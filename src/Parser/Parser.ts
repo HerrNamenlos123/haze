@@ -1,166 +1,169 @@
 import {
-  assert,
-  CompilerError,
-  InternalError,
-  printErrorMessage,
-  SyntaxError,
-  type SourceLoc,
-} from "../shared/Errors";
+  BaseErrorListener,
+  CharStream,
+  CommonTokenStream,
+  Interval,
+  type ParserRuleContext,
+  type TerminalNode,
+} from "antlr4ng";
 import {
-  EAssignmentOperation,
-  EBinaryOperation,
-  EExternLanguage,
-  EIncrOperation,
-  ELiteralUnit,
-  EUnaryOperation,
+  type ASTAggregateLiteralElement,
+  type ASTAggregateLiteralExpr,
+  type ASTArraySubscriptExpr,
+  type ASTAttemptExpr,
   type ASTBinaryExpr,
-  type ASTLiteralExpr,
+  type ASTBlockScopeExpr,
+  type ASTEnumDefinition,
+  type ASTEnumValueDefinition,
+  type ASTErrorPropagationExpr,
   type ASTExplicitCastExpr,
   type ASTExpr,
   type ASTExprAsFuncbody,
   type ASTExprAssignmentExpr,
   type ASTExprCallExpr,
   type ASTExprComptimeMemberAccess,
+  type ASTExprIsTypeExpr,
   type ASTExprMemberAccess,
   type ASTExprStatement,
+  type ASTForEachStatement,
+  type ASTForStatement,
+  type ASTFStringExpr,
+  type ASTFuncBody,
   type ASTFunctionDefinition,
+  type ASTFunctionOverloading,
+  type ASTFunctionRequiresBlock,
   type ASTGlobalVariableDefinition,
   type ASTIfStatement,
   type ASTInlineCStatement,
   type ASTLambda,
   type ASTLambdaExpr,
+  type ASTLiteralExpr,
+  type ASTModuleImport,
   type ASTNamespaceDefinition,
   type ASTParam,
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
+  type ASTRaiseStatement,
   type ASTReturnStatement,
   type ASTScope,
+  type ASTStatement,
   type ASTStructDefinition,
-  type ASTAggregateLiteralExpr,
   type ASTStructMemberDefinition,
+  type ASTSubscriptIndexExpr,
+  type ASTSymbolImport,
   type ASTSymbolValueExpr,
+  type ASTTernaryExpr,
+  type ASTTypeAlias,
+  type ASTTypeLiteralExpr,
   type ASTUnaryExpr,
   type ASTVariableDefinitionStatement,
   type ASTWhileStatement,
-  type ASTBlockScopeExpr,
-  type ASTModuleImport,
-  type ASTSymbolImport,
-  type ASTTypeAlias,
-  type ASTArraySubscriptExpr,
-  type ASTForEachStatement,
-  type ASTTypeLiteralExpr,
-  type ASTFStringExpr,
+  EAssignmentOperation,
+  EBinaryOperation,
   EDatatypeMutability,
-  EVariableMutability,
-  type ASTFunctionRequiresBlock,
-  type ASTFunctionOverloading,
+  EExternLanguage,
+  EIncrOperation,
+  ELiteralUnit,
   EOverloadedOperator,
-  type ASTExprIsTypeExpr,
-  type ASTErrorPropagationExpr,
-  type ASTEnumDefinition,
-  type ASTEnumValueDefinition,
-  type ASTAggregateLiteralElement,
-  type ASTSubscriptIndexExpr,
-  type ASTForStatement,
-  type ASTAttemptExpr,
-  type ASTRaiseStatement,
-  type ASTTernaryExpr,
-  type ASTStatement,
-  type ASTFuncBody,
-  type ASTTypeModifierExpr,
+  EUnaryOperation,
+  EVariableMutability,
 } from "../shared/AST";
-import {
-  BooleanConstantContext,
-  CInjectDirectiveContext,
-  CInlineStatementContext,
-  ExprAsFuncbodyContext,
-  ExprStatementContext,
-  FunctionDefinitionContext,
-  GenericLiteralConstantContext,
-  GenericLiteralTypeExprContext,
-  GlobalVariableDefinitionContext,
-  HazeParser,
-  IfStatementContext,
-  LambdaContext,
-  NamespaceDefinitionContext,
-  NestedStructDefinitionContext,
-  ParamsContext,
-  ProgContext,
-  ReturnStatementContext,
-  StringConstantContext,
-  StructDefinitionContext,
-  StructMemberContext,
-  StructMethodContext,
-  VariableCreationStatementContext,
-  WhileStatementContext,
-  IntegerLiteralContext,
-  FloatLiteralContext,
-  IntegerUnitLiteralContext,
-  FloatUnitLiteralContext,
-  FromImportStatementContext,
-  ImportStatementContext,
-  ForEachStatementContext,
-  TypeAliasDirectiveContext,
-  TypeAliasStatementContext,
-  VariableConstContext,
-  VariableLetContext,
-  DoScopeContext,
-  RawScopeContext,
-  SourceLocationPrefixRuleContext,
-  GlobalDeclarationWithSourceContext,
-  GlobalDeclarationContext,
-  TopLevelDeclarationsContext,
-  RequiresBlockContext,
-  StructContentWithSourcelocContext,
-  EnumContentContext,
-  EnumDefinitionContext,
-  AggregateLiteralElementContext,
-  VariableCreationStatementRuleContext,
-  ForStatementContext,
-  WhileLetStatementContext,
-  IfStatementConditionContext,
-  IfLetStatementConditionContext,
-  HexIntegerLiteralContext,
-  RaiseStatementContext,
-  RegexLiteralContext,
-  NameSegmentContext,
-  NameExprContext,
-  SubscriptExprContext,
-  PrimaryExprContext,
-  PrefixExprContext,
-  ArrayExprContext,
-  BraceExprContext,
-  PostfixExprContext,
-  MultiplicativeContext,
-  AdditiveContext,
-  ComparisonContext,
-  EqualityContext,
-  LogicalContext,
-  TernaryContext,
-  AssignmentContext,
-  TripleStringConstantContext,
-  SingleFStringContext,
-  TripleFStringContext,
-  ParamContext,
-  ComptimeIfStatementContext,
-  TypeExprPrimaryContext,
-  TypeExprSimpleContext,
-  TypeExprModifiedContext,
-  TypeExprUnionContext,
-  TypeExprContext,
-} from "./grammar/autogen/HazeParser";
-import {
-  BaseErrorListener,
-  CharStream,
-  CommonTokenStream,
-  Interval,
-  ParserRuleContext,
-  TerminalNode,
-} from "antlr4ng";
-import { HazeLexer } from "./grammar/autogen/HazeLexer";
-import { EMethodType, EPrimitive, EVariableContext, type LiteralValue } from "../shared/common";
 import type { ModuleConfig } from "../shared/Config";
+import {
+  EMethodType,
+  EPrimitive,
+  EVariableContext,
+  type LiteralValue,
+} from "../shared/common";
+import {
+  assert,
+  CompilerError,
+  InternalError,
+  printErrorMessage,
+  type SourceLoc,
+  SyntaxError,
+} from "../shared/Errors";
+import { HazeLexer } from "./grammar/autogen/HazeLexer";
+import {
+  type AdditiveContext,
+  type AggregateLiteralElementContext,
+  type ArrayExprContext,
+  type AssignmentContext,
+  type BooleanConstantContext,
+  type BraceExprContext,
+  type CInjectDirectiveContext,
+  type CInlineStatementContext,
+  type ComparisonContext,
+  type ComptimeIfStatementContext,
+  type DoScopeContext,
+  type EnumContentContext,
+  type EnumDefinitionContext,
+  type EqualityContext,
+  type ExprAsFuncbodyContext,
+  type ExprStatementContext,
+  type FloatLiteralContext,
+  type FloatUnitLiteralContext,
+  type ForEachStatementContext,
+  type ForStatementContext,
+  type FromImportStatementContext,
+  type FunctionDefinitionContext,
+  type GenericLiteralTypeExprContext,
+  type GlobalDeclarationContext,
+  type GlobalDeclarationWithSourceContext,
+  type GlobalVariableDefinitionContext,
+  HazeParser,
+  type HexIntegerLiteralContext,
+  type IfLetStatementConditionContext,
+  type IfStatementConditionContext,
+  type IfStatementContext,
+  type ImportStatementContext,
+  type IntegerLiteralContext,
+  type IntegerUnitLiteralContext,
+  type LambdaContext,
+  type LogicalContext,
+  type MultiplicativeContext,
+  type NameExprContext,
+  type NameSegmentContext,
+  type NamespaceDefinitionContext,
+  type NestedStructDefinitionContext,
+  type ParamContext,
+  type ParamsContext,
+  type PostfixExprContext,
+  type PrefixExprContext,
+  type PrimaryExprContext,
+  type ProgContext,
+  type RaiseStatementContext,
+  type RawScopeContext,
+  type RegexLiteralContext,
+  type RequiresBlockContext,
+  type ReturnStatementContext,
+  type SingleFStringContext,
+  type SourceLocationPrefixRuleContext,
+  type StringConstantContext,
+  type StructContentWithSourcelocContext,
+  type StructDefinitionContext,
+  type StructMemberContext,
+  type StructMethodContext,
+  type SubscriptExprContext,
+  type TernaryContext,
+  type TopLevelDeclarationsContext,
+  type TripleFStringContext,
+  type TripleStringConstantContext,
+  type TypeAliasDirectiveContext,
+  type TypeAliasStatementContext,
+  type TypeExprContext,
+  type TypeExprModifiedContext,
+  type TypeExprPrimaryContext,
+  type TypeExprSimpleContext,
+  type TypeExprUnionContext,
+  VariableConstContext,
+  type VariableCreationStatementContext,
+  type VariableCreationStatementRuleContext,
+  VariableLetContext,
+  type WhileLetStatementContext,
+  type WhileStatementContext,
+} from "./grammar/autogen/HazeParser";
 import { HazeParserListener } from "./grammar/autogen/HazeParserListener";
 
 type IfStatementCondition =
@@ -191,20 +194,28 @@ export namespace Parser {
       line: number,
       column: number,
       msg: string,
-      _e: any,
+      _e: any
     ) {
-      printErrorMessage(msg, { filename: this.filename, start: { line, column } }, "SyntaxError");
+      printErrorMessage(
+        msg,
+        { filename: this.filename, start: { line, column } },
+        "SyntaxError"
+      );
     }
   }
 
-  function parse(text: string, listener: ASTBuilder, errorListenerFilename: string) {
+  function parse(
+    text: string,
+    listener: ASTBuilder,
+    errorListenerFilename: string
+  ) {
     const errorListener = new HazeErrorListener(errorListenerFilename);
-    let inputStream = CharStream.fromString(text);
-    let lexer = new HazeLexer(inputStream);
+    const inputStream = CharStream.fromString(text);
+    const lexer = new HazeLexer(inputStream);
     lexer.removeErrorListeners();
     lexer.addErrorListener(errorListener);
 
-    let tokenStream = new CommonTokenStream(lexer);
+    const tokenStream = new CommonTokenStream(lexer);
     const parser = new HazeParser(tokenStream);
     parser.removeErrorListeners();
     parser.addErrorListener(errorListener);
@@ -215,12 +226,16 @@ export namespace Parser {
     parser.addParseListener(listener);
 
     parser.prog();
-    if (parser.numberOfSyntaxErrors != 0) {
+    if (parser.numberOfSyntaxErrors !== 0) {
       throw new SyntaxError();
     }
   }
 
-  export function parseTextToAST(config: ModuleConfig, text: string, filename: string) {
+  export function parseTextToAST(
+    config: ModuleConfig,
+    text: string,
+    filename: string
+  ) {
     const listener = new ASTBuilder(config, filename);
     parse(text, listener, filename);
 
@@ -240,7 +255,7 @@ class ASTBuilder extends HazeParserListener {
 
   constructor(
     public config: ModuleConfig,
-    public filename: string,
+    public filename: string
   ) {
     super();
   }
@@ -264,7 +279,7 @@ class ASTBuilder extends HazeParserListener {
 
     if (mark > this.stack.length) {
       throw new InternalError(
-        `Invalid mark in ${ctx.constructor.name}: mark=${mark}, stack=${this.stack.length}`,
+        `Invalid mark in ${ctx.constructor.name}: mark=${mark}, stack=${this.stack.length}`
       );
     }
 
@@ -272,7 +287,9 @@ class ASTBuilder extends HazeParserListener {
   }
 
   result() {
-    if (this.stack.length !== 1) throw new Error("bad stack");
+    if (this.stack.length !== 1) {
+      throw new Error("bad stack");
+    }
     return this.stack[0];
   }
 
@@ -300,31 +317,35 @@ class ASTBuilder extends HazeParserListener {
       | FunctionDefinitionContext
       | StructDefinitionContext
       | TypeAliasDirectiveContext
-      | EnumDefinitionContext,
+      | EnumDefinitionContext
   ): EExternLanguage {
     if (!ctx._extern) {
       return EExternLanguage.None;
-    } else if (ctx._externLang?.getText() === "C") {
-      return EExternLanguage.Extern_C;
-    } else {
-      return EExternLanguage.Extern;
     }
+    if (ctx._externLang?.getText() === "C") {
+      return EExternLanguage.Extern_C;
+    }
+    return EExternLanguage.Extern;
   }
 
   mutability(
     ctx:
       | GlobalVariableDefinitionContext
       | VariableCreationStatementRuleContext
-      | StructMemberContext,
+      | StructMemberContext
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
       return EVariableMutability.Default;
-    } else if (ctx.variableMutabilitySpecifier() instanceof VariableConstContext) {
+    }
+    if (ctx.variableMutabilitySpecifier() instanceof VariableConstContext) {
       return EVariableMutability.Const;
-    } else if (ctx.variableMutabilitySpecifier() instanceof VariableLetContext) {
+    }
+    if (ctx.variableMutabilitySpecifier() instanceof VariableLetContext) {
       return EVariableMutability.Let;
     }
-    throw new InternalError("Mutability field of variable is neither let nor const");
+    throw new InternalError(
+      "Mutability field of variable is neither let nor const"
+    );
   }
 
   private assignOpFromText(text: string): EAssignmentOperation {
@@ -379,31 +400,66 @@ class ASTBuilder extends HazeParserListener {
   }
 
   private binaryOpFromText(text: string): EBinaryOperation {
-    if (text === "*") return EBinaryOperation.Multiply;
-    if (text === "/") return EBinaryOperation.Divide;
-    if (text === "%") return EBinaryOperation.Modulo;
-    if (text === "+") return EBinaryOperation.Add;
-    if (text === "-") return EBinaryOperation.Subtract;
-    if (text === "<") return EBinaryOperation.LessThan;
-    if (text === ">") return EBinaryOperation.GreaterThan;
-    if (text === "<=") return EBinaryOperation.LessEqual;
-    if (text === ">=") return EBinaryOperation.GreaterEqual;
-    if (text === "==") return EBinaryOperation.Equal;
-    if (text === "!=") return EBinaryOperation.NotEqual;
-    if (text === "&&") return EBinaryOperation.BoolAnd;
-    if (text === "||") return EBinaryOperation.BoolOr;
-    if (text === "|") return EBinaryOperation.BitwiseOr;
+    if (text === "*") {
+      return EBinaryOperation.Multiply;
+    }
+    if (text === "/") {
+      return EBinaryOperation.Divide;
+    }
+    if (text === "%") {
+      return EBinaryOperation.Modulo;
+    }
+    if (text === "+") {
+      return EBinaryOperation.Add;
+    }
+    if (text === "-") {
+      return EBinaryOperation.Subtract;
+    }
+    if (text === "<") {
+      return EBinaryOperation.LessThan;
+    }
+    if (text === ">") {
+      return EBinaryOperation.GreaterThan;
+    }
+    if (text === "<=") {
+      return EBinaryOperation.LessEqual;
+    }
+    if (text === ">=") {
+      return EBinaryOperation.GreaterEqual;
+    }
+    if (text === "==") {
+      return EBinaryOperation.Equal;
+    }
+    if (text === "!=") {
+      return EBinaryOperation.NotEqual;
+    }
+    if (text === "&&") {
+      return EBinaryOperation.BoolAnd;
+    }
+    if (text === "||") {
+      return EBinaryOperation.BoolOr;
+    }
+    if (text === "|") {
+      return EBinaryOperation.BitwiseOr;
+    }
 
     throw new InternalError("Binary operator is not known: " + text);
   }
 
-  private collectOperatorTokens(...tokenLists: (TerminalNode | null)[][]): TerminalNode[] {
-    const tokens = tokenLists.flat().filter((t): t is TerminalNode => Boolean(t));
+  private collectOperatorTokens(
+    ...tokenLists: (TerminalNode | null)[][]
+  ): TerminalNode[] {
+    const tokens = tokenLists
+      .flat()
+      .filter((t): t is TerminalNode => Boolean(t));
     tokens.sort((a, b) => a.symbol.tokenIndex - b.symbol.tokenIndex);
     return tokens;
   }
 
-  private makeSymbolExpr(name: string, sourceloc: SourceLoc): ASTSymbolValueExpr {
+  private makeSymbolExpr(
+    name: string,
+    sourceloc: SourceLoc
+  ): ASTSymbolValueExpr {
     return {
       variant: "SymbolValueExpr",
       name,
@@ -412,7 +468,10 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTSymbolValueExpr;
   }
 
-  private makeTypeofCallExpr(expr: ASTExpr, sourceloc: SourceLoc): ASTExprCallExpr {
+  private makeTypeofCallExpr(
+    expr: ASTExpr,
+    sourceloc: SourceLoc
+  ): ASTExprCallExpr {
     return {
       variant: "ExprCallExpr",
       calledExpr: this.makeSymbolExpr("typeof", sourceloc),
@@ -423,7 +482,9 @@ class ASTBuilder extends HazeParserListener {
   }
 
   getSource(ctx: ParserRuleContext) {
-    if (!ctx.start || !ctx.stop) return "<no-source>";
+    if (!(ctx.start && ctx.stop)) {
+      return "<no-source>";
+    }
     const interval = new Interval(ctx.start.start, ctx.stop.stop);
     return ctx.start.inputStream!.getTextFromInterval(interval);
   }
@@ -455,8 +516,11 @@ class ASTBuilder extends HazeParserListener {
     const out: any[] = [];
 
     for (const v of produced) {
-      if (Array.isArray(v)) out.push(...v);
-      else if (v != null) out.push(v);
+      if (Array.isArray(v)) {
+        out.push(...v);
+      } else if (v != null) {
+        out.push(v);
+      }
     }
 
     this.stack.push(out);
@@ -467,7 +531,9 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     if (produced.length !== 1) {
-      throw new InternalError(`CInjectDirective expected 1 child, got ${produced.length}`);
+      throw new InternalError(
+        `CInjectDirective expected 1 child, got ${produced.length}`
+      );
     }
 
     this.stack.push({
@@ -607,7 +673,9 @@ class ASTBuilder extends HazeParserListener {
   makeIntegerUnitLiteral(ctx: IntegerUnitLiteralContext): LiteralValue {
     function parseUnitBigInt(input: string): [bigint, string] {
       const match = input.match(/^(-?\d+)([a-zA-Z%]+)$/);
-      if (!match) throw new Error(`Invalid format: "${input}"`);
+      if (!match) {
+        throw new Error(`Invalid format: "${input}"`);
+      }
 
       const value = BigInt(match[1]);
       const unit = match[2];
@@ -651,11 +719,14 @@ class ASTBuilder extends HazeParserListener {
         break;
 
       default:
-        throw new CompilerError(`The unit '${unit}' is not known to the compiler`, this.loc(ctx));
+        throw new CompilerError(
+          `The unit '${unit}' is not known to the compiler`,
+          this.loc(ctx)
+        );
     }
 
     return {
-      value: value,
+      value,
       type: EPrimitive.int,
       unit: literalUnit,
     };
@@ -664,8 +735,10 @@ class ASTBuilder extends HazeParserListener {
   makeFloatUnitLiteral(ctx: FloatUnitLiteralContext): LiteralValue {
     function parseUnit(input: string): [number, string] {
       const match = input.match(/^(-?\d*\.?\d+)([a-zA-Z%]+)$/);
-      if (!match) throw new Error(`Invalid format: "${input}"`);
-      return [parseFloat(match[1]), match[2]];
+      if (!match) {
+        throw new Error(`Invalid format: "${input}"`);
+      }
+      return [Number.parseFloat(match[1]), match[2]];
     }
     const [value, unit] = parseUnit(ctx.UNIT_FLOAT_LITERAL().getText());
 
@@ -703,11 +776,14 @@ class ASTBuilder extends HazeParserListener {
         break;
 
       default:
-        throw new CompilerError(`The unit '${unit}' is not known to the compiler`, this.loc(ctx));
+        throw new CompilerError(
+          `The unit '${unit}' is not known to the compiler`,
+          this.loc(ctx)
+        );
     }
 
     return {
-      value: value,
+      value,
       type: EPrimitive.real,
       unit: literalUnit,
     };
@@ -724,23 +800,6 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
-  exitGenericLiteralConstant = (ctx: GenericLiteralConstantContext) => {
-    const start = this.getMark(ctx);
-    const produced = this.stack.splice(start);
-
-    if (produced.length !== 1) {
-      throw new InternalError("GenericLiteralConstant stack mismatch");
-    }
-
-    const literal = produced[0] as LiteralValue;
-
-    this.stack.push({
-      variant: "LiteralExpr",
-      literal,
-      sourceloc: this.loc(ctx),
-    } satisfies ASTLiteralExpr);
-  };
-
   exitTypeExprPrimary = (ctx: TypeExprPrimaryContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -754,25 +813,16 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if ((ctx as any).TYPEOF?.()) {
+    if (ctx.literal()) {
       if (produced.length !== 1) {
-        throw new InternalError("TypeExprPrimary typeof stack mismatch");
-      }
-
-      this.stack.push(this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx)));
-      return;
-    }
-
-    if (ctx.TYPE()) {
-      if (produced.length !== 1) {
-        throw new InternalError("TypeExprPrimary type literal stack mismatch");
+        throw new InternalError("TypeExprPrimary literal stack mismatch");
       }
 
       this.stack.push({
-        variant: "TypeLiteralExpr",
-        datatype: produced[0] as ASTExpr,
+        variant: "LiteralExpr",
+        literal: produced[0] as LiteralValue,
         sourceloc: this.loc(ctx),
-      } satisfies ASTTypeLiteralExpr);
+      } satisfies ASTLiteralExpr);
       return;
     }
 
@@ -791,26 +841,11 @@ class ASTBuilder extends HazeParserListener {
     let expr = produced[i++] as ASTExpr;
 
     for (const postfix of ctx.typeExprPostfix()) {
-      if (postfix.LB() && postfix.RB()) {
-        const argCount = postfix.argList()?.expr().length ?? 0;
-        const args = produced.slice(i, i + argCount) as ASTExpr[];
-        i += argCount;
-
-        const allocator = postfix.withAllocator() ? (produced[i++] as ASTExpr) : null;
-
-        expr = {
-          variant: "ExprCallExpr",
-          calledExpr: expr,
-          arguments: args,
-          allocator,
-          sourceloc: this.loc(postfix),
-        } satisfies ASTExprCallExpr;
-        continue;
-      }
-
       if (postfix.DOT() && postfix.LBRACKET() && postfix.RBRACKET()) {
         if (i >= produced.length) {
-          throw new InternalError("TypeExprSimple comptime member access missing expression");
+          throw new InternalError(
+            "TypeExprSimple comptime member access missing expression"
+          );
         }
 
         expr = {
@@ -822,23 +857,11 @@ class ASTBuilder extends HazeParserListener {
         continue;
       }
 
-      if (postfix.LBRACKET() && postfix.RBRACKET()) {
-        const indexCount = postfix.indexList()?.subscriptExpr().length ?? 0;
-        const indices = produced.slice(i, i + indexCount) as ASTSubscriptIndexExpr[];
-        i += indexCount;
-
-        expr = {
-          variant: "ArraySubscriptExpr",
-          expr,
-          indices,
-          sourceloc: this.loc(postfix),
-        } satisfies ASTArraySubscriptExpr;
-        continue;
-      }
-
       if (postfix.DOT() || postfix.QUESTIONDOT()) {
         if (i >= produced.length) {
-          throw new InternalError("TypeExprSimple member access missing segment");
+          throw new InternalError(
+            "TypeExprSimple member access missing segment"
+          );
         }
 
         const segment = produced[i++] as {
@@ -854,41 +877,6 @@ class ASTBuilder extends HazeParserListener {
           generics: segment.generics,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprMemberAccess;
-        continue;
-      }
-
-      if (postfix.AS() || postfix.IS()) {
-        if (i >= produced.length) {
-          throw new InternalError("TypeExprSimple AS/IS missing type expression");
-        }
-
-        const typeExpr = produced[i++] as ASTExpr;
-
-        if (postfix.AS()) {
-          expr = {
-            variant: "ExplicitCastExpr",
-            expr,
-            castedTo: typeExpr,
-            sourceloc: this.loc(postfix),
-          } satisfies ASTExplicitCastExpr;
-        } else {
-          expr = {
-            variant: "ExprIsTypeExpr",
-            expr,
-            comparisonType: typeExpr,
-            sourceloc: this.loc(postfix),
-          } satisfies ASTExprIsTypeExpr;
-        }
-
-        continue;
-      }
-
-      if (postfix.QUESTIONEXCL()) {
-        expr = {
-          variant: "ErrorPropagationExpr",
-          expr,
-          sourceloc: this.loc(postfix),
-        } satisfies ASTErrorPropagationExpr;
         continue;
       }
 
@@ -920,6 +908,7 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("TypeExprModified modifier stack mismatch");
       }
 
+      // biome-ignore lint/style/noNestedTernary: .
       const modifier = ctx.INLINE() ? "inline" : ctx.MUT() ? "mut" : "const";
       this.stack.push({
         variant: "TypeModifierExpr",
@@ -930,7 +919,12 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.LBRACKET() && ctx.RBRACKET() && ctx.typeExprModified() && !ctx.LB()) {
+    if (
+      ctx.LBRACKET() &&
+      ctx.RBRACKET() &&
+      ctx.typeExprModified() &&
+      !ctx.LB()
+    ) {
       if (produced.length !== 1) {
         throw new InternalError("TypeExprModified array stack mismatch");
       }
@@ -965,7 +959,9 @@ class ASTBuilder extends HazeParserListener {
       };
 
       const returnType = produced[i++] as ASTExpr;
-      const requires = ctx.requiresBlock() ? (produced[i++] as ASTFunctionRequiresBlock) : null;
+      const requires = ctx.requiresBlock()
+        ? (produced[i++] as ASTFunctionRequiresBlock)
+        : null;
 
       if (i !== produced.length) {
         throw new InternalError("TypeExprModified function stack mismatch");
@@ -978,7 +974,7 @@ class ASTBuilder extends HazeParserListener {
         parameterTypes: params.params.map((p) => p.datatype),
         parameterOptional: params.params.map((p) => p.optional),
         parameterEllipsis: params.ellipsis,
-        requires: requires,
+        requires,
         sourceloc: this.loc(ctx),
       } satisfies ASTTypeModifierExpr);
       return;
@@ -1171,11 +1167,13 @@ class ASTBuilder extends HazeParserListener {
       : this.emptyRequires();
 
     // funcbody (optional)
-    const funcbody = ctx.funcbody() ? (produced[i++] as ASTFuncBody) : undefined;
+    const funcbody = ctx.funcbody()
+      ? (produced[i++] as ASTFuncBody)
+      : undefined;
 
     if (i !== produced.length) {
       throw new InternalError(
-        `FunctionDefinition stack mismatch: expected ${i}, got ${produced.length}`,
+        `FunctionDefinition stack mismatch: expected ${i}, got ${produced.length}`
       );
     }
 
@@ -1226,7 +1224,7 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("Lambda missing funcbody");
     }
 
-    let returnType: ASTExpr | undefined = undefined;
+    let returnType: ASTExpr | undefined;
     if (ctx.typeExpr()) {
       returnType = produced[i++] as ASTExpr;
     }
@@ -1248,7 +1246,7 @@ class ASTBuilder extends HazeParserListener {
       ellipsis: params.ellipsis,
       scope: funcbody,
       returnType,
-      requires: requires,
+      requires,
       sourceloc: this.loc(ctx),
     } satisfies ASTLambda);
   };
@@ -1259,12 +1257,12 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
 
-    let datatype: ASTExpr | undefined = undefined;
+    let datatype: ASTExpr | undefined;
     if (ctx.typeExpr()) {
       datatype = produced[i++] as ASTExpr;
     }
 
-    let expr: ASTExpr | undefined = undefined;
+    let expr: ASTExpr | undefined;
     if (ctx.expr()) {
       expr = produced[i++] as ASTExpr;
     }
@@ -1340,7 +1338,9 @@ class ASTBuilder extends HazeParserListener {
       : this.emptyRequires();
 
     // funcbody (optional)
-    const funcbody = ctx.funcbody() ? (produced[i++] as ASTFuncBody) : undefined;
+    const funcbody = ctx.funcbody()
+      ? (produced[i++] as ASTFuncBody)
+      : undefined;
 
     if (i !== produced.length) {
       throw new InternalError("StructMethod stack mismatch");
@@ -1348,7 +1348,9 @@ class ASTBuilder extends HazeParserListener {
 
     const genericNames = ctx._generic.map((c) => {
       const t = c.getText();
-      if (!t) throw new InternalError("missing generic name");
+      if (!t) {
+        throw new InternalError("missing generic name");
+      }
       return t;
     });
 
@@ -1358,7 +1360,7 @@ class ASTBuilder extends HazeParserListener {
 
     let name = ctx._name.text;
     let methodType = EMethodType.Method;
-    let operatorOverloading: ASTFunctionOverloading | undefined = undefined;
+    let operatorOverloading: ASTFunctionOverloading | undefined;
 
     if (name === "constructor") {
       methodType = EMethodType.Constructor;
@@ -1405,11 +1407,16 @@ class ASTBuilder extends HazeParserListener {
       operatorOverloading = { operator: EOverloadedOperator.LessThanOrEqual };
       name = "__operator_lte";
     } else if (name === "operator>=") {
-      operatorOverloading = { operator: EOverloadedOperator.GreaterThanOrEqual };
+      operatorOverloading = {
+        operator: EOverloadedOperator.GreaterThanOrEqual,
+      };
       name = "__operator_gte";
     }
 
-    let methodRequiredMutability: EDatatypeMutability.Mut | EDatatypeMutability.Const | null = null;
+    let methodRequiredMutability:
+      | EDatatypeMutability.Mut
+      | EDatatypeMutability.Const
+      | null = null;
 
     if (ctx.MUT()) {
       methodRequiredMutability = EDatatypeMutability.Mut;
@@ -1456,10 +1463,8 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("EnumContent stack mismatch");
       }
       value = produced[0] as ASTExpr;
-    } else {
-      if (produced.length !== 0) {
-        throw new InternalError("EnumContent stack mismatch");
-      }
+    } else if (produced.length !== 0) {
+      throw new InternalError("EnumContent stack mismatch");
     }
 
     this.stack.push({
@@ -1521,7 +1526,9 @@ class ASTBuilder extends HazeParserListener {
 
     const processContent = (c: any) => {
       if (Array.isArray(c)) {
-        for (const cc of c) processContent(cc);
+        for (const cc of c) {
+          processContent(cc);
+        }
         return;
       }
 
@@ -1540,7 +1547,7 @@ class ASTBuilder extends HazeParserListener {
 
         default:
           throw new InternalError(
-            "StructDefinition produced unexpected child: " + String(c?.variant),
+            "StructDefinition produced unexpected child: " + String(c?.variant)
           );
       }
     };
@@ -1652,7 +1659,10 @@ class ASTBuilder extends HazeParserListener {
     const datatype = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
 
     const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
-    const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
+    const elements = produced.slice(
+      i,
+      i + elementCount
+    ) as ASTAggregateLiteralElement[];
     i += elementCount;
 
     const allocator = ctx.withAllocator() ? (produced[i++] as ASTExpr) : null;
@@ -1676,7 +1686,10 @@ class ASTBuilder extends HazeParserListener {
 
     let i = 0;
     const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
-    const elements = produced.slice(i, i + elementCount) as ASTAggregateLiteralElement[];
+    const elements = produced.slice(
+      i,
+      i + elementCount
+    ) as ASTAggregateLiteralElement[];
     i += elementCount;
 
     const allocator = ctx.withAllocator() ? (produced[i++] as ASTExpr) : null;
@@ -1771,7 +1784,9 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("PrimaryExpr typeof stack mismatch");
       }
 
-      this.stack.push(this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx)));
+      this.stack.push(
+        this.makeTypeofCallExpr(produced[0] as ASTExpr, this.loc(ctx))
+      );
       return;
     }
 
@@ -1928,7 +1943,9 @@ class ASTBuilder extends HazeParserListener {
         const args = produced.slice(i, i + argCount) as ASTExpr[];
         i += argCount;
 
-        const allocator = postfix.withAllocator() ? (produced[i++] as ASTExpr) : null;
+        const allocator = postfix.withAllocator()
+          ? (produced[i++] as ASTExpr)
+          : null;
 
         expr = {
           variant: "ExprCallExpr",
@@ -1942,7 +1959,9 @@ class ASTBuilder extends HazeParserListener {
 
       if (postfix.DOT() && postfix.LBRACKET() && postfix.RBRACKET()) {
         if (i >= produced.length) {
-          throw new InternalError("PostfixExpr comptime member access missing expression");
+          throw new InternalError(
+            "PostfixExpr comptime member access missing expression"
+          );
         }
 
         const memberExpr = produced[i++] as ASTExpr;
@@ -1958,7 +1977,10 @@ class ASTBuilder extends HazeParserListener {
 
       if (postfix.LBRACKET() && postfix.RBRACKET()) {
         const indexCount = postfix.indexList()?.subscriptExpr().length ?? 0;
-        const indices = produced.slice(i, i + indexCount) as ASTSubscriptIndexExpr[];
+        const indices = produced.slice(
+          i,
+          i + indexCount
+        ) as ASTSubscriptIndexExpr[];
         i += indexCount;
 
         expr = {
@@ -2040,9 +2062,11 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start) as ASTExpr[];
 
-    const operators = this.collectOperatorTokens(ctx.MUL(), ctx.DIV(), ctx.MOD()).map((t) =>
-      t.getText(),
-    );
+    const operators = this.collectOperatorTokens(
+      ctx.MUL(),
+      ctx.DIV(),
+      ctx.MOD()
+    ).map((t) => t.getText());
 
     if (produced.length !== operators.length + 1) {
       throw new InternalError("Multiplicative stack mismatch");
@@ -2066,7 +2090,9 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start) as ASTExpr[];
 
-    const operators = this.collectOperatorTokens(ctx.PLUS(), ctx.MINUS()).map((t) => t.getText());
+    const operators = this.collectOperatorTokens(ctx.PLUS(), ctx.MINUS()).map(
+      (t) => t.getText()
+    );
 
     if (produced.length !== operators.length + 1) {
       throw new InternalError("Additive stack mismatch");
@@ -2094,7 +2120,7 @@ class ASTBuilder extends HazeParserListener {
       ctx.LANGLE(),
       ctx.RANGLE(),
       ctx.LEQ(),
-      ctx.GEQ(),
+      ctx.GEQ()
     ).map((t) => t.getText());
 
     if (produced.length !== operators.length + 1) {
@@ -2119,9 +2145,10 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start) as ASTExpr[];
 
-    const operators = this.collectOperatorTokens(ctx.DOUBLEEQUALS(), ctx.NOTEQUALS()).map((t) =>
-      t.getText(),
-    );
+    const operators = this.collectOperatorTokens(
+      ctx.DOUBLEEQUALS(),
+      ctx.NOTEQUALS()
+    ).map((t) => t.getText());
 
     if (produced.length !== operators.length + 1) {
       throw new InternalError("Equality stack mismatch");
@@ -2148,7 +2175,7 @@ class ASTBuilder extends HazeParserListener {
     const operators = this.collectOperatorTokens(
       ctx.DOUBLEAND(),
       ctx.DOUBLEOR(),
-      ctx.SINGLEOR(),
+      ctx.SINGLEOR()
     ).map((t) => t.getText());
 
     if (produced.length !== operators.length + 1) {
@@ -2204,7 +2231,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "TernaryExpr",
       condition: produced[0] as ASTExpr,
-      then: produced[1] as ASTExpr,
+      thenExpr: produced[1] as ASTExpr,
       else: produced[2] as ASTExpr,
       sourceloc: this.loc(ctx),
     } satisfies ASTTernaryExpr);
@@ -2278,17 +2305,15 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    let expr: ASTExpr | undefined = undefined;
+    let expr: ASTExpr | undefined;
 
     if (ctx.expr()) {
       if (produced.length !== 1) {
         throw new InternalError("ReturnStatement stack mismatch");
       }
       expr = produced[0] as ASTExpr;
-    } else {
-      if (produced.length !== 0) {
-        throw new InternalError("ReturnStatement stack mismatch");
-      }
+    } else if (produced.length !== 0) {
+      throw new InternalError("ReturnStatement stack mismatch");
     }
 
     this.stack.push({
@@ -2298,18 +2323,20 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTReturnStatement);
   };
 
-  exitVariableCreationStatementRule = (ctx: VariableCreationStatementRuleContext) => {
+  exitVariableCreationStatementRule = (
+    ctx: VariableCreationStatementRuleContext
+  ) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
     let i = 0;
 
-    let datatype: ASTExpr | undefined = undefined;
+    let datatype: ASTExpr | undefined;
     if (ctx.typeExpr()) {
       datatype = produced[i++] as ASTExpr;
     }
 
-    let expr: ASTExpr | undefined = undefined;
+    let expr: ASTExpr | undefined;
     if (ctx.expr()) {
       expr = produced[i++] as ASTExpr;
     }
@@ -2451,7 +2478,10 @@ class ASTBuilder extends HazeParserListener {
     } satisfies IfStatementCondition);
   };
 
-  processIfStatement(ctx: IfStatementContext | ComptimeIfStatementContext, comptime: boolean) {
+  processIfStatement(
+    ctx: IfStatementContext | ComptimeIfStatementContext,
+    comptime: boolean
+  ) {
     if (!ctx._then) {
       throw new InternalError("then scope is missing");
     }
@@ -2469,12 +2499,11 @@ class ASTBuilder extends HazeParserListener {
             expr: cond.letExpr,
           },
         };
-      } else {
-        return {
-          condition: cond.expr,
-          letCondition: null,
-        };
       }
+      return {
+        condition: cond.expr,
+        letCondition: null,
+      };
     };
 
     let i = 0;
@@ -2517,7 +2546,7 @@ class ASTBuilder extends HazeParserListener {
     }
 
     // --- else block (optional)
-    let elseBlock: ASTScope | undefined = undefined;
+    let elseBlock: ASTScope | undefined;
     if (ctx._elseBlock) {
       elseBlock = produced[i++] as ASTScope;
     }
@@ -2531,10 +2560,10 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "IfStatement",
       ...head,
-      then: thenScope,
+      thenScope,
       sourceloc: this.loc(ctx),
       elseIfs,
-      comptime: comptime,
+      comptime,
       else: elseBlock,
     } satisfies ASTIfStatement);
   }
@@ -2680,9 +2709,7 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("ImportStatement produced unexpected children");
     }
 
-    const alias = ctx._alias
-      ? this.trimAndUnescapeStringLiteral(ctx._alias.getText(), 1, this.loc(ctx))
-      : null;
+    const alias = ctx._alias ? ctx._alias.getText() : null;
 
     let result: ASTModuleImport;
 
@@ -2691,7 +2718,11 @@ class ASTBuilder extends HazeParserListener {
       result = {
         alias,
         mode: "path",
-        name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
+        name: this.trimAndUnescapeStringLiteral(
+          ctx._path.text,
+          1,
+          this.loc(ctx)
+        ),
         sourceloc: this.loc(ctx),
         variant: "ModuleImport",
       };
@@ -2715,7 +2746,9 @@ class ASTBuilder extends HazeParserListener {
 
     // This rule should not produce semantic children
     if (produced.length !== 0) {
-      throw new InternalError("FromImportStatement produced unexpected children");
+      throw new InternalError(
+        "FromImportStatement produced unexpected children"
+      );
     }
 
     const symbols = ctx.importAs().map((imp) => {
@@ -2733,7 +2766,11 @@ class ASTBuilder extends HazeParserListener {
       result = {
         symbols,
         mode: "path",
-        name: this.trimAndUnescapeStringLiteral(ctx._path.text, 1, this.loc(ctx)),
+        name: this.trimAndUnescapeStringLiteral(
+          ctx._path.text,
+          1,
+          this.loc(ctx)
+        ),
         sourceloc: this.loc(ctx),
         variant: "SymbolImport",
       };
@@ -2762,10 +2799,8 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("RaiseStatement stack mismatch");
       }
       expr = produced[0];
-    } else {
-      if (produced.length !== 0) {
-        throw new InternalError("RaiseStatement unexpected children");
-      }
+    } else if (produced.length !== 0) {
+      throw new InternalError("RaiseStatement unexpected children");
     }
 
     this.stack.push({
@@ -2791,10 +2826,13 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    const declarations = [];
+    const declarations: any[] = [];
     for (const x of produced) {
-      if (Array.isArray(x)) declarations.push(...x);
-      else if (x != null) declarations.push(x);
+      if (Array.isArray(x)) {
+        declarations.push(...x);
+      } else if (x != null) {
+        declarations.push(x);
+      }
     }
 
     const names = ctx
@@ -2890,7 +2928,11 @@ class ASTBuilder extends HazeParserListener {
     } satisfies LiteralValue);
   };
 
-  trimAndUnescapeStringLiteral(raw: string, stripQuotes: number, sourceloc: SourceLoc): string {
+  trimAndUnescapeStringLiteral(
+    raw: string,
+    stripQuotes: number,
+    sourceloc: SourceLoc
+  ): string {
     // --- strip delimiters ---
     if (stripQuotes > 0) {
       raw = raw.slice(stripQuotes, -stripQuotes);
@@ -2901,17 +2943,23 @@ class ASTBuilder extends HazeParserListener {
     // trim exactly one leading newline + indentation
     if (raw.startsWith("\n")) {
       let i = 1;
-      while (raw[i] === " " || raw[i] === "\t") i++;
+      while (raw[i] === " " || raw[i] === "\t") {
+        i++;
+      }
       raw = raw.slice(i);
     }
 
     // trim exactly one trailing newline + indentation
     if (raw.endsWith("\n") || raw.endsWith(" \n") || raw.endsWith("\t\n")) {
       let i = raw.length - 1;
-      if (raw[i] !== "\n") return raw;
+      if (raw[i] !== "\n") {
+        return raw;
+      }
 
       i--;
-      while (i >= 0 && (raw[i] === " " || raw[i] === "\t")) i--;
+      while (i >= 0 && (raw[i] === " " || raw[i] === "\t")) {
+        i--;
+      }
       raw = raw.slice(0, i + 1);
     }
 
@@ -2927,7 +2975,9 @@ class ASTBuilder extends HazeParserListener {
       }
 
       const n = raw[++i];
-      if (n === undefined) throw new CompilerError("Invalid escape: trailing \\", sourceloc);
+      if (n === undefined) {
+        throw new CompilerError("Invalid escape: trailing \\", sourceloc);
+      }
 
       switch (n) {
         case "b":
@@ -2954,27 +3004,30 @@ class ASTBuilder extends HazeParserListener {
 
         case "x": {
           const hex = raw.slice(i + 1, i + 3);
-          if (!/^[0-9a-fA-F]{2}$/.test(hex))
+          if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
             throw new CompilerError("Invalid \\x escape", sourceloc);
-          out += String.fromCharCode(parseInt(hex, 16));
+          }
+          out += String.fromCharCode(Number.parseInt(hex, 16));
           i += 2;
           break;
         }
 
         case "u": {
           const hex = raw.slice(i + 1, i + 5);
-          if (!/^[0-9a-fA-F]{4}$/.test(hex))
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
             throw new CompilerError("Invalid \\u escape", sourceloc);
-          out += String.fromCharCode(parseInt(hex, 16));
+          }
+          out += String.fromCharCode(Number.parseInt(hex, 16));
           i += 4;
           break;
         }
 
         case "U": {
           const hex = raw.slice(i + 1, i + 9);
-          if (!/^[0-9a-fA-F]{8}$/.test(hex))
+          if (!/^[0-9a-fA-F]{8}$/.test(hex)) {
             throw new CompilerError("Invalid \\U escape", sourceloc);
-          out += String.fromCodePoint(parseInt(hex, 16));
+          }
+          out += String.fromCodePoint(Number.parseInt(hex, 16));
           i += 8;
           break;
         }
@@ -2988,9 +3041,11 @@ class ASTBuilder extends HazeParserListener {
               if (d && /[0-7]/.test(d)) {
                 oct += d;
                 i++;
-              } else break;
+              } else {
+                break;
+              }
             }
-            out += String.fromCharCode(parseInt(oct, 8));
+            out += String.fromCharCode(Number.parseInt(oct, 8));
           } else {
             throw new CompilerError(`Unknown escape: \\${n}`, sourceloc);
           }
@@ -3018,6 +3073,9 @@ class ASTBuilder extends HazeParserListener {
           return "\\";
         case '"':
           return '"';
+        default:
+          assert(false);
+          throw new Error();
       }
     }
 
@@ -3027,27 +3085,30 @@ class ASTBuilder extends HazeParserListener {
 
     if (text.startsWith("\\x")) {
       const hex = text.slice(2);
-      if (!/^[0-9a-fA-F]{2}$/.test(hex))
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
         throw new CompilerError(`Invalid \\x escape: ${text}`, sourceloc);
-      return String.fromCharCode(parseInt(hex, 16));
+      }
+      return String.fromCharCode(Number.parseInt(hex, 16));
     }
 
     if (text.startsWith("\\u")) {
       const hex = text.slice(2);
-      if (!/^[0-9a-fA-F]{4}$/.test(hex))
+      if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
         throw new CompilerError(`Invalid \\u escape: ${text}`, sourceloc);
-      return String.fromCharCode(parseInt(hex, 16));
+      }
+      return String.fromCharCode(Number.parseInt(hex, 16));
     }
 
     if (text.startsWith("\\U")) {
       const hex = text.slice(2);
-      if (!/^[0-9a-fA-F]{8}$/.test(hex))
+      if (!/^[0-9a-fA-F]{8}$/.test(hex)) {
         throw new CompilerError(`Invalid \\U escape: ${text}`, sourceloc);
-      return String.fromCodePoint(parseInt(hex, 16));
+      }
+      return String.fromCodePoint(Number.parseInt(hex, 16));
     }
 
     if (/^\\[0-7]{1,3}$/.test(text)) {
-      return String.fromCharCode(parseInt(text.slice(1), 8));
+      return String.fromCharCode(Number.parseInt(text.slice(1), 8));
     }
 
     return text; // No escape
@@ -3056,7 +3117,7 @@ class ASTBuilder extends HazeParserListener {
   private processFStringFragments(
     ctx: SingleFStringContext | TripleFStringContext,
     exprs: ASTExpr[],
-    allocator: ASTExpr | null,
+    allocator: ASTExpr | null
   ): ASTFStringExpr {
     let exprIndex = 0;
 
@@ -3072,19 +3133,24 @@ class ASTBuilder extends HazeParserListener {
           type: "expr",
           value: exprs[exprIndex++],
         } as const;
-      } else {
-        assert(g.FSTRING_GRAPHEME());
-
-        let text = g.FSTRING_GRAPHEME()!.getText();
-        if (text === "{{") text = "{";
-        if (text === "}}") text = "}";
-        if (text === '\\"""') text = '"""';
-
-        return {
-          type: "text",
-          value: text,
-        } as const;
       }
+      assert(g.FSTRING_GRAPHEME());
+
+      let text = g.FSTRING_GRAPHEME()!.getText();
+      if (text === "{{") {
+        text = "{";
+      }
+      if (text === "}}") {
+        text = "}";
+      }
+      if (text === '\\"""') {
+        text = '"""';
+      }
+
+      return {
+        type: "text",
+        value: text,
+      } as const;
     });
 
     if (exprIndex !== exprs.length) {
@@ -3103,7 +3169,9 @@ class ASTBuilder extends HazeParserListener {
         combinedFragments.push(fragment);
       } else {
         const last =
-          combinedFragments.length > 0 ? combinedFragments[combinedFragments.length - 1] : null;
+          combinedFragments.length > 0
+            ? combinedFragments[combinedFragments.length - 1]
+            : null;
 
         if (last && last.type === "text") {
           last.value += fragment.value;
@@ -3124,9 +3192,8 @@ class ASTBuilder extends HazeParserListener {
           type: "text",
           value: this.trimAndUnescapeStringLiteral(f.value, 0, this.loc(ctx)),
         } as const;
-      } else {
-        return f;
       }
+      return f;
     });
 
     // --- final AST node ---
@@ -3144,13 +3211,17 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     let allocator: ASTExpr | null = null;
-    let exprs = produced;
+    const exprs = produced;
 
     if (ctx._allocatorExpr) {
       allocator = exprs.pop()!;
     }
 
-    const result = this.processFStringFragments(ctx, exprs as ASTExpr[], allocator);
+    const result = this.processFStringFragments(
+      ctx,
+      exprs as ASTExpr[],
+      allocator
+    );
 
     this.stack.push(result);
   }
@@ -3169,7 +3240,9 @@ class ASTBuilder extends HazeParserListener {
 
     // sanity check: this rule should not produce child AST nodes
     if (produced.length !== 0) {
-      throw new InternalError("SourceLocationPrefixRule produced unexpected children");
+      throw new InternalError(
+        "SourceLocationPrefixRule produced unexpected children"
+      );
     }
 
     const result = this.computeSourceLoc(ctx);
@@ -3183,10 +3256,14 @@ class ASTBuilder extends HazeParserListener {
     }
   };
 
-  enterGlobalDeclarationWithSource = (_ctx: GlobalDeclarationWithSourceContext) => {
+  enterGlobalDeclarationWithSource = (
+    _ctx: GlobalDeclarationWithSourceContext
+  ) => {
     this.sourcelocOverridePending.push(false);
   };
-  exitGlobalDeclarationWithSource = (ctx: GlobalDeclarationWithSourceContext) => {
+  exitGlobalDeclarationWithSource = (
+    ctx: GlobalDeclarationWithSourceContext
+  ) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
     const didOverride = this.sourcelocOverridePending.pop();
@@ -3195,24 +3272,38 @@ class ASTBuilder extends HazeParserListener {
     }
 
     // flatten declarations (this rule semantically returns a list)
-    const flat = [];
+    const flat: any[] = [];
     for (const x of produced) {
-      if (Array.isArray(x)) flat.push(...x);
-      else if (x != null) flat.push(x);
+      if (Array.isArray(x)) {
+        flat.push(...x);
+      } else if (x != null) {
+        flat.push(x);
+      }
     }
 
     this.stack.push(flat);
   };
 
-  private computeSourceLoc = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
+  private computeSourceLoc = (
+    ctx: SourceLocationPrefixRuleContext
+  ): SourceLoc => {
     const stringLiteral = ctx.STRING_LITERAL();
     if (!stringLiteral) {
-      throw new CompilerError("Missing source location filename", this.loc(ctx));
+      throw new CompilerError(
+        "Missing source location filename",
+        this.loc(ctx)
+      );
     }
 
-    const filename = this.trimAndUnescapeStringLiteral(stringLiteral.getText(), 1, this.loc(ctx));
+    const filename = this.trimAndUnescapeStringLiteral(
+      stringLiteral.getText(),
+      1,
+      this.loc(ctx)
+    );
 
-    const ints = ctx.INTEGER_LITERAL().map((int) => parseInt(int.getText()));
+    const ints = ctx
+      .INTEGER_LITERAL()
+      .map((int) => Number.parseInt(int.getText(), 10));
     const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
 
     if (ints.length === 2 && float === null) {
@@ -3220,25 +3311,31 @@ class ASTBuilder extends HazeParserListener {
         filename,
         start: { line: ints[0], column: ints[1] },
       };
-    } else if (ints.length === 3) {
+    }
+    if (ints.length === 3) {
       return {
         filename,
         start: { line: ints[0], column: ints[1] },
         end: { line: ints[0], column: ints[2] },
       };
-    } else if (ints.length === 2 && float !== null) {
+    }
+    if (ints.length === 2 && float !== null) {
       const end = float.split(".");
       return {
         filename,
         start: { line: ints[0], column: ints[1] },
-        end: { line: parseInt(end[0]), column: parseInt(end[1]) },
+        end: {
+          line: Number.parseInt(end[0], 10),
+          column: Number.parseInt(end[1], 10),
+        },
       };
-    } else {
-      throw new CompilerError(`Unexpected number of integers`, this.loc(ctx));
     }
+    throw new CompilerError("Unexpected number of integers", this.loc(ctx));
   };
 
-  enterStructContentWithSourceloc = (_ctx: StructContentWithSourcelocContext) => {
+  enterStructContentWithSourceloc = (
+    _ctx: StructContentWithSourcelocContext
+  ) => {
     this.sourcelocOverridePending.push(false);
   };
   exitStructContentWithSourceloc = (ctx: StructContentWithSourcelocContext) => {
@@ -3251,7 +3348,9 @@ class ASTBuilder extends HazeParserListener {
 
     for (const v of produced) {
       if (Array.isArray(v)) {
-        throw new InternalError(`${ctx.constructor.name} received nested array on stack`);
+        throw new InternalError(
+          `${ctx.constructor.name} received nested array on stack`
+        );
       }
       this.stack.push(v);
     }

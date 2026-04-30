@@ -1,78 +1,78 @@
-import { assert, ImpossibleSituation, type SourceLoc } from "./Errors";
 import type { EMethodType, EVariableContext, LiteralValue } from "./common";
+import { assert, ImpossibleSituation, type SourceLoc } from "./Errors";
 
 export enum EVariableMutability {
   Const = 1,
-  Let,
-  Default,
+  Let = 2,
+  Default = 3,
 }
 
 export enum EDatatypeMutability {
   Default = 1,
-  Mut,
-  Const,
+  Mut = 2,
+  Const = 3,
 }
 
 export enum EExternLanguage {
-  None,
-  Extern,
-  Extern_C,
+  None = 0,
+  Extern = 1,
+  Extern_C = 2,
 }
 
 export enum EOverloadedOperator {
   Add = 1,
-  Sub,
-  Mul,
-  Div,
-  Mod,
-  Rebind,
-  Assign,
-  Subscript,
-  Cast,
-  Equal,
-  NotEqual,
-  LessThan,
-  GreaterThan,
-  LessThanOrEqual,
-  GreaterThanOrEqual,
+  Sub = 2,
+  Mul = 3,
+  Div = 4,
+  Mod = 5,
+  Rebind = 6,
+  Assign = 7,
+  Subscript = 8,
+  Cast = 9,
+  Equal = 10,
+  NotEqual = 11,
+  LessThan = 12,
+  GreaterThan = 13,
+  LessThanOrEqual = 14,
+  GreaterThanOrEqual = 15,
 }
 
 export enum ELiteralUnit {
-  s,
-  ms,
-  us,
-  ns,
-  m,
-  h,
-  d,
+  s = 0,
+  ms = 1,
+  us = 2,
+  ns = 3,
+  m = 4,
+  h = 5,
+  d = 6,
 }
 
 export enum EIncrOperation {
-  Incr,
-  Decr,
+  Incr = 0,
+  Decr = 1,
 }
 
 export enum EUnaryOperation {
-  Plus,
-  Minus,
-  Negate,
+  Plus = 0,
+  Minus = 1,
+  Negate = 2,
 }
 
 export enum EBinaryOperation {
-  Multiply,
-  Divide,
-  Modulo,
-  Add,
-  Subtract,
-  LessThan,
-  LessEqual,
-  GreaterThan,
-  GreaterEqual,
-  Equal,
-  NotEqual,
-  BoolAnd,
-  BoolOr,
-  BitwiseOr,
+  Multiply = 0,
+  Divide = 1,
+  Modulo = 2,
+  Add = 3,
+  Subtract = 4,
+  LessThan = 5,
+  LessEqual = 6,
+  GreaterThan = 7,
+  GreaterEqual = 8,
+  Equal = 9,
+  NotEqual = 10,
+  BoolAnd = 11,
+  BoolOr = 12,
+  BitwiseOr = 13,
 }
 
 export function IncrOperationToString(op: EIncrOperation): string {
@@ -156,13 +156,13 @@ export function BinaryOperationToString(op: EBinaryOperation): string {
 }
 
 export enum EAssignmentOperation {
-  Rebind,
-  Assign,
-  Add,
-  Subtract,
-  Multiply,
-  Divide,
-  Modulo,
+  Rebind = 0,
+  Assign = 1,
+  Add = 2,
+  Subtract = 3,
+  Multiply = 4,
+  Divide = 5,
+  Modulo = 6,
 }
 
 export type ASTDeferredType = {
@@ -236,89 +236,28 @@ export type ASTFunctionDefinition = {
   static: boolean;
   params: ASTParam[];
   ellipsis: boolean;
-  returnType?: ASTTypeExpr;
+  returnType?: ASTExpr;
   methodType: EMethodType;
-  methodRequiredMutability: EDatatypeMutability.Const | EDatatypeMutability.Mut | null;
+  methodRequiredMutability:
+    | EDatatypeMutability.Const
+    | EDatatypeMutability.Mut
+    | null;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   originalSourcecode: string;
 };
 
+export type ASTParamType =
+  | { kind: "normal"; type: ASTExpr }
+  | { kind: "parampack" };
+
 export type ASTParam = {
   name: string;
-  datatype: ASTTypeExpr;
+  datatype: ASTParamType;
   optional: boolean;
   defaultValue: ASTExpr | null;
   sourceloc: SourceLoc;
 };
-
-export type ASTUntaggedUnionDatatype = {
-  variant: "UntaggedUnionDatatype";
-  members: ASTTypeExpr[];
-  sourceloc: SourceLoc;
-};
-
-export type ASTTaggedUnionDatatype = {
-  variant: "TaggedUnionDatatype";
-  members: {
-    tag: string;
-    type: ASTTypeExpr;
-  }[];
-  nodiscard: boolean;
-  sourceloc: SourceLoc;
-};
-
-export type ASTCallableDatatype = {
-  variant: "CallableDatatype";
-  params: ASTParam[];
-  ellipsis: boolean;
-  returnType: ASTTypeExpr;
-  requires: ASTFunctionRequiresBlock;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTFunctionDatatype = {
-  variant: "FunctionDatatype";
-  params: ASTParam[];
-  ellipsis: boolean;
-  returnType: ASTTypeExpr;
-  requires: ASTFunctionRequiresBlock;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTStackArrayDatatype = {
-  variant: "StackArrayDatatype";
-  datatype: ASTTypeExpr;
-  length: bigint;
-  inline: boolean;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTDynamicArrayDatatype = {
-  variant: "DynamicArrayDatatype";
-  datatype: ASTTypeExpr;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTTypeOfExprDatatype = {
-  variant: "TypeOfExprDatatype";
-  expr: ASTExpr;
-  mutability: EDatatypeMutability;
-  sourceloc: SourceLoc;
-};
-
-export type ASTParameterPackDatatypeExpr = {
-  variant: "ParameterPack";
-  sourceloc: SourceLoc;
-};
-
-// Type annotations are now expression-backed. Keep ASTTypeUse as a compatibility alias.
-export type ASTTypeExpr = ASTExpr;
-// export type ASTTypeUse = ASTTypeExpr;
 
 export type ASTGlobalVariableDefinition = {
   variant: "GlobalVariableDefinition";
@@ -328,7 +267,7 @@ export type ASTGlobalVariableDefinition = {
   extern: EExternLanguage;
   mutability: EVariableMutability;
   name: string;
-  datatype?: ASTTypeExpr;
+  datatype?: ASTExpr;
   expr?: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -362,7 +301,7 @@ export type ASTVariableDefinitionStatement = {
   mutability: EVariableMutability;
   comptime: boolean;
   name: string;
-  datatype?: ASTTypeExpr;
+  datatype?: ASTExpr;
   expr?: ASTExpr;
   variableContext: EVariableContext;
   sourceloc: SourceLoc;
@@ -373,16 +312,16 @@ export type ASTIfStatement = {
   condition: ASTExpr | null;
   letCondition: {
     name: string;
-    type: ASTTypeExpr | null;
+    type: ASTExpr | null;
     expr: ASTExpr;
   } | null;
-  then: ASTScope;
+  thenScope: ASTScope;
   comptime: boolean;
   elseIfs: {
     condition: ASTExpr | null;
     letCondition: {
       name: string;
-      type: ASTTypeExpr | null;
+      type: ASTExpr | null;
       expr: ASTExpr;
     } | null;
     then: ASTScope;
@@ -421,7 +360,7 @@ export type ASTWhileStatement = {
   variant: "WhileStatement";
   letCondition: {
     name: string;
-    type: ASTTypeExpr | null;
+    type: ASTExpr | null;
     expr: ASTExpr;
   } | null;
   condition: ASTExpr | null;
@@ -432,7 +371,7 @@ export type ASTWhileStatement = {
 export type ASTTypeAlias = {
   variant: "TypeAlias";
   name: string;
-  datatype: ASTTypeExpr;
+  datatype: ASTExpr;
   generics: {
     name: string;
     sourceloc: SourceLoc;
@@ -496,7 +435,10 @@ export type ASTLiteralExpr = {
 
 export type ASTFStringExpr = {
   variant: "FStringExpr";
-  fragments: ({ type: "expr"; value: ASTExpr } | { type: "text"; value: string })[];
+  fragments: (
+    | { type: "expr"; value: ASTExpr }
+    | { type: "text"; value: string }
+  )[];
   allocator: ASTExpr | null;
   sourceloc: SourceLoc;
 };
@@ -520,7 +462,7 @@ export type ASTExprMemberAccess = {
   variant: "ExprMemberAccess";
   expr: ASTExpr;
   member: string;
-  generics: (ASTTypeExpr | ASTLiteralExpr)[];
+  generics: ASTExpr[];
   sourceloc: SourceLoc;
 };
 
@@ -539,7 +481,7 @@ export type ASTAggregateLiteralElement = {
 
 export type ASTAggregateLiteralExpr = {
   variant: "AggregateLiteralExpr";
-  datatype: ASTTypeExpr | null;
+  datatype: ASTExpr | null;
   elements: ASTAggregateLiteralElement[];
   allocator: ASTExpr | null;
   sourceloc: SourceLoc;
@@ -548,7 +490,7 @@ export type ASTAggregateLiteralExpr = {
 export type ASTTernaryExpr = {
   variant: "TernaryExpr";
   condition: ASTExpr;
-  then: ASTExpr;
+  thenExpr: ASTExpr;
   else: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -570,14 +512,14 @@ export type ASTUnaryExpr = {
 export type ASTExplicitCastExpr = {
   variant: "ExplicitCastExpr";
   expr: ASTExpr;
-  castedTo: ASTTypeExpr;
+  castedTo: ASTExpr;
   sourceloc: SourceLoc;
 };
 
 export type ASTExprIsTypeExpr = {
   variant: "ExprIsTypeExpr";
   expr: ASTExpr;
-  comparisonType: ASTTypeExpr;
+  comparisonType: ASTExpr;
   sourceloc: SourceLoc;
 };
 
@@ -618,29 +560,90 @@ export type ASTExprAssignmentExpr = {
 export type ASTSymbolValueExpr = {
   variant: "SymbolValueExpr";
   name: string;
-  generics: (ASTTypeExpr | ASTLiteralExpr)[];
+  generics: ASTExpr[];
   sourceloc: SourceLoc;
 };
 
-export type ASTTypeLiteralExpr = {
-  variant: "TypeLiteralExpr";
-  datatype: ASTTypeExpr;
+export type ASTConstTypeExpr = {
+  variant: "ConstTypeExpr";
+  type: ASTExpr;
   sourceloc: SourceLoc;
 };
 
-export type TypeModifier =
-  | "mut"
-  | "const"
-  | "inline"
-  | "dynamic-array"
-  | "static-array"
-  | "nodiscard";
+export type ASTMutTypeExpr = {
+  variant: "MutTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
 
-export type ASTTypeModifierExpr = {
-  variant: "TypeModifierExpr";
-  type: ASTTypeExpr;
-  modifier: TypeModifier;
-  staticArraySize?: bigint;
+export type ASTInlineTypeExpr = {
+  variant: "InlineTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTDynamicArrayTypeExpr = {
+  variant: "DynamicArrayTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTStaticArrayTypeExpr = {
+  variant: "StaticArrayTypeExpr";
+  type: ASTExpr;
+  arraySize: bigint;
+  sourceloc: SourceLoc;
+};
+
+export type ASTNodiscardTypeExpr = {
+  variant: "NodiscardTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTFunctionTypeExpr = {
+  variant: "FunctionTypeExpr";
+  kind: "callable" | "function";
+  params: ASTParam[];
+  ellipsis: boolean;
+  returnType: ASTExpr;
+  requires: ASTFunctionRequiresBlock;
+  mutability: EDatatypeMutability;
+  sourceloc: SourceLoc;
+};
+
+export type ASTBinaryUnionTypeExpr = {
+  // int | real
+  variant: "BinaryUnionTypeExpr";
+  left: ASTExpr;
+  right: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTTaggedUnionTypeExpr = {
+  // union { Foo: int, Bar: real }
+  variant: "TaggedUnionTypeExpr";
+  members: {
+    tag: string;
+    type: ASTExpr;
+  }[];
+  sourceloc: SourceLoc;
+};
+
+export type ASTTypeValueExpr = {
+  // This is the "type mut[]mut Foo" syntax, which switches from expression syntax to type syntax in the parser and
+  // allows a type to appear in a place where a normal expression is expected.
+  // The distinction is only relevant in the parser, so this is a direct pass-through node to preserve the parsed
+  // syntax. In the collection step, it will simply be unwrapped and skipped.
+  variant: "TypeValueExpr";
+  expr: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTTypeOfExpr = {
+  // This is the "typeof(() -> 0)" syntax, which bridges expression land and type land, to infer type from runtime values.
+  variant: "TypeOfExpr";
+  expr: ASTExpr;
   sourceloc: SourceLoc;
 };
 
@@ -666,15 +669,23 @@ export type ASTExpr =
   | ASTBinaryExpr
   | ASTExprAssignmentExpr
   | ASTSymbolValueExpr
-  | ASTTypeLiteralExpr
-  | ASTParameterPackDatatypeExpr
-  | ASTTypeModifierExpr;
+  | ASTConstTypeExpr
+  | ASTMutTypeExpr
+  | ASTInlineTypeExpr
+  | ASTDynamicArrayTypeExpr
+  | ASTStaticArrayTypeExpr
+  | ASTNodiscardTypeExpr
+  | ASTFunctionTypeExpr
+  | ASTBinaryUnionTypeExpr
+  | ASTTaggedUnionTypeExpr
+  | ASTTypeValueExpr
+  | ASTTypeOfExpr;
 
 export type ASTLambda = {
   variant: "Lambda";
   params: ASTParam[];
   ellipsis: boolean;
-  returnType?: ASTTypeExpr;
+  returnType?: ASTExpr;
   scope: ASTFuncBody;
   requires: ASTFunctionRequiresBlock;
   sourceloc: SourceLoc;
@@ -697,7 +708,7 @@ export type ASTCInjectDirective = {
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
-  type: ASTTypeExpr;
+  type: ASTExpr;
   defaultValue: ASTExpr | null;
   optional: boolean;
   mutability: EVariableMutability;
@@ -796,11 +807,11 @@ export type ASTRoot = ASTTopLevelDeclaration[];
 
 export function buildASTDatatype(
   nestedName: (string | [string, string[]])[],
-  sourceloc: SourceLoc,
+  sourceloc: SourceLoc
 ) {
   const buildType = (
     parentType: ASTExpr | null,
-    nestedName: string | [string, string[]],
+    nestedName: string | [string, string[]]
   ): ASTExpr => {
     let name = "";
     let generics = [] as string[];
@@ -818,16 +829,15 @@ export function buildASTDatatype(
         generics: generics.map((g) => buildASTDatatype([g], sourceloc)),
         expr: parentType,
         member: name,
-        sourceloc: sourceloc,
-      };
-    } else {
-      return {
-        variant: "SymbolValueExpr",
-        generics: generics.map((g) => buildASTDatatype([g], sourceloc)),
-        name: name,
-        sourceloc: sourceloc,
+        sourceloc,
       };
     }
+    return {
+      variant: "SymbolValueExpr",
+      generics: generics.map((g) => buildASTDatatype([g], sourceloc)),
+      name,
+      sourceloc,
+    };
   };
   let t: ASTExpr | null = null;
   for (const name of nestedName) {

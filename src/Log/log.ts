@@ -6,9 +6,12 @@ function enabled(level: string) {
 }
 
 export const logger = {
-  trace: (...args: any[]) => enabled("trace") && console.log("[trace]", ...args),
-  debug: (...args: any[]) => enabled("debug") && console.log("[debug]", ...args),
+  trace: (...args: any[]) =>
+    enabled("trace") && console.log("[trace]", ...args),
+  debug: (...args: any[]) =>
+    enabled("debug") && console.log("[debug]", ...args),
   info: (...args: any[]) => enabled("info") && console.log("[info]", ...args),
   warn: (...args: any[]) => enabled("warn") && console.warn("[warn]", ...args),
-  error: (...args: any[]) => enabled("error") && console.error("[error]", ...args),
+  error: (...args: any[]) =>
+    enabled("error") && console.error("[error]", ...args),
 };

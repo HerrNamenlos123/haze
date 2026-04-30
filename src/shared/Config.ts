@@ -1,21 +1,19 @@
-import { dirname, join } from "path";
-import { existsSync } from "fs";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { parse } from "@ltd/j-toml";
-import { writeFile, readFile } from "fs/promises";
-
-import { CompilerError, GeneralError } from "./Errors";
-import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { getCurrentPlatform, type ModulePrintInfo } from "../Module";
-import assert from "assert";
+import type { Collect } from "../SymbolCollection/SymbolCollection";
+import { assert, GeneralError } from "./Errors";
 
 export enum ModuleType {
-  Library,
-  Executable,
+  Library = 0,
+  Executable = 1,
 }
 
 export enum Platform {
-  Win32,
-  Linux,
+  Win32 = 0,
+  Linux = 1,
 }
 
 export let PLATFORM: Platform;
@@ -31,7 +29,11 @@ if (process.platform === "win32") {
 
 export type ModuleDependency = { name: string; path: string };
 
-export type ScriptDef = { name: string; command: string; depends: string[] | null };
+export type ScriptDef = {
+  name: string;
+  command: string;
+  depends: string[] | null;
+};
 
 export class PlatformStrings {
   private all = new Set<string>();
@@ -107,8 +109,8 @@ export class PlatformStrings {
 }
 
 export enum ECollectionMode {
-  WrapIntoModuleNamespace,
-  ImportUnderRootDirectly,
+  WrapIntoModuleNamespace = 0,
+  ImportUnderRootDirectly = 1,
 }
 
 export enum EModuleFileDir {
@@ -160,7 +162,9 @@ export type ModuleConfig = {
     win32: ScriptDef[];
     linux: ScriptDef[];
   };
-  source: { type: "src-dir"; dirpath: string } | { type: "single-file"; filepath: string };
+  source:
+    | { type: "src-dir"; dirpath: string }
+    | { type: "single-file"; filepath: string };
   nostdlib: boolean;
   moduleType: ModuleType;
   configFilePath?: string;
@@ -251,12 +255,14 @@ export type ModuleMetadata = {
 const getStringArray = (v: any) => {
   if (!Array.isArray(v)) {
     throw new GeneralError(
-      "Inconsistent module config: Expected string array instead of '" + v + "'",
+      "Inconsistent module config: Expected string array instead of '" + v + "'"
     );
   }
   for (const s of v) {
     if (typeof s !== "string") {
-      throw new GeneralError("Inconsistent module config: Expected string instead of '" + s + "'");
+      throw new GeneralError(
+        "Inconsistent module config: Expected string instead of '" + s + "'"
+      );
     }
   }
   return v as string[];
@@ -267,24 +273,32 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
 
   const getString = (v: any) => {
     if (typeof v !== "string") {
-      throw new GeneralError("Inconsistent module config: Expected string instead of '" + v + "'");
+      throw new GeneralError(
+        "Inconsistent module config: Expected string instead of '" + v + "'"
+      );
     }
     return v as string;
   };
 
   function getStringAnyOf<T extends string>(v: any, options: string[]): T {
     if (typeof v !== "string") {
-      throw new GeneralError("Inconsistent module config: Expected string instead of '" + v + "'");
+      throw new GeneralError(
+        "Inconsistent module config: Expected string instead of '" + v + "'"
+      );
     }
     if (!options.includes(v)) {
-      throw new GeneralError("Inconsistent module config: Expected any of '" + options + "'");
+      throw new GeneralError(
+        "Inconsistent module config: Expected any of '" + options + "'"
+      );
     }
     return v as T;
   }
 
   const getNumber = (v: any) => {
     if (typeof v !== "number") {
-      throw new GeneralError("Inconsistent module config: Expected number instead of '" + v + "'");
+      throw new GeneralError(
+        "Inconsistent module config: Expected number instead of '" + v + "'"
+      );
     }
     return v as number;
   };
@@ -292,20 +306,28 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   const getLibs = (v: any): ModuleLibMetadata[] => {
     if (!Array.isArray(v)) {
       throw new GeneralError(
-        "Inconsistent module config: Expected object array instead of '" + v + "'",
+        "Inconsistent module config: Expected object array instead of '" +
+          v +
+          "'"
       );
     }
     const libs: ModuleLibMetadata[] = [];
     for (const obj of v) {
       if (typeof obj !== "object") {
         throw new GeneralError(
-          "Inconsistent module config: Expected object instead of '" + v + "'",
+          "Inconsistent module config: Expected object instead of '" + v + "'"
         );
       }
       libs.push({
         filename: getString(obj["filename"]),
-        platform: getStringAnyOf<PlatformString>(obj["platform"], ["linux-x64", "win32-x64"]),
-        type: getStringAnyOf<"static" | "shared">(obj["type"], ["static", "shared"]),
+        platform: getStringAnyOf<PlatformString>(obj["platform"], [
+          "linux-x64",
+          "win32-x64",
+        ]),
+        type: getStringAnyOf<"static" | "shared">(obj["type"], [
+          "static",
+          "shared",
+        ]),
       });
     }
     return libs;
@@ -343,7 +365,10 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   };
 }
 
-export function getModuleGlobalNamespaceName(moduleName: string, moduleVersion: string) {
+export function getModuleGlobalNamespaceName(
+  moduleName: string,
+  moduleVersion: string
+) {
   return `${moduleName.replaceAll("-", "_")}_v${moduleVersion.replaceAll(".", "_")}`;
 }
 
@@ -354,7 +379,7 @@ export class ConfigParser {
     const configPath = this.findUpwards(hazeConfigFile, startDir);
     if (!configPath) {
       throw new GeneralError(
-        `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`,
+        `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`
       );
     }
     this.configPath = configPath;
@@ -369,40 +394,54 @@ export class ConfigParser {
       }
       dir = dirname(dir);
     }
-    return undefined;
+    return;
   }
 
   getString(toml: any, field: string): string {
     if (typeof toml[field] === "string") {
       return toml[field];
-    } else if (field in toml) {
-      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
-    } else {
-      throw new GeneralError(`Required field '${field}' is missing in ${this.configPath}`);
     }
+    if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`
+      );
+    }
+    throw new GeneralError(
+      `Required field '${field}' is missing in ${this.configPath}`
+    );
   }
 
   getOptionalString(toml: any, field: string): string | undefined {
     if (typeof toml[field] === "string") {
       return toml[field];
-    } else if (field in toml) {
-      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
     }
-    return undefined;
+    if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`
+      );
+    }
+    return;
   }
 
-  getOptionalStringAnyOf(toml: any, field: string, options: string[]): string | undefined {
+  getOptionalStringAnyOf(
+    toml: any,
+    field: string,
+    options: string[]
+  ): string | undefined {
     if (typeof toml[field] === "string") {
       if (options.includes(toml[field])) {
         return toml[field];
       }
       throw new GeneralError(
-        `Field '${field}' in file ${this.configPath} must be any of '${options}'`,
+        `Field '${field}' in file ${this.configPath} must be any of '${options}'`
       );
-    } else if (field in toml) {
-      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be of type string`);
     }
-    return undefined;
+    if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be of type string`
+      );
+    }
+    return;
   }
 
   getOptionalStringArray(toml: any, field: string): string[] | undefined {
@@ -411,37 +450,46 @@ export class ConfigParser {
       array.forEach((s) => {
         if (typeof s !== "string") {
           throw new GeneralError(
-            `Element '${s}' of field '${field}' in file ${this.configPath} must be of type string`,
+            `Element '${s}' of field '${field}' in file ${this.configPath} must be of type string`
           );
         }
       });
       return array;
-    } else if (field in toml) {
-      throw new GeneralError(`Field '${field}' in file ${this.configPath} must be an array`);
     }
-    return undefined;
+    if (field in toml) {
+      throw new GeneralError(
+        `Field '${field}' in file ${this.configPath} must be an array`
+      );
+    }
+    return;
   }
 
   getScripts(scriptInput: any) {
-    const scripts = [] as { name: string; command: string; depends: string[] | null }[];
+    const scripts = [] as {
+      name: string;
+      command: string;
+      depends: string[] | null;
+    }[];
     if (scriptInput) {
       for (const [name, cmd] of Object.entries(scriptInput)) {
-        if (name === "linux" || name === "win32") continue;
+        if (name === "linux" || name === "win32") {
+          continue;
+        }
         if (typeof cmd === "string") {
           scripts.push({
-            name: name,
+            name,
             command: cmd,
             depends: null,
           });
         } else if (typeof cmd === "object" && cmd !== null) {
           if (!("command" in cmd)) {
             throw new GeneralError(
-              `Script '${name}' in file ${this.configPath} requires a 'command' attribute`,
+              `Script '${name}' in file ${this.configPath} requires a 'command' attribute`
             );
           }
           if (typeof cmd.command !== "string") {
             throw new GeneralError(
-              `Script '${name}' in file ${this.configPath} requires the 'command' attribute to be a string`,
+              `Script '${name}' in file ${this.configPath} requires the 'command' attribute to be a string`
             );
           }
           let depends = null as string[] | null;
@@ -452,25 +500,25 @@ export class ConfigParser {
               depends = cmd.depends.map((a) => {
                 if (typeof a !== "string") {
                   throw new GeneralError(
-                    `Script '${name}' in file ${this.configPath} requires all 'depends' globs to be strings`,
+                    `Script '${name}' in file ${this.configPath} requires all 'depends' globs to be strings`
                   );
                 }
                 return a;
               });
             } else {
               throw new GeneralError(
-                `Script '${name}' in file ${this.configPath} requires a 'command' attribute`,
+                `Script '${name}' in file ${this.configPath} requires a 'command' attribute`
               );
             }
           }
           scripts.push({
-            name: name,
+            name,
             command: cmd.command,
-            depends: depends,
+            depends,
           });
         } else {
           throw new GeneralError(
-            `Script '${name}' in file ${this.configPath} has unsupported type`,
+            `Script '${name}' in file ${this.configPath} has unsupported type`
           );
         }
       }
@@ -484,21 +532,21 @@ export class ConfigParser {
       for (const [name, props] of Object.entries(toml["dependencies"])) {
         if (typeof props !== "object" || props === null) {
           throw new GeneralError(
-            `Dependency props for dependency '${name}' in file ${this.configPath} must be an object`,
+            `Dependency props for dependency '${name}' in file ${this.configPath} must be an object`
           );
         }
         if (!("path" in props)) {
           throw new GeneralError(
-            `Dependency '${name}' in file ${this.configPath} requires a path attribute`,
+            `Dependency '${name}' in file ${this.configPath} requires a path attribute`
           );
         }
         if (typeof props["path"] !== "string") {
           throw new GeneralError(
-            `Dependency path '${props["path"]}' in file ${this.configPath} must be of type string`,
+            `Dependency path '${props["path"]}' in file ${this.configPath} must be of type string`
           );
         }
         deps.push({
-          name: name,
+          name,
           path: props["path"],
         });
       }
@@ -511,7 +559,8 @@ export class ConfigParser {
     const toml = parse(content, { bigint: false });
 
     const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);
-    const moduleType = type === "exe" ? ModuleType.Executable : ModuleType.Library;
+    const moduleType =
+      type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
     const config: ModuleConfig = {
       name: this.getString(toml, "name"),
@@ -522,17 +571,24 @@ export class ConfigParser {
       scripts: {
         any: this.getScripts(toml["scripts"]),
         win32:
-          ((toml as any)?.scripts?.win32 && this.getScripts((toml as any)["scripts"]?.win32)) || [],
+          ((toml as any)?.scripts?.win32 &&
+            this.getScripts((toml as any)["scripts"]?.win32)) ||
+          [],
         linux:
-          ((toml as any)?.scripts?.linux && this.getScripts((toml as any)["scripts"]?.linux)) || [],
+          ((toml as any)?.scripts?.linux &&
+            this.getScripts((toml as any)["scripts"]?.linux)) ||
+          [],
       },
       dependencies: this.getDependencies(toml),
       source: {
         type: "src-dir",
-        dirpath: join(dirname(this.configPath), this.getOptionalString(toml, "src") || "src"),
+        dirpath: join(
+          dirname(this.configPath),
+          this.getOptionalString(toml, "src") || "src"
+        ),
       },
       configFilePath: this.configPath,
-      moduleType: moduleType,
+      moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
       linkerFlags: new PlatformStrings({
         all: [],
@@ -571,53 +627,75 @@ export class ConfigParser {
     };
 
     const linker = toml["linker"] as any;
-    config.linkerFlags.addAll((linker && this.getOptionalStringArray(linker, "flags")) || []);
+    config.linkerFlags.addAll(
+      (linker && this.getOptionalStringArray(linker, "flags")) || []
+    );
     config.linkerFlags.addWin32(
-      (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) || [],
+      (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) ||
+        []
     );
     config.linkerFlags.addLinux(
-      (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) || [],
+      (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) ||
+        []
     );
 
     const compiler = toml["compiler"] as any;
-    config.compilerFlags.addAll((compiler && this.getOptionalStringArray(compiler, "flags")) || []);
+    config.compilerFlags.addAll(
+      (compiler && this.getOptionalStringArray(compiler, "flags")) || []
+    );
     config.compilerFlags.addWin32(
-      (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "flags")) || [],
+      (compiler?.win32 &&
+        this.getOptionalStringArray(compiler.win32, "flags")) ||
+        []
     );
     config.compilerFlags.addLinux(
-      (compiler?.linux && this.getOptionalStringArray(compiler.linux, "flags")) || [],
+      (compiler?.linux &&
+        this.getOptionalStringArray(compiler.linux, "flags")) ||
+        []
     );
 
-    config.macros.addAll((compiler && this.getOptionalStringArray(compiler, "defines")) || []);
+    config.macros.addAll(
+      (compiler && this.getOptionalStringArray(compiler, "defines")) || []
+    );
     config.macros.addWin32(
-      (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "defines")) || [],
+      (compiler?.win32 &&
+        this.getOptionalStringArray(compiler.win32, "defines")) ||
+        []
     );
     config.macros.addLinux(
-      (compiler?.linux && this.getOptionalStringArray(compiler.linux, "defines")) || [],
+      (compiler?.linux &&
+        this.getOptionalStringArray(compiler.linux, "defines")) ||
+        []
     );
 
     const _interface = toml["interface"] as any;
     if (_interface) {
       const compiler = _interface["compiler"] as any;
       config.interfaceMacros.addAll(
-        (compiler && this.getOptionalStringArray(compiler, "defines")) || [],
+        (compiler && this.getOptionalStringArray(compiler, "defines")) || []
       );
       config.interfaceMacros.addWin32(
-        (compiler?.win32 && this.getOptionalStringArray(compiler.win32, "defines")) || [],
+        (compiler?.win32 &&
+          this.getOptionalStringArray(compiler.win32, "defines")) ||
+          []
       );
       config.interfaceMacros.addLinux(
-        (compiler?.linux && this.getOptionalStringArray(compiler.linux, "defines")) || [],
+        (compiler?.linux &&
+          this.getOptionalStringArray(compiler.linux, "defines")) ||
+          []
       );
 
       const linker = _interface["linker"] as any;
       config.interfaceLinkerFlags.addAll(
-        (linker && this.getOptionalStringArray(linker, "flags")) || [],
+        (linker && this.getOptionalStringArray(linker, "flags")) || []
       );
       config.interfaceLinkerFlags.addWin32(
-        (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) || [],
+        (linker?.win32 && this.getOptionalStringArray(linker.win32, "flags")) ||
+          []
       );
       config.interfaceLinkerFlags.addLinux(
-        (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) || [],
+        (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) ||
+          []
       );
     }
 
@@ -625,11 +703,15 @@ export class ConfigParser {
     if (generators) {
       for (const [key, _value] of Object.entries(generators)) {
         if (typeof _value !== "object" || _value === null) {
-          throw new GeneralError(`Generator '${key}' is expected to be an object`);
+          throw new GeneralError(
+            `Generator '${key}' is expected to be an object`
+          );
         }
         const value = _value as Record<string, unknown>;
         if (!value["exec"]) {
-          throw new GeneralError(`Generator '${key}' is expected to have an 'exec' attribute`);
+          throw new GeneralError(
+            `Generator '${key}' is expected to have an 'exec' attribute`
+          );
         }
         const generator: GeneratorConfig = {
           name: key,
@@ -639,14 +721,14 @@ export class ConfigParser {
           type: "exec",
         };
 
-        if (!value["inputs"] || !Array.isArray(value["inputs"])) {
+        if (!(value["inputs"] && Array.isArray(value["inputs"]))) {
           throw new GeneralError(
-            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`,
+            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`
           );
         }
-        if (!value["outputs"] || !Array.isArray(value["outputs"])) {
+        if (!(value["outputs"] && Array.isArray(value["outputs"]))) {
           throw new GeneralError(
-            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`,
+            `Generator '${key}' is expected to be an 'inputs' attribute with an array value`
           );
         }
 
@@ -654,17 +736,17 @@ export class ConfigParser {
           if (file["module"]) {
             if (typeof file["module"] !== "string") {
               throw new GeneralError(
-                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`,
+                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`
               );
             }
             if (typeof file["path"] !== "string") {
               throw new GeneralError(
-                `Generator '${key}' defines an invalid ${type}: 'path' property is expected to be a string`,
+                `Generator '${key}' defines an invalid ${type}: 'path' property is expected to be a string`
               );
             }
             if (typeof file["dir"] !== "string") {
               throw new GeneralError(
-                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`,
+                `Generator '${key}' defines an invalid ${type}: 'module' property is expected to be a string`
               );
             }
             const dirStr = file["dir"] as string;
@@ -684,21 +766,20 @@ export class ConfigParser {
                 break;
               default:
                 throw new GeneralError(
-                  `Generator '${key}' defines an invalid ${type}: 'dir' property can only be: ["bin", "root", "src"]`,
+                  `Generator '${key}' defines an invalid ${type}: 'dir' property can only be: ["bin", "root", "src"]`
                 );
             }
             const f: GeneratorFile = {
               module: file["module"] as string,
-              dir: dir,
+              dir,
               type: "module-file",
               path: file["path"] as string,
             };
             return f;
-          } else {
-            throw new GeneralError(
-              `Generator '${key}' defines an invalid input: Only module-directories are supported yet`,
-            );
           }
+          throw new GeneralError(
+            `Generator '${key}' defines an invalid input: Only module-directories are supported yet`
+          );
         };
 
         generator.type = "exec";

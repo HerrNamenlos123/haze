@@ -1,11 +1,11 @@
 import type { Semantic } from "../Semantic/SemanticTypes";
 import type { ELiteralUnit } from "./AST";
-import { InternalError } from "./Errors";
+import { assert, InternalError } from "./Errors";
 
 export type Brand<T, B> = T & { __brand: B };
 
 export class BrandedArray<I extends number, T> {
-  private data: T[];
+  private readonly data: T[];
 
   constructor(data: T[]) {
     this.data = data;
@@ -41,9 +41,13 @@ export class BrandedArray<I extends number, T> {
   }
 }
 
-export function pushBrandedNode<I extends number, U>(array: BrandedArray<I, U>, value: U): [U, I] {
+export function pushBrandedNode<I extends number, U>(
+  array: BrandedArray<I, U>,
+  value: U
+): [U, I] {
   if (array.length === 0) {
     // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
+    // biome-ignore lint/suspicious/noExplicitAny: .
     array.push(undefined as any);
   }
   const id = array.length as I;
@@ -60,38 +64,38 @@ export type NameSet = {
 // This order is the order in which unions are canonicalized, so be careful
 export enum EPrimitive {
   str = 1, // Start at 1 to avoid issues with 'if (primitive)'
-  cstr,
-  ccstr,
-  cptr,
-  int,
-  i64,
-  i32,
-  i16,
-  i8,
-  usize,
-  u64,
-  u32,
-  u16,
-  u8,
-  real,
-  f64,
-  f32,
-  bool,
-  null,
-  none,
-  void,
+  cstr = 2,
+  ccstr = 3,
+  cptr = 4,
+  int = 5,
+  i64 = 6,
+  i32 = 7,
+  i16 = 8,
+  i8 = 9,
+  usize = 10,
+  u64 = 11,
+  u32 = 12,
+  u16 = 13,
+  u8 = 14,
+  real = 15,
+  f64 = 16,
+  f32 = 17,
+  bool = 18,
+  null = 19,
+  none = 20,
+  void = 21,
   // This is intentionally uppercase because lowercase would collide with the 'regex' namespace.
   // In order to resolve the naming conflict, we introduce the 'Regex' type as a compiler-internal builtin
   // even though it is Uppercase. Users won't care at all because it is more consistent with stdlib this way.
-  Regex,
+  Regex = 22,
 }
 
 export enum EVariableContext {
-  FunctionParameter,
-  FunctionLocal,
-  MemberOfStruct,
-  ThisReference,
-  Global,
+  FunctionParameter = 0,
+  FunctionLocal = 1,
+  MemberOfStruct = 2,
+  ThisReference = 3,
+  Global = 4,
 }
 
 export type LiteralValue =
@@ -240,7 +244,10 @@ export namespace CTValueHelpers {
     return { kind: "type", typeDefId };
   }
 
-  export function struct(typeDefId: Semantic.TypeDefId, fields: CTValue[]): CTValue {
+  export function struct(
+    typeDefId: Semantic.TypeDefId,
+    fields: CTValue[]
+  ): CTValue {
     return { kind: "struct", typeDefId, fields };
   }
 
@@ -248,7 +255,10 @@ export namespace CTValueHelpers {
     return { kind: "list", items };
   }
 
-  export function enum_(enumType: Semantic.TypeDefId, valueName: string): CTValue {
+  export function enum_(
+    enumType: Semantic.TypeDefId,
+    valueName: string
+  ): CTValue {
     return { kind: "enum", enumType, valueName };
   }
 
@@ -285,13 +295,18 @@ export namespace CTValueHelpers {
         case EPrimitive.cstr:
         case EPrimitive.ccstr:
           return string(lit.value, lit.prefix);
+        default:
+          assert(false);
       }
-    } else if ("type" in lit) {
+    }
+    if ("type" in lit) {
       if (lit.type === EPrimitive.null) {
         return null_();
-      } else if (lit.type === EPrimitive.none) {
+      }
+      if (lit.type === EPrimitive.none) {
         return none_();
-      } else if (lit.type === "enum") {
+      }
+      if (lit.type === "enum") {
         return enum_(lit.enumType, lit.valueName);
       }
     }
@@ -300,9 +315,9 @@ export namespace CTValueHelpers {
 }
 
 export enum EMethodType {
-  None,
-  Method,
-  Constructor,
+  None = 0,
+  Method = 1,
+  Constructor = 2,
 }
 
 export function primitiveToString(primitive: EPrimitive) {
@@ -403,6 +418,6 @@ export function stringToPrimitive(str: string) {
     case "Regex":
       return EPrimitive.Regex;
     default:
-      return undefined;
+      return;
   }
 }

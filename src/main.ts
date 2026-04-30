@@ -1,12 +1,10 @@
+import path, { join } from "node:path";
 import { ArgumentParser, REMAINDER } from "argparse";
-import { GeneralError, SilentError } from "./shared/Errors";
-import { join } from "path";
-import path from "node:path";
-import { getFile, ProjectCompiler } from "./Module";
-import { startLsp } from "./lsp";
-import open from "open";
-
 import pkg from "../package.json" with { type: "json" };
+import { startLsp } from "./lsp";
+import { getFile, ProjectCompiler } from "./Module";
+import { GeneralError, SilentError } from "./shared/Errors";
+
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
 
@@ -20,7 +18,9 @@ async function main(): Promise<number> {
     required: true,
   });
 
-  const build_parser = subparsers.add_parser("build", { help: "Build the project" });
+  const build_parser = subparsers.add_parser("build", {
+    help: "Build the project",
+  });
   build_parser.add_argument("--no-sourceloc", {
     action: "store_false",
     dest: "sourceloc",
@@ -137,27 +137,35 @@ async function main(): Promise<number> {
       await startLsp();
       return 0;
     }
-    if (args.command === "build" || args.command === "run" || args.command === "exec") {
+    if (
+      args.command === "build" ||
+      args.command === "run" ||
+      args.command === "exec"
+    ) {
       const project = new ProjectCompiler(
         Boolean(args.verbose),
         Boolean(args.ignoreLock),
-        Boolean(args.strip),
+        Boolean(args.strip)
       );
 
-      if (!(await project.build(args.filename, args.sourceloc, args.fullRebuild))) {
+      if (
+        !(await project.build(args.filename, args.sourceloc, args.fullRebuild))
+      ) {
         return 1;
       }
       if (args.command === "run" || args.command === "exec") {
-        const exitCode = await project.run(args.filename, args.sourceloc, args.args);
+        const exitCode = await project.run(
+          args.filename,
+          args.sourceloc,
+          args.args
+        );
         return exitCode;
       }
-    } else {
-      if (args.command === "wget") {
-        if (path.isAbsolute(args.filename)) {
-          await getFile(args.url, args.filename);
-        } else {
-          await getFile(args.url, join(process.cwd(), args.filename));
-        }
+    } else if (args.command === "wget") {
+      if (path.isAbsolute(args.filename)) {
+        await getFile(args.url, args.filename);
+      } else {
+        await getFile(args.url, join(process.cwd(), args.filename));
       }
     }
   } catch (err) {
@@ -184,7 +192,7 @@ if ((process.env as any).HAZE_EXEC_MODE === "profiling") {
 
   console.log(
     `${bold}${fg(255, 255, 255)}${bg(255, 0, 200)}  OPEN CHROME INSPECT  ${reset}\n` +
-      `${bold}${fg(0, 255, 255)}${url}${reset}`,
+      `${bold}${fg(0, 255, 255)}${url}${reset}`
   );
 
   async function runMain() {

@@ -1,4 +1,0 @@
-onlyBuiltDependencies:
-  - bun
-  - puppeteer
-  - vue-demi

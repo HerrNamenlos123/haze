@@ -1,10 +1,17 @@
+import {
+  EDatatypeMutability,
+  EExternLanguage,
+  EVariableMutability,
+} from "../shared/AST";
+import { EVariableContext } from "../shared/common";
 import { assert, type SourceLoc } from "../shared/Errors";
 import { isTypeConcrete } from "./Elaborate";
-import { EDatatypeMutability, EVariableMutability, EExternLanguage } from "../shared/AST";
-import { EVariableContext } from "../shared/common";
 import { Semantic } from "./SemanticTypes";
 
-function createLengthFieldSymbol(sr: Semantic.Context, sourceloc: SourceLoc): Semantic.SymbolId {
+function createLengthFieldSymbol(
+  sr: Semantic.Context,
+  sourceloc: SourceLoc
+): Semantic.SymbolId {
   // Create a synthetic VariableSymbol for the "length" field
   const [_, lengthFieldId] = sr.b.addSymbol(sr, {
     variant: Semantic.ENode.VariableSymbol,
@@ -12,7 +19,7 @@ function createLengthFieldSymbol(sr: Semantic.Context, sourceloc: SourceLoc): Se
     export: false,
     extern: EExternLanguage.None,
     mutability: EVariableMutability.Default,
-    sourceloc: sourceloc,
+    sourceloc,
     memberOfStruct: null,
     type: sr.b.usizeType(),
     consumed: false,
@@ -36,7 +43,7 @@ export function makeDeferredFunctionDatatypeAvailable(
     }[];
     vararg: boolean;
     sourceloc: SourceLoc;
-  },
+  }
 ): Semantic.TypeDefId {
   for (const id of sr.deferredFunctionTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -54,8 +61,12 @@ export function makeDeferredFunctionDatatypeAvailable(
         break;
       }
     }
-    if (wrong) continue;
-    if (type.vararg !== args.vararg) continue;
+    if (wrong) {
+      continue;
+    }
+    if (type.vararg !== args.vararg) {
+      continue;
+    }
 
     // Everything matches
     return id;
@@ -77,7 +88,7 @@ export function makeRawCallableDatatypeAvailable(
   args: {
     functionType: Semantic.TypeDefId;
     sourceloc: SourceLoc;
-  },
+  }
 ): Semantic.TypeDefId {
   for (const id of sr.callableTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -103,14 +114,14 @@ export function makeCallableDatatypeAvailable(
   args: {
     functionType: Semantic.TypeDefId;
     sourceloc: SourceLoc;
-  },
+  }
 ): Semantic.TypeUseId {
   return makeTypeUse(
     sr,
     makeRawCallableDatatypeAvailable(sr, args),
     EDatatypeMutability.Default,
     false,
-    args.sourceloc,
+    args.sourceloc
   )[1];
 }
 
@@ -122,7 +133,7 @@ export function makeRawFunctionDatatypeAvailable(
     vararg: boolean;
     requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
-  },
+  }
 ): Semantic.TypeDefId {
   for (const id of sr.functionTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -140,15 +151,27 @@ export function makeRawFunctionDatatypeAvailable(
         break;
       }
     }
-    if (wrong) continue;
+    if (wrong) {
+      continue;
+    }
     if (type.returnType !== args.returnType) {
       continue;
     }
-    if (type.vararg !== args.vararg) continue;
-    if (type.requires.final !== args.requires.final) continue;
-    if (type.requires.pure !== args.requires.pure) continue;
-    if (type.requires.noreturn !== args.requires.noreturn) continue;
-    if (type.requires.noreturnIf?.expr !== args.requires.noreturnIf?.expr) continue;
+    if (type.vararg !== args.vararg) {
+      continue;
+    }
+    if (type.requires.final !== args.requires.final) {
+      continue;
+    }
+    if (type.requires.pure !== args.requires.pure) {
+      continue;
+    }
+    if (type.requires.noreturn !== args.requires.noreturn) {
+      continue;
+    }
+    if (type.requires.noreturnIf?.expr !== args.requires.noreturnIf?.expr) {
+      continue;
+    }
 
     // Everything matches
     return id;
@@ -178,14 +201,14 @@ export function makeFunctionDatatypeAvailable(
     mutability: EDatatypeMutability;
     requires: Semantic.FunctionRequireBlock;
     sourceloc: SourceLoc;
-  },
+  }
 ): Semantic.TypeUseId {
   return makeTypeUse(
     sr,
     makeRawFunctionDatatypeAvailable(sr, args),
     args.mutability,
     false,
-    args.sourceloc,
+    args.sourceloc
   )[1];
 }
 
@@ -194,7 +217,7 @@ export function makeTypeUse(
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
   inline: boolean | "force-no-inline",
-  sourceloc: SourceLoc,
+  sourceloc: SourceLoc
 ) {
   const type = sr.typeDefNodes.get(typeId);
   if (type.variant === Semantic.ENode.StructDatatype) {
@@ -219,31 +242,30 @@ export function makeTypeUse(
     }
 
     const instance = sr.b.addTypeInstance(sr, {
-      mutability: mutability,
+      mutability,
       inline: shouldBeInline,
       type: typeId,
-      sourceloc: sourceloc,
-    });
-    sr.typeInstanceCache.push(instance[1]);
-    return instance;
-  } else {
-    for (const id of sr.typeInstanceCache) {
-      const typeUse = sr.typeUseNodes.get(id);
-      if (typeUse.type !== typeId) {
-        continue;
-      }
-      return [typeUse, id] as const;
-    }
-
-    const instance = sr.b.addTypeInstance(sr, {
-      mutability: EDatatypeMutability.Default,
-      inline: false,
-      type: typeId,
-      sourceloc: sourceloc,
+      sourceloc,
     });
     sr.typeInstanceCache.push(instance[1]);
     return instance;
   }
+  for (const id of sr.typeInstanceCache) {
+    const typeUse = sr.typeUseNodes.get(id);
+    if (typeUse.type !== typeId) {
+      continue;
+    }
+    return [typeUse, id] as const;
+  }
+
+  const instance = sr.b.addTypeInstance(sr, {
+    mutability: EDatatypeMutability.Default,
+    inline: false,
+    type: typeId,
+    sourceloc,
+  });
+  sr.typeInstanceCache.push(instance[1]);
+  return instance;
 }
 
 export function makeStackArrayDatatypeAvailable(
@@ -252,7 +274,7 @@ export function makeStackArrayDatatypeAvailable(
   length: bigint,
   mutability: EDatatypeMutability,
   inline: boolean,
-  sourceloc: SourceLoc,
+  sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -267,8 +289,8 @@ export function makeStackArrayDatatypeAvailable(
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.FixedArrayDatatype,
-    datatype: datatype,
-    length: length,
+    datatype,
+    length,
     concrete: isTypeConcrete(sr, datatype),
     syntheticFields: [lengthFieldId],
   });
@@ -281,7 +303,7 @@ export function makeDynamicArrayDatatypeAvailable(
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   inline: boolean,
-  sourceloc: SourceLoc,
+  sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -296,7 +318,7 @@ export function makeDynamicArrayDatatypeAvailable(
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
   const [_, typeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
-    datatype: datatype,
+    datatype,
     concrete: isTypeConcrete(sr, datatype),
     syntheticFields: [lengthFieldId],
   });

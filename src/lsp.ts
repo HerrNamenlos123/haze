@@ -1,28 +1,28 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import type { Connection, InitializeParams } from "vscode-languageserver/node";
 import {
   createConnection,
-  Diagnostic,
+  type Diagnostic,
   DiagnosticSeverity,
   ProposedFeatures,
   TextDocumentSyncKind,
   TextDocuments,
 } from "vscode-languageserver/node";
-import type { Connection, InitializeParams } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
-import path from "node:path";
-import { existsSync } from "node:fs";
 
 import { ModuleCompiler, ProjectCompiler } from "./Module";
+import { Semantic } from "./Semantic/SemanticTypes";
 import { ModuleType } from "./shared/Config";
 import {
+  type CompilerDiagnostic,
   CompilerError,
   ErrorType,
-  setDiagnosticSink,
-  SyntaxError,
-  type CompilerDiagnostic,
   type SourceLoc,
+  SyntaxError,
+  setDiagnosticSink,
 } from "./shared/Errors";
-import { Semantic } from "./Semantic/SemanticTypes";
 
 // Walk up the directory tree to find the module root (haze.toml location).
 function findModuleRoot(filePath: string): string | null {
@@ -37,7 +37,9 @@ function findModuleRoot(filePath: string): string | null {
       lastResult = current;
     }
     const parent = path.dirname(current);
-    if (parent === current) break;
+    if (parent === current) {
+      break;
+    }
     current = parent;
   }
   return lastResult;
@@ -48,7 +50,7 @@ function findModuleRoot(filePath: string): string | null {
 async function analyzeModule(
   connection: Connection,
   changedFile: string,
-  changedText: string,
+  changedText: string
 ): Promise<Map<string, CompilerDiagnostic[]>> {
   const diagnostics: CompilerDiagnostic[] = [];
   const push = (diag: CompilerDiagnostic) => diagnostics.push(diag);
@@ -80,7 +82,7 @@ async function analyzeModule(
       globalBuildDir,
       moduleDir,
       false,
-      false,
+      false
     );
     moduleCompiler.currentModuleRootDir = moduleRoot;
 
@@ -95,7 +97,7 @@ async function analyzeModule(
       moduleCompiler.cc,
       config.moduleType === ModuleType.Library,
       config.name,
-      config.version,
+      config.version
     );
     connection.console.log(">>> Analyzed: " + JSON.stringify(diagnostics));
 
@@ -173,21 +175,29 @@ function rangeFromLoc(loc: SourceLoc | undefined | null) {
   };
 }
 
-function belongsToFile(loc: SourceLoc | undefined | null, filePath: string): boolean {
+function belongsToFile(
+  loc: SourceLoc | undefined | null,
+  filePath: string
+): boolean {
   if (!loc?.filename) {
     return true;
   }
   return path.resolve(loc.filename) === path.resolve(filePath);
 }
 
-function toLspDiagnostics(diagnostics: CompilerDiagnostic[], filePath: string): Diagnostic[] {
+function toLspDiagnostics(
+  diagnostics: CompilerDiagnostic[],
+  filePath: string
+): Diagnostic[] {
   return diagnostics
     .filter((d) => belongsToFile(d.loc, filePath))
     .map((d) => ({
       message: d.message,
       range: rangeFromLoc(d.loc),
       severity:
-        d.type === ErrorType.Warning ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
+        d.type === ErrorType.Warning
+          ? DiagnosticSeverity.Warning
+          : DiagnosticSeverity.Error,
       source: "haze",
     }));
 }
@@ -224,16 +234,24 @@ export function startLsp(): Promise<never> {
 
   const analyzeAndPublish = async (document: TextDocument) => {
     const filePath = uriToPath(document.uri);
-    connection.console.log(`[LSP] analyzeAndPublish called for: ${document.uri}`);
+    connection.console.log(
+      `[LSP] analyzeAndPublish called for: ${document.uri}`
+    );
     if (!filePath) {
-      connection.console.error(`[LSP] Could not convert URI to path: ${document.uri}`);
+      connection.console.error(
+        `[LSP] Could not convert URI to path: ${document.uri}`
+      );
       return;
     }
     connection.console.log(`[LSP] Analyzing module at: ${filePath}`);
 
-    const diagnosticsByFile = await analyzeModule(connection, filePath, document.getText());
+    const diagnosticsByFile = await analyzeModule(
+      connection,
+      filePath,
+      document.getText()
+    );
     connection.console.log(
-      `[LSP] Analysis complete. Files with diagnostics: ${diagnosticsByFile.size}`,
+      `[LSP] Analysis complete. Files with diagnostics: ${diagnosticsByFile.size}`
     );
 
     const nextPublished = new Set<string>();
@@ -243,14 +261,17 @@ export function startLsp(): Promise<never> {
       const fileUri = URI.file(filepath).toString();
       const lspDiagnostics = toLspDiagnostics(diags, filepath);
       connection.console.log(
-        `[LSP] Publishing ${lspDiagnostics.length} diagnostics for ${fileUri}`,
+        `[LSP] Publishing ${lspDiagnostics.length} diagnostics for ${fileUri}`
       );
       for (const diag of lspDiagnostics) {
         connection.console.log(
-          `[LSP]   - ${diag.severity === 1 ? "ERROR" : "WARN"}: ${diag.message} at line ${diag.range.start.line}`,
+          `[LSP]   - ${diag.severity === 1 ? "ERROR" : "WARN"}: ${diag.message} at line ${diag.range.start.line}`
         );
       }
-      await connection.sendDiagnostics({ uri: fileUri, diagnostics: lspDiagnostics });
+      await connection.sendDiagnostics({
+        uri: fileUri,
+        diagnostics: lspDiagnostics,
+      });
       nextPublished.add(fileUri);
     }
 
@@ -273,7 +294,9 @@ export function startLsp(): Promise<never> {
     analyzeAndPublish(e.document).catch((err) => {
       console.error(`[DEBUG] Error in onDidOpen: ${String(err)}`);
       connection.console.error(`[LSP] Error in onDidOpen: ${String(err)}`);
-      connection.console.error(err instanceof Error && err.stack ? err.stack : String(err));
+      connection.console.error(
+        err instanceof Error && err.stack ? err.stack : String(err)
+      );
     });
   });
 
@@ -282,13 +305,17 @@ export function startLsp(): Promise<never> {
     connection.console.log(`[LSP] Document changed: ${e.document.uri}`);
     analyzeAndPublish(e.document).catch((err) => {
       console.error(`[DEBUG] Error in onDidChangeContent: ${String(err)}`);
-      connection.console.error(`[LSP] Error in onDidChangeContent: ${String(err)}`);
-      connection.console.error(err instanceof Error && err.stack ? err.stack : String(err));
+      connection.console.error(
+        `[LSP] Error in onDidChangeContent: ${String(err)}`
+      );
+      connection.console.error(
+        err instanceof Error && err.stack ? err.stack : String(err)
+      );
     });
   });
 
-  documents.onDidClose((e) => {
-    void connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
+  documents.onDidClose(async (e) => {
+    await connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
   });
 
   documents.listen(connection);
@@ -299,5 +326,5 @@ export function startLsp(): Promise<never> {
   console.error("[DEBUG] LSP server fully initialized and ready");
 
   // Return a promise that never resolves to keep the process alive
-  return new Promise<never>(() => {});
+  return new Promise<never>(() => undefined);
 }

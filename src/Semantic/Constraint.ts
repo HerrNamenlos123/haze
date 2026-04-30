@@ -11,7 +11,9 @@ export type ConstraintPathRoot = {
   symbolId: Semantic.SymbolId;
 };
 
-export type ConstraintPathElement = ConstraintPathMember | ConstraintPathSubscript;
+export type ConstraintPathElement =
+  | ConstraintPathMember
+  | ConstraintPathSubscript;
 
 export type ConstraintPathMember = {
   kind: "member";
@@ -72,33 +74,58 @@ export function pathToKey(path: ConstraintPath): string {
   return key;
 }
 
-function pathConstraintKey(path: ConstraintPath, value: ConstraintValue): string {
+function pathConstraintKey(
+  path: ConstraintPath,
+  value: ConstraintValue
+): string {
   const base = pathToKey(path);
   if (value.kind === "comparison") {
     return [base, "cmp", value.operation, value.value].join("|");
   }
-  return [base, "union", value.operation, value.typeUse ?? "", value.typeDef ?? ""].join("|");
+  return [
+    base,
+    "union",
+    value.operation,
+    value.typeUse ?? "",
+    value.typeDef ?? "",
+  ].join("|");
 }
 
 export function pathsMatch(a: ConstraintPath, b: ConstraintPath): boolean {
-  if (a.root.symbolId !== b.root.symbolId) return false;
-  if (a.path.length !== b.path.length) return false;
+  if (a.root.symbolId !== b.root.symbolId) {
+    return false;
+  }
+  if (a.path.length !== b.path.length) {
+    return false;
+  }
 
   for (let i = 0; i < a.path.length; i++) {
     const elemA = a.path[i];
     const elemB = b.path[i];
 
-    if (elemA.kind !== elemB.kind) return false;
+    if (elemA.kind !== elemB.kind) {
+      return false;
+    }
 
     if (elemA.kind === "member" && elemB.kind === "member") {
-      if (elemA.member !== elemB.member) return false;
+      if (elemA.member !== elemB.member) {
+        return false;
+      }
     } else if (elemA.kind === "subscript" && elemB.kind === "subscript") {
-      if (elemA.index.kind !== elemB.index.kind) return false;
+      if (elemA.index.kind !== elemB.index.kind) {
+        return false;
+      }
       if (elemA.index.kind === "literal" && elemB.index.kind === "literal") {
         // Compare literal values (serialized strings)
-        if (elemA.index.value !== elemB.index.value) return false;
-      } else if (elemA.index.kind === "variable" && elemB.index.kind === "variable") {
-        if (elemA.index.symbol !== elemB.index.symbol) return false;
+        if (elemA.index.value !== elemB.index.value) {
+          return false;
+        }
+      } else if (
+        elemA.index.kind === "variable" &&
+        elemB.index.kind === "variable" &&
+        elemA.index.symbol !== elemB.index.symbol
+      ) {
+        return false;
       }
     }
   }
@@ -106,24 +133,43 @@ export function pathsMatch(a: ConstraintPath, b: ConstraintPath): boolean {
   return true;
 }
 
-export function isPathPrefix(prefix: ConstraintPath, path: ConstraintPath): boolean {
-  if (prefix.root.symbolId !== path.root.symbolId) return false;
-  if (prefix.path.length > path.path.length) return false;
+export function isPathPrefix(
+  prefix: ConstraintPath,
+  path: ConstraintPath
+): boolean {
+  if (prefix.root.symbolId !== path.root.symbolId) {
+    return false;
+  }
+  if (prefix.path.length > path.path.length) {
+    return false;
+  }
 
   for (let i = 0; i < prefix.path.length; i++) {
     const elemA = prefix.path[i];
     const elemB = path.path[i];
 
-    if (elemA.kind !== elemB.kind) return false;
+    if (elemA.kind !== elemB.kind) {
+      return false;
+    }
 
     if (elemA.kind === "member" && elemB.kind === "member") {
-      if (elemA.member !== elemB.member) return false;
+      if (elemA.member !== elemB.member) {
+        return false;
+      }
     } else if (elemA.kind === "subscript" && elemB.kind === "subscript") {
-      if (elemA.index.kind !== elemB.index.kind) return false;
+      if (elemA.index.kind !== elemB.index.kind) {
+        return false;
+      }
       if (elemA.index.kind === "literal" && elemB.index.kind === "literal") {
-        if (elemA.index.value !== elemB.index.value) return false;
-      } else if (elemA.index.kind === "variable" && elemB.index.kind === "variable") {
-        if (elemA.index.symbol !== elemB.index.symbol) return false;
+        if (elemA.index.value !== elemB.index.value) {
+          return false;
+        }
+      } else if (
+        elemA.index.kind === "variable" &&
+        elemB.index.kind === "variable" &&
+        elemA.index.symbol !== elemB.index.symbol
+      ) {
+        return false;
       }
     }
   }
@@ -133,9 +179,12 @@ export function isPathPrefix(prefix: ConstraintPath, path: ConstraintPath): bool
 
 function constraintKey(c: Constraint): string {
   if (c.constraintValue.kind === "comparison") {
-    return ["cmp", c.variableSymbol, c.constraintValue.operation, c.constraintValue.value].join(
-      "|",
-    );
+    return [
+      "cmp",
+      c.variableSymbol,
+      c.constraintValue.operation,
+      c.constraintValue.value,
+    ].join("|");
   }
 
   // union constraint
@@ -213,13 +262,16 @@ function invertConstraintValue(v: ConstraintValue): ConstraintValue {
 
 export class ConstraintSet {
   private readonly map: Map<string, Constraint>;
-  private readonly pathMap: Map<string, { path: ConstraintPath; value: ConstraintValue }>;
+  private readonly pathMap: Map<
+    string,
+    { path: ConstraintPath; value: ConstraintValue }
+  >;
 
   private _inverse?: ConstraintSet;
 
   private constructor(
     map?: Map<string, Constraint>,
-    pathMap?: Map<string, { path: ConstraintPath; value: ConstraintValue }>,
+    pathMap?: Map<string, { path: ConstraintPath; value: ConstraintValue }>
   ) {
     this.map = map ?? new Map();
     this.pathMap = pathMap ?? new Map();
@@ -233,7 +285,9 @@ export class ConstraintSet {
 
   static fromArray(constraints: Constraint[]): ConstraintSet {
     const set = new ConstraintSet();
-    for (const c of constraints) set.add(c);
+    for (const c of constraints) {
+      set.add(c);
+    }
     return set;
   }
 
@@ -369,7 +423,9 @@ export class ConstraintSet {
   // ---- inversion -----------------------------------------------------------
 
   inverse(): ConstraintSet {
-    if (this._inverse) return this._inverse;
+    if (this._inverse) {
+      return this._inverse;
+    }
 
     // If there are multiple distinct symbols with constraints (A && B), we cannot properly invert them
     // because the correct inverse would be (!A || !B), which is not representable
@@ -413,27 +469,25 @@ export class ConstraintSet {
   }
 
   serialize(sr: Semantic.Context) {
-    let constraints = [] as string[];
+    const constraints = [] as string[];
     for (const [_, constraint] of this.map) {
       const symbol = sr.symbolNodes.get(constraint.variableSymbol);
       assert(symbol.variant === Semantic.ENode.VariableSymbol);
 
       if (constraint.constraintValue.kind === "comparison") {
         constraints.push(
-          `${symbol.name} ${BinaryOperationToString(constraint.constraintValue.operation)} ${Semantic.serializeExpr(sr, constraint.constraintValue.value)}`,
+          `${symbol.name} ${BinaryOperationToString(constraint.constraintValue.operation)} ${Semantic.serializeExpr(sr, constraint.constraintValue.value)}`
+        );
+      } else if (constraint.constraintValue.typeDef) {
+        constraints.push(
+          `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeDef(sr, constraint.constraintValue.typeDef)}`
+        );
+      } else if (constraint.constraintValue.typeUse) {
+        constraints.push(
+          `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeUse(sr, constraint.constraintValue.typeUse)}`
         );
       } else {
-        if (constraint.constraintValue.typeDef) {
-          constraints.push(
-            `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeDef(sr, constraint.constraintValue.typeDef)}`,
-          );
-        } else if (constraint.constraintValue.typeUse) {
-          constraints.push(
-            `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeUse(sr, constraint.constraintValue.typeUse)}`,
-          );
-        } else {
-          assert(false);
-        }
+        assert(false);
       }
     }
     return constraints;

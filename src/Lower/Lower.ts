@@ -1,6 +1,9 @@
 import { Conversion } from "../Semantic/Conversion";
 import { makePrimitiveAvailable, makeVoidType } from "../Semantic/Elaborate";
-import { makeRawFunctionDatatypeAvailable, makeTypeUse } from "../Semantic/LookupDatatype";
+import {
+  makeRawFunctionDatatypeAvailable,
+  makeTypeUse,
+} from "../Semantic/LookupDatatype";
 import { Semantic } from "../Semantic/SemanticTypes";
 import {
   BinaryOperationToString,
@@ -8,21 +11,19 @@ import {
   EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
-  EIncrOperation,
-  EUnaryOperation,
+  type EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
 import {
+  type Brand,
   BrandedArray,
   EPrimitive,
   EVariableContext,
-  type Brand,
   type LiteralValue,
   type NameSet,
 } from "../shared/common";
 import {
   assert,
-  formatSourceLoc,
   InternalError,
   printWarningMessage,
   type SourceLoc,
@@ -40,71 +41,71 @@ export namespace Lowered {
   export type BlockScopeId = Brand<number, "LoweredBlockScope">;
 
   export enum ENode {
-    CInjectDirective,
+    CInjectDirective = 0,
     // Symbols
-    VariableSymbol,
-    GlobalVariableDefinitionSymbol,
-    FunctionSymbol,
+    VariableSymbol = 1,
+    GlobalVariableDefinitionSymbol = 2,
+    FunctionSymbol = 3,
     // Datatypes
-    FunctionDatatype,
-    BlockScope,
-    StructDatatype,
-    PointerDatatype,
-    CallableDatatype,
-    PrimitiveDatatype,
-    GenericParameterDatatype,
-    NamespaceDatatype,
-    FixedArrayDatatype,
-    DynamicArrayDatatype,
-    SliceDatatype,
-    ReactiveDatatype,
-    ComputedDatatype,
-    UntaggedUnionDatatype,
-    TaggedUnionDatatype,
-    EnumDatatype,
-    LiteralDatatype,
+    FunctionDatatype = 4,
+    BlockScope = 5,
+    StructDatatype = 6,
+    PointerDatatype = 7,
+    CallableDatatype = 8,
+    PrimitiveDatatype = 9,
+    GenericParameterDatatype = 10,
+    NamespaceDatatype = 11,
+    FixedArrayDatatype = 12,
+    DynamicArrayDatatype = 13,
+    SliceDatatype = 14,
+    ReactiveDatatype = 15,
+    ComputedDatatype = 16,
+    UntaggedUnionDatatype = 17,
+    TaggedUnionDatatype = 18,
+    EnumDatatype = 19,
+    LiteralDatatype = 20,
     // Type Use
-    TypeUse,
+    TypeUse = 21,
     // Statements
-    InlineCStatement,
-    WhileStatement,
-    IfStatement,
-    ForStatement,
-    VariableStatement,
-    ExprStatement,
-    BlockScopeExpr,
-    ReturnStatement,
-    LabelJumpStatement,
-    LabelDefinitionStatement,
+    InlineCStatement = 22,
+    WhileStatement = 23,
+    IfStatement = 24,
+    ForStatement = 25,
+    VariableStatement = 26,
+    ExprStatement = 27,
+    BlockScopeExpr = 28,
+    ReturnStatement = 29,
+    LabelJumpStatement = 30,
+    LabelDefinitionStatement = 31,
     // Expressions
-    ParenthesisExpr,
-    BinaryExpr,
-    LiteralExpr,
-    UnaryExpr,
-    ExprCallExpr,
-    SymbolValueExpr,
-    NamespaceOrStructValueExpr,
-    SizeofExpr,
-    AlignofExpr,
-    DatatypeAsValueExpr,
-    ExplicitCastExpr,
-    ValueToUnionCastExpr,
-    UnionToValueCastExpr,
-    UnionToUnionCastExpr,
-    UnionTagCheckExpr,
-    MemberAccessExpr,
-    CallableExpr,
-    AddressOfExpr,
-    DereferenceExpr,
-    ExprAssignmentExpr,
-    StructLiteralExpr,
-    ArrayLiteralExpr,
-    ArraySubscriptExpr,
-    ArraySliceExpr,
-    StringSubscriptExpr,
-    StringConstructExpr,
+    ParenthesisExpr = 32,
+    BinaryExpr = 33,
+    LiteralExpr = 34,
+    UnaryExpr = 35,
+    ExprCallExpr = 36,
+    SymbolValueExpr = 37,
+    NamespaceOrStructValueExpr = 38,
+    SizeofExpr = 39,
+    AlignofExpr = 40,
+    DatatypeAsValueExpr = 41,
+    ExplicitCastExpr = 42,
+    ValueToUnionCastExpr = 43,
+    UnionToValueCastExpr = 44,
+    UnionToUnionCastExpr = 45,
+    UnionTagCheckExpr = 46,
+    MemberAccessExpr = 47,
+    CallableExpr = 48,
+    AddressOfExpr = 49,
+    DereferenceExpr = 50,
+    ExprAssignmentExpr = 51,
+    StructLiteralExpr = 52,
+    ArrayLiteralExpr = 53,
+    ArraySubscriptExpr = 54,
+    ArraySliceExpr = 55,
+    StringSubscriptExpr = 56,
+    StringConstructExpr = 57,
     // Dummy
-    Dummy,
+    Dummy = 58,
   }
 
   export type TagMapping = {
@@ -135,7 +136,7 @@ export namespace Lowered {
 
   export function addTypeUse<T extends Lowered.TypeUse>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.TypeUseId] {
     if (lr.typeUseNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -148,7 +149,7 @@ export namespace Lowered {
 
   export function addTypeDef<T extends Lowered.TypeDef>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.TypeDefId] {
     if (lr.typeDefNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -161,7 +162,7 @@ export namespace Lowered {
 
   export function addBlockScope<T extends Lowered.BlockScope>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.BlockScopeId] {
     if (lr.blockScopeNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -174,7 +175,7 @@ export namespace Lowered {
 
   export function addExpr<T extends Lowered.Expression>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.ExprId] {
     if (lr.exprNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -187,7 +188,7 @@ export namespace Lowered {
 
   export function addStatement<T extends Lowered.Statement>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.StatementId] {
     if (lr.statementNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -200,7 +201,7 @@ export namespace Lowered {
 
   export function addFunction<T extends Lowered.FunctionSymbol>(
     lr: Lowered.Module,
-    n: T,
+    n: T
   ): [T, Lowered.FunctionId] {
     if (lr.functionNodes.length === 0) {
       // Push a dummy because it causes issues when the id is zero, so zero is not a valid id.
@@ -677,7 +678,7 @@ const callSysPanic = (
   lr: Lowered.Module,
   message: string,
   steps: bigint,
-  instanceInfo: InstanceInfo,
+  instanceInfo: InstanceInfo
 ) => {
   const flattened: Lowered.StatementId[] = [];
   const id = Lowered.addStatement(lr, {
@@ -686,10 +687,20 @@ const callSysPanic = (
       lr,
       "hzstd_panic_str_n",
       [
-        lowerExpr(lr, lr.sr.b.literal(message, null)[1], flattened, instanceInfo)[1],
-        lowerExpr(lr, lr.sr.b.literal(steps, null)[1], flattened, instanceInfo)[1],
+        lowerExpr(
+          lr,
+          lr.sr.b.literal(message, null)[1],
+          flattened,
+          instanceInfo
+        )[1],
+        lowerExpr(
+          lr,
+          lr.sr.b.literal(steps, null)[1],
+          flattened,
+          instanceInfo
+        )[1],
       ],
-      lowerTypeUse(lr, lr.sr.b.voidType()),
+      lowerTypeUse(lr, lr.sr.b.voidType())
     )[1],
     sourceloc: null,
   })[1];
@@ -703,7 +714,7 @@ const storeInTempVarAndGetIfRequired = (
   value: Lowered.ExprId | null,
   sourceloc: SourceLoc,
   flattened: Lowered.StatementId[],
-  varname?: string,
+  varname?: string
 ): [Lowered.Expression, Lowered.ExprId] => {
   if (value) {
     const expr = lr.exprNodes.get(value);
@@ -724,7 +735,7 @@ const storeInTempVarAndGet = (
   value: Lowered.ExprId | null,
   sourceloc: SourceLoc,
   flattened: Lowered.StatementId[],
-  varname?: string,
+  varname?: string
 ): [Lowered.Expression, Lowered.ExprId] => {
   if (varname === undefined) {
     varname = makeTempName();
@@ -737,12 +748,12 @@ const storeInTempVarAndGet = (
         mangledName: varname,
         wasMangled: false,
       },
-      type: type,
+      type,
       intrinsicTakeAddrOfValue: false,
       variableContext: EVariableContext.FunctionLocal,
-      value: value,
-      sourceloc: sourceloc,
-    })[1],
+      value,
+      sourceloc,
+    })[1]
   );
   return Lowered.addExpr(lr, {
     variant: Lowered.ENode.SymbolValueExpr,
@@ -751,14 +762,14 @@ const storeInTempVarAndGet = (
       mangledName: varname,
       wasMangled: false,
     },
-    type: type,
+    type,
   });
 };
 
 const lowerExprAndWrapFlattenedStatements = (
   lr: Lowered.Module,
   exprId: Semantic.ExprId,
-  instanceInfo: InstanceInfo,
+  instanceInfo: InstanceInfo
 ) => {
   const flattenedStatements: Lowered.StatementId[] = [];
   const [e, eId] = lowerExpr(lr, exprId, flattenedStatements, instanceInfo);
@@ -783,12 +794,12 @@ function makeIntrinsicCall(
   lr: Lowered.Module,
   functionName: string,
   callArguments: Lowered.ExprId[],
-  returnType: Lowered.TypeUseId,
+  returnType: Lowered.TypeUseId
 ) {
   const [functype, functypeId] = Lowered.addTypeDef(lr, {
     variant: Lowered.ENode.FunctionDatatype,
     parameters: callArguments.map((a) => lr.exprNodes.get(a).type),
-    returnType: returnType,
+    returnType,
     name: {
       prettyName: functionName,
       mangledName: functionName,
@@ -820,18 +831,23 @@ function makeIntrinsicCall(
 const shouldBeOptimizedToNullptr = (
   lr: Lowered.Module,
   loweredUnionType: Lowered.TypeUseId,
-  valueType: Semantic.TypeUseId,
+  valueType: Semantic.TypeUseId
 ) => {
-  const unionTypeDef = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionType).type);
+  const unionTypeDef = lr.typeDefNodes.get(
+    lr.typeUseNodes.get(loweredUnionType).type
+  );
   assert(
     unionTypeDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
-      unionTypeDef.variant === Lowered.ENode.TaggedUnionDatatype,
+      unionTypeDef.variant === Lowered.ENode.TaggedUnionDatatype
   );
   if (unionTypeDef.optimizeAsRawPointer) {
-    const exprTypeDef = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(valueType).type);
+    const exprTypeDef = lr.sr.typeDefNodes.get(
+      lr.sr.typeUseNodes.get(valueType).type
+    );
     if (
       exprTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-      (exprTypeDef.primitive === EPrimitive.none || exprTypeDef.primitive === EPrimitive.null)
+      (exprTypeDef.primitive === EPrimitive.none ||
+        exprTypeDef.primitive === EPrimitive.null)
     ) {
       return true;
     }
@@ -850,18 +866,23 @@ export function lowerExpr(
   instanceInfo: InstanceInfo,
   args?: {
     noLambdaHoisting?: boolean;
-  },
+  }
 ): [Lowered.Expression, Lowered.ExprId] {
   const expr = lr.sr.exprNodes.get(exprId);
 
   switch (expr.variant) {
     case Semantic.ENode.ExprCallExpr: {
-      const [calledExpr, calledExprId] = lowerExpr(lr, expr.calledExpr, flattened, instanceInfo);
+      const [calledExpr, calledExprId] = lowerExpr(
+        lr,
+        expr.calledExpr,
+        flattened,
+        instanceInfo
+      );
       const calledExprType = lr.typeUseNodes.get(calledExpr.type);
       const calledExprTypeDef = lr.typeDefNodes.get(calledExprType.type);
       assert(
         calledExprTypeDef.variant === Lowered.ENode.FunctionDatatype ||
-          calledExprTypeDef.variant === Lowered.ENode.CallableDatatype,
+          calledExprTypeDef.variant === Lowered.ENode.CallableDatatype
       );
 
       if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
@@ -874,34 +895,43 @@ export function lowerExpr(
           // As optimization, switch back from the trampoline function to the native function
           const trampolineFunction = lr.functionNodes.get(calledExpr.function);
           assert(trampolineFunction.isClosureTrampolineFor);
-          const nativeFunction = lr.functionNodes.get(trampolineFunction.isClosureTrampolineFor);
+          const nativeFunction = lr.functionNodes.get(
+            trampolineFunction.isClosureTrampolineFor
+          );
 
           const type = lowerTypeUse(lr, expr.type);
-          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
-            variant: Lowered.ENode.ExprCallExpr,
-            expr: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.SymbolValueExpr,
-              name: nativeFunction.name,
-              type: calledExpr.type,
-            })[1],
-            arguments: [
-              calledExpr.envValue.thisExpr,
-              ...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1]),
-            ],
-            type: type,
-          });
-          return [callExpr, callExprId];
-        } else {
-          // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
-          const type = lowerTypeUse(lr, expr.type);
-          const callableTmp = storeInTempVarAndGetIfRequired(
+          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
             lr,
-            calledExpr.type,
-            calledExprId,
-            null,
-            flattened,
-          )[1];
-          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+            {
+              variant: Lowered.ENode.ExprCallExpr,
+              expr: Lowered.addExpr(lr, {
+                variant: Lowered.ENode.SymbolValueExpr,
+                name: nativeFunction.name,
+                type: calledExpr.type,
+              })[1],
+              arguments: [
+                calledExpr.envValue.thisExpr,
+                ...expr.arguments.map(
+                  (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
+                ),
+              ],
+              type,
+            }
+          );
+          return [callExpr, callExprId];
+        }
+        // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
+        const type = lowerTypeUse(lr, expr.type);
+        const callableTmp = storeInTempVarAndGetIfRequired(
+          lr,
+          calledExpr.type,
+          calledExprId,
+          null,
+          flattened
+        )[1];
+        const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
+          lr,
+          {
             variant: Lowered.ENode.ExprCallExpr,
             expr: Lowered.addExpr(lr, {
               variant: Lowered.ENode.MemberAccessExpr,
@@ -918,21 +948,26 @@ export function lowerExpr(
                 memberName: "env",
                 type: lowerTypeUse(lr, lr.sr.b.cptrType()),
               })[1],
-              ...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1]),
+              ...expr.arguments.map(
+                (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
+              ),
             ],
-            type: type,
-          });
-          return [callExpr, callExprId];
-        }
-      } else {
-        const [exprCall, exprCallId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
-          variant: Lowered.ENode.ExprCallExpr,
-          expr: calledExprId,
-          arguments: [...expr.arguments.map((a) => lowerExpr(lr, a, flattened, instanceInfo)[1])],
-          type: lowerTypeUse(lr, expr.type),
-        });
-        return [exprCall, exprCallId];
+            type,
+          }
+        );
+        return [callExpr, callExprId];
       }
+      const [exprCall, exprCallId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+        variant: Lowered.ENode.ExprCallExpr,
+        expr: calledExprId,
+        arguments: [
+          ...expr.arguments.map(
+            (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
+          ),
+        ],
+        type: lowerTypeUse(lr, expr.type),
+      });
+      return [exprCall, exprCallId];
     }
 
     case Semantic.ENode.BinaryExpr: {
@@ -940,9 +975,13 @@ export function lowerExpr(
       const type = lr.typeUseNodes.get(typeId);
 
       const leftExpr = lr.sr.exprNodes.get(expr.left);
-      const leftType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(leftExpr.type).type);
+      const leftType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(leftExpr.type).type
+      );
       const rightExpr = lr.sr.exprNodes.get(expr.right);
-      const rightType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(rightExpr.type).type);
+      const rightType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(rightExpr.type).type
+      );
 
       if (
         (leftType.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -954,7 +993,7 @@ export function lowerExpr(
           leftType.variant === Semantic.ENode.PrimitiveDatatype &&
             leftType.primitive === EPrimitive.str &&
             rightType.variant === Semantic.ENode.PrimitiveDatatype &&
-            rightType.primitive === EPrimitive.str,
+            rightType.primitive === EPrimitive.str
         );
         if (
           expr.operation === EBinaryOperation.Equal ||
@@ -969,11 +1008,10 @@ export function lowerExpr(
               lowerExpr(lr, expr.left, flattened, instanceInfo)[1],
               lowerExpr(lr, expr.right, flattened, instanceInfo)[1],
             ],
-            lowerTypeUse(lr, lr.sr.b.boolType()),
+            lowerTypeUse(lr, lr.sr.b.boolType())
           );
-        } else {
-          assert(false, "not implemented");
         }
+        assert(false, "not implemented");
       }
 
       return Lowered.addExpr(lr, {
@@ -999,31 +1037,38 @@ export function lowerExpr(
       const symbol = lr.sr.symbolNodes.get(expr.symbol);
       assert(
         symbol.variant === Semantic.ENode.VariableSymbol ||
-          symbol.variant === Semantic.ENode.FunctionSymbol,
+          symbol.variant === Semantic.ENode.FunctionSymbol
       );
 
       if (symbol.variant === Semantic.ENode.VariableSymbol) {
         assert(symbol.type);
 
-        const globalVariableStatementId = [...lr.sr.elaboratedGlobalVariableDefinitionSymbols].find(
-          (d) => {
-            const symbol = lr.sr.symbolNodes.get(d);
-            assert(symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
-            return symbol.variableSymbol === expr.symbol;
-          },
-        );
+        const globalVariableStatementId = [
+          ...lr.sr.elaboratedGlobalVariableDefinitionSymbols,
+        ].find((d) => {
+          const symbol = lr.sr.symbolNodes.get(d);
+          assert(
+            symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
+          );
+          return symbol.variableSymbol === expr.symbol;
+        });
 
         let name = symbol.name;
         if (symbol.requiresHoisting && !args?.noLambdaHoisting) {
           name = "*" + name;
         }
 
-        let prettyName = name;
+        const prettyName = name;
         let mangledName = name;
         let wasMangled = false;
         if (globalVariableStatementId) {
-          const globalVariableStatement = lr.sr.symbolNodes.get(globalVariableStatementId);
-          assert(globalVariableStatement.variant === Semantic.ENode.GlobalVariableDefinitionSymbol);
+          const globalVariableStatement = lr.sr.symbolNodes.get(
+            globalVariableStatementId
+          );
+          assert(
+            globalVariableStatement.variant ===
+              Semantic.ENode.GlobalVariableDefinitionSymbol
+          );
           const mangled = Semantic.mangleSymbol(lr.sr, expr.symbol);
           mangledName = mangled.name;
           wasMangled = mangled.wasMangled;
@@ -1032,20 +1077,19 @@ export function lowerExpr(
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
-            prettyName: prettyName,
-            mangledName: mangledName,
-            wasMangled: wasMangled,
+            prettyName,
+            mangledName,
+            wasMangled,
           },
           type: lowerTypeUse(lr, symbol.type),
         });
-      } else {
-        lowerSymbol(lr, expr.symbol);
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.SymbolValueExpr,
-          name: Semantic.makeNameSetSymbol(lr.sr, expr.symbol),
-          type: makeLowerTypeUse(lr, lowerTypeDef(lr, symbol.type), false)[1],
-        });
       }
+      lowerSymbol(lr, expr.symbol);
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.SymbolValueExpr,
+        name: Semantic.makeNameSetSymbol(lr.sr, expr.symbol),
+        type: makeLowerTypeUse(lr, lowerTypeDef(lr, symbol.type), false)[1],
+      });
     }
 
     case Semantic.ENode.AddressOfExpr: {
@@ -1065,7 +1109,12 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.ExplicitCastExpr: {
-      const [loweredExpr, loweredExprId] = lowerExpr(lr, expr.expr, flattened, instanceInfo);
+      const [loweredExpr, loweredExprId] = lowerExpr(
+        lr,
+        expr.expr,
+        flattened,
+        instanceInfo
+      );
       const targetTypeId = lowerTypeUse(lr, expr.type);
       const exprType = lr.typeUseNodes.get(loweredExpr.type);
       const exprTypeDef = lr.typeDefNodes.get(exprType.type);
@@ -1121,7 +1170,9 @@ export function lowerExpr(
     case Semantic.ENode.MemberAccessExpr: {
       const accessedExpr = lr.sr.exprNodes.get(expr.expr);
       const accessedExprTypeUse = lr.sr.typeUseNodes.get(accessedExpr.type);
-      const accessedExprTypeDef = lr.sr.typeDefNodes.get(accessedExprTypeUse.type);
+      const accessedExprTypeDef = lr.sr.typeDefNodes.get(
+        accessedExprTypeUse.type
+      );
 
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
@@ -1151,7 +1202,11 @@ export function lowerExpr(
       if (structTypeUse.pointer) {
         const [_, structExprId] = Lowered.addExpr(lr, {
           variant: Lowered.ENode.StructLiteralExpr,
-          type: makeLowerTypeUse(lr, lowerTypeDef(lr, semanticTypeUse.type), true)[1],
+          type: makeLowerTypeUse(
+            lr,
+            lowerTypeDef(lr, semanticTypeUse.type),
+            true
+          )[1],
           memberAssigns: expr.assign.map((a) => ({
             name: a.name,
             value: lowerExpr(lr, a.value, flattened, instanceInfo)[1],
@@ -1160,13 +1215,18 @@ export function lowerExpr(
 
         let allocatorExprId: Lowered.ExprId;
         if (expr.allocator) {
-          allocatorExprId = lowerExpr(lr, expr.allocator, flattened, instanceInfo)[1];
+          allocatorExprId = lowerExpr(
+            lr,
+            expr.allocator,
+            flattened,
+            instanceInfo
+          )[1];
         } else {
           allocatorExprId = makeIntrinsicCall(
             lr,
             "hzstd_make_heap_allocator",
             [],
-            lowerTypeUse(lr, lr.sr.e.allocatorTypeUse(expr.sourceloc)[1]),
+            lowerTypeUse(lr, lr.sr.e.allocatorTypeUse(expr.sourceloc)[1])
           )[1];
         }
 
@@ -1179,20 +1239,19 @@ export function lowerExpr(
           lr,
           "HZSTD_ALLOC_STRUCT",
           [allocatorExprId, structTypeExprId, structExprId],
-          structType,
+          structType
         );
 
         return [result, resultId];
-      } else {
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.StructLiteralExpr,
-          type: structType,
-          memberAssigns: expr.assign.map((a) => ({
-            name: a.name,
-            value: lowerExpr(lr, a.value, flattened, instanceInfo)[1],
-          })),
-        });
       }
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.StructLiteralExpr,
+        type: structType,
+        memberAssigns: expr.assign.map((a) => ({
+          name: a.name,
+          value: lowerExpr(lr, a.value, flattened, instanceInfo)[1],
+        })),
+      });
     }
 
     // case Semantic.ENode.PreIncrExpr: {
@@ -1247,36 +1306,54 @@ export function lowerExpr(
       if (typeDef.variant === Semantic.ENode.FixedArrayDatatype) {
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.ArrayLiteralExpr,
-          values: expr.elements.map((v) => lowerExpr(lr, v, flattened, instanceInfo)[1]),
+          values: expr.elements.map(
+            (v) => lowerExpr(lr, v, flattened, instanceInfo)[1]
+          ),
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
-        const elements = expr.elements.map((v) => lowerExpr(lr, v, flattened, instanceInfo)[1]);
+      }
+      if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+        const elements = expr.elements.map(
+          (v) => lowerExpr(lr, v, flattened, instanceInfo)[1]
+        );
         const rawType = lr.sr.typeUseNodes.get(expr.type).type;
         const arrayType = lowerTypeUse(
           lr,
-          makeTypeUse(lr.sr, rawType, EDatatypeMutability.Default, false, expr.sourceloc)[1],
+          makeTypeUse(
+            lr.sr,
+            rawType,
+            EDatatypeMutability.Default,
+            false,
+            expr.sourceloc
+          )[1]
         );
         const elementType = lowerTypeUse(lr, typeDef.datatype);
 
-        let returns = false;
+        const returns = false;
         if (expr.inFunction) {
           const funcsym = lr.sr.symbolNodes.get(expr.inFunction);
           assert(funcsym.variant === Semantic.ENode.FunctionSymbol);
-          if (expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))) {
+          if (
+            expr.instanceIds.some((id) => funcsym.returnsInstanceIds.has(id))
+          ) {
             // returns = true;
           }
         }
 
         let allocatorId: Lowered.ExprId;
         if (expr.allocator) {
-          allocatorId = lowerExpr(lr, expr.allocator, flattened, instanceInfo)[1];
+          allocatorId = lowerExpr(
+            lr,
+            expr.allocator,
+            flattened,
+            instanceInfo
+          )[1];
         } else {
           allocatorId = makeIntrinsicCall(
             lr,
             "hzstd_make_heap_allocator",
             [],
-            lowerTypeUse(lr, lr.sr.e.allocatorTypeUse(expr.sourceloc)[1]),
+            lowerTypeUse(lr, lr.sr.e.allocatorTypeUse(expr.sourceloc)[1])
           )[1];
         }
 
@@ -1284,7 +1361,7 @@ export function lowerExpr(
           lr,
           lr.sr.b.literal(BigInt(elements.length), expr.sourceloc)[1],
           flattened,
-          instanceInfo,
+          instanceInfo
         );
 
         const statements: Lowered.StatementId[] = [];
@@ -1302,10 +1379,10 @@ export function lowerExpr(
               })[1],
               lengthExpr[1],
             ],
-            arrayType,
+            arrayType
           )[1],
           expr.sourceloc,
-          statements,
+          statements
         );
 
         const voidType = lowerTypeUse(lr, lr.sr.b.voidType());
@@ -1315,20 +1392,20 @@ export function lowerExpr(
             elementType,
             element,
             expr.sourceloc,
-            statements,
+            statements
           )[1];
           const call = makeIntrinsicCall(
             lr,
             "HZSTD_DYNAMIC_ARRAY_PUSH",
             [tempVar[1], variable],
-            voidType,
+            voidType
           )[1];
           statements.push(
             Lowered.addStatement(lr, {
               variant: Lowered.ENode.ExprStatement,
               expr: call,
               sourceloc: expr.sourceloc,
-            })[1],
+            })[1]
           );
         }
 
@@ -1336,7 +1413,7 @@ export function lowerExpr(
           variant: Lowered.ENode.BlockScopeExpr,
           block: Lowered.addBlockScope(lr, {
             definesVariables: true,
-            statements: statements,
+            statements,
             emittedExpr: tempVar[1],
           })[1],
           sourceloc: expr.sourceloc,
@@ -1369,7 +1446,9 @@ export function lowerExpr(
       assert(expr.indices.length === 1);
       const arrayId = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
       const semanticArray = lr.sr.exprNodes.get(expr.expr);
-      const arrayType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(semanticArray.type).type);
+      const arrayType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(semanticArray.type).type
+      );
       assert(arrayType.variant === Semantic.ENode.FixedArrayDatatype);
 
       const startIndex = expr.indices[0].start
@@ -1387,8 +1466,8 @@ export function lowerExpr(
                 lr.sr,
                 EPrimitive.usize,
                 EDatatypeMutability.Const,
-                expr.sourceloc,
-              ),
+                expr.sourceloc
+              )
             ),
           })[1];
       const endIndex = expr.indices[0].end
@@ -1406,15 +1485,21 @@ export function lowerExpr(
                 lr.sr,
                 EPrimitive.usize,
                 EDatatypeMutability.Const,
-                expr.sourceloc,
-              ),
+                expr.sourceloc
+              )
             ),
           })[1];
 
       let sliceExprId = arrayId;
       const array = lr.exprNodes.get(arrayId);
       if (array.variant === Lowered.ENode.ArrayLiteralExpr) {
-        sliceExprId = storeInTempVarAndGet(lr, array.type, arrayId, expr.sourceloc, flattened)[1];
+        sliceExprId = storeInTempVarAndGet(
+          lr,
+          array.type,
+          arrayId,
+          expr.sourceloc,
+          flattened
+        )[1];
       }
 
       return Lowered.addExpr(lr, {
@@ -1440,7 +1525,7 @@ export function lowerExpr(
           lr,
           expr.envValue.thisExpr,
           flattened,
-          instanceInfo,
+          instanceInfo
         )[1];
         const structPointerType = lowerTypeUse(lr, thisExpr.type);
         let tempId = loweredThisExpression;
@@ -1450,7 +1535,7 @@ export function lowerExpr(
             lowerTypeUse(lr, thisExpr.type),
             loweredThisExpression,
             expr.sourceloc,
-            flattened,
+            flattened
           )[1];
         }
 
@@ -1482,9 +1567,12 @@ export function lowerExpr(
         };
         envValue = {
           type: "lambda",
-          captures: expr.envValue.captures.map((c) => {
-            return lowerExpr(lr, c.value, flattened, instanceInfo, { noLambdaHoisting: true })[1];
-          }),
+          captures: expr.envValue.captures.map(
+            (c) =>
+              lowerExpr(lr, c.value, flattened, instanceInfo, {
+                noLambdaHoisting: true,
+              })[1]
+          ),
         };
       }
 
@@ -1506,16 +1594,30 @@ export function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.CallableExpr,
         function: callableFunc,
-        envType: envType,
-        envValue: envValue,
+        envType,
+        envValue,
         type: lowerTypeUse(lr, expr.type),
-        functionType: makeLowerTypeUse(lr, lowerTypeDef(lr, functionSymbol.type), false)[1],
+        functionType: makeLowerTypeUse(
+          lr,
+          lowerTypeDef(lr, functionSymbol.type),
+          false
+        )[1],
       });
     }
 
     case Semantic.ENode.ExprAssignmentExpr: {
-      const loweredTarget = lowerExpr(lr, expr.target, flattened, instanceInfo)[1];
-      const loweredValue = lowerExpr(lr, expr.value, flattened, instanceInfo)[1];
+      const loweredTarget = lowerExpr(
+        lr,
+        expr.target,
+        flattened,
+        instanceInfo
+      )[1];
+      const loweredValue = lowerExpr(
+        lr,
+        expr.value,
+        flattened,
+        instanceInfo
+      )[1];
       if (
         expr.operation === EAssignmentOperation.Rebind ||
         expr.operation === EAssignmentOperation.Assign
@@ -1527,7 +1629,8 @@ export function lowerExpr(
           assignRefTarget: expr.operation === EAssignmentOperation.Assign,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (expr.operation === EAssignmentOperation.Add) {
+      }
+      if (expr.operation === EAssignmentOperation.Add) {
         const typeId = lowerTypeUse(lr, expr.type);
         const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
@@ -1544,7 +1647,8 @@ export function lowerExpr(
           assignRefTarget: false,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (expr.operation === EAssignmentOperation.Subtract) {
+      }
+      if (expr.operation === EAssignmentOperation.Subtract) {
         const typeId = lowerTypeUse(lr, expr.type);
         const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
@@ -1561,7 +1665,8 @@ export function lowerExpr(
           assignRefTarget: false,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (expr.operation === EAssignmentOperation.Multiply) {
+      }
+      if (expr.operation === EAssignmentOperation.Multiply) {
         const typeId = lowerTypeUse(lr, expr.type);
         const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
@@ -1578,7 +1683,8 @@ export function lowerExpr(
           assignRefTarget: false,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (expr.operation === EAssignmentOperation.Divide) {
+      }
+      if (expr.operation === EAssignmentOperation.Divide) {
         const typeId = lowerTypeUse(lr, expr.type);
         const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
@@ -1595,7 +1701,8 @@ export function lowerExpr(
           assignRefTarget: false,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else if (expr.operation === EAssignmentOperation.Modulo) {
+      }
+      if (expr.operation === EAssignmentOperation.Modulo) {
         const typeId = lowerTypeUse(lr, expr.type);
         const type = lr.typeUseNodes.get(typeId);
         return Lowered.addExpr(lr, {
@@ -1612,9 +1719,8 @@ export function lowerExpr(
           assignRefTarget: false,
           type: lowerTypeUse(lr, expr.type),
         });
-      } else {
-        assert(false);
       }
+      assert(false);
     }
 
     case Semantic.ENode.SizeofExpr: {
@@ -1661,17 +1767,21 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.ValueToUnionCastExpr: {
-      const exprType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(expr.type).type);
+      const exprType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(expr.type).type
+      );
       assert(
         exprType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-          exprType.variant === Semantic.ENode.TaggedUnionDatatype,
+          exprType.variant === Semantic.ENode.TaggedUnionDatatype
       );
 
       const loweredUnionId = lowerTypeUse(lr, expr.type);
-      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      const loweredUnion = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredUnionId).type
+      );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
       return Lowered.addExpr(lr, {
@@ -1680,7 +1790,7 @@ export function lowerExpr(
         optimizeExprToNullptr: shouldBeOptimizedToNullptr(
           lr,
           loweredUnionId,
-          lr.sr.exprNodes.get(expr.expr).type,
+          lr.sr.exprNodes.get(expr.expr).type
         ),
         index: expr.index,
         type: loweredUnionId,
@@ -1689,17 +1799,21 @@ export function lowerExpr(
 
     case Semantic.ENode.UnionToValueCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
-      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      const sourceType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(sourceExpr.type).type
+      );
       assert(
         sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-          sourceType.variant === Semantic.ENode.TaggedUnionDatatype,
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
       );
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
-      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      const loweredUnion = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredUnionId).type
+      );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
       return Lowered.addExpr(lr, {
@@ -1708,7 +1822,7 @@ export function lowerExpr(
         optimizeExprToNullptr: shouldBeOptimizedToNullptr(
           lr,
           loweredUnionId,
-          lr.sr.exprNodes.get(expr.expr).type,
+          lr.sr.exprNodes.get(expr.expr).type
         ),
         index: expr.tag,
         type: lowerTypeUse(lr, expr.type),
@@ -1727,7 +1841,7 @@ export function lowerExpr(
         lowerExpr(lr, expr.target, statements, instanceInfo)[1],
         expr.sourceloc,
         statements,
-        "__tmp_reactive",
+        "__tmp_reactive"
       )[1];
 
       storeInTempVarAndGet(
@@ -1736,7 +1850,7 @@ export function lowerExpr(
         lowerExpr(lr, expr.value, statements, instanceInfo)[1],
         expr.sourceloc,
         statements,
-        "__tmp_value",
+        "__tmp_value"
       );
 
       statements.push(
@@ -1746,7 +1860,7 @@ export function lowerExpr(
 hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));
 hzstd_reactive_write(__tmp_reactive, __slot);`,
           sourceloc: expr.sourceloc,
-        })[1],
+        })[1]
       );
 
       return Lowered.addExpr(lr, {
@@ -1754,7 +1868,7 @@ hzstd_reactive_write(__tmp_reactive, __slot);`,
         block: Lowered.addBlockScope(lr, {
           definesVariables: true,
           emittedExpr: tmpReactive,
-          statements: statements,
+          statements,
         })[1],
         type: reactiveType,
         sourceloc: expr.sourceloc,
@@ -1764,7 +1878,10 @@ hzstd_reactive_write(__tmp_reactive, __slot);`,
     case Semantic.ENode.ComputedReadExpr: {
       const statements: Lowered.StatementId[] = [];
 
-      const reactiveType = lowerTypeUse(lr, lr.sr.exprNodes.get(expr.value).type);
+      const reactiveType = lowerTypeUse(
+        lr,
+        lr.sr.exprNodes.get(expr.value).type
+      );
       const valueType = lowerTypeUse(lr, expr.type);
 
       storeInTempVarAndGet(
@@ -1773,7 +1890,7 @@ hzstd_reactive_write(__tmp_reactive, __slot);`,
         lowerExpr(lr, expr.value, statements, instanceInfo)[1],
         expr.sourceloc,
         statements,
-        "__tmp_computed",
+        "__tmp_computed"
       );
 
       const result = storeInTempVarAndGet(
@@ -1782,7 +1899,7 @@ hzstd_reactive_write(__tmp_reactive, __slot);`,
         null,
         expr.sourceloc,
         statements,
-        "__tmp_result",
+        "__tmp_result"
       )[1];
 
       statements.push(
@@ -1791,7 +1908,7 @@ hzstd_reactive_write(__tmp_reactive, __slot);`,
           value: `void* __slot = hzstd_computed_read(__tmp_computed);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           sourceloc: expr.sourceloc,
-        })[1],
+        })[1]
       );
 
       return Lowered.addExpr(lr, {
@@ -1799,7 +1916,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         block: Lowered.addBlockScope(lr, {
           definesVariables: true,
           emittedExpr: result,
-          statements: statements,
+          statements,
         })[1],
         type: valueType,
         sourceloc: expr.sourceloc,
@@ -1809,7 +1926,10 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     case Semantic.ENode.ReactiveReadExpr: {
       const statements: Lowered.StatementId[] = [];
 
-      const reactiveType = lowerTypeUse(lr, lr.sr.exprNodes.get(expr.value).type);
+      const reactiveType = lowerTypeUse(
+        lr,
+        lr.sr.exprNodes.get(expr.value).type
+      );
       const valueType = lowerTypeUse(lr, expr.type);
 
       storeInTempVarAndGet(
@@ -1818,7 +1938,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         lowerExpr(lr, expr.value, statements, instanceInfo)[1],
         expr.sourceloc,
         statements,
-        "__tmp_reactive",
+        "__tmp_reactive"
       );
 
       const result = storeInTempVarAndGet(
@@ -1827,7 +1947,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         null,
         expr.sourceloc,
         statements,
-        "__tmp_result",
+        "__tmp_result"
       )[1];
 
       statements.push(
@@ -1836,7 +1956,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           value: `void* __slot = hzstd_reactive_read(__tmp_reactive);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           sourceloc: expr.sourceloc,
-        })[1],
+        })[1]
       );
 
       return Lowered.addExpr(lr, {
@@ -1844,7 +1964,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         block: Lowered.addBlockScope(lr, {
           definesVariables: true,
           emittedExpr: result,
-          statements: statements,
+          statements,
         })[1],
         type: valueType,
         sourceloc: expr.sourceloc,
@@ -1853,40 +1973,53 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
     case Semantic.ENode.UnionToUnionCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
-      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      const sourceType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(sourceExpr.type).type
+      );
       assert(
         sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-          sourceType.variant === Semantic.ENode.TaggedUnionDatatype,
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
       );
 
       const loweredSourceUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredSourceUnion = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredSourceUnionId).type,
+        lr.typeUseNodes.get(loweredSourceUnionId).type
       );
       assert(
         loweredSourceUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredSourceUnion.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredSourceUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
       const loweredTargetUnionId = lowerTypeUse(lr, expr.type);
       const loweredTargetUnion = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredTargetUnionId).type,
+        lr.typeUseNodes.get(loweredTargetUnionId).type
       );
       assert(
         loweredTargetUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredTargetUnion.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredTargetUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      if (loweredSourceUnion.optimizeAsRawPointer || loweredTargetUnion.optimizeAsRawPointer) {
+      if (
+        loweredSourceUnion.optimizeAsRawPointer ||
+        loweredTargetUnion.optimizeAsRawPointer
+      ) {
         let isFine = false;
         // This is not a true ultimate solution, it just checks if the union actually remains the same,
         // and if so, allows the direct conversion. This takes care of 90% of common cases.
         if (
-          loweredSourceUnion.members.length === loweredTargetUnion.members.length &&
+          loweredSourceUnion.members.length ===
+            loweredTargetUnion.members.length &&
           loweredSourceUnion.members.every((m, i) => {
-            if (typeof m === "number" && typeof loweredTargetUnion.members[i] === "number") {
+            if (
+              typeof m === "number" &&
+              typeof loweredTargetUnion.members[i] === "number"
+            ) {
               return m === loweredTargetUnion.members[i];
-            } else if (typeof m !== "number" && typeof loweredTargetUnion.members[i] !== "number") {
+            }
+            if (
+              typeof m !== "number" &&
+              typeof loweredTargetUnion.members[i] !== "number"
+            ) {
               return (
                 m.tag === loweredTargetUnion.members[i].tag &&
                 m.type === loweredTargetUnion.members[i].type
@@ -1894,7 +2027,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             }
             return false;
           }) &&
-          loweredSourceUnion.optimizeAsRawPointer === loweredTargetUnion.optimizeAsRawPointer
+          loweredSourceUnion.optimizeAsRawPointer ===
+            loweredTargetUnion.optimizeAsRawPointer
         ) {
           isFine = true;
         }
@@ -1902,20 +2036,30 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         if (!isFine) {
           assert(
             false,
-            "Union to Union conversion if one is nullptr optimized is not implemented yet (properly)",
+            "Union to Union conversion if one is nullptr optimized is not implemented yet (properly)"
           );
         }
       }
 
-      let mapping = lr.loweredUnionMappings.find((m) => {
-        return m.from === loweredSourceUnionId && m.to === loweredTargetUnionId;
-      });
+      let mapping = lr.loweredUnionMappings.find(
+        (m) => m.from === loweredSourceUnionId && m.to === loweredTargetUnionId
+      );
 
       // Both unions may have different values (due to either narrowing or expansion)
       // And since it is a conversion mapping, only the overlapping ones need to be mapped.
       // Therefore, only the members that appear in BOTH unions are mapped, the others are ignored.
 
-      if (!mapping) {
+      if (mapping) {
+        // Verify existing entry
+        loweredSourceUnion.members.forEach((source, sourceIndex) => {
+          const targetIndex = loweredTargetUnion.members.findIndex(
+            (m) => m === source
+          );
+          if (targetIndex !== -1) {
+            assert(mapping!.mapping.get(sourceIndex) === targetIndex);
+          }
+        });
+      } else {
         mapping = {
           from: loweredSourceUnionId,
           to: loweredTargetUnionId,
@@ -1925,17 +2069,11 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
         // Fill new entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
-          const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
+          const targetIndex = loweredTargetUnion.members.findIndex(
+            (m) => m === source
+          );
           if (targetIndex !== -1) {
             mapping!.mapping.set(sourceIndex, targetIndex);
-          }
-        });
-      } else {
-        // Verify existing entry
-        loweredSourceUnion.members.forEach((source, sourceIndex) => {
-          const targetIndex = loweredTargetUnion.members.findIndex((m) => m === source);
-          if (targetIndex !== -1) {
-            assert(mapping!.mapping.get(sourceIndex) === targetIndex);
           }
         });
       }
@@ -1951,21 +2089,25 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
     case Semantic.ENode.UnionTagCheckExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
-      const sourceType = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(sourceExpr.type).type);
+      const sourceType = lr.sr.typeDefNodes.get(
+        lr.sr.typeUseNodes.get(sourceExpr.type).type
+      );
       assert(
         sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-          sourceType.variant === Semantic.ENode.TaggedUnionDatatype,
+          sourceType.variant === Semantic.ENode.TaggedUnionDatatype
       );
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
-      const loweredUnion = lr.typeDefNodes.get(lr.typeUseNodes.get(loweredUnionId).type);
+      const loweredUnion = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(loweredUnionId).type
+      );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
       const comparisonTypes = expr.comparisonTypesAnd.map((comparisonType) =>
-        lowerTypeUse(lr, comparisonType),
+        lowerTypeUse(lr, comparisonType)
       );
 
       if (loweredUnion.optimizeAsRawPointer) {
@@ -1978,7 +2120,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         const compType = lr.typeDefNodes.get(compTypeUse.type);
         if (
           compType.variant === Lowered.ENode.PrimitiveDatatype &&
-          (compType.primitive === EPrimitive.null || compType.primitive === EPrimitive.none)
+          (compType.primitive === EPrimitive.null ||
+            compType.primitive === EPrimitive.none)
         ) {
           // But -> If the user wrote: Foo | none -> NOT none we must rewrite it into IS Foo
           // So:
@@ -1998,28 +2141,27 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           tags: [],
           type: loweredUnionId,
         });
-      } else {
-        const unionMembers =
-          loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype
-            ? loweredUnion.members
-            : loweredUnion.members.map((m) => m.type);
-
-        let tags: number[] = [];
-        comparisonTypes.forEach((t) => {
-          const tag = unionMembers.findIndex((m) => m === t);
-          assert(tag !== -1);
-          tags.push(tag);
-        });
-
-        return Lowered.addExpr(lr, {
-          variant: Lowered.ENode.UnionTagCheckExpr,
-          expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-          optimizeExprToNullptr: !!loweredUnion.optimizeAsRawPointer,
-          invertCheck: expr.invertCheck,
-          tags: tags,
-          type: loweredUnionId,
-        });
       }
+      const unionMembers =
+        loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype
+          ? loweredUnion.members
+          : loweredUnion.members.map((m) => m.type);
+
+      const tags: number[] = [];
+      comparisonTypes.forEach((t) => {
+        const tag = unionMembers.findIndex((m) => m === t);
+        assert(tag !== -1);
+        tags.push(tag);
+      });
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionTagCheckExpr,
+        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        optimizeExprToNullptr: !!loweredUnion.optimizeAsRawPointer,
+        invertCheck: expr.invertCheck,
+        tags,
+        type: loweredUnionId,
+      });
     }
 
     case Semantic.ENode.AttemptErrorPropagationExpr: {
@@ -2039,24 +2181,29 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         srcUnionUse,
         lowerExpr(lr, expr.expr, scope.statements, instanceInfo)[1],
         expr.sourceloc,
-        scope.statements,
+        scope.statements
       );
 
       const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
       const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
       assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
 
-      const targetIndex = targetUnionDef.members.findIndex((m) => m === expr.srcErrTagType);
+      const targetIndex = targetUnionDef.members.findIndex(
+        (m) => m === expr.srcErrTagType
+      );
       assert(targetIndex !== -1);
 
-      const loweredErrorUnionType = lowerTypeUse(lr, attemptExpr.errorUnionType);
+      const loweredErrorUnionType = lowerTypeUse(
+        lr,
+        attemptExpr.errorUnionType
+      );
 
       const loweredValueUnionDef = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredInnerExpr[0].type).type,
+        lr.typeUseNodes.get(loweredInnerExpr[0].type).type
       );
       assert(
         loweredValueUnionDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
-          loweredValueUnionDef.variant === Lowered.ENode.TaggedUnionDatatype,
+          loweredValueUnionDef.variant === Lowered.ENode.TaggedUnionDatatype
       );
       scope.statements.push(
         Lowered.addStatement(lr, {
@@ -2066,7 +2213,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             expr: loweredInnerExpr[1],
             invertCheck: false,
             tags: [expr.srcErrTagIndex],
-            optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
+            optimizeExprToNullptr:
+              loweredValueUnionDef.optimizeAsRawPointer !== null,
             type: lowerTypeUse(lr, expr.srcErrTagType),
           })[1],
           elseIfs: [],
@@ -2098,7 +2246,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
                       optimizeExprToNullptr: shouldBeOptimizedToNullptr(
                         lr,
                         srcUnionUse,
-                        innerExpr.type,
+                        innerExpr.type
                       ),
                     })[1],
                     index: targetIndex,
@@ -2106,7 +2254,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
                     optimizeExprToNullptr: shouldBeOptimizedToNullptr(
                       lr,
                       loweredErrorUnionType,
-                      innerExpr.type,
+                      innerExpr.type
                     ),
                   })[1],
                   assignRefTarget: false,
@@ -2122,14 +2270,15 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           })[1],
           sourceloc: expr.sourceloc,
           else: undefined,
-        })[1],
+        })[1]
       );
 
       scope.emittedExpr = Lowered.addExpr(lr, {
         variant: Lowered.ENode.UnionToValueCastExpr,
         expr: loweredInnerExpr[1],
         index: expr.srcOkTagIndex,
-        optimizeExprToNullptr: loweredValueUnionDef.optimizeAsRawPointer !== null,
+        optimizeExprToNullptr:
+          loweredValueUnionDef.optimizeAsRawPointer !== null,
         type: lowerTypeUse(lr, expr.srcOkTagType),
       })[1];
 
@@ -2153,13 +2302,13 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       const attemptResultType = lowerTypeUse(lr, expr.type);
       const attemptErrorType = lowerTypeUse(lr, expr.errorUnionType);
 
-      let resultVarId = storeInTempVarAndGet(
+      const resultVarId = storeInTempVarAndGet(
         lr,
         attemptResultType,
         null,
         expr.sourceloc,
         enclosingBlockScope.statements,
-        `__attempt_result_${expr.uniqueId}`,
+        `__attempt_result_${expr.uniqueId}`
       )[1];
       enclosingBlockScope.emittedExpr = resultVarId;
 
@@ -2169,14 +2318,14 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         null,
         expr.sourceloc,
         enclosingBlockScope.statements,
-        expr.errorResultVarname,
+        expr.errorResultVarname
       )[1];
 
       const loweredAttemptScopeExpr = lowerExpr(
         lr,
         expr.attemptScopeExpr,
         enclosingBlockScope.statements,
-        instanceInfo,
+        instanceInfo
       );
       if (expr.attemptScopeReturnsType) {
         assert(resultVarId);
@@ -2191,7 +2340,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
               value: loweredAttemptScopeExpr[1],
             })[1],
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
         // Jump to yield and produce a value
         enclosingBlockScope.statements.push(
@@ -2199,7 +2348,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             variant: Lowered.ENode.LabelJumpStatement,
             labelName: expr.resultLabel,
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
       } else {
         // Does not return
@@ -2208,10 +2357,15 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             variant: Lowered.ENode.ExprStatement,
             expr: loweredAttemptScopeExpr[1],
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
         enclosingBlockScope.statements.push(
-          callSysPanic(lr, "noreturn function tried to return", 0n, instanceInfo),
+          callSysPanic(
+            lr,
+            "noreturn function tried to return",
+            0n,
+            instanceInfo
+          )
         );
       }
 
@@ -2220,13 +2374,13 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           variant: Lowered.ENode.LabelDefinitionStatement,
           labelName: expr.errorLabel,
           sourceloc: expr.sourceloc,
-        })[1],
+        })[1]
       );
       const loweredElseScopeExpr = lowerExpr(
         lr,
         expr.elseScopeExpr,
         enclosingBlockScope.statements,
-        instanceInfo,
+        instanceInfo
       );
 
       if (expr.elseScopeReturnsType) {
@@ -2242,7 +2396,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
               value: loweredElseScopeExpr[1],
             })[1],
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
         // Jump to error and produce a value
         enclosingBlockScope.statements.push(
@@ -2250,7 +2404,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             variant: Lowered.ENode.LabelJumpStatement,
             labelName: expr.resultLabel,
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
       } else {
         // Does not return
@@ -2259,10 +2413,15 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             variant: Lowered.ENode.ExprStatement,
             expr: loweredElseScopeExpr[1],
             sourceloc: expr.sourceloc,
-          })[1],
+          })[1]
         );
         enclosingBlockScope.statements.push(
-          callSysPanic(lr, "noreturn function tried to return", 0n, instanceInfo),
+          callSysPanic(
+            lr,
+            "noreturn function tried to return",
+            0n,
+            instanceInfo
+          )
         );
       }
 
@@ -2271,7 +2430,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           variant: Lowered.ENode.LabelDefinitionStatement,
           labelName: expr.resultLabel,
           sourceloc: expr.sourceloc,
-        })[1],
+        })[1]
       );
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.BlockScopeExpr,
@@ -2291,10 +2450,10 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         variableType,
         null,
         expr.sourceloc,
-        statements,
+        statements
       )[1];
 
-      let thenExpr = lowerExpr(lr, expr.then, statements, instanceInfo)[1];
+      let thenExpr = lowerExpr(lr, expr.thenExpr, statements, instanceInfo)[1];
       if (expr.thenProducesValue) {
         thenExpr = Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
@@ -2331,7 +2490,12 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
                 sourceloc: expr.sourceloc,
               })[1],
             ],
-            emittedExpr: lowerExpr(lr, lr.sr.b.noneExpr()[1], statements, instanceInfo)[1],
+            emittedExpr: lowerExpr(
+              lr,
+              lr.sr.b.noneExpr()[1],
+              statements,
+              instanceInfo
+            )[1],
           })[1],
           else: Lowered.addBlockScope(lr, {
             definesVariables: false,
@@ -2342,16 +2506,21 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
                 sourceloc: expr.sourceloc,
               })[1],
             ],
-            emittedExpr: lowerExpr(lr, lr.sr.b.noneExpr()[1], statements, instanceInfo)[1],
+            emittedExpr: lowerExpr(
+              lr,
+              lr.sr.b.noneExpr()[1],
+              statements,
+              instanceInfo
+            )[1],
           })[1],
-        })[1],
+        })[1]
       );
 
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.BlockScopeExpr,
         block: Lowered.addBlockScope(lr, {
           definesVariables: false,
-          statements: statements,
+          statements,
           emittedExpr: resultVariableId,
         })[1],
         sourceloc: expr.sourceloc,
@@ -2360,7 +2529,10 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     }
 
     default:
-      assert(false, "All cases handled " + Semantic.ENode[(expr as any).variant]);
+      assert(
+        false,
+        "All cases handled " + Semantic.ENode[(expr as any).variant]
+      );
   }
 }
 
@@ -2383,362 +2555,372 @@ function makeVoidPointerType(lr: Lowered.Module) {
   return newVoidId;
 }
 
-function makeLowerTypeUse(lr: Lowered.Module, typeDefId: Lowered.TypeDefId, pointer: boolean) {
+function makeLowerTypeUse(
+  lr: Lowered.Module,
+  typeDefId: Lowered.TypeDefId,
+  pointer: boolean
+) {
   const typeDef = lr.typeDefNodes.get(typeDefId);
   return Lowered.addTypeUse(lr, {
     variant: Lowered.ENode.TypeUse,
     name: typeDef.name,
     mutability: EDatatypeMutability.Default,
-    pointer: pointer,
+    pointer,
     type: typeDefId,
     sourceloc: null,
   });
 }
 
-export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lowered.TypeDefId {
+export function lowerTypeDef(
+  lr: Lowered.Module,
+  typeId: Semantic.TypeDefId
+): Lowered.TypeDefId {
   const type = lr.sr.typeDefNodes.get(typeId);
 
   if (type.variant === Semantic.ENode.StructDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      let [p, pId] = Lowered.addTypeDef<Lowered.StructDatatypeDef>(lr, {
-        variant: Lowered.ENode.StructDatatype,
-        noemit: type.noemit,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-        members: [],
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-
-      p.members = type.members.map((mId) => {
-        const m = lr.sr.symbolNodes.get(mId);
-        assert(m.variant === Semantic.ENode.VariableSymbol);
-        assert(m.type);
-        return {
-          name: m.name,
-          type: lowerTypeUse(lr, m.type),
-        };
-      });
-
-      return pId;
     }
-  } else if (type.variant === Semantic.ENode.PrimitiveDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.PrimitiveDatatypeDef>(lr, {
-        variant: Lowered.ENode.PrimitiveDatatype,
-        primitive: type.primitive,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.FunctionDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const parameters: Lowered.TypeUseId[] = [];
+    const [p, pId] = Lowered.addTypeDef<Lowered.StructDatatypeDef>(lr, {
+      variant: Lowered.ENode.StructDatatype,
+      noemit: type.noemit,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      members: [],
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
 
-      for (const p of type.parameters) {
-        const pp = lr.sr.typeUseNodes.get(p.type);
-        const typeDef = lr.sr.typeDefNodes.get(pp.type);
-        if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
-          for (const packParam of typeDef.parameters || []) {
-            const sym = lr.sr.symbolNodes.get(packParam);
-            assert(sym.variant === Semantic.ENode.VariableSymbol);
-            assert(sym.type);
-            parameters.push(lowerTypeUse(lr, sym.type));
-          }
-        } else {
-          parameters.push(lowerTypeUse(lr, p.type));
-        }
-      }
-
-      const returnType = lowerTypeUse(lr, type.returnType);
-
-      // Now additionally intern equivalent function types, that were not equivalent in elaboration
-      // but are not equivalent after lowering.
-      for (const [_, id] of lr.loweredTypeDefs) {
-        const t = lr.typeDefNodes.get(id);
-        if (t.variant === Lowered.ENode.FunctionDatatype) {
-          if (
-            t.vararg === type.vararg &&
-            t.returnType === returnType &&
-            t.parameters.length === parameters.length &&
-            t.parameters.every((p, i) => parameters[i] === p)
-          ) {
-            return id;
-          }
-        }
-      }
-
-      const [p, pId] = Lowered.addTypeDef<Lowered.FunctionDatatypeDef>(lr, {
-        variant: Lowered.ENode.FunctionDatatype,
-        parameters: parameters,
-        returnType: returnType,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-        vararg: type.vararg,
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.CallableDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      // Produce a new function type that respects the env block
-      let additionalArgs: {
-        optional: boolean;
-        type: Semantic.TypeUseId;
-      }[] = [];
-      additionalArgs.push({
-        optional: false,
-        type: lr.sr.b.cptrType(),
-      });
-
-      const semFType = lr.sr.typeDefNodes.get(type.functionType);
-      assert(semFType.variant === Semantic.ENode.FunctionDatatype);
-      const ftypeId = lowerTypeDef(
-        lr,
-        makeRawFunctionDatatypeAvailable(lr.sr, {
-          parameters: [...additionalArgs, ...semFType.parameters],
-          requires: semFType.requires,
-          returnType: semFType.returnType,
-          sourceloc: null,
-          vararg: semFType.vararg,
-        }),
-      );
-      const ftype = lr.typeDefNodes.get(ftypeId);
-      assert(ftype.variant === Lowered.ENode.FunctionDatatype);
-
-      const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
-        variant: Lowered.ENode.CallableDatatype,
-        functionType: ftypeId,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.FixedArrayDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.FixedArrayDatatypeDef>(lr, {
-        variant: Lowered.ENode.FixedArrayDatatype,
-        datatype: lowerTypeUse(lr, type.datatype),
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-        length: type.length,
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.DynamicArrayDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.DynamicArrayDatatype>(lr, {
-        variant: Lowered.ENode.DynamicArrayDatatype,
-        datatype: lowerTypeUse(lr, type.datatype),
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.SliceDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const [p, pId] = Lowered.addTypeDef<Lowered.SliceDatatype>(lr, {
-        variant: Lowered.ENode.SliceDatatype,
-        datatype: lowerTypeUse(lr, type.datatype),
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.UntaggedUnionDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
-      if (type.members.length === 2) {
-        // Is optimized if either 'Foo | null' or 'Foo | none'. 'Foo | null | none' can NOT be optimized (length != 2)
-        const use1 = lr.sr.typeUseNodes.get(type.members[0]);
-        const def1 = lr.sr.typeDefNodes.get(use1.type);
-        const use2 = lr.sr.typeUseNodes.get(type.members[1]);
-        const def2 = lr.sr.typeDefNodes.get(use2.type);
-        if (
-          def1.variant === Semantic.ENode.StructDatatype &&
-          !use1.inline &&
-          def2.variant === Semantic.ENode.PrimitiveDatatype &&
-          (def2.primitive === EPrimitive.none || def2.primitive === EPrimitive.null)
-        ) {
-          optimizeAsRawPointer = lowerTypeUse(lr, type.members[0]);
-        }
-        if (
-          def2.variant === Semantic.ENode.StructDatatype &&
-          !use2.inline &&
-          def1.variant === Semantic.ENode.PrimitiveDatatype &&
-          (def1.primitive === EPrimitive.none || def1.primitive === EPrimitive.null)
-        ) {
-          optimizeAsRawPointer = lowerTypeUse(lr, type.members[1]);
-        }
-      }
-
-      const canonicalMembers = type.members.map((m) => lowerTypeUse(lr, m));
-
-      // Do another cache lookup for deduplication
-      for (const [id, unionId] of lr.loweredTypeDefs) {
-        const union = lr.typeDefNodes.get(unionId);
-        if (union.variant === Lowered.ENode.UntaggedUnionDatatype) {
-          if (
-            union.optimizeAsRawPointer === optimizeAsRawPointer &&
-            union.members.length === canonicalMembers.length &&
-            union.members.every((m, i) => m === canonicalMembers[i])
-          ) {
-            return unionId;
-          }
-        }
-      }
-
-      const [p, pId] = Lowered.addTypeDef<Lowered.UntaggedUnionDatatypeDef>(lr, {
-        variant: Lowered.ENode.UntaggedUnionDatatype,
-        members: canonicalMembers,
-        optimizeAsRawPointer: optimizeAsRawPointer,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.TaggedUnionDatatype) {
-    if (lr.loweredTypeDefs.has(typeId)) {
-      return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const members = type.members.map((m) => ({
-        tag: m.tag,
+    p.members = type.members.map((mId) => {
+      const m = lr.sr.symbolNodes.get(mId);
+      assert(m.variant === Semantic.ENode.VariableSymbol);
+      assert(m.type);
+      return {
+        name: m.name,
         type: lowerTypeUse(lr, m.type),
-      }));
+      };
+    });
 
-      // Do another cache lookup for deduplication
-      for (const [id, unionId] of lr.loweredTypeDefs) {
-        const union = lr.typeDefNodes.get(unionId);
-        if (union.variant === Lowered.ENode.TaggedUnionDatatype) {
-          if (
-            union.members.length === members.length &&
-            union.members.every((m, i) => m.tag === members[i].tag && m.type === members[i].type)
-          ) {
-            return unionId;
-          }
-        }
-      }
-
-      const [p, pId] = Lowered.addTypeDef<Lowered.TaggedUnionDatatypeDef>(lr, {
-        variant: Lowered.ENode.TaggedUnionDatatype,
-        members: members,
-        optimizeAsRawPointer: null,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.ComputedDatatype) {
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.PrimitiveDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const wrapped = lowerTypeUse(lr, type.wrappedType);
-
-      // Do another cache lookup for deduplication (should not be needed ?!?)
-      for (const [_, reactiveId] of lr.loweredTypeDefs) {
-        const reactive = lr.typeDefNodes.get(reactiveId);
-        if (reactive.variant === Lowered.ENode.ComputedDatatype) {
-          if (reactive.datatype === wrapped) {
-            return reactiveId;
-          }
-        }
-      }
-
-      const [_, pId] = Lowered.addTypeDef<Lowered.ComputedDatatype>(lr, {
-        variant: Lowered.ENode.ComputedDatatype,
-        datatype: wrapped,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
     }
-  } else if (
+    const [p, pId] = Lowered.addTypeDef<Lowered.PrimitiveDatatypeDef>(lr, {
+      variant: Lowered.ENode.PrimitiveDatatype,
+      primitive: type.primitive,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.FunctionDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const parameters: Lowered.TypeUseId[] = [];
+
+    for (const p of type.parameters) {
+      const pp = lr.sr.typeUseNodes.get(p.type);
+      const typeDef = lr.sr.typeDefNodes.get(pp.type);
+      if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+        for (const packParam of typeDef.parameters || []) {
+          const sym = lr.sr.symbolNodes.get(packParam);
+          assert(sym.variant === Semantic.ENode.VariableSymbol);
+          assert(sym.type);
+          parameters.push(lowerTypeUse(lr, sym.type));
+        }
+      } else {
+        parameters.push(lowerTypeUse(lr, p.type));
+      }
+    }
+
+    const returnType = lowerTypeUse(lr, type.returnType);
+
+    // Now additionally intern equivalent function types, that were not equivalent in elaboration
+    // but are not equivalent after lowering.
+    for (const [_, id] of lr.loweredTypeDefs) {
+      const t = lr.typeDefNodes.get(id);
+      if (
+        t.variant === Lowered.ENode.FunctionDatatype &&
+        t.vararg === type.vararg &&
+        t.returnType === returnType &&
+        t.parameters.length === parameters.length &&
+        t.parameters.every((p, i) => parameters[i] === p)
+      ) {
+        return id;
+      }
+    }
+
+    const [p, pId] = Lowered.addTypeDef<Lowered.FunctionDatatypeDef>(lr, {
+      variant: Lowered.ENode.FunctionDatatype,
+      parameters,
+      returnType,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      vararg: type.vararg,
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.CallableDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    // Produce a new function type that respects the env block
+    const additionalArgs: {
+      optional: boolean;
+      type: Semantic.TypeUseId;
+    }[] = [];
+    additionalArgs.push({
+      optional: false,
+      type: lr.sr.b.cptrType(),
+    });
+
+    const semFType = lr.sr.typeDefNodes.get(type.functionType);
+    assert(semFType.variant === Semantic.ENode.FunctionDatatype);
+    const ftypeId = lowerTypeDef(
+      lr,
+      makeRawFunctionDatatypeAvailable(lr.sr, {
+        parameters: [...additionalArgs, ...semFType.parameters],
+        requires: semFType.requires,
+        returnType: semFType.returnType,
+        sourceloc: null,
+        vararg: semFType.vararg,
+      })
+    );
+    const ftype = lr.typeDefNodes.get(ftypeId);
+    assert(ftype.variant === Lowered.ENode.FunctionDatatype);
+
+    const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
+      variant: Lowered.ENode.CallableDatatype,
+      functionType: ftypeId,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.FixedArrayDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const [p, pId] = Lowered.addTypeDef<Lowered.FixedArrayDatatypeDef>(lr, {
+      variant: Lowered.ENode.FixedArrayDatatype,
+      datatype: lowerTypeUse(lr, type.datatype),
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+      length: type.length,
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.DynamicArrayDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const [p, pId] = Lowered.addTypeDef<Lowered.DynamicArrayDatatype>(lr, {
+      variant: Lowered.ENode.DynamicArrayDatatype,
+      datatype: lowerTypeUse(lr, type.datatype),
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.SliceDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const [p, pId] = Lowered.addTypeDef<Lowered.SliceDatatype>(lr, {
+      variant: Lowered.ENode.SliceDatatype,
+      datatype: lowerTypeUse(lr, type.datatype),
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.UntaggedUnionDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
+    if (type.members.length === 2) {
+      // Is optimized if either 'Foo | null' or 'Foo | none'. 'Foo | null | none' can NOT be optimized (length != 2)
+      const use1 = lr.sr.typeUseNodes.get(type.members[0]);
+      const def1 = lr.sr.typeDefNodes.get(use1.type);
+      const use2 = lr.sr.typeUseNodes.get(type.members[1]);
+      const def2 = lr.sr.typeDefNodes.get(use2.type);
+      if (
+        def1.variant === Semantic.ENode.StructDatatype &&
+        !use1.inline &&
+        def2.variant === Semantic.ENode.PrimitiveDatatype &&
+        (def2.primitive === EPrimitive.none ||
+          def2.primitive === EPrimitive.null)
+      ) {
+        optimizeAsRawPointer = lowerTypeUse(lr, type.members[0]);
+      }
+      if (
+        def2.variant === Semantic.ENode.StructDatatype &&
+        !use2.inline &&
+        def1.variant === Semantic.ENode.PrimitiveDatatype &&
+        (def1.primitive === EPrimitive.none ||
+          def1.primitive === EPrimitive.null)
+      ) {
+        optimizeAsRawPointer = lowerTypeUse(lr, type.members[1]);
+      }
+    }
+
+    const canonicalMembers = type.members.map((m) => lowerTypeUse(lr, m));
+
+    // Do another cache lookup for deduplication
+    for (const [id, unionId] of lr.loweredTypeDefs) {
+      const union = lr.typeDefNodes.get(unionId);
+      if (
+        union.variant === Lowered.ENode.UntaggedUnionDatatype &&
+        union.optimizeAsRawPointer === optimizeAsRawPointer &&
+        union.members.length === canonicalMembers.length &&
+        union.members.every((m, i) => m === canonicalMembers[i])
+      ) {
+        return unionId;
+      }
+    }
+
+    const [p, pId] = Lowered.addTypeDef<Lowered.UntaggedUnionDatatypeDef>(lr, {
+      variant: Lowered.ENode.UntaggedUnionDatatype,
+      members: canonicalMembers,
+      optimizeAsRawPointer,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.TaggedUnionDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const members = type.members.map((m) => ({
+      tag: m.tag,
+      type: lowerTypeUse(lr, m.type),
+    }));
+
+    // Do another cache lookup for deduplication
+    for (const [id, unionId] of lr.loweredTypeDefs) {
+      const union = lr.typeDefNodes.get(unionId);
+      if (
+        union.variant === Lowered.ENode.TaggedUnionDatatype &&
+        union.members.length === members.length &&
+        union.members.every(
+          (m, i) => m.tag === members[i].tag && m.type === members[i].type
+        )
+      ) {
+        return unionId;
+      }
+    }
+
+    const [p, pId] = Lowered.addTypeDef<Lowered.TaggedUnionDatatypeDef>(lr, {
+      variant: Lowered.ENode.TaggedUnionDatatype,
+      members,
+      optimizeAsRawPointer: null,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.ComputedDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    const wrapped = lowerTypeUse(lr, type.wrappedType);
+
+    // Do another cache lookup for deduplication (should not be needed ?!?)
+    for (const [_, reactiveId] of lr.loweredTypeDefs) {
+      const reactive = lr.typeDefNodes.get(reactiveId);
+      if (
+        reactive.variant === Lowered.ENode.ComputedDatatype &&
+        reactive.datatype === wrapped
+      ) {
+        return reactiveId;
+      }
+    }
+
+    const [_, pId] = Lowered.addTypeDef<Lowered.ComputedDatatype>(lr, {
+      variant: Lowered.ENode.ComputedDatatype,
+      datatype: wrapped,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (
     type.variant === Semantic.ENode.ReactiveDatatype ||
     type.variant === Semantic.ENode.ShallowReactiveDatatype
   ) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const wrapped = lowerTypeUse(lr, type.wrappedType);
+    }
+    const wrapped = lowerTypeUse(lr, type.wrappedType);
 
-      // Do another cache lookup for deduplication (should not be needed ?!?)
-      for (const [_, reactiveId] of lr.loweredTypeDefs) {
-        const reactive = lr.typeDefNodes.get(reactiveId);
-        if (reactive.variant === Lowered.ENode.ReactiveDatatype) {
-          if (reactive.datatype === wrapped) {
-            return reactiveId;
-          }
-        }
+    // Do another cache lookup for deduplication (should not be needed ?!?)
+    for (const [_, reactiveId] of lr.loweredTypeDefs) {
+      const reactive = lr.typeDefNodes.get(reactiveId);
+      if (
+        reactive.variant === Lowered.ENode.ReactiveDatatype &&
+        reactive.datatype === wrapped
+      ) {
+        return reactiveId;
       }
+    }
 
-      const [_, pId] = Lowered.addTypeDef<Lowered.ReactiveDatatype>(lr, {
-        variant: Lowered.ENode.ReactiveDatatype,
-        datatype: wrapped,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
-    }
-  } else if (type.variant === Semantic.ENode.EnumDatatype) {
+    const [_, pId] = Lowered.addTypeDef<Lowered.ReactiveDatatype>(lr, {
+      variant: Lowered.ENode.ReactiveDatatype,
+      datatype: wrapped,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.EnumDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      const enumName = Semantic.makeNameSetTypeDef(lr.sr, typeId);
-      const flattened: Lowered.StatementId[] = [];
-      const [p, pId] = Lowered.addTypeDef<Lowered.EnumDatatypeDef>(lr, {
-        variant: Lowered.ENode.EnumDatatype,
-        values: type.values.map((m) => ({
-          originalName: m.name,
-          loweredName: {
-            prettyName: enumName.prettyName + "." + m.name,
-            mangledName:
-              type.extern === EExternLanguage.Extern_C
-                ? m.name
-                : enumName.mangledName + "_" + m.name,
-            wasMangled: type.extern !== EExternLanguage.Extern_C,
-          },
-          value: lowerExpr(lr, m.valueExpr, flattened, {
-            returnedInstanceIds: new Set(),
-          })[1],
-        })),
-        noemit: type.noemit,
-        type: lowerTypeUse(lr, type.type),
-        name: enumName,
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      assert(flattened.length === 0);
-      return pId;
     }
-  } else if (type.variant === Semantic.ENode.LiteralDatatype) {
+    const enumName = Semantic.makeNameSetTypeDef(lr.sr, typeId);
+    const flattened: Lowered.StatementId[] = [];
+    const [p, pId] = Lowered.addTypeDef<Lowered.EnumDatatypeDef>(lr, {
+      variant: Lowered.ENode.EnumDatatype,
+      values: type.values.map((m) => ({
+        originalName: m.name,
+        loweredName: {
+          prettyName: enumName.prettyName + "." + m.name,
+          mangledName:
+            type.extern === EExternLanguage.Extern_C
+              ? m.name
+              : enumName.mangledName + "_" + m.name,
+          wasMangled: type.extern !== EExternLanguage.Extern_C,
+        },
+        value: lowerExpr(lr, m.valueExpr, flattened, {
+          returnedInstanceIds: new Set(),
+        })[1],
+      })),
+      noemit: type.noemit,
+      type: lowerTypeUse(lr, type.type),
+      name: enumName,
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    assert(flattened.length === 0);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.LiteralDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;
-    } else {
-      // Lower the base type of the literal datatype
-      const baseType = lowerTypeUse(lr, type.type);
-      const [p, pId] = Lowered.addTypeDef<Lowered.LiteralDatatypeDef>(lr, {
-        variant: Lowered.ENode.LiteralDatatype,
-        baseType: baseType,
-        literalValue: type.literalValue,
-        name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
-      });
-      lr.loweredTypeDefs.set(typeId, pId);
-      return pId;
     }
-  } else if (type.variant === Semantic.ENode.ParameterPackDatatype) {
+    // Lower the base type of the literal datatype
+    const baseType = lowerTypeUse(lr, type.type);
+    const [p, pId] = Lowered.addTypeDef<Lowered.LiteralDatatypeDef>(lr, {
+      variant: Lowered.ENode.LiteralDatatype,
+      baseType,
+      literalValue: type.literalValue,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.ParameterPackDatatype) {
     assert(false, "A Parameter Pack cannot be lowered");
   } else {
     throw new InternalError("Unhandled variant: " + type.variant);
@@ -2765,7 +2947,10 @@ export function lowerTypeDef(lr: Lowered.Module, typeId: Semantic.TypeDefId): Lo
 //   }
 // }
 
-function lowerTypeUse(lr: Lowered.Module, typeId: Semantic.TypeUseId): Lowered.TypeUseId {
+function lowerTypeUse(
+  lr: Lowered.Module,
+  typeId: Semantic.TypeUseId
+): Lowered.TypeUseId {
   const typeUse = lr.sr.typeUseNodes.get(typeId);
   if (lr.loweredTypeUses.has(typeId)) {
     return lr.loweredTypeUses.get(typeId)!;
@@ -2792,7 +2977,7 @@ function lowerTypeUse(lr: Lowered.Module, typeId: Semantic.TypeUseId): Lowered.T
 function lowerStatement(
   lr: Lowered.Module,
   statementId: Semantic.StatementId,
-  instanceInfo: InstanceInfo,
+  instanceInfo: InstanceInfo
 ): Lowered.StatementId[] {
   const statement = lr.sr.statementNodes.get(statementId);
   switch (statement.variant) {
@@ -2803,14 +2988,16 @@ function lowerStatement(
       assert(variableSymbol.type);
 
       let name = statement.name;
-      let value = statement.value && lowerExpr(lr, statement.value, flattened, instanceInfo)[1];
+      let value =
+        statement.value &&
+        lowerExpr(lr, statement.value, flattened, instanceInfo)[1];
       if (value && variableSymbol.requiresHoisting) {
         const original = storeInTempVarAndGet(
           lr,
           lr.exprNodes.get(value).type,
           value,
           null,
-          flattened,
+          flattened
         )[1];
         value = makeIntrinsicCall(
           lr,
@@ -2822,7 +3009,7 @@ function lowerStatement(
             })[1],
             original,
           ],
-          lowerTypeUse(lr, variableSymbol.type),
+          lowerTypeUse(lr, variableSymbol.type)
         )[1];
         name = "*" + name;
       }
@@ -2836,7 +3023,7 @@ function lowerStatement(
         },
         intrinsicTakeAddrOfValue: statement.intrinsicTakeAddrOfValue,
         type: lowerTypeUse(lr, variableSymbol.type),
-        value: value,
+        value,
         variableContext: variableSymbol.variableContext,
         sourceloc: statement.sourceloc,
       });
@@ -2846,15 +3033,22 @@ function lowerStatement(
     case Semantic.ENode.IfStatement: {
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.IfStatement,
-        condition: lowerExprAndWrapFlattenedStatements(lr, statement.condition, instanceInfo)[1],
-        then: lowerBlockScope(lr, statement.then, instanceInfo),
-        elseIfs: statement.elseIfs.map((e) => {
-          return {
-            condition: lowerExprAndWrapFlattenedStatements(lr, e.condition, instanceInfo)[1],
-            then: lowerBlockScope(lr, e.then, instanceInfo),
-          };
-        }),
-        else: statement.else && lowerBlockScope(lr, statement.else, instanceInfo),
+        condition: lowerExprAndWrapFlattenedStatements(
+          lr,
+          statement.condition,
+          instanceInfo
+        )[1],
+        then: lowerBlockScope(lr, statement.thenBlock, instanceInfo),
+        elseIfs: statement.elseIfs.map((e) => ({
+          condition: lowerExprAndWrapFlattenedStatements(
+            lr,
+            e.condition,
+            instanceInfo
+          )[1],
+          then: lowerBlockScope(lr, e.thenBlock, instanceInfo),
+        })),
+        else:
+          statement.else && lowerBlockScope(lr, statement.else, instanceInfo),
         sourceloc: statement.sourceloc,
       });
       return [sId];
@@ -2867,10 +3061,18 @@ function lowerStatement(
           ? lowerStatement(lr, statement.initStatement, instanceInfo)
           : [],
         loopCondition: statement.loopCondition
-          ? lowerExprAndWrapFlattenedStatements(lr, statement.loopCondition, instanceInfo)[1]
+          ? lowerExprAndWrapFlattenedStatements(
+              lr,
+              statement.loopCondition,
+              instanceInfo
+            )[1]
           : null,
         loopIncrement: statement.loopIncrement
-          ? lowerExprAndWrapFlattenedStatements(lr, statement.loopIncrement, instanceInfo)[1]
+          ? lowerExprAndWrapFlattenedStatements(
+              lr,
+              statement.loopIncrement,
+              instanceInfo
+            )[1]
           : null,
         body: lowerBlockScope(lr, statement.body, instanceInfo),
         sourceloc: statement.sourceloc,
@@ -2881,20 +3083,31 @@ function lowerStatement(
     case Semantic.ENode.ForEachStatement: {
       const semanticForeachStmt = statement as Semantic.ForEachStatement;
       const arrayType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(lr.sr.exprNodes.get(semanticForeachStmt.arrayExpr).type).type,
+        lr.sr.typeUseNodes.get(
+          lr.sr.exprNodes.get(semanticForeachStmt.arrayExpr).type
+        ).type
       );
       assert(
         arrayType.variant === Semantic.ENode.FixedArrayDatatype ||
-          arrayType.variant === Semantic.ENode.DynamicArrayDatatype,
+          arrayType.variant === Semantic.ENode.DynamicArrayDatatype
       );
       const flattenedArrayStatements: Lowered.StatementId[] = [];
       const [_arrayVar, arrayVarId] = storeInTempVarAndGet(
         lr,
-        lowerExpr(lr, semanticForeachStmt.arrayExpr, flattenedArrayStatements, instanceInfo)[0]
-          .type,
-        lowerExpr(lr, semanticForeachStmt.arrayExpr, flattenedArrayStatements, instanceInfo)[1],
+        lowerExpr(
+          lr,
+          semanticForeachStmt.arrayExpr,
+          flattenedArrayStatements,
+          instanceInfo
+        )[0].type,
+        lowerExpr(
+          lr,
+          semanticForeachStmt.arrayExpr,
+          flattenedArrayStatements,
+          instanceInfo
+        )[1],
         semanticForeachStmt.sourceloc,
-        flattenedArrayStatements,
+        flattenedArrayStatements
       );
 
       const intTypeUse = lowerTypeUse(
@@ -2903,8 +3116,8 @@ function lowerStatement(
           lr.sr,
           EPrimitive.int,
           EDatatypeMutability.Const,
-          semanticForeachStmt.sourceloc,
-        ),
+          semanticForeachStmt.sourceloc
+        )
       );
       const boolTypeUse = lowerTypeUse(
         lr,
@@ -2912,15 +3125,18 @@ function lowerStatement(
           lr.sr,
           EPrimitive.bool,
           EDatatypeMutability.Const,
-          semanticForeachStmt.sourceloc,
-        ),
+          semanticForeachStmt.sourceloc
+        )
       );
       const indexVarName = makeTempName();
-      const indexName = { prettyName: indexVarName, mangledName: indexVarName, wasMangled: false };
+      const indexName = {
+        prettyName: indexVarName,
+        mangledName: indexVarName,
+        wasMangled: false,
+      };
 
-      const [_indexInitStmt, indexInitStmtId] = Lowered.addStatement<Lowered.VariableStatement>(
-        lr,
-        {
+      const [_indexInitStmt, indexInitStmtId] =
+        Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
           name: indexName,
           type: intTypeUse,
@@ -2932,8 +3148,7 @@ function lowerStatement(
             type: intTypeUse,
           })[1],
           sourceloc: semanticForeachStmt.sourceloc,
-        },
-      );
+        });
 
       const indexSymbolExpr = Lowered.addExpr(lr, {
         variant: Lowered.ENode.SymbolValueExpr,
@@ -2990,7 +3205,7 @@ function lowerStatement(
       const bodyStatements: Lowered.StatementId[] = [];
 
       const loopVariable = lr.sr.symbolNodes.get(
-        semanticForeachStmt.loopVariable,
+        semanticForeachStmt.loopVariable
       ) as Semantic.VariableSymbol;
       assert(loopVariable.type);
 
@@ -3010,7 +3225,7 @@ function lowerStatement(
           lr.exprNodes.get(loopVariableValue).type,
           loopVariableValue,
           null,
-          flattened,
+          flattened
         )[1];
         loopVariableValue = makeIntrinsicCall(
           lr,
@@ -3022,7 +3237,7 @@ function lowerStatement(
             })[1],
             original,
           ],
-          lowerTypeUse(lr, loopVariable.type),
+          lowerTypeUse(lr, loopVariable.type)
         )[1];
         loopVariableName = "*" + loopVariableName;
       }
@@ -3040,14 +3255,14 @@ function lowerStatement(
           intrinsicTakeAddrOfValue: false,
           value: loopVariableValue,
           sourceloc: semanticForeachStmt.sourceloc,
-        })[1],
+        })[1]
       );
 
       bodyStatements.push(...flattened);
 
       if (semanticForeachStmt.indexVariable) {
         const indexVariable = lr.sr.symbolNodes.get(
-          semanticForeachStmt.indexVariable,
+          semanticForeachStmt.indexVariable
         ) as Semantic.VariableSymbol;
         bodyStatements.push(
           Lowered.addStatement<Lowered.VariableStatement>(lr, {
@@ -3062,7 +3277,7 @@ function lowerStatement(
             value: indexSymbolExpr,
             intrinsicTakeAddrOfValue: false,
             sourceloc: semanticForeachStmt.sourceloc,
-          })[1],
+          })[1]
         );
       }
 
@@ -3074,7 +3289,12 @@ function lowerStatement(
         definesVariables: true,
         statements: bodyStatements,
         emittedExpr: bodyScope.emittedExpr
-          ? lowerExpr(lr, bodyScope.emittedExpr, bodyStatements, instanceInfo)[1]
+          ? lowerExpr(
+              lr,
+              bodyScope.emittedExpr,
+              bodyStatements,
+              instanceInfo
+            )[1]
           : Lowered.addExpr(lr, {
               variant: Lowered.ENode.LiteralExpr,
               literal: { type: EPrimitive.none, value: "" },
@@ -3098,8 +3318,12 @@ function lowerStatement(
     case Semantic.ENode.WhileStatement: {
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.WhileStatement,
-        condition: lowerExprAndWrapFlattenedStatements(lr, statement.condition, instanceInfo)[1],
-        then: lowerBlockScope(lr, statement.then, instanceInfo),
+        condition: lowerExprAndWrapFlattenedStatements(
+          lr,
+          statement.condition,
+          instanceInfo
+        )[1],
+        then: lowerBlockScope(lr, statement.thenBlock, instanceInfo),
         sourceloc: statement.sourceloc,
       });
       return [sId];
@@ -3107,7 +3331,12 @@ function lowerStatement(
 
     case Semantic.ENode.ExprStatement: {
       const flattened: Lowered.StatementId[] = [];
-      const loweredExprId = lowerExpr(lr, statement.expr, flattened, instanceInfo)[1];
+      const loweredExprId = lowerExpr(
+        lr,
+        statement.expr,
+        flattened,
+        instanceInfo
+      )[1];
       const loweredExpr = lr.exprNodes.get(loweredExprId);
 
       // Elide pure compile-time placeholders like static_print, which lower to a literal none.
@@ -3129,7 +3358,9 @@ function lowerStatement(
 
     case Semantic.ENode.ReturnStatement: {
       const flattened: Lowered.StatementId[] = [];
-      let value = statement.expr ? lowerExpr(lr, statement.expr, flattened, instanceInfo)[1] : null;
+      const value = statement.expr
+        ? lowerExpr(lr, statement.expr, flattened, instanceInfo)[1]
+        : null;
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.ReturnStatement,
         expr: value,
@@ -3157,13 +3388,23 @@ function lowerStatement(
       const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
       const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
       assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
-      const targetIndex = targetUnionDef.members.findIndex((m) => m === semanticExpr.type);
+      const targetIndex = targetUnionDef.members.findIndex(
+        (m) => m === semanticExpr.type
+      );
       assert(targetIndex !== -1);
 
-      const loweredErrorUnionType = lowerTypeUse(lr, attemptExpr.errorUnionType);
+      const loweredErrorUnionType = lowerTypeUse(
+        lr,
+        attemptExpr.errorUnionType
+      );
 
       const flattened: Lowered.StatementId[] = [];
-      const loweredExpr = lowerExpr(lr, statement.expr, flattened, instanceInfo);
+      const loweredExpr = lowerExpr(
+        lr,
+        statement.expr,
+        flattened,
+        instanceInfo
+      );
       return [
         ...flattened,
         Lowered.addStatement(lr, {
@@ -3187,7 +3428,7 @@ function lowerStatement(
               optimizeExprToNullptr: shouldBeOptimizedToNullptr(
                 lr,
                 loweredErrorUnionType,
-                semanticExpr.type,
+                semanticExpr.type
               ),
               type: loweredErrorUnionType,
             })[1],
@@ -3211,7 +3452,7 @@ function lowerStatement(
 function lowerBlockScope(
   lr: Lowered.Module,
   semanticScopeId: Semantic.BlockScopeId,
-  instanceInfo: InstanceInfo,
+  instanceInfo: InstanceInfo
 ): Lowered.BlockScopeId {
   const blockScope = lr.sr.blockScopeNodes.get(semanticScopeId);
   assert(blockScope.variant === Semantic.ENode.BlockScope);
@@ -3247,7 +3488,8 @@ function lowerBlockScope(
   if (
     blockScope.emittedExpr === null &&
     blockScope.statements.length === 2 &&
-    lr.sr.statementNodes.get(blockScope.statements[1]).variant === Semantic.ENode.ForStatement
+    lr.sr.statementNodes.get(blockScope.statements[1]).variant ===
+      Semantic.ENode.ForStatement
   ) {
     // If this is a block scope of the form
     // ({
@@ -3270,7 +3512,7 @@ function lowerBlockScope(
   const statements: Lowered.StatementId[] = [];
 
   // undefined = no return, null = return nothing, expr = return expr
-  let returnedExpr: Lowered.ExprId | null | undefined = undefined;
+  let returnedExpr: Lowered.ExprId | null | undefined;
   let firstStrippedStatement = null as SourceLoc | null;
   let lastStrippedStatement = null as SourceLoc | null;
 
@@ -3299,7 +3541,10 @@ function lowerBlockScope(
         if (innerStatement.expr) {
           // Only store in extra variable if necessary
           const thisReturnedExpression = lr.exprNodes.get(innerStatement.expr);
-          if (thisReturnedExpression.variant === Lowered.ENode.SymbolValueExpr || !usesDefer) {
+          if (
+            thisReturnedExpression.variant === Lowered.ENode.SymbolValueExpr ||
+            !usesDefer
+          ) {
             returnedExpr = innerStatement.expr;
           } else {
             returnedExpr = storeInTempVarAndGet(
@@ -3307,7 +3552,7 @@ function lowerBlockScope(
               lr.exprNodes.get(innerStatement.expr).type,
               innerStatement.expr,
               innerStatement.sourceloc,
-              statements,
+              statements
             )[1];
           }
         } else {
@@ -3326,11 +3571,16 @@ function lowerBlockScope(
       start: firstStrippedStatement.start,
       end: lastStrippedStatement.end,
     };
-    printWarningMessage(`Dead code detected and stripped`, location);
+    printWarningMessage("Dead code detected and stripped", location);
   }
 
   assert(blockScope.emittedExpr !== -1);
-  const emitted = lowerExpr(lr, blockScope.emittedExpr, statements, instanceInfo)[1];
+  const emitted = lowerExpr(
+    lr,
+    blockScope.emittedExpr,
+    statements,
+    instanceInfo
+  )[1];
 
   if (returnedExpr !== undefined) {
     statements.push(
@@ -3338,7 +3588,7 @@ function lowerBlockScope(
         variant: Lowered.ENode.ReturnStatement,
         expr: returnedExpr,
         sourceloc: null,
-      })[1],
+      })[1]
     );
   }
 
@@ -3355,13 +3605,16 @@ function lowerBlockScope(
         // block scope's yield if possible
         if (blockScope.emittedExpr) {
           const expr = lr.exprNodes.get(blockScope.emittedExpr);
-          if (expr.variant === Lowered.ENode.LiteralExpr && expr.literal.type === EPrimitive.none) {
+          if (
+            expr.variant === Lowered.ENode.LiteralExpr &&
+            expr.literal.type === EPrimitive.none
+          ) {
             blockScope.emittedExpr = null;
           }
         }
 
         // Flatten trivial scopes
-        if (!blockScope.definesVariables && !blockScope.emittedExpr) {
+        if (!(blockScope.definesVariables || blockScope.emittedExpr)) {
           flattenedStatements.push(...blockScope.statements);
           continue;
         }
@@ -3478,16 +3731,16 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       } else if (symbol.envType?.type === "lambda") {
         envType = {
           type: "lambda",
-          captures: symbol.envType.captures.map((c) => {
-            return {
-              name: c.name,
-              type: lowerTypeUse(lr, c.type),
-            };
-          }),
+          captures: symbol.envType.captures.map((c) => ({
+            name: c.name,
+            type: lowerTypeUse(lr, c.type),
+          })),
         };
         for (let i = symbol.envType.captures.length - 1; i >= 0; i--) {
           let name = symbol.envType.captures[i].name;
-          const varsym = lr.sr.symbolNodes.get(symbol.envType.captures[i].capturedSymbol);
+          const varsym = lr.sr.symbolNodes.get(
+            symbol.envType.captures[i].capturedSymbol
+          );
           assert(varsym.variant === Semantic.ENode.VariableSymbol);
           if (varsym.requiresHoisting) {
             name = "*" + name;
@@ -3529,12 +3782,14 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         parameterNames: mainFuncParameterNames,
         type: lowerTypeDef(lr, newFuncType),
         noreturn: originalFuncType.requires.noreturn,
-        envType: envType,
+        envType,
         closureTrampoline: null,
         isClosureTrampolineFor: null,
         isLibraryLocal:
           monomorphized ||
-          (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
+          (!exported &&
+            symbol.extern !== EExternLanguage.Extern_C &&
+            symbol.scope !== null),
         scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,
@@ -3550,36 +3805,39 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         const name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
         name.mangledName += "_trampoline";
         name.prettyName += "_trampoline";
-        const [trampoline, trampolineId] = Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
-          variant: Lowered.ENode.FunctionSymbol,
-          name: name,
-          parameterNames: trampolineFuncParameterNames,
-          type: lowerTypeDef(
-            lr,
-            makeRawFunctionDatatypeAvailable(lr.sr, {
-              parameters: trampolineFuncParameters,
-              returnType: originalFuncType.returnType,
-              sourceloc: symbol.sourceloc,
-              requires: {
-                final: originalFuncType.requires.final,
-                pure: originalFuncType.requires.pure,
-                noreturn: originalFuncType.requires.noreturn,
-                noreturnIf: originalFuncType.requires.noreturnIf,
-              },
-              vararg: false,
-            }),
-          ),
-          noreturn: originalFuncType.requires.noreturn,
-          envType: envType,
-          closureTrampoline: null,
-          isClosureTrampolineFor: null,
-          isLibraryLocal:
-            monomorphized ||
-            (!exported && symbol.extern !== EExternLanguage.Extern_C && symbol.scope !== null),
-          scope: null,
-          sourceloc: symbol.sourceloc,
-          externLanguage: symbol.extern,
-        });
+        const [trampoline, trampolineId] =
+          Lowered.addFunction<Lowered.FunctionSymbol>(lr, {
+            variant: Lowered.ENode.FunctionSymbol,
+            name,
+            parameterNames: trampolineFuncParameterNames,
+            type: lowerTypeDef(
+              lr,
+              makeRawFunctionDatatypeAvailable(lr.sr, {
+                parameters: trampolineFuncParameters,
+                returnType: originalFuncType.returnType,
+                sourceloc: symbol.sourceloc,
+                requires: {
+                  final: originalFuncType.requires.final,
+                  pure: originalFuncType.requires.pure,
+                  noreturn: originalFuncType.requires.noreturn,
+                  noreturnIf: originalFuncType.requires.noreturnIf,
+                },
+                vararg: false,
+              })
+            ),
+            noreturn: originalFuncType.requires.noreturn,
+            envType,
+            closureTrampoline: null,
+            isClosureTrampolineFor: null,
+            isLibraryLocal:
+              monomorphized ||
+              (!exported &&
+                symbol.extern !== EExternLanguage.Extern_C &&
+                symbol.scope !== null),
+            scope: null,
+            sourceloc: symbol.sourceloc,
+            externLanguage: symbol.extern,
+          });
         f.closureTrampoline = trampolineId;
         trampoline.isClosureTrampolineFor = fId;
 
@@ -3591,7 +3849,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                 variant: Lowered.ENode.InlineCStatement,
                 sourceloc: f.sourceloc,
                 value: "void* this = ((void**)__hz_env)[0];",
-              })[1],
+              })[1]
             );
             const args: Lowered.ExprId[] = [];
             for (let i = 0; i < parameterNames.length; i++) {
@@ -3604,7 +3862,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                     prettyName: parameterNames[i],
                     wasMangled: false,
                   },
-                })[1],
+                })[1]
               );
             }
             statements.push(
@@ -3632,7 +3890,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   })[1],
                   type: lowerTypeUse(lr, lr.sr.b.voidType()),
                 })[1],
-              })[1],
+              })[1]
             );
           } else if (envType?.type === "lambda") {
             const args: Lowered.ExprId[] = [];
@@ -3642,7 +3900,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   variant: Lowered.ENode.InlineCStatement,
                   sourceloc: f.sourceloc,
                   value: `void* ${c.name} = ((void**)__hz_env)[${i}];`,
-                })[1],
+                })[1]
               );
               args.push(
                 Lowered.addExpr(lr, {
@@ -3653,7 +3911,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                     prettyName: c.name,
                     wasMangled: false,
                   },
-                })[1],
+                })[1]
               );
             });
             for (let i = 0; i < parameterNames.length; i++) {
@@ -3666,7 +3924,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                     prettyName: parameterNames[i],
                     wasMangled: false,
                   },
-                })[1],
+                })[1]
               );
             }
             statements.push(
@@ -3683,7 +3941,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   })[1],
                   type: lowerTypeUse(lr, lr.sr.b.voidType()),
                 })[1],
-              })[1],
+              })[1]
             );
           } else {
             assert(false);
@@ -3691,7 +3949,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
           trampoline.scope = Lowered.addBlockScope(lr, {
             definesVariables: true,
-            statements: statements,
+            statements,
             emittedExpr: null,
           })[1];
         }
@@ -3734,11 +3992,11 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   type: paramType,
                 })[1],
               ],
-              paramType,
+              paramType
             )[1],
             null,
             statements,
-            "*" + param.name,
+            "*" + param.name
           );
         }
         scope.statements.unshift(...statements.reverse());
@@ -3749,10 +4007,12 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         const scope = lr.blockScopeNodes.get(f.scope);
         if (scope.emittedExpr) {
           const expr = lr.exprNodes.get(scope.emittedExpr);
-          const exprType = lr.typeDefNodes.get(lr.typeUseNodes.get(expr.type).type);
+          const exprType = lr.typeDefNodes.get(
+            lr.typeUseNodes.get(expr.type).type
+          );
           assert(
             exprType.variant === Lowered.ENode.PrimitiveDatatype &&
-              exprType.primitive === EPrimitive.none,
+              exprType.primitive === EPrimitive.none
           );
           scope.emittedExpr = null;
         }
@@ -3769,7 +4029,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         case Semantic.ENode.EnumDatatype:
         case Semantic.ENode.StructDatatype: {
           if (datatype.noemit) {
-            return undefined;
+            return;
           }
           lowerTypeDef(lr, datatypeId);
           break;
@@ -3797,7 +4057,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
     case Semantic.ENode.VariableSymbol: {
       if (symbol.variableContext !== EVariableContext.Global) {
-        return undefined;
+        return;
       }
       assert(false, "not implemented");
     }
@@ -3807,7 +4067,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
       assert(variableSymbol.type);
 
-      let name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
+      const name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
       const flattened: Lowered.StatementId[] = [];
       let value =
         symbol.value &&
@@ -3820,7 +4080,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           lr.exprNodes.get(value).type,
           value,
           null,
-          flattened,
+          flattened
         )[1];
         value = makeIntrinsicCall(
           lr,
@@ -3832,23 +4092,23 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             })[1],
             original,
           ],
-          lowerTypeUse(lr, variableSymbol.type),
+          lowerTypeUse(lr, variableSymbol.type)
         )[1];
         name.mangledName = "*" + name.mangledName;
       }
 
       const [_, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
         variant: Lowered.ENode.VariableStatement,
-        name: name,
+        name,
         intrinsicTakeAddrOfValue: false,
         type: lowerTypeUse(lr, variableSymbol.type),
         variableContext: EVariableContext.Global,
-        value: value,
+        value,
         sourceloc: symbol.sourceloc,
       });
       assert(
         flattened.length === 0,
-        "Global variables cannot take multi line expressions, rewrite it as scope expression",
+        "Global variables cannot take multi line expressions, rewrite it as scope expression"
       );
       lr.loweredGlobalVariables.push(pId);
       return;
@@ -3863,13 +4123,16 @@ const print = (str: string, indent = 0) => {
   console.info(" ".repeat(indent) + str);
 };
 
-function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): string {
+function serializeLoweredExpr(
+  lr: Lowered.Module,
+  exprId: Lowered.ExprId
+): string {
   const expr = lr.exprNodes.get(exprId);
 
   switch (expr.variant) {
     case Lowered.ENode.BinaryExpr:
       return `(${serializeLoweredExpr(lr, expr.left)} ${BinaryOperationToString(
-        expr.operation,
+        expr.operation
       )} ${serializeLoweredExpr(lr, expr.left)})`;
 
     case Lowered.ENode.UnaryExpr:
@@ -3878,13 +4141,13 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.UnionToValueCastExpr:
       return `(${lr.typeUseNodes.get(expr.type).name.prettyName})${serializeLoweredExpr(
         lr,
-        expr.expr,
+        expr.expr
       )}`;
 
     case Lowered.ENode.ValueToUnionCastExpr:
       return `(${lr.typeUseNodes.get(expr.type).name.prettyName})${serializeLoweredExpr(
         lr,
-        expr.expr,
+        expr.expr
       )}`;
 
     case Lowered.ENode.UnionToUnionCastExpr:
@@ -3909,12 +4172,12 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
       return expr.name.prettyName;
 
     case Lowered.ENode.BlockScopeExpr:
-      return `{ ... }`;
+      return "{ ... }";
 
     case Lowered.ENode.StringConstructExpr:
       return `str(${serializeLoweredExpr(lr, expr.value.data)}, ${serializeLoweredExpr(
         lr,
-        expr.value.length,
+        expr.value.length
       )})`;
 
     case Lowered.ENode.ArrayLiteralExpr: {
@@ -3933,7 +4196,7 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.ArraySliceExpr:
       return `(${serializeLoweredExpr(lr, expr.expr)})[${serializeLoweredExpr(
         lr,
-        expr.start,
+        expr.start
       )}:${serializeLoweredExpr(lr, expr.end)}]`;
 
     case Lowered.ENode.StructLiteralExpr: {
@@ -3951,24 +4214,32 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
     case Lowered.ENode.LiteralExpr: {
       const exprType = lr.typeUseNodes.get(expr.type);
       const type = lr.typeDefNodes.get(exprType.type);
-      if (type.variant === Lowered.ENode.PrimitiveDatatype && type.primitive === EPrimitive.str) {
+      if (
+        type.variant === Lowered.ENode.PrimitiveDatatype &&
+        type.primitive === EPrimitive.str
+      ) {
         assert(expr.literal.type === EPrimitive.str);
         return `${JSON.stringify(expr.literal.value)}`;
-      } else if (expr.literal.type === EPrimitive.cstr) {
-        return `${JSON.stringify(expr.literal.value)}`;
-      } else if (expr.literal.type === EPrimitive.ccstr) {
-        return `${JSON.stringify(expr.literal.value)}`;
-      } else if (expr.literal.type === EPrimitive.null) {
-        return `null`;
-      } else if (expr.literal.type === EPrimitive.none) {
-        return `none`;
-      } else if (expr.literal.type === EPrimitive.Regex) {
-        return `Regex`;
-      } else if (expr.literal.type === "enum") {
-        return `Enum Literal`;
-      } else {
-        return `${expr.literal.value}`;
       }
+      if (expr.literal.type === EPrimitive.cstr) {
+        return `${JSON.stringify(expr.literal.value)}`;
+      }
+      if (expr.literal.type === EPrimitive.ccstr) {
+        return `${JSON.stringify(expr.literal.value)}`;
+      }
+      if (expr.literal.type === EPrimitive.null) {
+        return "null";
+      }
+      if (expr.literal.type === EPrimitive.none) {
+        return "none";
+      }
+      if (expr.literal.type === EPrimitive.Regex) {
+        return "Regex";
+      }
+      if (expr.literal.type === "enum") {
+        return "Enum Literal";
+      }
+      return `${expr.literal.value}`;
     }
 
     case Lowered.ENode.MemberAccessExpr:
@@ -3996,7 +4267,11 @@ function serializeLoweredExpr(lr: Lowered.Module, exprId: Lowered.ExprId): strin
   }
 }
 
-export function printStatement(lr: Lowered.Module, sId: Lowered.StatementId, indent = 0) {
+export function printStatement(
+  lr: Lowered.Module,
+  sId: Lowered.StatementId,
+  indent = 0
+) {
   const s = lr.statementNodes.get(sId);
 
   switch (s.variant) {
@@ -4009,7 +4284,10 @@ export function printStatement(lr: Lowered.Module, sId: Lowered.StatementId, ind
       break;
 
     case Lowered.ENode.ReturnStatement:
-      print("return" + (s.expr ? ` ${serializeLoweredExpr(lr, s.expr)}` : "") + ";", indent);
+      print(
+        "return" + (s.expr ? ` ${serializeLoweredExpr(lr, s.expr)}` : "") + ";",
+        indent
+      );
       break;
 
     case Lowered.ENode.VariableStatement: {
@@ -4021,7 +4299,7 @@ export function printStatement(lr: Lowered.Module, sId: Lowered.StatementId, ind
           type.name.prettyName +
           (s.value ? " = " + serializeLoweredExpr(lr, s.value) : "") +
           ";",
-        indent,
+        indent
       );
       break;
     }
@@ -4030,25 +4308,32 @@ export function printStatement(lr: Lowered.Module, sId: Lowered.StatementId, ind
       print(`If ${serializeLoweredExpr(lr, s.condition)} {`, indent);
       printScope(lr, s.then, indent);
       for (const elseif of s.elseIfs) {
-        print(`} else if ${serializeLoweredExpr(lr, elseif.condition)} {`, indent);
+        print(
+          `} else if ${serializeLoweredExpr(lr, elseif.condition)} {`,
+          indent
+        );
         printScope(lr, elseif.then, indent);
       }
       if (s.else) {
-        print(`} else {`, indent);
+        print("} else {", indent);
         printScope(lr, s.else, indent);
       }
-      print(`}`, indent);
+      print("}", indent);
       break;
 
     case Lowered.ENode.WhileStatement:
       print(`While ${serializeLoweredExpr(lr, s.condition)} {`, indent);
       printScope(lr, s.then, indent);
-      print(`}`, indent);
+      print("}", indent);
       break;
   }
 }
 
-function printScope(lr: Lowered.Module, scopeId: Lowered.BlockScopeId, indent = 0) {
+function printScope(
+  lr: Lowered.Module,
+  scopeId: Lowered.BlockScopeId,
+  indent = 0
+) {
   const scope = lr.blockScopeNodes.get(scopeId);
   for (const s of scope.statements) {
     printStatement(lr, s, indent + 4);
@@ -4085,12 +4370,18 @@ export function PrettyPrintLowered(lr: Lowered.Module) {
 
 export function LowerModule(sr: Semantic.Context): Lowered.Module {
   const lr: Lowered.Module = {
-    sr: sr,
+    sr,
 
-    blockScopeNodes: new BrandedArray<Lowered.BlockScopeId, Lowered.BlockScope>([]),
+    blockScopeNodes: new BrandedArray<Lowered.BlockScopeId, Lowered.BlockScope>(
+      []
+    ),
     exprNodes: new BrandedArray<Lowered.ExprId, Lowered.Expression>([]),
-    functionNodes: new BrandedArray<Lowered.FunctionId, Lowered.FunctionSymbol>([]),
-    statementNodes: new BrandedArray<Lowered.StatementId, Lowered.Statement>([]),
+    functionNodes: new BrandedArray<Lowered.FunctionId, Lowered.FunctionSymbol>(
+      []
+    ),
+    statementNodes: new BrandedArray<Lowered.StatementId, Lowered.Statement>(
+      []
+    ),
     typeUseNodes: new BrandedArray<Lowered.TypeUseId, Lowered.TypeUse>([]),
     typeDefNodes: new BrandedArray<Lowered.TypeDefId, Lowered.TypeDef>([]),
 

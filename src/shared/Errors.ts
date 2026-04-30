@@ -1,7 +1,7 @@
 export enum ErrorType {
-  Error,
-  Warning,
-  Info,
+  Error = 0,
+  Warning = 1,
+  Info = 2,
 }
 
 export type SourceLocNotNull = {
@@ -38,21 +38,19 @@ export function formatSourceLoc(loc: SourceLocNotNull) {
       return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
         loc.end.column + 1
       }`;
-    } else {
-      return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
-        loc.end.line
-      }.${loc.end.column + 1}`;
     }
-  } else {
-    return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}`;
+    return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
+      loc.end.line
+    }.${loc.end.column + 1}`;
   }
+  return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}`;
 }
 
 function formatCompilerMessage(
   type: ErrorType,
   error: string | null,
   msg: string,
-  loc?: SourceLoc,
+  loc?: SourceLoc
 ): string {
   let text = "";
   if (loc) {
@@ -77,7 +75,7 @@ export function printCompilerMessage(
   type: ErrorType,
   error: string | null,
   msg: string,
-  loc?: SourceLoc,
+  loc?: SourceLoc
 ): void {
   if (diagnosticSink) {
     diagnosticSink({ type, message: msg, loc, title: error ?? undefined });
@@ -90,7 +88,11 @@ export function formatErrorMessage(msg: string, loc?: SourceLoc): string {
   return formatCompilerMessage(ErrorType.Error, "Error", msg, loc);
 }
 
-export function printErrorMessage(msg: string, loc?: SourceLoc, title?: string): void {
+export function printErrorMessage(
+  msg: string,
+  loc?: SourceLoc,
+  title?: string
+): void {
   printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc);
 }
 
@@ -102,10 +104,11 @@ export function printWarningMessage(msg: string, loc?: SourceLoc): void {
   printCompilerMessage(ErrorType.Warning, "Warning", msg, loc);
 }
 
+const callerLocationRegex = /at (?:(.+)\s+\()?(.+?):(\d+):(\d+)/;
 export function getCallerLocation(depth = 1): SourceLoc {
   const stack = new Error().stack?.split("\n") ?? [];
   const frame = stack[depth + 1];
-  const matches = frame.match(/at (?:(.+)\s+\()?(.+?):(\d+):(\d+)/);
+  const matches = frame.match(callerLocationRegex);
   if (!matches) {
     return {
       start: {
@@ -117,8 +120,8 @@ export function getCallerLocation(depth = 1): SourceLoc {
   }
   return {
     start: {
-      line: parseInt(matches[3], 10),
-      column: parseInt(matches[4], 10),
+      line: Number.parseInt(matches[3], 10),
+      column: Number.parseInt(matches[4], 10),
     },
     filename: matches[2],
   };
@@ -137,7 +140,12 @@ export class CompilerError extends Error {
 
 export class InternalError extends Error {
   constructor(msg: string, loc?: SourceLoc, callFrames?: number) {
-    super(formatErrorMessage(msg, loc ?? getCallerLocation(callFrames ? callFrames + 2 : 2)));
+    super(
+      formatErrorMessage(
+        msg,
+        loc ?? getCallerLocation(callFrames ? callFrames + 2 : 2)
+      )
+    );
   }
 }
 
@@ -146,15 +154,17 @@ export class ImpossibleSituation extends Error {
     super(
       formatErrorMessage(
         "Impossible situation, something fatal has happened",
-        getCallerLocation(2),
-      ),
+        getCallerLocation(2)
+      )
     );
   }
 }
 
 export class UnreachableCode extends Error {
   constructor() {
-    super(formatErrorMessage("Unreachable Code was reached", getCallerLocation(2)));
+    super(
+      formatErrorMessage("Unreachable Code was reached", getCallerLocation(2))
+    );
   }
 }
 
@@ -185,7 +195,14 @@ export class GeneralError extends Error {
   }
 }
 
-export function assert(condition: unknown, message = "Assertion failed"): asserts condition {
+export function assertFalse(message: string): never {
+  throw new InternalError(message, undefined, 1);
+}
+
+export function assert(
+  condition: unknown,
+  message = "Assertion failed"
+): asserts condition {
   if (!condition) {
     throw new InternalError(message, undefined, 1);
   }
@@ -194,7 +211,7 @@ export function assert(condition: unknown, message = "Assertion failed"): assert
 export function assertCompilerError(
   condition: unknown,
   message: string,
-  sourceloc: SourceLoc,
+  sourceloc: SourceLoc
 ): asserts condition {
   if (!condition) {
     throw new CompilerError(message, sourceloc);

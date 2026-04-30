@@ -1,6 +1,6 @@
 export class OutputWriter {
-  private content: string = "";
-  private indent: number = 0;
+  private content = "";
+  private indent = 0;
 
   constructor(private indentWidth = 2) {}
 
@@ -20,7 +20,9 @@ export class OutputWriter {
     // Match all lines, including empty ones, preserving the newline characters
     const lines = raw.match(/[^\n]*\n?|$/g);
     for (const line of lines || []) {
-      if (line === "") continue; // avoid trailing empty match
+      if (line === "") {
+        continue; // avoid trailing empty match
+      }
 
       // Indenting
       if (this.content[this.content.length - 1] === "\n") {
@@ -38,9 +40,8 @@ export class OutputWriter {
     if (value instanceof OutputWriter) {
       const raw = value.get();
       return this.write(raw.endsWith("\n") ? value : raw + "\n");
-    } else {
-      return this.write(value.endsWith("\n") ? value : value + "\n");
     }
+    return this.write(value.endsWith("\n") ? value : value + "\n");
   }
 
   get() {

@@ -1,27 +1,4 @@
 {
-  "name": "haze",
-  "version": "1.0.0",
-  "description": "A WIP toy programming language, inspired by the best of TypeScript and C++",
-  "main": "main.ts",
-  "directories": {
-    "test": "tests"
-  },
-  "scripts": {
-    "dev": "npx cross-env NODE_ENV=development bun run src/main.ts",
-    "perf": "npx cross-env NODE_ENV=development bun --perf run src/main.ts",
-    "inspect": "npx cross-env NODE_ENV=development bun --inspect run src/main.ts",
-    "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun link",
-    "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
-    "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
-    "postinstall": "bun run generate-parser",
-    "test": "bun run src/all.test.ts",
-    "profile": "node scripts/build.js && HAZE_EXEC_MODE=profiling node --inspect dist/bundle.js"
-  },
-  "bin": {
-    "haze": "dist/haze"
-  },
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "@ltd/j-toml": "^1.38.0",
     "@types/archiver": "^6.0.3",
@@ -48,17 +25,46 @@
     "which": "^5.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.12",
     "@mermaid-js/mermaid-cli": "^11.4.2",
     "@types/chalk": "^0.4.31",
     "@types/cli-progress": "^3.11.6",
     "@types/deep-equal": "^1.0.4",
     "@types/which": "^3.0.4",
     "esbuild": "^0.25.11",
+    "husky": "^9.1.7",
     "mermaid": "^11.4.1",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "ultracite": "7.6.2"
   },
+  "name": "haze",
   "peerDependencies": {
     "typescript": "^5.0.0"
-  }
+  },
+  "scripts": {
+    "dev": "npx cross-env NODE_ENV=development bun run src/main.ts",
+    "perf": "npx cross-env NODE_ENV=development bun --perf run src/main.ts",
+    "inspect": "npx cross-env NODE_ENV=development bun --inspect run src/main.ts",
+    "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun link",
+    "copylib": "mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib",
+    "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
+    "postinstall": "bun run generate-parser",
+    "test": "bun run src/all.test.ts",
+    "profile": "node scripts/build.js && HAZE_EXEC_MODE=profiling node --inspect dist/bundle.js",
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "prepare": "husky"
+  },
+  "version": "1.0.0",
+  "description": "A WIP toy programming language, inspired by the best of TypeScript and C++",
+  "main": "main.ts",
+  "directories": {
+    "test": "tests"
+  },
+  "bin": {
+    "haze": "dist/haze"
+  },
+  "author": "",
+  "license": "ISC"
 }

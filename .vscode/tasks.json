@@ -7,11 +7,7 @@
       "command": "bun",
       // "command": "~/.bun/bin/bun",
       // "command": "%USERPROFILE%/.bun/bin/bun",
-      "args": [
-        "run",
-        "dev",
-        "build"
-      ],
+      "args": ["run", "dev", "build"],
       // "args": [
       //   "run",
       //   "dev",
@@ -22,9 +18,7 @@
         "kind": "build",
         "isDefault": true
       },
-      "problemMatcher": [
-        "$gcc"
-      ]
+      "problemMatcher": ["$gcc"]
     }
   ]
 }

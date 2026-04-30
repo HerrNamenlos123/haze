@@ -1,7 +1,57 @@
-import * as child_process from "child_process";
-import os from "os";
-import path from "path";
-import { mkdir } from "fs/promises";
+import * as child_process from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import fs, {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path, { basename, dirname, extname, join } from "node:path";
+import { cwd, stdout } from "node:process";
+import archiver from "archiver";
+import chalk from "chalk";
+import { MultiBar, Presets, type SingleBar } from "cli-progress";
+import fg from "fast-glob";
+import gunzip from "gunzip-maybe";
+import tarFs from "tar-fs";
+import which from "which";
+import { version } from "../package.json";
+import { generateCode } from "./Codegen/CodeGenerator";
+import { LowerModule } from "./Lower/Lower";
+import { Parser } from "./Parser/Parser";
+import { Semantic } from "./Semantic/SemanticTypes";
+import { ExportCollectedSymbols as ExportSymbols } from "./SymbolCollection/Export";
+import {
+  Collect,
+  CollectFile,
+  CollectImmediate,
+  type CollectionContext,
+  makeCollectionContext,
+} from "./SymbolCollection/SymbolCollection";
+import {
+  type CompileCommands,
+  ConfigParser,
+  ECollectionMode,
+  EModuleFileDir,
+  type GeneratorConfig,
+  type GeneratorFile,
+  type GeneratorGraphNode,
+  type ModuleConfig,
+  type ModuleMetadata,
+  ModuleType,
+  PLATFORM,
+  Platform,
+  PlatformStrings,
+  parseModuleMetadata,
+} from "./shared/Config";
 import {
   assert,
   CmdFailed,
@@ -12,71 +62,15 @@ import {
   SyntaxError,
   UnreachableCode,
 } from "./shared/Errors";
-import {
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "fs";
-import { readdir, stat } from "fs/promises";
-import { basename, dirname, extname, join } from "path";
-import fs from "fs";
-import { version } from "../package.json";
-import {
-  ConfigParser,
-  ECollectionMode,
-  EModuleFileDir,
-  ModuleType,
-  parseModuleMetadata,
-  Platform,
-  PLATFORM,
-  PlatformStrings,
-  type CompileCommands,
-  type GeneratorConfig,
-  type GeneratorFile,
-  type GeneratorGraphNode,
-  type ModuleConfig,
-  type ModuleMetadata,
-} from "./shared/Config";
-import { Parser } from "./Parser/Parser";
-import {
-  Collect,
-  CollectFile,
-  CollectImmediate,
-  makeCollectionContext,
-  type CollectionContext,
-} from "./SymbolCollection/SymbolCollection";
-import { generateCode } from "./Codegen/CodeGenerator";
-import { LowerModule } from "./Lower/Lower";
-import { ExportCollectedSymbols as ExportSymbols } from "./SymbolCollection/Export";
-import { cwd, stdout } from "process";
-import { spawnSync } from "child_process";
-import archiver from "archiver";
-import tarFs from "tar-fs";
-import gunzip from "gunzip-maybe";
-import { spawn } from "child_process";
-import fg from "fast-glob";
-import { writeFile, readFile } from "fs/promises";
-import which from "which";
-import { createHash } from "crypto";
-
-import { MultiBar, Presets, SingleBar } from "cli-progress";
-import chalk from "chalk";
-import { once } from "events";
-import { Semantic } from "./Semantic/SemanticTypes";
 
 export enum EModulePrintCompilerPhase {
-  Parsing,
-  Collecting,
-  Analyzing,
-  Lowering,
-  Generating,
-  CCompiling,
-  Done,
+  Parsing = 0,
+  Collecting = 1,
+  Analyzing = 2,
+  Lowering = 3,
+  Generating = 4,
+  CCompiling = 5,
+  Done = 6,
 }
 
 export type ModulePrintInfo = {
@@ -102,7 +96,9 @@ function sleep(ms: number) {
 }
 
 function isProcessAlive(pid: number) {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false;
+  }
   try {
     process.kill(pid, 0);
     return true;
@@ -174,7 +170,7 @@ async function acquireBuildLock(lockPath: string) {
 
       if (Date.now() - start > HAZE_BUILD_LOCK_TIMEOUT_MS) {
         throw new GeneralError(
-          `Timed out waiting for build lock at ${lockPath}. Another build may still be running.`,
+          `Timed out waiting for build lock at ${lockPath}. Another build may still be running.`
         );
       }
 
@@ -190,7 +186,10 @@ async function acquireBuildLock(lockPath: string) {
  * @param fn - async callback to run with the temporary environment
  * @returns the value returned by fn
  */
-export async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+export async function withEnv<T>(
+  vars: Record<string, string>,
+  fn: () => Promise<T>
+): Promise<T> {
   const oldValues: Record<string, string | undefined> = {};
 
   // Save old values and set new ones
@@ -228,11 +227,10 @@ export class CLIPrinter {
       {
         clearOnComplete: false,
         hideCursor: true,
-        format: (options, params, payload) => {
-          return this.createCustomFormat(payload.module, payload.spinnerIndex);
-        },
+        format: (options, params, payload) =>
+          this.createCustomFormat(payload.module, payload.spinnerIndex),
       },
-      Presets.shades_classic,
+      Presets.shades_classic
     );
   }
 
@@ -241,10 +239,12 @@ export class CLIPrinter {
     const indexStr = chalk.gray(`[${index + 1}/${this.modules.length}]`);
     const actionStr = chalk.greenBright("Compiling");
     const nameStr = chalk.white(module.name.padEnd(14));
-    const timeStr = chalk.gray(`${Date.now() - module.startTime.getTime()}ms`.padStart(7));
+    const timeStr = chalk.gray(
+      `${Date.now() - module.startTime.getTime()}ms`.padStart(7)
+    );
     const DONE_GLYPH = chalk.green("✔");
 
-    let phaseBlock;
+    let phaseBlock: string;
 
     if (module.endTime) {
       const doneText = `Done     ${DONE_GLYPH}`;
@@ -271,6 +271,9 @@ export class CLIPrinter {
         case EModulePrintCompilerPhase.CCompiling:
           text = "Compiling C  ";
           break;
+        default:
+          assert(false);
+          break;
       }
       phaseBlock = `[${chalk.cyan(text)}${chalk.cyan(CLIPrinter.SPINNER[spinnerIndex])}]`;
     }
@@ -283,7 +286,8 @@ export class CLIPrinter {
   }
 
   loop() {
-    CLIPrinter.spinnerIndex = (CLIPrinter.spinnerIndex + 1) % CLIPrinter.SPINNER.length;
+    CLIPrinter.spinnerIndex =
+      (CLIPrinter.spinnerIndex + 1) % CLIPrinter.SPINNER.length;
 
     this.modules.forEach((m) => {
       // Update the bar using the custom payload and the new time
@@ -331,7 +335,8 @@ export class CLIPrinter {
 
 export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
-export const HAZE_TOOLCHAIN_INSTALLED_MARKER = HAZE_CACHE + "/toolchain-installed.json";
+export const HAZE_TOOLCHAIN_INSTALLED_MARKER =
+  HAZE_CACHE + "/toolchain-installed.json";
 export const HAZE_GLOBAL_DIR = HAZE_DIR + "/global";
 export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
@@ -378,27 +383,36 @@ if (PLATFORM === Platform.Win32) {
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
 const HAZE_C_COMPILER =
-  HAZE_GLOBAL_DIR + (PLATFORM === Platform.Linux ? "/bin/clang" : "/bin/clang.exe");
+  HAZE_GLOBAL_DIR +
+  (PLATFORM === Platform.Linux ? "/bin/clang" : "/bin/clang.exe");
 const HAZE_CXX_COMPILER =
-  HAZE_GLOBAL_DIR + (PLATFORM === Platform.Linux ? "/bin/clang++" : "/bin/clang++.exe");
-const ARCHIVE_TOOL = PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
+  HAZE_GLOBAL_DIR +
+  (PLATFORM === Platform.Linux ? "/bin/clang++" : "/bin/clang++.exe");
+const ARCHIVE_TOOL =
+  PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 export async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch: ${response.statusText}`);
+  }
   const buffer = await response.arrayBuffer();
   await writeFile(outfile, new Uint8Array(buffer));
 }
 
 export async function getFileWithProgress(url: string, outfile: string) {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch: ${response.statusText}`);
+  }
 
   const total = Number(response.headers.get("content-length")) || 0;
   const stream = response.body;
-  if (!stream) throw new Error("No response body");
+  if (!stream) {
+    throw new Error("No response body");
+  }
 
   const fileWriter = createWriteStream(outfile);
   let downloaded = 0;
@@ -416,7 +430,9 @@ export async function getFileWithProgress(url: string, outfile: string) {
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      break;
+    }
     if (value) {
       downloaded += value.length;
       fileWriter.write(value);
@@ -443,9 +459,8 @@ async function getStdlibDirectory() {
     }
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "stdlib/");
-  } else {
-    return join(__dirname, "../stdlib");
   }
+  return join(import.meta.dirname, "../stdlib");
 }
 
 async function getToolsDirectory() {
@@ -458,9 +473,8 @@ async function getToolsDirectory() {
     }
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "tools/");
-  } else {
-    return join(__dirname, "../tools");
   }
+  return join(import.meta.dirname, "../tools");
 }
 
 async function catchErrors(fn: () => Promise<void>) {
@@ -497,10 +511,18 @@ function commandExists(cmd: string) {
 }
 
 async function detectPackageManager() {
-  if (await commandExists("dnf")) return "fedora";
-  if (await commandExists("yum")) return "rhel";
-  if (await commandExists("zypper")) return "suse";
-  if (await commandExists("apt-get")) return "debian";
+  if (await commandExists("dnf")) {
+    return "fedora";
+  }
+  if (await commandExists("yum")) {
+    return "rhel";
+  }
+  if (await commandExists("zypper")) {
+    return "suse";
+  }
+  if (await commandExists("apt-get")) {
+    return "debian";
+  }
 
   return "unknown";
 }
@@ -509,20 +531,26 @@ type FileWatcherCache = Record<string, number>;
 const FILE_WATCHER_FILENAME = "watcher.cache.json";
 function loadCache(globalBuildDir: string): FileWatcherCache {
   try {
-    return JSON.parse(fs.readFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, "utf8"));
+    return JSON.parse(
+      fs.readFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, "utf8")
+    );
   } catch {
     return {};
   }
 }
 
 function saveCache(cache: FileWatcherCache, globalBuildDir: string) {
-  fs.writeFileSync(globalBuildDir + "/" + FILE_WATCHER_FILENAME, JSON.stringify(cache), "utf8");
+  fs.writeFileSync(
+    globalBuildDir + "/" + FILE_WATCHER_FILENAME,
+    JSON.stringify(cache),
+    "utf8"
+  );
 }
 
 export function invalidateChangeCache(
   globs: string[],
   globalBuildDir: string,
-  workingDir: string,
+  workingDir: string
 ): string[] {
   const cache = loadCache(globalBuildDir);
   const changed: string[] = [];
@@ -542,7 +570,7 @@ export function invalidateChangeCache(
 export function checkForChanges(
   globs: string[],
   globalBuildDir: string,
-  workingDir: string,
+  workingDir: string
 ): string[] {
   const cache = loadCache(globalBuildDir);
   const changed: string[] = [];
@@ -574,7 +602,9 @@ class Cache {
 
   constructor() {}
 
-  async getFilesWithModificationDates(dir: string): Promise<{ file: string; modified: Date }[]> {
+  async getFilesWithModificationDates(
+    dir: string
+  ): Promise<{ file: string; modified: Date }[]> {
     const files: { file: string; modified: Date }[] = [];
 
     async function traverse(currentDir: string) {
@@ -595,9 +625,11 @@ class Cache {
     return files;
   }
 
-  async getFileModificationDate(file: string): Promise<{ file: string; modified: Date }> {
+  async getFileModificationDate(
+    file: string
+  ): Promise<{ file: string; modified: Date }> {
     const fileStat = await stat(file);
-    return { file: file, modified: fileStat.mtime };
+    return { file, modified: fileStat.mtime };
   }
 
   async load(filename: string) {
@@ -612,9 +644,8 @@ class Cache {
   async save() {
     if (!this.filename) {
       throw new ImpossibleSituation();
-    } else {
-      await writeFile(this.filename, JSON.stringify(this.data, undefined, 2));
     }
+    await writeFile(this.filename, JSON.stringify(this.data, undefined, 2));
   }
 
   async compiledModule(name: string, moduleDir: string, configFile: string) {
@@ -633,7 +664,7 @@ class Cache {
       [
         ...(await this.getFilesWithModificationDates(moduleDir)),
         await this.getFileModificationDate(configFile),
-      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`),
+      ].map((f) => `${f.file}=${new Date(f.modified).toISOString()}`)
     );
     if (!this.data[name]) {
       return true;
@@ -641,8 +672,8 @@ class Cache {
     const foundFiles = new Set(
       this.data[name]["files"].map(
         (f: { file: string; modified: string }) =>
-          `${f.file}=${new Date(f.modified).toISOString()}`,
-      ),
+          `${f.file}=${new Date(f.modified).toISOString()}`
+      )
     );
     if (foundFiles.difference(files).size !== 0) {
       return true;
@@ -677,7 +708,9 @@ export class FileChangeCache {
   }
 
   save(): void {
-    if (!this.dirty) return;
+    if (!this.dirty) {
+      return;
+    }
 
     fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
     fs.writeFileSync(this.cacheFile, JSON.stringify(this.data, null, 2));
@@ -758,7 +791,9 @@ export class ModuleBuildCache {
     }
 
     const raw = fs.readFileSync(this.cacheFile, "utf8");
-    const parsed = JSON.parse(raw) as ModuleBuildCacheData | LegacyModuleBuildCacheData;
+    const parsed = JSON.parse(raw) as
+      | ModuleBuildCacheData
+      | LegacyModuleBuildCacheData;
 
     const legacyEntry = Object.values(parsed)[0];
     if (legacyEntry && !(legacyEntry as ModuleBuildCacheEntry).files) {
@@ -776,7 +811,9 @@ export class ModuleBuildCache {
   }
 
   save(): void {
-    if (!this.dirty) return;
+    if (!this.dirty) {
+      return;
+    }
 
     fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
     fs.writeFileSync(this.cacheFile, JSON.stringify(this.data, null, 2));
@@ -787,17 +824,27 @@ export class ModuleBuildCache {
     return this.data[moduleName]?.compilerKey;
   }
 
-  hasModuleChanged(moduleName: string, files: string[], compilerKey?: string): boolean {
+  hasModuleChanged(
+    moduleName: string,
+    files: string[],
+    compilerKey?: string
+  ): boolean {
     const normalized = new Set(files.map((f) => path.resolve(f)));
     const entry = this.data[moduleName];
 
-    if (!entry) return true;
-    if (compilerKey && entry.compilerKey !== compilerKey) return true;
+    if (!entry) {
+      return true;
+    }
+    if (compilerKey && entry.compilerKey !== compilerKey) {
+      return true;
+    }
 
     const prev = entry.files ?? {};
 
     for (const file of normalized) {
-      if (!fs.existsSync(file)) return true;
+      if (!fs.existsSync(file)) {
+        return true;
+      }
       const stat = fs.statSync(file);
       const prevStamp = prev[file];
       if (!prevStamp || prevStamp.mtimeMs < stat.mtimeMs) {
@@ -814,12 +861,18 @@ export class ModuleBuildCache {
     return false;
   }
 
-  updateModule(moduleName: string, files: string[], compilerKey?: string): void {
+  updateModule(
+    moduleName: string,
+    files: string[],
+    compilerKey?: string
+  ): void {
     const normalized = files.map((f) => path.resolve(f));
     const next: Record<string, FileStamp> = {};
 
     for (const file of normalized) {
-      if (!fs.existsSync(file)) continue;
+      if (!fs.existsSync(file)) {
+        continue;
+      }
       const stat = fs.statSync(file);
       next[file] = { mtimeMs: stat.mtimeMs };
     }
@@ -835,9 +888,8 @@ export class ModuleBuildCache {
 export function getCurrentPlatform() {
   if (PLATFORM === Platform.Linux) {
     return "linux-x64";
-  } else {
-    return "win32-x64";
   }
+  return "win32-x64";
 }
 
 function toCIdentifier(str: string) {
@@ -859,12 +911,12 @@ function toCIdentifier(str: string) {
 
 export class ProjectCompiler {
   cache: Cache = new Cache();
-  globalBuildDir: string = "";
+  globalBuildDir = "";
   verbose: boolean;
   ignoreLock: boolean;
   strip: boolean;
 
-  constructor(verbose: boolean = false, ignoreLock: boolean = false, strip: boolean = false) {
+  constructor(verbose = false, ignoreLock = false, strip = false) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
     this.strip = strip;
@@ -872,9 +924,7 @@ export class ProjectCompiler {
 
   async getConfig(singleFilename?: string, sourceloc?: boolean) {
     let config: ModuleConfig | undefined;
-    if (!singleFilename) {
-      config = await parseConfig(undefined, sourceloc);
-    } else {
+    if (singleFilename) {
       config = {
         configFilePath: undefined,
         dependencies: [],
@@ -905,6 +955,8 @@ export class ProjectCompiler {
         includeSourceloc: sourceloc ?? true,
         generators: [],
       };
+    } else {
+      config = await parseConfig(undefined, sourceloc);
     }
     return config;
   }
@@ -918,7 +970,11 @@ export class ProjectCompiler {
     env.HAZE_CMAKE_TOOLCHAIN = HAZE_CMAKE_TOOLCHAIN;
   }
 
-  async build(singleFilename?: string, sourceloc?: boolean, fullRebuild?: boolean) {
+  async build(
+    singleFilename?: string,
+    sourceloc?: boolean,
+    fullRebuild?: boolean
+  ) {
     if (!(await this.setupToolchain())) {
       return false;
     }
@@ -945,11 +1001,14 @@ export class ProjectCompiler {
         this.globalBuildDir,
         join(this.globalBuildDir, config.name),
         this.verbose,
-        this.strip,
+        this.strip
       );
 
       if (!mainModule.config.nostdlib) {
-        const stdlibConfig = await parseConfig(join(await getStdlibDirectory(), "core"), sourceloc);
+        const stdlibConfig = await parseConfig(
+          join(await getStdlibDirectory(), "core"),
+          sourceloc
+        );
         if (!stdlibConfig) {
           return false;
         }
@@ -959,7 +1018,7 @@ export class ProjectCompiler {
           this.globalBuildDir,
           join(this.globalBuildDir, stdlibConfig.name),
           this.verbose,
-          this.strip,
+          this.strip
         );
 
         const c = new CLIPrinter();
@@ -993,7 +1052,7 @@ export class ProjectCompiler {
             this.globalBuildDir,
             join(this.globalBuildDir, config.name),
             this.verbose,
-            this.strip,
+            this.strip
           );
 
           const c = new CLIPrinter();
@@ -1037,7 +1096,11 @@ export class ProjectCompiler {
     }
   }
 
-  async run(singleFilename?: string, sourceloc?: boolean, args?: string[]): Promise<number> {
+  async run(
+    singleFilename?: string,
+    sourceloc?: boolean,
+    args?: string[]
+  ): Promise<number> {
     try {
       const config = await this.getConfig(singleFilename, sourceloc);
       if (!config) {
@@ -1047,11 +1110,14 @@ export class ProjectCompiler {
 
       if (config?.moduleType === ModuleType.Library) {
         throw new GeneralError(
-          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`,
+          `This module is a library and cannot be executed. Use 'haze build' to build it instead.`
         );
       }
 
-      let moduleExecutable = join(join(this.globalBuildDir, config.name, "bin"), config.name);
+      let moduleExecutable = join(
+        join(this.globalBuildDir, config.name, "bin"),
+        config.name
+      );
       if (PLATFORM === Platform.Win32) {
         moduleExecutable += ".exe";
       }
@@ -1088,9 +1154,15 @@ export class ProjectCompiler {
 
   async setupToolchain() {
     return await catchErrors(async () => {
-      if (!existsSync(HAZE_CACHE)) mkdirSync(HAZE_CACHE, { recursive: true });
-      if (!existsSync(HAZE_TMP_DIR)) mkdirSync(HAZE_TMP_DIR, { recursive: true });
-      if (!existsSync(HAZE_GLOBAL_DIR)) mkdirSync(HAZE_GLOBAL_DIR, { recursive: true });
+      if (!existsSync(HAZE_CACHE)) {
+        mkdirSync(HAZE_CACHE, { recursive: true });
+      }
+      if (!existsSync(HAZE_TMP_DIR)) {
+        mkdirSync(HAZE_TMP_DIR, { recursive: true });
+      }
+      if (!existsSync(HAZE_GLOBAL_DIR)) {
+        mkdirSync(HAZE_GLOBAL_DIR, { recursive: true });
+      }
 
       process.env["CC"] = HAZE_C_COMPILER;
       process.env["CXX"] = HAZE_CXX_COMPILER;
@@ -1114,7 +1186,10 @@ export class ProjectCompiler {
       // Step 1: Download
       if (!this.isStepDone(MARKERS.download)) {
         console.info("Downloading LLVM toolchain...");
-        await getFileWithProgress(LLVM_TOOLCHAIN_DOWNLOAD_URL, HAZE_TMP_DIR + "/llvm.tar.xz");
+        await getFileWithProgress(
+          LLVM_TOOLCHAIN_DOWNLOAD_URL,
+          HAZE_TMP_DIR + "/llvm.tar.xz"
+        );
         this.markStepDone(MARKERS.download);
         console.info("Downloading LLVM toolchain... Done");
       }
@@ -1123,7 +1198,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.extract)) {
         console.info("Extracting LLVM toolchain...");
         exec(
-          `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`,
+          `tar -xf "${HAZE_TMP_DIR + "/llvm.tar.xz"}" -C "${HAZE_GLOBAL_DIR}" --strip-components=1`
         );
         this.markStepDone(MARKERS.extract);
         console.info("Extracting LLVM toolchain... Done");
@@ -1143,11 +1218,13 @@ export class ProjectCompiler {
         if (packageManager === "debian") {
           exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
           exec(
-            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`,
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
           );
-          exec(`dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`);
           exec(
-            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`,
+            `dpkg-deb -x ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb ${HAZE_GLOBAL_DIR}`
+          );
+          exec(
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
           );
         } else if (packageManager === "fedora") {
           // await exec(`rm -f ${HAZE_TMP_DIR}ncurses-compat-libs*`);
@@ -1162,17 +1239,19 @@ export class ProjectCompiler {
           // );
           exec(`rm -f ${HAZE_TMP_DIR}/libtinfo5_6.1-1ubuntu1_amd64.deb*`);
           exec(
-            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`,
+            `cd ${HAZE_TMP_DIR} && wget http://archive.ubuntu.com/ubuntu/pool/main/n/ncurses/libtinfo5_6.1-1ubuntu1_amd64.deb`
           );
           exec(`cd ${HAZE_TMP_DIR} && ar x libtinfo5_6.1-1ubuntu1_amd64.deb`);
-          exec(`cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`);
           exec(
-            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`,
+            `cd ${HAZE_TMP_DIR} && tar -xf data.tar.xz -C ${HAZE_GLOBAL_DIR}`
+          );
+          exec(
+            `cd ${HAZE_GLOBAL_DIR + "/lib"} && ln -s x86_64-linux-gnu/libtinfo.so.5 libtinfo.so.5`
           );
         } else {
           throw new CompilerError(
             "This Distro/Package Manager is not supported yet, please report",
-            null,
+            null
           );
         }
         this.markStepDone(MARKERS.ncursesLib);
@@ -1182,7 +1261,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.winSDK) && PLATFORM === Platform.Win32) {
         console.info("Installing Windows SDK...");
         execInherit(
-          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`,
+          `powershell -NoLogo -NoProfile -Command \\"if (-not (winget list --name 'Visual Studio Community 2022' | Select-String 'Visual Studio Community 2022')) { winget install 'Visual Studio Community 2022' --override '--add Microsoft.VisualStudio.Workload.NativeDesktop Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp' -s msstore } else { Write-Host 'Visual Studio already installed.' }\\"`
         );
         this.markStepDone(MARKERS.winSDK);
         console.info("Installing Windows SDK... Done");
@@ -1191,7 +1270,7 @@ export class ProjectCompiler {
       if (!this.isStepDone(MARKERS.winNinja) && PLATFORM === Platform.Win32) {
         console.info("Installing Ninja Build System...");
         execInherit(
-          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`,
+          `powershell -NoLogo -NoProfile -Command "if (-not (winget list --id 'Ninja-build.Ninja' | Select-String 'Ninja-build.Ninja')) { winget install 'Ninja-build.Ninja' } else { Write-Host 'Ninja already installed.'; exit 0 }"`
         );
         this.markStepDone(MARKERS.winNinja);
         console.info("Installing Ninja Build System... Done");
@@ -1201,11 +1280,13 @@ export class ProjectCompiler {
         console.info("Installing Ninja Build System...");
         switch (await detectPackageManager()) {
           case "debian":
-            execInherit(`sudo apt-get update && sudo apt-get install ninja-build`);
+            execInherit(
+              "sudo apt-get update && sudo apt-get install ninja-build"
+            );
             break;
 
           case "fedora":
-            execInherit(`sudo dnf install ninja-build`);
+            execInherit("sudo dnf install ninja-build");
             break;
 
           default:
@@ -1272,11 +1353,11 @@ export class ProjectCompiler {
         execInherit(`rm -rf ${outdir}`);
         execInherit(`mkdir -p ${builddir}`);
         execInherit(
-          `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`,
+          `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
         );
         execInherit(`cd ${builddir} && autoreconf -i`);
         execInherit(
-          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`,
+          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
         );
         execInherit(`cd ${builddir} && make -j`);
         execInherit(`cd ${builddir} && make install`);
@@ -1297,14 +1378,14 @@ export class ProjectCompiler {
         }
         mkdirSync(builddir);
         execInherit(
-          `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`,
+          `git clone https://github.com/bdwgc/bdwgc.git "${builddir}" && cd "${builddir}" && git checkout ${commitHash}`
         );
         execInherit(
           `cmake . -B build -G Ninja -DCMAKE_C_COMPILER="${HAZE_C_COMPILER}" -DCMAKE_CXX_COMPILER="${HAZE_CXX_COMPILER}" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGC_BUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
-          builddir,
+          builddir
         );
-        execInherit(`cmake --build build -j`, builddir);
-        execInherit(`cmake --build build --target=install`, builddir);
+        execInherit("cmake --build build -j", builddir);
+        execInherit("cmake --build build --target=install", builddir);
         this.markStepDone(MARKERS.bdwgc);
         console.info("Retrieving and building bdwgc... Done");
       }
@@ -1322,15 +1403,15 @@ export class ProjectCompiler {
         }
         mkdirSync(builddir);
         execInherit(
-          `git clone https://github.com/PCRE2Project/pcre2.git "${builddir}" --branch ${commitHash} -c advice.detachedHead=false --depth 1`,
+          `git clone https://github.com/PCRE2Project/pcre2.git "${builddir}" --branch ${commitHash} -c advice.detachedHead=false --depth 1`
         );
-        execInherit(`git submodule update --init`, builddir);
+        execInherit("git submodule update --init", builddir);
         execInherit(
           `cmake . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_SHARED_LIBS=OFF -DPCRE2_SUPPORT_JIT=ON -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_TESTING=OFF`,
-          builddir,
+          builddir
         );
-        execInherit(`cmake --build build -j`, builddir);
-        execInherit(`cmake --build build --target=install`, builddir);
+        execInherit("cmake --build build -j", builddir);
+        execInherit("cmake --build build --target=install", builddir);
         this.markStepDone(MARKERS.regexEngine);
         console.info("Retrieving and building Regex Engine... Done");
       }
@@ -1345,9 +1426,12 @@ export class ProjectCompiler {
         mkdirSync(dirname(outfile), { recursive: true });
         execInherit(
           `cmake . -B "${HAZE_TMP_DIR}/regex-compiler-build" -DHAZE_GLOBAL_DIR="${HAZE_GLOBAL_DIR}" -G Ninja -DCMAKE_C_COMPILER="${HAZE_C_COMPILER}" -DCMAKE_CXX_COMPILER="${HAZE_CXX_COMPILER}"`,
-          projDir,
+          projDir
         );
-        execInherit(`cmake --build "${HAZE_TMP_DIR}/regex-compiler-build"`, projDir);
+        execInherit(
+          `cmake --build "${HAZE_TMP_DIR}/regex-compiler-build"`,
+          projDir
+        );
         this.markStepDone(MARKERS.regexCompiler);
         console.info("Building Regex Compiler... Done");
       }
@@ -1358,7 +1442,7 @@ export class ProjectCompiler {
 function exec(str: string) {
   try {
     child_process.execSync(str);
-  } catch (e) {
+  } catch {
     throw new CmdFailed();
   }
 }
@@ -1383,8 +1467,12 @@ function execSync(cmd: string, args: string[], dir?: string) {
 }
 
 function execInherit(str: string, dir?: string) {
-  let shell = PLATFORM === Platform.Win32 ? "C:\\Windows\\System32\\cmd.exe" : "/bin/sh";
-  const args = PLATFORM === Platform.Win32 ? ["/d", "/s", "/c", `${str}`] : ["-c", `"${str}"`];
+  const shell =
+    PLATFORM === Platform.Win32 ? "C:\\Windows\\System32\\cmd.exe" : "/bin/sh";
+  const args =
+    PLATFORM === Platform.Win32
+      ? ["/d", "/s", "/c", `${str}`]
+      : ["-c", `"${str}"`];
 
   if (dir) {
     fs.mkdirSync(dir, {
@@ -1416,7 +1504,7 @@ export class ModuleCompiler {
     public hazeWorkspaceDirectory: string,
     public moduleDir: string,
     public verbose: boolean,
-    public strip: boolean,
+    public strip: boolean
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
@@ -1445,7 +1533,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
-      collectionMode,
+      collectionMode
     );
   }
 
@@ -1472,7 +1560,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
-      collectionMode,
+      collectionMode
     );
   }
 
@@ -1482,10 +1570,8 @@ export class ModuleCompiler {
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
         await this.collectDirectory(fullPath, collectionMode);
-      } else {
-        if (extname(fullPath) == ".hz") {
-          await this.collectFile(fullPath, collectionMode);
-        }
+      } else if (extname(fullPath) === ".hz") {
+        await this.collectFile(fullPath, collectionMode);
       }
     }
   }
@@ -1494,7 +1580,7 @@ export class ModuleCompiler {
     sourceCode: string,
     args: {
       inScope: Collect.ScopeId;
-    },
+    }
   ) {
     const ast = Parser.parseTextToAST(this.config, sourceCode, "internal");
     CollectImmediate(this.cc, ast, args.inScope);
@@ -1504,7 +1590,9 @@ export class ModuleCompiler {
     const files = new Set<string>();
 
     const addDir = async (dirpath: string) => {
-      if (!existsSync(dirpath)) return;
+      if (!existsSync(dirpath)) {
+        return;
+      }
       for (const file of readdirSync(dirpath)) {
         const fullPath = join(dirpath, file);
         const stats = statSync(fullPath);
@@ -1537,7 +1625,9 @@ export class ModuleCompiler {
   private buildGeneratorGraph(): Map<string, GeneratorGraphNode> {
     const generatorGraph = new Map<string, GeneratorGraphNode>();
     for (const gen of this.config.generators) {
-      if (gen.type !== "exec") continue;
+      if (gen.type !== "exec") {
+        continue;
+      }
 
       generatorGraph.set(gen.name, {
         config: gen,
@@ -1549,17 +1639,21 @@ export class ModuleCompiler {
     for (const node of generatorGraph.values()) {
       const gen = node.config;
 
-      if (gen.type !== "exec") continue;
+      if (gen.type !== "exec") {
+        continue;
+      }
 
       for (const out of gen.outputs) {
-        if (out.type !== "module-file") continue;
+        if (out.type !== "module-file") {
+          continue;
+        }
 
         const key = this.generatorFileKey(out);
 
         if (outputIndex.has(key)) {
           throw new GeneralError(
             `Output file '${out.path}' is produced by both ` +
-              `'${outputIndex.get(key)}' and '${gen.name}'`,
+              `'${outputIndex.get(key)}' and '${gen.name}'`
           );
         }
 
@@ -1570,19 +1664,25 @@ export class ModuleCompiler {
     for (const node of generatorGraph.values()) {
       const gen = node.config;
 
-      if (gen.type !== "exec") continue;
+      if (gen.type !== "exec") {
+        continue;
+      }
 
       for (const input of gen.inputs) {
-        if (input.type !== "module-file") continue;
+        if (input.type !== "module-file") {
+          continue;
+        }
 
         const key = this.generatorFileKey(input);
         const producer = outputIndex.get(key);
 
-        if (!producer) continue;
+        if (!producer) {
+          continue;
+        }
 
         if (producer === gen.name) {
           throw new GeneralError(
-            `Generator '${gen.name}' lists its own output '${input.path}' as input`,
+            `Generator '${gen.name}' lists its own output '${input.path}' as input`
           );
         }
 
@@ -1594,7 +1694,7 @@ export class ModuleCompiler {
       for (const dep of node.dependsOn) {
         if (!generatorGraph.has(dep)) {
           throw new GeneralError(
-            `Generator '${node.config.name}' depends on unknown generator '${dep}'`,
+            `Generator '${node.config.name}' depends on unknown generator '${dep}'`
           );
         }
       }
@@ -1606,13 +1706,27 @@ export class ModuleCompiler {
   private getGeneratorsToRun(
     batch: GeneratorGraphNode[],
     cache: FileChangeCache,
-    force: boolean,
-  ): { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] {
-    const toRun: { gen: GeneratorGraphNode; inputPaths: string[]; outputPaths: string[] }[] = [];
+    force: boolean
+  ): {
+    gen: GeneratorGraphNode;
+    inputPaths: string[];
+    outputPaths: string[];
+  }[] {
+    const toRun: {
+      gen: GeneratorGraphNode;
+      inputPaths: string[];
+      outputPaths: string[];
+    }[] = [];
     for (const gen of batch) {
-      if (gen.config.type !== "exec") throw new Error("Not implemented");
-      const inputPaths = gen.config.inputs.map((i) => this.resolveGeneratorFile(i));
-      const outputPaths = gen.config.outputs.map((i) => this.resolveGeneratorFile(i));
+      if (gen.config.type !== "exec") {
+        throw new Error("Not implemented");
+      }
+      const inputPaths = gen.config.inputs.map((i) =>
+        this.resolveGeneratorFile(i)
+      );
+      const outputPaths = gen.config.outputs.map((i) =>
+        this.resolveGeneratorFile(i)
+      );
 
       if (
         force ||
@@ -1634,7 +1748,7 @@ export class ModuleCompiler {
     const executionOrder = this.topoLayers(generatorGraph);
 
     const cache = new FileChangeCache(
-      path.join(this.hazeWorkspaceDirectory, "generator.cache.json"),
+      path.join(this.hazeWorkspaceDirectory, "generator.cache.json")
     );
     cache.load();
 
@@ -1650,10 +1764,10 @@ export class ModuleCompiler {
 
   private computeCompilerFingerprint(): string | undefined {
     if (process.env["NODE_ENV"] === "production") {
-      return undefined;
+      return;
     }
 
-    const compilerRootDir = join(__dirname, "..");
+    const compilerRootDir = join(import.meta.dirname, "..");
     const compilerSrcDir = join(compilerRootDir, "src");
     if (!existsSync(compilerSrcDir)) {
       return "missing-src";
@@ -1690,7 +1804,11 @@ export class ModuleCompiler {
     }
 
     return deps.map((dep) =>
-      join(join(this.hazeWorkspaceDirectory, dep.name), "bin", dep.name + ".hzlib"),
+      join(
+        join(this.hazeWorkspaceDirectory, dep.name),
+        "bin",
+        dep.name + ".hzlib"
+      )
     );
   }
 
@@ -1708,14 +1826,20 @@ export class ModuleCompiler {
     depLibs.forEach((f) => files.add(f));
 
     for (const gen of this.config.generators) {
-      if (gen.type !== "exec") continue;
+      if (gen.type !== "exec") {
+        continue;
+      }
       files.add(this.resolveExec(gen.exec));
       for (const input of gen.inputs) {
-        if (input.type !== "module-file") continue;
+        if (input.type !== "module-file") {
+          continue;
+        }
         files.add(this.resolveGeneratorFile(input));
       }
       for (const output of gen.outputs) {
-        if (output.type !== "module-file") continue;
+        if (output.type !== "module-file") {
+          continue;
+        }
         files.add(this.resolveGeneratorFile(output));
       }
     }
@@ -1773,7 +1897,9 @@ export class ModuleCompiler {
     let ready: string[] = [];
 
     for (const [name, degree] of inDegree) {
-      if (degree === 0) ready.push(name);
+      if (degree === 0) {
+        ready.push(name);
+      }
     }
 
     let processed = 0;
@@ -1810,7 +1936,7 @@ export class ModuleCompiler {
     const executionOrder = this.topoLayers(generatorGraph);
 
     const cache = new FileChangeCache(
-      path.join(this.hazeWorkspaceDirectory, "generator.cache.json"),
+      path.join(this.hazeWorkspaceDirectory, "generator.cache.json")
     );
     cache.load();
 
@@ -1824,7 +1950,9 @@ export class ModuleCompiler {
         ranAny = true;
       }
 
-      await Promise.all(toRun.map((item) => this.executeGenerator(item.gen.config)));
+      await Promise.all(
+        toRun.map((item) => this.executeGenerator(item.gen.config))
+      );
 
       for (const item of toRun) {
         assert(item.gen.config.type === "exec");
@@ -1846,7 +1974,9 @@ export class ModuleCompiler {
   }
 
   resolveGeneratorFile(file: GeneratorFile) {
-    if (file.type !== "module-file") throw new Error("Not implemented");
+    if (file.type !== "module-file") {
+      throw new Error("Not implemented");
+    }
 
     let moduleName = file.module;
     if (moduleName === "this") {
@@ -1858,25 +1988,36 @@ export class ModuleCompiler {
       case EModuleFileDir.BinaryDir:
         dir = this.getModuleBinaryDir(moduleName);
         break;
+
       case EModuleFileDir.AutogenDir:
         dir = this.getModuleAutogenDir(moduleName);
         break;
+
       case EModuleFileDir.SourceDir:
         assert(false);
+        throw new Error();
+
       case EModuleFileDir.ModuleRootDir:
         assert(false);
+        throw new Error();
+
       default:
         assert(false);
+        throw new Error();
     }
 
     if (file.path.startsWith("/")) {
-      throw new GeneralError("File paths are not supposed to have a leading slash");
+      throw new GeneralError(
+        "File paths are not supposed to have a leading slash"
+      );
     }
     return join(dir, file.path);
   }
 
   async executeGenerator(gen: GeneratorConfig) {
-    if (gen.type !== "exec") throw new Error("Not implemented");
+    if (gen.type !== "exec") {
+      throw new Error("Not implemented");
+    }
 
     assert(this.currentModuleRootDir);
     console.log(`>> Running generator ${gen.name}...`);
@@ -1894,22 +2035,28 @@ export class ModuleCompiler {
         HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
         HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
         HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-        HAZE_C_COMPILER: HAZE_C_COMPILER,
-        HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
+        HAZE_C_COMPILER,
+        HAZE_CXX_COMPILER,
       },
       async () => {
-        const exitCode = await project.run(this.resolveExec(gen.exec), sourceloc, []);
+        const exitCode = await project.run(
+          this.resolveExec(gen.exec),
+          sourceloc,
+          []
+        );
         if (exitCode !== 0) {
-          throw new GeneralError(`Generator step ${gen.name} failed with exit code ${exitCode}`);
+          throw new GeneralError(
+            `Generator step ${gen.name} failed with exit code ${exitCode}`
+          );
         }
-      },
+      }
     );
 
     for (const file of gen.outputs) {
       const path = this.resolveGeneratorFile(file);
       if (!existsSync(path)) {
         throw new GeneralError(
-          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`,
+          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`
         );
       }
     }
@@ -1937,11 +2084,22 @@ export class ModuleCompiler {
       };
 
       const maybeStripExecutable = () => {
-        if (!isTopLevelModule || !this.strip) return;
-        if (this.config.moduleType !== ModuleType.Executable) return;
-        if (PLATFORM !== Platform.Linux) return;
-        const moduleExecutable = join(this.moduleDir, `bin/${this.config.name}`);
-        if (!existsSync(moduleExecutable)) return;
+        if (!(isTopLevelModule && this.strip)) {
+          return;
+        }
+        if (this.config.moduleType !== ModuleType.Executable) {
+          return;
+        }
+        if (PLATFORM !== Platform.Linux) {
+          return;
+        }
+        const moduleExecutable = join(
+          this.moduleDir,
+          `bin/${this.config.name}`
+        );
+        if (!existsSync(moduleExecutable)) {
+          return;
+        }
         exec(`strip --strip-unneeded "${moduleExecutable}"`);
       };
 
@@ -1975,23 +2133,33 @@ export class ModuleCompiler {
       env.CXX = HAZE_CXX_COMPILER;
 
       const buildCache = new ModuleBuildCache(
-        path.join(this.hazeWorkspaceDirectory, "module-build.cache.json"),
+        path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
       );
       buildCache.load();
 
       const compilerFingerprint = this.computeCompilerFingerprint();
-      const compilerKey = compilerFingerprint ? `${version}:${compilerFingerprint}` : `${version}`;
-      const cachedCompilerKey = buildCache.getModuleCompilerKey(this.config.name);
+      const compilerKey = compilerFingerprint
+        ? `${version}:${compilerFingerprint}`
+        : `${version}`;
+      const cachedCompilerKey = buildCache.getModuleCompilerKey(
+        this.config.name
+      );
       const compilerKeyChanged = cachedCompilerKey !== compilerKey;
       const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
 
       const initialRelevantFiles = await this.gatherModuleRelevantFiles();
-      const generatorsNeedRun = forceFullRebuild ? true : this.generatorsNeedRun();
+      const generatorsNeedRun = forceFullRebuild
+        ? true
+        : this.generatorsNeedRun();
       const moduleChanged = forceFullRebuild
         ? true
-        : buildCache.hasModuleChanged(this.config.name, initialRelevantFiles, compilerKey);
+        : buildCache.hasModuleChanged(
+            this.config.name,
+            initialRelevantFiles,
+            compilerKey
+          );
 
-      if (!moduleChanged && !generatorsNeedRun) {
+      if (!(moduleChanged || generatorsNeedRun)) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
         maybeStripExecutable();
         return;
@@ -2001,7 +2169,7 @@ export class ModuleCompiler {
         ? await this.runAllGenerators(forceFullRebuild)
         : false;
 
-      if (!moduleChanged && !generatorsRan) {
+      if (!(moduleChanged || generatorsRan)) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
         maybeStripExecutable();
         return;
@@ -2020,7 +2188,7 @@ export class ModuleCompiler {
         this.cc,
         this.config.moduleType === ModuleType.Library,
         this.config.name,
-        this.config.version,
+        this.config.version
       );
       // Semantic.PrettyPrintAnalyzed(sr);
       const lowered = LowerModule(sr);
@@ -2036,16 +2204,29 @@ export class ModuleCompiler {
       const moduleOFile = join(this.moduleDir, `build/${name}-${platform}.o`);
       const moduleAFile = join(this.moduleDir, `build/${name}-${platform}.a`);
       const moduleExecutable =
-        join(this.moduleDir, `bin/${name}`) + (PLATFORM === Platform.Win32 ? ".exe" : "");
+        join(this.moduleDir, `bin/${name}`) +
+        (PLATFORM === Platform.Win32 ? ".exe" : "");
 
       const moduleMetadataFile = join(this.moduleDir, "build/metadata.json");
-      const moduleOutputLib = join(this.moduleDir, "bin/" + this.config.name + ".hzlib");
-      const importFilePath = join(this.moduleDir, "build", HAZE_LIB_IMPORT_FILE);
+      const moduleOutputLib = join(
+        this.moduleDir,
+        "bin/" + this.config.name + ".hzlib"
+      );
+      const importFilePath = join(
+        this.moduleDir,
+        "build",
+        HAZE_LIB_IMPORT_FILE
+      );
 
       await mkdir(join(this.moduleDir, "build/"), { recursive: true });
       await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
 
-      const code = generateCode(this.config, this.moduleDir, allModules, lowered);
+      const code = generateCode(
+        this.config,
+        this.moduleDir,
+        allModules,
+        lowered
+      );
       await writeFile(moduleCFile, code);
 
       const compilerFlags = this.config.compilerFlags;
@@ -2056,43 +2237,46 @@ export class ModuleCompiler {
       compilerFlags.addAll("-Wno-parentheses-equality");
       compilerFlags.addAll("-Wno-extra-tokens");
 
-      interfaceMacros.addAll(`PCRE2_STATIC`);
+      interfaceMacros.addAll("PCRE2_STATIC");
 
       includeDirs.addAll(`${this.moduleDir}/bin/include`);
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
-      compilerFlags.addAll(`-fno-omit-frame-pointer`);
+      compilerFlags.addAll("-fno-omit-frame-pointer");
       linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
       linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib64"`);
 
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}`);
-      linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
-      linkerFlags.addLinux(`-llzma`);
+      linkerFlags.addLinux(
+        `"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`
+      );
+      linkerFlags.addLinux("-llzma");
 
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
       linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
       linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
-      linkerFlags.addAll(`-lgc`);
+      linkerFlags.addAll("-lgc");
       // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
 
       includeDirs.addAll(`${HAZE_GLOBAL_DIR}/pcre2/include`);
       linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`);
       linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib/"`);
-      linkerFlags.addAll(`-lpcre2-8`);
+      linkerFlags.addAll("-lpcre2-8");
       // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/pcre2/lib/gc.lib"`);
 
-      compilerFlags.addWin32(`-D_CRT_SECURE_NO_WARNINGS`);
-      linkerFlags.addWin32(`-fuse-ld=lld`);
-      linkerFlags.addWin32(`-lntdll`);
-      linkerFlags.addWin32(`-lkernel32`);
-      linkerFlags.addWin32(`-luser32`);
-      linkerFlags.addWin32(`-ladvapi32`);
+      compilerFlags.addWin32("-D_CRT_SECURE_NO_WARNINGS");
+      linkerFlags.addWin32("-fuse-ld=lld");
+      linkerFlags.addWin32("-lntdll");
+      linkerFlags.addWin32("-lkernel32");
+      linkerFlags.addWin32("-luser32");
+      linkerFlags.addWin32("-ladvapi32");
 
       compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
       compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
 
       compilerFlags.addLinux("-fPIC");
 
-      const compileCommands: CompileCommands = await this.loadDependencyCompileCommands();
+      const compileCommands: CompileCommands =
+        await this.loadDependencyCompileCommands();
       const writeCompileCommands = async () => {
         if (isTopLevelModule) {
           // If Top Level, remove all previous dirty hacks and write one clean entry.
@@ -2108,17 +2292,20 @@ export class ModuleCompiler {
 
           await writeFile(
             `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2),
+            JSON.stringify(cleanedCommands, null, 2)
           );
         } else {
           // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
 
           const addedFiles = new Set<string>();
           let currentCommands: CompileCommands;
-          let cleanedCommands: CompileCommands = [];
+          const cleanedCommands: CompileCommands = [];
           try {
             currentCommands = JSON.parse(
-              await readFile(`${this.hazeWorkspaceDirectory}/compile_commands.json`, "utf-8"),
+              await readFile(
+                `${this.hazeWorkspaceDirectory}/compile_commands.json`,
+                "utf-8"
+              )
             );
             for (const c of currentCommands) {
               if (!addedFiles.has(c.file)) {
@@ -2126,7 +2313,7 @@ export class ModuleCompiler {
                 cleanedCommands.push(c);
               }
             }
-          } catch (_e) {}
+          } catch {}
 
           for (const c of compileCommands) {
             if (!addedFiles.has(c.file)) {
@@ -2137,7 +2324,7 @@ export class ModuleCompiler {
 
           await writeFile(
             `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2),
+            JSON.stringify(cleanedCommands, null, 2)
           );
         }
       };
@@ -2176,12 +2363,22 @@ export class ModuleCompiler {
         compilerFlags.addAll(archives.map((l) => `"${l}"`));
       }
 
-      compilerFlags.addAll(this.config.macros.getAll().map((dir) => `-D${dir}`));
-      compilerFlags.addLinux(this.config.macros.getLinux().map((dir) => `-D${dir}`));
-      compilerFlags.addWin32(this.config.macros.getWin32().map((dir) => `-D${dir}`));
+      compilerFlags.addAll(
+        this.config.macros.getAll().map((dir) => `-D${dir}`)
+      );
+      compilerFlags.addLinux(
+        this.config.macros.getLinux().map((dir) => `-D${dir}`)
+      );
+      compilerFlags.addWin32(
+        this.config.macros.getWin32().map((dir) => `-D${dir}`)
+      );
       compilerFlags.addAll(interfaceMacros.getAll().map((dir) => `-D${dir}`));
-      compilerFlags.addLinux(interfaceMacros.getLinux().map((dir) => `-D${dir}`));
-      compilerFlags.addWin32(interfaceMacros.getWin32().map((dir) => `-D${dir}`));
+      compilerFlags.addLinux(
+        interfaceMacros.getLinux().map((dir) => `-D${dir}`)
+      );
+      compilerFlags.addWin32(
+        interfaceMacros.getWin32().map((dir) => `-D${dir}`)
+      );
       linkerFlags.addWin32(interfaceLinker.getWin32().map((dir) => `${dir}`));
 
       compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
@@ -2194,9 +2391,12 @@ export class ModuleCompiler {
 
       if (this.config.moduleType === ModuleType.Executable) {
         const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
-        const filePreamble = `// clang-format off\n\n`;
-        const filePostamble = `\n// clang-format on\n`;
-        await writeFile(moduleCFile, filePreamble + (await readFile(moduleCFile)) + filePostamble);
+        const filePreamble = "// clang-format off\n\n";
+        const filePostamble = "\n// clang-format on\n";
+        await writeFile(
+          moduleCFile,
+          filePreamble + (await readFile(moduleCFile)) + filePostamble
+        );
 
         const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -o "${moduleExecutable}" ${flags}`;
         // log(cmd);
@@ -2216,9 +2416,12 @@ export class ModuleCompiler {
         }
       } else {
         const flags = `${platformCompilerFlags.join(" ")}`;
-        const filePreamble = `// clang-format off\n\n`;
-        const filePostamble = `\n// clang-format on\n`;
-        await writeFile(moduleCFile, filePreamble + (await readFile(moduleCFile)) + filePostamble);
+        const filePreamble = "// clang-format off\n\n";
+        const filePostamble = "\n// clang-format on\n";
+        await writeFile(
+          moduleCFile,
+          filePreamble + (await readFile(moduleCFile)) + filePostamble
+        );
 
         const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -c -o "${moduleOFile}" ${flags}`;
         // log(cmd);
@@ -2239,16 +2442,19 @@ export class ModuleCompiler {
         // }
 
         if (PLATFORM === Platform.Linux) {
-          exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`);
+          exec(
+            `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`
+          );
         } else {
-          exec(`"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`);
+          exec(
+            `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`
+          );
         }
 
-        const makerel = (absolute: string) => {
-          return absolute
+        const makerel = (absolute: string) =>
+          absolute
             .replaceAll("\\", "/")
             .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
-        };
 
         const moduleMetadata: ModuleMetadata = {
           compilerVersion: version,
@@ -2264,9 +2470,9 @@ export class ModuleCompiler {
           ],
           linkerFlags: this.config.linkerFlags,
           interfaceLinkerFlags: this.config.interfaceLinkerFlags,
-          includeDirs: includeDirs,
-          interfaceMacros: interfaceMacros,
-          compileCommands: compileCommands,
+          includeDirs,
+          interfaceMacros,
+          compileCommands,
           fullModuleGraph: allModules,
           importFile: HAZE_LIB_IMPORT_FILE,
         };
@@ -2293,7 +2499,10 @@ export class ModuleCompiler {
             win32: moduleMetadata.interfaceMacros.getWin32(),
           },
         };
-        await writeFile(moduleMetadataFile, JSON.stringify(moduleMetadataSerialized, undefined, 2));
+        await writeFile(
+          moduleMetadataFile,
+          JSON.stringify(moduleMetadataSerialized, undefined, 2)
+        );
 
         const importFile = ExportSymbols(sr);
         await writeFile(importFilePath, importFile);
@@ -2304,8 +2513,12 @@ export class ModuleCompiler {
 
         await createTarGz(
           `${this.moduleDir}/build`,
-          [makerel(moduleAFile), makerel(importFilePath), makerel(moduleMetadataFile)],
-          moduleOutputLib,
+          [
+            makerel(moduleAFile),
+            makerel(importFilePath),
+            makerel(moduleMetadataFile),
+          ],
+          moduleOutputLib
         );
       }
       if (this.config.configFilePath) {
@@ -2317,7 +2530,11 @@ export class ModuleCompiler {
       }
 
       const finalRelevantFiles = await this.gatherModuleRelevantFiles();
-      buildCache.updateModule(this.config.name, finalRelevantFiles, compilerKey);
+      buildCache.updateModule(
+        this.config.name,
+        finalRelevantFiles,
+        compilerKey
+      );
       buildCache.save();
     });
   }
@@ -2347,7 +2564,7 @@ export class ModuleCompiler {
       const lib = meta.libs.find((l) => l.platform === this.config.platform);
       if (!lib) {
         throw new GeneralError(
-          `Lib ${meta.name} does not provide platform ${this.config.platform}`,
+          `Lib ${meta.name} does not provide platform ${this.config.platform}`
         );
       }
 
@@ -2360,18 +2577,18 @@ export class ModuleCompiler {
       interfaceLinker.merge(meta.interfaceLinkerFlags);
     });
 
-    return [archives, linkerFlags, includeDirs, interfaceMacros, interfaceLinker] as const;
+    return [
+      archives,
+      linkerFlags,
+      includeDirs,
+      interfaceMacros,
+      interfaceLinker,
+    ] as const;
   }
 
   private async loadDependencyCompileCommands() {
     const metadata = await this.loadDependenciesMetadata();
-    return (
-      metadata
-        .map((meta) => {
-          return meta.compileCommands;
-        })
-        .flat() ?? []
-    );
+    return metadata.flatMap((meta) => meta.compileCommands) ?? [];
   }
 
   private async loadDependenciesMetadata() {
@@ -2388,11 +2605,14 @@ export class ModuleCompiler {
         const libpath = join(
           join(this.hazeWorkspaceDirectory, dep.name),
           "bin",
-          dep.name + ".hzlib",
+          dep.name + ".hzlib"
         );
-        const metadata = await this.loadSingleDependencyMetadata(libpath, dep.name);
+        const metadata = await this.loadSingleDependencyMetadata(
+          libpath,
+          dep.name
+        );
         return metadata;
-      }),
+      })
     );
   }
 
@@ -2400,7 +2620,9 @@ export class ModuleCompiler {
     const tempdir = join(this.moduleDir, "__deps", libname);
     fs.mkdirSync(tempdir, { recursive: true });
     await extractTarGz(libpath, tempdir);
-    return parseModuleMetadata(await readFile(join(tempdir, "metadata.json"), "utf-8"));
+    return parseModuleMetadata(
+      await readFile(join(tempdir, "metadata.json"), "utf-8")
+    );
   }
 
   async collectImports() {
@@ -2413,12 +2635,16 @@ export class ModuleCompiler {
     }
 
     for (const dep of deps) {
-      const libpath = join(join(this.hazeWorkspaceDirectory, dep.name), "bin", dep.name + ".hzlib");
+      const libpath = join(
+        join(this.hazeWorkspaceDirectory, dep.name),
+        "bin",
+        dep.name + ".hzlib"
+      );
       // WARNING: For some weird reason this is required
       const _ = await this.loadSingleDependencyMetadata(libpath, dep.name);
       await this.collectDirectory(
         join(this.moduleDir, "__deps", dep.name),
-        ECollectionMode.ImportUnderRootDirectly,
+        ECollectionMode.ImportUnderRootDirectly
       );
     }
   }
