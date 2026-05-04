@@ -2411,6 +2411,16 @@ export class SemanticElaborator {
           memberAccess.sourceloc
         );
       }
+
+      const builtinSymbol = this.handleBuiltinSymbolValues(
+        memberAccess.memberName,
+        memberAccess.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+        memberAccess.sourceloc
+      );
+      if (builtinSymbol) {
+        return builtinSymbol;
+      }
+
       throw new CompilerError(
         `builtin namespace does not define any declarations named '${memberAccess.memberName}'`,
         memberAccess.sourceloc
@@ -4702,6 +4712,27 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.MemberAccessExpr: {
+        const leftExpr = this.sr.cc.exprNodes.get(type.expr);
+        if (
+          leftExpr.variant === Collect.ENode.SymbolValueExpr &&
+          leftExpr.name === "builtin"
+        ) {
+          if (leftExpr.genericArgs.length !== 0) {
+            throw new CompilerError(
+              `'builtin' Namespace cannot take generic arguments`,
+              type.sourceloc
+            );
+          }
+          const builtinSymbol = this.handleBuiltinSymbolValues(
+            type.memberName,
+            type.genericArgs.map((g) => this.expressionAsGenericArg(g)),
+            type.sourceloc
+          );
+          if (builtinSymbol) {
+            return this.evaluateExpressionToDatatype(builtinSymbol[1]);
+          }
+        }
+
         const result = this.resolveMemberAccess(
           this.expr(type.expr, {})[1],
           type.memberName,
@@ -4844,43 +4875,6 @@ export class SemanticElaborator {
       //     if (type.innerNested) {
       //       const innerTypeUse = this.sr.cc.typeUseNodes.get(type.innerNested);
       //       if (innerTypeUse.variant === Collect.ENode.NamedDatatype) {
-      //         if (innerTypeUse.name === "ShallowReactive") {
-      //           if (innerTypeUse.genericArgs.length !== 1) {
-      //             throw new CompilerError(
-      //               `rx.ShallowReactive<T> requires exactly 1 generic argument`,
-      //               type.sourceloc,
-      //             );
-      //           }
-
-      //           if (innerTypeUse.inline) {
-      //             throw new CompilerError(
-      //               `rx.ShallowReactive<T> cannot be inline`,
-      //               innerTypeUse.sourceloc,
-      //             );
-      //           }
-
-      //           if (innerTypeUse.innerNested) {
-      //             throw new CompilerError(
-      //               `rx.ShallowReactive<T> is not a namespace`,
-      //               innerTypeUse.sourceloc,
-      //             );
-      //           }
-
-      //           const [genericArgExpr] = this.expr(innerTypeUse.genericArgs[0], undefined);
-      //           if (genericArgExpr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
-      //             throw new CompilerError(
-      //               `rx.ShallowReactive<T> requires T to resolve to a datatype`,
-      //               type.sourceloc,
-      //             );
-      //           }
-
-      //           return makeShallowReactiveDatatypeAvailable(
-      //             this.sr,
-      //             genericArgExpr.type,
-      //             innerTypeUse.mutability,
-      //             innerTypeUse.sourceloc,
-      //           );
-      //         }
 
       //         if (innerTypeUse.name === "Reactive") {
       //           if (innerTypeUse.genericArgs.length !== 1) {
@@ -9539,6 +9533,53 @@ export class SemanticElaborator {
     }
   }
 
+  handleBuiltinSymbolValues(
+    name: string,
+    generics: Semantic.ExprId[],
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const assertGenericArgCount = (count: number) => {
+      if (generics.length !== count) {
+        throw new CompilerError(
+          `builtin.${name}<T> requires exactly ${count} generic ${count === 1 ? "argument" : "arguments"}`,
+          sourceloc
+        );
+      }
+    };
+
+    const assertExprIsDatatype = (
+      args: string,
+      arg: string,
+      exprId: Semantic.ExprId
+    ) => {
+      const expr = this.sr.exprNodes.get(exprId);
+      if (expr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+        throw new CompilerError(
+          `builtin.${name}${args} requires ${arg} to resolve to a datatype`,
+          sourceloc
+        );
+      }
+      return expr;
+    };
+
+    if (name === "__hz_shallow_reactive_t") {
+      assertGenericArgCount(1);
+      const T = assertExprIsDatatype("<T>", "T", generics[0]);
+      return this.sr.b.datatypeDefAsValue(
+        makeRawShallowReactiveDatatypeAvailable(this.sr, T.type),
+        sourceloc
+      );
+    }
+    if (name === "__hz_unwrap_reactive_t") {
+      assertGenericArgCount(1);
+      assertExprIsDatatype("<T>", "T", generics[0]);
+      const exprId = this.unwrapReactiveOrComputedIfPossible(generics[0]);
+      return [this.sr.exprNodes.get(exprId), exprId];
+    }
+
+    return null;
+  }
+
   symbolValue(
     symbolValue: Collect.SymbolValueExpr,
     inference: Semantic.Inference
@@ -9573,6 +9614,17 @@ export class SemanticElaborator {
         symbolValue.sourceloc
       );
     }
+
+    const generics = symbolValue.genericArgs.map((g) =>
+      this.withContext(
+        {
+          context: this.currentContext,
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => this.expressionAsGenericArg(g)
+      )
+    );
 
     const foundResult = Semantic.lookupSymbol(this.sr, symbolValue.name, {
       startLookupInScope: this.currentContext.currentScope,
@@ -9613,17 +9665,6 @@ export class SemanticElaborator {
     ) {
       const alias = this.sr.cc.typeDefNodes.get(symbol.typeDef);
       assert(alias.variant === Collect.ENode.TypeAliasDef);
-
-      const generics = symbolValue.genericArgs.map((g) =>
-        this.withContext(
-          {
-            context: this.currentContext,
-            inAttemptExpr: null,
-            inFunction: null,
-          },
-          () => this.expressionAsGenericArg(g)
-        )
-      );
 
       if (alias.generics.length !== generics.length) {
         throw new CompilerError(

@@ -2503,6 +2503,24 @@ export namespace Semantic {
         };
       }
 
+      case Semantic.ENode.TypeAliasDatatype: {
+        assert(type.concrete);
+
+        if (type.parentSymbolId) {
+          const names = getNamespaceChainFromDatatype(sr, type.parentSymbolId);
+          if (names.length === 1) {
+            return {
+              name: names[0].mangled,
+              wasMangled: names[0].wasMangled,
+            };
+          }
+        }
+        return {
+          name: `N${names.map((n) => n.mangled).join("")}E`,
+          wasMangled: true,
+        };
+      }
+
       case Semantic.ENode.GenericParameterDatatype: {
         return {
           name: type.name.length + type.name,

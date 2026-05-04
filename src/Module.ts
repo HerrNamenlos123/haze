@@ -485,8 +485,8 @@ async function catchErrors(fn: () => Promise<void>) {
     if (e instanceof GeneralError) {
       console.error(e.message);
     } else if (e instanceof InternalError) {
-      console.error(e.stack);
       console.error(e.message);
+      console.log(e.stack?.split("\n").slice(1, undefined).join("\n"));
     } else if (e instanceof CompilerError) {
       console.error(e.message);
     } else if (e instanceof UnreachableCode) {
@@ -629,7 +629,7 @@ class Cache {
     file: string
   ): Promise<{ file: string; modified: Date }> {
     const fileStat = await stat(file);
-    return { file, modified: fileStat.mtime };
+    return { file: file, modified: fileStat.mtime };
   }
 
   async load(filename: string) {
@@ -800,7 +800,7 @@ export class ModuleBuildCache {
       const legacy = parsed as LegacyModuleBuildCacheData;
       const migrated: ModuleBuildCacheData = {};
       for (const [moduleName, files] of Object.entries(legacy)) {
-        migrated[moduleName] = { files };
+        migrated[moduleName] = { files: files };
       }
       this.data = migrated;
       this.dirty = true;
@@ -879,7 +879,7 @@ export class ModuleBuildCache {
 
     this.data[moduleName] = {
       files: next,
-      compilerKey,
+      compilerKey: compilerKey,
     };
     this.dirty = true;
   }
@@ -1736,7 +1736,11 @@ export class ModuleCompiler {
           ...outputPaths,
         ])
       ) {
-        toRun.push({ gen, inputPaths, outputPaths });
+        toRun.push({
+          gen: gen,
+          inputPaths: inputPaths,
+          outputPaths: outputPaths,
+        });
       }
     }
 
@@ -2035,8 +2039,8 @@ export class ModuleCompiler {
         HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
         HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
         HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-        HAZE_C_COMPILER,
-        HAZE_CXX_COMPILER,
+        HAZE_C_COMPILER: HAZE_C_COMPILER,
+        HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
       },
       async () => {
         const exitCode = await project.run(
@@ -2470,9 +2474,9 @@ export class ModuleCompiler {
           ],
           linkerFlags: this.config.linkerFlags,
           interfaceLinkerFlags: this.config.interfaceLinkerFlags,
-          includeDirs,
-          interfaceMacros,
-          compileCommands,
+          includeDirs: includeDirs,
+          interfaceMacros: interfaceMacros,
+          compileCommands: compileCommands,
           fullModuleGraph: allModules,
           importFile: HAZE_LIB_IMPORT_FILE,
         };

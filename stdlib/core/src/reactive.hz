@@ -1,5 +1,8 @@
 
 namespace rx {
+    type ShallowReactive<T> = builtin.__hz_shallow_reactive_t<T>;
+    type UnwrapReactive<T> = builtin.__hz_unwrap_reactive_t<T>;
+
     export fn shallowReactive<T>(value: T): rx.ShallowReactive<T> {
 
         if comptime rx.IsShallowReactive<T> { 

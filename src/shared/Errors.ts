@@ -35,15 +35,15 @@ export function setDiagnosticSink(sink: DiagnosticSink | null) {
 export function formatSourceLoc(loc: SourceLocNotNull) {
   if (loc.end) {
     if (loc.end.line === loc.start.line) {
-      return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
+      return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}-${
         loc.end.column + 1
       }`;
     }
-    return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}-${
+    return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}-${
       loc.end.line
     }.${loc.end.column + 1}`;
   }
-  return `${JSON.stringify(loc.filename)}:${loc.start.line}:${loc.start.column + 1}`;
+  return `${loc.filename}:${loc.start.line}:${loc.start.column + 1}`;
 }
 
 function formatCompilerMessage(
@@ -78,7 +78,12 @@ export function printCompilerMessage(
   loc?: SourceLoc
 ): void {
   if (diagnosticSink) {
-    diagnosticSink({ type, message: msg, loc, title: error ?? undefined });
+    diagnosticSink({
+      type: type,
+      message: msg,
+      loc: loc,
+      title: error ?? undefined,
+    });
     return;
   }
   console.log(formatCompilerMessage(type, error, msg, loc));
