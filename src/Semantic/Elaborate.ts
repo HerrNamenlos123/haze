@@ -6171,7 +6171,7 @@ export class SemanticElaborator {
           `Method ${Semantic.serializeFullSymbolName(
             this.sr,
             elaboratedMethodId
-          )} is static but is called through an object`,
+          )}() is static but is called through an object`,
           sourceloc
         );
       }
@@ -6184,7 +6184,7 @@ export class SemanticElaborator {
           `Method ${Semantic.serializeFullSymbolName(
             this.sr,
             elaboratedMethodId
-          )} can mutate the object but is not called on an object that is mutable. Is it called on a const object?`,
+          )}() can mutate the object but is not called on an object that is mutable. Is it called on a const object?`,
           sourceloc
         );
       }
@@ -6197,7 +6197,7 @@ export class SemanticElaborator {
           `Method ${Semantic.serializeFullSymbolName(
             this.sr,
             elaboratedMethodId
-          )} requires the object it is called on to be const (fully immutable).`,
+          )}() requires the object it is called on to be const (fully immutable).`,
           sourceloc
         );
       }
@@ -6313,8 +6313,6 @@ export class SemanticElaborator {
   ): [Semantic.Expression, Semantic.ExprId] {
     const genericArgs = generics.map((g) => this.expressionAsGenericArg(g));
     let expr = this.sr.exprNodes.get(exprId);
-
-    // console.log("Resolve", name, expr.variant);
 
     // Handle datatypes BEFORE reactive unwrapping
     // TODO: Why? Can't remember
@@ -6629,7 +6627,7 @@ export class SemanticElaborator {
     if (exprType.variant === Semantic.ENode.StructDatatype) {
       // Call again recursively and handle on the top, to unwrap
       return this.resolveMemberAccess(
-        this.sr.b.datatypeDefAsValue(exprTypeUse.type, sourceloc)[1],
+        this.sr.b.datatypeUseAsValue(expr.type, sourceloc)[1],
         name,
         generics,
         inference,
@@ -11026,7 +11024,8 @@ export class SemanticElaborator {
     );
   }
 
-  private isParameterPackType(typeUseId: Semantic.TypeUseId): boolean {
+  private;
+  isParameterPackType(typeUseId: Semantic.TypeUseId): boolean {
     const typeUse = this.sr.typeUseNodes.get(typeUseId);
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
     return typeDef.variant === Semantic.ENode.ParameterPackDatatype;

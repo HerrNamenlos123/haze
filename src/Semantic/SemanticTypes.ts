@@ -2765,6 +2765,9 @@ export namespace Semantic {
         if (symbol.variant === Semantic.ENode.VariableSymbol) {
           return symbol.name;
         }
+        if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+          return Semantic.serializeTypeDef(sr, symbol.datatype);
+        }
         if (symbol.variant === Semantic.ENode.FunctionSymbol) {
           const generic =
             symbol.generics.length > 0
