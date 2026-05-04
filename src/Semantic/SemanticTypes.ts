@@ -432,6 +432,7 @@ export namespace Semantic {
   export type TypeAliasDatatypeDef = {
     variant: ENode.TypeAliasDatatype;
     name: string;
+    generics: ExprId[];
     parentSymbolId: SymbolId | null;
     targetType: Semantic.TypeUseId;
     concrete: boolean; // For consistency, always true
@@ -1737,6 +1738,24 @@ export namespace Semantic {
     return s;
   }
 
+  export function canonicalizeTypeDef(
+    sr: Semantic.Context,
+    typeDefId: TypeDefId
+  ) {
+    const typeDef = sr.typeDefNodes.get(typeDefId);
+    if (typeDef.variant === Semantic.ENode.TypeAliasDatatype) {
+      return typeDef.targetType;
+    }
+  }
+
+  export function canonicalizeTypeUse(
+    sr: Semantic.Context,
+    typeUseId: TypeUseId
+  ) {
+    const typeUse = sr.typeUseNodes.get(typeUseId);
+    return canonicalizeTypeDef(sr, typeUse.type);
+  }
+
   export function serializeTypeUse(
     sr: Semantic.Context,
     datatypeId: Semantic.TypeUseId
@@ -1828,7 +1847,8 @@ export namespace Semantic {
     if (
       type.variant !== Semantic.ENode.StructDatatype &&
       type.variant !== Semantic.ENode.EnumDatatype &&
-      type.variant !== Semantic.ENode.NamespaceDatatype
+      type.variant !== Semantic.ENode.NamespaceDatatype &&
+      type.variant !== Semantic.ENode.TypeAliasDatatype
     ) {
       const mangle = mangleTypeDef(sr, typeId);
       return [
@@ -1847,10 +1867,12 @@ export namespace Semantic {
       mangled: type.name.length + type.name,
       wasMangled: true,
       isMonomorphized: false,
-      isExported: type.export,
+      isExported:
+        type.variant !== Semantic.ENode.TypeAliasDatatype && type.export,
     };
     if (
-      type.variant === Semantic.ENode.StructDatatype &&
+      (type.variant === Semantic.ENode.StructDatatype ||
+        type.variant === Semantic.ENode.TypeAliasDatatype) &&
       type.generics.length > 0
     ) {
       current.isMonomorphized = true;
@@ -2506,14 +2528,12 @@ export namespace Semantic {
       case Semantic.ENode.TypeAliasDatatype: {
         assert(type.concrete);
 
-        if (type.parentSymbolId) {
-          const names = getNamespaceChainFromDatatype(sr, type.parentSymbolId);
-          if (names.length === 1) {
-            return {
-              name: names[0].mangled,
-              wasMangled: names[0].wasMangled,
-            };
-          }
+        const names = getNamespaceChainFromDatatype(sr, typeId);
+        if (names.length === 1) {
+          return {
+            name: names[0].mangled,
+            wasMangled: true,
+          };
         }
         return {
           name: `N${names.map((n) => n.mangled).join("")}E`,

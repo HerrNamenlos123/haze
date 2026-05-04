@@ -36,7 +36,11 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import { makeTempId, makeTempName } from "../shared/store";
-import { ConditionChain, ConstraintSet } from "./Constraint";
+import {
+  ConditionChain,
+  type ConstraintPath,
+  ConstraintSet,
+} from "./Constraint";
 import { Conversion } from "./Conversion";
 import {
   ctValueToExpr,
@@ -3343,7 +3347,10 @@ export class SemanticElaborator {
         let reason = null as string | null;
         signature.parameters.forEach((signatureParam, i) => {
           const passed = calledWithArgs.find((a) => a.index === i);
-          if (!(passed && passed.exprId)) {
+          if (
+            !(passed && passed.exprId) ||
+            signatureParam.kind === "param-pack"
+          ) {
             // This parameter is not passed or is not concrete, so hope that the others are enough for a match
             // matches = false;
             // reason = `Parameter #${i + 1} does not have a concrete type`;
@@ -3697,6 +3704,7 @@ export class SemanticElaborator {
     // For each parameter, check if its type is directly a generic parameter
     for (let i = 0; i < functionSignature.parameters.length; i++) {
       const param = functionSignature.parameters[i];
+      assert(param.kind !== "param-pack");
       const paramTypeUse = this.sr.typeUseNodes.get(param.type);
       const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
 
@@ -4606,6 +4614,7 @@ export class SemanticElaborator {
         return this.sr.b.addType(this.sr, {
           variant: Semantic.ENode.TypeAliasDatatype,
           targetType: aliasedTypeId,
+          generics: genericArgs,
           name: typedef.name,
           parentSymbolId: parent,
           concrete: true,

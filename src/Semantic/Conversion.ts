@@ -747,8 +747,8 @@ export namespace Conversion {
           return [];
         }
         values.ranges.push({
-          max,
-          min,
+          max: max,
+          min: min,
         });
         return values.normalize();
       },
@@ -773,7 +773,7 @@ export namespace Conversion {
         if (min !== undefined && max !== undefined && min > max) {
           return null;
         }
-        return { min, max };
+        return { min: min, max: max };
       },
       constrainMin: (v: bigint) => {
         if (values.ranges.length === 0) {
@@ -812,14 +812,14 @@ export namespace Conversion {
           if (r.min === undefined || r.min <= v - 1n) {
             const max = r.max !== undefined && r.max < v ? r.max : v - 1n;
             if (r.min === undefined || max >= r.min) {
-              out.push({ min: r.min, max });
+              out.push({ min: r.min, max: max });
             }
           }
           // right part
           if (r.max === undefined || r.max >= v + 1n) {
             const min = r.min !== undefined && r.min > v ? r.min : v + 1n;
             if (r.max === undefined || min <= r.max) {
-              out.push({ min, max: r.max });
+              out.push({ min: min, max: r.max });
             }
           }
         }
@@ -966,13 +966,13 @@ export namespace Conversion {
     return {
       possibleVariants: new Set<Semantic.TypeUseId>(),
 
-      addVariants(members: Semantic.TypeUseId[]) {
+      addVariants: function (members: Semantic.TypeUseId[]) {
         for (const m of members) {
           this.possibleVariants.add(m);
         }
       },
 
-      constrainFromConstraints(
+      constrainFromConstraints: function (
         constraints: ConstraintSet,
         fromExprId: Semantic.ExprId
       ) {
@@ -998,7 +998,7 @@ export namespace Conversion {
         }
       },
 
-      constrainFromConstraint(cv: ConstraintValue) {
+      constrainFromConstraint: function (cv: ConstraintValue) {
         if (cv.kind === "union") {
           if (cv.operation === "is") {
             // Keep only this variant
@@ -1190,12 +1190,12 @@ export namespace Conversion {
           variant: Semantic.ENode.MemberAccessExpr,
           instanceIds: [...fromExpr.instanceIds],
           expr: fromExprId,
-          memberName,
+          memberName: memberName,
           type: memberType,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: true,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1];
 
         assign.push({
@@ -1210,20 +1210,20 @@ export namespace Conversion {
         {
           variant: Semantic.ENode.StructLiteralExpr,
           instanceIds: [Semantic.makeInstanceId(sr)],
-          assign,
+          assign: assign,
           type: toId,
           inFunction: sr.e.inFunction,
           allocator: null,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: true,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         }
       );
 
       // Add instance dependencies
       if (sr.e.inFunction) {
-        const functionSymbol = sr.e.getSymbol(sr.e.inFunction);
+        const functionSymbol = sr.e.sr.symbolNodes.get(sr.e.inFunction);
         assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
         literal.instanceIds.forEach((i) =>
           functionSymbol.createsInstanceIds.add(i)
@@ -1279,10 +1279,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1300,10 +1300,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1361,10 +1361,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1397,10 +1397,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1416,10 +1416,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1471,10 +1471,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1494,10 +1494,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1529,10 +1529,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1634,10 +1634,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1657,10 +1657,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1692,10 +1692,10 @@ export namespace Conversion {
           instanceIds: fromExpr.instanceIds,
           expr: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: fromExpr.isTemporary,
-          flow,
-          writes,
+          flow: flow,
+          writes: writes,
         })[1]
       );
     }
@@ -1711,10 +1711,10 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -1730,10 +1730,10 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -1750,10 +1750,10 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -1766,10 +1766,10 @@ export namespace Conversion {
                 instanceIds: fromExpr.instanceIds,
                 expr: fromExprId,
                 type: toId,
-                sourceloc,
+                sourceloc: sourceloc,
                 isTemporary: fromExpr.isTemporary,
-                flow,
-                writes,
+                flow: flow,
+                writes: writes,
               })[1]
             );
           }
@@ -1841,10 +1841,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             type: toId,
             index: matching,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1890,10 +1890,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             type: toId,
             index: matchingIndex,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1934,10 +1934,10 @@ export namespace Conversion {
             expr: fromExprId,
             type: toId,
             castComesFromNarrowingAndMayBeUnwrapped: false,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -1973,13 +1973,13 @@ export namespace Conversion {
                 variant: Semantic.ENode.UnionTagCheckExpr,
                 comparisonTypesAnd: [okTag.type],
                 expr: fromExprId,
-                sourceloc,
+                sourceloc: sourceloc,
                 invertCheck: false,
                 isTemporary: true,
                 instanceIds: [],
                 type: toId,
-                flow,
-                writes,
+                flow: flow,
+                writes: writes,
               })[1]
             );
           }
@@ -2020,13 +2020,13 @@ export namespace Conversion {
               variant: Semantic.ENode.UnionTagCheckExpr,
               comparisonTypesAnd: types,
               expr: fromExprId,
-              sourceloc,
+              sourceloc: sourceloc,
               invertCheck: true,
               isTemporary: true,
               instanceIds: [],
               type: toId,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -2047,12 +2047,12 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            tag,
+            tag: tag,
             canBeUnwrappedForLHS: false,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -2079,10 +2079,10 @@ export namespace Conversion {
               expr: fromExprId,
               type: toId,
               castComesFromNarrowingAndMayBeUnwrapped: false,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -2118,10 +2118,10 @@ export namespace Conversion {
               expr: fromExprId,
               type: toId,
               castComesFromNarrowingAndMayBeUnwrapped: false,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -2174,10 +2174,10 @@ export namespace Conversion {
             instanceIds: fromExpr.instanceIds,
             expr: fromExprId,
             type: toId,
-            sourceloc,
+            sourceloc: sourceloc,
             isTemporary: fromExpr.isTemporary,
-            flow,
-            writes,
+            flow: flow,
+            writes: writes,
           })[1]
         );
       }
@@ -2204,10 +2204,10 @@ export namespace Conversion {
               instanceIds: fromExpr.instanceIds,
               expr: fromExprId,
               type: toId,
-              sourceloc,
+              sourceloc: sourceloc,
               isTemporary: fromExpr.isTemporary,
-              flow,
-              writes,
+              flow: flow,
+              writes: writes,
             })[1]
           );
         }
@@ -2225,7 +2225,7 @@ export namespace Conversion {
           instanceIds: [],
           value: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: true,
           flow: Semantic.FlowResult.fallthrough(),
           writes: Semantic.WriteResult.empty(),
@@ -2244,7 +2244,7 @@ export namespace Conversion {
           instanceIds: [],
           value: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: true,
           flow: Semantic.FlowResult.fallthrough(),
           writes: Semantic.WriteResult.empty(),
@@ -2263,7 +2263,7 @@ export namespace Conversion {
           instanceIds: [],
           value: fromExprId,
           type: toId,
-          sourceloc,
+          sourceloc: sourceloc,
           isTemporary: true,
           flow: Semantic.FlowResult.fallthrough(),
           writes: Semantic.WriteResult.empty(),
