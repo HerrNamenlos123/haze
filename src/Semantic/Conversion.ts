@@ -6,7 +6,11 @@ import {
   EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
-import { EPrimitive, primitiveToString } from "../shared/common";
+import {
+  EPrimitive,
+  type LiteralValue,
+  primitiveToString,
+} from "../shared/common";
 import {
   assert,
   CompilerError,
@@ -1070,196 +1074,163 @@ export namespace Conversion {
     throw new CompilerError(c.error, sourceloc);
   }
 
-  export function MakeConversion(
-    sr: Semantic.Context,
-    fromExprId: Semantic.ExprId,
-    toId: Semantic.TypeUseId,
-    constraints: ConstraintSet,
-    sourceloc: SourceLoc,
-    mode: Mode,
-    unsafe?: boolean
-  ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
-    const fromExpr = sr.exprNodes.get(fromExprId);
-
-    // Intrinsic values cannot be assigned to variables - they can only be called
-    if (fromExpr.variant === Semantic.ENode.IntrinsicSymbol) {
-      return {
-        ok: false as const,
-        error:
-          "Intrinsic functions cannot be assigned to variables. They may only be called directly.",
+  type ConversionPlanSuccess =
+    | {
+        kind: "keep";
+      }
+    | {
+        kind: "produce-literal";
+        literalValue: LiteralValue;
+      }
+    | {
+        kind: "basic-c-cast";
+      }
+    | {
+        kind: "reactive-read";
+      }
+    | {
+        kind: "computed-read";
+      }
+    | {
+        kind: "union-to-value";
+        tag: number;
+      }
+    | {
+        kind: "value-to-union";
+        index: number;
+      }
+    | {
+        kind: "union-to-union";
+      }
+    | {
+        kind: "union-tag-check";
+        comparisonTypesAnd: Semantic.TypeUseId[];
+        invertCheck: boolean;
+      }
+    | {
+        kind: "clone-struct-to-target-type";
       };
-    }
 
-    const fromTypeInstance = sr.typeUseNodes.get(fromExpr.type);
-    const fromType = sr.typeDefNodes.get(fromTypeInstance.type);
-    const toInstance = sr.typeUseNodes.get(toId);
-    const to = sr.typeDefNodes.get(toInstance.type);
+  type ConversionPlanError = {
+    kind: "error";
+    message: string;
+  };
 
-    const flow = fromExpr.flow;
-    const writes = fromExpr.writes;
+  type ConversionPlan = ConversionPlanSuccess | ConversionPlanError;
 
-    const fromTypeText = Semantic.serializeTypeUse(sr, fromExpr.type);
-    const toTypeText = Semantic.serializeTypeUse(sr, toId);
+  function buildConversionPlan(
+    sr: Semantic.Context,
+    sourceExprId: Semantic.ExprId,
+    rawTargetTypeUseId: Semantic.TypeUseId,
+    constraints: ConstraintSet,
+    _sourceloc: SourceLoc,
+    mode: Mode,
+    unsafe: boolean
+  ): ConversionPlan {
+    // WARNING: It is very important that the types are canonicalized here!!! (Resolving aliases)
+    // In order to make aliases comparable.
+    // All of those types are already fully resolved. They all must be used for type checking, BUT they cannot be
+    // used for anything else, they CANNOT be returned, because otherwise later code will use the incorrect alias
+    // values.
+    const sourceExpr = sr.exprNodes.get(sourceExprId);
+    const resolvedSourceTypeUseId = sr.e.resolveAlias(sourceExpr.type);
+    const resolvedSourceTypeUse = sr.typeUseNodes.get(resolvedSourceTypeUseId);
+    const resolvedSourceTypeDefId = resolvedSourceTypeUse.type;
+    const resolvedSourceTypeDef = sr.typeDefNodes.get(resolvedSourceTypeDefId);
+    const resolvedTargetTypeUseId = sr.e.resolveAlias(rawTargetTypeUseId);
+    const resolvedTargetTypeUse = sr.typeUseNodes.get(resolvedTargetTypeUseId);
+    const resolvedTargetTypeDefId = resolvedTargetTypeUse.type;
+    const resolvedTargetTypeDef = sr.typeDefNodes.get(resolvedTargetTypeDefId);
+    const sourceTypeText = Semantic.serializeTypeUseWithAliasAKA(
+      sr,
+      sourceExpr.type
+    );
+    const targetTypeText = Semantic.serializeTypeUseWithAliasAKA(
+      sr,
+      rawTargetTypeUseId
+    );
 
-    const ok = (v: Semantic.ExprId) => ({ ok: true as const, expr: v });
-    const err = (msg: string) => ({ ok: false as const, error: msg });
-
-    // naive return, it's the same type so remove the cast
-    if (fromExpr.type === toId) {
-      return ok(fromExprId);
+    // naive return, it's the same type so just remove the cast
+    if (resolvedSourceTypeUseId === resolvedTargetTypeUseId) {
+      return { kind: "keep" };
     }
 
     // Conversion from LiteralDatatype to PrimitiveDatatype
     // When a literal type like "hello" (LiteralDatatype) needs to become str (PrimitiveDatatype)
     if (
-      fromType.variant === Semantic.ENode.LiteralDatatype &&
-      to.variant === Semantic.ENode.PrimitiveDatatype
+      resolvedSourceTypeDef.variant === Semantic.ENode.LiteralDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype
     ) {
-      const literalValue = fromType.literalValue;
-      // Check if the literal type matches the target primitive type
-      if (literalValue.type === to.primitive) {
-        // Create a literal expression with the value from the literal datatype
-        return ok(sr.b.literalValue(literalValue, sourceloc)[1]);
+      if (
+        resolvedSourceTypeDef.literalValue.type ===
+        resolvedTargetTypeDef.primitive
+      ) {
+        return {
+          kind: "produce-literal",
+          literalValue: resolvedSourceTypeDef.literalValue,
+        };
       }
       // Handle conversion from string literal to cstr/ccstr
       if (
-        literalValue.type === EPrimitive.str &&
-        (to.primitive === EPrimitive.cstr || to.primitive === EPrimitive.ccstr)
+        resolvedSourceTypeDef.literalValue.type === EPrimitive.str &&
+        (resolvedTargetTypeDef.primitive === EPrimitive.cstr ||
+          resolvedTargetTypeDef.primitive === EPrimitive.ccstr)
       ) {
-        return ok(
-          sr.b.literalValue(
-            {
-              type: to.primitive,
-              prefix: null,
-              value: literalValue.value,
-            },
-            sourceloc
-          )[1]
-        );
+        return {
+          kind: "produce-literal",
+          literalValue: {
+            type: resolvedTargetTypeDef.primitive,
+            prefix: null,
+            value: resolvedSourceTypeDef.literalValue.value,
+          },
+        };
       }
     }
 
     // Conversion from str to cstr
     if (
-      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-      to.variant === Semantic.ENode.PrimitiveDatatype &&
-      fromType.primitive === EPrimitive.str &&
-      (to.primitive === EPrimitive.cstr || to.primitive === EPrimitive.ccstr)
+      resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      resolvedSourceTypeDef.primitive === EPrimitive.str &&
+      (resolvedTargetTypeDef.primitive === EPrimitive.cstr ||
+        resolvedTargetTypeDef.primitive === EPrimitive.ccstr)
     ) {
-      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
-        assert(fromExpr.literal.type === EPrimitive.str);
-        return ok(
-          sr.b.literalValue(
-            {
-              type: to.primitive,
-              prefix: null,
-              value: fromExpr.literal.value,
-            },
-            fromExpr.sourceloc
-          )[1]
-        );
+      if (sourceExpr.variant === Semantic.ENode.LiteralExpr) {
+        assert(sourceExpr.literal.type === EPrimitive.str);
+        return {
+          kind: "produce-literal",
+          literalValue: {
+            type: resolvedTargetTypeDef.primitive,
+            prefix: null,
+            value: sourceExpr.literal.value,
+          },
+        };
       }
-      return err(
-        "Conversion from str to cstr/ccstr (char*/const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. For runtime strings, use str.cstr(arena)."
-      );
+      return {
+        kind: "error",
+        message:
+          "Conversion from str to cstr/ccstr (char*/const char*) is not possible because the value is not known at compile time, therefore no C string literal can be emitted that preserves null termination. Either make sure the value is known at compile time, or use 'str.cstr(arena)' to clone the string at runtime.",
+      };
     }
 
     // Conversion between inline/non-inline structs of the same type
     // Since a copy always happens, mutability doesn't matter
     if (
-      fromType.variant === Semantic.ENode.StructDatatype &&
-      to.variant === Semantic.ENode.StructDatatype &&
-      fromTypeInstance.type === toInstance.type &&
-      fromTypeInstance.inline !== toInstance.inline
+      resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.StructDatatype &&
+      resolvedSourceTypeUse.type === resolvedTargetTypeUse.type &&
+      resolvedSourceTypeUse.inline !== resolvedTargetTypeUse.inline
     ) {
-      // Create a struct literal that copies all members from the source struct
-      const assign: { name: string; value: Semantic.ExprId }[] = [];
-
-      fromType.members.forEach((memberSymbolId) => {
-        const memberSymbol = sr.symbolNodes.get(memberSymbolId);
-        if (memberSymbol.variant !== Semantic.ENode.VariableSymbol) {
-          return;
-        }
-
-        const memberName = memberSymbol.name;
-        const memberType = memberSymbol.type;
-        assert(memberType);
-
-        // Create a member access expression for this member
-        const memberAccessId = sr.b.addExpr(sr, {
-          variant: Semantic.ENode.MemberAccessExpr,
-          instanceIds: [...fromExpr.instanceIds],
-          expr: fromExprId,
-          memberName: memberName,
-          type: memberType,
-          sourceloc: sourceloc,
-          isTemporary: true,
-          flow: flow,
-          writes: writes,
-        })[1];
-
-        assign.push({
-          name: memberName,
-          value: memberAccessId,
-        });
-      });
-
-      // Create the struct literal expression
-      const [literal, literalId] = sr.b.addExpr<Semantic.StructLiteralExpr>(
-        sr,
-        {
-          variant: Semantic.ENode.StructLiteralExpr,
-          instanceIds: [Semantic.makeInstanceId(sr)],
-          assign: assign,
-          type: toId,
-          inFunction: sr.e.inFunction,
-          allocator: null,
-          sourceloc: sourceloc,
-          isTemporary: true,
-          flow: flow,
-          writes: writes,
-        }
-      );
-
-      // Add instance dependencies
-      if (sr.e.inFunction) {
-        const functionSymbol = sr.e.sr.symbolNodes.get(sr.e.inFunction);
-        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
-        literal.instanceIds.forEach((i) =>
-          functionSymbol.createsInstanceIds.add(i)
-        );
-      }
-
-      assign.forEach((a) => {
-        const member = fromType.members.find((m) => {
-          const varsym = sr.symbolNodes.get(m);
-          return (
-            varsym.variant === Semantic.ENode.VariableSymbol &&
-            varsym.name === a.name
-          );
-        });
-        assert(member);
-
-        const value = sr.exprNodes.get(a.value);
-        literal.flow.addAll(value.flow);
-        literal.writes.addAll(value.writes);
-
-        Semantic.addStructMemberInstanceDeps(
-          sr.e.currentContext.instanceDeps,
-          literal.instanceIds[0],
-          member,
-          value.instanceIds
-        );
-      });
-
-      return ok(literalId);
+      return {
+        kind: "clone-struct-to-target-type",
+      };
     }
 
     // Conversion from T[N] to T[]
     // if (
-    //   fromType.variant === Semantic.ENode.ArrayDatatype &&
-    //   to.variant === Semantic.ENode.SliceDatatype &&
-    //   fromType.datatype === to.datatype
+    //   resolvedSourceTypeDef.variant === Semantic.ENode.ArrayDatatype &&
+    //   resolvedTargetTypeDef.variant === Semantic.ENode.SliceDatatype &&
+    //   resolvedSourceTypeDef.datatype === resolvedTargetTypeDef.datatype
     // ) {
     //   return Semantic.addNode(sr, {
     //     variant:
@@ -1268,82 +1239,88 @@ export namespace Conversion {
 
     // From none to cptr (represents nullptr)
     if (
-      fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-      fromType.primitive === EPrimitive.none &&
-      to.variant === Semantic.ENode.PrimitiveDatatype &&
-      to.primitive === EPrimitive.cptr
+      resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      resolvedSourceTypeDef.primitive === EPrimitive.none &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      resolvedTargetTypeDef.primitive === EPrimitive.cptr
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // From object reference to cptr
     if (
-      fromType.variant === Semantic.ENode.StructDatatype &&
-      !fromTypeInstance.inline &&
-      to.variant === Semantic.ENode.PrimitiveDatatype &&
-      to.primitive === EPrimitive.cptr
+      resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
+      !resolvedSourceTypeUse.inline &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+      resolvedTargetTypeDef.primitive === EPrimitive.cptr
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // Function conversions
     if (
-      fromType.variant === Semantic.ENode.FunctionDatatype &&
-      to.variant === Semantic.ENode.FunctionDatatype
+      resolvedSourceTypeDef.variant === Semantic.ENode.FunctionDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.FunctionDatatype
     ) {
-      if (!to.requires.final) {
-        return err(
-          "Cannot use a non-final function datatype as a conversion target"
-        );
+      if (!resolvedTargetTypeDef.requires.final) {
+        return {
+          kind: "error",
+          message:
+            "Cannot use a non-final function datatype as a conversion target",
+        };
       }
 
-      if (!fromType.requires.final) {
-        return err(
-          "Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion."
-        );
+      if (!resolvedSourceTypeDef.requires.final) {
+        return {
+          kind: "error",
+          message:
+            "Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.",
+        };
       }
 
-      if (!fromType.requires.pure && to.requires.pure) {
-        return err(
-          "Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have."
-        );
+      if (
+        !resolvedSourceTypeDef.requires.pure &&
+        resolvedTargetTypeDef.requires.pure
+      ) {
+        return {
+          kind: "error",
+          message:
+            "Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.",
+        };
       }
 
-      const concreteMatch = fromType.concrete && to.concrete;
-      const varargMatch = fromType.vararg === to.vararg;
-      const noreturnMatch = fromType.requires.noreturn === to.requires.noreturn;
+      const concreteMatch =
+        resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete;
+      const varargMatch =
+        resolvedSourceTypeDef.vararg === resolvedTargetTypeDef.vararg;
+      const noreturnMatch =
+        resolvedSourceTypeDef.requires.noreturn ===
+        resolvedTargetTypeDef.requires.noreturn;
       const noreturnIfMatch =
-        fromType.requires.noreturnIf?.expr === to.requires.noreturnIf?.expr;
-      const returnTypeMatch = fromType.returnType === to.returnType;
+        resolvedSourceTypeDef.requires.noreturnIf?.expr ===
+        resolvedTargetTypeDef.requires.noreturnIf?.expr;
+      const returnTypeMatch =
+        sr.e.resolveAlias(resolvedSourceTypeDef.returnType) ===
+        sr.e.resolveAlias(resolvedTargetTypeDef.returnType);
       const paramLengthMatch =
-        fromType.parameters.length === to.parameters.length;
+        resolvedSourceTypeDef.parameters.length ===
+        resolvedTargetTypeDef.parameters.length;
       // Compare parameter types, not the parameter objects themselves (which may have different names, etc.)
       const paramsMatch =
-        fromType.parameters.length === to.parameters.length &&
-        fromType.parameters.every((p, i) => to.parameters[i].type === p.type);
-      const purityOk = !to.requires.pure || fromType.requires.pure;
+        resolvedSourceTypeDef.parameters.length ===
+          resolvedTargetTypeDef.parameters.length &&
+        resolvedSourceTypeDef.parameters.every(
+          (p, i) =>
+            sr.e.resolveAlias(resolvedTargetTypeDef.parameters[i].type) ===
+            sr.e.resolveAlias(p.type)
+        );
+      const purityOk =
+        !resolvedTargetTypeDef.requires.pure ||
+        resolvedSourceTypeDef.requires.pure;
 
       if (
         concreteMatch &&
@@ -1355,33 +1332,25 @@ export namespace Conversion {
         paramsMatch &&
         purityOk
       ) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "basic-c-cast",
+        };
       }
 
       // If we reach here, the function types are incompatible
       // Fall through to "No suitable conversion" error below
+      // TODO: Better error on why functions are incompatible
     }
 
     // Conversion between Integers
     if (
-      Conversion.isIntegerById(sr, fromTypeInstance.type) &&
-      Conversion.isIntegerById(sr, toInstance.type)
+      Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
+      Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)
     ) {
-      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const fi = sr.typeUseNodes.get(sourceExpr.type);
       const f = sr.typeDefNodes.get(fi.type);
       assert(f.variant === Semantic.ENode.PrimitiveDatatype);
-      const ti = sr.typeUseNodes.get(toId);
+      const ti = sr.typeUseNodes.get(resolvedTargetTypeUseId);
       const t = sr.typeDefNodes.get(ti.type);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
       const fromSigned = Conversion.isSignedInteger(f.primitive);
@@ -1391,37 +1360,19 @@ export namespace Conversion {
 
       if (fromSigned === toSigned && toBits >= fromBits) {
         // Totally safe
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "basic-c-cast",
+        };
       }
       const source = valueNarrowing(sr);
       source.addRange(...Conversion.getIntegerMinMax(f.primitive));
-      source.constrainExactFromExprIfPossible(fromExprId);
-      source.constrainFromConstraints(constraints, fromExprId);
+      source.constrainExactFromExprIfPossible(sourceExprId);
+      source.constrainFromConstraints(constraints, sourceExprId);
 
       if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "basic-c-cast",
+        };
       }
 
       let sourceRangeText = "";
@@ -1435,82 +1386,63 @@ export namespace Conversion {
         )}`;
       }
 
-      return err(
-        `No safe conversion from '${Semantic.serializeTypeUse(
-          sr,
-          fromExpr.type
-        )}' to '${Semantic.serializeTypeUse(
-          sr,
-          toId
-        )}' is known: Target type has integer range ${Conversion.prettyRange(
-          ...Conversion.getIntegerMinMax(t.primitive),
-          t.primitive,
-          "integer"
-        )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`
+      const targetRangeText = Conversion.prettyRange(
+        ...Conversion.getIntegerMinMax(t.primitive),
+        t.primitive,
+        "integer"
       );
+
+      return {
+        kind: "error",
+        message: `No safe conversion from ${sourceTypeText} to ${targetTypeText} is known: Target type has integer range ${
+          targetRangeText
+        }, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+      };
     }
 
     // Trivial Integer <-> Float & Float <-> Float conversions
     if (
-      (Conversion.isFloat(sr, fromTypeInstance.type) &&
-        Conversion.isIntegerById(sr, toInstance.type)) ||
-      (Conversion.isFloat(sr, fromTypeInstance.type) &&
-        Conversion.isFloat(sr, toInstance.type)) ||
-      (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
-        Conversion.isFloat(sr, toInstance.type))
+      (Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
+        Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)) ||
+      (Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
+        Conversion.isFloat(sr, resolvedTargetTypeUse.type)) ||
+      (Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
+        Conversion.isFloat(sr, resolvedTargetTypeUse.type))
     ) {
       // If it is a conversion between Float and Int or Float and Float, it is trivially allowed
       // if the value comes directly from a literal, since it would generally not be an issue that
       // precision is lost. E.g. for "let x: f32 = 0.1" it's clear that we just want 0.1 as the
       // closest representation that fits in f32. For "let x: f32 = y", this is not the case and
       // losing precision may actually be an issue.
-      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+      if (sourceExpr.variant === Semantic.ENode.LiteralExpr) {
+        return {
+          kind: "basic-c-cast",
+        };
       }
     }
 
     // Explicit Integer <-> Float conversion
     if (
-      ((Conversion.isFloat(sr, fromTypeInstance.type) &&
-        Conversion.isIntegerById(sr, toInstance.type)) ||
-        (Conversion.isIntegerById(sr, fromTypeInstance.type) &&
-          Conversion.isFloat(sr, toInstance.type))) &&
+      ((Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
+        Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)) ||
+        (Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
+          Conversion.isFloat(sr, resolvedTargetTypeUse.type))) &&
       mode === Mode.Explicit
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // Conversions between Integer and float
     if (
-      Conversion.isIntegerById(sr, fromTypeInstance.type) &&
-      Conversion.isFloat(sr, toInstance.type)
+      Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
+      Conversion.isFloat(sr, resolvedTargetTypeUse.type)
     ) {
-      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const fi = sr.typeUseNodes.get(sourceExpr.type);
       const f = sr.typeDefNodes.get(fi.type);
       assert(f.variant === Semantic.ENode.PrimitiveDatatype);
-      const ti = sr.typeUseNodes.get(toId);
+      const ti = sr.typeUseNodes.get(resolvedTargetTypeUseId);
       const t = sr.typeDefNodes.get(ti.type);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
       const floatSafeIntegerRange = Conversion.getFloatMinMaxSafeIntegerRange(
@@ -1519,22 +1451,13 @@ export namespace Conversion {
 
       const source = valueNarrowing(sr);
       source.addRange(...Conversion.getIntegerMinMax(f.primitive));
-      source.constrainExactFromExprIfPossible(fromExprId);
-      source.constrainFromConstraints(constraints, fromExprId);
+      source.constrainExactFromExprIfPossible(sourceExprId);
+      source.constrainFromConstraints(constraints, sourceExprId);
 
       if (source.isWithinRange(...floatSafeIntegerRange)) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "basic-c-cast",
+        };
       }
 
       let sourceRangeText = "";
@@ -1545,29 +1468,26 @@ export namespace Conversion {
         sourceRangeText = "range TBD";
       }
 
-      return err(
-        `No lossless conversion from '${Semantic.serializeTypeUse(
-          sr,
-          fromExpr.type
-        )}' to '${Semantic.serializeTypeUse(
-          sr,
-          toId
-        )}' is possible: Floating point target type has safe integer range ${Conversion.prettyRange(
-          ...floatSafeIntegerRange,
-          t.primitive,
-          "float"
-        )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`
+      const targetRangeText = Conversion.prettyRange(
+        ...floatSafeIntegerRange,
+        t.primitive,
+        "float"
       );
+
+      return {
+        kind: "error",
+        message: `No lossless conversion from ${sourceTypeText} to ${targetTypeText} is possible: Floating point target type has safe integer range ${targetRangeText}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+      };
     }
 
     if (
-      Conversion.isFloat(sr, fromTypeInstance.type) &&
-      Conversion.isIntegerById(sr, toInstance.type)
+      Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
+      Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)
     ) {
-      const fi = sr.typeUseNodes.get(fromExpr.type);
+      const fi = sr.typeUseNodes.get(sourceExpr.type);
       const f = sr.typeDefNodes.get(fi.type);
       assert(f.variant === Semantic.ENode.PrimitiveDatatype);
-      const ti = sr.typeUseNodes.get(toId);
+      const ti = sr.typeUseNodes.get(resolvedTargetTypeUseId);
       const t = sr.typeDefNodes.get(ti.type);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
 
@@ -1577,19 +1497,21 @@ export namespace Conversion {
       // source.constrainExactFromExprIfPossible(fromExprId);
       // source.constrainFromConstraints(constraints, fromExprId);
 
-      return err(
-        "Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint.... Use an explicit cast to override."
-      );
+      return {
+        kind: "error",
+        message:
+          "Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint.... Use an explicit cast to override.",
+      };
 
       // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
       //   return ok(
       //     Semantic.addExpr(sr, {
       //       variant: Semantic.ENode.ExplicitCastExpr,
-      //       instanceIds: fromExpr.instanceIds,
+      //       instanceIds: sourceExpr.instanceIds,
       //       expr: fromExprId,
       //       type: toId,
       //       sourceloc: sourceloc,
-      //       isTemporary: fromExpr.isTemporary,
+      //       isTemporary: sourceExpr.isTemporary,
       //     })[1]
       //   );
       // }
@@ -1604,7 +1526,7 @@ export namespace Conversion {
       // throw new CompilerError(
       //   `No lossless conversion from '${Semantic.serializeTypeUse(
       //     sr,
-      //     fromExpr.type
+      //     sourceExpr.type
       //   )}' to '${Semantic.serializeTypeUse(
       //     sr,
       //     toId
@@ -1619,164 +1541,101 @@ export namespace Conversion {
 
     // Conversions between floats
     if (
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.real &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.f64) ||
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.f64 &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.real)
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.real &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.f64) ||
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.f64 &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.real)
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
     if (
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.f32 &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.f64) ||
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.f32 &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.real)
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.f32 &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.f64) ||
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.f32 &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.real)
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     if (
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.real &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.f32) ||
-      (fromType.variant === Semantic.ENode.PrimitiveDatatype &&
-        fromType.primitive === EPrimitive.f64 &&
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.f32)
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.real &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.f32) ||
+      (resolvedSourceTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedSourceTypeDef.primitive === EPrimitive.f64 &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.f32)
     ) {
       if (mode !== Mode.Explicit) {
-        return err(
-          `Conversion from '${Semantic.serializeTypeUse(sr, fromExpr.type)}' to '${Semantic.serializeTypeUse(
-            sr,
-            toId
-          )}' is lossy. If wanted, cast explicitly using '... as ${Semantic.serializeTypeUse(
-            sr,
-            toId
-          )}'`
-        );
+        return {
+          kind: "error",
+          message: `Conversion from ${sourceTypeText} to ${targetTypeText} is lossy. If desired, cast explicitly using '... as ${
+            sourceTypeText
+          }'`,
+        };
       }
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ExplicitCastExpr,
-          instanceIds: fromExpr.instanceIds,
-          expr: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: fromExpr.isTemporary,
-          flow: flow,
-          writes: writes,
-        })[1]
-      );
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // Mutability conversions
-    if (fromTypeInstance.type === toInstance.type) {
+    if (resolvedSourceTypeUse.type === resolvedTargetTypeUse.type) {
       // Same type but different mutability
-      if (fromTypeInstance.inline === toInstance.inline) {
-        if (fromTypeInstance.mutability === toInstance.mutability) {
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.ExplicitCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+      if (resolvedSourceTypeUse.inline === resolvedTargetTypeUse.inline) {
+        if (
+          resolvedSourceTypeUse.mutability === resolvedTargetTypeUse.mutability
+        ) {
+          return {
+            kind: "basic-c-cast",
+          };
         }
 
         if (
-          (fromTypeInstance.mutability === EDatatypeMutability.Mut ||
-            fromTypeInstance.mutability === EDatatypeMutability.Const) &&
-          toInstance.mutability === EDatatypeMutability.Default
+          (resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut ||
+            resolvedSourceTypeUse.mutability === EDatatypeMutability.Const) &&
+          resolvedTargetTypeUse.mutability === EDatatypeMutability.Default
         ) {
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.ExplicitCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "basic-c-cast",
+          };
         }
 
         // If it is a direct literal, allow conversions from anything to const
         if (
-          (fromExpr.variant === Semantic.ENode.StructLiteralExpr ||
-            fromExpr.variant === Semantic.ENode.ArrayLiteralExpr) &&
-          toInstance.mutability === EDatatypeMutability.Const
+          (sourceExpr.variant === Semantic.ENode.StructLiteralExpr ||
+            sourceExpr.variant === Semantic.ENode.ArrayLiteralExpr) &&
+          resolvedTargetTypeUse.mutability === EDatatypeMutability.Const
         ) {
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.ExplicitCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "basic-c-cast",
+          };
         }
 
-        if (toInstance.mutability === EDatatypeMutability.Const) {
+        if (resolvedTargetTypeUse.mutability === EDatatypeMutability.Const) {
           if (mode === Mode.Explicit && unsafe) {
-            return ok(
-              sr.b.addExpr(sr, {
-                variant: Semantic.ENode.ExplicitCastExpr,
-                instanceIds: fromExpr.instanceIds,
-                expr: fromExprId,
-                type: toId,
-                sourceloc: sourceloc,
-                isTemporary: fromExpr.isTemporary,
-                flow: flow,
-                writes: writes,
-              })[1]
-            );
+            return {
+              kind: "basic-c-cast",
+            };
           }
 
-          return err(
-            `This value cannot be converted to 'const' since other references may exist, which may allow mutation of a const value. Use .freezeClone() to safely clone the object and make it deeply immutable.`
-          );
+          return {
+            kind: "error",
+            message: `This value cannot be converted to 'const' since other references may exist, which may allow mutation of a const value. Use .freezeClone() to safely clone the object and make it deeply immutable.`,
+          };
         }
       }
     }
@@ -1785,46 +1644,48 @@ export namespace Conversion {
     // if (
     //   IsStructurallyEquivalent(
     //     sr,
-    //     sr.typeUseNodes.get(fromExpr.type).type,
+    //     sr.typeUseNodes.get(sourceExpr.type).type,
     //     sr.typeUseNodes.get(toId).type
     //   )
     // ) {
     //   return ok(
     //     Semantic.addExpr(sr, {
     //       variant: Semantic.ENode.ExplicitCastExpr,
-    //       instanceIds: fromExpr.instanceIds,
+    //       instanceIds: sourceExpr.instanceIds,
     //       expr: fromExprId,
     //       type: toId,
     //       sourceloc: sourceloc,
-    //       isTemporary: fromExpr.isTemporary,
+    //       isTemporary: sourceExpr.isTemporary,
     //     })[1]
     //   );
     // }
 
     // Union Conversions: Value to Union (simple)
-    if (to.variant === Semantic.ENode.UntaggedUnionDatatype) {
-      const matching = to.members.findIndex((m) => {
+    if (
+      resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+    ) {
+      const matching = resolvedTargetTypeDef.members.findIndex((m) => {
         // Check Direct match
-        if (m === fromExpr.type) {
+        if (m === sourceExpr.type) {
           return true;
         }
 
         if (
           sr.typeUseNodes.get(m).type !==
-          sr.typeUseNodes.get(fromExpr.type).type
+          sr.typeUseNodes.get(sourceExpr.type).type
         ) {
           return false;
         }
 
         // Check match with implicit mutability change
         if (
-          fromTypeInstance.mutability === EDatatypeMutability.Const &&
+          resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
           sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
         ) {
           return true;
         }
         if (
-          fromTypeInstance.mutability === EDatatypeMutability.Mut &&
+          resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut &&
           sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
         ) {
           return true;
@@ -1834,44 +1695,35 @@ export namespace Conversion {
       });
 
       if (matching !== -1) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ValueToUnionCastExpr,
-            expr: fromExprId,
-            instanceIds: fromExpr.instanceIds,
-            type: toId,
-            index: matching,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "value-to-union",
+          index: matching,
+        };
       }
     }
 
     // Value To Tagged Union (i.e. Value-To-Result)
-    if (to.variant === Semantic.ENode.TaggedUnionDatatype) {
+    if (resolvedTargetTypeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
       const matchFunc = (m: { tag: string; type: Semantic.TypeUseId }) => {
         // Check Direct match
-        if (m.type === fromExpr.type) {
+        if (m.type === sourceExpr.type) {
           return true;
         }
 
         // Check match with implicit mutability change
         const mUse = sr.typeUseNodes.get(m.type);
         if (
-          fromTypeInstance.mutability === EDatatypeMutability.Const &&
+          resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
           mUse.mutability === EDatatypeMutability.Default &&
-          mUse.type === fromTypeInstance.type
+          mUse.type === resolvedSourceTypeUse.type
         ) {
           return true;
         }
         if (
-          fromTypeInstance.mutability === EDatatypeMutability.Mut &&
+          resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut &&
           sr.typeUseNodes.get(m.type).mutability ===
             EDatatypeMutability.Default &&
-          mUse.type === fromTypeInstance.type
+          mUse.type === resolvedSourceTypeUse.type
         ) {
           return true;
         }
@@ -1879,114 +1731,95 @@ export namespace Conversion {
         return false;
       };
 
-      const allMatches = to.members.filter(matchFunc);
-      const matchingIndex = to.members.findIndex(matchFunc);
+      const allMatches = resolvedTargetTypeDef.members.filter(matchFunc);
+      const matchingIndex = resolvedTargetTypeDef.members.findIndex(matchFunc);
 
       if (allMatches.length === 1 && matchingIndex !== -1) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ValueToUnionCastExpr,
-            expr: fromExprId,
-            instanceIds: fromExpr.instanceIds,
-            type: toId,
-            index: matchingIndex,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "value-to-union",
+          index: matchingIndex,
+        };
       }
     }
 
     // Union to Union conversion
     if (
-      (fromType.variant === Semantic.ENode.UntaggedUnionDatatype &&
-        to.variant === Semantic.ENode.UntaggedUnionDatatype) ||
-      (fromType.variant === Semantic.ENode.TaggedUnionDatatype &&
-        to.variant === Semantic.ENode.TaggedUnionDatatype)
+      (resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+        resolvedTargetTypeDef.variant ===
+          Semantic.ENode.UntaggedUnionDatatype) ||
+      (resolvedSourceTypeDef.variant === Semantic.ENode.TaggedUnionDatatype &&
+        resolvedTargetTypeDef.variant === Semantic.ENode.TaggedUnionDatatype)
     ) {
       const fromUnionMembers =
-        fromType.variant === Semantic.ENode.UntaggedUnionDatatype
-          ? fromType.members
-          : fromType.members.map((m) => m.type);
+        resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? resolvedSourceTypeDef.members
+          : resolvedSourceTypeDef.members.map((m) => m.type);
       const membersFrom = typeNarrowing(sr);
       membersFrom.addVariants(fromUnionMembers);
-      membersFrom.constrainFromConstraints(constraints, fromExprId);
+      membersFrom.constrainFromConstraints(constraints, sourceExprId);
 
       const toUnionMembers =
-        to.variant === Semantic.ENode.UntaggedUnionDatatype
-          ? to.members
-          : to.members.map((m) => m.type);
+        resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? resolvedTargetTypeDef.members
+          : resolvedTargetTypeDef.members.map((m) => m.type);
       const membersTo = typeNarrowing(sr);
       membersTo.addVariants(toUnionMembers);
-      membersTo.constrainFromConstraints(constraints, fromExprId);
+      membersTo.constrainFromConstraints(constraints, sourceExprId);
 
       if (
         [...membersFrom.possibleVariants].every((v) =>
           membersTo.possibleVariants.has(v)
         )
       ) {
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.UnionToUnionCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            castComesFromNarrowingAndMayBeUnwrapped: false,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "union-to-union",
+        };
       }
     }
 
     // Union Conversions: Union to Value (complex)
     if (
-      fromType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-      fromType.variant === Semantic.ENode.TaggedUnionDatatype
+      resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      resolvedSourceTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
     ) {
       const unionMembers =
-        fromType.variant === Semantic.ENode.UntaggedUnionDatatype
-          ? fromType.members
-          : fromType.members.map((m) => m.type);
+        resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+          ? resolvedSourceTypeDef.members
+          : resolvedSourceTypeDef.members.map((m) => m.type);
 
       const members = typeNarrowing(sr);
       members.addVariants(unionMembers);
-      members.constrainFromConstraints(constraints, fromExprId);
+      members.constrainFromConstraints(constraints, sourceExprId);
 
       // Union to bool
       if (
-        to.variant === Semantic.ENode.PrimitiveDatatype &&
-        to.primitive === EPrimitive.bool
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.bool
       ) {
         // Result check
-        if (fromType.variant === Semantic.ENode.TaggedUnionDatatype) {
-          const okTag = fromType.members.find((m) => m.tag === "Ok");
-          const errTag = fromType.members.find((m) => m.tag === "Err");
+        if (
+          resolvedSourceTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+        ) {
+          const okTag = resolvedSourceTypeDef.members.find(
+            (m) => m.tag === "Ok"
+          );
+          const errTag = resolvedSourceTypeDef.members.find(
+            (m) => m.tag === "Err"
+          );
           if (okTag && errTag) {
             // It's a result type
-            return ok(
-              sr.b.addExpr(sr, {
-                variant: Semantic.ENode.UnionTagCheckExpr,
-                comparisonTypesAnd: [okTag.type],
-                expr: fromExprId,
-                sourceloc: sourceloc,
-                invertCheck: false,
-                isTemporary: true,
-                instanceIds: [],
-                type: toId,
-                flow: flow,
-                writes: writes,
-              })[1]
-            );
+            return {
+              kind: "union-tag-check",
+              comparisonTypesAnd: [okTag.type],
+              invertCheck: false,
+            };
           }
         }
 
         // Existence check (Only for untagged unions, otherwise Result<null,none> completely breaks everything)
-        if (fromType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+        if (
+          resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+        ) {
           const types: Semantic.TypeUseId[] = [];
           for (const mId of members.possibleVariants) {
             const mUse = sr.typeUseNodes.get(mId);
@@ -2007,54 +1840,34 @@ export namespace Conversion {
           }
 
           if (types.length === 0) {
-            return err(
-              `Type '${Semantic.serializeTypeUse(
-                sr,
-                fromExpr.type
-              )}' is not implicitly convertible to bool: Union does not contain a null- or none-Variant.`
-            );
+            return {
+              kind: "error",
+              message: `Type ${sourceTypeText} is not implicitly convertible to bool: Union does not contain a null- or none-Variant.`,
+            };
           }
 
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.UnionTagCheckExpr,
-              comparisonTypesAnd: types,
-              expr: fromExprId,
-              sourceloc: sourceloc,
-              invertCheck: true,
-              isTemporary: true,
-              instanceIds: [],
-              type: toId,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "union-tag-check",
+            comparisonTypesAnd: types,
+            invertCheck: true,
+          };
         }
       }
 
       if (
         members.possibleVariants.size === 1 &&
-        [...members.possibleVariants][0] === toId
+        sr.e.resolveAlias([...members.possibleVariants][0]) ===
+          resolvedTargetTypeUseId
       ) {
         const tag = unionMembers.findIndex(
           (m) => m === [...members.possibleVariants][0]
         );
         assert(tag !== -1);
 
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.UnionToValueCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            tag: tag,
-            canBeUnwrappedForLHS: false,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "union-to-value",
+          tag: tag,
+        };
       }
 
       // Union to Union (e.g. A | B | null to A | B)
@@ -2072,19 +1885,9 @@ export namespace Conversion {
 
         if (!missing) {
           // Fine, it is either the same union or one with the same members in a different order
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.UnionToUnionCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              castComesFromNarrowingAndMayBeUnwrapped: false,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "union-to-union",
+          };
         }
       }
 
@@ -2111,19 +1914,9 @@ export namespace Conversion {
 
         if (allFound) {
           // Union matches exactly after narrowing
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.UnionToUnionCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              castComesFromNarrowingAndMayBeUnwrapped: false,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "union-to-union",
+          };
         }
 
         // Union does not match exactly, but may be extended
@@ -2132,12 +1925,12 @@ export namespace Conversion {
 
     // Callable conversions
     if (
-      fromType.variant === Semantic.ENode.CallableDatatype &&
-      to.variant === Semantic.ENode.CallableDatatype
+      resolvedSourceTypeDef.variant === Semantic.ENode.CallableDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.CallableDatatype
     ) {
-      const fType = sr.typeDefNodes.get(fromType.functionType);
+      const fType = sr.typeDefNodes.get(resolvedSourceTypeDef.functionType);
       assert(fType.variant === Semantic.ENode.FunctionDatatype);
-      const tType = sr.typeDefNodes.get(to.functionType);
+      const tType = sr.typeDefNodes.get(resolvedTargetTypeDef.functionType);
       assert(tType.variant === Semantic.ENode.FunctionDatatype);
 
       if (
@@ -2146,10 +1939,12 @@ export namespace Conversion {
         fType.parameters.length === tType.parameters.length &&
         fType.parameters.every(
           (p, i) =>
-            p.type === tType.parameters[i].type &&
+            sr.e.resolveAlias(p.type) ===
+              sr.e.resolveAlias(tType.parameters[i].type) &&
             p.optional === tType.parameters[i].optional
         ) &&
-        fType.returnType === tType.returnType &&
+        sr.e.resolveAlias(fType.returnType) ===
+          sr.e.resolveAlias(tType.returnType) &&
         fType.vararg === tType.vararg &&
         fType.requires.final &&
         tType.requires.final &&
@@ -2163,32 +1958,24 @@ export namespace Conversion {
         if (tType.requires.pure && !fType.requires.pure) {
           // It is an error, if a pure function is required but an impure function is given.
           // Every other combination is valid
-          return err(
-            `Assigning impure function ${fromTypeText} to pure function ${toTypeText} is not allowed because the target requires a function to be pure and to not have sideeffects.`
-          );
+          return {
+            kind: "error",
+            message: `Assigning impure function ${sourceTypeText} to pure function ${targetTypeText} is not allowed because the target requires a function to be pure and to not have sideeffects.`,
+          };
         }
 
-        return ok(
-          sr.b.addExpr(sr, {
-            variant: Semantic.ENode.ExplicitCastExpr,
-            instanceIds: fromExpr.instanceIds,
-            expr: fromExprId,
-            type: toId,
-            sourceloc: sourceloc,
-            isTemporary: fromExpr.isTemporary,
-            flow: flow,
-            writes: writes,
-          })[1]
-        );
+        return {
+          kind: "basic-c-cast",
+        };
       }
     }
 
     // Conversion to LiteralDatatype
-    if (to.variant === Semantic.ENode.LiteralDatatype) {
+    if (resolvedTargetTypeDef.variant === Semantic.ENode.LiteralDatatype) {
       // If the source is a literal, check if it matches the literal datatype
-      if (fromExpr.variant === Semantic.ENode.LiteralExpr) {
-        const fromLiteral = fromExpr.literal;
-        const toLiteral = to.literalValue;
+      if (sourceExpr.variant === Semantic.ENode.LiteralExpr) {
+        const fromLiteral = sourceExpr.literal;
+        const toLiteral = resolvedTargetTypeDef.literalValue;
 
         // Check if the literal types and values match
         // Need to check property existence for union discriminants that may not have 'value'
@@ -2198,85 +1985,305 @@ export namespace Conversion {
         if (fromLiteral.type === toLiteral.type && fromValue === toValue) {
           // The literals match, so we can just return the expression as-is
           // since a literal matches the literal type it represents
-          return ok(
-            sr.b.addExpr(sr, {
-              variant: Semantic.ENode.ExplicitCastExpr,
-              instanceIds: fromExpr.instanceIds,
-              expr: fromExprId,
-              type: toId,
-              sourceloc: sourceloc,
-              isTemporary: fromExpr.isTemporary,
-              flow: flow,
-              writes: writes,
-            })[1]
-          );
+          return {
+            kind: "basic-c-cast",
+          };
         }
       }
     }
 
     // Read Conversion: ShallowReactive<T> to T
     if (
-      fromType.variant === Semantic.ENode.ShallowReactiveDatatype &&
-      fromType.wrappedType === toId
+      resolvedSourceTypeDef.variant ===
+        Semantic.ENode.ShallowReactiveDatatype &&
+      sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType) ===
+        resolvedTargetTypeUseId
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ReactiveReadExpr,
-          instanceIds: [],
-          value: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: true,
-          flow: Semantic.FlowResult.fallthrough(),
-          writes: Semantic.WriteResult.empty(),
-        })[1]
-      );
+      return {
+        kind: "reactive-read",
+      };
     }
 
     // Read Conversion: Reactive<T> to T
     if (
-      fromType.variant === Semantic.ENode.ReactiveDatatype &&
-      fromType.wrappedType === toId
+      resolvedSourceTypeDef.variant === Semantic.ENode.ReactiveDatatype &&
+      sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType) ===
+        resolvedTargetTypeUseId
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ReactiveReadExpr,
-          instanceIds: [],
-          value: fromExprId,
-          type: toId,
-          sourceloc: sourceloc,
-          isTemporary: true,
-          flow: Semantic.FlowResult.fallthrough(),
-          writes: Semantic.WriteResult.empty(),
-        })[1]
-      );
+      return {
+        kind: "reactive-read",
+      };
     }
 
     // Read Conversion: Computed<T> to T
     if (
-      fromType.variant === Semantic.ENode.ComputedDatatype &&
-      fromType.wrappedType === toId
+      resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype &&
+      resolvedSourceTypeDef.wrappedType === resolvedTargetTypeUseId
     ) {
-      return ok(
-        sr.b.addExpr(sr, {
-          variant: Semantic.ENode.ComputedReadExpr,
+      return {
+        kind: "computed-read",
+      };
+    }
+
+    return {
+      kind: "error",
+      message: `No suitable conversion from ${sourceTypeText} to ${targetTypeText} is known`,
+    };
+  }
+
+  function materializeConversionPlan(
+    sr: Semantic.Context,
+    sourceExprId: Semantic.ExprId,
+    targetTypeId: Semantic.TypeUseId,
+    conversionPlan: ConversionPlanSuccess,
+    sourceloc: SourceLoc
+  ): Semantic.ExprId {
+    const sourceExpr = sr.exprNodes.get(sourceExprId);
+    const rawSourceTypeUseId = sourceExpr.type;
+    const rawSourceTypeUse = sr.typeUseNodes.get(rawSourceTypeUseId);
+    const resolvedSourceTypeDef = sr.typeDefNodes.get(rawSourceTypeUse.type);
+
+    switch (conversionPlan.kind) {
+      case "clone-struct-to-target-type": {
+        assert(resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype);
+        // Create a struct literal that copies all members from the source struct
+        const assign: { name: string; value: Semantic.ExprId }[] = [];
+
+        resolvedSourceTypeDef.members.forEach((memberSymbolId) => {
+          const memberSymbol = sr.symbolNodes.get(memberSymbolId);
+          if (memberSymbol.variant !== Semantic.ENode.VariableSymbol) {
+            return;
+          }
+
+          const memberName = memberSymbol.name;
+          const memberType = memberSymbol.type;
+          assert(memberType);
+
+          // Create a member access expression for this member
+          const memberAccessId = sr.b.addExpr(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            instanceIds: [...sourceExpr.instanceIds],
+            expr: sourceExprId,
+            memberName: memberName,
+            type: memberType,
+            sourceloc: sourceloc,
+            isTemporary: true,
+            flow: sourceExpr.flow,
+            writes: sourceExpr.writes,
+          })[1];
+
+          assign.push({
+            name: memberName,
+            value: memberAccessId,
+          });
+        });
+
+        // Create the struct literal expression
+        const [literal, literalId] = sr.b.addExpr<Semantic.StructLiteralExpr>(
+          sr,
+          {
+            variant: Semantic.ENode.StructLiteralExpr,
+            instanceIds: [Semantic.makeInstanceId(sr)],
+            assign: assign,
+            type: targetTypeId,
+            inFunction: sr.e.inFunction,
+            allocator: null,
+            sourceloc: sourceloc,
+            isTemporary: true,
+            flow: sourceExpr.flow,
+            writes: sourceExpr.writes,
+          }
+        );
+
+        // Add instance dependencies
+        if (sr.e.inFunction) {
+          const functionSymbol = sr.e.sr.symbolNodes.get(sr.e.inFunction);
+          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+          literal.instanceIds.forEach((i) =>
+            functionSymbol.createsInstanceIds.add(i)
+          );
+        }
+
+        assign.forEach((a) => {
+          const member = resolvedSourceTypeDef.members.find((m) => {
+            const varsym = sr.symbolNodes.get(m);
+            return (
+              varsym.variant === Semantic.ENode.VariableSymbol &&
+              varsym.name === a.name
+            );
+          });
+          assert(member);
+
+          const value = sr.exprNodes.get(a.value);
+          literal.flow.addAll(value.flow);
+          literal.writes.addAll(value.writes);
+
+          Semantic.addStructMemberInstanceDeps(
+            sr.e.currentContext.instanceDeps,
+            literal.instanceIds[0],
+            member,
+            value.instanceIds
+          );
+        });
+
+        return literalId;
+      }
+
+      case "basic-c-cast": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ExplicitCastExpr,
+          instanceIds: sourceExpr.instanceIds,
+          expr: sourceExprId,
+          type: targetTypeId,
+          sourceloc: sourceloc,
+          isTemporary: sourceExpr.isTemporary,
+          flow: sourceExpr.flow,
+          writes: sourceExpr.writes,
+        })[1];
+      }
+
+      case "keep": {
+        return sourceExprId;
+      }
+
+      case "produce-literal": {
+        return sr.b.literalValue(conversionPlan.literalValue, sourceloc)[1];
+      }
+
+      case "value-to-union": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ValueToUnionCastExpr,
+          expr: sourceExprId,
+          instanceIds: sourceExpr.instanceIds,
+          type: targetTypeId,
+          index: conversionPlan.index,
+          sourceloc: sourceloc,
+          isTemporary: sourceExpr.isTemporary,
+          flow: sourceExpr.flow,
+          writes: sourceExpr.writes,
+        })[1];
+      }
+
+      case "union-to-value": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.UnionToValueCastExpr,
+          instanceIds: sourceExpr.instanceIds,
+          expr: sourceExprId,
+          type: targetTypeId,
+          tag: conversionPlan.tag,
+          canBeUnwrappedForLHS: false,
+          sourceloc: sourceloc,
+          isTemporary: sourceExpr.isTemporary,
+          flow: sourceExpr.flow,
+          writes: sourceExpr.writes,
+        })[1];
+      }
+
+      case "union-to-union": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.UnionToUnionCastExpr,
+          instanceIds: sourceExpr.instanceIds,
+          expr: sourceExprId,
+          type: targetTypeId,
+          castComesFromNarrowingAndMayBeUnwrapped: false,
+          sourceloc: sourceloc,
+          isTemporary: sourceExpr.isTemporary,
+          flow: sourceExpr.flow,
+          writes: sourceExpr.writes,
+        })[1];
+      }
+
+      case "union-tag-check": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.UnionTagCheckExpr,
+          comparisonTypesAnd: conversionPlan.comparisonTypesAnd,
+          expr: sourceExprId,
+          sourceloc: sourceloc,
+          invertCheck: conversionPlan.invertCheck,
+          isTemporary: true,
           instanceIds: [],
-          value: fromExprId,
-          type: toId,
+          type: targetTypeId,
+          flow: sourceExpr.flow,
+          writes: sourceExpr.writes,
+        })[1];
+      }
+
+      case "reactive-read": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ReactiveReadExpr,
+          instanceIds: [],
+          value: sourceExprId,
+          type: targetTypeId,
           sourceloc: sourceloc,
           isTemporary: true,
           flow: Semantic.FlowResult.fallthrough(),
           writes: Semantic.WriteResult.empty(),
-        })[1]
-      );
+        })[1];
+      }
+
+      case "computed-read": {
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ComputedReadExpr,
+          instanceIds: [],
+          value: sourceExprId,
+          type: targetTypeId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1];
+      }
+
+      default:
+        break;
+    }
+    assert(false);
+  }
+
+  export function MakeConversion(
+    sr: Semantic.Context,
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    constraints: ConstraintSet,
+    sourceloc: SourceLoc,
+    mode: Mode,
+    unsafe?: boolean
+  ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
+    const sourceExpr = sr.exprNodes.get(sourceExprId);
+
+    // Intrinsic values cannot be assigned to variables - they can only be called
+    if (sourceExpr.variant === Semantic.ENode.IntrinsicSymbol) {
+      return {
+        ok: false as const,
+        error:
+          "Intrinsic functions cannot be assigned to variables. They may only be called directly.",
+      };
     }
 
-    return err(
-      `No suitable conversion from '${Semantic.serializeTypeUse(
-        sr,
-        fromExpr.type
-      )}' to '${Semantic.serializeTypeUse(sr, toId)}' is known`
+    const conversionPlan = buildConversionPlan(
+      sr,
+      sourceExprId,
+      targetTypeUseId,
+      constraints,
+      sourceloc,
+      mode,
+      unsafe ?? false
     );
+
+    if (conversionPlan.kind === "error") {
+      return { ok: false, error: conversionPlan.message };
+    }
+
+    return {
+      ok: true,
+      expr: materializeConversionPlan(
+        sr,
+        sourceExprId,
+        targetTypeUseId,
+        conversionPlan,
+        sourceloc
+      ),
+    };
   }
 
   export function MakeDefaultValue(
@@ -2406,8 +2413,14 @@ export namespace Conversion {
     b: Semantic.ExprId,
     sourceloc: SourceLoc
   ): Semantic.TypeUseId {
-    const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
-    const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
+    const leftTypeUseId = sr.exprNodes.get(a).type;
+    const rightTypeUseId = sr.exprNodes.get(b).type;
+    const leftTypeId = sr.typeUseNodes.get(
+      sr.e.resolveAlias(leftTypeUseId)
+    ).type;
+    const rightTypeId = sr.typeUseNodes.get(
+      sr.e.resolveAlias(rightTypeUseId)
+    ).type;
 
     if (isIntegerById(sr, leftTypeId) && isIntegerById(sr, rightTypeId)) {
       return sr.b.boolType();
@@ -2462,10 +2475,10 @@ export namespace Conversion {
     }
 
     throw new CompilerError(
-      `No safe comparison is available between types '${Semantic.serializeTypeDef(
+      `No safe comparison is available between types '${Semantic.serializeTypeUse(
         sr,
-        leftTypeId
-      )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
+        leftTypeUseId
+      )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
       sourceloc
     );
   }
@@ -2477,8 +2490,14 @@ export namespace Conversion {
     operation: EBinaryOperation,
     sourceloc: SourceLoc
   ): Semantic.TypeUseId {
-    const leftTypeId = sr.typeUseNodes.get(sr.exprNodes.get(a).type).type;
-    const rightTypeId = sr.typeUseNodes.get(sr.exprNodes.get(b).type).type;
+    const leftTypeUseId = sr.exprNodes.get(a).type;
+    const rightTypeUseId = sr.exprNodes.get(b).type;
+    const leftTypeId = sr.typeUseNodes.get(
+      sr.e.resolveAlias(leftTypeUseId)
+    ).type;
+    const rightTypeId = sr.typeUseNodes.get(
+      sr.e.resolveAlias(rightTypeUseId)
+    ).type;
 
     switch (operation) {
       case EBinaryOperation.Equal:
@@ -2520,10 +2539,10 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
         operation
-      )} operation is known between types '${Semantic.serializeTypeDef(
+      )} operation is known between types '${Semantic.serializeTypeUse(
         sr,
-        leftTypeId
-      )}' and '${Semantic.serializeTypeDef(sr, rightTypeId)}'`,
+        leftTypeUseId
+      )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
       sourceloc
     );
   }

@@ -346,7 +346,9 @@ export class SemanticElaborator {
       const _right2 = this.sr.exprNodes.get(rightId);
 
       // Try to find an overloaded operator on the left operand's type
-      const leftTypeUse = this.sr.typeUseNodes.get(left.type);
+      const leftTypeUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(left.type)
+      );
       const leftTypeDef = this.sr.typeDefNodes.get(leftTypeUse.type);
 
       if (leftTypeDef.variant === Semantic.ENode.StructDatatype) {
@@ -545,13 +547,17 @@ export class SemanticElaborator {
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
       right = this.sr.exprNodes.get(rightId);
 
-      const leftTypeUse = this.sr.typeUseNodes.get(left.type);
+      const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(left.type)
+      );
       // const leftType = this.sr.typeDefNodes.get(leftTypeUse.type);
-      const rightTypeUse = this.sr.typeUseNodes.get(right.type);
+      const resolvedRightTypeUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(right.type)
+      );
       // const rightType = this.sr.typeDefNodes.get(rightTypeUse.type);
       if (
-        Conversion.isString(this.sr, leftTypeUse.type) &&
-        Conversion.isString(this.sr, rightTypeUse.type)
+        Conversion.isString(this.sr, resolvedLeftTypeUse.type) &&
+        Conversion.isString(this.sr, resolvedRightTypeUse.type)
       ) {
         const leftCTFE = EvalCTFE(this.sr, leftId);
         const rightCTFE = EvalCTFE(this.sr, rightId);
@@ -9487,6 +9493,22 @@ export class SemanticElaborator {
       )}' is not a valid type for an aggregate literal`,
       structInst.sourceloc
     );
+  }
+
+  resolveAlias(
+    aliasId: Semantic.TypeUseId,
+    visited: Set<Semantic.TypeUseId> = new Set()
+  ): Semantic.TypeUseId {
+    if (visited.has(aliasId)) {
+      return aliasId;
+    }
+    visited.add(aliasId);
+    const use = this.sr.typeUseNodes.get(aliasId);
+    const def = this.sr.typeDefNodes.get(use.type);
+    if (def.variant !== Semantic.ENode.TypeAliasDatatype) {
+      return aliasId;
+    }
+    return this.resolveAlias(def.targetType, visited);
   }
 
   addCaptureToLambda(

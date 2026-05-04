@@ -1738,22 +1738,16 @@ export namespace Semantic {
     return s;
   }
 
-  export function canonicalizeTypeDef(
+  export function serializeTypeUseWithAliasAKA(
     sr: Semantic.Context,
-    typeDefId: TypeDefId
-  ) {
-    const typeDef = sr.typeDefNodes.get(typeDefId);
-    if (typeDef.variant === Semantic.ENode.TypeAliasDatatype) {
-      return typeDef.targetType;
+    datatypeId: Semantic.TypeUseId
+  ): string {
+    const pretty = serializeTypeUse(sr, datatypeId);
+    const alias = serializeTypeUse(sr, sr.e.resolveAlias(datatypeId));
+    if (pretty !== alias) {
+      return `${pretty} (a.k.a ${alias})`;
     }
-  }
-
-  export function canonicalizeTypeUse(
-    sr: Semantic.Context,
-    typeUseId: TypeUseId
-  ) {
-    const typeUse = sr.typeUseNodes.get(typeUseId);
-    return canonicalizeTypeDef(sr, typeUse.type);
+    return pretty;
   }
 
   export function serializeTypeUse(
@@ -1981,6 +1975,12 @@ export namespace Semantic {
         return getNamespaceChainFromDatatype(sr, datatypeId)
           .map((n) => n.pretty)
           .join(".");
+
+      case Semantic.ENode.TypeAliasDatatype: {
+        return getNamespaceChainFromDatatype(sr, datatypeId)
+          .map((n) => n.pretty)
+          .join(".");
+      }
 
       case Semantic.ENode.FunctionDatatype: {
         const blocks = [] as string[];
