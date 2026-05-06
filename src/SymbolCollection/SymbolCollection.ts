@@ -175,7 +175,6 @@ export namespace Collect {
     ExprCallExpr,
     SymbolValueExpr,
     CallableExpr,
-    TypeExpr,
     ExplicitCastExpr,
     ExprIsTypeExpr,
     MemberAccessExpr,
@@ -303,6 +302,7 @@ export namespace Collect {
       }
     | {
         kind: "param-pack";
+        name: string;
         sourceloc: SourceLoc;
       };
 
@@ -1562,6 +1562,7 @@ function collectSymbol(
         if (p.kind === "param-pack") {
           return {
             kind: "param-pack",
+            name: p.name,
             sourceloc: p.sourceloc,
           } satisfies Collect.ParameterValue;
         } else {
@@ -2511,6 +2512,7 @@ function collectExpr(
         variant: Collect.ENode.SymbolValueExpr,
         name: item.name,
         genericArgs: item.generics.map((g) => {
+          console.log("SYMBOL", item, g);
           if (g.variant === "LiteralExpr") {
             return collectExpr(cc, g, args);
           }
@@ -3797,6 +3799,13 @@ export function printCollectedDatatype(
       })}${type.vararg ? ", ..." : ""}) -> ${printCollectedDatatype(cc, type.returnType)}${requires})`;
     }
 
+    case Collect.ENode.SymbolValueExpr:
+    case Collect.ENode.TypeModifierExpr:
+    case Collect.ENode.BinaryExpr:
+    case Collect.ENode.MemberAccessExpr: {
+      return printCollectedExpr(cc, typeId);
+    }
+
     default:
       assert(false, (type as any).variant.toString());
   }
@@ -3935,8 +3944,32 @@ export const printCollectedExpr = (
       return `${printCollectedDatatype(cc, expr.datatype)}`;
     }
 
+    case Collect.ENode.TypeModifierExpr: {
+      if (expr.modifier === ETypeModifier.Const) {
+        return `const ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Mut) {
+        return `mut ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Inline) {
+        return `inline ${printCollectedDatatype(cc, expr.type)}`;
+      }
+      assert(false);
+      throw new Error();
+    }
+
     case Collect.ENode.ErrorPropagationExpr: {
       return `${printCollectedExpr(cc, expr.expr)}?!`;
+    }
+
+    case Collect.ENode.TypeOfExpr: {
+      return `typeof(${printCollectedDatatype(cc, expr.expr)})`;
+    }
+
+    case Collect.ENode.DynamicArrayTypeDefinitionExpr:
+    case Collect.ENode.UntaggedUnionTypeDefinitionExpr:
+    case Collect.ENode.CallableTypeDefinitionExpr:
+    case Collect.ENode.FunctionTypeDefinitionExpr:
+    case Collect.ENode.TaggedUnionTypeDefinitionExpr: {
+      return printCollectedDatatype(cc, exprId);
     }
 
     default:

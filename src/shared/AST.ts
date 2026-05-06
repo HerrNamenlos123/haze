@@ -258,6 +258,7 @@ export type ASTParam =
     }
   | {
       kind: "param-pack";
+      name: string;
       sourceloc: SourceLoc;
     };
 

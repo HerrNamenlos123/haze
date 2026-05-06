@@ -13,9 +13,11 @@ namespace meta {
             hzstd_meta_type_category_slice = 8,
             hzstd_meta_type_category_union = 9,
             hzstd_meta_type_category_reactive = 10,
-            hzstd_meta_type_category_generic = 11,
-            hzstd_meta_type_category_literal = 12,
-            hzstd_meta_type_category_parameter_pack = 13,
+            hzstd_meta_type_category_shallow_reactive = 11,
+            hzstd_meta_type_category_computed = 12,
+            hzstd_meta_type_category_generic = 13,
+            hzstd_meta_type_category_literal = 14,
+            hzstd_meta_type_category_parameter_pack = 15,
         }
     }
 
@@ -31,6 +33,8 @@ namespace meta {
         Slice = ffi.hzstd_meta_type_category_slice,
         Union = ffi.hzstd_meta_type_category_union,
         Reactive = ffi.hzstd_meta_type_category_reactive,
+        ShallowReactive = ffi.hzstd_meta_type_category_shallow_reactive,
+        Computed = ffi.hzstd_meta_type_category_computed,
         Generic = ffi.hzstd_meta_type_category_generic,
         Literal = ffi.hzstd_meta_type_category_literal,
         ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,

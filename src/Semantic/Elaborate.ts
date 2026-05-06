@@ -3,6 +3,8 @@ import * as path from "node:path";
 import {
   Collect,
   funcSymHasParameterPack,
+  printCollectedDatatype,
+  printCollectedExpr,
   printCollectedSymbol,
 } from "../SymbolCollection/SymbolCollection";
 import {
@@ -906,15 +908,6 @@ export class SemanticElaborator {
   ): [Semantic.Expression, Semantic.ExprId] {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
-      if (collectedExpr.name === "typeof") {
-        this.assertNoGenericArgs(collectedExpr, "typeof");
-        this.assertParameterN(callExpr, 1, "typeof");
-        return this.sr.b.datatypeUseAsValue(
-          this.sr.exprNodes.get(this.expr(callExpr.arguments[0], undefined)[1])
-            .type,
-          collectedExpr.sourceloc
-        );
-      }
       if (collectedExpr.name === "sizeof") {
         this.assertNoGenericArgs(collectedExpr, "sizeof");
         this.assertParameterN(callExpr, 1, "sizeof");
@@ -3912,7 +3905,7 @@ export class SemanticElaborator {
             extern: func.extern,
             parameterSymbols: new Set<Semantic.SymbolId>(),
             envType: null,
-            parameterNames: [],
+            parameterNames: func.parameters.map((p) => p.name),
             methodRequiredMutability: func.methodRequiredMutability,
             returnedDatatypes: new Set(),
             name: func.name,
@@ -4631,6 +4624,7 @@ export class SemanticElaborator {
 
   evaluateExpressionToDatatype(exprId: Semantic.ExprId) {
     const expr = this.sr.exprNodes.get(exprId);
+    console.log("AS DT", Semantic.ENode[expr.variant]);
 
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
       return expr.type;
@@ -4638,6 +4632,7 @@ export class SemanticElaborator {
 
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
+      console.log(Semantic.ENode[symbol.variant]);
       if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
         return makeTypeUse(
           this.sr,
@@ -4661,6 +4656,7 @@ export class SemanticElaborator {
       }
     }
 
+    assert(false);
     throw new CompilerError(
       `Expression '${Semantic.serializeExpr(this.sr, exprId)}' does not evaluate to a datatype`,
       expr.sourceloc
@@ -4672,6 +4668,14 @@ export class SemanticElaborator {
     args?: { noSubstituteGenerics?: boolean }
   ): Semantic.TypeUseId {
     const type = this.sr.cc.exprNodes.get(typeId);
+    console.log(
+      "Elaborating datatype",
+      Collect.ENode[type.variant],
+      printCollectedExpr(this.sr.cc, typeId)
+    );
+    if (printCollectedExpr(this.sr.cc, typeId) === "value") {
+      console.log(type.sourceloc);
+    }
 
     switch (type.variant) {
       case Collect.ENode.SymbolValueExpr: {
@@ -4679,7 +4683,9 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.TypeOfExpr: {
+        console.log("TYPEOF(", printCollectedExpr(this.sr.cc, type.expr), ")");
         const [expr] = this.expr(type.expr, {});
+        console.log("TYPEOF DONE");
         return expr.type;
       }
 
@@ -5401,6 +5407,26 @@ export class SemanticElaborator {
         );
       }
 
+      case Collect.ENode.BinaryExpr: {
+        if (type.operation === EBinaryOperation.BitwiseOr) {
+          const leftType = this.evaluateExpressionToDatatype(
+            this.expr(type.left, {})[1]
+          );
+          const rightType = this.evaluateExpressionToDatatype(
+            this.expr(type.right, {})[1]
+          );
+          return this.sr.b.untaggedUnionTypeUse(
+            [leftType, rightType],
+            type.sourceloc
+          );
+        } else {
+          throw new CompilerError(
+            `Unexpected binary operation on a datatype`,
+            type.sourceloc
+          );
+        }
+      }
+
       // =================================================================================================================
       // =================================================================================================================
       // =================================================================================================================
@@ -5434,7 +5460,9 @@ export class SemanticElaborator {
 
     this.assertNotIntrinsic(valueExpr, "assigned to a variable");
 
-    const lhsTypeUse = this.sr.typeUseNodes.get(targetExpr.type);
+    const lhsTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(targetExpr.type)
+    );
     const lhsType = this.sr.typeDefNodes.get(lhsTypeUse.type);
 
     if (
@@ -6320,6 +6348,41 @@ export class SemanticElaborator {
       const typeUse = this.sr.typeUseNodes.get(expr.type);
       const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
+      if (name === "name") {
+        return this.sr.b.literal(
+          Semantic.serializeTypeUse(this.sr, expr.type),
+          sourceloc
+        );
+      }
+      if (name === "mangled") {
+        const name = Semantic.mangleFullTypeUse(this.sr, expr.type);
+        return this.sr.b.literal(
+          name.wasMangled ? "_H" + name.name : name.name,
+          sourceloc
+        );
+      }
+      if (name === "category") {
+        const typeCategoryEnumTypeId =
+          this.ensureMetaTypeCategoryEnumType(sourceloc);
+        return this.sr.b.literalValue(
+          {
+            type: "enum",
+            enumType: typeCategoryEnumTypeId,
+            valueName: this.getDatatypeCategoryName(typeDef),
+          },
+          sourceloc
+        );
+      }
+      if (name === "baseType") {
+        // For literal types (compile-time constants like datatype 5), unwrap to the base type
+        // For all other types, return the same type
+        const baseTypeUseId =
+          typeDef.variant === Semantic.ENode.LiteralDatatype
+            ? typeDef.type
+            : expr.type;
+        return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
+      }
+
       if (typeDef.variant === Semantic.ENode.StructDatatype) {
         if (name === "fields") {
           if (typeDef.reactiveClone) {
@@ -6597,7 +6660,6 @@ export class SemanticElaborator {
         assert(false);
       }
 
-      console.log(typeDef.variant);
       assert(false);
     }
 
@@ -6626,14 +6688,19 @@ export class SemanticElaborator {
     // And here the remaining rest, based on the datatype
     if (exprType.variant === Semantic.ENode.StructDatatype) {
       // Call again recursively and handle on the top, to unwrap
-      return this.resolveMemberAccess(
-        this.sr.b.datatypeUseAsValue(expr.type, sourceloc)[1],
+      const result = this.resolveMemberAccessInStruct(
+        exprId,
         name,
-        generics,
+        genericArgs,
         inference,
         sourceloc
       );
-    } else if (
+      if (result) {
+        return result;
+      }
+    }
+
+    if (
       exprType.variant === Semantic.ENode.PrimitiveDatatype &&
       exprType.primitive === EPrimitive.str
     ) {
@@ -7056,40 +7123,6 @@ export class SemanticElaborator {
     // const datatypeValueInstance = this.sr.typeUseNodes.get(typeUseId);
     // const datatypeValue = this.sr.typeDefNodes.get(datatypeValueInstance.type);
 
-    // if (memberAccessExpr.memberName === "name") {
-    //   return this.sr.b.literal(
-    //     Semantic.serializeTypeUse(this.sr, typeUseId),
-    //     memberAccessExpr.sourceloc,
-    //   );
-    // }
-    // if (memberAccessExpr.memberName === "mangled") {
-    //   const name = Semantic.mangleFullTypeUse(this.sr, typeUseId);
-    //   return this.sr.b.literal(
-    //     name.wasMangled ? "_H" + name.name : name.name,
-    //     memberAccessExpr.sourceloc,
-    //   );
-    // }
-    // if (memberAccessExpr.memberName === "category") {
-    //   const typeCategoryEnumTypeId = this.ensureMetaTypeCategoryEnumType(
-    //     memberAccessExpr.sourceloc,
-    //   );
-    //   return this.sr.b.literalValue(
-    //     {
-    //       type: "enum",
-    //       enumType: typeCategoryEnumTypeId,
-    //       valueName: this.getDatatypeCategoryName(datatypeValue),
-    //     },
-    //     memberAccessExpr.sourceloc,
-    //   );
-    // }
-    // if (memberAccessExpr.memberName === "baseType") {
-    //   // For literal types (compile-time constants like datatype 5), unwrap to the base type
-    //   // For all other types, return the same type
-    //   const baseTypeUseId =
-    //     datatypeValue.variant === Semantic.ENode.LiteralDatatype ? datatypeValue.type : typeUseId;
-    //   return this.sr.b.datatypeUseAsValue(baseTypeUseId, memberAccessExpr.sourceloc);
-    // }
-
     // if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
     //   return this.elaborateMemberFromExpr(
     //     datatypeAsValueExprId,
@@ -7484,9 +7517,13 @@ export class SemanticElaborator {
         return "Union";
 
       case Semantic.ENode.ReactiveDatatype:
-      case Semantic.ENode.ShallowReactiveDatatype:
-      case Semantic.ENode.ComputedDatatype:
         return "Reactive";
+
+      case Semantic.ENode.ShallowReactiveDatatype:
+        return "ShallowReactive";
+
+      case Semantic.ENode.ComputedDatatype:
+        return "Computed";
 
       case Semantic.ENode.GenericParameterDatatype:
         return "Generic";
@@ -11004,6 +11041,15 @@ export class SemanticElaborator {
   }
 
   typeLiteral(literal: Collect.TypeLiteralExpr) {
+    console.log(
+      "TYPE LITERAL: ",
+      printCollectedDatatype(this.sr.cc, literal.datatype),
+      literal.sourceloc
+    );
+    if (printCollectedDatatype(this.sr.cc, literal.datatype) === "value") {
+      const s = this.sr.cc.exprNodes.get(literal.datatype);
+      console.log(s);
+    }
     return this.sr.b.datatypeUseAsValue(
       this.elaborateDatatype(literal.datatype),
       literal.sourceloc
@@ -11024,8 +11070,7 @@ export class SemanticElaborator {
     );
   }
 
-  private;
-  isParameterPackType(typeUseId: Semantic.TypeUseId): boolean {
+  private isParameterPackType(typeUseId: Semantic.TypeUseId): boolean {
     const typeUse = this.sr.typeUseNodes.get(typeUseId);
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
     return typeDef.variant === Semantic.ENode.ParameterPackDatatype;

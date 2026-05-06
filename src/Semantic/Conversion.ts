@@ -2474,6 +2474,7 @@ export namespace Conversion {
       );
     }
 
+    console.log(sr.e.currentContext.constraints.serialize(sr));
     throw new CompilerError(
       `No safe comparison is available between types '${Semantic.serializeTypeUse(
         sr,

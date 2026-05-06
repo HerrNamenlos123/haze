@@ -2160,6 +2160,7 @@ export namespace Semantic {
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
         symbol.variant === Semantic.ENode.FunctionSignature ||
+        symbol.variant === Semantic.ENode.VariableSymbol ||
         symbol.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
     );
 

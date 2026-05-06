@@ -1060,6 +1060,7 @@ class ASTBuilder extends HazeParserListener {
     if (datatype === "param-pack") {
       this.stack.push({
         kind: "param-pack",
+        name: p.id().getText(),
         sourceloc: this.loc(p),
       } satisfies ASTParam);
     } else {
