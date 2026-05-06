@@ -3039,7 +3039,6 @@ function collectExpr(
     // =================================================================================================================
 
     case "ExprMemberAccess":
-      console.log(item);
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.MemberAccessExpr,
         expr: collectExpr(cc, item.expr, args),
