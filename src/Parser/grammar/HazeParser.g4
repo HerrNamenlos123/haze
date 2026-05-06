@@ -220,7 +220,7 @@ requiresBlock
     ;
 
 aggregateLiteralElement
-    : (key=id COLON)? value=expr
+    : (key=memberNameId COLON)? value=expr
     ;
 
 genericArgs
@@ -350,6 +350,11 @@ statement
     | FOR comptime=COMPTIME? LB statement? SEMI condition=expr? SEMI incr=expr? RB rawScope #ForStatement
     | WHILE expr rawScope                                                           #WhileStatement
     | WHILE LET id (COLON typeExpr)? EQUALS expr (SEMI expr)? rawScope              #WhileLetStatement
+    ;
+
+memberNameId
+    : RAW_ID
+    | TYPE
     ;
 
 id

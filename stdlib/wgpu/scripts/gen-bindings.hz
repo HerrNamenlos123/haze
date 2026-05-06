@@ -734,7 +734,11 @@ fn generateBindings(args: GenArgs): Result<none, fs.Error> {
         let f = args.functionTypes[i];
         let params = "";
         for (let j = 0; j < f.params.length; j++) {
-            params = params + f"{f.params[j].name}: {parseType(args, f.params[j].paramType)}";
+            let name = f.params[j].name;
+            if name == "type" {
+                name = "_type";
+            }
+            params = params + f"{name}: {parseType(args, f.params[j].paramType)}";
             if j != f.params.length - 1 {
                 params = params + ", ";
             }

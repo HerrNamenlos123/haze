@@ -2718,7 +2718,7 @@ class ASTBuilder extends HazeParserListener {
     const value = produced[0];
 
     this.stack.push({
-      key: ctx.id() ? ctx.id()!.getText() : null,
+      key: ctx._key?.getText() ?? null,
       value: value,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);

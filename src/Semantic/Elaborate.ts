@@ -7153,11 +7153,6 @@ export class SemanticElaborator {
       );
     }
 
-    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
-      const symbol = this.sr.symbolNodes.get(expr.symbol);
-      console.log(symbol, exprType);
-    }
-
     throw new CompilerError(
       `Expression of type '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a member called ${name}`,
       sourceloc
