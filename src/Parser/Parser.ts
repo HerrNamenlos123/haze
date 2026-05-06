@@ -812,19 +812,6 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.TYPE()) {
-      if (produced.length !== 1) {
-        throw new InternalError("TypeExprPrimary type stack mismatch");
-      }
-
-      this.stack.push({
-        variant: "TypeValueExpr",
-        datatype: produced[0] as ASTExpr,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTTypeValueExpr);
-      return;
-    }
-
     throw new InternalError("TypeExprPrimary produced unexpected children");
   };
 
@@ -1307,7 +1294,15 @@ class ASTBuilder extends HazeParserListener {
   };
 
   exitStructMember = (ctx: StructMemberContext) => {
-    const start = this.getMark(ctx);
+    const expectedChildren = (ctx.typeExpr() ? 1 : 0) + (ctx.expr() ? 1 : 0);
+    const start = this.stack.length - expectedChildren;
+
+    if (start < 0) {
+      throw new InternalError(
+        `StructMember stack underflow: text='${ctx.getText()}' type='${ctx.typeExpr()?.getText() ?? "<missing>"}' default='${ctx.expr()?.getText() ?? "<missing>"}' expected=${expectedChildren} stack=${this.stack.length}`
+      );
+    }
+
     const produced = this.stack.splice(start);
 
     let i = 0;
@@ -1320,22 +1315,22 @@ class ASTBuilder extends HazeParserListener {
     }
 
     if (i !== produced.length) {
-      throw new InternalError("StructMember stack mismatch");
+      throw new InternalError(
+        `StructMember stack mismatch: text='${ctx.getText()}' type='${ctx.typeExpr()?.getText() ?? "<missing>"}' default='${ctx.expr()?.getText() ?? "<missing>"}' produced=${produced.length} expected=${i}`
+      );
     }
 
-    this.stack.push([
-      {
-        variant: "StructMember",
-        name: ctx.id().getText(),
-        type: type,
-        mutability: ctx.variableMutabilitySpecifier()
-          ? this.mutability(ctx)
-          : EVariableMutability.Default,
-        optional: Boolean(ctx.QUESTIONMARK()),
-        defaultValue: defaultValue,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTStructMemberDefinition,
-    ]);
+    this.stack.push({
+      variant: "StructMember",
+      name: ctx.TYPE()?.getText() ?? ctx.id()!.getText(),
+      type: type,
+      mutability: ctx.variableMutabilitySpecifier()
+        ? this.mutability(ctx)
+        : EVariableMutability.Default,
+      optional: Boolean(ctx.QUESTIONMARK()),
+      defaultValue: defaultValue,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTStructMemberDefinition);
   };
 
   exitStructMethod = (ctx: StructMethodContext) => {
@@ -1737,8 +1732,13 @@ class ASTBuilder extends HazeParserListener {
       throw new InternalError("NameSegment generic count mismatch");
     }
 
+    const name = ctx.id()?.getText() ?? ctx.TYPE()?.getText();
+    if (!name) {
+      throw new InternalError("NameSegment missing name");
+    }
+
     this.stack.push({
-      name: ctx.id().getText(),
+      name: name,
       generics: produced as ASTExpr[],
       sourceloc: this.loc(ctx),
     });
@@ -3137,7 +3137,7 @@ class ASTBuilder extends HazeParserListener {
     return text; // No escape
   }
 
-  private processFStringFragments(
+  processFStringFragments(
     ctx: SingleFStringContext | TripleFStringContext,
     exprs: ASTExpr[],
     allocator: ASTExpr | null
@@ -3229,7 +3229,7 @@ class ASTBuilder extends HazeParserListener {
     };
   }
 
-  private exitFStringCommon(ctx: SingleFStringContext | TripleFStringContext) {
+  exitFStringCommon(ctx: SingleFStringContext | TripleFStringContext) {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
@@ -3307,9 +3307,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(flat);
   };
 
-  private computeSourceLoc = (
-    ctx: SourceLocationPrefixRuleContext
-  ): SourceLoc => {
+  computeSourceLoc = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
     const stringLiteral = ctx.STRING_LITERAL();
     if (!stringLiteral) {
       throw new CompilerError(
