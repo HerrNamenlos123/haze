@@ -69,10 +69,6 @@ fn arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
 fn arrayToFFI<T, ffiT>(array: []T) {
     let ffiArray: []ffiT = [];
     for element in array {
-        let a = typeof(element).name;
-        static_print(
-            f"Element: {typeof(element).name}"
-        );
         ffiArray.push(toFFI(element));
     }
 
