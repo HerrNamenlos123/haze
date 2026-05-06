@@ -85,7 +85,7 @@ namespace fmt {
         __c__("fwrite(string.data, 1, string.length, stdout);");
     }
 
-    export fn println(args: ...) {
+    export fn println(args: ...) :: final {
         // TODO: This should just call print() and append a \n, but for that we must support 
         // passing parameter packs to other parameter packs, i.e. unwrapping them
         let writer = StringWriter(ByteBuffer());

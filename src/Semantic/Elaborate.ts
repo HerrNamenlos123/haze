@@ -4625,7 +4625,6 @@ export class SemanticElaborator {
 
   evaluateExpressionToDatatype(exprId: Semantic.ExprId) {
     const expr = this.sr.exprNodes.get(exprId);
-    // console.log("AS DT", Semantic.ENode[expr.variant]);
 
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
       return expr.type;
@@ -4633,7 +4632,6 @@ export class SemanticElaborator {
 
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
-      // console.log(Semantic.ENode[symbol.variant]);
       if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
         return makeTypeUse(
           this.sr,
@@ -4668,24 +4666,13 @@ export class SemanticElaborator {
     args?: { noSubstituteGenerics?: boolean }
   ): Semantic.TypeUseId {
     const type = this.sr.cc.exprNodes.get(typeId);
-    // console.log(
-    //   "Elaborating datatype",
-    //   Collect.ENode[type.variant],
-    //   printCollectedExpr(this.sr.cc, typeId)
-    // );
-    // if (printCollectedExpr(this.sr.cc, typeId) === "value") {
-    //   console.log(type.sourceloc);
-    // }
-
     switch (type.variant) {
       case Collect.ENode.SymbolValueExpr: {
         return this.evaluateExpressionToDatatype(this.expr(typeId, {})[1]);
       }
 
       case Collect.ENode.TypeOfExpr: {
-        // console.log("TYPEOF(", printCollectedExpr(this.sr.cc, type.expr), ")");
         const [expr] = this.expr(type.expr, {});
-        // console.log("TYPEOF DONE");
         return expr.type;
       }
 
@@ -6032,10 +6019,12 @@ export class SemanticElaborator {
   resolveMemberAccessInStruct(
     exprId: Semantic.ExprId,
     name: string,
-    genericArgs: Semantic.ExprId[],
+    generics: Collect.ExprId[],
     inference: Semantic.Inference,
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] | null {
+    let genericArgs = generics.map((g) => this.expressionAsGenericArg(g));
+
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
     const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
@@ -6250,6 +6239,24 @@ export class SemanticElaborator {
       );
     }
 
+    const typeDefId = [...structScope.symbols].find((mId) => {
+      const m = this.sr.cc.symbolNodes.get(mId);
+      return m.variant === Collect.ENode.TypeDefSymbol && m.name === name;
+    });
+    if (typeDefId) {
+      const typeDefSymbol = this.sr.cc.symbolNodes.get(typeDefId);
+      if (typeDefSymbol.variant === Collect.ENode.TypeDefSymbol) {
+        const typeSymbolId = this.elaborateTypeDef(
+          typeDefSymbol,
+          generics,
+          sourceloc
+        );
+        const typeSymbol = this.sr.symbolNodes.get(typeSymbolId);
+        assert(typeSymbol.variant === Semantic.ENode.TypeDefSymbol);
+        return this.sr.b.datatypeDefAsValue(typeSymbol.datatype, sourceloc);
+      }
+    }
+
     return null;
   }
 
@@ -6434,7 +6441,7 @@ export class SemanticElaborator {
         const result = this.resolveMemberAccessInStruct(
           exprId,
           name,
-          genericArgs,
+          generics,
           inference,
           sourceloc
         );
@@ -6527,13 +6534,11 @@ export class SemanticElaborator {
             Collect.ENode.NamespaceSharedInstance
         );
 
-        console.log("Looking for ", name);
         for (const scopeId of collectedNSSharedInstance.namespaceScopes) {
           const scope = this.sr.cc.scopeNodes.get(scopeId);
           assert(scope.variant === Collect.ENode.NamespaceScope);
           for (const symbolId of scope.symbols) {
             const symbol = this.sr.cc.symbolNodes.get(symbolId);
-            console.log("Sym", symbol.name);
             if (
               symbol.variant !== Collect.ENode.CInjectDirective &&
               symbol.name === name
@@ -6690,11 +6695,10 @@ export class SemanticElaborator {
 
     // And here the remaining rest, based on the datatype
     if (exprType.variant === Semantic.ENode.StructDatatype) {
-      // Call again recursively and handle on the top, to unwrap
       const result = this.resolveMemberAccessInStruct(
         exprId,
         name,
-        genericArgs,
+        generics,
         inference,
         sourceloc
       );
