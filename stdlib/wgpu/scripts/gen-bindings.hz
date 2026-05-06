@@ -9,7 +9,7 @@ struct EnumResult {
     values: []EnumValue = [];
 }
 
-extractEnums(file: str): Result<[]EnumResult, str> {
+fn extractEnums(file: str): Result<[]EnumResult, str> {
     attempt {
         // Remove all comments to avoid accidental matches
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
@@ -71,7 +71,7 @@ struct StructResult {
 }
 
 
-extractStructs(file: str): Result<[]StructResult, str> {
+fn extractStructs(file: str): Result<[]StructResult, str> {
     attempt {
         // Strip comments
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
@@ -126,7 +126,7 @@ struct FunctionType {
     params: []FunctionParam = [];
 }
 
-extractFunctionTypes(file: str): Result<[]FunctionType, str> {
+fn extractFunctionTypes(file: str): Result<[]FunctionType, str> {
     attempt {
         // Strip comments
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
@@ -190,7 +190,7 @@ struct BitflagType {
     baseType: str = "";
 }
 
-extractBitflagTypes(file: str): Result<[]BitflagType, str> {
+fn extractBitflagTypes(file: str): Result<[]BitflagType, str> {
     attempt {
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
 
@@ -226,7 +226,7 @@ struct BitflagValue {
     value: str = "";
 }
 
-extractBitflagValues(file: str): Result<[]BitflagValue, str> {
+fn extractBitflagValues(file: str): Result<[]BitflagValue, str> {
     attempt {
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
 
@@ -257,7 +257,7 @@ struct Typedef {
     base: str = "";
 }
 
-extractTypedefs(file: str): Result<[]Typedef, str> {
+fn extractTypedefs(file: str): Result<[]Typedef, str> {
     attempt {
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
 
@@ -297,7 +297,7 @@ struct FunctionDecl {
     params: []FunctionParam = [];
 }
 
-extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
+fn extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
     attempt {
         // Strip comments
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
@@ -382,7 +382,7 @@ struct ImplStruct {
 // Therefore we use the Impl structs directly so Haze can work with the non-inline reference directly,
 // but in order to do that, we have to convert between Impl/Non-Impl names and manually typedef 
 // the structs to their name because they aren't currently.
-getImplStructs(file: str): Result<[]ImplStruct, str> {
+fn getImplStructs(file: str): Result<[]ImplStruct, str> {
     attempt {
         // Strip comments
         let stripped = regex.replace(r"\/\/[^\n\r]*|\/\*[\s\S]*?\*\/", file, "");
@@ -409,7 +409,7 @@ getImplStructs(file: str): Result<[]ImplStruct, str> {
     };
 }
 
-parseType(args: GenArgs, fieldType: str): str {
+fn parseType(args: GenArgs, fieldType: str): str {
     if fieldType == "void" {
         return "void";
     }
@@ -654,7 +654,7 @@ parseType(args: GenArgs, fieldType: str): str {
     return f"<{fieldType}>";
 }
 
-betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
+fn betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     let values = "";
 
     for (let j = 0; j < e.values.length; j++) {
@@ -666,14 +666,14 @@ betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     }
     file = file + f"export enum {finalName} {{\n{values}}};\n\n";
 
-    file = file + f"toFFI(nice: {finalName}): ffi.{e.name} {{\n";
+    file = file + f"fn toFFI(nice: {finalName}): ffi.{e.name} {{\n";
     file = file + f"    do unsafe {{\n";
     file = file + f"        let raw: ffi.{e.name} = uninitialized;\n";
     file = file + f"        __c__(\"raw = (int)nice;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
     file = file + f"        return raw;\n";
     file = file + f"    }};\n";
     file = file + f"}}\n";
-    file = file + f"fromFFI(raw: ffi.{e.name}): {finalName} {{\n";
+    file = file + f"fn fromFFI(raw: ffi.{e.name}): {finalName} {{\n";
     file = file + f"    do unsafe {{\n";
     file = file + f"        let nice: {finalName} = uninitialized;\n";
     file = file + f"        __c__(\"nice = (int)raw;\"); // By design binary-equivalent, should turn into a no-op when optimized\n";
@@ -684,7 +684,7 @@ betterEnum(file: str, e: EnumResult, r: Regex, finalName: str) {
     return file;
 }
 
-generateBindings(args: GenArgs): Result<none, fs.Error> {
+fn generateBindings(args: GenArgs): Result<none, fs.Error> {
     let file = "\nnamespace ffi {\n";
 
     let functionsReturnNullable: []str = [
@@ -804,7 +804,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
                 nullable = " | none";
             }
         }
-        file = file + f"    export extern C noemit {f.name}({params}): {parseType(args, f.returnType)}{nullable} :: final;\n";
+        file = file + f"    export extern C noemit fn {f.name}({params}): {parseType(args, f.returnType)}{nullable} :: final;\n";
     }
 
     file = file + "}\n\n";
@@ -928,7 +928,7 @@ generateBindings(args: GenArgs): Result<none, fs.Error> {
     fs.writeText(args.outfile, file)?!;
 }
 
-generate(): int {
+fn generate(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
@@ -979,6 +979,6 @@ generate(): int {
     return 0;
 }
 
-main(): int {
+fn main(): int {
     return generate();
 }

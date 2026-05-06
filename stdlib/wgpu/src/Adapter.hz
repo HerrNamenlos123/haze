@@ -2,7 +2,7 @@
 export struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
-    requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
+    fn requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
         let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
         if descriptor {
             let requiredFeatureCount = 0 as usize;
@@ -70,10 +70,10 @@ export struct Adapter {
     }
 }
 
-fromFFI(v: mut ffi.WGPUAdapterImpl): mut Adapter :: final {
+fn fromFFI(v: mut ffi.WGPUAdapterImpl): mut Adapter :: final {
     return Adapter { handle: v };
 }
 
-toFFI(v: Adapter): mut ffi.WGPUAdapterImpl :: final {
+fn toFFI(v: Adapter): mut ffi.WGPUAdapterImpl :: final {
     return v.handle;
 }

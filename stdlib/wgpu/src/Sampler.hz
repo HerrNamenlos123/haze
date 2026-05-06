@@ -3,13 +3,13 @@ export struct Sampler {
     handle: mut ffi.WGPUSamplerImpl;
 }
 
-fromFFI(v: mut ffi.WGPUSamplerImpl): mut Sampler :: final {
+fn fromFFI(v: mut ffi.WGPUSamplerImpl): mut Sampler :: final {
     return {
         handle: v,
     };
 }
 
-toFFI(v: mut Sampler): mut ffi.WGPUSamplerImpl :: final {
+fn toFFI(v: mut Sampler): mut ffi.WGPUSamplerImpl :: final {
     return v.handle;
 }
 
@@ -27,7 +27,7 @@ export struct SamplerDescriptor {
     maxAnisotropy: int;
 }
 
-fromFFI(v: ffi.WGPUSamplerDescriptor): SamplerDescriptor :: final {
+fn fromFFI(v: ffi.WGPUSamplerDescriptor): SamplerDescriptor :: final {
     return SamplerDescriptor {
         debugLabel: fromOptionalFFI(v.label),
         addressModeU: fromFFI(v.addressModeU),
@@ -43,7 +43,7 @@ fromFFI(v: ffi.WGPUSamplerDescriptor): SamplerDescriptor :: final {
     };
 }
 
-toFFI(v: SamplerDescriptor): ffi.WGPUSamplerDescriptor :: final {
+fn toFFI(v: SamplerDescriptor): ffi.WGPUSamplerDescriptor :: final {
     assert(v.maxAnisotropy >= u16.min && v.maxAnisotropy <= u16.max);
     return {
         nextInChain: none,

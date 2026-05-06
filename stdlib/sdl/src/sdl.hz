@@ -5,21 +5,21 @@ __c__("#include \"sdl_impl.c\"");
 namespace ffi {
 	export extern C struct SDL_Window {};
 
-	extern C haze_sdl_init(): bool :: final;
-	extern C haze_sdl_terminate(): void :: final;
-	extern C haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none :: final;
-	extern C haze_sdl_destroyWindow(window: SDL_Window): void :: final;
-	extern C haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
-	extern C haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
-	extern C haze_sdl_pollEvents(): void :: final;
-	extern C haze_sdl_makeContextCurrent(window: SDL_Window): bool :: final;
-	extern C haze_sdl_swapBuffers(window: SDL_Window): void :: final;
-	extern C haze_sdl_swapInterval(interval: i32): bool :: final;
-	extern C haze_sdl_getProcAddress(procname: ccstr): cptr :: final;
-	extern C haze_sdl_getTime(): f64 :: final;
-	extern C haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
-	extern C noemit SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
-	extern C noemit SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
+	extern C fn haze_sdl_init(): bool :: final;
+	extern C fn haze_sdl_terminate(): void :: final;
+	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none :: final;
+	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
+	extern C fn haze_sdl_pollEvents(): void :: final;
+	extern C fn haze_sdl_makeContextCurrent(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_swapBuffers(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_swapInterval(interval: i32): bool :: final;
+	extern C fn haze_sdl_getProcAddress(procname: ccstr): cptr :: final;
+	extern C fn haze_sdl_getTime(): f64 :: final;
+	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
+	extern C noemit fn SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
+	extern C noemit fn SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 
 	// Event trampoline registration (private to ffi namespace — SDL headers not available outside)
 	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
@@ -33,10 +33,10 @@ namespace ffi {
 		mouseMove: HazeSdlMouseMoveFn;
 	}
 
-	extern C haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
-	export extern C haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
+	extern C fn haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
+	export extern C fn haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
 
-	export init(): bool {
+	export fn init(): bool {
 		let result = haze_sdl_init();
 		if result {
 			haze_sdl_register_trampolines({
@@ -49,51 +49,51 @@ namespace ffi {
 		return result;
 	}
 
-	export terminate(): void {
+	export fn terminate(): void {
 		haze_sdl_terminate();
 	}
 
-	export createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none {
+	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none {
 		return haze_sdl_createWindow(width, height, title, noApi);
 	}
 
-	export destroyWindow(window: SDL_Window) {
+	export fn destroyWindow(window: SDL_Window) {
 		haze_sdl_destroyWindow(window);
 	}
 
-	export windowShouldClose(window: SDL_Window): bool {
+	export fn windowShouldClose(window: SDL_Window): bool {
 		return haze_sdl_windowShouldClose(window);
 	}
 
-	export setWindowShouldClose(window: SDL_Window, value: bool) {
+	export fn setWindowShouldClose(window: SDL_Window, value: bool) {
 		haze_sdl_setWindowShouldClose(window, value);
 	}
 
-	export pollEvents() {
+	export fn pollEvents() {
 		haze_sdl_pollEvents();
 	}
 
-	export makeContextCurrent(window: SDL_Window): bool {
+	export fn makeContextCurrent(window: SDL_Window): bool {
 		return haze_sdl_makeContextCurrent(window);
 	}
 
-	export swapBuffers(window: SDL_Window) {
+	export fn swapBuffers(window: SDL_Window) {
 		haze_sdl_swapBuffers(window);
 	}
 
-	export swapInterval(interval: i32): bool {
+	export fn swapInterval(interval: i32): bool {
 		return haze_sdl_swapInterval(interval);
 	}
 
-	export getProcAddress(procname: ccstr): cptr {
+	export fn getProcAddress(procname: ccstr): cptr {
 		return haze_sdl_getProcAddress(procname);
 	}
 
-	export getTime(): f64 {
+	export fn getTime(): f64 {
 		return haze_sdl_getTime();
 	}
 
-	export consumeWindowSizeChanged(window: SDL_Window): bool {
+	export fn consumeWindowSizeChanged(window: SDL_Window): bool {
 		return haze_sdl_consumeWindowSizeChanged(window);
 	}
 }
@@ -196,7 +196,7 @@ export struct MouseMoveHandler {
 // Internal: convert SDL3 scancode integer to Key enum
 // ---------------------------------------------------------------------------
 
-scancodeToKey(scancode: i32): Key :: final {
+fn scancodeToKey(scancode: i32): Key :: final {
 	do unsafe {
 		let k: Key = uninitialized;
 		__c__("k = scancode;");
@@ -208,7 +208,7 @@ scancodeToKey(scancode: i32): Key :: final {
 // C-side event trampoline functions (called by sdl_impl.c)
 // ---------------------------------------------------------------------------
 
-hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+fn hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
@@ -217,7 +217,7 @@ hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final 
 	};
 }
 
-hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+fn hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
@@ -226,7 +226,7 @@ hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
 	};
 }
 
-hazeResizeDispatch(userdata: cptr, width: i32, height: i32): void :: final {
+fn hazeResizeDispatch(userdata: cptr, width: i32, height: i32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
@@ -235,7 +235,7 @@ hazeResizeDispatch(userdata: cptr, width: i32, height: i32): void :: final {
 	};
 }
 
-hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
+fn hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
@@ -254,35 +254,35 @@ export struct Window {
 	resizeHandlers: []ResizeHandler = [];
 	mouseMoveHandlers: []MouseMoveHandler = [];
 
-	makeContextCurrent() {
+	fn makeContextCurrent() {
 		ffi.makeContextCurrent(this.handle);
 	}
 
-	shouldClose(): bool {
+	fn shouldClose(): bool {
 		return ffi.windowShouldClose(this.handle);
 	}
 
-	close() {
+	fn close() {
 		ffi.setWindowShouldClose(this.handle, true);
 	}
 
-	destroy() {
+	fn destroy() {
 		ffi.destroyWindow(this.handle);
 	}
 
-	swapBuffers() {
+	fn swapBuffers() {
 		ffi.makeContextCurrent(this.handle);
 		ffi.swapBuffers(this.handle);
 	}
 
-	swapInterval(interval: int) {
+	fn swapInterval(interval: int) {
 		if interval >= 0 && interval <= 10 {
 			ffi.makeContextCurrent(this.handle);
 			ffi.swapInterval(interval);
 		}
 	}
 
-	getLogicalSize() {
+	fn getLogicalSize() {
 		let width = 0 as i32;
 		let height = 0 as i32;
 		let w = none as cptr;
@@ -293,7 +293,7 @@ export struct Window {
 		return Vec2i(width, height);
 	}
 
-	getFramebufferSize() {
+	fn getFramebufferSize() {
 		let width = 0 as i32;
 		let height = 0 as i32;
 		let w = none as cptr;
@@ -304,11 +304,11 @@ export struct Window {
 		return Vec2i(width, height);
 	}
 
-	consumeSizeChanged(): bool {
+	fn consumeSizeChanged(): bool {
 		return ffi.consumeWindowSizeChanged(this.handle);
 	}
 
-	getProcAddress(): ((name: ccstr) -> cptr) {
+	fn getProcAddress(): ((name: ccstr) -> cptr) {
 		this.makeContextCurrent();
 
 		do unsafe {
@@ -321,28 +321,28 @@ export struct Window {
 
 	// --- Event handler registration ---
 
-	onKeyDown(cb: KeyEventCallback): int {
+	fn onKeyDown(cb: KeyEventCallback): int {
 		let id = this.nextHandlerId;
 		this.nextHandlerId = id + 1;
 		this.keyDownHandlers.push(KeyHandler { id: id, callback: cb });
 		return id;
 	}
 
-	onKeyUp(cb: KeyEventCallback): int {
+	fn onKeyUp(cb: KeyEventCallback): int {
 		let id = this.nextHandlerId;
 		this.nextHandlerId = id + 1;
 		this.keyUpHandlers.push(KeyHandler { id: id, callback: cb });
 		return id;
 	}
 
-	onResize(cb: ResizeEventCallback): int {
+	fn onResize(cb: ResizeEventCallback): int {
 		let id = this.nextHandlerId;
 		this.nextHandlerId = id + 1;
 		this.resizeHandlers.push(ResizeHandler { id: id, callback: cb });
 		return id;
 	}
 
-	onMouseMove(cb: MouseMoveEventCallback): int {
+	fn onMouseMove(cb: MouseMoveEventCallback): int {
 		let id = this.nextHandlerId;
 		this.nextHandlerId = id + 1;
 		this.mouseMoveHandlers.push(MouseMoveHandler { id: id, callback: cb });
@@ -351,7 +351,7 @@ export struct Window {
 
 	// --- Deregistration ---
 
-	removeHandler(id: int) {
+	fn removeHandler(id: int) {
 		let i = 0;
 		while i < this.keyDownHandlers.length {
 			if this.keyDownHandlers[i].id == id {
@@ -399,7 +399,7 @@ export struct Window {
 
 	// --- Internal dispatch (called by trampolines) ---
 
-	dispatchKeyDown(e: KeyEvent) {
+	fn dispatchKeyDown(e: KeyEvent) {
 		let i = 0;
 		while i < this.keyDownHandlers.length {
 			if this.keyDownHandlers[i].callback(e) {
@@ -409,7 +409,7 @@ export struct Window {
 		}
 	}
 
-	dispatchKeyUp(e: KeyEvent) {
+	fn dispatchKeyUp(e: KeyEvent) {
 		let i = 0;
 		while i < this.keyUpHandlers.length {
 			if this.keyUpHandlers[i].callback(e) {
@@ -419,7 +419,7 @@ export struct Window {
 		}
 	}
 
-	dispatchResize(e: ResizeEvent) {
+	fn dispatchResize(e: ResizeEvent) {
 		let i = 0;
 		while i < this.resizeHandlers.length {
 			if this.resizeHandlers[i].callback(e) {
@@ -429,7 +429,7 @@ export struct Window {
 		}
 	}
 
-	dispatchMouseMove(e: MouseMoveEvent) {
+	fn dispatchMouseMove(e: MouseMoveEvent) {
 		let i = 0;
 		while i < this.mouseMoveHandlers.length {
 			if this.mouseMoveHandlers[i].callback(e) {
@@ -451,15 +451,15 @@ export struct WindowConfig {
 	noApi: bool = false;
 }
 
-export init(): bool {
+export fn init(): bool {
 	return ffi.init();
 }
 
-export terminate() {
+export fn terminate() {
 	ffi.terminate();
 }
 
-export createWindow(config: WindowConfig): Result<Window, none> {
+export fn createWindow(config: WindowConfig): Result<Window, none> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
 	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi);
@@ -475,10 +475,10 @@ export createWindow(config: WindowConfig): Result<Window, none> {
 	return Result<Window, none>.Ok(window);
 }
 
-export pollEvents() {
+export fn pollEvents() {
 	ffi.pollEvents();
 }
 
-export getTime(): real {
+export fn getTime(): real {
 	return ffi.getTime() as real;
 }

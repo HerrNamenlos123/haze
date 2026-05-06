@@ -24,7 +24,7 @@ export struct RequestAdapterCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
 }
 
-requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
         let callback: Box<RequestAdapterCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
@@ -67,7 +67,7 @@ export struct Limits {
     maxComputeWorkgroupSizeZ: u32 = 0;
     maxComputeWorkgroupsPerDimension: u32 = 0;
 
-    toFFI() {
+    fn toFFI() {
         return ffi.WGPULimits {
             nextInChain: none,
             maxTextureDimension1D: this.maxTextureDimension1D,
@@ -124,7 +124,7 @@ export struct RequestDeviceCallbackInfo {
     callback: RequestDeviceCallback;
 }
 
-requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
         let callback: Box<RequestDeviceCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
@@ -133,7 +133,7 @@ requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.
 }
 
 
-export createInstance() { 
+export fn createInstance() { 
     let instance = ffi.wgpuCreateInstance({
         nextInChain: none,
         features: {

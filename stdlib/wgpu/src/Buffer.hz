@@ -6,7 +6,7 @@ export struct BufferDescriptor {
     mappedAtCreation: bool = false;
 }
 
-toFFI(v: BufferDescriptor): ffi.WGPUBufferDescriptor :: final {
+fn toFFI(v: BufferDescriptor): ffi.WGPUBufferDescriptor :: final {
     assert(v.size >= 0, "Buffer Descriptor size >= 0");
     return ffi.WGPUBufferDescriptor {
         nextInChain: none,
@@ -32,7 +32,7 @@ export enum bitflag BufferUsage {
     QueryResolve = 0x200,
 }
 
-bufferUsageFromFFI(v: ffi.WGPUBufferUsage): BufferUsage :: final {
+fn bufferUsageFromFFI(v: ffi.WGPUBufferUsage): BufferUsage :: final {
     do unsafe {
         let usage: BufferUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
@@ -40,7 +40,7 @@ bufferUsageFromFFI(v: ffi.WGPUBufferUsage): BufferUsage :: final {
     };
 }
 
-toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
+fn toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
     do unsafe {
         let usage: ffi.WGPUBufferUsage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
@@ -52,11 +52,11 @@ export struct Buffer {
     handle: mut ffi.WGPUBufferImpl;
 }
 
-fromFFI(v: mut ffi.WGPUBufferImpl): mut Buffer :: final {
+fn fromFFI(v: mut ffi.WGPUBufferImpl): mut Buffer :: final {
     return Buffer { handle: v };
 }
 
-toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
+fn toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
     return v.handle;
 }
 
@@ -66,7 +66,7 @@ export struct VertexBufferLayout {
     attributes: []VertexAttribute;
 }
 
-fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
+fn fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
     let c = none as cptr;
     __c__("c = (void*)v.attributes;"); // ignoring constness issue
     assert(v.arrayStride >= int.min && v.arrayStride <= int.max, "Vertex Buffer Layout: Array Stride out of bounds");
@@ -77,7 +77,7 @@ fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
     };
 }
 
-toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
+fn toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
     assert(v.arrayStride >= u64.min && v.arrayStride <= u64.max, "Vertex Buffer Layout: Array Stride out of bounds");
     let attributes = arrayToFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributes);
     return ffi.WGPUVertexBufferLayout {

@@ -1,7 +1,7 @@
 export struct Instance {
     handle: mut ffi.WGPUInstanceImpl;
 
-    requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
+    fn requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
 
         let callback = Box<RequestAdapterCallback>(callbackInfo.callback);
         let userdata1: cptr = none;
@@ -39,10 +39,10 @@ export struct Instance {
     }
 }
 
-fromFFI(v: mut ffi.WGPUInstanceImpl): mut Instance :: final {
+fn fromFFI(v: mut ffi.WGPUInstanceImpl): mut Instance :: final {
     return Instance { handle: v };
 }
 
-toFFI(v: Instance): mut ffi.WGPUInstanceImpl :: final {
+fn toFFI(v: Instance): mut ffi.WGPUInstanceImpl :: final {
     return v.handle;
 }

@@ -4,7 +4,7 @@ export struct ShaderModuleDescriptor {
     code: str;
 }
 
-toFFI(v: ShaderModuleDescriptor): ffi.WGPUShaderModuleDescriptor :: final {
+fn toFFI(v: ShaderModuleDescriptor): ffi.WGPUShaderModuleDescriptor :: final {
 
     let source = ffi.WGPUShaderSourceWGSL {
         chain: {
@@ -27,13 +27,13 @@ export struct ShaderModule {
     handle: mut ffi.WGPUShaderModuleImpl;
 }
 
-fromFFI(v: mut ffi.WGPUShaderModuleImpl): mut ShaderModule :: final {
+fn fromFFI(v: mut ffi.WGPUShaderModuleImpl): mut ShaderModule :: final {
     return ShaderModule {
         handle: v,
     };
 }
 
-toFFI(v: ShaderModule): mut ffi.WGPUShaderModuleImpl :: final {
+fn toFFI(v: ShaderModule): mut ffi.WGPUShaderModuleImpl :: final {
     return v.handle;
 }
 
@@ -44,7 +44,7 @@ export enum bitflag ShaderStage {
     Compute = 4,
 }
 
-shaderStageFromFFI(v: ffi.WGPUShaderStage): ShaderStage :: final {
+fn shaderStageFromFFI(v: ffi.WGPUShaderStage): ShaderStage :: final {
     do unsafe {
         let usage: ShaderStage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");
@@ -52,7 +52,7 @@ shaderStageFromFFI(v: ffi.WGPUShaderStage): ShaderStage :: final {
     };
 }
 
-toFFI(v: ShaderStage): ffi.WGPUShaderStage :: final {
+fn toFFI(v: ShaderStage): ffi.WGPUShaderStage :: final {
     do unsafe {
         let usage: ffi.WGPUShaderStage = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");

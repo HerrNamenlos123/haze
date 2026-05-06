@@ -12,7 +12,7 @@ export struct DepthStencilState {
     depthBiasClamp: f32;
 }
 
-fromFFI(v: ffi.WGPUDepthStencilState): DepthStencilState :: final {
+fn fromFFI(v: ffi.WGPUDepthStencilState): DepthStencilState :: final {
     let depthWriteEnabled = none as bool | none;
     if v.depthWriteEnabled == ffi.WGPUOptionalBool_Undefined {
         depthWriteEnabled = none;
@@ -37,7 +37,7 @@ fromFFI(v: ffi.WGPUDepthStencilState): DepthStencilState :: final {
     };
 }
 
-toFFI(v: DepthStencilState): ffi.WGPUDepthStencilState :: final {
+fn toFFI(v: DepthStencilState): ffi.WGPUDepthStencilState :: final {
     let depthWriteEnabled = ffi.WGPUOptionalBool_Undefined;
     if v.depthWriteEnabled {
         if v.depthWriteEnabled == true {
@@ -69,7 +69,7 @@ export struct StencilFaceState {
     passOp: StencilOperation;
 }
 
-fromFFI(v: inline ffi.WGPUStencilFaceState): StencilFaceState :: final {
+fn fromFFI(v: inline ffi.WGPUStencilFaceState): StencilFaceState :: final {
     return {
         compare: fromFFI(v.compare),
         failOp: fromFFI(v.failOp),
@@ -78,7 +78,7 @@ fromFFI(v: inline ffi.WGPUStencilFaceState): StencilFaceState :: final {
     };
 }
 
-toFFI(v: StencilFaceState): ffi.WGPUStencilFaceState :: final {
+fn toFFI(v: StencilFaceState): ffi.WGPUStencilFaceState :: final {
     return {
         compare: toFFI(v.compare),
         failOp: toFFI(v.failOp),

@@ -3,11 +3,11 @@ export struct RenderPipeline {
     handle: mut ffi.WGPURenderPipelineImpl;
 }
 
-fromFFI(v: mut ffi.WGPURenderPipelineImpl): mut RenderPipeline :: final {
+fn fromFFI(v: mut ffi.WGPURenderPipelineImpl): mut RenderPipeline :: final {
     return RenderPipeline { handle: v };
 }
 
-toFFI(v: RenderPipeline): mut ffi.WGPURenderPipelineImpl :: final {
+fn toFFI(v: RenderPipeline): mut ffi.WGPURenderPipelineImpl :: final {
     return v.handle;
 }
 
@@ -15,11 +15,11 @@ export struct PipelineLayout {
     handle: mut ffi.WGPUPipelineLayoutImpl;
 }
 
-fromFFI(v: mut ffi.WGPUPipelineLayoutImpl): mut PipelineLayout :: final {
+fn fromFFI(v: mut ffi.WGPUPipelineLayoutImpl): mut PipelineLayout :: final {
     return PipelineLayout { handle: v };
 }
 
-toFFI(v: PipelineLayout): mut ffi.WGPUPipelineLayoutImpl :: final {
+fn toFFI(v: PipelineLayout): mut ffi.WGPUPipelineLayoutImpl :: final {
     return v.handle;
 }
 
@@ -33,7 +33,7 @@ export struct RenderPipelineDescriptor {
     fragment?: FragmentState;
 }
 
-toFFI(v: RenderPipelineDescriptor): ffi.WGPURenderPipelineDescriptor :: final {
+fn toFFI(v: RenderPipelineDescriptor): ffi.WGPURenderPipelineDescriptor :: final {
     return ffi.WGPURenderPipelineDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
@@ -52,7 +52,7 @@ export struct MultisampleState {
     alphaToCoverageEnabled: bool = false;
 }
 
-fromFFI(v: ffi.WGPUMultisampleState): MultisampleState :: final {
+fn fromFFI(v: ffi.WGPUMultisampleState): MultisampleState :: final {
     return {
         count: v.count,
         mask: v.mask,
@@ -60,7 +60,7 @@ fromFFI(v: ffi.WGPUMultisampleState): MultisampleState :: final {
     };
 }
 
-toFFI(v: MultisampleState): ffi.WGPUMultisampleState :: final {
+fn toFFI(v: MultisampleState): ffi.WGPUMultisampleState :: final {
     return {
         nextInChain: none,
         count: v.count,
@@ -74,7 +74,7 @@ export struct PipelineLayoutDescriptor {
     bindGroupLayouts: [](mut BindGroupLayout);
 }
 
-fromFFI(v: inline ffi.WGPUPipelineLayoutDescriptor): PipelineLayoutDescriptor :: final {
+fn fromFFI(v: inline ffi.WGPUPipelineLayoutDescriptor): PipelineLayoutDescriptor :: final {
     let c = none as cptr;
     __c__("c = (void*)v.bindGroupLayouts;"); // ignoring constness issue
     return {
@@ -83,7 +83,7 @@ fromFFI(v: inline ffi.WGPUPipelineLayoutDescriptor): PipelineLayoutDescriptor ::
     };
 }
 
-toFFI(v: PipelineLayoutDescriptor): inline ffi.WGPUPipelineLayoutDescriptor :: final {
+fn toFFI(v: PipelineLayoutDescriptor): inline ffi.WGPUPipelineLayoutDescriptor :: final {
     let layouts = arrayToFFI<mut BindGroupLayout, mut ffi.WGPUBindGroupLayoutImpl>(v.bindGroupLayouts);
     return {
         nextInChain: none,

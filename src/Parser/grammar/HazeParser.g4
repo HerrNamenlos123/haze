@@ -353,4 +353,5 @@ statement
 
 id
     : RAW_ID
+    | TYPE
     ;

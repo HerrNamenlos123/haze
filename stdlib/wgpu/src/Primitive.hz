@@ -7,7 +7,7 @@ export struct PrimitiveState {
     unclippedDepth: bool = false;
 }
 
-fromFFI(v: ffi.WGPUPrimitiveState): PrimitiveState :: final {
+fn fromFFI(v: ffi.WGPUPrimitiveState): PrimitiveState :: final {
     return {
         topology: fromFFI(v.topology),
         stripIndexFormat: fromFFI(v.stripIndexFormat),
@@ -17,7 +17,7 @@ fromFFI(v: ffi.WGPUPrimitiveState): PrimitiveState :: final {
     };
 }
 
-toFFI(v: PrimitiveState): ffi.WGPUPrimitiveState :: final {
+fn toFFI(v: PrimitiveState): ffi.WGPUPrimitiveState :: final {
     return {
         nextInChain: none,
         topology: toFFI(v.topology),

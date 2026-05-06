@@ -1,5 +1,5 @@
 
-main(): int {
+fn main(): int {
     attempt {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }

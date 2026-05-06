@@ -102,13 +102,13 @@ namespace fmt {
     }
 
     export fn format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
-        if comptime rx.IsReactive<T> {
+        if comptime T.category == meta.TypeCategory.Reactive {
             format_to_proxy(writer, rx.get(value), args);
         }
-        else if comptime rx.IsShallowReactive<T> {
+        else if comptime T.category == meta.TypeCategory.ShallowReactive {
             format_to_proxy(writer, rx.get(value), args);
         }
-        else if comptime rx.IsComputed<T> {
+        else if comptime T.category == meta.TypeCategory.Computed {
             format_to_proxy(writer, rx.get(value), args);
         }
         else {

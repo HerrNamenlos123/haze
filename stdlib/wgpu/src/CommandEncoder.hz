@@ -3,13 +3,13 @@ export struct CommandEncoderDescriptor {
     label: str;
 }
 
-fromFFI(v: ffi.WGPUCommandEncoderDescriptor): CommandEncoderDescriptor :: final {
+fn fromFFI(v: ffi.WGPUCommandEncoderDescriptor): CommandEncoderDescriptor :: final {
     return CommandEncoderDescriptor {
         label: fromFFI(v.label),
     };
 }
 
-fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none): CommandEncoderDescriptor | none :: final {
+fn fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none): CommandEncoderDescriptor | none :: final {
     if !v {
         return none;
     }
@@ -18,14 +18,14 @@ fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none): CommandEncoderDescr
     };
 }
 
-toFFI(c: CommandEncoderDescriptor): ffi.WGPUCommandEncoderDescriptor :: final {
+fn toFFI(c: CommandEncoderDescriptor): ffi.WGPUCommandEncoderDescriptor :: final {
     return ffi.WGPUCommandEncoderDescriptor {
         nextInChain: none,
         label: toFFI(c.label),
     };
 }
 
-toOptionalFFI(c: CommandEncoderDescriptor | none): ffi.WGPUCommandEncoderDescriptor | none :: final {
+fn toOptionalFFI(c: CommandEncoderDescriptor | none): ffi.WGPUCommandEncoderDescriptor | none :: final {
     if !c {
         return none;
     }
@@ -38,14 +38,14 @@ toOptionalFFI(c: CommandEncoderDescriptor | none): ffi.WGPUCommandEncoderDescrip
 export struct CommandEncoder {
     handle: mut ffi.WGPUCommandEncoderImpl;
 
-    beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
+    fn beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
         let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, toFFI(descriptor));
         if handle {
             return fromFFI(handle);
         }
     }
 
-    finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
+    fn finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
         let d = none as ffi.WGPUCommandBufferDescriptor | none;
         if descriptor {
             d = toFFI(descriptor);
@@ -57,12 +57,12 @@ export struct CommandEncoder {
     }
 }
 
-fromFFI(v: mut ffi.WGPUCommandEncoderImpl): CommandEncoder :: final {
+fn fromFFI(v: mut ffi.WGPUCommandEncoderImpl): CommandEncoder :: final {
     return CommandEncoder {
         handle: v,
     };
 }
 
-toFFI(v: CommandEncoder): mut ffi.WGPUCommandEncoderImpl :: final {
+fn toFFI(v: CommandEncoder): mut ffi.WGPUCommandEncoderImpl :: final {
     return v.handle;
 }

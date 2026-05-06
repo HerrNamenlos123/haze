@@ -2,7 +2,7 @@
 export struct Queue {
     handle: mut ffi.WGPUQueueImpl;
 
-    submit(commands: []CommandBuffer) {
+    fn submit(commands: []CommandBuffer) {
         let rawCommands: []ffi.WGPUCommandBufferImpl = [];
         for (let i = 0; i < commands.length; i++) {
             rawCommands.push(commands[i].handle);
@@ -17,7 +17,7 @@ export struct Queue {
         ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
     }
 
-    writeBuffer<T>(buffer: mut Buffer, data: []T) {
+    fn writeBuffer<T>(buffer: mut Buffer, data: []T) {
         // export extern C noemit wgpuQueueWriteBuffer(queue: mut WGPUQueueImpl, buffer: mut WGPUBufferImpl, bufferOffset: u64, data: cptr, size: usize): void :: final;
         let elementSize = sizeof(T);
         let raw = none as cptr;
@@ -43,7 +43,7 @@ export struct Queue {
         ffi.wgpuQueueWriteBuffer(this.handle, buffer.handle, 0, raw, count);
     }
 
-    writeTexture(
+    fn writeTexture(
         destination: TexelCopyTextureInfo,
         textureData: cptr,
         textureDataSize: int,
@@ -62,12 +62,12 @@ export struct Queue {
     }
 }
 
-fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {
+fn fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {
     return Queue {
         handle: v,
     };
 }
 
-toFFI(v: Queue): mut ffi.WGPUQueueImpl :: final {
+fn toFFI(v: Queue): mut ffi.WGPUQueueImpl :: final {
     return v.handle;
 }

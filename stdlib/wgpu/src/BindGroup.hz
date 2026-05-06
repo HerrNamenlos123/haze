@@ -3,13 +3,13 @@ export struct BindGroup {
     handle: mut ffi.WGPUBindGroupImpl;
 }
 
-fromFFI(v: mut ffi.WGPUBindGroupImpl): mut BindGroup :: final {
+fn fromFFI(v: mut ffi.WGPUBindGroupImpl): mut BindGroup :: final {
     return {
         handle: v,
     };
 }
 
-toFFI(v: mut BindGroup): mut ffi.WGPUBindGroupImpl :: final {
+fn toFFI(v: mut BindGroup): mut ffi.WGPUBindGroupImpl :: final {
     return v.handle;
 }
 
@@ -17,13 +17,13 @@ export struct BindGroupLayout {
     handle: mut ffi.WGPUBindGroupLayoutImpl;
 }
 
-fromFFI(v: mut ffi.WGPUBindGroupLayoutImpl): mut BindGroupLayout :: final {
+fn fromFFI(v: mut ffi.WGPUBindGroupLayoutImpl): mut BindGroupLayout :: final {
     return {
         handle: v,
     };
 }
 
-toFFI(v: BindGroupLayout): mut ffi.WGPUBindGroupLayoutImpl :: final {
+fn toFFI(v: BindGroupLayout): mut ffi.WGPUBindGroupLayoutImpl :: final {
     return v.handle;
 }
 
@@ -32,7 +32,7 @@ export struct BindGroupLayoutDescriptor {
     entries: []BindGroupLayoutEntry = [];
 }
 
-fromFFI(v: inline ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor :: final {
+fn fromFFI(v: inline ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor :: final {
     let c = none as cptr;
     __c__("c = (void*)v.entries;"); // ignoring constness issue
     return {
@@ -41,7 +41,7 @@ fromFFI(v: inline ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor 
     };
 }
 
-toFFI(v: BindGroupLayoutDescriptor): ffi.WGPUBindGroupLayoutDescriptor :: final {
+fn toFFI(v: BindGroupLayoutDescriptor): ffi.WGPUBindGroupLayoutDescriptor :: final {
     let entries = arrayToFFI<BindGroupLayoutEntry, inline ffi.WGPUBindGroupLayoutEntry>(v.entries);
     return {
         label: toOptionalFFI(v.debugLabel),
@@ -60,7 +60,7 @@ export struct BindGroupLayoutEntry {
     storageTexture: StorageTextureBindingLayout = default;
 }
 
-fromFFI(v: inline ffi.WGPUBindGroupLayoutEntry): BindGroupLayoutEntry :: final {
+fn fromFFI(v: inline ffi.WGPUBindGroupLayoutEntry): BindGroupLayoutEntry :: final {
     return {
         binding: v.binding,
         visibility: shaderStageFromFFI(v.visibility),
@@ -71,7 +71,7 @@ fromFFI(v: inline ffi.WGPUBindGroupLayoutEntry): BindGroupLayoutEntry :: final {
     };
 }
 
-toFFI(v: BindGroupLayoutEntry): inline ffi.WGPUBindGroupLayoutEntry :: final {
+fn toFFI(v: BindGroupLayoutEntry): inline ffi.WGPUBindGroupLayoutEntry :: final {
     assert(v.binding >= u32.min && v.binding <= u32.max);
     return {
         nextInChain: none,
@@ -90,7 +90,7 @@ export struct BufferBindingLayout {
     minBindingSize: int = 0;
 }
 
-fromFFI(v: inline ffi.WGPUBufferBindingLayout): BufferBindingLayout :: final {
+fn fromFFI(v: inline ffi.WGPUBufferBindingLayout): BufferBindingLayout :: final {
     assert(v.minBindingSize <= int.max);
     return {
         type: fromFFI(v.type),
@@ -99,7 +99,7 @@ fromFFI(v: inline ffi.WGPUBufferBindingLayout): BufferBindingLayout :: final {
     };
 }
 
-toFFI(v: BufferBindingLayout): inline ffi.WGPUBufferBindingLayout :: final {
+fn toFFI(v: BufferBindingLayout): inline ffi.WGPUBufferBindingLayout :: final {
     assert(v.minBindingSize >= 0);
     return {
         nextInChain: none,
@@ -113,13 +113,13 @@ export struct SamplerBindingLayout {
     type: SamplerBindingType = SamplerBindingType.BindingNotUsed;
 }
 
-fromFFI(v: inline ffi.WGPUSamplerBindingLayout): SamplerBindingLayout :: final {
+fn fromFFI(v: inline ffi.WGPUSamplerBindingLayout): SamplerBindingLayout :: final {
     return {
         type: fromFFI(v.type),
     };
 }
 
-toFFI(v: SamplerBindingLayout): inline ffi.WGPUSamplerBindingLayout :: final {
+fn toFFI(v: SamplerBindingLayout): inline ffi.WGPUSamplerBindingLayout :: final {
     return {
         nextInChain: none,
         type: toFFI(v.type),
@@ -132,7 +132,7 @@ export struct TextureBindingLayout {
     multisampled: bool = false;
 }
 
-fromFFI(v: inline ffi.WGPUTextureBindingLayout): TextureBindingLayout :: final {
+fn fromFFI(v: inline ffi.WGPUTextureBindingLayout): TextureBindingLayout :: final {
     return {
         sampleType: fromFFI(v.sampleType),
         viewDimension: fromFFI(v.viewDimension),
@@ -140,7 +140,7 @@ fromFFI(v: inline ffi.WGPUTextureBindingLayout): TextureBindingLayout :: final {
     };
 }
 
-toFFI(v: TextureBindingLayout): inline ffi.WGPUTextureBindingLayout :: final {
+fn toFFI(v: TextureBindingLayout): inline ffi.WGPUTextureBindingLayout :: final {
     return {
         nextInChain: none,
         sampleType: toFFI(v.sampleType),
@@ -155,7 +155,7 @@ export struct StorageTextureBindingLayout {
     viewDimension: TextureViewDimension = TextureViewDimension.Undefined;
 }
 
-fromFFI(v: inline ffi.WGPUStorageTextureBindingLayout): StorageTextureBindingLayout :: final {
+fn fromFFI(v: inline ffi.WGPUStorageTextureBindingLayout): StorageTextureBindingLayout :: final {
     return {
         access: fromFFI(v.access),
         format: fromFFI(v.format),
@@ -163,7 +163,7 @@ fromFFI(v: inline ffi.WGPUStorageTextureBindingLayout): StorageTextureBindingLay
     };
 }
 
-toFFI(v: StorageTextureBindingLayout): inline ffi.WGPUStorageTextureBindingLayout :: final {
+fn toFFI(v: StorageTextureBindingLayout): inline ffi.WGPUStorageTextureBindingLayout :: final {
     return {
         nextInChain: none,
         access: toFFI(v.access),
@@ -178,7 +178,7 @@ export struct BindGroupDescriptor {
     entries: [](mut BindGroupEntry) = [];
 }
 
-fromFFI(v: inline ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {
+fn fromFFI(v: inline ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {
     let c = none as cptr;
     __c__("c = (void*)v.entries;"); // ignoring constness issue
     return {
@@ -188,7 +188,7 @@ fromFFI(v: inline ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {
     };
 }
 
-toFFI(v: BindGroupDescriptor): inline ffi.WGPUBindGroupDescriptor :: final {
+fn toFFI(v: BindGroupDescriptor): inline ffi.WGPUBindGroupDescriptor :: final {
     let entries = arrayToFFI<mut BindGroupEntry, inline ffi.WGPUBindGroupEntry>(v.entries);
     return {
         nextInChain: none,
@@ -208,7 +208,7 @@ export struct BindGroupEntry {
     textureView?: mut TextureView;
 }
 
-fromFFI(v: inline ffi.WGPUBindGroupEntry): mut BindGroupEntry :: final {
+fn fromFFI(v: inline ffi.WGPUBindGroupEntry): mut BindGroupEntry :: final {
     assert(v.offset <= int.max);
     assert(v.size <= int.max);
     return {
@@ -221,7 +221,7 @@ fromFFI(v: inline ffi.WGPUBindGroupEntry): mut BindGroupEntry :: final {
     };
 }
 
-toFFI(v: BindGroupEntry): inline ffi.WGPUBindGroupEntry :: final {
+fn toFFI(v: BindGroupEntry): inline ffi.WGPUBindGroupEntry :: final {
     assert(v.binding >= u32.min && v.binding <= u32.max);
     assert(v.offset >= 0);
     assert(v.size >= 0);

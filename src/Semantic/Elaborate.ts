@@ -2436,29 +2436,6 @@ export class SemanticElaborator {
 
     let [object, objectId] = this.expr(memberAccess.expr, inference);
 
-    // if (objectType.variant === Semantic.ENode.ParameterPackDatatype) {
-    //   if (memberAccess.memberName === "length") {
-    //     if (objectType.parameters === null) {
-    //       throw new CompilerError(
-    //         "Parameter Pack is not substituted yet and does not have enough context to know its length",
-    //         memberAccess.sourceloc
-    //       );
-    //     }
-    //     return this.sr.b.literalValue(
-    //       {
-    //         type: EPrimitive.int,
-    //         unit: null,
-    //         value: BigInt(objectType.parameters.length),
-    //       },
-    //       memberAccess.sourceloc
-    //     );
-    //   }
-    //   throw new CompilerError(
-    //     `Parameter Pack does not have a member named '${memberAccess.memberName}'`,
-    //     memberAccess.sourceloc
-    //   );
-    // }
-
     return this.resolveMemberAccess(
       objectId,
       memberAccess.memberName,
@@ -3142,6 +3119,11 @@ export class SemanticElaborator {
   elaborateVariableSymbolInScope(variableSymbolId: Collect.SymbolId) {
     const symbol = this.sr.cc.symbolNodes.get(variableSymbolId);
     assert(symbol.variant === Collect.ENode.VariableSymbol);
+
+    // If already elaborated (e.g., parameter pack parameters), return the elaborated version
+    if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
+      return this.currentContext.elaboratedVariables.get(variableSymbolId);
+    }
 
     let variableContext = EVariableContext.FunctionLocal;
     let type: Semantic.TypeUseId | null = null;
@@ -4011,7 +3993,9 @@ export class SemanticElaborator {
                   });
                   return variableId;
                 }),
-                concrete: false,
+                concrete: paramPackTypes.every((t) =>
+                  isTypeConcrete(this.sr, t)
+                ),
               });
               const paramPackVariableId = this.sr.b.addSymbol(this.sr, {
                 variant: Semantic.ENode.VariableSymbol,
@@ -4097,7 +4081,10 @@ export class SemanticElaborator {
         // Elaborate default parameter values
         if (symbol.concrete) {
           for (const param of func.parameters) {
-            assert(param.kind !== "param-pack");
+            // Skip parameter pack parameters - they don't have default values
+            if (param.kind === "param-pack") {
+              continue;
+            }
             if (param.defaultParameterValue) {
               const value = this.sr.cc.exprNodes.get(
                 param.defaultParameterValue
@@ -4114,7 +4101,9 @@ export class SemanticElaborator {
                   );
                 }
                 const paramType = parameters.find((_p, i) => {
-                  assert(func.parameters[i].kind !== "param-pack");
+                  if (func.parameters[i].kind === "param-pack") {
+                    return false;
+                  }
                   return func.parameters[i].name === param.name;
                 })?.type;
                 if (!paramType) {
@@ -4130,7 +4119,9 @@ export class SemanticElaborator {
                 );
               } else {
                 const paramType = parameters.find((_p, i) => {
-                  assert(func.parameters[i].kind !== "param-pack");
+                  if (func.parameters[i].kind === "param-pack") {
+                    return false;
+                  }
                   return func.parameters[i].name === param.name;
                 })?.type;
                 defaultExprId = this.expr(param.defaultParameterValue, {
@@ -4139,7 +4130,9 @@ export class SemanticElaborator {
                 })[1];
               }
               const paramType = parameters.find((_p, i) => {
-                assert(func.parameters[i].kind !== "param-pack");
+                if (func.parameters[i].kind === "param-pack") {
+                  return false;
+                }
                 return func.parameters[i].name === param.name;
               })?.type;
               if (paramType) {
@@ -6346,7 +6339,6 @@ export class SemanticElaborator {
     inference: Semantic.Inference,
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
-    const genericArgs = generics.map((g) => this.expressionAsGenericArg(g));
     let expr = this.sr.exprNodes.get(exprId);
 
     // Handle datatypes BEFORE reactive unwrapping
@@ -6388,6 +6380,29 @@ export class SemanticElaborator {
             ? typeDef.type
             : expr.type;
         return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
+      }
+
+      if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+        if (name === "length") {
+          if (typeDef.parameters === null) {
+            throw new CompilerError(
+              "Parameter Pack is not substituted yet and does not have enough context to know its length",
+              sourceloc
+            );
+          }
+          return this.sr.b.literalValue(
+            {
+              type: EPrimitive.int,
+              unit: null,
+              value: BigInt(typeDef.parameters.length),
+            },
+            sourceloc
+          );
+        }
+        throw new CompilerError(
+          `Parameter Pack does not have a member named '${name}'`,
+          sourceloc
+        );
       }
 
       if (typeDef.variant === Semantic.ENode.StructDatatype) {
@@ -7121,57 +7136,15 @@ export class SemanticElaborator {
         inference,
         sourceloc
       );
+    } else if (exprType.variant === Semantic.ENode.ParameterPackDatatype) {
+      return this.resolveMemberAccess(
+        this.sr.b.datatypeUseAsValue(expr.type, sourceloc)[1],
+        name,
+        generics,
+        inference,
+        sourceloc
+      );
     }
-
-    console.log(expr, exprType);
-
-    // DATATYPE LOOKUP
-
-    // const datatypeValueInstance = this.sr.typeUseNodes.get(typeUseId);
-    // const datatypeValue = this.sr.typeDefNodes.get(datatypeValueInstance.type);
-
-    // if (datatypeValue.variant === Semantic.ENode.NamespaceDatatype) {
-    //   return this.elaborateMemberFromExpr(
-    //     datatypeAsValueExprId,
-    //     memberAccessExpr.memberName,
-    //     memberAccessExpr.genericArgs,
-    //     memberAccessExpr.sourceloc,
-    //     inference,
-    //   );
-    // } else if (datatypeValue.variant === Semantic.ENode.StructDatatype) {
-    // } else if (datatypeValue.variant === Semantic.ENode.PrimitiveDatatype) {
-    // } else if (datatypeValue.variant === Semantic.ENode.TaggedUnionDatatype) {
-    // } else if (datatypeValue.variant === Semantic.ENode.EnumDatatype) {
-    // }
-
-    // throw new CompilerError(
-    //   `Datatype ${Semantic.serializeTypeUse(this.sr, typeUseId)} does not have a member named '${
-    //     memberAccessExpr.memberName
-    //   }'`,
-    //   memberAccessExpr.sourceloc,
-    // );
-
-    // if (symbol.variant === Collect.ENode.TypeDefSymbol && symbol.name === name) {
-    //   const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-    //   if (def.variant === Collect.ENode.StructTypeDef) {
-    //   } else if (def.variant === Collect.ENode.NamespaceTypeDef) {
-    //     const ns = this.namespace(symbol.typeDef);
-    //     return this.sr.b.datatypeDefAsValue(ns, memberAccessExpr.sourceloc);
-    //   } else if (def.variant === Collect.ENode.EnumTypeDef) {
-    //     const e = this.enum(typeUse.type);
-    //     return this.sr.b.datatypeDefAsValue(e, memberAccessExpr.sourceloc);
-    //   } else if (def.variant === Collect.ENode.TypeDefAlias) {
-    //     const e = this.elaborateTypeDefAlias(
-    //       def,
-    //       memberAccessExpr.genericArgs,
-    //       null,
-    //       null,
-    //       false,
-    //       memberAccessExpr.sourceloc,
-    //     );
-    //     return this.sr.b.datatypeUseAsValue(e, memberAccessExpr.sourceloc);
-    //   }
-    // }
 
     throw new CompilerError(
       `Expression of type '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a member called ${name}`,

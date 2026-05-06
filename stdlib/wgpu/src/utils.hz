@@ -1,5 +1,5 @@
 
-toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
+fn toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
     do unsafe {
         if text {
             let t = text;
@@ -17,7 +17,7 @@ toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
     };
 }
 
-fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
+fn fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
     do unsafe {
         let available = false;
         __c__("available = view.data != NULL;");
@@ -32,7 +32,7 @@ fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
     };
 }
 
-toFFI(text: str): inline ffi.WGPUStringView :: final {
+fn toFFI(text: str): inline ffi.WGPUStringView :: final {
     do unsafe {
         let view: inline ffi.WGPUStringView = uninitialized;
         __c__("view.data = text.data;");
@@ -41,7 +41,7 @@ toFFI(text: str): inline ffi.WGPUStringView :: final {
     };
 }
 
-fromFFI(view: inline ffi.WGPUStringView): str :: final {
+fn fromFFI(view: inline ffi.WGPUStringView): str :: final {
     do unsafe {
         let text = "";
         __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
@@ -54,7 +54,7 @@ struct ArrayFFIResult {
     length: usize = 0;
 }
 
-arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
+fn arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
     let result: []T = [];
     for (let i = 0; i < length; i++) {
         do unsafe {
@@ -66,9 +66,12 @@ arrayFromFFI<T, ffiT>(length: usize, data: cptr) {
     return result;
 }
 
-arrayToFFI<T, ffiT>(array: []T) {
+fn arrayToFFI<T, ffiT>(array: []T) {
     let ffiArray: []ffiT = [];
     for element in array {
+        static_print(
+            f"Element: {typeof(element).name}"
+        );
         ffiArray.push(toFFI(element));
     }
 

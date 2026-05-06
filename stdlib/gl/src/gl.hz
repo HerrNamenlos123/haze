@@ -2,17 +2,17 @@
 __c__("#include \"glad.h\"");
 __c__("#include \"glad.c\"");
 
-extern C noemit gladLoadGLLoader(proc: (name: ccstr) -> cptr) :: final;
+extern C noemit fn gladLoadGLLoader(proc: (name: ccstr) -> cptr) :: final;
 
-export init(proc: (name: ccstr) -> cptr) {
+export fn init(proc: (name: ccstr) -> cptr) {
     gladLoadGLLoader(proc);
 }
 
-extern C noemit glViewport(x: i32, y: i32, w: i32, h: i32) :: final;
-extern C noemit glClearColor(x: f32, y: f32, w: f32, h: f32) :: final;
-extern C noemit glClear(flags: i32) :: final;
+extern C noemit fn glViewport(x: i32, y: i32, w: i32, h: i32) :: final;
+extern C noemit fn glClearColor(x: f32, y: f32, w: f32, h: f32) :: final;
+extern C noemit fn glClear(flags: i32) :: final;
 
-toI32(value: int): i32 {
+fn toI32(value: int): i32 {
     // assert(value >= -2147483648 && value <= 2147483647);
     if (value >= i32.min && value <= i32.max) {
         return value as i32;
@@ -28,15 +28,15 @@ export struct Vertex {
     color: Colorf;
 }
 
-export viewport(x: int, y: int, w: int, h: int) {
+export fn viewport(x: int, y: int, w: int, h: int) {
     glViewport(toI32(x), toI32(y), toI32(w), toI32(h));
 }
 
-export clearColor(color: Color) {
+export fn clearColor(color: Color) {
     glClearColor(color.r as f32, color.g as f32, color.b as f32, color.a as f32);
 }
 
-export clear() {
+export fn clear() {
     let flags = 0 as i32;
     __c__("flags = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT;");
     glClear(flags);
