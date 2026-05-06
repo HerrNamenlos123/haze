@@ -157,7 +157,7 @@ genericLiteral
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
-    | variableMutabilitySpecifier? id QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
+    | variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
     | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     ;
@@ -182,7 +182,7 @@ typeDefinition
 // Expressions
 
 nameSegment
-    : id genericArgs?
+    : (id | TYPE) genericArgs?
     ;
 
 nameExpr
@@ -193,6 +193,7 @@ primaryExpr
     : LB expr RB
     | doScope
     | TYPE typeExpr
+    | TYPEOF LB expr RB
     | lambda
     | literal
     | interpolatedString
@@ -353,5 +354,4 @@ statement
 
 id
     : RAW_ID
-    | TYPE
     ;

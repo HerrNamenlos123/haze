@@ -1939,6 +1939,13 @@ export class SemanticElaborator {
       case Collect.ENode.TypeLiteralExpr:
         return this.typeLiteral(expr);
 
+      case Collect.ENode.TypeOfExpr: {
+        return this.sr.b.datatypeUseAsValue(
+          this.elaborateDatatype(exprId),
+          expr.sourceloc
+        );
+      }
+
       case Collect.ENode.ArraySubscriptExpr:
         return this.arraySubscript(expr);
 
@@ -7144,6 +7151,11 @@ export class SemanticElaborator {
         inference,
         sourceloc
       );
+    }
+
+    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+      const symbol = this.sr.symbolNodes.get(expr.symbol);
+      console.log(symbol, exprType);
     }
 
     throw new CompilerError(
