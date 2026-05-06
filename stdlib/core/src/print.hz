@@ -1,6 +1,8 @@
 
 __c__("#include <stdio.h>");
 
+fn watchBinary(): rx.ShallowReactive<mut Bytes> :: final;
+
 namespace ffi {
     export extern C noemit fn printf(fmt: ccstr, ...) :: final;
 }

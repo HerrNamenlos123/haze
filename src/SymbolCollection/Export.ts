@@ -198,7 +198,7 @@ export function ExportTypeDef(
 
           if (functype.returnType) {
             file.write(
-              `${methodName}(${parameters}): (${Semantic.serializeTypeUse(
+              `fn ${methodName}(${parameters}): (${Semantic.serializeTypeUse(
                 sr,
                 functype.returnType
               )})`
@@ -217,7 +217,7 @@ export function ExportTypeDef(
             }
             file.writeLine(";");
           } else {
-            file.writeLine(`${methodName}(${parameters});`);
+            file.writeLine(`fn ${methodName}(${parameters});`);
           }
         } else {
           const originalFunc = sr.cc.symbolNodes.get(
@@ -356,6 +356,7 @@ export function ExportSymbol(
       if (symbol.noemit) {
         file.write("noemit ");
       }
+      file.write("fn ");
       file.write(symbol.name);
       file.write(
         "(" +
