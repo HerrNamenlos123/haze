@@ -29,11 +29,7 @@ importAs
 // Namespaces
 
 sourceLocationPrefixRule
-    : SOURCE_LOCATION_DIRECTIVE STRING_LITERAL COLON INTEGER_LITERAL (
-        (COLON INTEGER_LITERAL) | 
-        (COLON INTEGER_LITERAL MINUS INTEGER_LITERAL) | 
-        (COLON INTEGER_LITERAL MINUS FLOAT_LITERAL) // Not supposed to be float, but ROW.COLUMN parses as float
-    )?
+    : SOURCE_LOCATION_DIRECTIVE STRING_LITERAL
     ;
 
 globalDeclarationWithSource

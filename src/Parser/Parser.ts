@@ -3292,42 +3292,43 @@ class ASTBuilder extends HazeParserListener {
       );
     }
 
-    const filename = this.trimAndUnescapeStringLiteral(
+    const fullPath = this.trimAndUnescapeStringLiteral(
       stringLiteral.getText(),
       1,
       this.loc(ctx)
     );
 
-    const ints = ctx
-      .INTEGER_LITERAL()
-      .map((int) => Number.parseInt(int.getText(), 10));
-    const float = ctx.FLOAT_LITERAL() ? ctx.FLOAT_LITERAL()!.getText() : null;
+    // Parse the new format: "/path/to/file.hz:line:col-endcol"
+    // Find the location suffix by looking for ":digits:" pattern
+    const match = fullPath.match(/^(.+?):(\d+):(\d+)(?:-(\d+))?(?:\.(\d+))?$/);
 
-    if (ints.length === 2 && float === null) {
-      return {
-        filename: filename,
-        start: { line: ints[0], column: ints[1] },
-      };
+    if (!match) {
+      throw new CompilerError(
+        `Invalid source location format: expected "/path/to/file.hz:line:col[-endcol]", got "${fullPath}"`,
+        this.loc(ctx)
+      );
     }
-    if (ints.length === 3) {
-      return {
-        filename: filename,
-        start: { line: ints[0], column: ints[1] },
-        end: { line: ints[0], column: ints[2] },
-      };
+
+    const filename = match[1];
+    const line = Number.parseInt(match[2], 10);
+    const startCol = Number.parseInt(match[3], 10);
+    const endCol = match[4] ? Number.parseInt(match[4], 10) : undefined;
+    const endLine = match[5] ? Number.parseInt(match[5], 10) : undefined;
+
+    const result: SourceLoc = {
+      filename: filename,
+      start: { line: line, column: startCol },
+    };
+
+    if (endCol !== undefined) {
+      if (endLine === undefined) {
+        result.end = { line: line, column: endCol };
+      } else {
+        result.end = { line: endLine, column: endCol };
+      }
     }
-    if (ints.length === 2 && float !== null) {
-      const end = float.split(".");
-      return {
-        filename: filename,
-        start: { line: ints[0], column: ints[1] },
-        end: {
-          line: Number.parseInt(end[0], 10),
-          column: Number.parseInt(end[1], 10),
-        },
-      };
-    }
-    throw new CompilerError("Unexpected number of integers", this.loc(ctx));
+
+    return result;
   };
 
   enterStructContentWithSourceloc = (
