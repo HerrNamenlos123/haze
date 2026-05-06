@@ -298,7 +298,10 @@ export class ConstraintSet {
   // ---- path-based operations -----------------------------------------------
 
   addPath(path: ConstraintPath, value: ConstraintValue): this {
-    this.pathMap.set(pathConstraintKey(path, value), { path, value });
+    this.pathMap.set(pathConstraintKey(path, value), {
+      path: path,
+      value: value,
+    });
     this._inverse = undefined;
     return this;
   }

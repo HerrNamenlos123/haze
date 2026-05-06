@@ -61,8 +61,8 @@ export function EvalCTFE(
   }
 
   const ok = (value: [Semantic.Expression, Semantic.ExprId]) =>
-    ({ ok: true, value }) as const;
-  const err = (error: string) => ({ ok: false, error }) as const;
+    ({ ok: true, value: value }) as const;
+  const err = (error: string) => ({ ok: false, error: error }) as const;
 
   switch (expr.variant) {
     case Semantic.ENode.BinaryExpr: {

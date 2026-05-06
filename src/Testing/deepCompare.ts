@@ -20,17 +20,17 @@ export function compareWithDebug(
 
     // Handle null/undefined early
     if (a === undefined && b !== undefined) {
-      diffs.push({ path, expected: a, actual: b });
+      diffs.push({ path: path, expected: a, actual: b });
       return;
     }
 
     if (a !== undefined && b === undefined) {
-      diffs.push({ path, expected: a, actual: b });
+      diffs.push({ path: path, expected: a, actual: b });
       return;
     }
 
     if (a == null || b == null) {
-      diffs.push({ path, expected: a, actual: b });
+      diffs.push({ path: path, expected: a, actual: b });
       return;
     }
 
@@ -44,7 +44,7 @@ export function compareWithDebug(
 
     // Type mismatch
     if (typeof a !== typeof b) {
-      diffs.push({ path, expected: a, actual: b });
+      diffs.push({ path: path, expected: a, actual: b });
       return;
     }
 
@@ -67,13 +67,13 @@ export function compareWithDebug(
     }
 
     // Primitive mismatch
-    diffs.push({ path, expected: a, actual: b });
+    diffs.push({ path: path, expected: a, actual: b });
   }
 
   walk(expected, actual, "");
 
   return {
     equal: diffs.length === 0,
-    diffs,
+    diffs: diffs,
   };
 }

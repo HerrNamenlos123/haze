@@ -777,6 +777,19 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
+    if (ctx.TYPEOF()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprPrimary typeof stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "TypeOfExpr",
+        expr: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeOfExpr);
+      return;
+    }
+
     if (ctx.nameExpr() || (ctx.LB() && ctx.RB())) {
       if (produced.length !== 1) {
         throw new InternalError("TypeExprPrimary stack mismatch");
@@ -1774,19 +1787,6 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if ((ctx as any).TYPEOF?.()) {
-      if (produced.length !== 1) {
-        throw new InternalError("PrimaryExpr typeof stack mismatch");
-      }
-
-      this.stack.push({
-        variant: "TypeOfExpr",
-        expr: produced[0] as ASTExpr,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTTypeOfExpr);
-      return;
-    }
-
     if (ctx.doScope()) {
       if (produced.length !== 1) {
         throw new InternalError("PrimaryExpr doScope stack mismatch");
@@ -1803,7 +1803,7 @@ class ASTBuilder extends HazeParserListener {
 
       this.stack.push({
         variant: "TypeValueExpr",
-        expr: produced[0] as ASTExpr,
+        datatype: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
       } satisfies ASTTypeValueExpr);
       return;

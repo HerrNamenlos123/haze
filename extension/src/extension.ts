@@ -25,7 +25,7 @@ async function startClient(_ctx: vscode.ExtensionContext) {
   client = new LanguageClient(
     "haze",
     "Haze Language Server",
-    { command, args },
+    { command: command, args: args },
     { documentSelector: [{ language: "haze" }] }
   );
 

@@ -1682,9 +1682,6 @@ function collectSymbol(
         }
 
         for (const p of parameters) {
-          if (p.kind === "param-pack") {
-            continue;
-          }
           const varsymId = defineVariableSymbol(
             cc,
             {
@@ -1693,7 +1690,7 @@ function collectSymbol(
               mutability: EVariableMutability.Let,
               name: p.name,
               sourceloc: p.sourceloc,
-              type: p.type,
+              type: p.type ?? null,
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
             },
@@ -2512,7 +2509,6 @@ function collectExpr(
         variant: Collect.ENode.SymbolValueExpr,
         name: item.name,
         genericArgs: item.generics.map((g) => {
-          console.log("SYMBOL", item, g);
           if (g.variant === "LiteralExpr") {
             return collectExpr(cc, g, args);
           }
@@ -2521,7 +2517,7 @@ function collectExpr(
             return Collect.makeExpr(cc, {
               variant: Collect.ENode.TypeLiteralExpr,
               sourceloc: g.sourceloc,
-              datatype: collectExpr(cc, g.expr, args),
+              datatype: collectExpr(cc, g.datatype, args),
             })[1];
           }
 
@@ -3056,7 +3052,7 @@ function collectExpr(
             return Collect.makeExpr(cc, {
               variant: Collect.ENode.TypeLiteralExpr,
               sourceloc: g.sourceloc,
-              datatype: collectExpr(cc, g.expr, args),
+              datatype: collectExpr(cc, g.datatype, args),
             })[1];
           }
 
@@ -3339,7 +3335,7 @@ function collectExpr(
     case "TypeValueExpr": {
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.TypeLiteralExpr,
-        datatype: collectExpr(cc, item.expr, {
+        datatype: collectExpr(cc, item.datatype, {
           currentParentScope: args.currentParentScope,
         }),
         sourceloc: item.sourceloc,

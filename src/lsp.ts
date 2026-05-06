@@ -278,7 +278,7 @@ export function startLsp(): Promise<never> {
     // Clear diagnostics for files that no longer have errors or are no longer in the module
     for (const uri of lastPublished) {
       if (!nextPublished.has(uri)) {
-        await connection.sendDiagnostics({ uri, diagnostics: [] });
+        await connection.sendDiagnostics({ uri: uri, diagnostics: [] });
       }
     }
 

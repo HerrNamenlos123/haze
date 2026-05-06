@@ -477,7 +477,7 @@ export class ConfigParser {
         }
         if (typeof cmd === "string") {
           scripts.push({
-            name,
+            name: name,
             command: cmd,
             depends: null,
           });
@@ -512,9 +512,9 @@ export class ConfigParser {
             }
           }
           scripts.push({
-            name,
+            name: name,
             command: cmd.command,
-            depends,
+            depends: depends,
           });
         } else {
           throw new GeneralError(
@@ -546,7 +546,7 @@ export class ConfigParser {
           );
         }
         deps.push({
-          name,
+          name: name,
           path: props["path"],
         });
       }
@@ -588,7 +588,7 @@ export class ConfigParser {
         ),
       },
       configFilePath: this.configPath,
-      moduleType,
+      moduleType: moduleType,
       nostdlib: this.getOptionalStringAnyOf(toml, "std", ["none"]) === "none",
       linkerFlags: new PlatformStrings({
         all: [],
@@ -771,7 +771,7 @@ export class ConfigParser {
             }
             const f: GeneratorFile = {
               module: file["module"] as string,
-              dir,
+              dir: dir,
               type: "module-file",
               path: file["path"] as string,
             };

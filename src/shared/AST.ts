@@ -638,12 +638,12 @@ export type ASTTypeValueExpr = {
   // The distinction is only relevant in the parser, so this is a direct pass-through node to preserve the parsed
   // syntax. In the collection step, it will simply be unwrapped and skipped.
   variant: "TypeValueExpr";
-  expr: ASTExpr;
+  datatype: ASTExpr;
   sourceloc: SourceLoc;
 };
 
 export type ASTTypeOfExpr = {
-  // This is the "typeof(() -> 0)" syntax, which bridges expression land and type land, to infer type from runtime values.
+  // This is the "typeof(<expr>)" syntax, which bridges expression land and type land, to infer type from runtime values.
   variant: "TypeOfExpr";
   expr: ASTExpr;
   sourceloc: SourceLoc;
