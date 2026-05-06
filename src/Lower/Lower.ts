@@ -106,6 +106,8 @@ export namespace Lowered {
     StringConstructExpr = 57,
     // Dummy
     Dummy = 58,
+
+    TypeAliasDatatype,
   }
 
   export type TagMapping = {
@@ -563,6 +565,7 @@ export namespace Lowered {
     | FixedArrayDatatypeDef
     | DynamicArrayDatatype
     | SliceDatatype
+    | TypeAliasDatatype
     | ReactiveDatatype
     | ComputedDatatype
     | UntaggedUnionDatatypeDef
@@ -615,6 +618,12 @@ export namespace Lowered {
 
   export type DynamicArrayDatatype = {
     variant: ENode.DynamicArrayDatatype;
+    datatype: TypeUseId;
+    name: NameSet;
+  };
+
+  export type TypeAliasDatatype = {
+    variant: ENode.TypeAliasDatatype;
     datatype: TypeUseId;
     name: NameSet;
   };
@@ -672,6 +681,23 @@ export namespace Lowered {
     literalValue: LiteralValue;
     name: NameSet;
   };
+
+  export function resolveAlias(
+    lr: Lowered.Module,
+    typeUseId: Lowered.TypeUseId,
+    visited: Set<Lowered.TypeUseId> = new Set()
+  ): Lowered.TypeUseId {
+    if (visited.has(typeUseId)) {
+      return typeUseId;
+    }
+    visited.add(typeUseId);
+    const use = lr.typeUseNodes.get(typeUseId);
+    const def = lr.typeDefNodes.get(use.type);
+    if (def.variant !== Lowered.ENode.TypeAliasDatatype) {
+      return typeUseId;
+    }
+    return resolveAlias(lr, def.datatype, visited);
+  }
 }
 
 const callSysPanic = (
@@ -2935,6 +2961,19 @@ export function lowerTypeDef(
       variant: Lowered.ENode.LiteralDatatype,
       baseType: baseType,
       literalValue: type.literalValue,
+      name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
+    });
+    lr.loweredTypeDefs.set(typeId, pId);
+    return pId;
+  }
+  if (type.variant === Semantic.ENode.TypeAliasDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    // Lower the base type of the literal datatype
+    const [p, pId] = Lowered.addTypeDef<Lowered.TypeAliasDatatype>(lr, {
+      variant: Lowered.ENode.TypeAliasDatatype,
+      datatype: lowerTypeUse(lr, type.targetType),
       name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
     });
     lr.loweredTypeDefs.set(typeId, pId);

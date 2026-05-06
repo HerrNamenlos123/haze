@@ -646,6 +646,10 @@ class CodeGenerator {
           this.out.type_declarations.writeLine(
             `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`
           );
+        } else if (symbol.variant === Lowered.ENode.TypeAliasDatatype) {
+          this.out.type_declarations.writeLine(
+            `typedef ${this.mangleTypeUse(symbol.datatype)} ${this.mangleTypeDef(symbol)};`
+          );
         } else if (symbol.variant === Lowered.ENode.LiteralDatatype) {
           // A literal datatype is just an alias for its base type
           const a = this.mangleTypeUse(symbol.baseType);
@@ -658,7 +662,6 @@ class CodeGenerator {
         }
       } else {
         const symbol = this.lr.typeUseNodes.get(symbolInfo.id);
-        // console.log("TypeUse: ", symbolInfo.id, symbol.name.mangledName, symbol);
         if (symbol.pointer) {
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
@@ -744,7 +747,6 @@ class CodeGenerator {
         return;
       }
 
-      // console.log(type.name.mangledName, type.variant);
       if (type.variant === Lowered.ENode.FunctionDatatype) {
         appliedTypes.add(type);
         for (const p of type.parameters) {
@@ -805,6 +807,9 @@ class CodeGenerator {
         appliedTypes.add(type);
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.ComputedDatatype) {
+        appliedTypes.add(type);
+        sortedLoweredTypes.push({ type: "def", id: typeId });
+      } else if (type.variant === Lowered.ENode.TypeAliasDatatype) {
         appliedTypes.add(type);
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.LiteralDatatype) {
@@ -1548,10 +1553,14 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
 
             const left = this.lr.exprNodes.get(expr.left);
-            const leftType = this.lr.typeUseNodes.get(left.type);
+            const leftType = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, left.type)
+            );
             const leftTypeDef = this.lr.typeDefNodes.get(leftType.type);
             const right = this.lr.exprNodes.get(expr.right);
-            const rightType = this.lr.typeUseNodes.get(right.type);
+            const rightType = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, right.type)
+            );
             const rightTypeDef = this.lr.typeDefNodes.get(rightType.type);
             assert(
               leftTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
@@ -1838,7 +1847,6 @@ class CodeGenerator {
             );
           }
         } else {
-          console.log(targetExpr, typeUse, typeDef);
           assert(false);
         }
 

@@ -4005,7 +4005,7 @@ export class SemanticElaborator {
                   });
                   return variableId;
                 }),
-                concrete: true,
+                concrete: false,
               });
               const paramPackVariableId = this.sr.b.addSymbol(this.sr, {
                 variant: Semantic.ENode.VariableSymbol,
@@ -6653,8 +6653,6 @@ export class SemanticElaborator {
         //     memberAccessExpr.sourceloc,
         //   );
         // }
-
-        assert(false);
       }
 
       assert(false);
