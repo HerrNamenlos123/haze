@@ -1957,6 +1957,12 @@ export class SemanticElaborator {
       case Collect.ENode.CallableExpr:
         return this.callableExpr(expr, inference);
 
+      case Collect.ENode.TypeModifierExpr:
+        return this.sr.b.datatypeUseAsValue(
+          this.elaborateDatatype(exprId),
+          expr.sourceloc
+        );
+
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
     }
@@ -6521,11 +6527,13 @@ export class SemanticElaborator {
             Collect.ENode.NamespaceSharedInstance
         );
 
+        console.log("Looking for ", name);
         for (const scopeId of collectedNSSharedInstance.namespaceScopes) {
           const scope = this.sr.cc.scopeNodes.get(scopeId);
           assert(scope.variant === Collect.ENode.NamespaceScope);
           for (const symbolId of scope.symbols) {
             const symbol = this.sr.cc.symbolNodes.get(symbolId);
+            console.log("Sym", symbol.name);
             if (
               symbol.variant !== Collect.ENode.CInjectDirective &&
               symbol.name === name

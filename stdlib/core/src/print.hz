@@ -121,23 +121,23 @@ namespace fmt {
     }
 
     export fn format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi8", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIi8", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: i16, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi16", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIi16", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: i32, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi32", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIi32", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: i64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi64", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: int, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi64", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: str, args: FormatArgs) {
@@ -145,31 +145,31 @@ namespace fmt {
     }
     
     export fn format_to(writer: mut StringWriter, value: u8, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu8", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIu8", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: u16, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu16", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIu16", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: u32, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu32", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIu32", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: u64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu64", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: usize, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu64", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: f32, args: FormatArgs) {
-        format_to_sprintf<64, "\"%.9g\"", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%.9g\"", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: f64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%.17g\"", type typeof(value)>(writer, value);
+        format_to_sprintf<64, "\"%.17g\"", typeof(value)>(writer, value);
     }
 
     export fn format_to(writer: mut StringWriter, value: real, args: FormatArgs) {

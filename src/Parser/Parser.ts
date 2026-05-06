@@ -812,6 +812,19 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
+    if (ctx.TYPE()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprPrimary type stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "TypeValueExpr",
+        datatype: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTTypeValueExpr);
+      return;
+    }
+
     throw new InternalError("TypeExprPrimary produced unexpected children");
   };
 

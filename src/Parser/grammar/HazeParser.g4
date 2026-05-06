@@ -152,7 +152,7 @@ typeExpr
     ;
 
 genericLiteral
-    : expr
+    : typeExpr
     ;
 
 structContent
