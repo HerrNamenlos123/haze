@@ -9258,8 +9258,9 @@ export class SemanticElaborator {
     exprId: Semantic.ExprId
   ) {
     const expr = this.sr.exprNodes.get(exprId);
-    const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
-    const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
+    const resolvedExprTypeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
+    );
 
     if (
       expr.variant === Semantic.ENode.ExplicitCastExpr &&
@@ -9353,8 +9354,8 @@ export class SemanticElaborator {
     }
 
     // Boolean context narrowing: if (expr) where expr is union with null/none
-    if (exprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-      const memberDefs = exprTypeDef.members.map(
+    if (resolvedExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const memberDefs = resolvedExprTypeDef.members.map(
         (m) => this.sr.typeUseNodes.get(m).type
       );
       const path = this.extractConstraintPath(exprId);
@@ -9403,10 +9404,10 @@ export class SemanticElaborator {
 
     if (
       expr.variant === Semantic.ENode.SymbolValueExpr &&
-      exprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+      resolvedExprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
     ) {
-      const okTag = exprTypeDef.members.find((m) => m.tag === "Ok");
-      const errTag = exprTypeDef.members.find((m) => m.tag === "Err");
+      const okTag = resolvedExprTypeDef.members.find((m) => m.tag === "Ok");
+      const errTag = resolvedExprTypeDef.members.find((m) => m.tag === "Err");
       if (okTag && errTag) {
         const path = this.extractConstraintPath(exprId);
         if (path) {
