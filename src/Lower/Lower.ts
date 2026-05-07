@@ -2234,19 +2234,46 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         scope.statements
       );
 
-      const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
-      const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
-      assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
-
-      const targetIndex = targetUnionDef.members.findIndex(
-        (m) => m === expr.srcErrTagType
-      );
-      assert(targetIndex !== -1);
+      let errorValue = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.UnionToValueCastExpr,
+        expr: loweredInnerExpr[1],
+        index: expr.srcErrTagIndex,
+        type: srcUnionUse,
+        optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+          lr,
+          srcUnionUse,
+          innerExpr.type
+        ),
+      })[1];
 
       const loweredErrorUnionType = lowerTypeUse(
         lr,
-        attemptExpr.errorUnionType
+        attemptExpr.errorResultType
       );
+
+      const targetUnionUse = lr.sr.typeUseNodes.get(
+        lr.sr.e.resolveAlias(attemptExpr.errorResultType)
+      );
+      const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
+      if (attemptExpr.errorResultTypeIsUnion) {
+        assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
+        const targetIndex = targetUnionDef.members.findIndex(
+          (m) => m === expr.srcErrTagType
+        );
+        assert(targetIndex !== -1);
+
+        errorValue = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ValueToUnionCastExpr,
+          expr: errorValue,
+          index: targetIndex,
+          type: loweredErrorUnionType,
+          optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+            lr,
+            loweredErrorUnionType,
+            innerExpr.type
+          ),
+        })[1];
+      }
 
       const loweredValueUnionDef = lr.typeDefNodes.get(
         lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredInnerExpr[0].type))
@@ -2287,27 +2314,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
                     type: loweredErrorUnionType,
                   })[1],
                   type: loweredErrorUnionType,
-                  value: Lowered.addExpr(lr, {
-                    variant: Lowered.ENode.ValueToUnionCastExpr,
-                    expr: Lowered.addExpr(lr, {
-                      variant: Lowered.ENode.UnionToValueCastExpr,
-                      expr: loweredInnerExpr[1],
-                      index: expr.srcErrTagIndex,
-                      type: srcUnionUse,
-                      optimizeExprToNullptr: shouldBeOptimizedToNullptr(
-                        lr,
-                        srcUnionUse,
-                        innerExpr.type
-                      ),
-                    })[1],
-                    index: targetIndex,
-                    type: loweredErrorUnionType,
-                    optimizeExprToNullptr: shouldBeOptimizedToNullptr(
-                      lr,
-                      loweredErrorUnionType,
-                      innerExpr.type
-                    ),
-                  })[1],
+                  value: errorValue,
                   assignRefTarget: false,
                 })[1],
                 sourceloc: expr.sourceloc,
@@ -2351,7 +2358,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         });
 
       const attemptResultType = lowerTypeUse(lr, expr.type);
-      const attemptErrorType = lowerTypeUse(lr, expr.errorUnionType);
+      const attemptErrorType = lowerTypeUse(lr, expr.errorResultType);
 
       const resultVarId = storeInTempVarAndGet(
         lr,
@@ -2365,7 +2372,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
       const errorVarId = storeInTempVarAndGet(
         lr,
-        lowerTypeUse(lr, expr.errorUnionType),
+        lowerTypeUse(lr, expr.errorResultType),
         null,
         expr.sourceloc,
         enclosingBlockScope.statements,
@@ -3449,19 +3456,6 @@ function lowerStatement(
       const attemptExpr = lr.sr.exprNodes.get(statement.toAttemptExpr);
       assert(attemptExpr.variant === Semantic.ENode.AttemptExpr);
 
-      const targetUnionUse = lr.sr.typeUseNodes.get(attemptExpr.errorUnionType);
-      const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
-      assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
-      const targetIndex = targetUnionDef.members.findIndex(
-        (m) => m === semanticExpr.type
-      );
-      assert(targetIndex !== -1);
-
-      const loweredErrorUnionType = lowerTypeUse(
-        lr,
-        attemptExpr.errorUnionType
-      );
-
       const flattened: Lowered.StatementId[] = [];
       const loweredExpr = lowerExpr(
         lr,
@@ -3469,6 +3463,38 @@ function lowerStatement(
         flattened,
         instanceInfo
       );
+
+      let resultExpr = loweredExpr[1];
+
+      const loweredErrorUnionType = lowerTypeUse(
+        lr,
+        attemptExpr.errorResultType
+      );
+
+      if (attemptExpr.errorResultTypeIsUnion) {
+        const targetUnionUse = lr.sr.typeUseNodes.get(
+          attemptExpr.errorResultType
+        );
+        const targetUnionDef = lr.sr.typeDefNodes.get(targetUnionUse.type);
+        assert(targetUnionDef.variant === Semantic.ENode.UntaggedUnionDatatype);
+        const targetIndex = targetUnionDef.members.findIndex(
+          (m) => m === semanticExpr.type
+        );
+        assert(targetIndex !== -1);
+
+        resultExpr = Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ValueToUnionCastExpr,
+          expr: resultExpr,
+          index: targetIndex,
+          optimizeExprToNullptr: shouldBeOptimizedToNullptr(
+            lr,
+            loweredErrorUnionType,
+            semanticExpr.type
+          ),
+          type: loweredErrorUnionType,
+        })[1];
+      }
+
       return [
         ...flattened,
         Lowered.addStatement(lr, {
@@ -3485,17 +3511,7 @@ function lowerStatement(
               },
               type: loweredErrorUnionType,
             })[1],
-            value: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.ValueToUnionCastExpr,
-              expr: loweredExpr[1],
-              index: targetIndex,
-              optimizeExprToNullptr: shouldBeOptimizedToNullptr(
-                lr,
-                loweredErrorUnionType,
-                semanticExpr.type
-              ),
-              type: loweredErrorUnionType,
-            })[1],
+            value: resultExpr,
             type: loweredErrorUnionType,
           })[1],
           sourceloc: statement.sourceloc,

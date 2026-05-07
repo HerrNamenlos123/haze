@@ -9964,10 +9964,10 @@ export class SemanticElaborator {
     errPropExpr: Collect.ErrorPropagationExpr,
     inference: Semantic.Inference
   ) {
-    const [rightExpr, rightExprId] = this.expr(errPropExpr.expr, inference);
+    const [leftExpr, leftExprId] = this.expr(errPropExpr.expr, inference);
 
     const typeUse = this.sr.typeUseNodes.get(
-      this.sr.e.resolveAlias(rightExpr.type)
+      this.sr.e.resolveAlias(leftExpr.type)
     );
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
@@ -9999,7 +9999,7 @@ export class SemanticElaborator {
 
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.AttemptErrorPropagationExpr,
-        expr: rightExprId,
+        expr: leftExprId,
         srcErrTagIndex: srcErrIndex,
         srcErrTagType: srcErrTag.type,
         srcOkTagIndex: srcOkIndex,
@@ -10011,8 +10011,8 @@ export class SemanticElaborator {
         type: srcOkTag.type,
         flow: Semantic.FlowResult.fallthrough()
           .with(Semantic.FlowType.Raise)
-          .withAll(rightExpr.flow),
-        writes: Semantic.WriteResult.empty().withAll(rightExpr.writes),
+          .withAll(leftExpr.flow),
+        writes: Semantic.WriteResult.empty().withAll(leftExpr.writes),
       });
     }
 
@@ -10038,7 +10038,7 @@ export class SemanticElaborator {
       name: makeTempName(),
       sourceloc: errPropExpr.sourceloc,
       parentSymbolId: null,
-      type: rightExpr.type,
+      type: leftExpr.type,
       consumed: false,
       variableContext: EVariableContext.FunctionLocal,
     });
@@ -10077,7 +10077,7 @@ export class SemanticElaborator {
         symbol: tempVariableId,
         isTemporary: true,
         sourceloc: errPropExpr.sourceloc,
-        type: rightExpr.type,
+        type: leftExpr.type,
         flow: Semantic.FlowResult.fallthrough(),
         writes: Semantic.WriteResult.empty(),
       })[1];
@@ -10089,7 +10089,7 @@ export class SemanticElaborator {
         sourceloc: errPropExpr.sourceloc,
       })[1];
       functionSymbol.returnStatements.add(statementId);
-      rightExpr.instanceIds.forEach((id) =>
+      leftExpr.instanceIds.forEach((id) =>
         functionSymbol.returnsInstanceIds.add(id)
       );
       functionSymbol.returnedDatatypes.add(srcErrTag.type);
@@ -10103,7 +10103,7 @@ export class SemanticElaborator {
           name: tempVariable.name,
           comptime: false,
           sourceloc: errPropExpr.sourceloc,
-          value: rightExprId,
+          value: leftExprId,
           intrinsicTakeAddrOfValue: false,
           variableSymbol: tempVariableId,
         })[1],
@@ -10112,15 +10112,15 @@ export class SemanticElaborator {
           isLetBinding: false,
           condition: this.sr.b.addExpr(this.sr, {
             variant: Semantic.ENode.UnionTagCheckExpr,
-            expr: rightExprId,
+            expr: leftExprId,
             instanceIds: [],
             isTemporary: true,
             sourceloc: errPropExpr.sourceloc,
             type: this.sr.b.boolType(),
             invertCheck: false,
             comparisonTypesAnd: [srcErrTag.type],
-            flow: rightExpr.flow,
-            writes: rightExpr.writes,
+            flow: leftExpr.flow,
+            writes: leftExpr.writes,
           })[1],
           elseIfs: [],
           sourceloc: errPropExpr.sourceloc,
@@ -10140,8 +10140,8 @@ export class SemanticElaborator {
         sourceloc: errPropExpr.sourceloc,
         tag: srcOkIndex,
         type: srcOkTag.type,
-        flow: rightExpr.flow,
-        writes: rightExpr.writes,
+        flow: leftExpr.flow,
+        writes: leftExpr.writes,
       })[1],
       errPropExpr.sourceloc
     )[1];
@@ -10150,8 +10150,8 @@ export class SemanticElaborator {
       blockScopeId,
       Semantic.FlowResult.fallthrough()
         .with(Semantic.FlowType.Return)
-        .withAll(rightExpr.flow),
-      Semantic.WriteResult.empty().withAll(rightExpr.writes)
+        .withAll(leftExpr.flow),
+      Semantic.WriteResult.empty().withAll(leftExpr.writes)
     );
   }
 
@@ -10164,8 +10164,12 @@ export class SemanticElaborator {
       unsafe: inference?.unsafe,
     });
 
-    const sourceExprTypeUse = this.sr.typeUseNodes.get(sourceExpr.type);
-    const sourceExprTypeDef = this.sr.typeDefNodes.get(sourceExprTypeUse.type);
+    const resolvedSourceExprTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(sourceExpr.type)
+    );
+    const sourceExprTypeDef = this.sr.typeDefNodes.get(
+      resolvedSourceExprTypeUse.type
+    );
 
     if (
       sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
@@ -10866,7 +10870,8 @@ export class SemanticElaborator {
         hasErrorVar: Boolean(attempt.elseVar),
         sourceloc: attempt.sourceloc,
         type: -1 as Semantic.TypeUseId,
-        errorUnionType: -1 as Semantic.TypeUseId,
+        errorResultTypeIsUnion: false,
+        errorResultType: -1 as Semantic.TypeUseId,
         flow: Semantic.FlowResult.empty(),
         writes: Semantic.WriteResult.empty(),
       });
@@ -10978,13 +10983,28 @@ export class SemanticElaborator {
       memberSet.add(attemptExpr.elseScopeReturnsType);
     }
 
-    const resultUnion =
+    const resultType =
       memberSet.size > 0
         ? this.sr.b.untaggedUnionTypeUse([...memberSet], attempt.sourceloc)
         : this.sr.b.noneType();
 
-    attemptExpr.type = resultUnion;
-    attemptExpr.errorUnionType = errorUnion;
+    attemptExpr.type = resultType;
+    attemptExpr.errorResultType = errorUnion;
+
+    const errorResultTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(errorUnion)
+    );
+    const errorResultTypeDef = this.sr.typeDefNodes.get(
+      errorResultTypeUse.type
+    );
+
+    // TODO: Verify that this line ACTUALLY is correct, and cannot incorrectly trigger
+    // when the return type happens to be a union, not because the union was created, but
+    // because only one path returns and this one path happens to be a union, then the union
+    // must not be created during lowering because it already has been.
+    // Not sure if this is a real thing that can happen.
+    attemptExpr.errorResultTypeIsUnion =
+      errorResultTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype;
 
     // ───────────────────────────────────────────────────────────────────────────
     // BLOCK EXPRESSIONS
@@ -10999,7 +11019,7 @@ export class SemanticElaborator {
       ? Conversion.MakeConversionOrThrow(
           this.sr,
           attemptScopeExprId,
-          resultUnion,
+          resultType,
           this.currentContext.constraints,
           attemptScope.sourceloc,
           Conversion.Mode.Implicit,
@@ -11017,7 +11037,7 @@ export class SemanticElaborator {
       ? Conversion.MakeConversionOrThrow(
           this.sr,
           elseExprId,
-          resultUnion,
+          resultType,
           this.currentContext.constraints,
           elseScope.sourceloc,
           Conversion.Mode.Implicit,
@@ -11057,15 +11077,6 @@ export class SemanticElaborator {
   }
 
   typeLiteral(literal: Collect.TypeLiteralExpr) {
-    // console.log(
-    //   "TYPE LITERAL: ",
-    //   printCollectedDatatype(this.sr.cc, literal.datatype),
-    //   literal.sourceloc
-    // );
-    // if (printCollectedDatatype(this.sr.cc, literal.datatype) === "value") {
-    //   const s = this.sr.cc.exprNodes.get(literal.datatype);
-    //   console.log(s);
-    // }
     return this.sr.b.datatypeUseAsValue(
       this.elaborateDatatype(literal.datatype),
       literal.sourceloc

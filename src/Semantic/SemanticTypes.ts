@@ -601,7 +601,8 @@ export namespace Semantic {
     errorLabel: string;
     resultLabel: string;
     errorResultVarname: string;
-    errorUnionType: TypeUseId;
+    errorResultType: TypeUseId;
+    errorResultTypeIsUnion: boolean;
     uniqueId: bigint;
     hasErrorVar: boolean;
   };

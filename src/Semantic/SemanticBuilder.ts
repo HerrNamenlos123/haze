@@ -1652,6 +1652,10 @@ export class SemanticBuilder {
       }
     });
 
+    if (canonicalMembers.length === 1) {
+      return canonicalMembers[0];
+    }
+
     // Canonicalization: Create a stable key from the sorted members
     // This ensures that unions with the same members always have the same TypeDefId
     const canonicalKey = canonicalMembers.map((id) => id.toString()).join(",");

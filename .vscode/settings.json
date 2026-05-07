@@ -7,6 +7,10 @@
     "/^clear && bun run dev build --no-sourceloc 2>&1 \\| head -50$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^clear && bun run dev build --no-sourceloc 2>&1 \\| grep -A 5 \"Error:\"$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
