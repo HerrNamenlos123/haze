@@ -7,11 +7,11 @@ import sdl_wgpu
 // ui framework module (includes flexbox layout)
 import ui
 
-export extern C noemit wgpu_init(window: cptr) :: final;
-export extern C wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
-export extern C wgpu_end(window: cptr) :: final;
+export extern C noemit fn wgpu_init(window: cptr) :: final;
+export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
+export extern C fn wgpu_end(window: cptr) :: final;
 
-getWindowState(window: sdl.Window): WindowState {
+fn getWindowState(window: sdl.Window): WindowState {
     let logicalSize = window.getLogicalSize();
     let framebufferSize = window.getFramebufferSize();
 
@@ -44,7 +44,7 @@ struct Foo {
     // bar: Bar;
 }
 
-print<T>(value: T) {
+fn print<T>(value: T) {
     if comptime typeof(value).category == meta.TypeCategory.Struct {
         let s = "{\n";
         for comptime field, i in typeof(value).fields {
@@ -58,7 +58,7 @@ print<T>(value: T) {
     }
 }
 
-main(): int {
+fn main(): int {
 
     const foo = Foo { value: 187, otherValue: 42.0 };
     print(foo);

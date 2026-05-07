@@ -9,14 +9,14 @@ inline struct Globals {
     screenSize: inline Vec2f;
 }
 
-max<T>(a: T, b: T): T => {
+fn max<T>(a: T, b: T): T => {
     if a >= b {
         return a;
     }
     return b;
 }
 
-min<T>(a: T, b: T): T => {
+fn min<T>(a: T, b: T): T => {
     if a <= b {
         return a;
     }
@@ -64,7 +64,7 @@ struct TextRenderer {
     atlasUploaded: bool = false;
     defaultFont: int;
 
-    constructor() {
+    fn constructor() {
         let glyphBuffer: []fontstash.Glyph = [];
         glyphBuffer.reserve(1024);
 
@@ -80,7 +80,7 @@ struct TextRenderer {
         };
     }
 
-    drawText(
+    fn drawText(
         renderer: Renderer,
         font: int,
         size: f32,
@@ -164,7 +164,7 @@ opaque struct Renderer {
 
     primitives: []PrimitiveInstance = [];
 
-    constructor(options: RendererOptions) {
+    fn constructor(options: RendererOptions) {
         let queue = options.device.getQueue();
         if !queue { 
             sys.panic("Failed to get queue");
@@ -379,7 +379,7 @@ opaque struct Renderer {
         borderThickness: real = 0;
     };
 
-    drawRect(opts: RectOpts) {
+    fn drawRect(opts: RectOpts) {
         if opts.fillColor.a != 0.0 {
             this.primitives.push({
                 type: 0, // Filled Rounded Rectangle
@@ -432,7 +432,7 @@ opaque struct Renderer {
         color: Color;
     }
 
-    drawText(
+    fn drawText(
         opts: TextOpts
     ) {
         this.fontRenderer.drawText(
@@ -446,7 +446,7 @@ opaque struct Renderer {
         );
     }
 
-    updateAtlas() {
+    fn updateAtlas() {
         let atlas = this.fontRenderer.fs.getAtlas()
 
         this.queue.writeTexture(
@@ -458,15 +458,15 @@ opaque struct Renderer {
         );
     }
 
-    beginFrame() {
+    fn beginFrame() {
         this.primitives = [];
     }
 
-    updateWindowState(nextState: WindowState) {
+    fn updateWindowState(nextState: WindowState) {
         this.windowState = nextState;
     }
 
-    endFrame() {
+    fn endFrame() {
         let pipelineValue = rx.get(this.pipeline);
 
         this.updateAtlas();

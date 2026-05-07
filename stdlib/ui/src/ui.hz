@@ -3,14 +3,14 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit hzui_clay_define_div_element(fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
-    extern C noemit hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
 
-    extern C noemit hzui_clay_init(width: int, height: int): void :: final;
-    extern C noemit hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
-    extern C noemit Clay_BeginLayout(): void :: final;
-    extern C noemit Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
-    extern C noemit Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
+    extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
+    extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
+    extern C noemit fn Clay_BeginLayout(): void :: final;
+    extern C noemit fn Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
+    extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
 
     extern C noemit struct Clay_RenderCommandArray {};
     extern C noemit inline struct ClayCallbacks {
@@ -185,7 +185,7 @@ export opaque struct Context {
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
 
-    constructor(opts: ContextOpts) {
+    fn constructor(opts: ContextOpts) {
         ffi.hzui_clay_init(opts.width, opts.height);
         return Context {
             fonts: opts.fonts,
@@ -200,7 +200,7 @@ export opaque struct Context {
         lineHeightStack: []LineHeight = [];
         textColorStack: []Color = [];
 
-        validateEmpty() {
+        fn validateEmpty() {
             assert(this.fontFamilyStack.length == 0);
             assert(this.fontSizeStack.length == 0);
             assert(this.fontWeightStack.length == 0);
@@ -209,7 +209,7 @@ export opaque struct Context {
         }
     }
 
-    withCascadingStackApplied(ctx: TreeTraverseContext, element: Element, fn: () => none) {
+    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: Element, func: () => none) {
         let fontFamily = element is DivElement ? element.style.fontFamily : element.style.fontFamily;
         let fontSize = element is DivElement ? element.style.fontSize : element.style.fontSize;
         let fontWeight = element is DivElement ? element.style.fontWeight : element.style.fontWeight;
@@ -232,7 +232,7 @@ export opaque struct Context {
             ctx.textColorStack.push(textColor);
         }
 
-        fn();
+        func();
 
         if fontFamily {
             ctx.fontFamilyStack.pop();
@@ -251,7 +251,7 @@ export opaque struct Context {
         }
     }
 
-    getFont(name: str) {
+    fn getFont(name: str) {
         for entry in this.fonts {
             if entry.name == name {
                 return entry.id;
@@ -259,7 +259,7 @@ export opaque struct Context {
         }
     }
 
-    getCurrentFont(ctx: TreeTraverseContext) {
+    fn getCurrentFont(ctx: TreeTraverseContext) {
         assert(ctx.fontFamilyStack.length > 0);
 
         // Find the font
@@ -276,27 +276,27 @@ export opaque struct Context {
         sys.panic("Font could not be found and default font is not available. Default font must always exist.");
     }
 
-    getCurrentFontSize(ctx: TreeTraverseContext) {
+    fn getCurrentFontSize(ctx: TreeTraverseContext) {
         assert(ctx.fontSizeStack.length > 0);
         return ctx.fontSizeStack[ctx.fontSizeStack.length - 1];
     }
 
-    getCurrentFontWeight(ctx: TreeTraverseContext) {
+    fn getCurrentFontWeight(ctx: TreeTraverseContext) {
         assert(ctx.fontWeightStack.length > 0);
         return ctx.fontWeightStack[ctx.fontWeightStack.length - 1];
     }
 
-    getCurrentLineHeight(ctx: TreeTraverseContext) {
+    fn getCurrentLineHeight(ctx: TreeTraverseContext) {
         assert(ctx.lineHeightStack.length > 0);
         return ctx.lineHeightStack[ctx.lineHeightStack.length - 1];
     }
 
-    getCurrentTextColor(ctx: TreeTraverseContext) {
+    fn getCurrentTextColor(ctx: TreeTraverseContext) {
         assert(ctx.textColorStack.length > 0);
         return ctx.textColorStack[ctx.textColorStack.length - 1];
     }
 
-    processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
+    fn processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
         if element is DivElement {
             let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
             this.withCascadingStackApplied(ctx, element, () => {
@@ -306,9 +306,9 @@ export opaque struct Context {
                         this.processTreeElement(ctx, child);
                     }
                 };
-                let fn = none as cptr;
+                let func = none as cptr;
                 let env = none as cptr;
-                __c__("fn = (void*)renderChildren.fn;");
+                __c__("func = (void*)renderChildren.fn;");
                 __c__("env = (void*)renderChildren.env;");
 
                 let elementBox = Box<Element>(element);
@@ -316,7 +316,7 @@ export opaque struct Context {
                 __c__("elementPtr = elementBox;");
 
                 ffi.hzui_clay_define_div_element(
-                    fn, env, 
+                    func, env, 
                     element.id, 
                     element.style.backgroundColor, 
                     getPaddingValues(element.style.padding), 
@@ -365,7 +365,7 @@ export opaque struct Context {
         }
     }
 
-    render(element: Element, callbacks: RenderCallbacks) {
+    fn render(element: Element, callbacks: RenderCallbacks) {
         ffi.Clay_BeginLayout();
 
         let ctx = TreeTraverseContext {};
@@ -418,11 +418,11 @@ export opaque struct Context {
     }
 }
 
-export setLayoutSize(width: int, height: int) {
+export fn setLayoutSize(width: int, height: int) {
     ffi.hzui_clay_set_layout_dimensions(width, height);
 }
 
-getPaddingValues(padding: StylePadding) {
+fn getPaddingValues(padding: StylePadding) {
     if padding is StylePaddingSimple {
         return ffi.PaddingValues {
             left: padding.value ? padding.value : 0.0,
@@ -447,7 +447,7 @@ getPaddingValues(padding: StylePadding) {
     };
 }
 
-getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
+fn getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
     if cornerRadius is StyleCornerRadiusSimple {
         return CornerRadiusValues {
             topLeft: cornerRadius.value ? cornerRadius.value : 0.0,
@@ -472,7 +472,7 @@ getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
     };
 }
 
-export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.CornerRadiusValues) => void;
+export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;
 export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
 
 export struct RenderCallbacks {
@@ -480,7 +480,7 @@ export struct RenderCallbacks {
     renderText: RenderTextCB;
 }
 
-renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
+fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
         let callable: Box<RenderFilledRectCB> = uninitialized;
         __c__("callable = userdata;");
@@ -488,7 +488,7 @@ renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height
     };
 }
 
-renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
+fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
     do unsafe {
         let callable: Box<RenderTextCB> = uninitialized;
         __c__("callable = userdata;");
@@ -496,7 +496,7 @@ renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): voi
     };
 }
 
-applyBoundingBoxTrampoline(elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+fn applyBoundingBoxTrampoline(elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
         let box: Box<Element> = uninitialized;
         __c__("box = elementPtr;");

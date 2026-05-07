@@ -3,23 +3,23 @@ __c__("#include \"ffi/haze_fontstash.c\"");
 export __c__("#include \"ffi/public/haze_fontstash.h\"");
 
 namespace ffi {
-    export extern C haze_fontstash_create(width: int, height: int): cptr :: final;
-    export extern C haze_fontstash_destroy(ctx: cptr) :: final;
+    export extern C fn haze_fontstash_create(width: int, height: int): cptr :: final;
+    export extern C fn haze_fontstash_destroy(ctx: cptr) :: final;
 
-    export extern C haze_fontstash_add_font(
+    export extern C fn haze_fontstash_add_font(
         ctx: cptr,
         name: str,
         path: str
     ): int :: final;
 
-    export extern C haze_fontstash_add_font_from_memory(
+    export extern C fn haze_fontstash_add_font_from_memory(
         ctx: cptr,
         name: str,
         data: cptr,
         length: int
     ): int :: final;
 
-    export extern C haze_fontstash_layout_text(
+    export extern C fn haze_fontstash_layout_text(
         ctx: cptr,
         font: int,
         size: f32,
@@ -29,11 +29,11 @@ namespace ffi {
         out: []Glyph,
     ): void :: final;
 
-    export extern C haze_fontstash_get_atlas(
+    export extern C fn haze_fontstash_get_atlas(
         ctx: cptr,
     ): haze_fontstash_atlas_t :: final;
 
-    export extern C haze_fontstash_get_metrics(
+    export extern C fn haze_fontstash_get_metrics(
         ctx: cptr,
         font: int,
         size: real,
@@ -81,7 +81,7 @@ export struct Atlas {
 export opaque struct FontStash {
     fonsContext: cptr | none;
 
-    constructor(width: int, height: int) {
+    fn constructor(width: int, height: int) {
         let ctx = ffi.haze_fontstash_create(width, height);
         let valid = false;
         __c__("valid = ctx != NULL;");
@@ -94,13 +94,13 @@ export opaque struct FontStash {
         };
     }
 
-    destroy() {
+    fn destroy() {
         assert(this.fonsContext, "FontStash Context was already destroyed");
         ffi.haze_fontstash_destroy(this.fonsContext);
         this.fonsContext = none;
     }
 
-    addFont(name: str, path: str): int {
+    fn addFont(name: str, path: str): int {
         assert(this.fonsContext, "FontStash Context not available");
         let id = ffi.haze_fontstash_add_font(
             this.fonsContext,
@@ -114,7 +114,7 @@ export opaque struct FontStash {
         return id;
     }
 
-    addFont(name: str, data: Bytes): int {
+    fn addFont(name: str, data: Bytes): int {
         assert(this.fonsContext, "FontStash Context not available");
 
         let ptr = none as cptr;
@@ -135,7 +135,7 @@ export opaque struct FontStash {
         return id;
     }
 
-    layoutText(
+    fn layoutText(
         font: int,
         size: f32,
         x: f32,
@@ -155,7 +155,7 @@ export opaque struct FontStash {
         );
     }
 
-    getAtlas(): Atlas {
+    fn getAtlas(): Atlas {
         assert(this.fonsContext, "FontStash Context not available");
         let atlas = ffi.haze_fontstash_get_atlas(
             this.fonsContext,
@@ -167,7 +167,7 @@ export opaque struct FontStash {
         };
     }
 
-    getMetrics(font: int, fontSize: real): Metrics {
+    fn getMetrics(font: int, fontSize: real): Metrics {
         assert(this.fonsContext, "FontStash Context not available");
         let metrics = ffi.haze_fontstash_get_metrics(
             this.fonsContext,

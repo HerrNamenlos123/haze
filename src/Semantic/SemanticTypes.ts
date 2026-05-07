@@ -1888,8 +1888,21 @@ export namespace Semantic {
     let fragments = [current];
     if (type.parentSymbolId) {
       const sym = sr.symbolNodes.get(type.parentSymbolId);
-      assert(sym.variant === Semantic.ENode.TypeDefSymbol);
-      fragments = [...getNamespaceChainFromDatatype(sr, sym.datatype), current];
+      if (sym.variant === Semantic.ENode.TypeDefSymbol) {
+        fragments = [
+          ...getNamespaceChainFromDatatype(sr, sym.datatype),
+          current,
+        ];
+      } else if (sym.variant === Semantic.ENode.FunctionSymbol) {
+        if (sym.parentSymbolId) {
+          fragments = [
+            ...getNamespaceChainFromSymbol(sr, sym.parentSymbolId),
+            current,
+          ];
+        }
+      } else {
+        assert(false);
+      }
     }
     return fragments;
   }
@@ -1899,6 +1912,11 @@ export namespace Semantic {
     symbolId: Semantic.SymbolId
   ) {
     const symbol = sr.symbolNodes.get(symbolId);
+
+    if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+      return getNamespaceChainFromDatatype(sr, symbol.datatype);
+    }
+
     assert(
       symbol.variant === Semantic.ENode.FunctionSymbol ||
         symbol.variant === Semantic.ENode.VariableSymbol ||
@@ -1909,6 +1927,7 @@ export namespace Semantic {
     const current = {
       pretty: symbol.name,
       mangled: symbol.name.length + symbol.name,
+      wasMangled: true,
       isMonomorphized: false,
       isExported:
         symbol.variant !== Semantic.ENode.FunctionSignature && symbol.export,
@@ -2830,7 +2849,7 @@ export namespace Semantic {
       case Semantic.ENode.ArrayLiteralExpr: {
         return `([${expr.elements
           .map((v) => serializeExpr(sr, v))
-          .join(", ")}]) as ${Semantic.serializeTypeUse(sr, expr.type)}`;
+          .join(", ")}] as (${Semantic.serializeTypeUse(sr, expr.type)}))`;
       }
 
       case Semantic.ENode.ArraySubscriptExpr: {

@@ -655,7 +655,7 @@ export class SemanticElaborator {
     const realAllocatorType =
       this.elaborateBuiltinSymbolByName("hzstd_allocator_t");
     const allocatorType = this.sr.typeUseNodes.get(
-      this.sr.exprNodes.get(allocatorExpr).type
+      this.sr.e.resolveAlias(this.sr.exprNodes.get(allocatorExpr).type)
     );
     if (allocatorType.type !== realAllocatorType) {
       throw new CompilerError(
@@ -1969,6 +1969,13 @@ export class SemanticElaborator {
           this.elaborateDatatype(exprId),
           expr.sourceloc
         );
+
+      case Collect.ENode.DynamicArrayTypeDefinitionExpr: {
+        return this.sr.b.datatypeUseAsValue(
+          this.elaborateDatatype(exprId),
+          expr.sourceloc
+        );
+      }
 
       default:
         assert(false, "All cases handled: " + Collect.ENode[expr.variant]);
@@ -3362,8 +3369,12 @@ export class SemanticElaborator {
           }
 
           const actuallyGivenexpression = this.sr.exprNodes.get(passed.exprId);
-          const aUse = this.sr.typeUseNodes.get(actuallyGivenexpression.type);
-          const bUse = this.sr.typeUseNodes.get(signatureParam.type);
+          const aUse = this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(actuallyGivenexpression.type)
+          );
+          const bUse = this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(signatureParam.type)
+          );
 
           const parameterIsConcrete = isTypeConcrete(
             this.sr,
@@ -6363,8 +6374,10 @@ export class SemanticElaborator {
     // Handle datatypes BEFORE reactive unwrapping
     // TODO: Why? Can't remember
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      const typeUse = this.sr.typeUseNodes.get(expr.type);
-      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      const resolvedTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(expr.type)
+      );
+      const resolvedTypeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
 
       if (name === "name") {
         return this.sr.b.literal(
@@ -6386,7 +6399,7 @@ export class SemanticElaborator {
           {
             type: "enum",
             enumType: typeCategoryEnumTypeId,
-            valueName: this.getDatatypeCategoryName(typeDef),
+            valueName: this.getDatatypeCategoryName(resolvedTypeDef),
           },
           sourceloc
         );
@@ -6395,15 +6408,15 @@ export class SemanticElaborator {
         // For literal types (compile-time constants like datatype 5), unwrap to the base type
         // For all other types, return the same type
         const baseTypeUseId =
-          typeDef.variant === Semantic.ENode.LiteralDatatype
-            ? typeDef.type
+          resolvedTypeDef.variant === Semantic.ENode.LiteralDatatype
+            ? resolvedTypeDef.type
             : expr.type;
         return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
       }
 
-      if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+      if (resolvedTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
         if (name === "length") {
-          if (typeDef.parameters === null) {
+          if (resolvedTypeDef.parameters === null) {
             throw new CompilerError(
               "Parameter Pack is not substituted yet and does not have enough context to know its length",
               sourceloc
@@ -6413,7 +6426,7 @@ export class SemanticElaborator {
             {
               type: EPrimitive.int,
               unit: null,
-              value: BigInt(typeDef.parameters.length),
+              value: BigInt(resolvedTypeDef.parameters.length),
             },
             sourceloc
           );
@@ -6424,9 +6437,9 @@ export class SemanticElaborator {
         );
       }
 
-      if (typeDef.variant === Semantic.ENode.StructDatatype) {
+      if (resolvedTypeDef.variant === Semantic.ENode.StructDatatype) {
         if (name === "fields") {
-          if (typeDef.reactiveClone) {
+          if (resolvedTypeDef.reactiveClone) {
             throw new CompilerError(
               `Datatype ${Semantic.serializeTypeUse(this.sr, expr.type)} does not support '.fields' reflection`,
               sourceloc
@@ -6436,7 +6449,7 @@ export class SemanticElaborator {
           const metaFieldType = this.ensureMetaFieldStructType(sourceloc);
           const reflectedFields: Semantic.ExprId[] = [];
 
-          for (const memberId of typeDef.members) {
+          for (const memberId of resolvedTypeDef.members) {
             const member = this.sr.symbolNodes.get(memberId);
             assert(member.variant === Semantic.ENode.VariableSymbol);
 
@@ -6484,7 +6497,7 @@ export class SemanticElaborator {
         }
       }
 
-      if (typeDef.variant === Semantic.ENode.EnumDatatype) {
+      if (resolvedTypeDef.variant === Semantic.ENode.EnumDatatype) {
         if (generics.length !== 0) {
           throw new CompilerError(
             `Enums cannot take generic arguments`,
@@ -6492,7 +6505,7 @@ export class SemanticElaborator {
           );
         }
 
-        for (const value of typeDef.values) {
+        for (const value of resolvedTypeDef.values) {
           if (value.name === name) {
             return [
               this.sr.exprNodes.get(value.literalExpr),
@@ -6507,9 +6520,9 @@ export class SemanticElaborator {
         );
       }
 
-      if (typeDef.variant === Semantic.ENode.PrimitiveDatatype) {
+      if (resolvedTypeDef.variant === Semantic.ENode.PrimitiveDatatype) {
         const result = this.elaboratePrimitiveDatatypeMemberAccess(
-          typeUse.type,
+          resolvedTypeUse.type,
           name,
           sourceloc
         );
@@ -6518,7 +6531,7 @@ export class SemanticElaborator {
         }
       }
 
-      if (typeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
+      if (resolvedTypeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
         if (generics.length !== 0) {
           throw new CompilerError(
             `Unions cannot take generic arguments`,
@@ -6526,14 +6539,14 @@ export class SemanticElaborator {
           );
         }
 
-        for (const member of typeDef.members) {
+        for (const member of resolvedTypeDef.members) {
           if (member.tag === name) {
             return this.sr.b.addExpr(this.sr, {
               variant: Semantic.ENode.UnionTagReferenceExpr,
               instanceIds: [],
               isTemporary: true,
               tag: name,
-              unionType: typeUse.type,
+              unionType: resolvedTypeUse.type,
               type: makeTypeUse(
                 this.sr,
                 this.sr.b.unionTagRefTypeDef(),
@@ -6554,10 +6567,10 @@ export class SemanticElaborator {
         );
       }
 
-      if (typeDef.variant === Semantic.ENode.NamespaceDatatype) {
-        assert(typeDef.variant === Semantic.ENode.NamespaceDatatype);
+      if (resolvedTypeDef.variant === Semantic.ENode.NamespaceDatatype) {
+        assert(resolvedTypeDef.variant === Semantic.ENode.NamespaceDatatype);
         const collectedNamespace = this.sr.cc.typeDefNodes.get(
-          typeDef.collectedNamespace
+          resolvedTypeDef.collectedNamespace
         );
         assert(collectedNamespace.variant === Collect.ENode.NamespaceTypeDef);
         const collectedNSSharedInstance = this.sr.cc.nsSharedInstances.get(
@@ -6578,7 +6591,7 @@ export class SemanticElaborator {
               symbol.name === name
             ) {
               return this.elaborateSymbolInNamespace(
-                typeDef.collectedNamespace,
+                resolvedTypeDef.collectedNamespace,
                 symbolId,
                 generics,
                 inference,
@@ -9730,47 +9743,10 @@ export class SemanticElaborator {
       const alias = this.sr.cc.typeDefNodes.get(symbol.typeDef);
       assert(alias.variant === Collect.ENode.TypeAliasDef);
 
-      if (alias.generics.length !== generics.length) {
-        throw new CompilerError(
-          `Type ${alias.name} expects ${alias.generics.length} type parameters but got ${generics.length}`,
-          alias.sourceloc
-        );
-      }
-      // Alias-as-value must follow the same scoping rules as alias-in-type-position.
-      assert(alias.genericScope !== (-1 as Collect.ScopeId));
-      const context = Semantic.isolateElaborationContext(this.currentContext, {
-        currentScope: alias.genericScope,
-        genericsScope: alias.genericScope,
-        constraints: this.currentContext.constraints,
-        instanceDeps: {
-          instanceDependsOn: new Map(),
-          structMembersDependOn: new Map(),
-          symbolDependsOn: new Map(),
-        },
-      });
-
-      for (let i = 0; i < alias.generics.length; i++) {
-        context.substitute.set(alias.generics[i], generics[i]);
-      }
-
-      const newId = this.withContext(
-        {
-          context: context,
-          inFunction: this.inFunction,
-          inAttemptExpr: this.inAttemptExpr,
-        },
-        () =>
-          this.elaborateDatatype(
-            (
-              this.sr.cc.typeDefNodes.get(
-                symbol.typeDef
-              ) as Collect.TypeAliasDef
-            ).target
-          )
+      return this.sr.b.datatypeDefAsValue(
+        this.elaborateTypeDefAlias(alias, generics)[1],
+        symbolValue.sourceloc
       );
-
-      const result = this.sr.b.datatypeUseAsValue(newId, symbolValue.sourceloc);
-      return result;
     }
 
     if (symbol.variant === Collect.ENode.VariableSymbol) {
