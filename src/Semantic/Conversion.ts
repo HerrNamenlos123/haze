@@ -1121,6 +1121,114 @@ export namespace Conversion {
 
   type ConversionPlan = ConversionPlanSuccess | ConversionPlanError;
 
+  function checkFunctionDatatypeCompatibility(
+    sr: Semantic.Context,
+    resolvedSourceTypeDef: Semantic.FunctionDatatypeDef,
+    sourceTypeText: string,
+    resolvedTargetTypeDef: Semantic.FunctionDatatypeDef,
+    targetTypeText: string
+  ): ConversionPlan | "success" {
+    if (!resolvedTargetTypeDef.requires.final) {
+      return {
+        kind: "error",
+        message:
+          "Cannot use a non-final function datatype as a conversion target",
+      };
+    }
+
+    if (!resolvedSourceTypeDef.requires.final) {
+      return {
+        kind: "error",
+        message:
+          "Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.",
+      };
+    }
+
+    assert(resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete);
+
+    if (
+      resolvedSourceTypeDef.parameters.length !==
+      resolvedTargetTypeDef.parameters.length
+    ) {
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the number of parameters does not match`,
+      };
+    }
+
+    assert(
+      resolvedSourceTypeDef.parameters.length ===
+        resolvedTargetTypeDef.parameters.length
+    );
+    const paramsMatch = resolvedSourceTypeDef.parameters.map(
+      (p, i) =>
+        sr.e.resolveAlias(resolvedTargetTypeDef.parameters[i].type) ===
+        sr.e.resolveAlias(p.type)
+    );
+    if (paramsMatch.some((m) => !m)) {
+      const nonmatchingParameters: string[] = [];
+      for (let i = 0; i < paramsMatch.length; i++) {
+        if (!paramsMatch[i]) {
+          nonmatchingParameters.push(`#${i}`);
+        }
+      }
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the parameters ${nonmatchingParameters.join(", ")} are not compatible`,
+      };
+    }
+
+    if (
+      sr.e.resolveAlias(resolvedSourceTypeDef.returnType) !==
+      sr.e.resolveAlias(resolvedTargetTypeDef.returnType)
+    ) {
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the return types do not match`,
+      };
+    }
+
+    if (
+      resolvedSourceTypeDef.requires.noreturnIf !==
+      resolvedTargetTypeDef.requires.noreturnIf
+    ) {
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn_if requirements`,
+      };
+    }
+
+    if (
+      resolvedSourceTypeDef.requires.noreturn !==
+      resolvedTargetTypeDef.requires.noreturn
+    ) {
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn requirements`,
+      };
+    }
+
+    if (resolvedSourceTypeDef.vararg !== resolvedTargetTypeDef.vararg) {
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different variadic argument requirements`,
+      };
+    }
+
+    if (
+      !resolvedSourceTypeDef.requires.pure &&
+      resolvedTargetTypeDef.requires.pure
+    ) {
+      return {
+        kind: "error",
+        message:
+          "Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.",
+      };
+    }
+
+    return "success";
+  }
+
   function buildConversionPlan(
     sr: Semantic.Context,
     sourceExprId: Semantic.ExprId,
@@ -1269,117 +1377,20 @@ export namespace Conversion {
       resolvedSourceTypeDef.variant === Semantic.ENode.FunctionDatatype &&
       resolvedTargetTypeDef.variant === Semantic.ENode.FunctionDatatype
     ) {
-      if (!resolvedTargetTypeDef.requires.final) {
-        return {
-          kind: "error",
-          message:
-            "Cannot use a non-final function datatype as a conversion target",
-        };
-      }
-
-      if (!resolvedSourceTypeDef.requires.final) {
-        return {
-          kind: "error",
-          message:
-            "Cannot convert a non-final function datatype, that is not fully elaborated yet. Remember to manually mark functions as final if they are extern or participate in recursion.",
-        };
-      }
-
-      if (
-        !resolvedSourceTypeDef.requires.pure &&
-        resolvedTargetTypeDef.requires.pure
-      ) {
-        return {
-          kind: "error",
-          message:
-            "Passing an impure function to a value that requires it to be pure. This is not safe as the caller may assume no side effects which the given function could have.",
-        };
-      }
-
-      assert(resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete);
-
-      if (
-        resolvedSourceTypeDef.parameters.length !==
-        resolvedTargetTypeDef.parameters.length
-      ) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the number of parameters does not match`,
-        };
-      }
-
-      assert(
-        resolvedSourceTypeDef.parameters.length ===
-          resolvedTargetTypeDef.parameters.length
+      const result = checkFunctionDatatypeCompatibility(
+        sr,
+        resolvedSourceTypeDef,
+        sourceTypeText,
+        resolvedTargetTypeDef,
+        targetTypeText
       );
-      const paramsMatch = resolvedSourceTypeDef.parameters.map(
-        (p, i) =>
-          sr.e.resolveAlias(resolvedTargetTypeDef.parameters[i].type) ===
-          sr.e.resolveAlias(p.type)
-      );
-      if (paramsMatch.some((m) => !m)) {
-        const nonmatchingParameters: string[] = [];
-        for (let i = 0; i < paramsMatch.length; i++) {
-          if (!paramsMatch[i]) {
-            nonmatchingParameters.push(`#${i}`);
-          }
-        }
+      if (result === "success") {
         return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the parameters ${nonmatchingParameters.join(", ")} are not compatible`,
+          kind: "basic-c-cast",
         };
+      } else {
+        return result;
       }
-
-      if (
-        sr.e.resolveAlias(resolvedSourceTypeDef.returnType) !==
-        sr.e.resolveAlias(resolvedTargetTypeDef.returnType)
-      ) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the return types do not match`,
-        };
-      }
-
-      if (
-        resolvedSourceTypeDef.requires.noreturnIf !==
-        resolvedTargetTypeDef.requires.noreturnIf
-      ) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn_if requirements`,
-        };
-      }
-
-      if (
-        resolvedSourceTypeDef.requires.noreturn !==
-        resolvedTargetTypeDef.requires.noreturn
-      ) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn requirements`,
-        };
-      }
-
-      if (resolvedSourceTypeDef.vararg !== resolvedTargetTypeDef.vararg) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different variadic argument requirements`,
-        };
-      }
-
-      if (
-        resolvedSourceTypeDef.requires.pure !==
-        resolvedTargetTypeDef.requires.pure
-      ) {
-        return {
-          kind: "error",
-          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different purity requirements`,
-        };
-      }
-
-      return {
-        kind: "basic-c-cast",
-      };
     }
 
     // Conversion between Integers
@@ -1973,40 +1984,19 @@ export namespace Conversion {
       const tType = sr.typeDefNodes.get(resolvedTargetTypeDef.functionType);
       assert(tType.variant === Semantic.ENode.FunctionDatatype);
 
-      if (
-        fType.concrete &&
-        tType.concrete &&
-        fType.parameters.length === tType.parameters.length &&
-        fType.parameters.every(
-          (p, i) =>
-            sr.e.resolveAlias(p.type) ===
-              sr.e.resolveAlias(tType.parameters[i].type) &&
-            p.optional === tType.parameters[i].optional
-        ) &&
-        sr.e.resolveAlias(fType.returnType) ===
-          sr.e.resolveAlias(tType.returnType) &&
-        fType.vararg === tType.vararg &&
-        fType.requires.final &&
-        tType.requires.final &&
-        fType.requires.noreturn === tType.requires.noreturn &&
-        fType.requires.noreturnIf?.argIndex ===
-          tType.requires.noreturnIf?.argIndex &&
-        fType.requires.noreturnIf?.expr === tType.requires.noreturnIf?.expr &&
-        fType.requires.noreturnIf?.operation ===
-          tType.requires.noreturnIf?.operation
-      ) {
-        if (tType.requires.pure && !fType.requires.pure) {
-          // It is an error, if a pure function is required but an impure function is given.
-          // Every other combination is valid
-          return {
-            kind: "error",
-            message: `Assigning impure function ${sourceTypeText} to pure function ${targetTypeText} is not allowed because the target requires a function to be pure and to not have sideeffects.`,
-          };
-        }
-
+      const result = checkFunctionDatatypeCompatibility(
+        sr,
+        fType,
+        sourceTypeText,
+        tType,
+        targetTypeText
+      );
+      if (result === "success") {
         return {
           kind: "basic-c-cast",
         };
+      } else {
+        return result;
       }
     }
 

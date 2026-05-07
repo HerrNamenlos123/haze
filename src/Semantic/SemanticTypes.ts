@@ -2029,7 +2029,7 @@ export namespace Semantic {
             `noreturn_if(${printCollectedExpr(sr.cc, datatype.requires.noreturnIf.expr)})`
           );
         }
-        return `(${datatype.parameters
+        return `((${datatype.parameters
           .map(
             (p, i) =>
               `arg_${i}${p.optional ? "?" : ""}: ${serializeTypeUse(sr, p.type)}`
@@ -2039,7 +2039,7 @@ export namespace Semantic {
           )}${datatype.vararg ? ", ..." : ""}) ${args?.functionTypeAsCallable ? "=>" : "->"} (${serializeTypeUse(
           sr,
           datatype.returnType
-        )}) ${blocks.length > 0 ? ":: " + blocks.join(", ") : ""}`;
+        )}) ${blocks.length > 0 ? ":: " + blocks.join(", ") : ""})`;
       }
 
       case Semantic.ENode.DeferredFunctionDatatype:

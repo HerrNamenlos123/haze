@@ -108,7 +108,7 @@ fn main(): int {
         let adapter = none as mut wgpu.Adapter | none;
         let adapterReady = false;
         instance.requestAdapter({}, { 
-            callback: (status: wgpu.RequestAdapterStatus, _adapter: mut wgpu.Adapter, message: str): void => {
+            callback: (status: wgpu.RequestAdapterStatus, _adapter: mut wgpu.Adapter, message: str): void -> {
                 if (status == wgpu.RequestAdapterStatus.Success) {
                     adapter = _adapter;
                     adapterReady = true;
