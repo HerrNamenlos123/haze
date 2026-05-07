@@ -604,9 +604,18 @@ export type ASTNodiscardTypeExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTCallableTypeExpr = {
+  variant: "CallableTypeExpr";
+  params: ASTParam[];
+  ellipsis: boolean;
+  returnType: ASTExpr;
+  requires: ASTFunctionRequiresBlock;
+  mutability: EDatatypeMutability;
+  sourceloc: SourceLoc;
+};
+
 export type ASTFunctionTypeExpr = {
   variant: "FunctionTypeExpr";
-  kind: "callable" | "function";
   params: ASTParam[];
   ellipsis: boolean;
   returnType: ASTExpr;
@@ -677,6 +686,7 @@ export type ASTExpr =
   | ASTDynamicArrayTypeExpr
   | ASTStaticArrayTypeExpr
   | ASTNodiscardTypeExpr
+  | ASTCallableTypeExpr
   | ASTFunctionTypeExpr
   | ASTBinaryUnionTypeExpr
   | ASTTaggedUnionTypeExpr

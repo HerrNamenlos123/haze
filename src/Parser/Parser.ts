@@ -14,6 +14,7 @@ import {
   type ASTBinaryExpr,
   type ASTBinaryUnionTypeExpr,
   type ASTBlockScopeExpr,
+  type ASTCallableTypeExpr,
   type ASTConstTypeExpr,
   type ASTDynamicArrayTypeExpr,
   type ASTEnumDefinition,
@@ -974,16 +975,28 @@ class ASTBuilder extends HazeParserListener {
         throw new InternalError("TypeExprModified function stack mismatch");
       }
 
-      this.stack.push({
-        variant: "FunctionTypeExpr",
-        kind: ctx.DOUBLEARROW() ? "callable" : "function",
-        params: params.params,
-        ellipsis: params.ellipsis,
-        returnType: returnType,
-        requires: requires,
-        mutability: EDatatypeMutability.Default,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTFunctionTypeExpr);
+      if (ctx.DOUBLEARROW()) {
+        this.stack.push({
+          variant: "CallableTypeExpr",
+          params: params.params,
+          ellipsis: params.ellipsis,
+          returnType: returnType,
+          requires: requires,
+          mutability: EDatatypeMutability.Default,
+          sourceloc: this.loc(ctx),
+        } satisfies ASTCallableTypeExpr);
+      } else {
+        this.stack.push({
+          variant: "FunctionTypeExpr",
+          params: params.params,
+          ellipsis: params.ellipsis,
+          returnType: returnType,
+          requires: requires,
+          mutability: EDatatypeMutability.Default,
+          sourceloc: this.loc(ctx),
+        } satisfies ASTFunctionTypeExpr);
+      }
+
       return;
     }
 
