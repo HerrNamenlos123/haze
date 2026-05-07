@@ -3129,7 +3129,19 @@ export class SemanticElaborator {
 
     // If already elaborated (e.g., parameter pack parameters), return the elaborated version
     if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
-      return this.currentContext.elaboratedVariables.get(variableSymbolId);
+      const variableCache =
+        this.currentContext.elaboratedVariables.get(variableSymbolId)!;
+      const variable = this.sr.symbolNodes.get(variableCache);
+      assert(variable.variant === Semantic.ENode.VariableSymbol);
+
+      // Only if the parent symbol matches, can we reuse the variable, otherwise
+      // we would wrongly reuse variables across different function monomorphizations
+      const parentFunction = this.elaborateParentSymbolFromCache(
+        symbol.inScope
+      );
+      if (parentFunction === variable.parentSymbolId) {
+        return variableCache;
+      }
     }
 
     let variableContext = EVariableContext.FunctionLocal;
@@ -3991,7 +4003,7 @@ export class SemanticElaborator {
                     extern: EExternLanguage.None,
                     memberOfStruct: null,
                     mutability: EVariableMutability.Default,
-                    parentSymbolId: null,
+                    parentSymbolId: symbolId,
                     requiresHoisting: false,
                     type: t,
                     consumed: false,
@@ -4016,7 +4028,7 @@ export class SemanticElaborator {
                 extern: EExternLanguage.None,
                 memberOfStruct: null,
                 mutability: EVariableMutability.Default,
-                parentSymbolId: null,
+                parentSymbolId: symbolId,
                 type: makeTypeUse(
                   this.sr,
                   paramPackId,

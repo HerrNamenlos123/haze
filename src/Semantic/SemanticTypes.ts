@@ -357,14 +357,14 @@ export namespace Semantic {
     datatype: TypeUseId;
     length: bigint;
     concrete: boolean;
-    syntheticFields: SymbolId[];
+    syntheticFields: SymbolId[]; // This is for synthetic fields to have symbol ids, such as ".length", for narrowing.
   };
 
   export type DynamicArrayDatatypeDef = {
     variant: ENode.DynamicArrayDatatype;
     datatype: TypeUseId;
     concrete: boolean;
-    syntheticFields: SymbolId[];
+    syntheticFields: SymbolId[]; // This is for synthetic fields to have symbol ids, such as ".length", for narrowing.
   };
 
   export type SliceDatatypeDef = {

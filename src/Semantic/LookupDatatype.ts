@@ -316,7 +316,7 @@ export function makeDynamicArrayDatatypeAvailable(
 
   // Nothing found - create new type with lengthField
   const lengthFieldId = createLengthFieldSymbol(sr, sourceloc);
-  const [_, typeId] = sr.b.addType(sr, {
+  const [_, typeId] = sr.b.addType<Semantic.DynamicArrayDatatypeDef>(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
     concrete: isTypeConcrete(sr, datatype),
