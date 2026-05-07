@@ -171,7 +171,7 @@ opaque struct Renderer {
         }
 
         let vertexLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(QuadVertex),
+            arrayStride: sizeofTypeInBytes<QuadVertex>(),
             stepMode: wgpu.VertexStepMode.Vertex,
             attributes: {
                 {
@@ -183,7 +183,7 @@ opaque struct Renderer {
         };
 
         let instanceLayout = wgpu.VertexBufferLayout {
-            arrayStride: sizeof(PrimitiveInstance),
+            arrayStride: sizeofTypeInBytes<PrimitiveInstance>(),
             stepMode: wgpu.VertexStepMode.Instance, // key! this is per-instance
             attributes: {
                 { shaderLocation: 1, offset: 0,  format: wgpu.VertexFormat.Float32x2 }, // pos
@@ -215,7 +215,7 @@ opaque struct Renderer {
 
         let globalsBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
-            size: sizeof(Globals),
+            size: sizeofTypeInBytes<Globals>(),
         });
 
         let globalsBindGroup = options.device.createBindGroup({
@@ -225,7 +225,7 @@ opaque struct Renderer {
                     binding: 0,
                     buffer: globalsBuffer,
                     offset: 0,
-                    size: sizeof(Globals),
+                    size: sizeofTypeInBytes<Globals>(),
                 },
             },
         });
@@ -296,7 +296,7 @@ opaque struct Renderer {
 
         let vertexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-            size: sizeof(QuadVertex) * 4,
+            size: sizeofTypeInBytes<QuadVertex>() * 4,
         });
         queue.writeBuffer<QuadVertex>(vertexBuffer, [
             { pos: Vec2f(-0.5, -0.5) },
@@ -307,7 +307,7 @@ opaque struct Renderer {
 
         let indexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
-            size: sizeof(u32) * 6,
+            size: sizeofTypeInBytes<u32>() * 6,
         });
         queue.writeBuffer<u32>(indexBuffer, [0, 1, 2, 0, 2, 3]);
 
@@ -501,7 +501,7 @@ opaque struct Renderer {
             ]
         );
 
-        let requiredInstanceBufferSize = sizeof(PrimitiveInstance) * this.primitives.length;
+        let requiredInstanceBufferSize = sizeofTypeInBytes<PrimitiveInstance>() * this.primitives.length;
         if (!this.instanceBuffer || requiredInstanceBufferSize > this.instanceBufferSize) {
             // Grow efficiently, at least double, or more if required
             this.instanceBufferSize = max(requiredInstanceBufferSize, this.instanceBufferSize * 2);

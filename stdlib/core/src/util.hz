@@ -42,3 +42,12 @@ export fn min<T>(a: T, b: T): T {
         return b;
     }
 }
+
+export fn sizeofTypeInBytes<T>() {
+    let size = 0;
+    extern C type Type = T;
+    do unsafe {
+        __c__("let size = sizeof(Type);");
+    };
+    return size;
+}

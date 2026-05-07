@@ -19,7 +19,7 @@ export struct Queue {
 
     fn writeBuffer<T>(buffer: mut Buffer, data: []T) {
         // export extern C noemit wgpuQueueWriteBuffer(queue: mut WGPUQueueImpl, buffer: mut WGPUBufferImpl, bufferOffset: u64, data: cptr, size: usize): void :: final;
-        let elementSize = sizeof(T);
+        let elementSize = sizeofTypeInBytes<T>();
         let raw = none as cptr;
         let count = 0 as usize;
         __c__("raw = hzstd_dynamic_array_raw_buffer(data);");

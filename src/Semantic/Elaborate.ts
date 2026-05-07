@@ -908,18 +908,6 @@ export class SemanticElaborator {
   ): [Semantic.Expression, Semantic.ExprId] {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
-      if (collectedExpr.name === "sizeof") {
-        this.assertNoGenericArgs(collectedExpr, "sizeof");
-        this.assertParameterN(callExpr, 1, "sizeof");
-        return this.sr.b.sizeof(this.expr(callExpr.arguments[0], undefined)[1]);
-      }
-      if (collectedExpr.name === "alignof") {
-        this.assertNoGenericArgs(collectedExpr, "alignof");
-        this.assertParameterN(callExpr, 1, "alignof");
-        return this.sr.b.alignof(
-          this.expr(callExpr.arguments[0], undefined)[1]
-        );
-      }
       if (collectedExpr.name === "static_assert") {
         this.assertNoGenericArgs(collectedExpr, "static_assert");
         this.assertParameterN(callExpr, [1, 2], "static_assert");

@@ -5,8 +5,8 @@ export extern C noemit inline struct hzstd_color_t {
     b: real = 0;
     a: real = 0;
 
-    fn constructor(r: real, g: real, b: real, a: real): mut hzstd_color_t {
-        return hzstd_color_t {
+    fn constructor(r: real, g: real, b: real, a: real): mut Color {
+        return Color {
             r: r,
             g: g,
             b: b,
@@ -27,8 +27,8 @@ export extern C noemit inline struct hzstd_colorf_t {
     b: f32 = 0;
     a: f32 = 0;
 
-    fn constructor(r: f32, g: f32, b: f32, a: f32): mut hzstd_colorf_t {
-        return hzstd_colorf_t {
+    fn constructor(r: f32, g: f32, b: f32, a: f32): mut Colorf {
+        return Colorf {
             r: r,
             g: g,
             b: b,
