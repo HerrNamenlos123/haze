@@ -63,7 +63,10 @@ export namespace Conversion {
 
       // Find the member symbol by name
       const exprTypeUse = sr.typeUseNodes.get(sr.exprNodes.get(expr.expr).type);
-      const exprTypeDef = sr.typeDefNodes.get(exprTypeUse.type);
+      const resolvedExprTypeUse = sr.typeUseNodes.get(
+        sr.e.resolveAlias(sr.exprNodes.get(expr.expr).type)
+      );
+      const exprTypeDef = sr.typeDefNodes.get(resolvedExprTypeUse.type);
 
       if (
         exprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||

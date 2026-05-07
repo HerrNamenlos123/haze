@@ -879,7 +879,10 @@ export class SemanticBuilder {
       const exprTypeUse = this.sr.typeUseNodes.get(
         this.sr.exprNodes.get(expr.expr).type
       );
-      const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
+      const resolvedExprTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(this.sr.exprNodes.get(expr.expr).type)
+      );
+      const exprTypeDef = this.sr.typeDefNodes.get(resolvedExprTypeUse.type);
 
       if (
         exprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||

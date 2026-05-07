@@ -3,7 +3,11 @@
   "files.exclude": {},
   "search.exclude": {},
   "chat.tools.terminal.autoApprove": {
-    ".\\__haze__\\test\\bin\\test.exe": true
+    ".\\__haze__\\test\\bin\\test.exe": true,
+    "/^clear && bun run dev build --no-sourceloc 2>&1 \\| head -50$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
   "editor.formatOnPaste": true,
