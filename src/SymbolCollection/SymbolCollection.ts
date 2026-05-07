@@ -2749,14 +2749,19 @@ function collectExpr(
         currentParentScope: blockScopeId,
       });
 
+      const aliasName = `__T_temp_${makeTempId()}`;
+
       const reactiveT = collectExpr(
         cc,
-        buildASTDatatype(["__T"], item.sourceloc),
+        buildASTDatatype([aliasName], item.sourceloc),
         args
       );
       const reactiveInnerT = collectExpr(
         cc,
-        buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+        buildASTDatatype(
+          ["rx", ["UnwrapReactive", [aliasName]]],
+          item.sourceloc
+        ),
         args
       );
 
@@ -2777,7 +2782,7 @@ function collectExpr(
       const aliasSymbol = Collect.makeSymbol(cc, {
         variant: Collect.ENode.TypeDefSymbol,
         inScope: blockScopeId,
-        name: "__T",
+        name: aliasName,
         export: false,
         sourceloc: item.sourceloc,
         typeDef: Collect.makeTypeDef(cc, {
@@ -2785,7 +2790,7 @@ function collectExpr(
           generics: [],
           genericScope: blockScopeId,
           inScope: blockScopeId,
-          name: "__T",
+          name: aliasName,
           sourceloc: item.sourceloc,
           target: collectExpr(
             cc,
@@ -2887,14 +2892,19 @@ function collectExpr(
         currentParentScope: blockScopeId,
       });
 
+      const aliasName = `__T_temp_${makeTempId()}`;
+
       const reactiveT = collectExpr(
         cc,
-        buildASTDatatype(["__T"], item.sourceloc),
+        buildASTDatatype([aliasName], item.sourceloc),
         args
       );
       const reactiveInnerT = collectExpr(
         cc,
-        buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+        buildASTDatatype(
+          ["rx", ["UnwrapReactive", [aliasName]]],
+          item.sourceloc
+        ),
         args
       );
 
@@ -2929,7 +2939,7 @@ function collectExpr(
       const aliasSymbol = Collect.makeSymbol(cc, {
         variant: Collect.ENode.TypeDefSymbol,
         inScope: blockScopeId,
-        name: "__T",
+        name: aliasName,
         sourceloc: item.sourceloc,
         export: false,
         typeDef: Collect.makeTypeDef(cc, {
@@ -2937,7 +2947,7 @@ function collectExpr(
           generics: [],
           genericScope: blockScopeId,
           inScope: blockScopeId,
-          name: "__T",
+          name: aliasName,
           sourceloc: item.sourceloc,
           target: collectExpr(
             cc,
@@ -3129,14 +3139,19 @@ function collectExpr(
           currentParentScope: blockScopeId,
         });
 
+        const aliasName = `__T_temp_${makeTempId()}`;
+
         const reactiveT = collectExpr(
           cc,
-          buildASTDatatype(["__T"], item.sourceloc),
+          buildASTDatatype([aliasName], item.sourceloc),
           args
         );
         const reactiveInnerT = collectExpr(
           cc,
-          buildASTDatatype(["rx", ["UnwrapReactive", ["__T"]]], item.sourceloc),
+          buildASTDatatype(
+            ["rx", ["UnwrapReactive", [aliasName]]],
+            item.sourceloc
+          ),
           args
         );
 
@@ -3186,7 +3201,7 @@ function collectExpr(
         const aliasSymbol = Collect.makeSymbol(cc, {
           variant: Collect.ENode.TypeDefSymbol,
           inScope: blockScopeId,
-          name: "__T",
+          name: aliasName,
           sourceloc: item.sourceloc,
           export: false,
           typeDef: Collect.makeTypeDef(cc, {
@@ -3194,7 +3209,7 @@ function collectExpr(
             generics: [],
             genericScope: blockScopeId,
             inScope: blockScopeId,
-            name: "__T",
+            name: aliasName,
             sourceloc: item.sourceloc,
 
             target: collectExpr(

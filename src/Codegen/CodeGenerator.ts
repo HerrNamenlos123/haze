@@ -811,6 +811,7 @@ class CodeGenerator {
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.TypeAliasDatatype) {
         appliedTypes.add(type);
+        processTypeUse(type.datatype);
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.LiteralDatatype) {
         appliedTypes.add(type);
@@ -1304,7 +1305,9 @@ class CodeGenerator {
         tempWriter.write(exprWriter.temp);
 
         const e = this.lr.exprNodes.get(expr.expr);
-        const eTypeUse = this.lr.typeUseNodes.get(e.type);
+        const eTypeUse = this.lr.typeUseNodes.get(
+          Lowered.resolveAlias(this.lr, e.type)
+        );
         const eTypeDef = this.lr.typeDefNodes.get(eTypeUse.type);
 
         if (eTypeDef.variant === Lowered.ENode.StructDatatype) {
@@ -1412,7 +1415,9 @@ class CodeGenerator {
       case Lowered.ENode.ValueToUnionCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const typeUse = this.lr.typeUseNodes.get(
+          Lowered.resolveAlias(this.lr, expr.type)
+        );
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||
@@ -1441,7 +1446,7 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(
-          this.lr.exprNodes.get(expr.expr).type
+          Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type)
         );
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
@@ -1488,7 +1493,7 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
         const typeUse = this.lr.typeUseNodes.get(
-          this.lr.exprNodes.get(expr.expr).type
+          Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type)
         );
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
@@ -1807,7 +1812,9 @@ class CodeGenerator {
         tempWriter.write(value.temp);
 
         const targetExpr = this.lr.exprNodes.get(expr.target);
-        const typeUse = this.lr.typeUseNodes.get(targetExpr.type);
+        const typeUse = this.lr.typeUseNodes.get(
+          Lowered.resolveAlias(this.lr, targetExpr.type)
+        );
         const typeDef = this.lr.typeDefNodes.get(typeUse.type);
 
         if (

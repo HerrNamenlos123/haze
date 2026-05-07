@@ -164,8 +164,10 @@ export class SemanticElaborator {
 
   unwrapReactiveOrComputedIfPossible(exprId: Semantic.ExprId): Semantic.ExprId {
     const expr = this.sr.exprNodes.get(exprId);
-    const typeUse = this.sr.typeUseNodes.get(expr.type);
-    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
+    const typeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
     if (
       typeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
       typeDef.variant === Semantic.ENode.ReactiveDatatype ||
@@ -2546,7 +2548,7 @@ export class SemanticElaborator {
     switch (typedef.variant) {
       case Collect.ENode.TypeAliasDef: {
         return this.sr.b.typeDefSymbol(
-          this.elaborateTypeDefAlias(typedef, genericArgs)[1]
+          this.elaborateTypeDefAlias(typeDefSymbol.typeDef, genericArgs)[1]
         )[1];
       }
 
@@ -4596,15 +4598,29 @@ export class SemanticElaborator {
   }
 
   elaborateTypeDefAlias(
-    typedef: Collect.TypeAliasDef,
+    typedefId: Collect.TypeDefId,
     genericArgs: Semantic.ExprId[]
-  ) {
+  ): [Semantic.TypeDef, Semantic.TypeDefId] {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.TypeAliasDef);
     if (typedef.generics.length !== genericArgs.length) {
       throw new CompilerError(
         `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${genericArgs.length}`,
         typedef.sourceloc
       );
     }
+
+    const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
+
+    // Find in cache
+    const cached = getFromTypeAliasDefCache(this.sr, typedefId, {
+      genericArgs: genericArgs,
+      parentSymbolId: parent,
+    });
+    if (cached) {
+      return [this.sr.typeDefNodes.get(cached), cached];
+    }
+
     // Alias targets must always resolve in the alias definition scope, not the usage site.
     // Using the alias generic scope keeps generic parameters visible while naturally falling
     // back to the alias parent scope for non-generic names.
@@ -4624,8 +4640,6 @@ export class SemanticElaborator {
       context.substitute.set(typedef.generics[i], genericArgs[i]);
     }
 
-    const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
-
     return this.withContext(
       {
         context: context,
@@ -4634,14 +4648,25 @@ export class SemanticElaborator {
       },
       () => {
         const aliasedTypeId = this.elaborateDatatype(typedef.target);
-        return this.sr.b.addType(this.sr, {
-          variant: Semantic.ENode.TypeAliasDatatype,
-          targetType: aliasedTypeId,
-          generics: genericArgs,
-          name: typedef.name,
+        const [t, tId] = this.sr.b.addType<Semantic.TypeAliasDatatypeDef>(
+          this.sr,
+          {
+            variant: Semantic.ENode.TypeAliasDatatype,
+            targetType: aliasedTypeId,
+            generics: genericArgs,
+            name: typedef.name,
+            parentSymbolId: parent,
+            concrete: true,
+          }
+        );
+        insertIntoTypeAliasDefCache(this.sr, typedefId, {
+          genericArgs: genericArgs,
           parentSymbolId: parent,
-          concrete: true,
+          result: tId,
+          resultAsTypeDefSymbol: this.sr.b.typeDefSymbol(tId)[1],
+          substitutionContext: context,
         });
+        return [t, tId];
       }
     );
   }
@@ -6050,7 +6075,10 @@ export class SemanticElaborator {
 
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
-    const exprTypeDef = this.sr.typeDefNodes.get(exprTypeUse.type);
+    const resolvedExprTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
+    const exprTypeDef = this.sr.typeDefNodes.get(resolvedExprTypeUse.type);
     assert(exprTypeDef.variant === Semantic.ENode.StructDatatype);
 
     const memberId = exprTypeDef.members.find((mId) => {
@@ -6217,7 +6245,7 @@ export class SemanticElaborator {
       }
 
       if (
-        exprTypeUse.mutability !== EDatatypeMutability.Mut &&
+        resolvedExprTypeUse.mutability !== EDatatypeMutability.Mut &&
         elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Mut
       ) {
         throw new CompilerError(
@@ -6230,7 +6258,7 @@ export class SemanticElaborator {
       }
 
       if (
-        exprTypeUse.mutability !== EDatatypeMutability.Const &&
+        resolvedExprTypeUse.mutability !== EDatatypeMutability.Const &&
         elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Const
       ) {
         throw new CompilerError(
@@ -6286,8 +6314,6 @@ export class SemanticElaborator {
   generateToStringMethod(exprId: Semantic.ExprId, sourceloc: SourceLoc) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
-    const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
-
     const funcname = `__hz_value_to_string_${Semantic.mangleTypeUse(this.sr, expr.type).name}`;
 
     let [func, funcId] = [null, null] as [
@@ -6723,7 +6749,10 @@ export class SemanticElaborator {
     expr = this.sr.exprNodes.get(exprId);
 
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
-    const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
+    const resolvedExprTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
+    const exprType = this.sr.typeDefNodes.get(resolvedExprTypeUse.type);
 
     if (name === "toString") {
       return this.generateToStringMethod(exprId, sourceloc);
@@ -8774,7 +8803,7 @@ export class SemanticElaborator {
             const expr = this.sr.exprNodes.get(exprId);
             if (expr.variant === Semantic.ENode.ArrayLiteralExpr) {
               const arrayType = this.sr.typeDefNodes.get(
-                this.sr.typeUseNodes.get(expr.type).type
+                this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
               );
               if (
                 arrayType.variant !== Semantic.ENode.FixedArrayDatatype &&
@@ -9264,7 +9293,10 @@ export class SemanticElaborator {
 
     if (
       expr.variant === Semantic.ENode.ExplicitCastExpr &&
-      Conversion.isBoolean(this.sr, this.sr.typeUseNodes.get(expr.type).type)
+      Conversion.isBoolean(
+        this.sr,
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
+      )
     ) {
       this.buildLogicalConstraintSet(constraints, expr.expr);
       return;
@@ -9330,10 +9362,11 @@ export class SemanticElaborator {
       const path = this.extractConstraintPath(expr.expr);
       if (path) {
         for (const comparisonType of expr.comparisonTypesAnd) {
+          const resolved = this.sr.e.resolveAlias(comparisonType);
           constraints.addPath(path, {
             kind: "union",
             operation: expr.invertCheck ? "isNot" : "is",
-            typeDef: this.sr.typeUseNodes.get(comparisonType).type,
+            typeDef: this.sr.typeUseNodes.get(resolved).type,
           });
         }
       }
@@ -9341,11 +9374,12 @@ export class SemanticElaborator {
       // Legacy: also add symbol-based constraint for backward compatibility
       if (unionExpr.variant === Semantic.ENode.SymbolValueExpr) {
         for (const comparisonType of expr.comparisonTypesAnd) {
+          const resolved = this.sr.e.resolveAlias(comparisonType);
           constraints.add({
             constraintValue: {
               kind: "union",
               operation: expr.invertCheck ? "isNot" : "is",
-              typeDef: this.sr.typeUseNodes.get(comparisonType).type,
+              typeDef: this.sr.typeUseNodes.get(resolved).type,
             },
             variableSymbol: unionExpr.symbol,
           });
@@ -9355,9 +9389,10 @@ export class SemanticElaborator {
 
     // Boolean context narrowing: if (expr) where expr is union with null/none
     if (resolvedExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-      const memberDefs = resolvedExprTypeDef.members.map(
-        (m) => this.sr.typeUseNodes.get(m).type
-      );
+      const memberDefs = resolvedExprTypeDef.members.map((m) => {
+        const resolved = this.sr.e.resolveAlias(m);
+        return this.sr.typeUseNodes.get(resolved).type;
+      });
       const path = this.extractConstraintPath(exprId);
 
       if (path) {
@@ -9411,18 +9446,20 @@ export class SemanticElaborator {
       if (okTag && errTag) {
         const path = this.extractConstraintPath(exprId);
         if (path) {
+          const okResolved = this.sr.e.resolveAlias(okTag.type);
           constraints.addPath(path, {
             kind: "union",
             operation: "is",
-            typeDef: this.sr.typeUseNodes.get(okTag.type).type,
+            typeDef: this.sr.typeUseNodes.get(okResolved).type,
           });
         }
         // Legacy
+        const okResolved2 = this.sr.e.resolveAlias(okTag.type);
         constraints.add({
           constraintValue: {
             kind: "union",
             operation: "is",
-            typeDef: this.sr.typeUseNodes.get(okTag.type).type,
+            typeDef: this.sr.typeUseNodes.get(okResolved2).type,
           },
           variableSymbol: expr.symbol,
         });
@@ -9741,11 +9778,8 @@ export class SemanticElaborator {
       this.sr.cc.typeDefNodes.get(symbol.typeDef).variant ===
         Collect.ENode.TypeAliasDef
     ) {
-      const alias = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-      assert(alias.variant === Collect.ENode.TypeAliasDef);
-
       return this.sr.b.datatypeDefAsValue(
-        this.elaborateTypeDefAlias(alias, generics)[1],
+        this.elaborateTypeDefAlias(symbol.typeDef, generics)[1],
         symbolValue.sourceloc
       );
     }
@@ -9792,9 +9826,10 @@ export class SemanticElaborator {
           symbolValue.sourceloc
         )[1];
 
-        const type = this.sr.typeDefNodes.get(
-          this.sr.typeUseNodes.get(elaboratedSymbol.type).type
+        const resolvedSymbolTypeUse = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(elaboratedSymbol.type)
         );
+        const type = this.sr.typeDefNodes.get(resolvedSymbolTypeUse.type);
         if (
           type.variant === Semantic.ENode.UntaggedUnionDatatype ||
           type.variant === Semantic.ENode.TaggedUnionDatatype
@@ -9803,8 +9838,8 @@ export class SemanticElaborator {
 
           const members =
             type.variant === Semantic.ENode.UntaggedUnionDatatype
-              ? type.members
-              : type.members.map((m) => m.type);
+              ? type.members.map((m) => this.sr.e.resolveAlias(m))
+              : type.members.map((m) => this.sr.e.resolveAlias(m.type));
 
           const narrowing = Conversion.typeNarrowing(this.sr);
           narrowing.addVariants(members);
@@ -11194,6 +11229,68 @@ export function insertIntoStructDefCache(
   });
 }
 
+export function getFromTypeAliasDefCache(
+  sr: Semantic.Context,
+  symbolId: Collect.TypeDefId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    parentSymbolId: Semantic.SymbolId | null;
+  }
+) {
+  const entries = sr.elaboratedTypeAliasSymbols.get(symbolId);
+  if (entries === undefined) {
+    return;
+  }
+
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  for (const entry of entries) {
+    if (
+      entry.parentSymbolId === args.parentSymbolId &&
+      entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
+      entry.canonicalizedGenerics.every(
+        (g, index) => g === canonicalizedGenerics[index]
+      )
+    ) {
+      return entry.result;
+    }
+  }
+
+  return;
+}
+
+export function insertIntoTypeAliasDefCache(
+  sr: Semantic.Context,
+  symbolId: Collect.TypeDefId,
+  args: {
+    genericArgs: Semantic.ExprId[];
+    substitutionContext: Semantic.ElaborationContext;
+    result: Semantic.TypeDefId;
+    resultAsTypeDefSymbol: Semantic.SymbolId;
+    parentSymbolId: Semantic.SymbolId | null;
+  }
+) {
+  const canonicalizedGenerics = args.genericArgs.map((g) =>
+    Semantic.canonicalizeGenericExpr(sr, g)
+  );
+
+  let entries = sr.elaboratedTypeAliasSymbols.get(symbolId);
+  if (!entries) {
+    sr.elaboratedTypeAliasSymbols.set(symbolId, []);
+    entries = sr.elaboratedTypeAliasSymbols.get(symbolId)!;
+  }
+
+  entries.push({
+    canonicalizedGenerics: canonicalizedGenerics,
+    parentSymbolId: args.parentSymbolId,
+    result: args.result,
+    substitutionContext: args.substitutionContext,
+    resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
+  });
+}
+
 export function getFromEnumDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
@@ -11586,7 +11683,7 @@ export function isTypeExprConcrete(sr: Semantic.Context, id: Semantic.ExprId) {
     expr.variant === Semantic.ENode.LiteralExpr ||
     expr.variant === Semantic.ENode.DatatypeAsValueExpr
   ) {
-    const typeInstance = sr.typeUseNodes.get(expr.type);
+    const typeInstance = sr.typeUseNodes.get(sr.e.resolveAlias(expr.type));
     const symbol = sr.typeDefNodes.get(typeInstance.type);
     assert("concrete" in symbol);
     return symbol.concrete;

@@ -860,7 +860,7 @@ const shouldBeOptimizedToNullptr = (
   valueType: Semantic.TypeUseId
 ) => {
   const unionTypeDef = lr.typeDefNodes.get(
-    lr.typeUseNodes.get(loweredUnionType).type
+    lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredUnionType)).type
   );
   assert(
     unionTypeDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
@@ -1814,7 +1814,7 @@ export function lowerExpr(
 
     case Semantic.ENode.ValueToUnionCastExpr: {
       const exprType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(expr.type).type
+        lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(expr.type)).type
       );
       assert(
         exprType.variant === Semantic.ENode.UntaggedUnionDatatype ||
@@ -1823,7 +1823,7 @@ export function lowerExpr(
 
       const loweredUnionId = lowerTypeUse(lr, expr.type);
       const loweredUnion = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredUnionId).type
+        lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredUnionId)).type
       );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
@@ -1846,7 +1846,7 @@ export function lowerExpr(
     case Semantic.ENode.UnionToValueCastExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(sourceExpr.type).type
+        lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(sourceExpr.type)).type
       );
       assert(
         sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
@@ -1855,7 +1855,7 @@ export function lowerExpr(
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredUnionId).type
+        lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredUnionId)).type
       );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
@@ -2136,7 +2136,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     case Semantic.ENode.UnionTagCheckExpr: {
       const sourceExpr = lr.sr.exprNodes.get(expr.expr);
       const sourceType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(sourceExpr.type).type
+        lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(sourceExpr.type)).type
       );
       assert(
         sourceType.variant === Semantic.ENode.UntaggedUnionDatatype ||
@@ -2145,7 +2145,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
       const loweredUnionId = lowerTypeUse(lr, sourceExpr.type);
       const loweredUnion = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredUnionId).type
+        lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredUnionId)).type
       );
       assert(
         loweredUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||

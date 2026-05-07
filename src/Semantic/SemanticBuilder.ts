@@ -1233,7 +1233,7 @@ export class SemanticBuilder {
     const expr = this.sr.exprNodes.get(exprId);
 
     const typeDef = this.sr.typeDefNodes.get(
-      this.sr.typeUseNodes.get(expr.type).type
+      this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
     );
 
     const dependsOn = new Set<Semantic.InstanceId>();
@@ -1294,9 +1294,15 @@ export class SemanticBuilder {
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
-    const exprType = this.sr.typeDefNodes.get(
+    let exprType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(expr.type).type
     );
+    if (exprType.variant === Semantic.ENode.TypeAliasDatatype) {
+      const resolved = this.sr.e.resolveAlias(expr.type);
+      exprType = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(resolved).type
+      );
+    }
     assert(exprType.variant === Semantic.ENode.StructDatatype);
 
     let memberType: Semantic.TypeUseId | null = null;

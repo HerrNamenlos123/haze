@@ -918,6 +918,15 @@ export namespace Semantic {
   };
   export type EnumDefCache = Map<Collect.TypeDefId, EnumDef[]>;
 
+  export type TypeAliasDef = {
+    substitutionContext: Semantic.ElaborationContext;
+    canonicalizedGenerics: string[];
+    parentSymbolId: Semantic.SymbolId | null;
+    result: Semantic.TypeDefId;
+    resultAsTypeDefSymbol: Semantic.SymbolId;
+  };
+  export type TypeAliasDefCache = Map<Collect.TypeDefId, TypeAliasDef[]>;
+
   export type StructDef = {
     canonicalizedGenerics: string[];
     substitutionContext: Semantic.ElaborationContext;
@@ -968,6 +977,7 @@ export namespace Semantic {
       result: Semantic.TypeDefId;
     }[];
     elaboratedEnumSymbols: EnumDefCache;
+    elaboratedTypeAliasSymbols: TypeAliasDefCache;
     elaboratedTypeDefSymbols: SymbolId[];
 
     // Those are GlobalVariableDefinitionSymbols
@@ -1624,6 +1634,7 @@ export namespace Semantic {
       elaboratedUntaggedUnions: new Map(),
       elaboratedTaggedUnions: new Map(),
       elaboratedEnumSymbols: new Map(),
+      elaboratedTypeAliasSymbols: new Map(),
       elaboratedPrimitiveTypes: [],
       elaboratedReactiveTypes: [],
       elaboratedComputedTypes: [],
