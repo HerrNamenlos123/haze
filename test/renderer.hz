@@ -501,7 +501,7 @@ opaque struct Renderer {
             ]
         );
 
-        let requiredInstanceBufferSize = sizeof(type<PrimitiveInstance>) * this.primitives.length;
+        let requiredInstanceBufferSize = sizeof(PrimitiveInstance) * this.primitives.length;
         if (!this.instanceBuffer || requiredInstanceBufferSize > this.instanceBufferSize) {
             // Grow efficiently, at least double, or more if required
             this.instanceBufferSize = max(requiredInstanceBufferSize, this.instanceBufferSize * 2);

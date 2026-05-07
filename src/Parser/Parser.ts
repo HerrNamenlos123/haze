@@ -1263,6 +1263,7 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push({
       variant: "Lambda",
+      kind: ctx.DOUBLEARROW() ? "closure" : "function",
       params: params.params,
       ellipsis: params.ellipsis,
       scope: funcbody,

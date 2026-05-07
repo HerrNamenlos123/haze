@@ -174,6 +174,7 @@ export namespace Collect {
     TernaryExpr,
     ExprCallExpr,
     SymbolValueExpr,
+    ExplicitSymbolValueExpr,
     CallableExpr,
     ExplicitCastExpr,
     ExprIsTypeExpr,
@@ -625,6 +626,11 @@ export namespace Collect {
     genericArgs: Collect.ExprId[];
   };
 
+  export type ExplicitSymbolValueExpr = BaseExpr & {
+    variant: ENode.ExplicitSymbolValueExpr;
+    symbol: Collect.SymbolId;
+  };
+
   export type ExplicitCastExpr = BaseExpr & {
     variant: ENode.ExplicitCastExpr;
     expr: Collect.ExprId;
@@ -806,6 +812,7 @@ export namespace Collect {
     | BinaryExpr
     | UnaryExpr
     | SymbolValueExpr
+    | ExplicitSymbolValueExpr
     | ExprCallExpr
     | TernaryExpr
     | ExplicitCastExpr
@@ -2559,6 +2566,8 @@ function collectExpr(
 
       const callableName = `__hz_callable_${makeTempId()}`;
 
+      const parentScopeId = args.currentParentScope;
+
       const overloadGroup = Collect.makeSymbol(cc, {
         variant: Collect.ENode.FunctionOverloadGroupSymbol,
         name: callableName,
@@ -2598,7 +2607,7 @@ function collectExpr(
           };
         }),
         hasParamPack: false,
-        parentScope: args.currentParentScope,
+        parentScope: parentScopeId,
         pub: false,
         requires: {
           final: item.lambda.requires.final,
@@ -2624,54 +2633,92 @@ function collectExpr(
         vararg: false,
       });
 
-      const [lambdaScope, lambdaScopeId] = Collect.makeScope(cc, {
-        variant: Collect.ENode.LambdaScope,
-        owningSymbol: functionSymbolId,
-        parentScope: args.currentParentScope,
-        sourceloc: item.sourceloc,
-        functionScope: -1 as Collect.ScopeId,
-        symbols: new Set(),
-      });
+      if (item.lambda.kind === "closure") {
+        const [lambdaScope, lambdaScopeId] = Collect.makeScope(cc, {
+          variant: Collect.ENode.LambdaScope,
+          owningSymbol: functionSymbolId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          functionScope: -1 as Collect.ScopeId,
+          symbols: new Set(),
+        });
 
-      const [functionScope, functionScopeId] = Collect.makeScope(cc, {
-        variant: Collect.ENode.FunctionScope,
-        owningSymbol: functionSymbolId,
-        parentScope: lambdaScopeId,
-        sourceloc: item.sourceloc,
-        blockScope: -1 as Collect.ScopeId,
-        symbols: new Set(),
-      });
-      lambdaScope.functionScope = functionScopeId;
-      functionSymbol.functionScope = functionScopeId;
+        const [functionScope, functionScopeId] = Collect.makeScope(cc, {
+          variant: Collect.ENode.FunctionScope,
+          owningSymbol: functionSymbolId,
+          parentScope: lambdaScopeId,
+          sourceloc: item.sourceloc,
+          blockScope: -1 as Collect.ScopeId,
+          symbols: new Set(),
+        });
+        lambdaScope.functionScope = functionScopeId;
+        functionSymbol.functionScope = functionScopeId;
+        functionScope.blockScope = collectScope(cc, item.lambda.scope, {
+          currentParentScope: functionScopeId,
+        });
 
-      functionScope.blockScope = collectScope(cc, item.lambda.scope, {
-        currentParentScope: functionScopeId,
-      });
+        for (const p of functionSymbol.parameters) {
+          const varsymId = defineVariableSymbol(
+            cc,
+            {
+              variant: Collect.ENode.VariableSymbol,
+              comptime: false,
+              mutability: EVariableMutability.Let,
+              name: p.name,
+              sourceloc: p.sourceloc,
+              type: p.type,
+              globalValueInitializer: null,
+              variableContext: EVariableContext.FunctionParameter,
+            },
+            functionScopeId
+          )[1];
+          functionSymbol.parameterSymbols.add(varsymId);
+        }
 
-      for (const p of functionSymbol.parameters) {
-        const varsymId = defineVariableSymbol(
-          cc,
-          {
-            variant: Collect.ENode.VariableSymbol,
-            comptime: false,
-            mutability: EVariableMutability.Let,
-            name: p.name,
-            sourceloc: p.sourceloc,
-            type: p.type,
-            globalValueInitializer: null,
-            variableContext: EVariableContext.FunctionParameter,
-          },
-          functionScopeId
-        )[1];
-        functionSymbol.parameterSymbols.add(varsymId);
+        return Collect.makeExpr(cc, {
+          variant: Collect.ENode.CallableExpr,
+          functionSymbol: functionSymbolId,
+          lambdaScope: lambdaScopeId,
+          sourceloc: item.sourceloc,
+        })[1];
+      } else {
+        const [functionScope, functionScopeId] = Collect.makeScope(cc, {
+          variant: Collect.ENode.FunctionScope,
+          owningSymbol: functionSymbolId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          blockScope: -1 as Collect.ScopeId,
+          symbols: new Set(),
+        });
+        functionSymbol.functionScope = functionScopeId;
+        functionScope.blockScope = collectScope(cc, item.lambda.scope, {
+          currentParentScope: functionScopeId,
+        });
+
+        for (const p of functionSymbol.parameters) {
+          const varsymId = defineVariableSymbol(
+            cc,
+            {
+              variant: Collect.ENode.VariableSymbol,
+              comptime: false,
+              mutability: EVariableMutability.Let,
+              name: p.name,
+              sourceloc: p.sourceloc,
+              type: p.type,
+              globalValueInitializer: null,
+              variableContext: EVariableContext.FunctionParameter,
+            },
+            functionScopeId
+          )[1];
+          functionSymbol.parameterSymbols.add(varsymId);
+        }
+
+        return Collect.makeExpr(cc, {
+          variant: Collect.ENode.ExplicitSymbolValueExpr,
+          symbol: functionSymbolId,
+          sourceloc: item.sourceloc,
+        })[1];
       }
-
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.CallableExpr,
-        functionSymbol: functionSymbolId,
-        lambdaScope: lambdaScopeId,
-        sourceloc: item.sourceloc,
-      })[1];
     }
 
     // =================================================================================================================
@@ -3477,27 +3524,69 @@ function collectExpr(
           : null,
       } satisfies Collect.FunctionRequiresBlock;
 
-      if (item.kind === "callable") {
-        return Collect.makeExpr(cc, {
-          variant: Collect.ENode.CallableTypeDefinitionExpr,
-          parameters: parameters,
-          returnType: collectExpr(cc, item.returnType, args),
-          vararg: item.ellipsis,
-          requires: requires,
-          mutability: item.mutability,
-          sourceloc: item.sourceloc,
-        })[1];
-      } else {
-        return Collect.makeExpr(cc, {
-          variant: Collect.ENode.FunctionTypeDefinitionExpr,
-          parameters: parameters,
-          returnType: collectExpr(cc, item.returnType, args),
-          vararg: item.ellipsis,
-          requires: requires,
-          mutability: item.mutability,
-          sourceloc: item.sourceloc,
-        })[1];
-      }
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.FunctionTypeDefinitionExpr,
+        parameters: parameters,
+        returnType: collectExpr(cc, item.returnType, args),
+        vararg: item.ellipsis,
+        requires: requires,
+        mutability: item.mutability,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "CallableTypeExpr": {
+      const parameters = item.params.map((p) => {
+        if (p.kind === "param-pack") {
+          throw new CompilerError(
+            `Function datatypes cannot have parameter packs`,
+            item.sourceloc
+          );
+        }
+
+        let datatype = p.datatype;
+        if (p.optional) {
+          datatype = wrapASTTypeInNoneUnion(datatype);
+        }
+        if (p.defaultValue) {
+          throw new CompilerError(
+            `Function datatypes cannot define default parameter values`,
+            item.sourceloc
+          );
+        }
+
+        return {
+          optional: p.optional,
+          type: collectExpr(cc, datatype, args),
+        };
+      });
+
+      const requires = {
+        final: item.requires.final,
+        pure: item.requires.pure,
+        noreturn: item.requires.noreturn,
+        noreturnIf: item.requires.noreturnIf
+          ? {
+              expr: collectExpr(cc, item.requires.noreturnIf.expr, args),
+              argIndex: null,
+              operation: null,
+            }
+          : null,
+      } satisfies Collect.FunctionRequiresBlock;
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.CallableTypeDefinitionExpr,
+        parameters: parameters,
+        returnType: collectExpr(cc, item.returnType, args),
+        vararg: item.ellipsis,
+        requires: requires,
+        mutability: item.mutability,
+        sourceloc: item.sourceloc,
+      })[1];
     }
 
     // =================================================================================================================

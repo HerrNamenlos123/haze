@@ -2897,6 +2897,10 @@ export namespace Semantic {
         return `(${Semantic.serializeExpr(sr, expr.expr)})?!`;
       }
 
+      case Semantic.ENode.ComputedReadExpr: {
+        return `(${Semantic.serializeExpr(sr, expr.value)})`;
+      }
+
       case Semantic.ENode.UnionTagReferenceExpr: {
         return `${Semantic.serializeTypeDef(sr, expr.unionType)}.${expr.tag}`;
       }

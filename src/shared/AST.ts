@@ -695,6 +695,7 @@ export type ASTExpr =
 
 export type ASTLambda = {
   variant: "Lambda";
+  kind: "closure" | "function";
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTExpr;
