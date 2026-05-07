@@ -12,8 +12,11 @@ outputs = [
     { module="this", dir="bin", path="include/SDL3/SDL.h" },
 ]
 
-[linker]
+[linker.win32]
 flags = ["-lSDL3-static"]
+
+[linker.linux]
+flags = ["-lSDL3"]
 
 [interface.linker.win32]
 flags = [  

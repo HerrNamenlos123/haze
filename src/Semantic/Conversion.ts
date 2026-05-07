@@ -1716,14 +1716,14 @@ export namespace Conversion {
       resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
     ) {
       const matching = resolvedTargetTypeDef.members.findIndex((m) => {
-        // Check Direct match
-        if (m === sourceExpr.type) {
+        // Check Direct match against the resolved (alias-canonicalized) source type
+        if (sr.e.resolveAlias(m) === resolvedSourceTypeUseId) {
           return true;
         }
 
         if (
-          sr.typeUseNodes.get(m).type !==
-          sr.typeUseNodes.get(sourceExpr.type).type
+          sr.typeUseNodes.get(sr.e.resolveAlias(m)).type !==
+          sr.typeUseNodes.get(resolvedSourceTypeUseId).type
         ) {
           return false;
         }
@@ -1731,13 +1731,15 @@ export namespace Conversion {
         // Check match with implicit mutability change
         if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
-          sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
+          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability ===
+            EDatatypeMutability.Default
         ) {
           return true;
         }
         if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut &&
-          sr.typeUseNodes.get(m).mutability === EDatatypeMutability.Default
+          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability ===
+            EDatatypeMutability.Default
         ) {
           return true;
         }
@@ -1757,12 +1759,12 @@ export namespace Conversion {
     if (resolvedTargetTypeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
       const matchFunc = (m: { tag: string; type: Semantic.TypeUseId }) => {
         // Check Direct match
-        if (m.type === sourceExpr.type) {
+        if (sr.e.resolveAlias(m.type) === sr.e.resolveAlias(sourceExpr.type)) {
           return true;
         }
 
         // Check match with implicit mutability change
-        const mUse = sr.typeUseNodes.get(m.type);
+        const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(m.type));
         if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
           mUse.mutability === EDatatypeMutability.Default &&
@@ -1772,7 +1774,7 @@ export namespace Conversion {
         }
         if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut &&
-          sr.typeUseNodes.get(m.type).mutability ===
+          sr.typeUseNodes.get(sr.e.resolveAlias(m.type)).mutability ===
             EDatatypeMutability.Default &&
           mUse.type === resolvedSourceTypeUse.type
         ) {
@@ -1804,7 +1806,7 @@ export namespace Conversion {
       const fromUnionMembers =
         resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
           ? resolvedSourceTypeDef.members
-          : resolvedSourceTypeDef.members.map((m) => m.type);
+          : resolvedSourceTypeDef.members.map((m) => sr.e.resolveAlias(m.type));
       const membersFrom = typeNarrowing(sr);
       membersFrom.addVariants(fromUnionMembers);
       membersFrom.constrainFromConstraints(constraints, sourceExprId);
@@ -1812,7 +1814,7 @@ export namespace Conversion {
       const toUnionMembers =
         resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
           ? resolvedTargetTypeDef.members
-          : resolvedTargetTypeDef.members.map((m) => m.type);
+          : resolvedTargetTypeDef.members.map((m) => sr.e.resolveAlias(m.type));
       const membersTo = typeNarrowing(sr);
       membersTo.addVariants(toUnionMembers);
       membersTo.constrainFromConstraints(constraints, sourceExprId);
@@ -1836,7 +1838,7 @@ export namespace Conversion {
       const unionMembers =
         resolvedSourceTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
           ? resolvedSourceTypeDef.members
-          : resolvedSourceTypeDef.members.map((m) => m.type);
+          : resolvedSourceTypeDef.members.map((m) => sr.e.resolveAlias(m.type));
 
       const members = typeNarrowing(sr);
       members.addVariants(unionMembers);
@@ -1873,7 +1875,7 @@ export namespace Conversion {
         ) {
           const types: Semantic.TypeUseId[] = [];
           for (const mId of members.possibleVariants) {
-            const mUse = sr.typeUseNodes.get(mId);
+            const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(mId));
             const mDef = sr.typeDefNodes.get(mUse.type);
 
             if (
@@ -2024,35 +2026,102 @@ export namespace Conversion {
 
     // Read Conversion: ShallowReactive<T> to T
     if (
-      resolvedSourceTypeDef.variant ===
-        Semantic.ENode.ShallowReactiveDatatype &&
-      sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType) ===
-        resolvedTargetTypeUseId
+      resolvedSourceTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
     ) {
-      return {
-        kind: "reactive-read",
-      };
+      const wrapped = sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType);
+      if (wrapped === resolvedTargetTypeUseId) {
+        return { kind: "reactive-read" };
+      }
+
+      if (
+        resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+      ) {
+        for (const m of resolvedTargetTypeDef.members) {
+          if (sr.e.resolveAlias(m) === wrapped) {
+            return { kind: "reactive-read" };
+          }
+          const mUse = sr.typeUseNodes.get(m);
+          const wrappedUse = sr.typeUseNodes.get(wrapped);
+          if (mUse.type === wrappedUse.type) {
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Const &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "reactive-read" };
+            }
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Mut &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "reactive-read" };
+            }
+          }
+        }
+      }
     }
 
-    // Read Conversion: Reactive<T> to T
-    if (
-      resolvedSourceTypeDef.variant === Semantic.ENode.ReactiveDatatype &&
-      sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType) ===
-        resolvedTargetTypeUseId
-    ) {
-      return {
-        kind: "reactive-read",
-      };
+    if (resolvedSourceTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+      const wrapped = sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType);
+      if (wrapped === resolvedTargetTypeUseId) {
+        return { kind: "reactive-read" };
+      }
+      if (
+        resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+      ) {
+        for (const m of resolvedTargetTypeDef.members) {
+          if (sr.e.resolveAlias(m) === wrapped) {
+            return { kind: "reactive-read" };
+          }
+          const mUse = sr.typeUseNodes.get(m);
+          const wrappedUse = sr.typeUseNodes.get(wrapped);
+          if (mUse.type === wrappedUse.type) {
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Const &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "reactive-read" };
+            }
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Mut &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "reactive-read" };
+            }
+          }
+        }
+      }
     }
 
-    // Read Conversion: Computed<T> to T
-    if (
-      resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype &&
-      resolvedSourceTypeDef.wrappedType === resolvedTargetTypeUseId
-    ) {
-      return {
-        kind: "computed-read",
-      };
+    if (resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype) {
+      const wrapped = sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType);
+      if (wrapped === resolvedTargetTypeUseId) {
+        return { kind: "computed-read" };
+      }
+      if (
+        resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+      ) {
+        for (const m of resolvedTargetTypeDef.members) {
+          if (sr.e.resolveAlias(m) === wrapped) {
+            return { kind: "computed-read" };
+          }
+          const mUse = sr.typeUseNodes.get(m);
+          const wrappedUse = sr.typeUseNodes.get(wrapped);
+          if (mUse.type === wrappedUse.type) {
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Const &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "computed-read" };
+            }
+            if (
+              wrappedUse.mutability === EDatatypeMutability.Mut &&
+              mUse.mutability === EDatatypeMutability.Default
+            ) {
+              return { kind: "computed-read" };
+            }
+          }
+        }
+      }
     }
 
     return {

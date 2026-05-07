@@ -2203,26 +2203,6 @@ export namespace Semantic {
     return names.map((n) => n.pretty).join(".");
   }
 
-  export function mangleFullTypeUse(
-    sr: Semantic.Context,
-    typeUseId: Semantic.TypeUseId
-  ) {
-    const type = sr.typeUseNodes.get(typeUseId);
-
-    const names = getNamespaceChainFromDatatype(sr, type.type);
-
-    const use = mangleTypeUse(sr, typeUseId);
-    return {
-      name:
-        use.name +
-        names
-          .slice(1)
-          .map((n) => n.mangled)
-          .join(""),
-      wasMangled: use.wasMangled || names.slice(1).some((n) => n.wasMangled),
-    };
-  }
-
   export function mangleSymbol(
     sr: Semantic.Context,
     symbolId: Semantic.SymbolId

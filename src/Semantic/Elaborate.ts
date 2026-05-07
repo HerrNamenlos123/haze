@@ -853,7 +853,7 @@ export class SemanticElaborator {
           );
 
           const innerCode = isBinary
-            ? `__c__("data = (_H${Semantic.mangleFullTypeUse(this.sr, returnType).name}){ .offset = 0, .basePtr = (void*)__hz_${moduleName}_embedded_binary_${embeddedFileId}_data, .length = __hz_${moduleName}_embedded_binary_${embeddedFileId}_size };");`
+            ? `__c__("data = (_H${Semantic.mangleTypeUse(this.sr, returnType).name}){ .offset = 0, .basePtr = (void*)__hz_${moduleName}_embedded_binary_${embeddedFileId}_data, .length = __hz_${moduleName}_embedded_binary_${embeddedFileId}_size };");`
             : `__c__("data = HZSTD_STRING((const char*)__hz_${moduleName}_embedded_text_${embeddedFileId}_data, __hz_${moduleName}_embedded_text_${embeddedFileId}_size);");`;
 
           const code = `do unsafe { let data: ${Semantic.serializeTypeUse(this.sr, returnType)} = uninitialized; ${innerCode} return data; };`;
@@ -6418,7 +6418,7 @@ export class SemanticElaborator {
         );
       }
       if (name === "mangled") {
-        const name = Semantic.mangleFullTypeUse(this.sr, expr.type);
+        const name = Semantic.mangleTypeUse(this.sr, expr.type);
         return this.sr.b.literal(
           name.wasMangled ? "_H" + name.name : name.name,
           sourceloc

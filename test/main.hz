@@ -68,7 +68,7 @@ fn main(): int {
     // const comptime field = "value";
     // foo.[field] = 187;
     // fmt.println(foo.value);
-    return 0;
+    // return 0;
 
     // let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
     // a.value = rx.reactive<int>(7);
@@ -88,7 +88,7 @@ fn main(): int {
     // fmt.println(f"a.value = {a.value}");
     // fmt.println(f"aValue = {aValue}");
 
-    return 0;
+    // return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

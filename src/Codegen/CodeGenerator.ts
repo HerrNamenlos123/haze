@@ -1376,7 +1376,9 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
 
-        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        const typeUse = this.lr.typeUseNodes.get(
+          Lowered.resolveAlias(this.lr, expr.type)
+        );
         const type = this.lr.typeDefNodes.get(typeUse.type);
         if (
           type.variant === Lowered.ENode.PrimitiveDatatype &&
