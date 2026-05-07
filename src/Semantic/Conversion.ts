@@ -1974,32 +1974,6 @@ export namespace Conversion {
       }
     }
 
-    // Callable conversions
-    if (
-      resolvedSourceTypeDef.variant === Semantic.ENode.CallableDatatype &&
-      resolvedTargetTypeDef.variant === Semantic.ENode.CallableDatatype
-    ) {
-      const fType = sr.typeDefNodes.get(resolvedSourceTypeDef.functionType);
-      assert(fType.variant === Semantic.ENode.FunctionDatatype);
-      const tType = sr.typeDefNodes.get(resolvedTargetTypeDef.functionType);
-      assert(tType.variant === Semantic.ENode.FunctionDatatype);
-
-      const result = checkFunctionDatatypeCompatibility(
-        sr,
-        fType,
-        sourceTypeText,
-        tType,
-        targetTypeText
-      );
-      if (result === "success") {
-        return {
-          kind: "basic-c-cast",
-        };
-      } else {
-        return result;
-      }
-    }
-
     // Conversion to LiteralDatatype
     if (resolvedTargetTypeDef.variant === Semantic.ENode.LiteralDatatype) {
       // If the source is a literal, check if it matches the literal datatype

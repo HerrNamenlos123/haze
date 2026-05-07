@@ -260,8 +260,8 @@
     "functions": {
       "patterns": [
         {
-          "begin": "(?x) (?:[a-zA-Z_][\\w]*\\.)? ([a-zA-Z_][\\w]*) \\s* (?=<|\\()",
-          "end": "(?=[;\\n])",
+          "begin": "(?x)(?:[a-zA-Z_][\\w]*\\.)?([a-zA-Z_][\\w]*)(?=<|\\()",
+          "end": "(?=[;\\n\\)\\]\\}])",
           "beginCaptures": {
             "1": {
               "name": "meta.function-call"

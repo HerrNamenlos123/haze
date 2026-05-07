@@ -4,18 +4,24 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = require("vscode");
 const node_1 = require("vscode-languageclient/node");
-let client = undefined;
+let client;
 async function startClient(_ctx) {
     let command = process.env.NODE_ENV === "development" ? "bun" : "haze";
     let args = process.env.NODE_ENV === "development" ? ["run", "dev", "lsp"] : ["lsp"];
     command = "bun";
     if (process.platform === "win32") {
-        args = ["run", "--cwd", "C:/Users/Florian Zachs/Projects/haze", "dev", "lsp"];
+        args = [
+            "run",
+            "--cwd",
+            "C:/Users/Florian Zachs/Projects/haze",
+            "dev",
+            "lsp",
+        ];
     }
     else {
         args = ["run", "--cwd", "/home/fzachs/Projects/haze", "dev", "lsp"];
     }
-    client = new node_1.LanguageClient("haze", "Haze Language Server", { command, args }, { documentSelector: [{ language: "haze" }] });
+    client = new node_1.LanguageClient("haze", "Haze Language Server", { command: command, args: args }, { documentSelector: [{ language: "haze" }] });
     await client.start();
 }
 async function stopClient() {

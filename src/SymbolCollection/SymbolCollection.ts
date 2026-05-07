@@ -3867,7 +3867,7 @@ export function printCollectedDatatype(
           (p, i) =>
             `param${i}${p.optional ? "?" : ""}: ${printCollectedDatatype(cc, p.type)}`
         )
-        .join(", ")}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(
+        .join(", ")}${type.vararg ? ", ..." : ""}) -> ${printCollectedDatatype(
         cc,
         type.returnType
       )}`;
@@ -3896,7 +3896,7 @@ export function printCollectedDatatype(
           return `arg_${i}?: ${printCollectedDatatype(cc, p.type)}`;
         }
         return `arg_${i}: ${printCollectedDatatype(cc, p.type)}`;
-      })}${type.vararg ? ", ..." : ""}) -> ${printCollectedDatatype(cc, type.returnType)}${requires})`;
+      })}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(cc, type.returnType)}${requires})`;
     }
 
     case Collect.ENode.SymbolValueExpr:
