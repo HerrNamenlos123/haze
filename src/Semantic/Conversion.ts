@@ -1296,53 +1296,90 @@ export namespace Conversion {
         };
       }
 
-      const concreteMatch =
-        resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete;
-      const varargMatch =
-        resolvedSourceTypeDef.vararg === resolvedTargetTypeDef.vararg;
-      const noreturnMatch =
-        resolvedSourceTypeDef.requires.noreturn ===
-        resolvedTargetTypeDef.requires.noreturn;
-      const noreturnIfMatch =
-        resolvedSourceTypeDef.requires.noreturnIf?.expr ===
-        resolvedTargetTypeDef.requires.noreturnIf?.expr;
-      const returnTypeMatch =
-        sr.e.resolveAlias(resolvedSourceTypeDef.returnType) ===
-        sr.e.resolveAlias(resolvedTargetTypeDef.returnType);
-      const paramLengthMatch =
-        resolvedSourceTypeDef.parameters.length ===
-        resolvedTargetTypeDef.parameters.length;
-      // Compare parameter types, not the parameter objects themselves (which may have different names, etc.)
-      const paramsMatch =
-        resolvedSourceTypeDef.parameters.length ===
-          resolvedTargetTypeDef.parameters.length &&
-        resolvedSourceTypeDef.parameters.every(
-          (p, i) =>
-            sr.e.resolveAlias(resolvedTargetTypeDef.parameters[i].type) ===
-            sr.e.resolveAlias(p.type)
-        );
-      const purityOk =
-        !resolvedTargetTypeDef.requires.pure ||
-        resolvedSourceTypeDef.requires.pure;
+      assert(resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete);
 
       if (
-        concreteMatch &&
-        varargMatch &&
-        noreturnMatch &&
-        noreturnIfMatch &&
-        returnTypeMatch &&
-        paramLengthMatch &&
-        paramsMatch &&
-        purityOk
+        resolvedSourceTypeDef.parameters.length !==
+        resolvedTargetTypeDef.parameters.length
       ) {
         return {
-          kind: "basic-c-cast",
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the number of parameters does not match`,
         };
       }
 
-      // If we reach here, the function types are incompatible
-      // Fall through to "No suitable conversion" error below
-      // TODO: Better error on why functions are incompatible
+      assert(
+        resolvedSourceTypeDef.parameters.length ===
+          resolvedTargetTypeDef.parameters.length
+      );
+      const paramsMatch = resolvedSourceTypeDef.parameters.map(
+        (p, i) =>
+          sr.e.resolveAlias(resolvedTargetTypeDef.parameters[i].type) ===
+          sr.e.resolveAlias(p.type)
+      );
+      if (paramsMatch.some((m) => !m)) {
+        const nonmatchingParameters: string[] = [];
+        for (let i = 0; i < paramsMatch.length; i++) {
+          if (!paramsMatch[i]) {
+            nonmatchingParameters.push(`#${i}`);
+          }
+        }
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the parameters ${nonmatchingParameters.join(", ")} are not compatible`,
+        };
+      }
+
+      if (
+        sr.e.resolveAlias(resolvedSourceTypeDef.returnType) !==
+        sr.e.resolveAlias(resolvedTargetTypeDef.returnType)
+      ) {
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the return types do not match`,
+        };
+      }
+
+      if (
+        resolvedSourceTypeDef.requires.noreturnIf !==
+        resolvedTargetTypeDef.requires.noreturnIf
+      ) {
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn_if requirements`,
+        };
+      }
+
+      if (
+        resolvedSourceTypeDef.requires.noreturn !==
+        resolvedTargetTypeDef.requires.noreturn
+      ) {
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different noreturn requirements`,
+        };
+      }
+
+      if (resolvedSourceTypeDef.vararg !== resolvedTargetTypeDef.vararg) {
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different variadic argument requirements`,
+        };
+      }
+
+      if (
+        resolvedSourceTypeDef.requires.pure !==
+        resolvedTargetTypeDef.requires.pure
+      ) {
+        return {
+          kind: "error",
+          message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}, because the functions have different purity requirements`,
+        };
+      }
+
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // Conversion between Integers
