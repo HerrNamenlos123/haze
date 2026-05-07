@@ -5453,6 +5453,10 @@ export class SemanticElaborator {
         );
       }
 
+      case Collect.ENode.LiteralExpr: {
+        return this.sr.b.literalType(type.literal, type.sourceloc);
+      }
+
       case Collect.ENode.BinaryExpr: {
         if (type.operation === EBinaryOperation.BitwiseOr) {
           const leftType = this.evaluateExpressionToDatatype(
