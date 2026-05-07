@@ -904,7 +904,9 @@ export function lowerExpr(
         flattened,
         instanceInfo
       );
-      const calledExprType = lr.typeUseNodes.get(calledExpr.type);
+      const calledExprType = lr.typeUseNodes.get(
+        Lowered.resolveAlias(lr, calledExpr.type)
+      );
       const calledExprTypeDef = lr.typeDefNodes.get(calledExprType.type);
       assert(
         calledExprTypeDef.variant === Lowered.ENode.FunctionDatatype ||
@@ -1195,7 +1197,9 @@ export function lowerExpr(
 
     case Semantic.ENode.MemberAccessExpr: {
       const accessedExpr = lr.sr.exprNodes.get(expr.expr);
-      const accessedExprTypeUse = lr.sr.typeUseNodes.get(accessedExpr.type);
+      const accessedExprTypeUse = lr.sr.typeUseNodes.get(
+        lr.sr.e.resolveAlias(accessedExpr.type)
+      );
       const accessedExprTypeDef = lr.sr.typeDefNodes.get(
         accessedExprTypeUse.type
       );
@@ -2245,7 +2249,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       );
 
       const loweredValueUnionDef = lr.typeDefNodes.get(
-        lr.typeUseNodes.get(loweredInnerExpr[0].type).type
+        lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredInnerExpr[0].type))
+          .type
       );
       assert(
         loweredValueUnionDef.variant === Lowered.ENode.UntaggedUnionDatatype ||

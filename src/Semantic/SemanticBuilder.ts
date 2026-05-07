@@ -177,7 +177,9 @@ export class SemanticBuilder {
     sourceloc: SourceLoc
   ) {
     const expr = this.sr.exprNodes.get(exprId);
-    const ftypeUse = this.sr.typeUseNodes.get(expr.type);
+    const ftypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
     const ftypeDef = this.sr.typeDefNodes.get(ftypeUse.type);
 
     assert(

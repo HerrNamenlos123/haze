@@ -1101,7 +1101,9 @@ export class SemanticElaborator {
       return this.handleIntrinsicCall(calledExpr, callExpr, inference);
     }
 
-    const calledExprTypeUse = this.sr.typeUseNodes.get(calledExpr.type);
+    const calledExprTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(calledExpr.type)
+    );
     const calledExprType = this.sr.typeDefNodes.get(calledExprTypeUse.type);
 
     // Try to extract the function symbol if calling a specific function
@@ -7288,7 +7290,9 @@ export class SemanticElaborator {
     sourceloc: SourceLoc,
     inference: Semantic.Inference
   ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
-    const structUse = this.sr.typeUseNodes.get(typeUseId);
+    const structUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(typeUseId)
+    );
     const struct = this.sr.typeDefNodes.get(structUse.type);
     assert(struct.variant === Semantic.ENode.StructDatatype);
 
@@ -9502,7 +9506,7 @@ export class SemanticElaborator {
     }
 
     const struct = this.sr.typeDefNodes.get(
-      this.sr.typeUseNodes.get(structId).type
+      this.sr.typeUseNodes.get(this.sr.e.resolveAlias(structId)).type
     );
     if (struct.variant === Semantic.ENode.StructDatatype) {
       return this.makeStructLiteral(
@@ -9962,7 +9966,9 @@ export class SemanticElaborator {
   ) {
     const [rightExpr, rightExprId] = this.expr(errPropExpr.expr, inference);
 
-    const typeUse = this.sr.typeUseNodes.get(rightExpr.type);
+    const typeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(rightExpr.type)
+    );
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
 
     if (typeDef.variant !== Semantic.ENode.TaggedUnionDatatype) {
