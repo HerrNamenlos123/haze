@@ -88,7 +88,7 @@ fn main(): int {
     // fmt.println(f"a.value = {a.value}");
     // fmt.println(f"aValue = {aValue}");
 
-    // return 0;
+    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
