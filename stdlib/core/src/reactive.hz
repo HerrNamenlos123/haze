@@ -11,14 +11,9 @@ namespace rx {
             return value;
         }
 
-        let tmp: T = value;
         return do unsafe {
             let result: rx.ShallowReactive<T> = uninitialized;
-            __c__("""
-                void* slot = hzstd_slot_alloc(sizeof(tmp));
-                hzstd_slot_write(slot, &tmp, sizeof(tmp));
-                result = hzstd_reactive_create(slot);
-            """);
+            __c__(f"""result = HZSTD_REACTIVE_CREATE(__typeof__(result), {T.mangledName}, value);""");
             result;
         };
     }
@@ -32,6 +27,8 @@ namespace rx {
         else if comptime T.category == meta.TypeCategory.Struct {
             do unsafe {
                 let result: Reactive<T> = uninitialized;
+                let __inline_struct: inline T = uninitialized; // TODO: This is a compiler bug: This line is required to let the C typedef be generated
+                __c__(f"result = HZSTD_REACTIVE_CREATE(__typeof__(result), {T.mangledName}, HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), {(type inline T).mangledName}, ({(type inline T).mangledName}){{0}}));");
                 for comptime field in T.fields {
                     result.[field.name] = reactive<typeof(value.[field.name])>(value.[field.name]);
                 }
@@ -45,11 +42,7 @@ namespace rx {
             // Primitive
             return do unsafe {
                 let result: rx.Reactive<T> = uninitialized;
-                __c__(f"""
-                    void* slot = hzstd_slot_alloc(sizeof({T.mangledName}));
-                    hzstd_slot_write(slot, &value, sizeof({T.mangledName}));
-                    result = hzstd_reactive_create(slot);
-                """);
+                __c__(f"""result = HZSTD_REACTIVE_CREATE(__typeof__(result), {T.mangledName}, value);""");
                 result;
             };
         }

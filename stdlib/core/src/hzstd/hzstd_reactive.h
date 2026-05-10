@@ -56,4 +56,32 @@ void* hzstd_slot_alloc(size_t size);
 void hzstd_slot_write(void* slot, void* src, size_t size);
 void hzstd_slot_read(void* dst, void* slot, size_t size);
 
+#define HZSTD_REACTIVE_READ(value_T, __reactive_value)                                                                 \
+  ({                                                                                                                   \
+    value_T __tmp_result = { 0 };                                                                                      \
+    void* __slot = hzstd_reactive_read(__reactive_value);                                                              \
+    hzstd_slot_read(&__tmp_result, __slot, sizeof(value_T));                                                           \
+    __tmp_result;                                                                                                      \
+  })
+
+#define HZSTD_REACTIVE_WRITE(reactive_T, value_T, reactive_value, value)                                               \
+  ({                                                                                                                   \
+    reactive_T __tmp_reactive = reactive_value;                                                                        \
+    value_T __tmp_value = value;                                                                                       \
+    void* __slot = hzstd_reactive_read(__tmp_reactive);                                                                \
+    hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));                                                       \
+    hzstd_reactive_write(__tmp_reactive, __slot);                                                                      \
+    __tmp_reactive;                                                                                                    \
+  })
+
+#define HZSTD_REACTIVE_CREATE(reactive_T, value_T, value)                                                              \
+  ({                                                                                                                   \
+    value_T __value = value;                                                                                           \
+    reactive_T __result = { 0 };                                                                                       \
+    void* __slot = hzstd_slot_alloc(sizeof(value_T));                                                                  \
+    hzstd_slot_write(__slot, &__value, sizeof(value_T));                                                               \
+    __result = hzstd_reactive_create(__slot);                                                                          \
+    __result;                                                                                                          \
+  })
+
 #endif // HZSTD_REACTIVE_H

@@ -1882,47 +1882,34 @@ export function lowerExpr(
     case Semantic.ENode.ReactiveWriteExpr: {
       const statements: Lowered.StatementId[] = [];
 
-      const reactiveType = lowerTypeUse(lr, expr.type);
+      const reactiveTypeId = lowerTypeUse(lr, expr.type);
+      const reactiveType = lr.typeUseNodes.get(reactiveTypeId);
 
       const valueExpr = lr.sr.exprNodes.get(expr.value);
-      const tmpReactive = storeInTempVarAndGet(
+      const valueExprTypeId = lowerTypeUse(lr, valueExpr.type);
+      const valueExprType = lr.typeUseNodes.get(valueExprTypeId);
+
+      return makeIntrinsicCall(
         lr,
-        reactiveType,
-        lowerExpr(lr, expr.target, statements, instanceInfo)[1],
-        expr.sourceloc,
-        statements,
-        "__tmp_reactive"
-      )[1];
-
-      storeInTempVarAndGet(
-        lr,
-        lowerTypeUse(lr, valueExpr.type),
-        lowerExpr(lr, expr.value, statements, instanceInfo)[1],
-        expr.sourceloc,
-        statements,
-        "__tmp_value"
+        "HZSTD_REACTIVE_WRITE",
+        [
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: reactiveType.name,
+            type: reactiveTypeId,
+          })[1],
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: valueExprType.name,
+            type: valueExprTypeId,
+          })[1],
+          // Reactive Value
+          lowerExpr(lr, expr.target, statements, instanceInfo)[1],
+          // Value
+          lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+        ],
+        reactiveTypeId
       );
-
-      statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.InlineCStatement,
-          value: `void* __slot = hzstd_reactive_read(__tmp_reactive);
-hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));
-hzstd_reactive_write(__tmp_reactive, __slot);`,
-          sourceloc: expr.sourceloc,
-        })[1]
-      );
-
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BlockScopeExpr,
-        block: Lowered.addBlockScope(lr, {
-          definesVariables: true,
-          emittedExpr: tmpReactive,
-          statements: statements,
-        })[1],
-        type: reactiveType,
-        sourceloc: expr.sourceloc,
-      });
     }
 
     case Semantic.ENode.ComputedReadExpr: {
@@ -1976,49 +1963,22 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     case Semantic.ENode.ReactiveReadExpr: {
       const statements: Lowered.StatementId[] = [];
 
-      const reactiveType = lowerTypeUse(
+      const valueTypeId = lowerTypeUse(lr, expr.type);
+      const valueType = lr.typeUseNodes.get(valueTypeId);
+
+      return makeIntrinsicCall(
         lr,
-        lr.sr.exprNodes.get(expr.value).type
+        "HZSTD_REACTIVE_READ",
+        [
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: valueType.name,
+            type: valueTypeId,
+          })[1],
+          lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+        ],
+        valueTypeId
       );
-      const valueType = lowerTypeUse(lr, expr.type);
-
-      storeInTempVarAndGet(
-        lr,
-        reactiveType,
-        lowerExpr(lr, expr.value, statements, instanceInfo)[1],
-        expr.sourceloc,
-        statements,
-        "__tmp_reactive"
-      );
-
-      const result = storeInTempVarAndGet(
-        lr,
-        valueType,
-        null,
-        expr.sourceloc,
-        statements,
-        "__tmp_result"
-      )[1];
-
-      statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.InlineCStatement,
-          value: `void* __slot = hzstd_reactive_read(__tmp_reactive);
-hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
-          sourceloc: expr.sourceloc,
-        })[1]
-      );
-
-      return Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BlockScopeExpr,
-        block: Lowered.addBlockScope(lr, {
-          definesVariables: true,
-          emittedExpr: result,
-          statements: statements,
-        })[1],
-        type: valueType,
-        sourceloc: expr.sourceloc,
-      });
     }
 
     case Semantic.ENode.UnionToUnionCastExpr: {
@@ -2997,26 +2957,6 @@ export function lowerTypeDef(
     throw new InternalError("Unhandled variant: " + type.variant);
   }
 }
-
-// function makePointerAvailable(lr: Lowered.Module, typeUseId: Lowered.TypeUseId) {
-//   if (lr.loweredPointers.has(typeUseId)) {
-//     return lr.loweredPointers.get(typeUseId)!;
-//   } else {
-//     const type = lr.typeUseNodes.get(typeUseId);
-//     const ptrId = Lowered.addTypeDef(lr, {
-//       variant: Lowered.ENode.PointerDatatype,
-//       name: {
-//         mangledName:
-//           (type.name.wasMangled ? "p" + type.name.mangledName : type.name.mangledName) + "AAA",
-//         prettyName: type.name.prettyName + "POINTER",
-//         wasMangled: type.name.wasMangled,
-//       },
-//       referee: typeUseId,
-//     })[1];
-//     lr.loweredPointers.set(typeUseId, ptrId);
-//     return ptrId;
-//   }
-// }
 
 function lowerTypeUse(
   lr: Lowered.Module,

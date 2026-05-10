@@ -7,13 +7,8 @@
       "command": "bun",
       // "command": "~/.bun/bin/bun",
       // "command": "%USERPROFILE%/.bun/bin/bun",
-      "args": ["run", "dev", "build"],
-      // "args": [
-      //   "run",
-      //   "dev",
-      //   "build",
-      //   "--no-sourceloc"
-      // ],
+      // "args": ["run", "dev", "build"],
+      "args": ["run", "dev", "build", "--no-sourceloc"],
       "group": {
         "kind": "build",
         "isDefault": true
