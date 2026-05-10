@@ -71,7 +71,7 @@ fn main(): int {
     // return 0;
 
     let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
-    a.value = rx.reactive<int>(7);
+    // a.value = rx.reactive<int>(7);
     // let aValue = rx.computed<int>(() => {
     //     fmt.println("Rerunning computed");
     //     return a.value as int;

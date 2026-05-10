@@ -25,32 +25,34 @@ namespace rx {
 
     export fn reactive<T>(value: T): rx.Reactive<T> :: final {
 
-        // if comptime T.category == meta.TypeCategory.Reactive { 
-        //     return value;
-        // }
+        if comptime T.category == meta.TypeCategory.Reactive { 
+            return value;
+        }
 
-        // if comptime T.category == meta.TypeCategory.Struct {
-        //     do unsafe {
-        //         let result: Reactive<T> = uninitialized;
-        //         for comptime field in T.fields {
-        //             result.[field.name] = reactive(value.[field.name]);
-        //         }
-        //         return result;
-        //     };
-        // }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            do unsafe {
+                let result: Reactive<T> = uninitialized;
+                for comptime field in T.fields {
+                    result.[field.name] = reactive<typeof(value.[field.name])>(value.[field.name]);
+                }
+                return result;
+            };
+        }
 
-        // static_assert(T.category == meta.TypeCategory.Primitive, f"reactive() on type {T.name} is not supported yet");
+        else {
+            static_assert(T.category == meta.TypeCategory.Primitive, f"reactive() on type {T.prettyName} is not supported yet");
 
-        // Primitive
-        return do unsafe {
-            let result: rx.Reactive<T> = uninitialized;
-            __c__(f"""
-                void* slot = hzstd_slot_alloc(sizeof({T.mangledName}));
-                hzstd_slot_write(slot, &value, sizeof({T.mangledName}));
-                result = hzstd_reactive_create(slot);
-            """);
-            result;
-        };
+            // Primitive
+            return do unsafe {
+                let result: rx.Reactive<T> = uninitialized;
+                __c__(f"""
+                    void* slot = hzstd_slot_alloc(sizeof({T.mangledName}));
+                    hzstd_slot_write(slot, &value, sizeof({T.mangledName}));
+                    result = hzstd_reactive_create(slot);
+                """);
+                result;
+            };
+        }
     }
 
     export fn computed<T>(func: () => T): rx.Computed<T> {

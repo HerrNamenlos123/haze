@@ -3722,20 +3722,22 @@ export class SemanticElaborator {
     for (let i = 0; i < functionSignature.parameters.length; i++) {
       const param = functionSignature.parameters[i];
       assert(param.kind !== "param-pack");
-      const paramTypeUse = this.sr.typeUseNodes.get(param.type);
+      const paramTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(param.type)
+      );
       const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
 
-      // Check if this parameter's type is a generic parameter
-      if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
-        // Find the corresponding actual argument
-        const actualArg = inference.gonnaCallFunctionWithParameterValues.find(
-          (arg) => arg.index === i
-        );
+      // Find the corresponding actual argument
+      const actualArg = inference.gonnaCallFunctionWithParameterValues.find(
+        (arg) => arg.index === i
+      );
 
-        if (actualArg && actualArg.exprId !== null) {
-          // Get the type of the actual argument
-          const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
+      if (actualArg && actualArg.exprId !== null) {
+        // Get the type of the actual argument
+        const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
 
+        // Check if this parameter's type is a generic parameter
+        if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
           // If it's a literal expression, create a LiteralDatatype to preserve the value
           let actualType: Semantic.TypeUseId;
           if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
@@ -3746,7 +3748,23 @@ export class SemanticElaborator {
 
           // Map this generic parameter to the actual type
           inferredTypes.set(paramTypeDef.collectedParameter, actualType);
+          continue;
         }
+
+        // TODO: Implement more sophisticated generic inference for unwrapped reactive and reactive T
+        // // Check if this parameter's type is a generic parameter
+        // if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
+        //   // If it's a literal expression, create a LiteralDatatype to preserve the value
+        //   let actualType: Semantic.TypeUseId;
+        //   if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
+        //     actualType = this.sr.b.literalType(actualExpr.literal, sourceloc);
+        //   } else {
+        //     actualType = actualExpr.type;
+        //   }
+
+        //   // Map this generic parameter to the actual type
+        //   inferredTypes.set(paramTypeDef.collectedParameter, actualType);
+        // }
       }
     }
 

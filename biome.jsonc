@@ -54,7 +54,8 @@
         "useOptionalChain": "off",
         "noUselessConstructor": "off",
         "noVoid": "off",
-        "useLiteralKeys": "off"
+        "useLiteralKeys": "off",
+        "noUselessContinue": "off"
       },
       "correctness": {
         "noUnusedVariables": "warn",
