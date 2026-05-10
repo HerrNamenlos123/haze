@@ -46,7 +46,7 @@ export fn min<T>(a: T, b: T): T {
 export fn sizeofTypeInBytes<T>() {
     let size = 0;
     do unsafe {
-        __c__(f"size = sizeof({T.mangled});");
+        __c__(f"size = sizeof({T.mangledName});");
     };
     return size;
 }

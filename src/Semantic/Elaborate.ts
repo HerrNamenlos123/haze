@@ -6411,13 +6411,13 @@ export class SemanticElaborator {
       );
       const resolvedTypeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
 
-      if (name === "name") {
+      if (name === "prettyName") {
         return this.sr.b.literal(
           Semantic.serializeTypeUse(this.sr, expr.type),
           sourceloc
         );
       }
-      if (name === "mangled") {
+      if (name === "mangledName") {
         const name = Semantic.mangleTypeUse(this.sr, expr.type);
         return this.sr.b.literal(
           name.wasMangled ? "_H" + name.name : name.name,
@@ -6747,7 +6747,13 @@ export class SemanticElaborator {
         // }
       }
 
-      assert(false);
+      throw new CompilerError(
+        `Datatype '${Semantic.serializeTypeUse(
+          this.sr,
+          expr.type
+        )}' does not have a member named '${name}'`,
+        sourceloc
+      );
     }
 
     // Any dot access to any reactive value should first unwrap the reactive value, always

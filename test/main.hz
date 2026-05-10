@@ -40,8 +40,8 @@ struct Bar {
 
 struct Foo {
     value: int;
-    otherValue: real;
-    // bar: Bar;
+    // otherValue: real;
+    bar: Bar;
 }
 
 fn print<T>(value: T) {
@@ -60,9 +60,9 @@ fn print<T>(value: T) {
 
 fn main(): int {
 
-    const foo = Foo { value: 187, otherValue: 42.0 };
-    print(foo);
-    print(5);
+    // const foo = Foo { value: 187, otherValue: 42.0 };
+    // print(foo);
+    // print(5);
 
     // let foo = Foo { value: 5, bar: { value: 42 } };
     // const comptime field = "value";
@@ -70,16 +70,14 @@ fn main(): int {
     // fmt.println(foo.value);
     // return 0;
 
-    // let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
-    // a.value = rx.reactive<int>(7);
-    // static_print(typeof(a).name);
-    // static_print(typeof(a.value).name);
+    let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
+    a.value = rx.reactive<int>(7);
     // let aValue = rx.computed<int>(() => {
     //     fmt.println("Rerunning computed");
     //     return a.value as int;
     // });
 
-    // fmt.println(f"a.value = {a.value}");
+    fmt.println(f"a.value = {a.value}");
     // fmt.println(f"aValue = {aValue}");
 
     // // a := Foo { value: 6 };
