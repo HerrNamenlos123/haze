@@ -112,8 +112,7 @@ interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
 
 typeExprPrimary
-    : 
-    | nameExpr
+    : nameExpr
     | literal // Literal types such as 5, true or "Foo"
     | TYPEOF LB expr RB
     | LB typeExpr RB

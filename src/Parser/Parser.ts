@@ -791,7 +791,7 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.nameExpr() || (ctx.LB() && ctx.RB())) {
+    if (ctx.nameExpr() || (ctx.LB() && ctx.RB() && ctx.typeExpr())) {
       if (produced.length !== 1) {
         throw new InternalError("TypeExprPrimary stack mismatch");
       }
