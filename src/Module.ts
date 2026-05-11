@@ -2385,6 +2385,10 @@ export class ModuleCompiler {
       );
       linkerFlags.addWin32(interfaceLinker.getWin32().map((dir) => `${dir}`));
 
+      linkerFlags.addWin32("-lucrtd");
+      linkerFlags.addWin32("-lvcruntimed");
+      linkerFlags.addWin32("-lmsvcrtd");
+
       compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
       compilerFlags.addLinux(includeDirs.getLinux().map((dir) => `-I"${dir}"`));
       compilerFlags.addWin32(includeDirs.getWin32().map((dir) => `-I"${dir}"`));
