@@ -1266,6 +1266,17 @@ export namespace Conversion {
       return { kind: "keep" };
     }
 
+    // Computed<Alias<T>> → Computed<T>: the identity check above fails when the
+    // wrapped types differ only by alias, so resolve inner aliases explicitly.
+    if (
+      resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.ComputedDatatype &&
+      sr.e.resolveAlias(resolvedSourceTypeDef.wrappedType) ===
+        sr.e.resolveAlias(resolvedTargetTypeDef.wrappedType)
+    ) {
+      return { kind: "keep" };
+    }
+
     // Conversion from LiteralDatatype to PrimitiveDatatype
     // When a literal type like "hello" (LiteralDatatype) needs to become str (PrimitiveDatatype)
     if (

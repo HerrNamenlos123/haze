@@ -253,13 +253,13 @@ opaque struct Renderer {
             bindGroupLayouts: { globalsLayout, textLayout },
         });
 
-        let shader = rx.computed<mut wgpu.ShaderModule>(() => {
+        let shader = rx.computed(() => {
             return options.device.createShaderModule({
                 code: options.shadercode,
             });
         });
 
-        let pipeline = rx.computed<mut wgpu.RenderPipeline>(() => {
+        let pipeline = rx.computed(() => {
             return options.device.createRenderPipeline({
                 layout: pipelineLayout,
                 vertex: {
