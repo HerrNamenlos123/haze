@@ -70,22 +70,31 @@ fn main(): int {
     // fmt.println(foo.value);
     // return 0;
 
-    let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
-    // a.value = rx.reactive<int>(7);
+    // let a = rx.reactive(Foo { value: 5, bar: { value: 42 } });
+    // // a.value = rx.reactive<int>(7);
+    // // a.value := 7;
+    // let aValue = rx.computed(() => {
+    //     fmt.println("Rerunning computed");
+    //     return a.value;
+    // });
+
+    // // fmt.println(f"a.value = {a.value}");
+    // fmt.println(f"aValue = {aValue}");
+    // fmt.println(f"aValue = {aValue}");
     // a.value := 7;
-    let aValue = rx.computed(() => {
-        fmt.println("Rerunning computed");
-        return a.value;
+    // fmt.println(f"aValue = {aValue}");
+    // fmt.println(f"aValue = {aValue}");
+
+    let arr = rx.reactive<[]int>([1, 2, 3]);
+    const last = rx.computed(() => {
+        fmt.println("Running computed");
+        return arr[arr.length - 1];
     });
-
-    // fmt.println(f"a.value = {a.value}");
-    fmt.println(f"aValue = {aValue}");
-    fmt.println(f"aValue = {aValue}");
-    a.value := 7;
-    fmt.println(f"aValue = {aValue}");
-    fmt.println(f"aValue = {aValue}");
-
-    // let arr = rx.reactive<[]int>([1, 2, 3]);
+    fmt.println(f"Last: {last}");
+    fmt.println(f"Last: {last}");
+    arr.push(4);
+    fmt.println(f"Last: {last}");
+    fmt.println(f"Last: {last}");
 
     // // a := Foo { value: 6 };
     // // a.value = 6;
