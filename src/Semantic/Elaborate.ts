@@ -3691,89 +3691,200 @@ export class SemanticElaborator {
     };
   }
 
+  // Represents a single deduction of a generic parameter from one position in the call site.
+  // depth=0 means T appeared directly as the parameter type; higher values mean T is inside
+  // a wrapper (reactive<T>, T[], callable<T>, etc.). Lower depth takes priority.
+  private collectGenericDeductions(
+    patternTypeDefId: Semantic.TypeDefId,
+    argTypeUseId: Semantic.TypeUseId,
+    depth: number,
+    paramIndex: number,
+    out: Map<
+      Collect.SymbolId,
+      { typeUseId: Semantic.TypeUseId; depth: number; paramIndex: number }[]
+    >
+  ): void {
+    const patternDef = this.sr.typeDefNodes.get(patternTypeDefId);
+    const resolvedArgTypeUseId = this.sr.e.resolveAlias(argTypeUseId);
+    const argTypeUse = this.sr.typeUseNodes.get(resolvedArgTypeUseId);
+    const argTypeDef = this.sr.typeDefNodes.get(argTypeUse.type);
+
+    switch (patternDef.variant) {
+      case Semantic.ENode.GenericParameterDatatype: {
+        const key = patternDef.collectedParameter;
+        if (!out.has(key)) {
+          out.set(key, []);
+        }
+        out.get(key)!.push({ typeUseId: argTypeUseId, depth: depth, paramIndex: paramIndex });
+        break;
+      }
+      case Semantic.ENode.ReactiveDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.ShallowReactiveDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.ComputedDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.ComputedDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.FixedArrayDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.FixedArrayDatatype && patternDef.length === argTypeDef.length) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.DynamicArrayDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.SliceDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.SliceDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
+          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.CallableDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.CallableDatatype) {
+          const patternFunc = this.sr.typeDefNodes.get(patternDef.functionType);
+          assert(patternFunc.variant === Semantic.ENode.FunctionDatatype);
+          const argFunc = this.sr.typeDefNodes.get(argTypeDef.functionType);
+          assert(argFunc.variant === Semantic.ENode.FunctionDatatype);
+          this.collectGenericDeductionsFromFunctionTypes(patternFunc, argFunc, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      case Semantic.ENode.FunctionDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.FunctionDatatype) {
+          this.collectGenericDeductionsFromFunctionTypes(patternDef, argTypeDef, depth + 1, paramIndex, out);
+        }
+        break;
+      }
+      default: {
+        // All other concrete types produce no deductions.
+        break;
+      }
+    }
+  }
+
+  private collectGenericDeductionsFromFunctionTypes(
+    patternFunc: Semantic.FunctionDatatypeDef,
+    argFunc: Semantic.FunctionDatatypeDef,
+    depth: number,
+    paramIndex: number,
+    out: Map<
+      Collect.SymbolId,
+      { typeUseId: Semantic.TypeUseId; depth: number; paramIndex: number }[]
+    >
+  ): void {
+    const paramCount = Math.min(patternFunc.parameters.length, argFunc.parameters.length);
+    for (let i = 0; i < paramCount; i++) {
+      const innerPattern = this.sr.typeUseNodes.get(patternFunc.parameters[i].type);
+      this.collectGenericDeductions(innerPattern.type, argFunc.parameters[i].type, depth, paramIndex, out);
+    }
+    const returnPattern = this.sr.typeUseNodes.get(patternFunc.returnType);
+    this.collectGenericDeductions(returnPattern.type, argFunc.returnType, depth, paramIndex, out);
+  }
+
   inferGenericArgumentsFromCallSite(
     functionSignatureId: Semantic.SymbolId,
     collectedFunctionSymbolId: Collect.SymbolId,
     inference: Semantic.Inference,
     sourceloc: SourceLoc
   ): Semantic.ExprId[] | null {
-    // Get the function signature which has elaborated parameter types
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
 
-    // Get the collected function to access its generic parameters
     const collectedFunc = this.sr.cc.symbolNodes.get(collectedFunctionSymbolId);
     assert(collectedFunc.variant === Collect.ENode.FunctionSymbol);
 
-    // No generics to infer
     if (collectedFunc.generics.length === 0) {
       return null;
     }
 
-    // No inference data available
     if (!inference?.gonnaCallFunctionWithParameterValues) {
       return null;
     }
 
-    // Map from generic parameter symbol ID to inferred type
-    const inferredTypes = new Map<Collect.SymbolId, Semantic.TypeUseId>();
+    // Collect all deduction candidates across all parameter positions.
+    // Each entry records the candidate type, its nesting depth (0 = direct), and which param it came from.
+    const allDeductions = new Map<
+      Collect.SymbolId,
+      { typeUseId: Semantic.TypeUseId; depth: number; paramIndex: number }[]
+    >();
 
-    // For each parameter, check if its type is directly a generic parameter
     for (let i = 0; i < functionSignature.parameters.length; i++) {
       const param = functionSignature.parameters[i];
       assert(param.kind !== "param-pack");
-      const paramTypeUse = this.sr.typeUseNodes.get(
-        this.sr.e.resolveAlias(param.type)
-      );
-      const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
 
-      // Find the corresponding actual argument
       const actualArg = inference.gonnaCallFunctionWithParameterValues.find(
         (arg) => arg.index === i
       );
-
-      if (actualArg && actualArg.exprId !== null) {
-        // Get the type of the actual argument
-        const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
-
-        // Check if this parameter's type is a generic parameter
-        if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
-          // If it's a literal expression, create a LiteralDatatype to preserve the value
-          let actualType: Semantic.TypeUseId;
-          if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
-            actualType = this.sr.b.literalType(actualExpr.literal, sourceloc);
-          } else {
-            actualType = actualExpr.type;
-          }
-
-          // Map this generic parameter to the actual type
-          inferredTypes.set(paramTypeDef.collectedParameter, actualType);
-          continue;
-        }
-
-        // TODO: Implement more sophisticated generic inference for unwrapped reactive and reactive T
-        // // Check if this parameter's type is a generic parameter
-        // if (paramTypeDef.variant === Semantic.ENode.GenericParameterDatatype) {
-        //   // If it's a literal expression, create a LiteralDatatype to preserve the value
-        //   let actualType: Semantic.TypeUseId;
-        //   if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
-        //     actualType = this.sr.b.literalType(actualExpr.literal, sourceloc);
-        //   } else {
-        //     actualType = actualExpr.type;
-        //   }
-
-        //   // Map this generic parameter to the actual type
-        //   inferredTypes.set(paramTypeDef.collectedParameter, actualType);
-        // }
+      if (!actualArg || actualArg.exprId === null) {
+        continue;
       }
+
+      const actualExpr = this.sr.exprNodes.get(actualArg.exprId);
+      let argTypeUseId: Semantic.TypeUseId;
+      if (actualExpr.variant === Semantic.ENode.LiteralExpr) {
+        argTypeUseId = this.sr.b.literalType(actualExpr.literal, sourceloc);
+      } else {
+        argTypeUseId = actualExpr.type;
+      }
+
+      const paramTypeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(param.type));
+      this.collectGenericDeductions(paramTypeUse.type, argTypeUseId, 0, i, allDeductions);
     }
 
-    // Check if all generic parameters were inferred
+    // Resolve the best candidate for each generic parameter using priority rules:
+    //   1. Among all candidates, keep only those with the minimum depth (direct > wrapped).
+    //   2. If all minimum-depth candidates agree on the resolved type → accept.
+    //   3. If they disagree → conflicting deductions, error.
+    //   4. If no candidates at all → cannot infer, error.
+    const inferredTypes = new Map<Collect.SymbolId, Semantic.TypeUseId>();
+
+    for (const [genericId, candidates] of allDeductions) {
+      const minDepth = Math.min(...candidates.map((c) => c.depth));
+      const primaryCandidates = candidates.filter((c) => c.depth === minDepth);
+
+      const firstResolved = this.sr.e.resolveAlias(primaryCandidates[0].typeUseId);
+      const allAgree = primaryCandidates.every(
+        (c) => this.sr.e.resolveAlias(c.typeUseId) === firstResolved
+      );
+
+      if (!allAgree) {
+        const genericSym = this.sr.cc.symbolNodes.get(genericId);
+        assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
+        throw new CompilerError(
+          `Conflicting deductions for generic parameter '${genericSym.name}' of function '${collectedFunc.name}'. Please specify it explicitly.`,
+          sourceloc
+        );
+      }
+
+      inferredTypes.set(genericId, primaryCandidates[0].typeUseId);
+    }
+
+    // Verify every generic parameter was covered and build the result.
     const inferredGenericArgs: Semantic.ExprId[] = [];
     for (const genericParamSymbolId of collectedFunc.generics) {
       const inferredType = inferredTypes.get(genericParamSymbolId);
       if (!inferredType) {
-        // Could not infer this generic parameter
         const genericSym = this.sr.cc.symbolNodes.get(genericParamSymbolId);
         assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
         throw new CompilerError(
@@ -3782,7 +3893,6 @@ export class SemanticElaborator {
         );
       }
 
-      // Convert the type to an expression (as a type literal)
       const typeAsExpr = this.sr.b.datatypeUseAsValue(inferredType, sourceloc);
       inferredGenericArgs.push(typeAsExpr[1]);
     }

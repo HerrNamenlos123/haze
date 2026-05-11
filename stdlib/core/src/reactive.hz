@@ -48,10 +48,10 @@ namespace rx {
         }
     }
 
-    export fn computed<T>(func: () => T): rx.Computed<T> {
+    export fn computed<T>(func: () => T): rx.Computed<rx.UnwrapReactive<T>> {
         return do unsafe {
             let fnWrapper = (): cptr => {
-                let resultValue = func();
+                let resultValue = rx.get(func());
                 do unsafe {
                     let slot = none as cptr;
                     __c__("""
@@ -62,7 +62,7 @@ namespace rx {
                 };
             };
 
-            let result: rx.Computed<T> = uninitialized;
+            let result: rx.Computed<rx.UnwrapReactive<T>> = uninitialized;
             __c__("""
                 result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
             """);
