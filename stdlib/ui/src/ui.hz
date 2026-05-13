@@ -163,7 +163,7 @@ export struct DivElement {
 export struct TextElement {
     id: usize;
     text: str;
-    style: TextStyle;
+    style: TextStyle = {};
     layout?: RenderLayout = none;
 }
 
