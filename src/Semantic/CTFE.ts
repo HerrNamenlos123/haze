@@ -160,7 +160,9 @@ export function EvalCTFE(
             left.value[0].variant === Semantic.ENode.DatatypeAsValueExpr &&
             right.value[0].variant === Semantic.ENode.DatatypeAsValueExpr
           ) {
-            const equal = left.value[0].type === right.value[0].type;
+            const equal =
+              sr.e.resolveAlias(left.value[0].type) ===
+              sr.e.resolveAlias(right.value[0].type);
             return ok(sr.b.literal(negate ? !equal : equal, expr.sourceloc));
           }
           return err(
@@ -430,8 +432,7 @@ export function evalCT(
       return literalValueToCTValue(expr.literal);
 
     case Semantic.ENode.DatatypeAsValueExpr: {
-      const typeUse = sr.typeUseNodes.get(expr.type);
-      return CTValueHelpers.type(typeUse.type);
+      return CTValueHelpers.type(sr.e.resolveAlias(expr.type));
     }
 
     case Semantic.ENode.StructLiteralExpr:
@@ -603,7 +604,7 @@ function equalCTValues(left: CTValue, right: CTValue): boolean {
     return true;
   }
   if (left.kind === "type" && right.kind === "type") {
-    return left.typeDefId === right.typeDefId;
+    return left.typeUseId === right.typeUseId;
   }
   if (left.kind === "enum" && right.kind === "enum") {
     return (
@@ -839,7 +840,7 @@ export function ctValueToExpr(
         sourceloc
       );
     case "type":
-      return sr.b.datatypeDefAsValue(ctValue.typeDefId, sourceloc);
+      return sr.b.datatypeUseAsValue(ctValue.typeUseId, sourceloc);
     case "enum":
       return sr.b.literalValue(
         {

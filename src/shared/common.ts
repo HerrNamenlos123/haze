@@ -195,10 +195,10 @@ export type CTValue =
   | {
       kind: "null" | "none";
     }
-  // Type as a compile-time value
+  // Type as a compile-time value (typeUseId is alias-resolved)
   | {
       kind: "type";
-      typeDefId: Semantic.TypeDefId;
+      typeUseId: Semantic.TypeUseId;
     }
   // Struct value with fields
   | {
@@ -247,8 +247,8 @@ export namespace CTValueHelpers {
     return { kind: "none" };
   }
 
-  export function type(typeDefId: Semantic.TypeDefId): CTValue {
-    return { kind: "type", typeDefId: typeDefId };
+  export function type(typeUseId: Semantic.TypeUseId): CTValue {
+    return { kind: "type", typeUseId: typeUseId };
   }
 
   export function struct(

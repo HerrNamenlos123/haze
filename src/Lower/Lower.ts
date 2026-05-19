@@ -2845,7 +2845,8 @@ export function lowerTypeDef(
       return lr.loweredTypeDefs.get(typeId)!;
     }
     // Deep<T> is transparent in codegen — same C layout as the cloned struct
-    const lowered = lowerTypeUse(lr, type.clonedType);
+    const clonedTypeUse = lr.sr.typeUseNodes.get(type.clonedType);
+    const lowered = lowerTypeDef(lr, clonedTypeUse.type);
     lr.loweredTypeDefs.set(typeId, lowered);
     return lowered;
   }

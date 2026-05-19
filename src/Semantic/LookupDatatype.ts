@@ -252,14 +252,14 @@ export function makeTypeUse(
   }
   for (const id of sr.typeInstanceCache) {
     const typeUse = sr.typeUseNodes.get(id);
-    if (typeUse.type !== typeId) {
+    if (typeUse.type !== typeId || typeUse.mutability !== mutability) {
       continue;
     }
     return [typeUse, id] as const;
   }
 
   const instance = sr.b.addTypeInstance(sr, {
-    mutability: EDatatypeMutability.Default,
+    mutability: mutability,
     inline: false,
     type: typeId,
     sourceloc: sourceloc,

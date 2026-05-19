@@ -4952,7 +4952,9 @@ export class SemanticElaborator {
       case Collect.ENode.TypeModifierExpr: {
         const [t, tId] = this.expr(type.type, {});
         const typeUseId = this.evaluateExpressionToDatatype(tId);
-        const tUse = this.sr.typeUseNodes.get(typeUseId);
+        // Resolve aliases so outer modifiers override conflicting inner (alias) modifiers
+        const resolvedTypeUseId = this.resolveAlias(typeUseId);
+        const tUse = this.sr.typeUseNodes.get(resolvedTypeUseId);
         assert(tUse);
 
         switch (type.modifier) {
@@ -6697,13 +6699,111 @@ export class SemanticElaborator {
         );
       }
       if (name === "baseType") {
-        // For literal types (compile-time constants like datatype 5), unwrap to the base type
-        // For all other types, return the same type
-        const baseTypeUseId =
-          resolvedTypeDef.variant === Semantic.ENode.LiteralDatatype
-            ? resolvedTypeDef.type
-            : expr.type;
+        // For literal types, unwrap to their value type first
+        let innerTypeDefId = resolvedTypeUse.type;
+        if (resolvedTypeDef.variant === Semantic.ENode.LiteralDatatype) {
+          const innerTypeUse = this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(resolvedTypeDef.type)
+          );
+          innerTypeDefId = innerTypeUse.type;
+        }
+        // Strip all modifiers: default mutability, no inline
+        const baseTypeUseId = makeTypeUse(
+          this.sr,
+          innerTypeDefId,
+          EDatatypeMutability.Default,
+          false,
+          sourceloc
+        )[1];
         return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
+      }
+      if (name === "isConst") {
+        return this.sr.b.literal(
+          resolvedTypeUse.mutability === EDatatypeMutability.Const,
+          sourceloc
+        );
+      }
+      if (name === "isMut") {
+        return this.sr.b.literal(
+          resolvedTypeUse.mutability === EDatatypeMutability.Mut,
+          sourceloc
+        );
+      }
+      if (name === "isInline") {
+        return this.sr.b.literal(resolvedTypeUse.inline, sourceloc);
+      }
+      if (name === "withoutConst") {
+        const newMutability =
+          resolvedTypeUse.mutability === EDatatypeMutability.Const
+            ? EDatatypeMutability.Default
+            : resolvedTypeUse.mutability;
+        const newTypeUseId = makeTypeUse(
+          this.sr,
+          resolvedTypeUse.type,
+          newMutability,
+          resolvedTypeUse.inline,
+          sourceloc
+        )[1];
+        return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
+      }
+      if (name === "withoutMut") {
+        const newMutability =
+          resolvedTypeUse.mutability === EDatatypeMutability.Mut
+            ? EDatatypeMutability.Default
+            : resolvedTypeUse.mutability;
+        const newTypeUseId = makeTypeUse(
+          this.sr,
+          resolvedTypeUse.type,
+          newMutability,
+          resolvedTypeUse.inline,
+          sourceloc
+        )[1];
+        return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
+      }
+      if (name === "withoutInline") {
+        const newTypeUseId = makeTypeUse(
+          this.sr,
+          resolvedTypeUse.type,
+          resolvedTypeUse.mutability,
+          false,
+          sourceloc
+        )[1];
+        return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
+      }
+      if (name === "isNoDiscard") {
+        const isNoDiscard =
+          resolvedTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+            ? resolvedTypeDef.nodiscard
+            : false;
+        return this.sr.b.literal(isNoDiscard, sourceloc);
+      }
+      if (name === "withoutNoDiscard") {
+        if (
+          resolvedTypeDef.variant === Semantic.ENode.TaggedUnionDatatype &&
+          resolvedTypeDef.nodiscard
+        ) {
+          // Get or create the same tagged union without the nodiscard flag
+          const nonNodiscardTypeUseId = this.sr.b.taggedUnionTypeUse(
+            resolvedTypeDef.members,
+            false,
+            sourceloc
+          );
+          const nonNodiscardTypeDefId =
+            this.sr.typeUseNodes.get(nonNodiscardTypeUseId).type;
+          const newTypeUseId = makeTypeUse(
+            this.sr,
+            nonNodiscardTypeDefId,
+            resolvedTypeUse.mutability,
+            resolvedTypeUse.inline,
+            sourceloc
+          )[1];
+          return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
+        }
+        // Not nodiscard — return the resolved type unchanged
+        return this.sr.b.datatypeUseAsValue(
+          this.sr.e.resolveAlias(expr.type),
+          sourceloc
+        );
       }
 
       if (
@@ -10731,7 +10831,12 @@ export class SemanticElaborator {
         sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
           ? sourceExprTypeDef.members
           : sourceExprTypeDef.members.map((m) => m.type);
-      if (!memberTypes.includes(comparisonType)) {
+      // Resolve aliases on both sides for the membership check
+      const resolvedComparisonType = this.resolveAlias(comparisonType);
+      const matchingMember = memberTypes.find(
+        (m) => this.resolveAlias(m) === resolvedComparisonType
+      );
+      if (!matchingMember) {
         throw new CompilerError(
           `This comparison is always false, as '${Semantic.serializeTypeUse(
             this.sr,
@@ -10746,7 +10851,8 @@ export class SemanticElaborator {
         instanceIds: [],
         expr: sourceExprId,
         type: this.sr.b.boolType(),
-        comparisonTypesAnd: [comparisonType],
+        // Use the actual union member TypeUseId so the lowerer can find the correct tag index
+        comparisonTypesAnd: [matchingMember],
         sourceloc: exprIsType.sourceloc,
         invertCheck: false,
         isTemporary: true,
@@ -10757,7 +10863,8 @@ export class SemanticElaborator {
     // It is not a union, so the 'is' operator is not meaningful to distinguish anything, therefore
     // all other types will result in a compile time true/false constant.
     // Limiting is and making it a compile error would seriously negatively affect how pleasant the operator is to use.
-    if (sourceExpr.type === comparisonType) {
+    // Resolve aliases and compare full TypeUseIds (including modifiers like const/mut/inline).
+    if (this.resolveAlias(sourceExpr.type) === this.resolveAlias(comparisonType)) {
       return this.sr.b.literal(true, exprIsType.sourceloc);
     }
     return this.sr.b.literal(false, exprIsType.sourceloc);
