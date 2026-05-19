@@ -1010,7 +1010,9 @@ export class SemanticBuilder {
         }
 
         const struct = this.sr.typeDefNodes.get(
-          this.sr.typeUseNodes.get(this.sr.exprNodes.get(lhs.expr).type).type
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(this.sr.exprNodes.get(lhs.expr).type)
+          ).type
         );
         assert(struct.variant === Semantic.ENode.StructDatatype);
 

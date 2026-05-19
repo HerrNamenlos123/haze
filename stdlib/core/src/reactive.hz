@@ -52,15 +52,20 @@ namespace rx {
             };
         }
 
-        else {
-            static_assert(T.category == meta.TypeCategory.Primitive, f"reactive() on type {T.prettyName} is not supported yet");
-
-            // Primitive
+        else if comptime 
+                T.category == meta.TypeCategory.Primitive || 
+                T.category == meta.TypeCategory.Union || 
+                T.category == meta.TypeCategory.Enum 
+        {
             return do unsafe {
                 let result: rx.Reactive<T> = uninitialized;
                 __c__(f"""result = HZSTD_REACTIVE_CREATE(__typeof__(result), {T.mangledName}, value);""");
                 result;
             };
+        }
+
+        else {
+            static_assert(false, f"reactive() on type {T.prettyName} is not supported yet");
         }
     }
 
