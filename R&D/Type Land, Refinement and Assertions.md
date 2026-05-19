@@ -238,6 +238,138 @@ Examples:
 
 Refinement is flow-sensitive.
 
+--- 
+
+## Compile-Time and Runtime Behavior of `is`
+
+The `is` operator is defined for all type combinations.
+
+Depending on the types involved, `is` may produce either:
+
+* a compile-time constant
+* or a runtime refinement check
+
+The compiler automatically selects the appropriate behavior.
+
+---
+
+### Compile-Time Evaluation
+
+If the compiler can statically determine the result of the refinement operation, `is` evaluates entirely at compile time.
+
+Example:
+
+```haze
+x: int
+
+x is int
+```
+
+This always evaluates to:
+
+```haze
+true
+```
+
+at compile time.
+
+Likewise:
+
+```haze
+x: int
+
+x is string
+```
+
+always evaluates to:
+
+```haze
+false
+```
+
+at compile time.
+
+No runtime check is generated.
+
+---
+
+### Runtime Refinement
+
+If the value may dynamically contain multiple possible variants, `is` becomes a runtime refinement operation.
+
+Example:
+
+```haze
+x: A | B
+
+if x is B {
+    x.bField
+}
+```
+
+In this case the compiler generates:
+
+* a runtime tag check
+* refinement state
+* refinement assertions at later accesses
+
+because the actual variant is only known at runtime.
+
+---
+
+### Unified Semantics
+
+Compile-time and runtime `is` are not separate operators.
+
+They are the same semantic operation evaluated at different levels of certainty.
+
+Conceptually:
+
+* exact known types produce compile-time constants
+* dynamic variant types produce runtime refinement
+
+This allows `is` to remain:
+
+* universally defined
+* predictable
+* optimizable
+* semantically consistent
+
+across all type combinations.
+
+---
+
+### `is` Is Not Equality
+
+`is` does not compare type identity.
+
+Example:
+
+```haze
+A | B == B
+```
+
+is always:
+
+```haze
+false
+```
+
+because unions are distinct datatypes.
+
+Instead:
+
+```haze
+value is B
+```
+
+asks:
+
+> can `value` currently refine into `B`?
+
+This distinction is fundamental to Haze refinement semantics.
+
+
 ---
 
 # Existence Checks
