@@ -6,10 +6,15 @@ import { Semantic } from "./SemanticTypes";
 // Path-based constraint system
 // ============================================================================
 
-export type ConstraintPathRoot = {
-  kind: "symbol";
-  symbolId: Semantic.SymbolId;
-};
+export type ConstraintPathRoot =
+  | {
+      kind: "symbol";
+      symbolId: Semantic.SymbolId;
+    }
+  | {
+      kind: "reactive-symbol";
+      symbolId: Semantic.SymbolId;
+    };
 
 export type ConstraintPathElement =
   | ConstraintPathMember
@@ -61,7 +66,13 @@ export type ConstraintValue =
 // ============================================================================
 
 export function pathToKey(path: ConstraintPath): string {
-  let key = `${path.root.symbolId}`;
+  let key = "";
+
+  if (path.root.kind === "reactive-symbol") {
+    key += "reactive";
+  }
+
+  key += `${path.root.symbolId}`;
   for (const element of path.path) {
     if (element.kind === "member") {
       key += `.${element.member}`;

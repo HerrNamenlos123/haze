@@ -38,6 +38,17 @@ export namespace Conversion {
       return null;
     }
 
+    if (expr.variant === Semantic.ENode.ReactiveReadExpr) {
+      const inner = sr.exprNodes.get(expr.value);
+      if (inner.variant === Semantic.ENode.SymbolValueExpr) {
+        return {
+          root: { kind: "reactive-symbol", symbolId: inner.symbol },
+          path: [],
+        };
+      }
+      return null;
+    }
+
     // Unwrap union casts to extract path from the underlying expression
     if (
       expr.variant === Semantic.ENode.UnionToValueCastExpr ||
@@ -989,6 +1000,21 @@ export namespace Conversion {
               continue;
             }
             this.constrainFromConstraint(c.constraintValue);
+          }
+        }
+
+        if (fromExpr.variant === Semantic.ENode.ReactiveReadExpr) {
+          const inner = sr.exprNodes.get(fromExpr.value);
+          if (inner.variant === Semantic.ENode.SymbolValueExpr) {
+            const path: ConstraintPath = {
+              root: { kind: "symbol", symbolId: inner.symbol },
+              path: [],
+            };
+            const constraintsForPath = constraints.getPathConstraint(path);
+            for (const c of constraintsForPath) {
+              this.constrainFromConstraint(c);
+            }
+            return;
           }
         }
 

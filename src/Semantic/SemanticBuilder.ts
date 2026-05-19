@@ -868,6 +868,18 @@ export class SemanticBuilder {
       };
     }
 
+    // Reactive read: constraint targets the content of the reactive symbol
+    if (expr.variant === Semantic.ENode.ReactiveReadExpr) {
+      const inner = this.sr.exprNodes.get(expr.value);
+      if (inner.variant === Semantic.ENode.SymbolValueExpr) {
+        return {
+          root: { kind: "reactive-symbol" as const, symbolId: inner.symbol },
+          path: [],
+        };
+      }
+      return null;
+    }
+
     // Member access: obj.member
     if (expr.variant === Semantic.ENode.MemberAccessExpr) {
       const basePath = this.extractConstraintPath(expr.expr);

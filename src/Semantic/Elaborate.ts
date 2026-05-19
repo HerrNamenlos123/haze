@@ -10473,6 +10473,73 @@ export class SemanticElaborator {
           }
         }
 
+        // Apply narrowing for reactive-wrapped union symbols (e.g. Reactive<A | B> narrowed via `if value is A`)
+        if (
+          type.variant === Semantic.ENode.ReactiveDatatype ||
+          type.variant === Semantic.ENode.ShallowReactiveDatatype
+        ) {
+          const wrappedTypeUse = this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(type.wrappedType)
+          );
+          const wrappedTypeDef = this.sr.typeDefNodes.get(wrappedTypeUse.type);
+          if (
+            wrappedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+            wrappedTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+          ) {
+            const unwrappedId =
+              this.unwrapReactiveOrComputedIfPossible(resultingExprId);
+            const unwrappedExpr = this.sr.exprNodes.get(unwrappedId);
+            const members =
+              wrappedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+                ? wrappedTypeDef.members.map((m) => this.sr.e.resolveAlias(m))
+                : wrappedTypeDef.members.map((m) =>
+                    this.sr.e.resolveAlias(m.type)
+                  );
+            const narrowing = Conversion.typeNarrowing(this.sr);
+            narrowing.addVariants(members);
+            narrowing.constrainFromConstraints(
+              this.currentContext.constraints,
+              unwrappedId
+            );
+            assert(narrowing.possibleVariants.size <= members.length);
+            if (narrowing.possibleVariants.size === 1) {
+              const tag = members.findIndex(
+                (m) => m === [...narrowing.possibleVariants][0]
+              );
+              assert(tag !== -1);
+              resultingExprId = this.sr.b.addExpr(this.sr, {
+                variant: Semantic.ENode.UnionToValueCastExpr,
+                instanceIds: [],
+                expr: unwrappedId,
+                tag: tag,
+                isTemporary: false,
+                canBeUnwrappedForLHS: true,
+                sourceloc: sourceloc,
+                type: [...narrowing.possibleVariants][0],
+                flow: unwrappedExpr.flow,
+                writes: unwrappedExpr.writes,
+              })[1];
+            } else if (narrowing.possibleVariants.size !== members.length) {
+              const newUnion = this.sr.b.untaggedUnionTypeUse(
+                [...narrowing.possibleVariants],
+                sourceloc
+              );
+              resultingExprId = this.sr.b.addExpr(this.sr, {
+                variant: Semantic.ENode.UnionToUnionCastExpr,
+                instanceIds: [],
+                expr: unwrappedId,
+                castComesFromNarrowingAndMayBeUnwrapped: true,
+                isTemporary: false,
+                sourceloc: sourceloc,
+                type: newUnion,
+                flow: unwrappedExpr.flow,
+                writes: unwrappedExpr.writes,
+              })[1];
+            }
+            // else: no narrowing possible, leave resultingExprId as reactive
+          }
+        }
+
         if (crossedLambdaScope) {
           this.addCaptureToLambda(
             crossedLambdaScope,
@@ -10815,9 +10882,11 @@ export class SemanticElaborator {
     inference: Semantic.Inference
   ) {
     const comparisonType = this.elaborateDatatype(exprIsType.comparisonType);
-    const [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
+    let [sourceExpr, sourceExprId] = this.expr(exprIsType.expr, {
       unsafe: inference?.unsafe,
     });
+    sourceExprId = this.unwrapReactiveOrComputedIfPossible(sourceExprId);
+    sourceExpr = this.sr.exprNodes.get(sourceExprId);
 
     const resolvedSourceExprTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(sourceExpr.type)
