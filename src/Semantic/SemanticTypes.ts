@@ -2081,10 +2081,7 @@ export namespace Semantic {
         return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
 
       case Semantic.ENode.DynamicArrayDatatype:
-        return `${serializeMutability(sr.typeUseNodes.get(datatype.datatype))}[]${serializeTypeUse(
-          sr,
-          datatype.datatype
-        )}`;
+        return `[](${serializeTypeUse(sr, datatype.datatype)})`;
 
       case Semantic.ENode.UntaggedUnionDatatype: {
         return (
