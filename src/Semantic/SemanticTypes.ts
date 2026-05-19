@@ -2074,7 +2074,11 @@ export namespace Semantic {
         )}`;
 
       case Semantic.ENode.UntaggedUnionDatatype: {
-        return datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ");
+        return (
+          "(" +
+          datatype.members.map((m) => serializeTypeUse(sr, m)).join(" | ") +
+          ")"
+        );
       }
 
       case Semantic.ENode.TaggedUnionDatatype: {

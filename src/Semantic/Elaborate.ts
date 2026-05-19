@@ -1580,7 +1580,7 @@ export class SemanticElaborator {
         type: makeTypeUse(
           this.sr,
           calledExpr.unionType,
-          EDatatypeMutability.Const,
+          EDatatypeMutability.Default,
           false,
           calledExpr.sourceloc
         )[1],
