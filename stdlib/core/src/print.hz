@@ -117,7 +117,7 @@ namespace fmt {
     }
 
     export fn format_to<T>(writer: mut StringWriter, value: T, args: FormatArgs) {
-        static_assert(false, f"No formatter is known for type '{T.name}'. To format this type, define a matching overload for fmt.format_to().");
+        static_assert(false, f"No formatter is known for type '{T.prettyName}'. To format this type, define a matching overload for fmt.format_to().");
     }
 
     export fn format_to(writer: mut StringWriter, value: i8, args: FormatArgs) {
