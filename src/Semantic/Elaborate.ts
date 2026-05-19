@@ -1580,7 +1580,7 @@ export class SemanticElaborator {
         type: makeTypeUse(
           this.sr,
           calledExpr.unionType,
-          EDatatypeMutability.Default,
+          EDatatypeMutability.Const,
           false,
           calledExpr.sourceloc
         )[1],
@@ -4950,11 +4950,9 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.TypeModifierExpr: {
-        const [t, tId] = this.expr(type.type, {});
+        const [_, tId] = this.expr(type.type, {});
         const typeUseId = this.evaluateExpressionToDatatype(tId);
-        // Resolve aliases so outer modifiers override conflicting inner (alias) modifiers
-        const resolvedTypeUseId = this.resolveAlias(typeUseId);
-        const tUse = this.sr.typeUseNodes.get(resolvedTypeUseId);
+        const tUse = this.sr.typeUseNodes.get(typeUseId);
         assert(tUse);
 
         switch (type.modifier) {
@@ -6788,8 +6786,9 @@ export class SemanticElaborator {
             false,
             sourceloc
           );
-          const nonNodiscardTypeDefId =
-            this.sr.typeUseNodes.get(nonNodiscardTypeUseId).type;
+          const nonNodiscardTypeDefId = this.sr.typeUseNodes.get(
+            nonNodiscardTypeUseId
+          ).type;
           const newTypeUseId = makeTypeUse(
             this.sr,
             nonNodiscardTypeDefId,
@@ -10864,7 +10863,9 @@ export class SemanticElaborator {
     // all other types will result in a compile time true/false constant.
     // Limiting is and making it a compile error would seriously negatively affect how pleasant the operator is to use.
     // Resolve aliases and compare full TypeUseIds (including modifiers like const/mut/inline).
-    if (this.resolveAlias(sourceExpr.type) === this.resolveAlias(comparisonType)) {
+    if (
+      this.resolveAlias(sourceExpr.type) === this.resolveAlias(comparisonType)
+    ) {
       return this.sr.b.literal(true, exprIsType.sourceloc);
     }
     return this.sr.b.literal(false, exprIsType.sourceloc);
