@@ -1747,7 +1747,7 @@ export class SemanticBuilder {
       return makeTypeUse(
         this.sr,
         existingUnionId,
-        EDatatypeMutability.Const,
+        EDatatypeMutability.Default,
         false,
         sourceloc
       )[1];
@@ -1766,7 +1766,7 @@ export class SemanticBuilder {
     return makeTypeUse(
       this.sr,
       unionTypeDefId,
-      EDatatypeMutability.Const,
+      EDatatypeMutability.Default,
       false,
       sourceloc
     )[1];

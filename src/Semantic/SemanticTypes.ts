@@ -1777,7 +1777,20 @@ export namespace Semantic {
   ): string {
     const datatype = sr.typeUseNodes.get(datatypeId);
     const names = getNamespaceChainFromDatatype(sr, datatype.type);
-    return serializeMutability(datatype) + names.map((n) => n.pretty).join(".");
+
+    let mut = serializeMutability(datatype);
+
+    const typeDef = sr.typeDefNodes.get(datatype.type);
+    if (
+      typeDef.variant === Semantic.ENode.PrimitiveDatatype ||
+      typeDef.variant === Semantic.ENode.ParameterPackDatatype ||
+      typeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      typeDef.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      mut = "";
+    }
+
+    return mut + names.map((n) => n.pretty).join(".");
   }
 
   export function serializeLiteralType(
@@ -2333,10 +2346,13 @@ export namespace Semantic {
       def.wasMangled = true;
     }
 
-    if (
-      sr.typeDefNodes.get(typeInstance.type).variant !==
-      Semantic.ENode.ParameterPackDatatype
-    ) {
+    const typeVariant = sr.typeDefNodes.get(typeInstance.type).variant;
+    const mutabilityIsMeaningless =
+      typeVariant === Semantic.ENode.ParameterPackDatatype ||
+      typeVariant === Semantic.ENode.UntaggedUnionDatatype ||
+      typeVariant === Semantic.ENode.TaggedUnionDatatype ||
+      typeVariant === Semantic.ENode.PrimitiveDatatype;
+    if (!mutabilityIsMeaningless) {
       if (typeInstance.mutability === EDatatypeMutability.Const) {
         def.name = "c" + def.name;
         def.wasMangled = true;

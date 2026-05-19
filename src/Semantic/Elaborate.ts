@@ -4950,8 +4950,7 @@ export class SemanticElaborator {
       }
 
       case Collect.ENode.TypeModifierExpr: {
-        const [_, tId] = this.expr(type.type, {});
-        const typeUseId = this.evaluateExpressionToDatatype(tId);
+        const typeUseId = this.elaborateDatatype(type.type);
         const tUse = this.sr.typeUseNodes.get(typeUseId);
         assert(tUse);
 
@@ -10951,7 +10950,7 @@ export class SemanticElaborator {
         type: makeDynamicArrayDatatypeAvailable(
           this.sr,
           valueType.datatype,
-          EDatatypeMutability.Const,
+          EDatatypeMutability.Default,
           false,
           arraySubscript.sourceloc
         ),
