@@ -49,7 +49,9 @@ export function ExportCollectedTypeDefAlias(
 
   if (typedef.sourceloc) {
     alias
-      .writeLine(`#source ${JSON.stringify(formatSourceLoc(typedef.sourceloc))} {`)
+      .writeLine(
+        `#source ${JSON.stringify(formatSourceLoc(typedef.sourceloc))} {`
+      )
       .pushIndent();
   }
 
@@ -334,7 +336,9 @@ export function ExportSymbol(
     case Semantic.ENode.FunctionSymbol: {
       if (symbol.sourceloc) {
         file
-          .writeLine(`#source ${JSON.stringify(formatSourceLoc(symbol.sourceloc))} {`)
+          .writeLine(
+            `#source ${JSON.stringify(formatSourceLoc(symbol.sourceloc))} {`
+          )
           .pushIndent();
       }
       const namespaces = Semantic.getNamespaceChainFromSymbol(sr, symbolId);
@@ -412,7 +416,9 @@ export function ExportSymbol(
     case Semantic.ENode.CInjectDirectiveSymbol: {
       if (symbol.sourceloc) {
         file
-          .writeLine(`#source ${JSON.stringify(formatSourceLoc(symbol.sourceloc))} {`)
+          .writeLine(
+            `#source ${JSON.stringify(formatSourceLoc(symbol.sourceloc))} {`
+          )
           .pushIndent();
       }
       file.writeLine(`__c__(${JSON.stringify(symbol.value)});`);

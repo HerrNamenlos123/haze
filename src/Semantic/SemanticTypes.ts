@@ -74,6 +74,7 @@ export namespace Semantic {
     ReactiveDatatype,
     ShallowReactiveDatatype,
     ComputedDatatype,
+    DeepDatatype,
     NamespaceDatatype,
     FixedArrayDatatype,
     DynamicArrayDatatype,
@@ -419,6 +420,13 @@ export namespace Semantic {
     concrete: boolean;
   };
 
+  export type DeepDatatypeDef = {
+    variant: ENode.DeepDatatype;
+    originalType: TypeUseId;
+    clonedType: TypeUseId;
+    concrete: boolean;
+  };
+
   export type NamespaceDatatypeDef = {
     variant: ENode.NamespaceDatatype;
     name: string;
@@ -452,6 +460,7 @@ export namespace Semantic {
     | ShallowReactiveDatatypeDef
     | ReactiveDatatypeDef
     | ComputedDatatypeDef
+    | DeepDatatypeDef
     | ParameterPackDatatypeDef
     | UntaggedUnionDatatypeDef
     | TaggedUnionDatatypeDef
@@ -990,9 +999,9 @@ export namespace Semantic {
 
     elaboratedLiteralTypes: Semantic.TypeDefId[];
     elaboratedPrimitiveTypes: Semantic.TypeDefId[];
-    elaboratedDeepReactiveStructs: {
-      rawStruct: Semantic.TypeDefId;
-      reactiveStruct: Semantic.TypeDefId;
+    elaboratedDeepTypes: {
+      originalTypeId: Semantic.TypeDefId;
+      deepTypeDefId: Semantic.TypeDefId;
     }[];
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
@@ -1435,7 +1444,7 @@ export namespace Semantic {
     }
 
     const all = new Set<Semantic.InstanceId>();
-    innerMap.forEach((e, k) => {
+    innerMap.forEach((e, _k) => {
       e.forEach((i) => {
         all.add(i);
       });
@@ -1627,7 +1636,7 @@ export namespace Semantic {
 
       elaboratedFunctionSignatures: new Map(),
       elaboratedFunctionSignaturesByName: new Map(),
-      elaboratedDeepReactiveStructs: [],
+      elaboratedDeepTypes: [],
 
       elaboratedLiteralTypes: [],
       elaboratedStructDatatypes: new Map(),
@@ -2088,6 +2097,10 @@ export namespace Semantic {
 
       case Semantic.ENode.ShallowReactiveDatatype: {
         return `rx.ShallowReactive<${serializeTypeUse(sr, datatype.wrappedType)}>`;
+      }
+
+      case Semantic.ENode.DeepDatatype: {
+        return `rx.Deep<${serializeTypeUse(sr, datatype.originalType)}>`;
       }
 
       case Semantic.ENode.ComputedDatatype: {
@@ -2566,6 +2579,10 @@ export namespace Semantic {
           name: "R" + mangleTypeUse(sr, type.wrappedType).name,
           wasMangled: true,
         };
+      }
+
+      case Semantic.ENode.DeepDatatype: {
+        return mangleTypeUse(sr, type.clonedType);
       }
 
       case Semantic.ENode.ComputedDatatype: {

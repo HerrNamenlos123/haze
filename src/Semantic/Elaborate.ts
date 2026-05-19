@@ -3715,48 +3715,106 @@ export class SemanticElaborator {
         if (!out.has(key)) {
           out.set(key, []);
         }
-        out.get(key)!.push({ typeUseId: argTypeUseId, depth: depth, paramIndex: paramIndex });
+        out.get(key)!.push({
+          typeUseId: argTypeUseId,
+          depth: depth,
+          paramIndex: paramIndex,
+        });
         break;
       }
       case Semantic.ENode.ReactiveDatatype: {
         if (argTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.wrappedType,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.ShallowReactiveDatatype: {
         if (argTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.wrappedType,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.ComputedDatatype: {
         if (argTypeDef.variant === Semantic.ENode.ComputedDatatype) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.wrappedType);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.wrappedType, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.wrappedType,
+            depth + 1,
+            paramIndex,
+            out
+          );
+        }
+        break;
+      }
+      case Semantic.ENode.DeepDatatype: {
+        if (argTypeDef.variant === Semantic.ENode.DeepDatatype) {
+          const innerPattern = this.sr.typeUseNodes.get(
+            patternDef.originalType
+          );
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.originalType,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.FixedArrayDatatype: {
-        if (argTypeDef.variant === Semantic.ENode.FixedArrayDatatype && patternDef.length === argTypeDef.length) {
+        if (
+          argTypeDef.variant === Semantic.ENode.FixedArrayDatatype &&
+          patternDef.length === argTypeDef.length
+        ) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.datatype,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.DynamicArrayDatatype: {
         if (argTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.datatype,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.SliceDatatype: {
         if (argTypeDef.variant === Semantic.ENode.SliceDatatype) {
           const innerPattern = this.sr.typeUseNodes.get(patternDef.datatype);
-          this.collectGenericDeductions(innerPattern.type, argTypeDef.datatype, depth + 1, paramIndex, out);
+          this.collectGenericDeductions(
+            innerPattern.type,
+            argTypeDef.datatype,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
@@ -3766,13 +3824,25 @@ export class SemanticElaborator {
           assert(patternFunc.variant === Semantic.ENode.FunctionDatatype);
           const argFunc = this.sr.typeDefNodes.get(argTypeDef.functionType);
           assert(argFunc.variant === Semantic.ENode.FunctionDatatype);
-          this.collectGenericDeductionsFromFunctionTypes(patternFunc, argFunc, depth + 1, paramIndex, out);
+          this.collectGenericDeductionsFromFunctionTypes(
+            patternFunc,
+            argFunc,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
       case Semantic.ENode.FunctionDatatype: {
         if (argTypeDef.variant === Semantic.ENode.FunctionDatatype) {
-          this.collectGenericDeductionsFromFunctionTypes(patternDef, argTypeDef, depth + 1, paramIndex, out);
+          this.collectGenericDeductionsFromFunctionTypes(
+            patternDef,
+            argTypeDef,
+            depth + 1,
+            paramIndex,
+            out
+          );
         }
         break;
       }
@@ -3793,13 +3863,30 @@ export class SemanticElaborator {
       { typeUseId: Semantic.TypeUseId; depth: number; paramIndex: number }[]
     >
   ): void {
-    const paramCount = Math.min(patternFunc.parameters.length, argFunc.parameters.length);
+    const paramCount = Math.min(
+      patternFunc.parameters.length,
+      argFunc.parameters.length
+    );
     for (let i = 0; i < paramCount; i++) {
-      const innerPattern = this.sr.typeUseNodes.get(patternFunc.parameters[i].type);
-      this.collectGenericDeductions(innerPattern.type, argFunc.parameters[i].type, depth, paramIndex, out);
+      const innerPattern = this.sr.typeUseNodes.get(
+        patternFunc.parameters[i].type
+      );
+      this.collectGenericDeductions(
+        innerPattern.type,
+        argFunc.parameters[i].type,
+        depth,
+        paramIndex,
+        out
+      );
     }
     const returnPattern = this.sr.typeUseNodes.get(patternFunc.returnType);
-    this.collectGenericDeductions(returnPattern.type, argFunc.returnType, depth, paramIndex, out);
+    this.collectGenericDeductions(
+      returnPattern.type,
+      argFunc.returnType,
+      depth,
+      paramIndex,
+      out
+    );
   }
 
   inferGenericArgumentsFromCallSite(
@@ -3848,8 +3935,16 @@ export class SemanticElaborator {
         argTypeUseId = actualExpr.type;
       }
 
-      const paramTypeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(param.type));
-      this.collectGenericDeductions(paramTypeUse.type, argTypeUseId, 0, i, allDeductions);
+      const paramTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(param.type)
+      );
+      this.collectGenericDeductions(
+        paramTypeUse.type,
+        argTypeUseId,
+        0,
+        i,
+        allDeductions
+      );
     }
 
     // Resolve the best candidate for each generic parameter using priority rules:
@@ -3863,7 +3958,9 @@ export class SemanticElaborator {
       const minDepth = Math.min(...candidates.map((c) => c.depth));
       const primaryCandidates = candidates.filter((c) => c.depth === minDepth);
 
-      const firstResolved = this.sr.e.resolveAlias(primaryCandidates[0].typeUseId);
+      const firstResolved = this.sr.e.resolveAlias(
+        primaryCandidates[0].typeUseId
+      );
       const allAgree = primaryCandidates.every(
         (c) => this.sr.e.resolveAlias(c.typeUseId) === firstResolved
       );
@@ -6445,6 +6542,41 @@ export class SemanticElaborator {
     return null;
   }
 
+  resolveMemberAccessInStructForDeep(
+    exprId: Semantic.ExprId,
+    name: string,
+    generics: Collect.ExprId[],
+    _inference: Semantic.Inference,
+    sourceloc: SourceLoc,
+    clonedTypeDef: Semantic.StructDatatypeDef
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const memberId = clonedTypeDef.members.find((mId) => {
+      const m = this.sr.symbolNodes.get(mId);
+      assert(m.variant === Semantic.ENode.VariableSymbol);
+      return m.name === name;
+    });
+
+    if (memberId) {
+      if (generics.length > 0) {
+        throw new CompilerError(
+          `Member '${name}' does not expect any type arguments, but ${generics.length} are given`,
+          sourceloc
+        );
+      }
+      const member = this.sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
+      return this.sr.b.memberAccessRaw(
+        exprId,
+        name,
+        member.type,
+        false,
+        sourceloc
+      );
+    }
+
+    return null;
+  }
+
   generateToStringMethod(exprId: Semantic.ExprId, sourceloc: SourceLoc) {
     const expr = this.sr.exprNodes.get(exprId);
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
@@ -6579,7 +6711,10 @@ export class SemanticElaborator {
         (resolvedTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||
           resolvedTypeDef.variant === Semantic.ENode.FixedArrayDatatype)
       ) {
-        return this.sr.b.datatypeUseAsValue(resolvedTypeDef.datatype, sourceloc);
+        return this.sr.b.datatypeUseAsValue(
+          resolvedTypeDef.datatype,
+          sourceloc
+        );
       }
 
       if (resolvedTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
@@ -6900,7 +7035,8 @@ export class SemanticElaborator {
       );
       if (
         preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
-        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+        preUnwrapResolvedTypeDef.variant ===
+          Semantic.ENode.ShallowReactiveDatatype
       ) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
@@ -6942,6 +7078,26 @@ export class SemanticElaborator {
         inference,
         sourceloc
       );
+    }
+
+    // Deep<T> — transparent access to the cloned struct's members
+    if (exprType.variant === Semantic.ENode.DeepDatatype) {
+      const clonedTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprType.clonedType))
+          .type
+      );
+      assert(clonedTypeDef.variant === Semantic.ENode.StructDatatype);
+      const result = this.resolveMemberAccessInStructForDeep(
+        exprId,
+        name,
+        generics,
+        inference,
+        sourceloc,
+        clonedTypeDef
+      );
+      if (result) {
+        return result;
+      }
     }
 
     // And here the remaining rest, based on the datatype
@@ -7884,6 +8040,9 @@ export class SemanticElaborator {
 
       case Semantic.ENode.ComputedDatatype:
         return "Computed";
+
+      case Semantic.ENode.DeepDatatype:
+        return "Deep";
 
       case Semantic.ENode.GenericParameterDatatype:
         return "Generic";
@@ -10022,6 +10181,16 @@ export class SemanticElaborator {
       }
       return [this.sr.exprNodes.get(generics[0]), generics[0]];
     }
+    if (name === "__hz_deep_t") {
+      assertGenericArgCount(1);
+      const T = assertExprIsDatatype("<T>", "T", generics[0]);
+      const deepTypeUseId = makeDeepDatatypeAvailable(
+        this.sr,
+        T.type,
+        sourceloc
+      );
+      return this.sr.b.datatypeUseAsValue(deepTypeUseId, sourceloc);
+    }
     if (name === "__hz_reactive_t") {
       assertGenericArgCount(1);
       const T = assertExprIsDatatype("<T>", "T", generics[0]);
@@ -10044,9 +10213,20 @@ export class SemanticElaborator {
           false,
           sourceloc
         );
+        // DynamicArray is not a struct — go directly to makeRaw without Deep
+        return this.sr.b.datatypeDefAsValue(
+          makeRawReactiveDatatypeAvailable(this.sr, wrappedTypeId),
+          sourceloc
+        );
       }
+      // Apply Deep transformation before wrapping in Reactive
+      const deepWrappedTypeId = makeDeepDatatypeAvailable(
+        this.sr,
+        wrappedTypeId,
+        sourceloc
+      );
       return this.sr.b.datatypeDefAsValue(
-        makeRawReactiveDatatypeAvailable(this.sr, wrappedTypeId),
+        makeRawReactiveDatatypeAvailable(this.sr, deepWrappedTypeId),
         sourceloc
       );
     }
@@ -11990,11 +12170,23 @@ export function makeReactiveDatatypeAvailable(
       false,
       sourceloc
     );
+    // DynamicArray is not a struct — no Deep wrapping needed
+    return makeTypeUse(
+      sr,
+      makeRawReactiveDatatypeAvailable(sr, wrappedType),
+      mutability,
+      false,
+      sourceloc
+    )[1];
   }
+
+  // Apply Deep transformation: for structs this produces a DeepDatatypeDef;
+  // for all other types it is the identity.
+  const deepWrappedType = makeDeepDatatypeAvailable(sr, wrappedType, sourceloc);
 
   return makeTypeUse(
     sr,
-    makeRawReactiveDatatypeAvailable(sr, wrappedType),
+    makeRawReactiveDatatypeAvailable(sr, deepWrappedType),
     mutability,
     false,
     sourceloc
@@ -12023,90 +12215,9 @@ export function makeRawReactiveDatatypeAvailable(
   const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
   const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
 
-  // Example: Reactive<Reactive<T>> -> Reactive<T>
-  // If the inner type T is already reactive, simply unwrap it and use it directly
+  // Idempotency: Reactive<Reactive<T>> -> Reactive<T>
   if (wrappedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
     return wrappedTypeUse.type;
-  }
-
-  // Here, do the actual deeply reactive type conversion
-  let makeNewStruct = false;
-  if (wrappedTypeDef.variant === Semantic.ENode.StructDatatype) {
-    for (const entry of sr.elaboratedDeepReactiveStructs) {
-      if (entry.rawStruct === wrappedTypeUse.type) {
-        return entry.reactiveStruct;
-      }
-    }
-
-    // sr.elaboratedDeepReactiveStructs.push(wrappedTypeDef);
-    // TODO: FATAL: There is still tons and tons of stuff to do in order to implement the
-    // reactive type cloning properly, there are still a lot of hidden issues with caching, parents, etc
-    makeNewStruct = true;
-    const [newStruct, newStructId] = sr.b.addType<Semantic.StructDatatypeDef>(
-      sr,
-      {
-        variant: Semantic.ENode.StructDatatype,
-        export: false,
-        extern: wrappedTypeDef.extern,
-        generics: wrappedTypeDef.generics,
-        inlineByDefault: wrappedTypeDef.inlineByDefault,
-        membersBuilt: false,
-        reactiveClone: true,
-        membersFinalized: false,
-        methodsFinalized: false,
-        memberDefaultValues: wrappedTypeDef.memberDefaultValues,
-        members: [],
-        methods: wrappedTypeDef.methods,
-        methodsInProgress: false,
-        name: wrappedTypeDef.name,
-        nestedStructs: wrappedTypeDef.nestedStructs,
-        noemit: wrappedTypeDef.noemit,
-        opaque: wrappedTypeDef.opaque,
-        originalCollectedDefinition: wrappedTypeDef.originalCollectedDefinition,
-        originalCollectedSymbol: wrappedTypeDef.originalCollectedSymbol,
-        parentSymbolId: wrappedTypeDef.parentSymbolId,
-        plain: wrappedTypeDef.plain,
-        sourceloc: wrappedTypeDef.sourceloc,
-        concrete: wrappedTypeDef.concrete,
-      }
-    );
-    const structSymbol = sr.b.typeDefSymbol(newStructId)[1];
-
-    for (const memberId of wrappedTypeDef.members) {
-      const member = sr.symbolNodes.get(memberId);
-      assert(member.variant === Semantic.ENode.VariableSymbol);
-      assert(member.type);
-      const newMember = sr.b.addSymbol(sr, {
-        variant: Semantic.ENode.VariableSymbol,
-        name: member.name,
-        comptime: member.comptime,
-        comptimeValue: member.comptimeValue,
-        concrete: member.concrete,
-        export: member.export,
-        extern: member.extern,
-        memberOfStruct: newStructId,
-        mutability: member.mutability,
-        parentSymbolId: structSymbol,
-        requiresHoisting: member.requiresHoisting,
-        sourceloc: member.sourceloc,
-        type: makeReactiveDatatypeAvailable(
-          sr,
-          member.type,
-          EDatatypeMutability.Default,
-          member.sourceloc
-        ),
-        variableContext: member.variableContext,
-      })[1];
-      newStruct.members.push(newMember);
-    }
-
-    wrappedType = makeTypeUse(
-      sr,
-      newStructId,
-      EDatatypeMutability.Default,
-      false,
-      newStruct.sourceloc
-    )[1];
   }
 
   for (const id of sr.elaboratedReactiveTypes) {
@@ -12127,14 +12238,127 @@ export function makeRawReactiveDatatypeAvailable(
   });
   sr.elaboratedReactiveTypes.push(sId);
 
-  if (makeNewStruct) {
-    sr.elaboratedDeepReactiveStructs.push({
-      rawStruct: wrappedTypeUse.type,
-      reactiveStruct: sId,
-    });
+  return sId;
+}
+
+export function makeDeepDatatypeAvailable(
+  sr: Semantic.Context,
+  wrappedType: Semantic.TypeUseId,
+  sourceloc: SourceLoc
+): Semantic.TypeUseId {
+  const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
+  const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
+
+  // For non-structs: Deep<T> is the identity — return T unchanged
+  if (wrappedTypeDef.variant !== Semantic.ENode.StructDatatype) {
+    return wrappedType;
   }
 
-  return sId;
+  // Idempotency: already a reactive clone struct — don't wrap again
+  if (wrappedTypeDef.reactiveClone) {
+    return wrappedType;
+  }
+
+  // Cache lookup
+  for (const entry of sr.elaboratedDeepTypes) {
+    if (entry.originalTypeId === wrappedTypeUse.type) {
+      return makeTypeUse(
+        sr,
+        entry.deepTypeDefId,
+        EDatatypeMutability.Default,
+        false,
+        sourceloc
+      )[1];
+    }
+  }
+
+  // Create the reactified clone struct
+  const [newStruct, newStructId] = sr.b.addType<Semantic.StructDatatypeDef>(
+    sr,
+    {
+      variant: Semantic.ENode.StructDatatype,
+      export: false,
+      extern: wrappedTypeDef.extern,
+      generics: wrappedTypeDef.generics,
+      inlineByDefault: wrappedTypeDef.inlineByDefault,
+      membersBuilt: false,
+      reactiveClone: true,
+      membersFinalized: false,
+      methodsFinalized: false,
+      memberDefaultValues: wrappedTypeDef.memberDefaultValues,
+      members: [],
+      methods: wrappedTypeDef.methods,
+      methodsInProgress: false,
+      name: wrappedTypeDef.name,
+      nestedStructs: wrappedTypeDef.nestedStructs,
+      noemit: wrappedTypeDef.noemit,
+      opaque: wrappedTypeDef.opaque,
+      originalCollectedDefinition: wrappedTypeDef.originalCollectedDefinition,
+      originalCollectedSymbol: wrappedTypeDef.originalCollectedSymbol,
+      parentSymbolId: wrappedTypeDef.parentSymbolId,
+      plain: wrappedTypeDef.plain,
+      sourceloc: wrappedTypeDef.sourceloc,
+      concrete: wrappedTypeDef.concrete,
+    }
+  );
+  const structSymbol = sr.b.typeDefSymbol(newStructId)[1];
+
+  for (const memberId of wrappedTypeDef.members) {
+    const member = sr.symbolNodes.get(memberId);
+    assert(member.variant === Semantic.ENode.VariableSymbol);
+    assert(member.type);
+    const newMember = sr.b.addSymbol(sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      name: member.name,
+      comptime: member.comptime,
+      comptimeValue: member.comptimeValue,
+      concrete: member.concrete,
+      export: member.export,
+      extern: member.extern,
+      memberOfStruct: newStructId,
+      mutability: member.mutability,
+      parentSymbolId: structSymbol,
+      requiresHoisting: member.requiresHoisting,
+      sourceloc: member.sourceloc,
+      type: makeReactiveDatatypeAvailable(
+        sr,
+        member.type,
+        EDatatypeMutability.Default,
+        member.sourceloc
+      ),
+      variableContext: member.variableContext,
+    })[1];
+    newStruct.members.push(newMember);
+  }
+
+  const clonedTypeUseId = makeTypeUse(
+    sr,
+    newStructId,
+    EDatatypeMutability.Default,
+    false,
+    newStruct.sourceloc
+  )[1];
+
+  // Create the DeepDatatypeDef wrapping the original type and the cloned struct
+  const [_, deepTypeDefId] = sr.b.addType<Semantic.DeepDatatypeDef>(sr, {
+    variant: Semantic.ENode.DeepDatatype,
+    originalType: wrappedType,
+    clonedType: clonedTypeUseId,
+    concrete: isTypeConcrete(sr, wrappedType),
+  });
+
+  sr.elaboratedDeepTypes.push({
+    originalTypeId: wrappedTypeUse.type,
+    deepTypeDefId: deepTypeDefId,
+  });
+
+  return makeTypeUse(
+    sr,
+    deepTypeDefId,
+    EDatatypeMutability.Default,
+    false,
+    sourceloc
+  )[1];
 }
 
 export function makeRawShallowReactiveDatatypeAvailable(

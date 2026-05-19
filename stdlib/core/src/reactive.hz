@@ -1,5 +1,6 @@
 
 namespace rx {
+    export type Deep<T> = builtin.__hz_deep_t<T>;
     export type ShallowReactive<T> = builtin.__hz_shallow_reactive_t<T>;
     export type UnwrapReactive<T> = builtin.__hz_unwrap_reactive_t<T>;
     export type Reactive<T> = builtin.__hz_reactive_t<T>;

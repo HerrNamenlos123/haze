@@ -2840,6 +2840,15 @@ export function lowerTypeDef(
     lr.loweredTypeDefs.set(typeId, pId);
     return pId;
   }
+  if (type.variant === Semantic.ENode.DeepDatatype) {
+    if (lr.loweredTypeDefs.has(typeId)) {
+      return lr.loweredTypeDefs.get(typeId)!;
+    }
+    // Deep<T> is transparent in codegen — same C layout as the cloned struct
+    const lowered = lowerTypeUse(lr, type.clonedType);
+    lr.loweredTypeDefs.set(typeId, lowered);
+    return lowered;
+  }
   if (type.variant === Semantic.ENode.ComputedDatatype) {
     if (lr.loweredTypeDefs.has(typeId)) {
       return lr.loweredTypeDefs.get(typeId)!;

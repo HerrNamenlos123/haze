@@ -1009,11 +1009,20 @@ export class SemanticBuilder {
           this.sr.e.currentContext.constraints.deletePathAndChildren(path);
         }
 
-        const struct = this.sr.typeDefNodes.get(
+        let struct = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(this.sr.exprNodes.get(lhs.expr).type)
           ).type
         );
+
+        // Handle Deep<T> wrapper
+        if (struct.variant === Semantic.ENode.DeepDatatype) {
+          struct = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(this.sr.e.resolveAlias(struct.clonedType))
+              .type
+          );
+        }
+
         assert(struct.variant === Semantic.ENode.StructDatatype);
 
         const member = struct.members.find((m) => {
@@ -1241,8 +1250,22 @@ export class SemanticBuilder {
     );
 
     const dependsOn = new Set<Semantic.InstanceId>();
+    let structDef: Semantic.StructDatatypeDef | null = null;
+
     if (typeDef.variant === Semantic.ENode.StructDatatype) {
-      const member = typeDef.members.find((m) => {
+      structDef = typeDef;
+    } else if (typeDef.variant === Semantic.ENode.DeepDatatype) {
+      // Deep<T> — look up members from the cloned struct
+      const cloned = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(typeDef.clonedType))
+          .type
+      );
+      assert(cloned.variant === Semantic.ENode.StructDatatype);
+      structDef = cloned;
+    }
+
+    if (structDef !== null) {
+      const member = structDef.members.find((m) => {
         const mem = this.sr.symbolNodes.get(m);
         return (
           mem.variant === Semantic.ENode.VariableSymbol && mem.name === name
@@ -1313,10 +1336,22 @@ export class SemanticBuilder {
         this.sr.typeUseNodes.get(resolved).type
       );
     }
-    assert(exprType.variant === Semantic.ENode.StructDatatype);
+    let structTypeDef: Semantic.StructDatatypeDef;
+    if (exprType.variant === Semantic.ENode.StructDatatype) {
+      structTypeDef = exprType;
+    } else if (exprType.variant === Semantic.ENode.DeepDatatype) {
+      const cloned = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprType.clonedType))
+          .type
+      );
+      assert(cloned.variant === Semantic.ENode.StructDatatype);
+      structTypeDef = cloned;
+    } else {
+      assert(false, "memberAccess expects a struct or Deep type");
+    }
 
     let memberType: Semantic.TypeUseId | null = null;
-    for (const m of exprType.members) {
+    for (const m of structTypeDef.members) {
       const symbol = this.sr.symbolNodes.get(m);
       if (
         symbol.variant === Semantic.ENode.VariableSymbol &&
