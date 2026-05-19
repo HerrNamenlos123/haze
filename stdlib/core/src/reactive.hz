@@ -7,8 +7,16 @@ namespace rx {
 
     export fn shallowReactive<T>(value: T): rx.ShallowReactive<T> {
 
-        if comptime T.category == meta.TypeCategory.ShallowReactive { 
+        if comptime T.category == meta.TypeCategory.ShallowReactive {
             return value;
+        }
+
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            return do unsafe {
+                let result: rx.ShallowReactive<T> = uninitialized;
+                __c__("result = hzstd_reactive_array_create(value);");
+                result;
+            };
         }
 
         return do unsafe {
@@ -22,6 +30,14 @@ namespace rx {
 
         if comptime T.category == meta.TypeCategory.Reactive { 
             return value;
+        }
+
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            do unsafe {
+                let result: Reactive<T> = uninitialized;
+                __c__(f"result = hzstd_reactive_array_create_from_plain(value, sizeof({T.elementType.mangledName}));");
+                return result;
+            };
         }
 
         else if comptime T.category == meta.TypeCategory.Struct {

@@ -23,6 +23,7 @@ typedef enum {
   hzstd_meta_type_category_generic = 11,
   hzstd_meta_type_category_literal = 12,
   hzstd_meta_type_category_parameter_pack = 13,
+  hzstd_meta_type_category_dynamic_array = 16,
 } hzstd_meta_type_category_t;
 
 #endif // HZSTD_META_H

@@ -639,9 +639,18 @@ class CodeGenerator {
               .writeLine(`} ${this.mangleName(symbol.name)} ;`);
           }
         } else if (symbol.variant === Lowered.ENode.ReactiveDatatype) {
-          this.out.type_declarations.writeLine(
-            `typedef hzstd_reactive_cell_t* ${this.mangleTypeDef(symbol)};`
+          const wrappedTypeDef = this.lr.typeDefNodes.get(
+            this.lr.typeUseNodes.get(symbol.datatype).type
           );
+          if (wrappedTypeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
+            this.out.type_declarations.writeLine(
+              `typedef hzstd_reactive_array_t* ${this.mangleTypeDef(symbol)};`
+            );
+          } else {
+            this.out.type_declarations.writeLine(
+              `typedef hzstd_reactive_cell_t* ${this.mangleTypeDef(symbol)};`
+            );
+          }
         } else if (symbol.variant === Lowered.ENode.ComputedDatatype) {
           this.out.type_declarations.writeLine(
             `typedef hzstd_computed_node_t* ${this.mangleTypeDef(symbol)};`
@@ -1337,6 +1346,13 @@ class CodeGenerator {
         ) {
           outWriter.write(
             "hzstd_dynamic_array_size(" + exprWriter.out.get() + ")"
+          );
+        } else if (
+          eTypeDef.variant === Lowered.ENode.ReactiveDatatype &&
+          expr.memberName === "length"
+        ) {
+          outWriter.write(
+            "HZSTD_REACTIVE_ARRAY_LENGTH(" + exprWriter.out.get() + ")"
           );
         } else {
           assert(false);

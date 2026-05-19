@@ -18,6 +18,7 @@ namespace meta {
             hzstd_meta_type_category_generic = 13,
             hzstd_meta_type_category_literal = 14,
             hzstd_meta_type_category_parameter_pack = 15,
+            hzstd_meta_type_category_dynamic_array = 16,
         }
     }
 
@@ -38,5 +39,6 @@ namespace meta {
         Generic = ffi.hzstd_meta_type_category_generic,
         Literal = ffi.hzstd_meta_type_category_literal,
         ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,
+        DynamicArray = ffi.hzstd_meta_type_category_dynamic_array,
     }
 }

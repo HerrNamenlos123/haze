@@ -6574,6 +6574,14 @@ export class SemanticElaborator {
         return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
       }
 
+      if (
+        name === "elementType" &&
+        (resolvedTypeDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+          resolvedTypeDef.variant === Semantic.ENode.FixedArrayDatatype)
+      ) {
+        return this.sr.b.datatypeUseAsValue(resolvedTypeDef.datatype, sourceloc);
+      }
+
       if (resolvedTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
         if (name === "length") {
           if (resolvedTypeDef.parameters === null) {
@@ -6882,6 +6890,33 @@ export class SemanticElaborator {
         )}' does not have a member named '${name}'`,
         sourceloc
       );
+    }
+
+    // Reactive<DynamicArray<T>> member access must be intercepted BEFORE the generic
+    // reactive unwrap, because these members operate on the reactive array struct itself.
+    {
+      const preUnwrapResolvedTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
+      );
+      if (
+        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+      ) {
+        const innerTypeDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(preUnwrapResolvedTypeDef.wrappedType)
+          ).type
+        );
+        if (innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          return this.resolveMemberAccessOnReactiveArray(
+            exprId,
+            name,
+            preUnwrapResolvedTypeDef,
+            innerTypeDef,
+            sourceloc
+          );
+        }
+      }
     }
 
     // Any dot access to any reactive value should first unwrap the reactive value, always
@@ -7353,6 +7388,146 @@ export class SemanticElaborator {
     );
   }
 
+  private resolveMemberAccessOnReactiveArray(
+    exprId: Semantic.ExprId,
+    name: string,
+    preUnwrapTypeDef:
+      | Semantic.ReactiveDatatypeDef
+      | Semantic.ShallowReactiveDatatypeDef,
+    innerArrayType: Semantic.DynamicArrayDatatypeDef,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const expr = this.sr.exprNodes.get(exprId);
+    const isDeepReactive =
+      preUnwrapTypeDef.variant === Semantic.ENode.ReactiveDatatype;
+
+    // After type promotion, deep-reactive inner array elements are Reactive<T>.
+    // Shallow-reactive inner array elements are T directly.
+    const promotedElemTypeId = innerArrayType.datatype;
+    const promotedElemTypeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(promotedElemTypeId).type
+    );
+    // User-facing element type (T, not Reactive<T>)
+    const userElemTypeId =
+      isDeepReactive &&
+      promotedElemTypeDef.variant === Semantic.ENode.ReactiveDatatype
+        ? promotedElemTypeDef.wrappedType
+        : promotedElemTypeId;
+
+    const cName = (typeId: Semantic.TypeUseId): string => {
+      const m = Semantic.mangleTypeUse(this.sr, typeId);
+      return m.wasMangled ? "_H" + m.name : m.name;
+    };
+    const promotedElemCName = cName(promotedElemTypeId);
+    const userElemCName = cName(userElemTypeId);
+
+    const thisExprTypeId = makeTypeUse(
+      this.sr,
+      this.sr.typeUseNodes.get(expr.type).type,
+      EDatatypeMutability.Mut,
+      "force-no-inline",
+      sourceloc
+    )[1];
+
+    const ensureSyntheticMethod = (
+      funcname: string,
+      paramTypes: { name: string; type: Semantic.TypeUseId }[],
+      returnType: Semantic.TypeUseId,
+      bodyCode: string
+    ): Semantic.SymbolId => {
+      if (this.sr.syntheticFunctions.has(funcname)) {
+        return this.sr.syntheticFunctions.get(funcname)!;
+      }
+      const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+        parameters: paramTypes.map((p) => ({ optional: false, type: p.type })),
+        returnType: returnType,
+        requires: {
+          final: true,
+          pure: false,
+          noreturn: false,
+          noreturnIf: null,
+        },
+        sourceloc: sourceloc,
+        vararg: false,
+      });
+      const [, funcId] = this.sr.b.syntheticFunctionFromCode({
+        functionTypeId: functionType,
+        parameterNames: paramTypes.map((p) => p.name),
+        funcname: funcname,
+        bodySourceCode: bodyCode,
+        currentScope: this.currentContext.currentScope,
+        sourceloc: sourceloc,
+        envType: { type: "method", thisExprType: thisExprTypeId },
+      });
+      this.sr.syntheticFunctions.set(funcname, funcId);
+      return funcId;
+    };
+
+    const makeCallable = (funcId: Semantic.SymbolId) =>
+      this.sr.b.callableExpr(
+        funcId,
+        { type: "method", thisExprType: thisExprTypeId },
+        { type: "method", thisExpr: exprId },
+        sourceloc
+      );
+
+    if (name === "length") {
+      return this.sr.b.memberAccessRaw(
+        exprId,
+        "length",
+        this.sr.b.intType(),
+        true,
+        sourceloc
+      );
+    }
+
+    if (name === "push") {
+      const suffix = Semantic.mangleTypeUse(this.sr, userElemTypeId).name;
+      const funcname = `__hz_reactive_array_push_${suffix}_${isDeepReactive ? "d" : "s"}`;
+      const body = isDeepReactive
+        ? `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CREATE(${promotedElemCName}, ${userElemCName}, element));");`
+        : `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${userElemCName}, element);");`;
+      return makeCallable(
+        ensureSyntheticMethod(
+          funcname,
+          [{ name: "element", type: userElemTypeId }],
+          this.sr.b.voidType(),
+          body
+        )
+      );
+    }
+
+    if (name === "pop") {
+      const funcname = `__hz_reactive_array_pop_${
+        Semantic.mangleTypeUse(this.sr, promotedElemTypeId).name
+      }`;
+      const body = `__c__("return HZSTD_REACTIVE_ARRAY_POP(this, ${promotedElemCName});");`;
+      return makeCallable(
+        ensureSyntheticMethod(funcname, [], promotedElemTypeId, body)
+      );
+    }
+
+    if (name === "reserve") {
+      const funcname = `__hz_reactive_array_reserve_${
+        Semantic.mangleTypeUse(this.sr, promotedElemTypeId).name
+      }`;
+      const body = `__c__("hzstd_dynamic_array_reserve(this->data, (size_t)capacity);");`;
+      return makeCallable(
+        ensureSyntheticMethod(
+          funcname,
+          [{ name: "capacity", type: this.sr.b.intType() }],
+          this.sr.b.voidType(),
+          body
+        )
+      );
+    }
+
+    throw new CompilerError(
+      `Reactive dynamic array does not have a member named '${name}'`,
+      sourceloc
+    );
+  }
+
   makeArrayLiteral(
     arrayTypeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
@@ -7688,8 +7863,10 @@ export class SemanticElaborator {
         return "Callable";
 
       case Semantic.ENode.FixedArrayDatatype:
-      case Semantic.ENode.DynamicArrayDatatype:
         return "Array";
+
+      case Semantic.ENode.DynamicArrayDatatype:
+        return "DynamicArray";
 
       case Semantic.ENode.SliceDatatype:
         return "Slice";
@@ -9848,8 +10025,28 @@ export class SemanticElaborator {
     if (name === "__hz_reactive_t") {
       assertGenericArgCount(1);
       const T = assertExprIsDatatype("<T>", "T", generics[0]);
+      // Apply DynamicArray promotion: Reactive<[]T> → Reactive<[]Reactive<T>>
+      let wrappedTypeId = T.type;
+      const wrappedTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(wrappedTypeId).type
+      );
+      if (wrappedTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+        const reactiveElemType = makeReactiveDatatypeAvailable(
+          this.sr,
+          wrappedTypeDef.datatype,
+          EDatatypeMutability.Default,
+          sourceloc
+        );
+        wrappedTypeId = makeDynamicArrayDatatypeAvailable(
+          this.sr,
+          reactiveElemType,
+          EDatatypeMutability.Default,
+          false,
+          sourceloc
+        );
+      }
       return this.sr.b.datatypeDefAsValue(
-        makeRawReactiveDatatypeAvailable(this.sr, T.type),
+        makeRawReactiveDatatypeAvailable(this.sr, wrappedTypeId),
         sourceloc
       );
     }
@@ -10481,6 +10678,32 @@ export class SemanticElaborator {
     const valueType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(value.type).type
     );
+
+    // Intercept Reactive<DynamicArray<T>> subscript before plain array handling
+    {
+      const resolvedExprType = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
+      );
+      if (
+        resolvedExprType.variant === Semantic.ENode.ReactiveDatatype ||
+        resolvedExprType.variant === Semantic.ENode.ShallowReactiveDatatype
+      ) {
+        const innerTypeDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(resolvedExprType.wrappedType)
+          ).type
+        );
+        if (innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          return this.elaborateReactiveArraySubscript(
+            valueId,
+            innerTypeDef,
+            indexId,
+            arraySubscript.sourceloc
+          );
+        }
+      }
+    }
+
     if (
       exprType.variant === Semantic.ENode.FixedArrayDatatype ||
       exprType.variant === Semantic.ENode.DynamicArrayDatatype
@@ -10637,6 +10860,83 @@ export class SemanticElaborator {
       `Expression of type '${Semantic.serializeTypeUse(this.sr, value.type)}' cannot be subscripted`,
       value.sourceloc
     );
+  }
+
+  private elaborateReactiveArraySubscript(
+    exprId: Semantic.ExprId,
+    innerArrayType: Semantic.DynamicArrayDatatypeDef,
+    indexId: Semantic.ExprId,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const expr = this.sr.exprNodes.get(exprId);
+    // innerArrayType.datatype is Reactive<T> for deep-reactive, T for shallow
+    const promotedElemTypeId = innerArrayType.datatype;
+    const promotedElemMangle = Semantic.mangleTypeUse(
+      this.sr,
+      promotedElemTypeId
+    );
+    const promotedElemCName = promotedElemMangle.wasMangled
+      ? "_H" + promotedElemMangle.name
+      : promotedElemMangle.name;
+
+    const funcname = `__hz_reactive_array_get_${promotedElemMangle.name}`;
+
+    const thisExprTypeId = makeTypeUse(
+      this.sr,
+      this.sr.typeUseNodes.get(expr.type).type,
+      EDatatypeMutability.Mut,
+      "force-no-inline",
+      sourceloc
+    )[1];
+
+    let funcId: Semantic.SymbolId;
+    if (this.sr.syntheticFunctions.has(funcname)) {
+      funcId = this.sr.syntheticFunctions.get(funcname)!;
+    } else {
+      const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+        parameters: [{ optional: false, type: this.sr.b.intType() }],
+        returnType: promotedElemTypeId,
+        requires: {
+          final: true,
+          pure: false,
+          noreturn: false,
+          noreturnIf: null,
+        },
+        sourceloc: sourceloc,
+        vararg: false,
+      });
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_READ_TRACK(this); return HZSTD_DYNAMIC_ARRAY_GET(this->data, ${promotedElemCName}, index);");`;
+      const [, id] = this.sr.b.syntheticFunctionFromCode({
+        functionTypeId: functionType,
+        parameterNames: ["index"],
+        funcname: funcname,
+        bodySourceCode: body,
+        currentScope: this.currentContext.currentScope,
+        sourceloc: sourceloc,
+        envType: { type: "method", thisExprType: thisExprTypeId },
+      });
+      funcId = id;
+      this.sr.syntheticFunctions.set(funcname, id);
+    }
+
+    const callableId = this.sr.b.callableExpr(
+      funcId,
+      { type: "method", thisExprType: thisExprTypeId },
+      { type: "method", thisExpr: exprId },
+      sourceloc
+    )[1];
+
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.ExprCallExpr,
+      instanceIds: [],
+      arguments: [indexId],
+      calledExpr: callableId,
+      type: promotedElemTypeId,
+      sourceloc: sourceloc,
+      isTemporary: true,
+      flow: expr.flow,
+      writes: expr.writes,
+    });
   }
 
   parenthesisExpr(
@@ -11670,6 +11970,28 @@ export function makeReactiveDatatypeAvailable(
   mutability: EDatatypeMutability,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
+  // Reactive<DynamicArray<T>> is promoted to Reactive<DynamicArray<Reactive<T>>>.
+  // This gives each element its own reactive cell so subscript reads and
+  // per-element writes are tracked independently from structural mutations.
+  const wrappedTypeDef = sr.typeDefNodes.get(
+    sr.typeUseNodes.get(wrappedType).type
+  );
+  if (wrappedTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+    const reactiveElemType = makeReactiveDatatypeAvailable(
+      sr,
+      wrappedTypeDef.datatype,
+      EDatatypeMutability.Default,
+      sourceloc
+    );
+    wrappedType = makeDynamicArrayDatatypeAvailable(
+      sr,
+      reactiveElemType,
+      EDatatypeMutability.Default,
+      false,
+      sourceloc
+    );
+  }
+
   return makeTypeUse(
     sr,
     makeRawReactiveDatatypeAvailable(sr, wrappedType),

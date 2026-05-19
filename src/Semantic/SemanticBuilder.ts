@@ -876,9 +876,6 @@ export class SemanticBuilder {
       }
 
       // Find the member symbol by name
-      const exprTypeUse = this.sr.typeUseNodes.get(
-        this.sr.exprNodes.get(expr.expr).type
-      );
       const resolvedExprTypeUse = this.sr.typeUseNodes.get(
         this.sr.e.resolveAlias(this.sr.exprNodes.get(expr.expr).type)
       );
@@ -1275,6 +1272,12 @@ export class SemanticBuilder {
       name === "length"
     ) {
       // No work required
+    } else if (
+      (typeDef.variant === Semantic.ENode.ReactiveDatatype ||
+        typeDef.variant === Semantic.ENode.ShallowReactiveDatatype) &&
+      name === "length"
+    ) {
+      // Reactive array length — CodeGenerator emits HZSTD_REACTIVE_ARRAY_LENGTH(...)
     } else {
       assert(false);
     }
