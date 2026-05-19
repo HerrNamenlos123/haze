@@ -34,58 +34,58 @@ fn getWindowState(window: sdl.Window): WindowState {
     };
 }
 
-fn div(data: ui.DivElement) {}
-fn text(data: ui.DivElement) {}
-fn defineComponent(dataFn: () => ui.Element) {}
+// fn div(data: ui.DivElement) {}
+// fn text(data: ui.DivElement) {}
+// fn defineComponent(dataFn: () => ui.Element) {}
 
-struct ButtonArgs {
-    label: str;
-    color: Color;
-}
+// struct ButtonArgs {
+//     label: str;
+//     color: Color;
+// }
 
-fn Button(args: Reactive<ButtonArgs>) {
+// fn Button(args: Reactive<ButtonArgs>) {
 
-    let textColor = rx.reactive(Color {});
-    watch(() => args.color, () => {
-        textColor := args.color;
-    }, { immediate: true, deep: true });
+//     let textColor = rx.reactive(Color {});
+//     watch(() => args.color, () => {
+//         textColor := args.color;
+//     }, { immediate: true, deep: true });
 
-    let buttonLabel = rx.computed(() => {
-        return f"args.label #{ui.framecount}";
-    })
+//     let buttonLabel = rx.computed(() => {
+//         return f"args.label #{ui.framecount}";
+//     })
 
-    return defineComponent(() => 
-        div({
-            id: 1,
-            children: [
-                text({
-                    id: 2,
-                    text: buttonLabel,
-                }),
-            ],
-            style: {
-                color: textColor
-            }
-        })
-    );
-}
+//     return defineComponent(() => 
+//         div({
+//             id: 1,
+//             children: [
+//                 text({
+//                     id: 2,
+//                     text: buttonLabel,
+//                 }),
+//             ],
+//             style: {
+//                 color: textColor
+//             }
+//         })
+//     );
+// }
 
-fn UI() {
-    let label = rx.reactive("My Button");
-    let color = rx.reactive("#FF0000");
+// fn UI() {
+//     let label = rx.reactive("My Button");
+//     let color = rx.reactive("#FF0000");
 
-    return defineComponent(() => 
-        div({
-            id: 3
-            children: [
-                Button({
-                    label: label,
-                    color: color,
-                })
-            ]
-        })
-    );
-}
+//     return defineComponent(() => 
+//         div({
+//             id: 3
+//             children: [
+//                 Button({
+//                     label: label,
+//                     color: color,
+//                 })
+//             ]
+//         })
+//     );
+// }
 
 struct Bar {
     value: int;
