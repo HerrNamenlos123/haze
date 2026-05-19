@@ -285,7 +285,9 @@ Examples:
 
 `const` and `mut` are mutually exclusive modifier states.
 
-Removing either modifier resets mutability back to the default mutability state.
+Removing either modifier resets mutability back to the default mutability state, if that modifier applied.
+
+Removing `mut` from `const Foo` retains the `const`.
 
 Example:
 
