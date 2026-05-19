@@ -107,6 +107,14 @@ fn print<T>(value: T) {
 
 fn main(): int {
 
+    // let foo: int | real = 5;
+    // (() => {
+    //     // foo = 3.14;
+    // })();
+
+    // println(f"Foo = {foo}");
+    // return;
+
     // const foo = Foo { value: 187, otherValue: 42.0 };
     // print(foo);
     // print(5);

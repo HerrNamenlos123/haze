@@ -134,6 +134,14 @@ export namespace Lowered {
     loweredGlobalVariables: Lowered.StatementId[];
 
     loweredUnionMappings: TagMapping[];
+
+    // Maps captured symbol IDs to override info for the function currently being lowered.
+    // suppressHoisting: true when the capture type is a non-inline struct (already a pointer),
+    // so we must NOT add the extra * that would be added for hoisted union captures.
+    currentFunctionCaptureTypeMap: Map<
+      Semantic.SymbolId,
+      { loweredType: Lowered.TypeUseId; suppressHoisting: boolean }
+    >;
   };
 
   export function addTypeUse<T extends Lowered.TypeUse>(
@@ -1102,6 +1110,25 @@ export function lowerExpr(
           wasMangled = mangled.wasMangled;
         }
 
+        const captureOverride = lr.currentFunctionCaptureTypeMap.get(expr.symbol);
+        if (captureOverride) {
+          // Suppress the hoisting * when the captured type is already a pointer (non-inline struct).
+          // Union captures still need *, but narrowed struct captures are already stored as pointers.
+          const suppressStar = captureOverride.suppressHoisting || !!args?.noLambdaHoisting;
+          const effectiveName =
+            symbol.requiresHoisting && !suppressStar
+              ? "*" + symbol.name
+              : symbol.name;
+          return Lowered.addExpr(lr, {
+            variant: Lowered.ENode.SymbolValueExpr,
+            name: {
+              prettyName: effectiveName,
+              mangledName: effectiveName,
+              wasMangled: false,
+            },
+            type: captureOverride.loweredType,
+          });
+        }
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.SymbolValueExpr,
           name: {
@@ -1866,9 +1893,28 @@ export function lowerExpr(
           loweredUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
+      const [loweredInner, loweredInnerId] = lowerExpr(
+        lr,
+        expr.expr,
+        flattened,
+        instanceInfo
+      );
+      const loweredInnerTypeDef = lr.typeDefNodes.get(
+        lr.typeUseNodes.get(Lowered.resolveAlias(lr, loweredInner.type)).type
+      );
+      // If the inner expression was already lowered to a non-union type (e.g. a captured
+      // variable whose type was overridden to the narrowed type), no union member access
+      // is needed — the value is already the right type.
+      if (
+        loweredInnerTypeDef.variant !== Lowered.ENode.UntaggedUnionDatatype &&
+        loweredInnerTypeDef.variant !== Lowered.ENode.TaggedUnionDatatype
+      ) {
+        return [loweredInner, loweredInnerId];
+      }
+
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.UnionToValueCastExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        expr: loweredInnerId,
         optimizeExprToNullptr: shouldBeOptimizedToNullptr(
           lr,
           loweredUnionId,
@@ -3773,7 +3819,12 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           );
           assert(varsym.variant === Semantic.ENode.VariableSymbol);
           if (varsym.requiresHoisting) {
-            name = "*" + name;
+            const capTypeUse = lr.sr.typeUseNodes.get(symbol.envType.captures[i].type);
+            const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
+            const captureAlreadyPointer = capTypeDef.variant === Semantic.ENode.StructDatatype && !capTypeUse.inline;
+            if (!captureAlreadyPointer) {
+              name = "*" + name;
+            }
           }
           mainFuncParameterNames.unshift(name);
           mainFuncParameters.unshift({
@@ -3985,12 +4036,28 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         }
       }
 
+      const prevCaptureTypeMap = lr.currentFunctionCaptureTypeMap;
+      lr.currentFunctionCaptureTypeMap = new Map();
+      if (symbol.envType?.type === "lambda") {
+        for (const cap of symbol.envType.captures) {
+          const capTypeUse = lr.sr.typeUseNodes.get(cap.type);
+          const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
+          const suppressHoisting = capTypeDef.variant === Semantic.ENode.StructDatatype && !capTypeUse.inline;
+          lr.currentFunctionCaptureTypeMap.set(cap.capturedSymbol, {
+            loweredType: lowerTypeUse(lr, cap.type),
+            suppressHoisting: suppressHoisting,
+          });
+        }
+      }
+
       f.scope =
         (symbol.scope &&
           lowerBlockScope(lr, symbol.scope, {
             returnedInstanceIds: symbol.returnsInstanceIds,
           })) ||
         null;
+
+      lr.currentFunctionCaptureTypeMap = prevCaptureTypeMap;
 
       if (f.scope) {
         const scope = lr.blockScopeNodes.get(f.scope);
@@ -4431,6 +4498,8 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredGlobalVariables: [],
 
     loweredUnionMappings: [],
+
+    currentFunctionCaptureTypeMap: new Map(),
   };
 
   for (const [key, entries] of sr.elaboratedFuncdefSymbols) {

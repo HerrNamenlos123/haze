@@ -302,9 +302,7 @@ export opaque struct Context {
 
     fn processTreeElement(ctx: TreeTraverseContext, element: Element): void :: final {
         if element is DivElement {
-            let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
             this.withCascadingStackApplied(ctx, element, () => {
-                let element = capturedElement;
                 let renderChildren = () => {
                     for child in element.children {
                         this.processTreeElement(ctx, child);
