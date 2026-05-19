@@ -1741,6 +1741,12 @@ export namespace Conversion {
 
         // Check match with implicit mutability change
         if (
+          resolvedSourceTypeUse.mutability ===
+          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability
+        ) {
+          return true;
+        }
+        if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
           sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability ===
             EDatatypeMutability.Default
