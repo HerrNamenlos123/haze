@@ -6705,11 +6705,16 @@ export class SemanticElaborator {
           );
           innerTypeDefId = innerTypeUse.type;
         }
+        const innerTypeDef = this.sr.typeDefNodes.get(innerTypeDefId);
+        const defaultMutability =
+          innerTypeDef.variant === Semantic.ENode.PrimitiveDatatype
+            ? EDatatypeMutability.Const
+            : EDatatypeMutability.Default;
         // Strip all modifiers: default mutability, no inline
         const baseTypeUseId = makeTypeUse(
           this.sr,
           innerTypeDefId,
-          EDatatypeMutability.Default,
+          defaultMutability,
           false,
           sourceloc
         )[1];
