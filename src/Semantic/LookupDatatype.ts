@@ -258,9 +258,14 @@ export function makeTypeUse(
     return [typeUse, id] as const;
   }
 
-  const instance = sr.b.addTypeInstance(sr, {
+  let shouldBeInline = inline;
+  if (shouldBeInline === "force-no-inline") {
+    shouldBeInline = false;
+  }
+
+  const instance = sr.b.addTypeInstance<Semantic.TypeUse>(sr, {
     mutability: mutability,
-    inline: false,
+    inline: shouldBeInline,
     type: typeId,
     sourceloc: sourceloc,
   });
