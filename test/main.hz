@@ -424,7 +424,7 @@ fn main(): int {
             fs.pollEvents();
             renderer.beginFrame();
 
-            uiCtx.render(rx.get(uiTree), {
+            uiCtx.render(uiTree, {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
                     renderer.drawRect({
                         pos: position, 

@@ -1590,7 +1590,7 @@ export class SemanticElaborator {
     }
     if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
       throw new CompilerError(
-        `Expression of type ${Semantic.serializeTypeUse(this.sr, calledExpr.type)} is not callable`,
+        `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, calledExpr.type)} is not callable`,
         callExpr.sourceloc
       );
     }
@@ -5815,7 +5815,7 @@ export class SemanticElaborator {
       }
 
       throw new CompilerError(
-        `Expression of type '${Semantic.serializeTypeUse(
+        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(
           this.sr,
           targetExpr.type
         )}' is not a valid LHS, no matching assignment operator overload exists`,
@@ -7539,7 +7539,7 @@ export class SemanticElaborator {
     }
 
     throw new CompilerError(
-      `Expression of type '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a member called ${name}`,
+      `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, expr.type)}' does not have a member called ${name}`,
       sourceloc
     );
   }
@@ -10825,7 +10825,7 @@ export class SemanticElaborator {
         valueType.variant !== Semantic.ENode.DynamicArrayDatatype
       ) {
         throw new CompilerError(
-          `Expression of type ${Semantic.serializeTypeUse(this.sr, value.type)} cannot be subscripted`,
+          `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)} cannot be subscripted`,
           arraySubscript.sourceloc
         );
       }
@@ -10903,7 +10903,7 @@ export class SemanticElaborator {
         valueType.variant !== Semantic.ENode.DynamicArrayDatatype
       ) {
         throw new CompilerError(
-          `Expression of type ${Semantic.serializeTypeUse(this.sr, value.type)} cannot be subscripted`,
+          `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)} cannot be subscripted`,
           arraySubscript.sourceloc
         );
       }
@@ -11029,15 +11029,15 @@ export class SemanticElaborator {
       }
 
       throw new CompilerError(
-        `No exact overloaded operator in type '${Semantic.serializeTypeUse(
+        `No exact overloaded operator in type '${Semantic.serializeTypeUseWithAliasAKA(
           this.sr,
           value.type
-        )}' for index type '${Semantic.serializeTypeUse(this.sr, index.type)}' is available`,
+        )}' for index type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, index.type)}' is available`,
         value.sourceloc
       );
     }
     throw new CompilerError(
-      `Expression of type '${Semantic.serializeTypeUse(this.sr, value.type)}' cannot be subscripted`,
+      `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)}' cannot be subscripted`,
       value.sourceloc
     );
   }
