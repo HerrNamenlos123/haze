@@ -12829,7 +12829,8 @@ export function makeDeepDatatypeAvailable(
   wrappedType: Semantic.TypeUseId,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
+  const resolvedWrappedType = sr.e.resolveAlias(wrappedType);
+  const wrappedTypeUse = sr.typeUseNodes.get(resolvedWrappedType);
   const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
 
   // For non-structs: Deep<T> is the identity — return T unchanged
@@ -12839,7 +12840,7 @@ export function makeDeepDatatypeAvailable(
 
   // Idempotency: already a reactive clone struct — don't wrap again
   if (wrappedTypeDef.reactiveClone) {
-    return wrappedType;
+    return resolvedWrappedType;
   }
 
   // Cache lookup
@@ -12925,7 +12926,7 @@ export function makeDeepDatatypeAvailable(
   // Create the DeepDatatypeDef wrapping the original type and the cloned struct
   const [_, deepTypeDefId] = sr.b.addType<Semantic.DeepDatatypeDef>(sr, {
     variant: Semantic.ENode.DeepDatatype,
-    originalType: wrappedType,
+    originalType: resolvedWrappedType,
     clonedType: clonedTypeUseId,
     concrete: isTypeConcrete(sr, wrappedType),
   });

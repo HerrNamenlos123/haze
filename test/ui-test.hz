@@ -1,8 +1,14 @@
 
 let g_renderStack: []RenderContext = [];
+let g_generation: int = 0;
+let g_effectQueue: [](() => void) = [];
 
 fn currentContext(): RenderContext {
     return g_renderStack.last();
+}
+
+fn scheduleEffect(effect: () => void) {
+    g_effectQueue.push(effect);
 }
 
 fn pushRenderContext(ctx: RenderContext) {
@@ -44,6 +50,7 @@ enum NodeType {
 struct Node {
     id: int;
     type: NodeType;
+    generation: int;
 
     parent?: Node;
 
@@ -81,6 +88,8 @@ struct ComponentInstance {
     // refs
     // watchers
     // computeds
+    templateComputed?: rx.Computed<none>;
+    dirty: bool = true;
 
     // nodesById: Map<u64, Node>;
     nodesById: []inline NodeCache = [];
@@ -131,6 +140,7 @@ fn div(props: DivProps, childrenFn: () => void) {
 
     // reconciliation preparation
     node.newChildren.clear();
+    node.generation = g_generation;
 
     // descend into node
     pushRenderContext({
@@ -163,6 +173,7 @@ fn text(props: TextProps) {
     }
 
     node.text = props.text;
+    node.generation = g_generation;
 
     // parent relationship
     node.parent = ctx.currentParent;
@@ -188,7 +199,28 @@ fn defineComponent(
     });
 
     // execute template
-    template();
+    if instance.templateComputed == none {
+        instance.templateComputed = rx.computed(() => {
+
+            instance.rootNode.newChildren.clear();
+
+            pushRenderContext({
+                currentComponent: instance,
+                currentParent: instance.rootNode,
+            });
+
+            template();
+
+            instance.rootNode.children =
+                instance.rootNode.newChildren;
+
+            popRenderContext();
+
+            return none;
+        });
+    }
+    
+    rx.get(instance.templateComputed);
 
     // finalize reconciliation
     instance.rootNode.children =
@@ -224,6 +256,48 @@ struct ButtonArgs {
     color: Color;
 }
 
+struct WatchOptions {
+    immediate?: bool;
+    deep?: bool;
+}
+
+let g_watchers: []rx.Computed<none> = [];
+
+fn watch<T>(
+    getter: () => T,
+    callback: () => void,
+    options: WatchOptions = {}
+) {
+    const react = rx.computed(() => {
+        getter();
+        callback();
+        return none;
+    });
+    g_watchers.push(react);
+
+    if options.immediate {
+        callback();
+    }
+}
+
+fn queuePopFront() {
+    let front = g_effectQueue[0];
+    let newQueue: [](() => void) = [];
+    for (let i = 1; i < g_effectQueue.length; i++) {
+        newQueue.push(g_effectQueue[1]);
+    }
+    g_effectQueue = newQueue;
+    return front;
+}
+
+fn flushEffects() {
+    while g_effectQueue.length > 0 {
+        let effect = queuePopFront();
+        effect();
+    }
+}
+
+
 fn Button(args: rx.Reactive<ButtonArgs>) {
 
     let textColor = rx.reactive(Color {});
@@ -251,7 +325,7 @@ fn UI() {
     let label = rx.reactive("My Button");
     let color = rx.reactive("#FF0000");
 
-    defineComponent({ id: 10 }, () => 
+    defineComponent({ id: 0 }, () => 
         div({
             id: 3
         }, () => {
@@ -264,10 +338,20 @@ fn UI() {
     );
 }
 
-fn computeUI() {
+fn cleanupNodes() {
+    // TODO: Remove nodes with an old generation from the array
+    // but currently splicing arrays is not supported yet
+}
+
+let g_rootTemplate = rx.computed(() => {
     UI();
+});
 
-    let root = getOrCreateComponent(10);
+fn computeUI() {
+    g_generation += 1;
 
+    rx.get(g_rootTemplate);
+
+    let root = getOrCreateComponent(0);
     printTree(root.rootNode);
 }
