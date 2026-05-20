@@ -107,13 +107,13 @@ fn print<T>(value: T) {
 
 fn main(): int {
 
-    let flexboxLayoutTest = ui.TextElement {
+    let flexboxLayoutTest = rx.computed(() => ui.TextElement {
         id: 16,
         text: "Flexbox layout test",
         style: { fontSize: 60.0, fontFamily: "roboto" }
-    };
+    });
 
-    let uiTree = rx.reactive<ui.Element>(ui.DivElement {
+    let uiTree = rx.computed<ui.Element>(() => ui.DivElement {
         id: 1,
         style: {
             backgroundColor: Color(0.15, 0.15, 0.15, 1),
@@ -241,8 +241,8 @@ fn main(): int {
                     }
                 ]
             }
-        ]
-    });
+        ] 
+    } as ui.Element);
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

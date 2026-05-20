@@ -1121,6 +1121,16 @@ export namespace Conversion {
         kind: "computed-read";
       }
     | {
+        kind: "reactive-read-to-union";
+        index: number;
+        memberTypeUseId: Semantic.TypeUseId;
+      }
+    | {
+        kind: "computed-read-to-union";
+        index: number;
+        memberTypeUseId: Semantic.TypeUseId;
+      }
+    | {
         kind: "union-to-value";
         tag: number;
       }
@@ -2030,9 +2040,13 @@ export namespace Conversion {
       if (
         resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
       ) {
-        for (const m of resolvedTargetTypeDef.members) {
+        for (const [index, m] of resolvedTargetTypeDef.members.entries()) {
           if (sr.e.resolveAlias(m) === wrapped) {
-            return { kind: "reactive-read" };
+            return {
+              kind: "reactive-read-to-union",
+              index: index,
+              memberTypeUseId: m,
+            };
           }
           const mUse = sr.typeUseNodes.get(m);
           const wrappedUse = sr.typeUseNodes.get(wrapped);
@@ -2041,13 +2055,21 @@ export namespace Conversion {
               wrappedUse.mutability === EDatatypeMutability.Const &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "reactive-read" };
+              return {
+                kind: "reactive-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
             if (
               wrappedUse.mutability === EDatatypeMutability.Mut &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "reactive-read" };
+              return {
+                kind: "reactive-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
           }
         }
@@ -2062,9 +2084,13 @@ export namespace Conversion {
       if (
         resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
       ) {
-        for (const m of resolvedTargetTypeDef.members) {
+        for (const [index, m] of resolvedTargetTypeDef.members.entries()) {
           if (sr.e.resolveAlias(m) === wrapped) {
-            return { kind: "reactive-read" };
+            return {
+              kind: "reactive-read-to-union",
+              index: index,
+              memberTypeUseId: m,
+            };
           }
           const mUse = sr.typeUseNodes.get(m);
           const wrappedUse = sr.typeUseNodes.get(wrapped);
@@ -2073,13 +2099,21 @@ export namespace Conversion {
               wrappedUse.mutability === EDatatypeMutability.Const &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "reactive-read" };
+              return {
+                kind: "reactive-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
             if (
               wrappedUse.mutability === EDatatypeMutability.Mut &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "reactive-read" };
+              return {
+                kind: "reactive-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
           }
         }
@@ -2094,9 +2128,13 @@ export namespace Conversion {
       if (
         resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
       ) {
-        for (const m of resolvedTargetTypeDef.members) {
+        for (const [index, m] of resolvedTargetTypeDef.members.entries()) {
           if (sr.e.resolveAlias(m) === wrapped) {
-            return { kind: "computed-read" };
+            return {
+              kind: "computed-read-to-union",
+              index: index,
+              memberTypeUseId: m,
+            };
           }
           const mUse = sr.typeUseNodes.get(m);
           const wrappedUse = sr.typeUseNodes.get(wrapped);
@@ -2105,13 +2143,21 @@ export namespace Conversion {
               wrappedUse.mutability === EDatatypeMutability.Const &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "computed-read" };
+              return {
+                kind: "computed-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
             if (
               wrappedUse.mutability === EDatatypeMutability.Mut &&
               mUse.mutability === EDatatypeMutability.Default
             ) {
-              return { kind: "computed-read" };
+              return {
+                kind: "computed-read-to-union",
+                index: index,
+                memberTypeUseId: m,
+              };
             }
           }
         }
@@ -2315,12 +2361,60 @@ export namespace Conversion {
         })[1];
       }
 
+      case "reactive-read-to-union": {
+        const readExprId = sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ReactiveReadExpr,
+          instanceIds: [],
+          value: sourceExprId,
+          type: conversionPlan.memberTypeUseId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1];
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ValueToUnionCastExpr,
+          expr: readExprId,
+          instanceIds: [],
+          type: targetTypeId,
+          index: conversionPlan.index,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1];
+      }
+
       case "computed-read": {
         return sr.b.addExpr(sr, {
           variant: Semantic.ENode.ComputedReadExpr,
           instanceIds: [],
           value: sourceExprId,
           type: targetTypeId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1];
+      }
+
+      case "computed-read-to-union": {
+        const readExprId = sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ComputedReadExpr,
+          instanceIds: [],
+          value: sourceExprId,
+          type: conversionPlan.memberTypeUseId,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1];
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ValueToUnionCastExpr,
+          expr: readExprId,
+          instanceIds: [],
+          type: targetTypeId,
+          index: conversionPlan.index,
           sourceloc: sourceloc,
           isTemporary: true,
           flow: Semantic.FlowResult.fallthrough(),

@@ -367,7 +367,15 @@ export opaque struct Context {
         }
     }
 
+    fn render(element: rx.Computed<Element>, callbacks: RenderCallbacks) {
+        this.render(rx.get(element), callbacks);
+    }
+
     fn render(element: rx.Reactive<Element>, callbacks: RenderCallbacks) {
+        this.render(rx.get(element), callbacks);
+    }
+
+    fn render(element: Element, callbacks: RenderCallbacks) {
         ffi.Clay_BeginLayout();
 
         let ctx = TreeTraverseContext {};

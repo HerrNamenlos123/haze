@@ -12694,6 +12694,7 @@ export function makeRawComputedDatatypeAvailable(
   sr: Semantic.Context,
   wrappedType: Semantic.TypeUseId
 ): Semantic.TypeDefId {
+  wrappedType = sr.e.resolveAlias(wrappedType);
   const wrappedTypeUse = sr.typeUseNodes.get(wrappedType);
   const wrappedTypeDef = sr.typeDefNodes.get(wrappedTypeUse.type);
 
