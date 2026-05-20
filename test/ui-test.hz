@@ -4,7 +4,7 @@ let g_generation: int = 0;
 let g_effectQueue: [](() => void) = [];
 
 fn currentContext(): RenderContext {
-    return g_renderStack.last();
+    return g_renderStack[g_renderStack.length - 1];
 }
 
 fn scheduleEffect(effect: () => void) {
@@ -37,7 +37,7 @@ fn getOrCreateComponent(id: int): ComponentInstance {
     };
     g_componentCache.push({
         id: id,
-        node: newComponent,
+        component: newComponent,
     });
     return newComponent;
 }
@@ -56,10 +56,11 @@ struct Node {
 
     children: []Node = [];
     newChildren: []Node = [];
+    text?: str;
 
-    layout: LayoutRect;
+    // layout: LayoutRect;
 
-    style: DivStyle | TextStyle;
+    style: ui.DivStyle | ui.TextStyle;
 }
 
 struct DivProps {
@@ -79,7 +80,7 @@ struct ComponentProps {
 
 struct NodeCache {
     id: int;
-    node: Node;
+    node: mut Node;
 }
 
 struct ComponentInstance {
@@ -95,7 +96,10 @@ struct ComponentInstance {
     nodesById: []inline NodeCache = [];
 
     rootNode: Node = {
-        id: -1
+        id: -1,
+        type: NodeType.Div,
+        generation: g_generation,
+        style: ui.DivStyle {},
     };
 
     fn getNode(id: int) {
@@ -104,7 +108,12 @@ struct ComponentInstance {
                 return n.node;
             }
         }
-        let newNode = Node {};
+        let newNode = Node {
+            id: id,
+            type: NodeType.Div,
+            generation: g_generation,
+            style: ui.DivStyle {},
+        };
         this.nodesById.push({
             id: id,
             node: newNode,
@@ -118,7 +127,7 @@ struct RenderContext {
     currentParent: Node;
 }
 
-fn div(props: DivProps, childrenFn: () => void) {
+fn div(props: DivProps, childrenFn: () => none) {
 
     let ctx = currentContext();
 
@@ -128,7 +137,7 @@ fn div(props: DivProps, childrenFn: () => void) {
     node.id = props.id;
     node.type = NodeType.Div;
 
-    if props.style != none {
+    if props.style is not none {
         node.style = props.style;
     }
 
@@ -139,7 +148,8 @@ fn div(props: DivProps, childrenFn: () => void) {
     ctx.currentParent.newChildren.push(node);
 
     // reconciliation preparation
-    node.newChildren.clear();
+    // node.newChildren.clear();
+    node.newChildren = [];
     node.generation = g_generation;
 
     // descend into node
@@ -168,7 +178,7 @@ fn text(props: TextProps) {
     node.id = props.id;
     node.type = NodeType.Text;
 
-    if props.style != none {
+    if props.style is not none {
         node.style = props.style;
     }
 
@@ -184,13 +194,13 @@ fn text(props: TextProps) {
 
 fn defineComponent(
     props: ComponentProps,
-    template: () => void
+    template: () => none
 ) {
-
     let instance = getOrCreateComponent(props.id);
 
     // prepare reconciliation
-    instance.rootNode.newChildren.clear();
+    // instance.rootNode.newChildren.clear();
+    instance.rootNode.newChildren = [];
 
     // enter component render scope
     pushRenderContext({
@@ -199,10 +209,11 @@ fn defineComponent(
     });
 
     // execute template
-    if instance.templateComputed == none {
+    if instance.templateComputed is none {
         instance.templateComputed = rx.computed(() => {
 
-            instance.rootNode.newChildren.clear();
+            // instance.rootNode.newChildren.clear();
+            instance.rootNode.newChildren = [];
 
             pushRenderContext({
                 currentComponent: instance,
@@ -230,19 +241,24 @@ fn defineComponent(
     popRenderContext();
 }
 
-fn printTree(node: Node, depth: int = 0) {
+fn printTree(node: Node, depth: int = 0): void :: final {
 
     let indent = "";
     for (let i = 0; i < depth; i++) {
-        indent += "  ";
+        indent = indent + "  ";
     }
 
     if node.type == NodeType.Div {
-        println(f"{indent}Div({node.id})");
+        fmt.println(f"{indent}Div({node.id})");
     }
 
     if node.type == NodeType.Text {
-        println(f"{indent}Text({node.id}): {node.text}");
+        if node.text {
+            fmt.println(f"{indent}Text({node.id}): {node.text}");
+        }
+        else {
+            fmt.println(f"{indent}Text({node.id}): {node.text}");
+        }
     }
 
     for child in node.children {
@@ -265,7 +281,7 @@ let g_watchers: []rx.Computed<none> = [];
 
 fn watch<T>(
     getter: () => T,
-    callback: () => void,
+    callback: () => none,
     options: WatchOptions = {}
 ) {
     const react = rx.computed(() => {
@@ -297,23 +313,22 @@ fn flushEffects() {
     }
 }
 
+let g_framecount = rx.reactive<int>(0);
+fn hover(): bool {
+    return true;
+}
 
-fn Button(args: rx.Reactive<ButtonArgs>) {
-
-    let textColor = rx.reactive(Color {});
-    watch(() => args.color, () => {
-        textColor := rx.get(args.color);
-    }, { immediate: true, deep: true });
+fn Button(args: ButtonArgs) {
 
     let buttonLabel = rx.computed(() => {
-        return f"args.label #{ui.framecount}";
+        return f"args.label #{g_framecount}";
     })
 
     defineComponent({ id: args.id }, () => 
         div({
             id: 1,
             style: {
-                color: hover() ? "#0000FF" : textColor
+                textColor: hover() ? Color("#0000FF") : Color(args.color),
             }
         }, () => {
             text({ id: 2, text: buttonLabel });
@@ -322,8 +337,8 @@ fn Button(args: rx.Reactive<ButtonArgs>) {
 }
 
 fn UI() {
-    let label = rx.reactive("My Button");
-    let color = rx.reactive("#FF0000");
+    let label = rx.reactive<str>("My Button");
+    let color = rx.shallowReactive<Color>(Color("#FF0000"));
 
     defineComponent({ id: 0 }, () => 
         div({
@@ -349,6 +364,7 @@ let g_rootTemplate = rx.computed(() => {
 
 fn computeUI() {
     g_generation += 1;
+    g_framecount++;
 
     rx.get(g_rootTemplate);
 

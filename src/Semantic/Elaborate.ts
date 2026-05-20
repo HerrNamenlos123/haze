@@ -2706,7 +2706,7 @@ export class SemanticElaborator {
       // Type is provided and there's an initializer, process the initializer and convert to the declared type
       const [_expr, exprId] = this.sr.e.expr(
         variableSymbol.globalValueInitializer,
-        undefined
+        { gonnaInstantiateStructWithType: type ?? undefined }
       );
       const conversionResult = Conversion.MakeConversionOrThrow(
         this.sr,
@@ -12862,7 +12862,7 @@ export function makeDeepDatatypeAvailable(
     {
       variant: Semantic.ENode.StructDatatype,
       export: false,
-      extern: wrappedTypeDef.extern,
+      extern: EExternLanguage.None,
       generics: wrappedTypeDef.generics,
       inlineByDefault: wrappedTypeDef.inlineByDefault,
       membersBuilt: false,
@@ -12875,7 +12875,7 @@ export function makeDeepDatatypeAvailable(
       methodsInProgress: false,
       name: wrappedTypeDef.name,
       nestedStructs: wrappedTypeDef.nestedStructs,
-      noemit: wrappedTypeDef.noemit,
+      noemit: false,
       opaque: wrappedTypeDef.opaque,
       originalCollectedDefinition: wrappedTypeDef.originalCollectedDefinition,
       originalCollectedSymbol: wrappedTypeDef.originalCollectedSymbol,

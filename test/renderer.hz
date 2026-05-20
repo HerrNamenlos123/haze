@@ -515,7 +515,7 @@ opaque struct Renderer {
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: backbuffer,
-            clearValue: Color(0, 0, 0, 0),
+            clearValue: Color(0.0, 0.0, 0.0, 0.0),
             loadOp: wgpu.LoadOp.Clear,
             storeOp: wgpu.StoreOp.Store,
         };

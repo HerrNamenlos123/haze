@@ -1239,12 +1239,24 @@ export function lowerExpr(
         accessedExprTypeUse.type
       );
 
+      let structTypeDef = accessedExprTypeDef;
+      let isInline = accessedExprTypeUse.inline;
+      if (accessedExprTypeDef.variant === Semantic.ENode.DeepDatatype) {
+        const clonedTypeUse = lr.sr.typeUseNodes.get(
+          lr.sr.e.resolveAlias(accessedExprTypeDef.clonedType)
+        );
+        const clonedTypeDef = lr.sr.typeDefNodes.get(clonedTypeUse.type);
+        if (clonedTypeDef.variant === Semantic.ENode.StructDatatype) {
+          structTypeDef = clonedTypeDef;
+          isInline = isInline || clonedTypeUse.inline;
+        }
+      }
+
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
         requiresDeref: !(
-          accessedExprTypeDef.variant === Semantic.ENode.StructDatatype &&
-          accessedExprTypeUse.inline
+          structTypeDef.variant === Semantic.ENode.StructDatatype && isInline
         ),
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),

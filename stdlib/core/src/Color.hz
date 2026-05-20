@@ -5,6 +5,33 @@ export extern C noemit inline struct hzstd_color_t {
     b: real = 0;
     a: real = 0;
 
+    fn constructor(color: str): mut Color {
+        let r = 0.0;
+        let g = 0.0;
+        let b = 0.0;
+        let a = 0.0;
+        fmt.println("Warning: Color(str) is not implemented yet!");
+        return Color {
+            r: r,
+            g: g,
+            b: b,
+            a: a,
+        };
+    }
+
+    fn constructor(color: rx.Reactive<Color>): mut Color {
+        return Color {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: color.a,
+        };
+    }
+
+    fn constructor(color: Color): mut Color {
+        return color;
+    }
+
     fn constructor(r: real, g: real, b: real, a: real): mut Color {
         return Color {
             r: r,
@@ -26,6 +53,33 @@ export extern C noemit inline struct hzstd_colorf_t {
     g: f32 = 0;
     b: f32 = 0;
     a: f32 = 0;
+
+    fn constructor(color: str): mut Colorf {
+        let r: f32 = 0;
+        let g: f32 = 0;
+        let b: f32 = 0;
+        let a: f32 = 0;
+        fmt.println("Warning: Color(str) is not implemented yet!");
+        return Colorf {
+            r: r,
+            g: g,
+            b: b,
+            a: a,
+        };
+    }
+
+    fn constructor(color: rx.Reactive<Colorf>): mut Colorf {
+        return Colorf {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: color.a,
+        };
+    }
+
+    fn constructor(color: Colorf): mut Colorf {
+        return color;
+    }
 
     fn constructor(r: f32, g: f32, b: f32, a: f32): mut Colorf {
         return Colorf {
