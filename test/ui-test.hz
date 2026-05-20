@@ -1,0 +1,273 @@
+
+let g_renderStack: []RenderContext = [];
+
+fn currentContext(): RenderContext {
+    return g_renderStack.last();
+}
+
+fn pushRenderContext(ctx: RenderContext) {
+    g_renderStack.push(ctx);
+}
+
+fn popRenderContext() {
+    g_renderStack.pop();
+}
+
+let g_componentCache: []inline ComponentCache = [];
+
+struct ComponentCache {
+    id: int;
+    component: ComponentInstance;
+}
+
+fn getOrCreateComponent(id: int): ComponentInstance {
+    for n in g_componentCache {
+        if n.id == id {
+            return n.component;
+        }
+    }
+    let newComponent = ComponentInstance {
+        id: id,
+    };
+    g_componentCache.push({
+        id: id,
+        node: newComponent,
+    });
+    return newComponent;
+}
+
+enum NodeType {
+    Div,
+    Text,
+}
+
+struct Node {
+    id: int;
+    type: NodeType;
+
+    parent?: Node;
+
+    children: []Node = [];
+    newChildren: []Node = [];
+
+    layout: LayoutRect;
+
+    style: DivStyle | TextStyle;
+}
+
+struct DivProps {
+    id: int;
+    style?: ui.DivStyle;
+}
+
+struct TextProps {
+    id: int;
+    style?: ui.TextStyle;
+    text: str;
+}
+
+struct ComponentProps {
+    id: int;
+}
+
+struct NodeCache {
+    id: int;
+    node: Node;
+}
+
+struct ComponentInstance {
+    id: int;
+
+    // refs
+    // watchers
+    // computeds
+
+    // nodesById: Map<u64, Node>;
+    nodesById: []inline NodeCache = [];
+
+    rootNode: Node = {
+        id: -1
+    };
+
+    fn getNode(id: int) {
+        for n in this.nodesById {
+            if n.id == id {
+                return n.node;
+            }
+        }
+        let newNode = Node {};
+        this.nodesById.push({
+            id: id,
+            node: newNode,
+        });
+        return newNode;
+    }
+}
+
+struct RenderContext {
+    currentComponent: ComponentInstance;
+    currentParent: Node;
+}
+
+fn div(props: DivProps, childrenFn: () => void) {
+
+    let ctx = currentContext();
+
+    // reconcile persistent node
+    let node = ctx.currentComponent.getNode(props.id);
+
+    node.id = props.id;
+    node.type = NodeType.Div;
+
+    if props.style != none {
+        node.style = props.style;
+    }
+
+    // parent relationship
+    node.parent = ctx.currentParent;
+
+    // attach into current parent
+    ctx.currentParent.newChildren.push(node);
+
+    // reconciliation preparation
+    node.newChildren.clear();
+
+    // descend into node
+    pushRenderContext({
+        currentComponent: ctx.currentComponent,
+        currentParent: node,
+    });
+
+    // build children
+    childrenFn();
+
+    // finalize reconciliation
+    node.children = node.newChildren;
+
+    // leave node
+    popRenderContext();
+}
+
+fn text(props: TextProps) {
+
+    let ctx = currentContext();
+
+    // reconcile persistent node
+    let node = ctx.currentComponent.getNode(props.id);
+
+    node.id = props.id;
+    node.type = NodeType.Text;
+
+    if props.style != none {
+        node.style = props.style;
+    }
+
+    node.text = props.text;
+
+    // parent relationship
+    node.parent = ctx.currentParent;
+
+    // attach into current parent
+    ctx.currentParent.newChildren.push(node);
+}
+
+fn defineComponent(
+    props: ComponentProps,
+    template: () => void
+) {
+
+    let instance = getOrCreateComponent(props.id);
+
+    // prepare reconciliation
+    instance.rootNode.newChildren.clear();
+
+    // enter component render scope
+    pushRenderContext({
+        currentComponent: instance,
+        currentParent: instance.rootNode,
+    });
+
+    // execute template
+    template();
+
+    // finalize reconciliation
+    instance.rootNode.children =
+        instance.rootNode.newChildren;
+
+    // leave component render scope
+    popRenderContext();
+}
+
+fn printTree(node: Node, depth: int = 0) {
+
+    let indent = "";
+    for (let i = 0; i < depth; i++) {
+        indent += "  ";
+    }
+
+    if node.type == NodeType.Div {
+        println(f"{indent}Div({node.id})");
+    }
+
+    if node.type == NodeType.Text {
+        println(f"{indent}Text({node.id}): {node.text}");
+    }
+
+    for child in node.children {
+        printTree(child, depth + 1);
+    }
+}
+
+struct ButtonArgs {
+    id: int;
+    label: str;
+    color: Color;
+}
+
+fn Button(args: rx.Reactive<ButtonArgs>) {
+
+    let textColor = rx.reactive(Color {});
+    watch(() => args.color, () => {
+        textColor := rx.get(args.color);
+    }, { immediate: true, deep: true });
+
+    let buttonLabel = rx.computed(() => {
+        return f"args.label #{ui.framecount}";
+    })
+
+    defineComponent({ id: args.id }, () => 
+        div({
+            id: 1,
+            style: {
+                color: hover() ? "#0000FF" : textColor
+            }
+        }, () => {
+            text({ id: 2, text: buttonLabel });
+        })
+    );
+}
+
+fn UI() {
+    let label = rx.reactive("My Button");
+    let color = rx.reactive("#FF0000");
+
+    defineComponent({ id: 10 }, () => 
+        div({
+            id: 3
+        }, () => {
+            Button({
+                id: 20,
+                label: label,
+                color: color,
+            });
+        })
+    );
+}
+
+fn computeUI() {
+    UI();
+
+    let root = getOrCreateComponent(10);
+
+    printTree(root.rootNode);
+}
