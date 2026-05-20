@@ -523,6 +523,7 @@ export type ASTExprIsTypeExpr = {
   variant: "ExprIsTypeExpr";
   expr: ASTExpr;
   comparisonType: ASTExpr;
+  inverted: boolean;
   sourceloc: SourceLoc;
 };
 

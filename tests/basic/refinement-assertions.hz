@@ -10,7 +10,31 @@ fn union_value() {
     return 0;
 }
 
+fn union_union() {
+    let b: int | real | null = 42;
+    assert(b is not null);
+    (() => {
+        b = null;
+    })();
+
+    fmt.println(f"Value = {b}");
+    return 0;
+}
+
+fn integer() {
+    let b: u16 = 255;
+    assert(b <= u8.max);
+    (() => {
+        b++;
+    })();
+
+    fmt.println(f"Value = {b as u8}");
+    return 0;
+}
+
 fn main(): int {
-    union_value();
+    // union_value();
+    // union_union();
+    // integer();
     return 0;
 }

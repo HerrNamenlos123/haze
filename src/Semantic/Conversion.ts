@@ -1490,20 +1490,15 @@ export namespace Conversion {
       };
     }
 
-    // Trivial Integer <-> Float & Float <-> Float conversions
+    // Trivial Float <-> Float conversions for literals
     if (
-      (Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
-        Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)) ||
-      (Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
-        Conversion.isFloat(sr, resolvedTargetTypeUse.type)) ||
-      (Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
-        Conversion.isFloat(sr, resolvedTargetTypeUse.type))
+      Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
+      Conversion.isFloat(sr, resolvedTargetTypeUse.type)
     ) {
-      // If it is a conversion between Float and Int or Float and Float, it is trivially allowed
-      // if the value comes directly from a literal, since it would generally not be an issue that
-      // precision is lost. E.g. for "let x: f32 = 0.1" it's clear that we just want 0.1 as the
-      // closest representation that fits in f32. For "let x: f32 = y", this is not the case and
-      // losing precision may actually be an issue.
+      // If it is a conversion between floats, it is trivially allowed if the value comes directly
+      // from a literal, since it would generally not be an issue that precision is lost.
+      // E.g. for "let x: f32 = 0.1" it's clear that we just want 0.1 as the closest representation
+      // that fits in f32. For "let x: f32 = y", this is not the case and losing precision may be an issue.
       if (sourceExpr.variant === Semantic.ENode.LiteralExpr) {
         return {
           kind: "basic-c-cast",

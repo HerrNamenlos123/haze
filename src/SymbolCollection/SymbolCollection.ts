@@ -641,6 +641,7 @@ export namespace Collect {
     variant: ENode.ExprIsTypeExpr;
     expr: Collect.ExprId;
     comparisonType: Collect.ExprId;
+    inverted: boolean;
   };
 
   export type AggregateLiteralElement = {
@@ -3143,6 +3144,7 @@ function collectExpr(
         variant: Collect.ENode.ExprIsTypeExpr,
         expr: collectExpr(cc, item.expr, args),
         comparisonType: collectExpr(cc, item.comparisonType, args),
+        inverted: item.inverted,
         sourceloc: item.sourceloc,
       })[1];
 

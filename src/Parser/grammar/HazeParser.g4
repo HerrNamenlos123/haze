@@ -281,6 +281,7 @@ postfix
     | QUESTIONEXCL
     | AS typeExpr
     | IS typeExpr
+    | ISNOT typeExpr
     ;
 
 multiplicative

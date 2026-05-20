@@ -10926,7 +10926,7 @@ export class SemanticElaborator {
         // Use the actual union member TypeUseId so the lowerer can find the correct tag index
         comparisonTypesAnd: [matchingMember],
         sourceloc: exprIsType.sourceloc,
-        invertCheck: false,
+        invertCheck: exprIsType.inverted,
         isTemporary: true,
         flow: sourceExpr.flow,
         writes: sourceExpr.writes,
@@ -10936,12 +10936,12 @@ export class SemanticElaborator {
     // all other types will result in a compile time true/false constant.
     // Limiting is and making it a compile error would seriously negatively affect how pleasant the operator is to use.
     // Resolve aliases and compare full TypeUseIds (including modifiers like const/mut/inline).
-    if (
-      this.resolveAlias(sourceExpr.type) === this.resolveAlias(comparisonType)
-    ) {
-      return this.sr.b.literal(true, exprIsType.sourceloc);
-    }
-    return this.sr.b.literal(false, exprIsType.sourceloc);
+    const typesMatch =
+      this.resolveAlias(sourceExpr.type) === this.resolveAlias(comparisonType);
+    return this.sr.b.literal(
+      exprIsType.inverted ? !typesMatch : typesMatch,
+      exprIsType.sourceloc
+    );
   }
 
   arraySubscript(arraySubscript: Collect.ArraySubscriptExpr) {

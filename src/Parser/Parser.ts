@@ -2050,7 +2050,7 @@ class ASTBuilder extends HazeParserListener {
         continue;
       }
 
-      if (postfix.AS() || postfix.IS()) {
+      if (postfix.AS() || postfix.IS() || postfix.ISNOT()) {
         if (i >= produced.length) {
           throw new InternalError("PostfixExpr AS/IS missing datatype");
         }
@@ -2069,6 +2069,7 @@ class ASTBuilder extends HazeParserListener {
             variant: "ExprIsTypeExpr",
             expr: expr,
             comparisonType: datatype,
+            inverted: postfix.ISNOT() !== null,
             sourceloc: this.loc(postfix),
           } satisfies ASTExprIsTypeExpr;
         }
