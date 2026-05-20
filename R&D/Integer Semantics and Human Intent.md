@@ -8,16 +8,39 @@ If you want C-like semantics (bit patterns, wraparound, representation-level beh
 
 ---
 
+## Semantic vs Explicit Precision Domains
+
+Haze distinguishes two categories of integer types:
+
+**Semantic domain** — `int` represents mathematical integers. Its internal representation is unspecified; the runtime may optimize storage freely. Overflow is forbidden and the mathematical integer invariant is always preserved.
+
+**Explicit precision domains** — `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, etc. represent intentionally chosen storage and performance constraints. Operations preserve their realm; overflow always traps at runtime.
+
+When `int` participates in arithmetic with a fixed-width integer, `int` absorbs the result:
+
+```haze
+int + u32 -> int
+int * i64 -> int
+```
+
+Different fixed-width realms do not implicitly mix:
+
+```haze
+u32 + i32  // compile error — explicit cast required
+u16 + u64  // compile error — explicit cast required
+```
+
+---
+
 ## Integer Types as Mathematical Sets
 
 Every integer type in Haze is defined as a **subset of the mathematical integers (ℤ)** with explicit bounds.
 
 Formally:
 
-* `int` = ℤ ∩ [INT_MIN, INT_MAX]  (e.g. i32.min .. i32.max)
-* `usize` = ℤ ∩ [0, USIZE_MAX]
-* `isize` = ℤ ∩ [ISIZE_MIN, ISIZE_MAX]
-* etc.
+* `int` = ℤ (unbounded mathematical integers; implementation chooses storage)
+* `u8` = ℤ ∩ [0, 255], `u16` = ℤ ∩ [0, 65535], etc.
+* `i8` = ℤ ∩ [-128, 127], `i32` = ℤ ∩ [-2³¹, 2³¹-1], etc.
 
 Values outside these ranges are **unrepresentable**. There is no such thing as "-1 as a usize" or reinterpretation of bit patterns.
 

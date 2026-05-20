@@ -42,6 +42,84 @@ A value always represents its mathematical value.
 
 ---
 
+# Semantic vs Explicit Precision Domains
+
+Haze distinguishes between two fundamentally different categories of numeric types:
+
+## Semantic Numeric Domains
+
+Semantic domains represent programmer intent and mathematical meaning.
+
+### int
+
+`int` is the default mathematical whole-number type.
+
+Properties:
+
+- represents mathematical integers
+- overflow forbidden
+- implementation representation is not semantically visible
+- runtime may internally optimize storage however it wants
+- arithmetic preserves mathematical integer semantics
+
+Operations:
+
+```
+int + int -> int
+int - int -> int
+int * int -> int
+```
+
+These operations preserve exactness and remain inside the mathematical integer domain.
+
+Division is special and handled separately below.
+
+### real
+
+`real` is the semantic floating-point domain.
+
+Current implementation: IEEE-754 f64.
+
+However, semantically:
+
+- `real` means "general real-number arithmetic"
+- not "explicitly chosen 64-bit float storage"
+
+`real` represents approximate arithmetic. Approximation is therefore an accepted property of this realm.
+
+---
+
+## Explicit Precision Domains
+
+These include:
+
+- `u8` / `u16` / `u32` / `u64`
+- `i8` / `i16` / `i32` / `i64`
+- `f32` / `f64`
+
+These are explicitly chosen precision, storage, and performance domains.
+
+Operations preserve their realm:
+
+```
+u32 + u32 -> u32
+i64 * i64 -> i64
+f32 / f32 -> f32
+```
+
+Runtime overflow traps always exist for fixed-width integer realms. The valid range depends on the target type.
+
+Example:
+
+```haze
+let x: u8 = 255
+x += 1
+```
+
+This always traps at runtime. No wraparound semantics exist implicitly.
+
+---
+
 # Overflow
 
 Integer overflow is forbidden.
@@ -143,77 +221,69 @@ Assertions and control-flow narrowing are the intended mechanism for narrowing i
 
 ---
 
-# Numeric Domains
+# Mixed Arithmetic Result Types
 
-Haze distinguishes between multiple numeric domains.
+## Mixed Integer Arithmetic
 
-## Integer Domain
+`int` absorbs fixed-width integer domains.
 
-Exact whole-number arithmetic.
+Examples:
 
-Types:
-
-* i8/i16/i32/i64
-* u8/u16/u32/u64
-* etc.
-
-Properties:
-
-* exact
-* non-approximate
-* overflow forbidden
-
----
-
-## Real Domain
-
-Approximate floating-point arithmetic representing mathematical real-number operations.
-
-Type:
-
-* real
-
-Current implementation:
-
-* IEEE-754 f64
-
-The `real` type represents intent, not storage format.
-
-`real` means:
-
-* "a general real-number value"
-* "mathematical floating-point arithmetic"
-
-It does not mean:
-
-* "explicitly 64-bit storage-focused floating point"
-
----
-
-## Explicit Floating-Point Domains
-
-Explicit low-level floating-point types.
-
-Types:
-
-* f32
-* f64
-
-These represent explicitly chosen precision/performance/storage domains.
-
-Unlike `real`, these types communicate implementation intent directly.
-
-Example:
-
-```haze
-f32
+```
+int + u32  -> int
+int - i64  -> int
+int * u8   -> int
 ```
 
-means:
+Reason: `int` is the semantic mathematical integer domain. Fixed-width integers are narrower explicit precision realms. Entering `int` removes boundedness constraints semantically. Once `int` participates, arithmetic remains inside the mathematical integer domain.
 
-* GPU-style arithmetic
-* reduced precision
-* explicit storage/performance choice
+---
+
+## Mixed Fixed-Width Integer Arithmetic
+
+Different explicit integer realms do not implicitly mix.
+
+Examples of compile errors:
+
+```
+u32 + i32
+u16 + u64
+```
+
+Reason: signedness intent differs; precision intent differs. Haze does not invent implicit promotion ladders between explicit precision realms. Explicit casts are required.
+
+---
+
+## Mixed Integer and Floating Arithmetic
+
+Floating-point realms dominate integer realms.
+
+Examples:
+
+```
+int  + real -> real
+u32  + real -> real
+int  + f32  -> f32
+u64  + f64  -> f64
+```
+
+Reason: the programmer has already entered an approximate numeric realm. Preserving that realm preserves intent. Approximation is already semantically active once floating arithmetic participates.
+
+---
+
+## Mixed Floating Realms
+
+Different explicit floating-point realms do not implicitly mix.
+
+Examples of compile errors:
+
+```
+f32 + f64
+real + f32
+f64 + real
+```
+
+Reason: precision and storage intent differ. Haze never guesses precision intent between explicit floating-point realms. Explicit realm transitions require explicit acknowledgement.
 
 ---
 
@@ -297,8 +367,6 @@ This cast is allowed because the programmer explicitly chose to:
 The same applies to:
 - `f64 -> f32`
 - `real -> f32`
-- `int -> real`
-- `int -> f32`
 - any narrowing floating-point conversion
 
 ---
@@ -319,30 +387,32 @@ not:
 2
 ```
 
-Therefore:
+Therefore any exact integer division produces a `real`:
 
 ```haze
 int / int -> real
 ```
 
-This promotion is implicit even though it may lose integer precision for large values.
+This applies universally to all exact integer divisions:
 
-Example:
-
-```haze
-let x = veryLargeI64 / 2
+```
+i32 / i32  -> real
+u32 / u32  -> real
+i64 / u64  -> real
+u8  / i16  -> real
+int / int  -> real
 ```
 
-This is allowed.
+This promotion is implicit even though large integers may lose precision during conversion into floating-point representation.
+
+This is intentional.
 
 Reason:
 - division fundamentally produces a fractional value
 - the programmer already requested a transition from exact integer arithmetic into approximate real-number arithmetic
 - approximation is therefore already part of the intended semantic operation
 
-This is the only place where Haze allows implicit precision-losing promotion between numeric realms.
-
-The rationale is ergonomic and semantic:
+Division is the only place where Haze allows implicit precision-losing promotion for two integer operands. The rationale is ergonomic and semantic:
 - integer truncation is usually unintended
 - real-valued division is usually intended
 - forcing explicit conversions for every division would severely harm usability
@@ -422,6 +492,16 @@ These are implementation details and not part of the semantic model.
 
 # Philosophy Summary
 
+The numeric system follows these rules:
+
+- preserve mathematical meaning
+- preserve exactness whenever semantically possible
+- preserve explicitly chosen precision realms
+- approximation is acceptable only where approximation is already semantically expected
+- never silently worsen approximation quality
+- never invent implicit promotion ladders between explicit precision realms
+- division is special because it fundamentally leaves the exact integer domain
+
 Haze rejects behavior that:
 
 * contradicts programmer intent
@@ -447,4 +527,3 @@ over:
 * direct hardware mapping
 * legacy language behavior
 * implicit low-level semantics
-
