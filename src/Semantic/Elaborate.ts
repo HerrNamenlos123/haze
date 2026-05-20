@@ -5866,6 +5866,86 @@ export class SemanticElaborator {
       });
     }
 
+    // Compound assignment on reactive types: x += 1, x -= 1, etc.
+    // Desugars to ReactiveWriteExpr(target, BinaryExpr(ReactiveReadExpr(target), value, op))
+    if (
+      assignment.operation !== EAssignmentOperation.Rebind &&
+      assignment.operation !== EAssignmentOperation.Assign &&
+      (lhsType.variant === Semantic.ENode.ReactiveDatatype ||
+        lhsType.variant === Semantic.ENode.ShallowReactiveDatatype)
+    ) {
+      const innerTypeId = lhsType.wrappedType;
+      const innerTypeDefId = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(innerTypeId)
+      ).type;
+      const rhsTypeDefId = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(valueExpr.type)
+      ).type;
+      const opTextMap: Record<number, string> = {
+        [EAssignmentOperation.Add]: "+=",
+        [EAssignmentOperation.Subtract]: "-=",
+        [EAssignmentOperation.Multiply]: "*=",
+        [EAssignmentOperation.Divide]: "/=",
+        [EAssignmentOperation.Modulo]: "%=",
+      };
+      this.checkCompoundAssignmentTypes(
+        innerTypeDefId,
+        rhsTypeDefId,
+        opTextMap[assignment.operation] ?? "?=",
+        Semantic.serializeTypeUse(this.sr, innerTypeId),
+        Semantic.serializeTypeUse(this.sr, valueExpr.type),
+        assignment.sourceloc
+      );
+      const convertedValueId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        valueExprId,
+        innerTypeId,
+        this.currentContext.constraints,
+        assignment.sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe ?? false
+      );
+      const [_, readId] = this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ReactiveReadExpr,
+        instanceIds: [],
+        value: targetExprId,
+        type: innerTypeId,
+        sourceloc: assignment.sourceloc,
+        isTemporary: true,
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+      });
+      const opToBinary: Record<number, EBinaryOperation> = {
+        [EAssignmentOperation.Add]: EBinaryOperation.Add,
+        [EAssignmentOperation.Subtract]: EBinaryOperation.Subtract,
+        [EAssignmentOperation.Multiply]: EBinaryOperation.Multiply,
+        [EAssignmentOperation.Divide]: EBinaryOperation.Divide,
+        [EAssignmentOperation.Modulo]: EBinaryOperation.Modulo,
+      };
+      const [__, sumId] = this.sr.b.binaryExpr(
+        readId,
+        convertedValueId,
+        opToBinary[assignment.operation],
+        innerTypeId,
+        assignment.sourceloc
+      );
+      const writes = this.sr.b.updateLHSDependencies(
+        targetExprId,
+        valueExpr.instanceIds
+      );
+      return this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ReactiveWriteExpr,
+        instanceIds: [...targetExpr.instanceIds],
+        value: sumId,
+        target: targetExprId,
+        type: targetExpr.type,
+        sourceloc: assignment.sourceloc,
+        isTemporary: true,
+        flow: targetExpr.flow.withAll(valueExpr.flow),
+        writes: targetExpr.writes.withAll(valueExpr.writes).withAll(writes),
+      });
+    }
+
     // Compound assignment operators: type-check per target-realm semantics
     if (
       assignment.operation !== EAssignmentOperation.Rebind &&
@@ -5962,15 +6042,99 @@ export class SemanticElaborator {
     // All other combos (integer+integer, float+integer) are allowed by target-realm semantics
   }
 
+  // Shared reactive desugaring for ++/--: emits ReactiveWriteExpr(target, ReactiveReadExpr(target) OP 1)
+  private incrReactiveExpr(
+    exprNode: Semantic.Expression,
+    exprId: Semantic.ExprId,
+    operation: EIncrOperation,
+    opStr: string,
+    sourceloc: import("../shared/Errors").SourceLoc,
+    inference: Semantic.Inference
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const typeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprNode.type)).type
+    ) as Semantic.ReactiveDatatypeDef | Semantic.ShallowReactiveDatatypeDef;
+    const innerTypeId = typeDef.wrappedType;
+    const innerTypeDefId = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(innerTypeId)
+    ).type;
+    const innerIsInteger = Conversion.isIntegerById(this.sr, innerTypeDefId);
+    const innerIsFloat = Conversion.isFloat(this.sr, innerTypeDefId);
+    if (!(innerIsInteger || innerIsFloat)) {
+      throw new CompilerError(
+        `'${opStr}' can only be applied to reactive values wrapping numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
+        sourceloc
+      );
+    }
+    const oneLiteral = innerIsFloat
+      ? this.sr.b.literal(1.0, sourceloc)
+      : this.sr.b.literal(1n, sourceloc);
+    const oneId = Conversion.MakeConversionOrThrow(
+      this.sr,
+      oneLiteral[1],
+      innerTypeId,
+      this.currentContext.constraints,
+      sourceloc,
+      Conversion.Mode.Implicit,
+      inference?.unsafe ?? false
+    );
+    const [_, readId] = this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.ReactiveReadExpr,
+      instanceIds: [],
+      value: exprId,
+      type: innerTypeId,
+      sourceloc: sourceloc,
+      isTemporary: true,
+      flow: Semantic.FlowResult.fallthrough(),
+      writes: Semantic.WriteResult.empty(),
+    });
+    const binaryOp =
+      operation === EIncrOperation.Incr
+        ? EBinaryOperation.Add
+        : EBinaryOperation.Subtract;
+    const [__, sumId] = this.sr.b.binaryExpr(
+      readId,
+      oneId,
+      binaryOp,
+      innerTypeId,
+      sourceloc
+    );
+    const writes = this.sr.b.updateLHSDependencies(exprId, exprNode.instanceIds);
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.ReactiveWriteExpr,
+      instanceIds: [...exprNode.instanceIds],
+      value: sumId,
+      target: exprId,
+      type: exprNode.type,
+      sourceloc: sourceloc,
+      isTemporary: true,
+      flow: exprNode.flow,
+      writes: exprNode.writes.withAll(writes),
+    });
+  }
+
   preIncrExpr(
     preIncr: Collect.PreIncrExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const [exprNode, exprId] = this.expr(preIncr.expr, { unsafe: inference?.unsafe });
-    const typeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprNode.type));
-    const lhsTypeId = typeUse.type;
-    const lhsIsInteger = Conversion.isIntegerById(this.sr, lhsTypeId);
-    const lhsIsFloat = Conversion.isFloat(this.sr, lhsTypeId);
+    const [exprNode, exprId] = this.expr(preIncr.expr, {
+      unsafe: inference?.unsafe,
+    });
+    const typeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(exprNode.type)
+    );
+    const lhsTypeDef = this.sr.typeDefNodes.get(typeUse.type);
+
+    if (
+      lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+      lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+    ) {
+      const opStr = preIncr.operation === EIncrOperation.Incr ? "++" : "--";
+      return this.incrReactiveExpr(exprNode, exprId, preIncr.operation, opStr, preIncr.sourceloc, inference);
+    }
+
+    const lhsIsInteger = Conversion.isIntegerById(this.sr, typeUse.type);
+    const lhsIsFloat = Conversion.isFloat(this.sr, typeUse.type);
     if (!(lhsIsInteger || lhsIsFloat)) {
       const opStr = preIncr.operation === EIncrOperation.Incr ? "++" : "--";
       throw new CompilerError(
@@ -5995,11 +6159,24 @@ export class SemanticElaborator {
     postIncr: Collect.PostIncrExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const [exprNode, exprId] = this.expr(postIncr.expr, { unsafe: inference?.unsafe });
-    const typeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprNode.type));
-    const lhsTypeId = typeUse.type;
-    const lhsIsInteger = Conversion.isIntegerById(this.sr, lhsTypeId);
-    const lhsIsFloat = Conversion.isFloat(this.sr, lhsTypeId);
+    const [exprNode, exprId] = this.expr(postIncr.expr, {
+      unsafe: inference?.unsafe,
+    });
+    const typeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(exprNode.type)
+    );
+    const lhsTypeDef = this.sr.typeDefNodes.get(typeUse.type);
+
+    if (
+      lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+      lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+    ) {
+      const opStr = postIncr.operation === EIncrOperation.Incr ? "++" : "--";
+      return this.incrReactiveExpr(exprNode, exprId, postIncr.operation, opStr, postIncr.sourceloc, inference);
+    }
+
+    const lhsIsInteger = Conversion.isIntegerById(this.sr, typeUse.type);
+    const lhsIsFloat = Conversion.isFloat(this.sr, typeUse.type);
     if (!(lhsIsInteger || lhsIsFloat)) {
       const opStr = postIncr.operation === EIncrOperation.Incr ? "++" : "--";
       throw new CompilerError(

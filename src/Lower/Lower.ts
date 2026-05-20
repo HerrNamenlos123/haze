@@ -1817,7 +1817,9 @@ export function lowerExpr(
       assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
       const one = Lowered.addExpr(lr, {
         variant: Lowered.ENode.LiteralExpr,
-        literal: { type: typeDef.primitive, value: 1n, unit: null },
+        literal: (Conversion.isInteger(typeDef.primitive)
+          ? { type: typeDef.primitive, value: 1n, unit: null }
+          : { type: typeDef.primitive, value: 1, unit: null }) as LiteralValue,
         type: typeId,
       })[1];
       return Lowered.addExpr(lr, {
@@ -1850,7 +1852,9 @@ export function lowerExpr(
       assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
       const one = Lowered.addExpr(lr, {
         variant: Lowered.ENode.LiteralExpr,
-        literal: { type: typeDef.primitive, value: 1n, unit: null },
+        literal: (Conversion.isInteger(typeDef.primitive)
+          ? { type: typeDef.primitive, value: 1n, unit: null }
+          : { type: typeDef.primitive, value: 1, unit: null }) as LiteralValue,
         type: typeId,
       })[1];
       const blockStatements: Lowered.StatementId[] = [];

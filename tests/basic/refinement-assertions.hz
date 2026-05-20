@@ -40,12 +40,6 @@ fn integer() {
 }
 
 fn main(): int {
-
-    // let b = 5;
-    // let a = rx.reactive(b);
-    // fmt.println(f"Value = {a}");
-    // a++;
-    // fmt.println(f"Value = {a}");
     // union_value();
     // union_union();
     // integer();

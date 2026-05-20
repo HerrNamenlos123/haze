@@ -938,17 +938,26 @@ class CodeGenerator {
 
   intFormatSpec(primitive: EPrimitive): string {
     switch (primitive) {
-      case EPrimitive.i8: return "PRId8";
-      case EPrimitive.i16: return "PRId16";
-      case EPrimitive.i32: return "PRId32";
+      case EPrimitive.i8:
+        return "PRId8";
+      case EPrimitive.i16:
+        return "PRId16";
+      case EPrimitive.i32:
+        return "PRId32";
       case EPrimitive.i64:
-      case EPrimitive.int: return "PRId64";
-      case EPrimitive.u8: return "PRIu8";
-      case EPrimitive.u16: return "PRIu16";
-      case EPrimitive.u32: return "PRIu32";
+      case EPrimitive.int:
+        return "PRId64";
+      case EPrimitive.u8:
+        return "PRIu8";
+      case EPrimitive.u16:
+        return "PRIu16";
+      case EPrimitive.u32:
+        return "PRIu32";
       case EPrimitive.u64:
-      case EPrimitive.usize: return "PRIu64";
-      default: assert(false);
+      case EPrimitive.usize:
+        return "PRIu64";
+      default:
+        assert(false);
     }
   }
 
@@ -1504,8 +1513,13 @@ class CodeGenerator {
           const tgtResolvedId = Lowered.resolveAlias(this.lr, expr.type);
           const tgtTypeUse = this.lr.typeUseNodes.get(tgtResolvedId);
 
-          const srcResolvedId = Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type);
-          const srcTypeDef = this.lr.typeDefNodes.get(this.lr.typeUseNodes.get(srcResolvedId).type);
+          const srcResolvedId = Lowered.resolveAlias(
+            this.lr,
+            this.lr.exprNodes.get(expr.expr).type
+          );
+          const srcTypeDef = this.lr.typeDefNodes.get(
+            this.lr.typeUseNodes.get(srcResolvedId).type
+          );
           assert(srcTypeDef.variant === Lowered.ENode.PrimitiveDatatype);
           const srcPrimitive = srcTypeDef.primitive;
           const [srcMin, srcMax] = Conversion.getIntegerMinMax(srcPrimitive);
@@ -1513,12 +1527,29 @@ class CodeGenerator {
           const needsLower = srcMin < tgtMin;
           const needsUpper = srcMax > tgtMax;
 
-          type IntLiteralPrimitive = EPrimitive.i8 | EPrimitive.i16 | EPrimitive.i32 | EPrimitive.i64 | EPrimitive.u8 | EPrimitive.u16 | EPrimitive.u32 | EPrimitive.u64 | EPrimitive.usize | EPrimitive.int;
+          type IntLiteralPrimitive =
+            | EPrimitive.i8
+            | EPrimitive.i16
+            | EPrimitive.i32
+            | EPrimitive.i64
+            | EPrimitive.u8
+            | EPrimitive.u16
+            | EPrimitive.u32
+            | EPrimitive.u64
+            | EPrimitive.usize
+            | EPrimitive.int;
           const emitBound = (v: bigint) => {
             const flattened: Lowered.StatementId[] = [];
             const lowered = lowerExpr(
               this.lr,
-              this.lr.sr.b.literalValue({ type: srcPrimitive as IntLiteralPrimitive, unit: null, value: v }, null)[1],
+              this.lr.sr.b.literalValue(
+                {
+                  type: srcPrimitive as IntLiteralPrimitive,
+                  unit: null,
+                  value: v,
+                },
+                null
+              )[1],
               flattened,
               { returnedInstanceIds: new Set() }
             )[1];
@@ -1526,11 +1557,17 @@ class CodeGenerator {
           };
 
           const parts: string[] = [];
-          if (needsLower) { parts.push(`__hz_tmp < ${emitBound(tgtMin)}`); }
-          if (needsUpper) { parts.push(`__hz_tmp > ${emitBound(tgtMax)}`); }
+          if (needsLower) {
+            parts.push(`__hz_tmp < ${emitBound(tgtMin)}`);
+          }
+          if (needsUpper) {
+            parts.push(`__hz_tmp > ${emitBound(tgtMax)}`);
+          }
 
           if (parts.length === 0) {
-            outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
+            outWriter.write(
+              `((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`
+            );
           } else {
             const targetPrettyName = tgtTypeUse.name.prettyName;
             const fmtSpec = this.intFormatSpec(srcPrimitive);

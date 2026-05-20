@@ -111,8 +111,6 @@ struct T {
 
 fn main(): int {
 
-    There are still 2 issues, you removed the ability to apply all of these operators to reactive values, that are supposed to be correctly updated with a reactive read and write, and secondly, there is a TypeScript error because the lowering function does not handle floating point values correctly. It should be defined for all integers and all floating point numbers, and in the lowered C code, every arithmetic operation can only strictly have 2 operands of the same bit width, otherwise the compiler failed.
-
     // let foo = T { value: 5 };
     // assert(foo.value is int);
     // (() => {
