@@ -1484,9 +1484,7 @@ export namespace Conversion {
 
       return {
         kind: "error",
-        message: `No safe conversion from ${sourceTypeText} to ${targetTypeText} is known: Target type has integer range ${
-          targetRangeText
-        }, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+        message: `Cannot implicitly convert ${sourceTypeText} to ${targetTypeText}: the value ${sourceRangeText} does not fit in the target range ${targetRangeText}. Constrain the value first with a conditional or an assertion.`,
       };
     }
 
@@ -1519,7 +1517,7 @@ export namespace Conversion {
       };
     }
 
-    // Conversions between Integer and float
+    // Conversions from Integer to float
     if (
       Conversion.isIntegerById(sr, resolvedSourceTypeUse.type) &&
       Conversion.isFloat(sr, resolvedTargetTypeUse.type)
@@ -1549,8 +1547,7 @@ export namespace Conversion {
       if (source.isExact()) {
         sourceRangeText = `value ${source.isExact()!}`;
       } else {
-        // sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive, "float")}`;
-        sourceRangeText = "range TBD";
+        sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive, "integer")}`;
       }
 
       const targetRangeText = Conversion.prettyRange(
@@ -1561,10 +1558,11 @@ export namespace Conversion {
 
       return {
         kind: "error",
-        message: `No lossless conversion from ${sourceTypeText} to ${targetTypeText} is possible: Floating point target type has safe integer range ${targetRangeText}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
+        message: `Cannot implicitly convert ${sourceTypeText} to ${targetTypeText}: ${targetTypeText} can only exactly represent integers in the range ${targetRangeText}, but the source has ${sourceRangeText}. Constrain the value first with a conditional or assertion, or use an explicit cast ('... as ${targetTypeText}') if precision loss is acceptable.`,
       };
     }
 
+    // From Float to Integer
     if (
       Conversion.isFloat(sr, resolvedSourceTypeUse.type) &&
       Conversion.isIntegerById(sr, resolvedTargetTypeUse.type)
@@ -1576,52 +1574,10 @@ export namespace Conversion {
       const t = sr.typeDefNodes.get(ti.type);
       assert(t.variant === Semantic.ENode.PrimitiveDatatype);
 
-      // Here, check if the floating point value is known to be an exact integer value, and if the integer value fits
-      // const source = valueNarrowing(sr);
-      // source.addRange(...Conversion.getFloatMinMaxSafeIntegerRange(f.primitive));
-      // source.constrainExactFromExprIfPossible(fromExprId);
-      // source.constrainFromConstraints(constraints, fromExprId);
-
       return {
         kind: "error",
-        message:
-          "Conversions from Integers to Floating points are not implemented yet, as it requires value narrowing on floating point numbers instead of bigint.... Use an explicit cast to override.",
+        message: `Cannot implicitly convert ${sourceTypeText} to ${targetTypeText}: floating-point values may have a fractional part that cannot be represented as an integer. Use an explicit cast ('... as ${targetTypeText}') if truncating toward zero is acceptable.`,
       };
-
-      // if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
-      //   return ok(
-      //     Semantic.addExpr(sr, {
-      //       variant: Semantic.ENode.ExplicitCastExpr,
-      //       instanceIds: sourceExpr.instanceIds,
-      //       expr: fromExprId,
-      //       type: toId,
-      //       sourceloc: sourceloc,
-      //       isTemporary: sourceExpr.isTemporary,
-      //     })[1]
-      //   );
-      // }
-
-      // let sourceRangeText = "";
-      // if (!source.isExact()) {
-      //   sourceRangeText = `range ${Conversion.prettyRanges(source.ranges, f.primitive)}`;
-      // } else {
-      //   sourceRangeText = `value ${source.isExact()!}`;
-      // }
-
-      // throw new CompilerError(
-      //   `No lossless conversion from '${Semantic.serializeTypeUse(
-      //     sr,
-      //     sourceExpr.type
-      //   )}' to '${Semantic.serializeTypeUse(
-      //     sr,
-      //     toId
-      //   )}' is possible: Floating point target type has safe integer range ${Conversion.prettyRange(
-      //     ...floatSafeIntegerRange,
-      //     t.primitive,
-      //     "float"
-      //   )}, but the source has ${sourceRangeText}. Add a conditional that constrains the integer range.`,
-      //   sourceloc
-      // );
     }
 
     // Conversions between floats
@@ -1667,9 +1623,7 @@ export namespace Conversion {
       if (mode !== Mode.Explicit) {
         return {
           kind: "error",
-          message: `Conversion from ${sourceTypeText} to ${targetTypeText} is lossy. If desired, cast explicitly using '... as ${
-            sourceTypeText
-          }'`,
+          message: `Cannot implicitly convert ${sourceTypeText} to ${targetTypeText}: the conversion is narrowing and may lose precision. If precision loss is acceptable, cast explicitly using '... as ${targetTypeText}'.`,
         };
       }
       return {
@@ -2679,10 +2633,10 @@ export namespace Conversion {
     throw new CompilerError(
       `No safe ${BinaryOperationToString(
         operation
-      )} operation is known between types '${Semantic.serializeTypeUse(
+      )} operation is known between types '${Semantic.serializeTypeUseWithAliasAKA(
         sr,
         leftTypeUseId
-      )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
+      )}' and '${Semantic.serializeTypeUseWithAliasAKA(sr, rightTypeUseId)}'`,
       sourceloc
     );
   }

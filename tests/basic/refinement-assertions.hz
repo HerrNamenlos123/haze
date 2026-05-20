@@ -1,6 +1,6 @@
 
 fn union_value() {
-    let b = Box<int>(42);
+    let b = Box<int | real>(42);
     assert(b.value is int);
     (() => {
         b.value = 3.14;
@@ -17,7 +17,14 @@ fn union_union() {
         b = null;
     })();
 
-    fmt.println(f"Value = {b}");
+    // TODO: Support formatting unions, by using compile time features
+    // to choose the currently active union variant
+    if b is int {
+        fmt.println(f"Value = {b}");
+    }
+    else {
+        fmt.println(f"Value = {b}");
+    }
     return 0;
 }
 
