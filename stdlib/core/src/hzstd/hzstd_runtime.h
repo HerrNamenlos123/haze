@@ -85,13 +85,16 @@ __attribute__((noreturn, cold)) static inline _Noreturn void hzstd_trap_str(hzst
     mapping_fn(__hz_tmp); \
   }))
 
-// Assert an integer value is within [min_val, max_val] then cast to target_type.
-// Evaluates expr once via the statement expression.
-#define HZ_ASSERT_INT_RANGE(expr, target_type, min_val, max_val) \
+// Assert an integer refinement and cast to target_type.
+// cond must be a boolean expression referencing __hz_tmp (the source value).
+// The codegen emits only the checks that are not already statically guaranteed
+// by the source type, with bounds cast to the source type — so no
+// signed/unsigned promotion issues arise.
+#define HZ_ASSERT_INT_RANGE(expr, target_type, cond) \
   (__extension__ ({ \
     __typeof__(expr) __hz_tmp = (expr); \
-    if ((__hz_tmp) < (min_val) || (__hz_tmp) > (max_val)) hzstd_panic("Refinement assertion failed: integer value is outside narrowed range"); \
-    (target_type)(__hz_tmp); \
+    if (cond) hzstd_panic("Refinement assertion failed: integer value is outside narrowed range"); \
+    (target_type)__hz_tmp; \
   }))
 
 #endif // HZSTD_RUNTIME_H

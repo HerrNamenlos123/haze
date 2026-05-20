@@ -454,6 +454,11 @@ export class SemanticBuilder {
 
   literal(value: boolean | number | bigint | string, sourceloc: SourceLoc) {
     if (typeof value === "bigint") {
+      const [intMin, intMax] = Conversion.getIntegerMinMax(EPrimitive.int);
+      assert(
+        value >= intMin && value <= intMax,
+        `Integer literal ${value} is out of range for type 'int' (${intMin}..${intMax})`
+      );
       return this.literalValue(
         {
           type: EPrimitive.int,

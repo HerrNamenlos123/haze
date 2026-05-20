@@ -90,6 +90,7 @@ class CodeGenerator {
   };
 
   private embeddedFiles: Semantic.EmbeddedFileData[] = [];
+  private inGlobalScope = false;
 
   constructor(
     public config: ModuleConfig,
@@ -689,7 +690,9 @@ class CodeGenerator {
       const statement = this.lr.statementNodes.get(statementId);
       assert(statement.variant === Lowered.ENode.VariableStatement);
       if (statement.value) {
+        this.inGlobalScope = true;
         let exprValue = this.emitExpr(statement.value).out.get();
+        this.inGlobalScope = false;
 
         if (statement.intrinsicTakeAddrOfValue) {
           exprValue = `&(${exprValue})`;
@@ -1428,27 +1431,46 @@ class CodeGenerator {
           }
         }
 
-        if (expr.integerNarrowingRange === null) {
+        if (expr.integerNarrowingRange === null || this.inGlobalScope) {
           outWriter.write(
             `((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`
           );
         } else {
-          const flattened: Lowered.StatementId[] = [];
-          const min = lowerExpr(
-            this.lr,
-            this.lr.sr.b.literal(expr.integerNarrowingRange.min, null)[1],
-            flattened,
-            { returnedInstanceIds: new Set() }
-          )[1];
-          const max = lowerExpr(
-            this.lr,
-            this.lr.sr.b.literal(expr.integerNarrowingRange.max, null)[1],
-            flattened,
-            { returnedInstanceIds: new Set() }
-          )[1];
-          outWriter.write(
-            `HZ_ASSERT_INT_RANGE(${exprWriter.out.get()}, ${this.mangleTypeUse(expr.type)}, ${this.emitExpr(min).out.get()}, ${this.emitExpr(max).out.get()})`
-          );
+          // Resolve source primitive to determine which bounds need runtime
+          // checking and emit bound literals cast to the source type —
+          // avoiding any signed/unsigned promotion mismatch in the comparison.
+          const srcResolvedId = Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type);
+          const srcTypeDef = this.lr.typeDefNodes.get(this.lr.typeUseNodes.get(srcResolvedId).type);
+          assert(srcTypeDef.variant === Lowered.ENode.PrimitiveDatatype);
+          const srcPrimitive = srcTypeDef.primitive;
+          const [srcMin, srcMax] = Conversion.getIntegerMinMax(srcPrimitive);
+          const { min: tgtMin, max: tgtMax } = expr.integerNarrowingRange;
+          const needsLower = srcMin < tgtMin;
+          const needsUpper = srcMax > tgtMax;
+
+          type IntLiteralPrimitive = EPrimitive.i8 | EPrimitive.i16 | EPrimitive.i32 | EPrimitive.i64 | EPrimitive.u8 | EPrimitive.u16 | EPrimitive.u32 | EPrimitive.u64 | EPrimitive.usize | EPrimitive.int;
+          const emitBound = (v: bigint) => {
+            const flattened: Lowered.StatementId[] = [];
+            const lowered = lowerExpr(
+              this.lr,
+              this.lr.sr.b.literalValue({ type: srcPrimitive as IntLiteralPrimitive, unit: null, value: v }, null)[1],
+              flattened,
+              { returnedInstanceIds: new Set() }
+            )[1];
+            return this.emitExpr(lowered).out.get();
+          };
+
+          const parts: string[] = [];
+          if (needsLower) { parts.push(`__hz_tmp < ${emitBound(tgtMin)}`); }
+          if (needsUpper) { parts.push(`__hz_tmp > ${emitBound(tgtMax)}`); }
+
+          if (parts.length === 0) {
+            outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
+          } else {
+            outWriter.write(
+              `HZ_ASSERT_INT_RANGE(${exprWriter.out.get()}, ${this.mangleTypeUse(expr.type)}, (${parts.join(" || ")}))`
+            );
+          }
         }
         return { out: outWriter, temp: tempWriter };
       }
