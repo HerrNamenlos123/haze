@@ -63,4 +63,37 @@ __attribute__((noreturn, cold)) static inline _Noreturn void hzstd_trap_str(hzst
   __builtin_trap();
 }
 
+// --- Refinement assertion macros ---
+
+// Check a union tag and panic if the refinement assumption is violated.
+// Evaluates union_expr once (as a void side-effect check).
+// Usage: (HZ_CHECK_UNION_TAG(union_expr, N), (union_expr).as_tag_N)
+// In GCC/Clang with GNU extensions the comma result is an lvalue when the
+// right operand is an lvalue, so the member access remains addressable.
+// union_expr is evaluated twice, which is safe for simple variable references
+// (the only case Haze generates this pattern for).
+#define HZ_CHECK_UNION_TAG(union_expr, tag_idx) \
+  ((void)(((union_expr).tag != (tag_idx)) \
+    ? (hzstd_panic("Refinement assertion failed: union variant changed after narrowing"), 0) \
+    : 0))
+
+// Check that a union's tag is in the set expected after narrowing, then apply
+// a remapping function. condition_expr must reference the union_expr directly.
+// Evaluates union_expr twice; safe for simple variable references.
+#define HZ_ASSERT_UNION_SET(union_expr, condition_expr, mapping_fn) \
+  (__extension__ ({ \
+    __typeof__(union_expr) __hz_tmp = (union_expr); \
+    if (!(condition_expr)) hzstd_panic("Refinement assertion failed: union variant changed after narrowing"); \
+    mapping_fn(__hz_tmp); \
+  }))
+
+// Assert an integer value is within [min_val, max_val] then cast to target_type.
+// Evaluates expr once via the statement expression.
+#define HZ_ASSERT_INT_RANGE(expr, target_type, min_val, max_val) \
+  (__extension__ ({ \
+    __typeof__(expr) __hz_tmp = (expr); \
+    if ((__hz_tmp) < (min_val) || (__hz_tmp) > (max_val)) hzstd_panic("Refinement assertion failed: integer value is outside narrowed range"); \
+    (target_type)(__hz_tmp); \
+  }))
+
 #endif // HZSTD_RUNTIME_H

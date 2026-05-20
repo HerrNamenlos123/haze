@@ -286,6 +286,7 @@ export namespace Lowered {
     variant: ENode.ExplicitCastExpr;
     expr: ExprId;
     type: TypeUseId;
+    integerNarrowingRange: { min: bigint; max: bigint } | null;
   };
 
   export type ValueToUnionCastExpr = {
@@ -301,6 +302,7 @@ export namespace Lowered {
     expr: ExprId;
     index: number;
     optimizeExprToNullptr: boolean;
+    needsRefinementAssertion: boolean;
     type: TypeUseId;
   };
 
@@ -309,6 +311,7 @@ export namespace Lowered {
     expr: ExprId;
     tagMapping: TagMapping;
     optimizeExprToNullptr: boolean;
+    needsRefinementAssertion: boolean;
     type: TypeUseId;
   };
 
@@ -1219,6 +1222,7 @@ export function lowerExpr(
         variant: Lowered.ENode.ExplicitCastExpr,
         expr: loweredExprId,
         type: targetTypeId,
+        integerNarrowingRange: expr.integerNarrowingRange,
       });
     }
 
@@ -1920,6 +1924,7 @@ export function lowerExpr(
           loweredUnionId,
           lr.sr.exprNodes.get(expr.expr).type
         ),
+        needsRefinementAssertion: true,
         index: expr.tag,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -2138,6 +2143,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         variant: Lowered.ENode.UnionToUnionCastExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
         optimizeExprToNullptr: false,
+        needsRefinementAssertion: expr.castComesFromNarrowingAndMayBeUnwrapped,
         tagMapping: mapping,
         type: loweredTargetUnionId,
       });
@@ -2245,6 +2251,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         expr: loweredInnerExpr[1],
         index: expr.srcErrTagIndex,
         type: srcUnionUse,
+        needsRefinementAssertion: false,
         optimizeExprToNullptr: shouldBeOptimizedToNullptr(
           lr,
           srcUnionUse,
@@ -2341,6 +2348,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         variant: Lowered.ENode.UnionToValueCastExpr,
         expr: loweredInnerExpr[1],
         index: expr.srcOkTagIndex,
+        needsRefinementAssertion: false,
         optimizeExprToNullptr:
           loweredValueUnionDef.optimizeAsRawPointer !== null,
         type: lowerTypeUse(lr, expr.srcOkTagType),

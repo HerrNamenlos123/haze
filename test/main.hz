@@ -105,15 +105,20 @@ fn print<T>(value: T) {
     }
 }
 
+struct T {
+    value: int | real;
+}
+
 fn main(): int {
 
-    // let foo: int | real = 5;
-    // (() => {
-    //     // foo = 3.14;
-    // })();
+    let foo = T { value: 5 };
+    assert(foo.value is int);
+    (() => {
+        foo.value = 3.14;
+    })();
 
-    // println(f"Foo = {foo}");
-    // return;
+    fmt.println(f"Foo = {foo.value}");
+    return 0;
 
     // const foo = Foo { value: 187, otherValue: 42.0 };
     // print(foo);

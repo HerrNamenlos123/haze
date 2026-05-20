@@ -1112,6 +1112,7 @@ export namespace Conversion {
       }
     | {
         kind: "basic-c-cast";
+        integerNarrowingRange?: { min: bigint; max: bigint };
       }
     | {
         kind: "reactive-read";
@@ -1457,8 +1458,10 @@ export namespace Conversion {
       source.constrainFromConstraints(constraints, sourceExprId);
 
       if (source.isWithinRange(...Conversion.getIntegerMinMax(t.primitive))) {
+        const [min, max] = Conversion.getIntegerMinMax(t.primitive);
         return {
           kind: "basic-c-cast",
+          integerNarrowingRange: { min: min, max: max },
         };
       }
 
@@ -2276,6 +2279,7 @@ export namespace Conversion {
           instanceIds: sourceExpr.instanceIds,
           expr: sourceExprId,
           type: targetTypeId,
+          integerNarrowingRange: conversionPlan.integerNarrowingRange ?? null,
           sourceloc: sourceloc,
           isTemporary: sourceExpr.isTemporary,
           flow: sourceExpr.flow,

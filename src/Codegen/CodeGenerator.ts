@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { Lowered, lowerTypeDef } from "../Lower/Lower";
+import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
 import { HAZE_GLOBAL_DIR } from "../Module";
 import { Conversion } from "../Semantic/Conversion";
 import type { Semantic } from "../Semantic/SemanticTypes";
@@ -985,7 +985,11 @@ class CodeGenerator {
       }
 
       const s = this.emitStatement(statementId);
-      tempWriter.write(s.temp);
+      // Interleave: each statement's setup code (temp) is emitted immediately
+      // before that statement rather than being hoisted to the function top.
+      // This is required for assertion temps that reference variables which
+      // are only declared later in the scope.
+      outWriter.write(s.temp);
       outWriter.write(s.out);
     }
 
@@ -1424,9 +1428,28 @@ class CodeGenerator {
           }
         }
 
-        outWriter.write(
-          `((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`
-        );
+        if (expr.integerNarrowingRange === null) {
+          outWriter.write(
+            `((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`
+          );
+        } else {
+          const flattened: Lowered.StatementId[] = [];
+          const min = lowerExpr(
+            this.lr,
+            this.lr.sr.b.literal(expr.integerNarrowingRange.min, null)[1],
+            flattened,
+            { returnedInstanceIds: new Set() }
+          )[1];
+          const max = lowerExpr(
+            this.lr,
+            this.lr.sr.b.literal(expr.integerNarrowingRange.max, null)[1],
+            flattened,
+            { returnedInstanceIds: new Set() }
+          )[1];
+          outWriter.write(
+            `HZ_ASSERT_INT_RANGE(${exprWriter.out.get()}, ${this.mangleTypeUse(expr.type)}, ${this.emitExpr(min).out.get()}, ${this.emitExpr(max).out.get()})`
+          );
+        }
         return { out: outWriter, temp: tempWriter };
       }
 
@@ -1474,6 +1497,16 @@ class CodeGenerator {
 
         if (union.optimizeAsRawPointer) {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+        } else if (expr.needsRefinementAssertion) {
+          // Use the comma lvalue extension: (void_check, lvalue_access).
+          // In GCC/Clang with GNU extensions, the comma result inherits the
+          // lvalue-ness of the right operand, so the member access stays
+          // addressable. union_expr is evaluated twice — safe for the simple
+          // symbol-value references Haze always produces here.
+          const inner = this.emitExpr(expr.expr).out.get();
+          outWriter.write(
+            `(HZ_CHECK_UNION_TAG(${inner}, ${expr.index}), (${inner}).as_tag_${expr.index})`
+          );
         } else {
           outWriter.write(
             `((${this.emitExpr(expr.expr).out.get()}).as_tag_${expr.index})`
@@ -1500,9 +1533,19 @@ class CodeGenerator {
             expr.tagMapping.from,
             expr.tagMapping.to
           );
-          outWriter.write(
-            `(${mappingName}(${this.emitExpr(expr.expr).out.get()}))`
-          );
+          if (expr.needsRefinementAssertion) {
+            const validTags = [...expr.tagMapping.mapping.keys()];
+            const condition = validTags
+              .map((t) => `__hz_tmp.tag == ${t}`)
+              .join(" || ");
+            outWriter.write(
+              `HZ_ASSERT_UNION_SET(${this.emitExpr(expr.expr).out.get()}, (${condition}), ${mappingName})`
+            );
+          } else {
+            outWriter.write(
+              `(${mappingName}(${this.emitExpr(expr.expr).out.get()}))`
+            );
+          }
         }
         return { out: outWriter, temp: tempWriter };
       }

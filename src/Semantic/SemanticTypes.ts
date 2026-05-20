@@ -597,6 +597,7 @@ export namespace Semantic {
     variant: ENode.ExplicitCastExpr;
     instanceIds: InstanceId[];
     expr: ExprId;
+    integerNarrowingRange: { min: bigint; max: bigint } | null;
   };
 
   export type AttemptExpr = BaseExpr & {
