@@ -1498,14 +1498,9 @@ class CodeGenerator {
         if (union.optimizeAsRawPointer) {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
         } else if (expr.needsRefinementAssertion) {
-          // Use the comma lvalue extension: (void_check, lvalue_access).
-          // In GCC/Clang with GNU extensions, the comma result inherits the
-          // lvalue-ness of the right operand, so the member access stays
-          // addressable. union_expr is evaluated twice — safe for the simple
-          // symbol-value references Haze always produces here.
           const inner = this.emitExpr(expr.expr).out.get();
           outWriter.write(
-            `(HZ_CHECK_UNION_TAG(${inner}, ${expr.index}), (${inner}).as_tag_${expr.index})`
+            `HZ_GET_UNION_TAG(${inner}, ${expr.index})`
           );
         } else {
           outWriter.write(
