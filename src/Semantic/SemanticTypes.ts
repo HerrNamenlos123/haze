@@ -10,6 +10,7 @@ import {
   type EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
+  type EIncrOperation,
   type EOverloadedOperator,
   type EUnaryOperation,
   type EVariableMutability,
@@ -126,6 +127,8 @@ export namespace Semantic {
     ReactiveWriteExpr,
     ReactiveReadExpr,
     ComputedReadExpr,
+    PreIncrExpr,
+    PostIncrExpr,
     // Dummy
     Dummy,
   }
@@ -581,6 +584,20 @@ export namespace Semantic {
     operation: EAssignmentOperation;
   };
 
+  export type PreIncrExpr = BaseExpr & {
+    variant: ENode.PreIncrExpr;
+    instanceIds: InstanceId[];
+    expr: ExprId;
+    operation: EIncrOperation;
+  };
+
+  export type PostIncrExpr = BaseExpr & {
+    variant: ENode.PostIncrExpr;
+    instanceIds: InstanceId[];
+    expr: ExprId;
+    operation: EIncrOperation;
+  };
+
   export type DereferenceExpr = BaseExpr & {
     variant: ENode.DereferenceExpr;
     instanceIds: InstanceId[];
@@ -807,7 +824,9 @@ export namespace Semantic {
     | ArrayLiteralExpr
     | ArraySubscriptExpr
     | ArraySliceExpr
-    | StringConstructExpr;
+    | StringConstructExpr
+    | PreIncrExpr
+    | PostIncrExpr;
 
   // =============================================
 

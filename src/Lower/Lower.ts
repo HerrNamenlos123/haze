@@ -11,6 +11,7 @@ import {
   EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
+  EIncrOperation,
   type EUnaryOperation,
   UnaryOperationToString,
 } from "../shared/AST";
@@ -105,7 +106,7 @@ export namespace Lowered {
     StringSubscriptExpr = 56,
     StringConstructExpr = 57,
     // Dummy
-    Dummy = 58,
+    Dummy = 60,
 
     TypeAliasDatatype,
   }
@@ -1113,11 +1114,14 @@ export function lowerExpr(
           wasMangled = mangled.wasMangled;
         }
 
-        const captureOverride = lr.currentFunctionCaptureTypeMap.get(expr.symbol);
+        const captureOverride = lr.currentFunctionCaptureTypeMap.get(
+          expr.symbol
+        );
         if (captureOverride) {
           // Suppress the hoisting * when the captured type is already a pointer (non-inline struct).
           // Union captures still need *, but narrowed struct captures are already stored as pointers.
-          const suppressStar = captureOverride.suppressHoisting || !!args?.noLambdaHoisting;
+          const suppressStar =
+            captureOverride.suppressHoisting || !!args?.noLambdaHoisting;
           const effectiveName =
             symbol.requiresHoisting && !suppressStar
               ? "*" + symbol.name
@@ -1802,6 +1806,95 @@ export function lowerExpr(
       }
       assert(false);
       throw new Error();
+    }
+
+    case Semantic.ENode.PreIncrExpr: {
+      // ++x / --x: collapse to ExprAssignmentExpr(target, target OP 1)
+      const loweredExpr = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
+      const typeId = lowerTypeUse(lr, expr.type);
+      const type = lr.typeUseNodes.get(typeId);
+      const typeDef = lr.typeDefNodes.get(type.type);
+      assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
+      const one = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.LiteralExpr,
+        literal: { type: typeDef.primitive, value: 1n, unit: null },
+        type: typeId,
+      })[1];
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ExprAssignmentExpr,
+        target: loweredExpr,
+        value: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BinaryExpr,
+          left: loweredExpr,
+          right: one,
+          operation:
+            expr.operation === EIncrOperation.Incr
+              ? EBinaryOperation.Add
+              : EBinaryOperation.Subtract,
+          type: typeId,
+          plainResultType: type.type,
+        })[1],
+        assignRefTarget: false,
+        type: typeId,
+      });
+    }
+
+    case Semantic.ENode.PostIncrExpr: {
+      // x++ / x--: collapse to BlockScopeExpr that saves the old value, mutates via
+      // ExprAssignmentExpr(target, BinaryExpr(target, 1, Add/Sub)), and returns old value.
+      // This mirrors PreIncrExpr but wraps the whole thing so the pre-mutation value is returned.
+      const loweredExpr = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
+      const typeId = lowerTypeUse(lr, expr.type);
+      const type = lr.typeUseNodes.get(typeId);
+      const typeDef = lr.typeDefNodes.get(type.type);
+      assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
+      const one = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.LiteralExpr,
+        literal: { type: typeDef.primitive, value: 1n, unit: null },
+        type: typeId,
+      })[1];
+      const blockStatements: Lowered.StatementId[] = [];
+      const [_savedExpr, savedExprId] = storeInTempVarAndGet(
+        lr,
+        typeId,
+        loweredExpr,
+        expr.sourceloc,
+        blockStatements
+      );
+      const mutateExprId = Lowered.addExpr(lr, {
+        variant: Lowered.ENode.ExprAssignmentExpr,
+        target: loweredExpr,
+        value: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.BinaryExpr,
+          left: loweredExpr,
+          right: one,
+          operation:
+            expr.operation === EIncrOperation.Incr
+              ? EBinaryOperation.Add
+              : EBinaryOperation.Subtract,
+          type: typeId,
+          plainResultType: type.type,
+        })[1],
+        assignRefTarget: false,
+        type: typeId,
+      })[1];
+      blockStatements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.ExprStatement,
+          expr: mutateExprId,
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        sourceloc: expr.sourceloc,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: blockStatements,
+          emittedExpr: savedExprId,
+        })[1],
+        type: typeId,
+      });
     }
 
     case Semantic.ENode.SizeofExpr: {
@@ -3827,9 +3920,13 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           );
           assert(varsym.variant === Semantic.ENode.VariableSymbol);
           if (varsym.requiresHoisting) {
-            const capTypeUse = lr.sr.typeUseNodes.get(symbol.envType.captures[i].type);
+            const capTypeUse = lr.sr.typeUseNodes.get(
+              symbol.envType.captures[i].type
+            );
             const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
-            const captureAlreadyPointer = capTypeDef.variant === Semantic.ENode.StructDatatype && !capTypeUse.inline;
+            const captureAlreadyPointer =
+              capTypeDef.variant === Semantic.ENode.StructDatatype &&
+              !capTypeUse.inline;
             if (!captureAlreadyPointer) {
               name = "*" + name;
             }
@@ -4050,7 +4147,9 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         for (const cap of symbol.envType.captures) {
           const capTypeUse = lr.sr.typeUseNodes.get(cap.type);
           const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
-          const suppressHoisting = capTypeDef.variant === Semantic.ENode.StructDatatype && !capTypeUse.inline;
+          const suppressHoisting =
+            capTypeDef.variant === Semantic.ENode.StructDatatype &&
+            !capTypeUse.inline;
           lr.currentFunctionCaptureTypeMap.set(cap.capturedSymbol, {
             loweredType: lowerTypeUse(lr, cap.type),
             suppressHoisting: suppressHoisting,

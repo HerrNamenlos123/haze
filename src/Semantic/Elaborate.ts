@@ -10,6 +10,7 @@ import {
   EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
+  EIncrOperation,
   EOverloadedOperator,
   EUnaryOperation,
   EVariableMutability,
@@ -1928,6 +1929,12 @@ export class SemanticElaborator {
 
       case Collect.ENode.ExprAssignmentExpr:
         return this.assignmentExpr(expr, inference);
+
+      case Collect.ENode.PreIncrExpr:
+        return this.preIncrExpr(expr, inference);
+
+      case Collect.ENode.PostIncrExpr:
+        return this.postIncrExpr(expr, inference);
 
       case Collect.ENode.ExplicitCastExpr:
         return this.explicitCastExpr(expr, inference);
@@ -5859,6 +5866,52 @@ export class SemanticElaborator {
       });
     }
 
+    // Compound assignment operators: type-check per target-realm semantics
+    if (
+      assignment.operation !== EAssignmentOperation.Rebind &&
+      assignment.operation !== EAssignmentOperation.Assign
+    ) {
+      const lhsTypeUseResolved = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(targetExprUnionUnwrapped.type)
+      );
+      const rhsTypeUseResolved = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(valueExpr.type)
+      );
+      const opTextMap: Record<number, string> = {
+        [EAssignmentOperation.Add]: "+=",
+        [EAssignmentOperation.Subtract]: "-=",
+        [EAssignmentOperation.Multiply]: "*=",
+        [EAssignmentOperation.Divide]: "/=",
+        [EAssignmentOperation.Modulo]: "%=",
+      };
+      const opText = opTextMap[assignment.operation] ?? "?=";
+      this.checkCompoundAssignmentTypes(
+        lhsTypeUseResolved.type,
+        rhsTypeUseResolved.type,
+        opText,
+        Semantic.serializeTypeUse(this.sr, targetExprUnionUnwrapped.type),
+        Semantic.serializeTypeUse(this.sr, valueExpr.type),
+        assignment.sourceloc
+      );
+      // Emit compound assignment node; lowering collapses it to target = target OP value
+      const writes = this.sr.b.updateLHSDependencies(
+        targetExprUnionUnwrappedId,
+        valueExpr.instanceIds
+      );
+      return this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ExprAssignmentExpr,
+        instanceIds: [...valueExpr.instanceIds],
+        value: valueExprId,
+        target: targetExprUnionUnwrappedId,
+        operation: assignment.operation,
+        type: targetExprUnionUnwrapped.type,
+        sourceloc: assignment.sourceloc,
+        isTemporary: true,
+        flow: targetExpr.flow.withAll(valueExpr.flow),
+        writes: targetExpr.writes.withAll(valueExpr.writes).withAll(writes),
+      });
+    }
+
     return this.sr.b.assignment(
       targetExprUnionUnwrappedId,
       assignment.operation,
@@ -5867,6 +5920,104 @@ export class SemanticElaborator {
       assignment.sourceloc,
       inference
     );
+  }
+
+  checkCompoundAssignmentTypes(
+    lhsTypeId: Semantic.TypeDefId,
+    rhsTypeId: Semantic.TypeDefId,
+    opText: string,
+    lhsTypeText: string,
+    rhsTypeText: string,
+    sourceloc: import("../shared/Errors").SourceLoc
+  ) {
+    const lhsIsInteger = Conversion.isIntegerById(this.sr, lhsTypeId);
+    const lhsIsFloat = Conversion.isFloat(this.sr, lhsTypeId);
+    const rhsIsInteger = Conversion.isIntegerById(this.sr, rhsTypeId);
+    const rhsIsFloat = Conversion.isFloat(this.sr, rhsTypeId);
+
+    if (!(lhsIsInteger || lhsIsFloat)) {
+      throw new CompilerError(
+        `Operator '${opText}' requires a numeric left-hand side, got '${lhsTypeText}'`,
+        sourceloc
+      );
+    }
+    if (!(rhsIsInteger || rhsIsFloat)) {
+      throw new CompilerError(
+        `Operator '${opText}' requires a numeric right-hand side, got '${rhsTypeText}'`,
+        sourceloc
+      );
+    }
+    if (lhsIsInteger && rhsIsFloat) {
+      throw new CompilerError(
+        `Cannot use '${opText}' to mutate integer '${lhsTypeText}' with a floating-point value '${rhsTypeText}': approximate values cannot implicitly mutate exact integer realms. Use an explicit conversion (e.g. 'value.floor() as ${lhsTypeText}') to choose a rounding strategy`,
+        sourceloc
+      );
+    }
+    if (lhsIsFloat && rhsIsFloat && lhsTypeId !== rhsTypeId) {
+      throw new CompilerError(
+        `Cannot use '${opText}' between different floating-point realms '${lhsTypeText}' and '${rhsTypeText}': explicit precision realms must not silently mix. Cast the right-hand side to '${lhsTypeText}' first`,
+        sourceloc
+      );
+    }
+    // All other combos (integer+integer, float+integer) are allowed by target-realm semantics
+  }
+
+  preIncrExpr(
+    preIncr: Collect.PreIncrExpr,
+    inference: Semantic.Inference
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const [exprNode, exprId] = this.expr(preIncr.expr, { unsafe: inference?.unsafe });
+    const typeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprNode.type));
+    const lhsTypeId = typeUse.type;
+    const lhsIsInteger = Conversion.isIntegerById(this.sr, lhsTypeId);
+    const lhsIsFloat = Conversion.isFloat(this.sr, lhsTypeId);
+    if (!(lhsIsInteger || lhsIsFloat)) {
+      const opStr = preIncr.operation === EIncrOperation.Incr ? "++" : "--";
+      throw new CompilerError(
+        `Prefix '${opStr}' can only be applied to numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
+        preIncr.sourceloc
+      );
+    }
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.PreIncrExpr,
+      expr: exprId,
+      operation: preIncr.operation,
+      instanceIds: [...exprNode.instanceIds],
+      type: exprNode.type,
+      sourceloc: preIncr.sourceloc,
+      isTemporary: true,
+      flow: exprNode.flow,
+      writes: exprNode.writes,
+    });
+  }
+
+  postIncrExpr(
+    postIncr: Collect.PostIncrExpr,
+    inference: Semantic.Inference
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const [exprNode, exprId] = this.expr(postIncr.expr, { unsafe: inference?.unsafe });
+    const typeUse = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(exprNode.type));
+    const lhsTypeId = typeUse.type;
+    const lhsIsInteger = Conversion.isIntegerById(this.sr, lhsTypeId);
+    const lhsIsFloat = Conversion.isFloat(this.sr, lhsTypeId);
+    if (!(lhsIsInteger || lhsIsFloat)) {
+      const opStr = postIncr.operation === EIncrOperation.Incr ? "++" : "--";
+      throw new CompilerError(
+        `Postfix '${opStr}' can only be applied to numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
+        postIncr.sourceloc
+      );
+    }
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.PostIncrExpr,
+      expr: exprId,
+      operation: postIncr.operation,
+      instanceIds: [...exprNode.instanceIds],
+      type: exprNode.type,
+      sourceloc: postIncr.sourceloc,
+      isTemporary: true,
+      flow: exprNode.flow,
+      writes: exprNode.writes,
+    });
   }
 
   elaborateParentSymbolFromCache(
@@ -10217,14 +10368,21 @@ export class SemanticElaborator {
         (c) => c.variable === capturedVariableId
       )
     ) {
+      // Use the original variable type and a raw symbol reference for the env slot.
+      // The capture stores a pointer to the variable; any narrowing casts on
+      // resultingExprId are contextual and must not bleed into the closure env block.
+      const rawValueId = this.sr.b.symbolValue(
+        capturedVariableId,
+        resultingExpr.sourceloc
+      )[1];
       lambdaExpr.envType.captures.push({
         name: capturedVariable.name,
-        type: resultingExpr.type,
+        type: capturedVariable.type,
         capturedSymbol: capturedVariableId,
       });
       lambdaExpr.envValue.captures.push({
         variable: capturedVariableId,
-        value: resultingExprId,
+        value: rawValueId,
       });
     }
   }
