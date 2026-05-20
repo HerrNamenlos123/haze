@@ -1,0 +1,16 @@
+
+fn union_value() {
+    let b = Box<int>(42);
+    assert(b.value is int);
+    (() => {
+        b.value = 3.14;
+    })();
+
+    fmt.println(f"Value = {b.value}");
+    return 0;
+}
+
+fn main(): int {
+    union_value();
+    return 0;
+}

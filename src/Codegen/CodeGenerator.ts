@@ -85,12 +85,14 @@ class CodeGenerator {
     type_declarations: new OutputWriter(),
     type_definitions: new OutputWriter(),
     function_declarations: new OutputWriter(),
+    refinement_helpers: new OutputWriter(),
     function_definitions: new OutputWriter(),
     global_variables: new OutputWriter(),
   };
 
   private embeddedFiles: Semantic.EmbeddedFileData[] = [];
   private inGlobalScope = false;
+  private emittedTagNameFunctions = new Set<Lowered.TypeDefId>();
 
   constructor(
     public config: ModuleConfig,
@@ -475,6 +477,10 @@ class CodeGenerator {
 
     writer.write("\n\n// Global Variable section\n");
     writer.write(this.out.global_variables);
+    writer.writeLine();
+
+    writer.write("\n\n// Refinement helper functions\n");
+    writer.write(this.out.refinement_helpers);
     writer.writeLine();
 
     writer.write("\n\n// Function definition section\n");
@@ -888,6 +894,62 @@ class CodeGenerator {
       return "_H" + name.mangledName;
     }
     return name.mangledName;
+  }
+
+  unionVariantPrettyName(
+    union: Lowered.UntaggedUnionDatatypeDef | Lowered.TaggedUnionDatatypeDef,
+    index: number
+  ): string {
+    if (union.variant === Lowered.ENode.TaggedUnionDatatype) {
+      return union.members[index].tag;
+    }
+    return this.lr.typeUseNodes.get(union.members[index]).name.prettyName;
+  }
+
+  ensureUnionTagNameFunction(typeDefId: Lowered.TypeDefId): string {
+    const union = this.lr.typeDefNodes.get(typeDefId);
+    assert(
+      union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+        union.variant === Lowered.ENode.TaggedUnionDatatype
+    );
+    const fnName = `__hz_tag_name_${this.mangleTypeDef(union)}`;
+    if (this.emittedTagNameFunctions.has(typeDefId)) {
+      return fnName;
+    }
+    this.emittedTagNameFunctions.add(typeDefId);
+    this.out.refinement_helpers
+      .writeLine(`static const char* ${fnName}(uint8_t tag) {`)
+      .pushIndent()
+      .writeLine("switch (tag) {")
+      .pushIndent();
+    for (let i = 0; i < union.members.length; i++) {
+      this.out.refinement_helpers.writeLine(
+        `case ${i}: return "${this.unionVariantPrettyName(union, i)}";`
+      );
+    }
+    this.out.refinement_helpers
+      .writeLine('default: return "<unknown>";')
+      .popIndent()
+      .writeLine("}")
+      .popIndent()
+      .writeLine("}");
+    return fnName;
+  }
+
+  intFormatSpec(primitive: EPrimitive): string {
+    switch (primitive) {
+      case EPrimitive.i8: return "PRId8";
+      case EPrimitive.i16: return "PRId16";
+      case EPrimitive.i32: return "PRId32";
+      case EPrimitive.i64:
+      case EPrimitive.int: return "PRId64";
+      case EPrimitive.u8: return "PRIu8";
+      case EPrimitive.u16: return "PRIu16";
+      case EPrimitive.u32: return "PRIu32";
+      case EPrimitive.u64:
+      case EPrimitive.usize: return "PRIu64";
+      default: assert(false);
+    }
   }
 
   makeCheckedBinaryArithmeticFunction(
@@ -1439,6 +1501,9 @@ class CodeGenerator {
           // Resolve source primitive to determine which bounds need runtime
           // checking and emit bound literals cast to the source type —
           // avoiding any signed/unsigned promotion mismatch in the comparison.
+          const tgtResolvedId = Lowered.resolveAlias(this.lr, expr.type);
+          const tgtTypeUse = this.lr.typeUseNodes.get(tgtResolvedId);
+
           const srcResolvedId = Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type);
           const srcTypeDef = this.lr.typeDefNodes.get(this.lr.typeUseNodes.get(srcResolvedId).type);
           assert(srcTypeDef.variant === Lowered.ENode.PrimitiveDatatype);
@@ -1467,8 +1532,10 @@ class CodeGenerator {
           if (parts.length === 0) {
             outWriter.write(`((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`);
           } else {
+            const targetPrettyName = tgtTypeUse.name.prettyName;
+            const fmtSpec = this.intFormatSpec(srcPrimitive);
             outWriter.write(
-              `HZ_ASSERT_INT_RANGE(${exprWriter.out.get()}, ${this.mangleTypeUse(expr.type)}, (${parts.join(" || ")}))`
+              `HZ_ASSERT_INT_RANGE(${exprWriter.out.get()}, ${this.mangleTypeUse(expr.type)}, (${parts.join(" || ")}), "${targetPrettyName}", ${fmtSpec})`
             );
           }
         }
@@ -1521,8 +1588,10 @@ class CodeGenerator {
           outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
         } else if (expr.needsRefinementAssertion) {
           const inner = this.emitExpr(expr.expr).out.get();
+          const tagNameFn = this.ensureUnionTagNameFunction(typeUse.type);
+          const expectedName = this.unionVariantPrettyName(union, expr.index);
           outWriter.write(
-            `HZ_GET_UNION_TAG(${inner}, ${expr.index})`
+            `HZ_GET_UNION_TAG(${inner}, ${expr.index}, "${expectedName}", ${tagNameFn})`
           );
         } else {
           outWriter.write(
@@ -1555,8 +1624,20 @@ class CodeGenerator {
             const condition = validTags
               .map((t) => `__hz_tmp.tag == ${t}`)
               .join(" || ");
+            const srcTypeUse = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, expr.tagMapping.from)
+            );
+            const srcUnion = this.lr.typeDefNodes.get(srcTypeUse.type);
+            assert(
+              srcUnion.variant === Lowered.ENode.UntaggedUnionDatatype ||
+                srcUnion.variant === Lowered.ENode.TaggedUnionDatatype
+            );
+            const tagNameFn = this.ensureUnionTagNameFunction(srcTypeUse.type);
+            const validSetStr = validTags
+              .map((t) => this.unionVariantPrettyName(srcUnion, t))
+              .join(" | ");
             outWriter.write(
-              `HZ_ASSERT_UNION_SET(${this.emitExpr(expr.expr).out.get()}, (${condition}), ${mappingName})`
+              `HZ_ASSERT_UNION_SET(${this.emitExpr(expr.expr).out.get()}, (${condition}), ${mappingName}, "${validSetStr}", ${tagNameFn})`
             );
           } else {
             outWriter.write(

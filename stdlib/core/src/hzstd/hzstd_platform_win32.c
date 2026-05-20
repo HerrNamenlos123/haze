@@ -302,9 +302,9 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
     }
   }
 
-  fprintf(stderr, "\e[0;31m[FATAL] Thread panicked: ");
+  fprintf(stderr, "\e[0;31m[FATAL] Thread panicked:\e[0m ");
   fwrite(panic_reason.data, panic_reason.length, 1, stderr);
-  fprintf(stderr, "\n\e[0m\e[1;37mStack trace: \n\n\e[0m");
+  fprintf(stderr, "\n\e[1;37mStack trace: \n\n\e[0m");
   hzstd_print_stacktrace(frameArray, panic_skip_n_frames);
 
   fflush(stdout);
