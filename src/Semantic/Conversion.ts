@@ -2520,6 +2520,38 @@ export namespace Conversion {
       return sr.b.boolType();
     }
 
+    const leftIsFloat = isFloat(sr, leftTypeId);
+    const rightIsFloat = isFloat(sr, rightTypeId);
+    if (leftIsFloat && rightIsFloat) {
+      if (leftTypeId === rightTypeId) {
+        return makePrimitiveAvailable(
+          sr,
+          EPrimitive.bool,
+          EDatatypeMutability.Const,
+          sourceloc
+        );
+      }
+      throw new CompilerError(
+        `No safe comparison is available between types '${Semantic.serializeTypeUse(
+          sr,
+          leftTypeUseId
+        )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
+        sourceloc
+      );
+    }
+
+    if (
+      (leftIsFloat && isIntegerById(sr, rightTypeId)) ||
+      (rightIsFloat && isIntegerById(sr, leftTypeId))
+    ) {
+      return makePrimitiveAvailable(
+        sr,
+        EPrimitive.bool,
+        EDatatypeMutability.Const,
+        sourceloc
+      );
+    }
+
     const comparisons = [
       {
         comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.str)],
@@ -2529,13 +2561,6 @@ export namespace Conversion {
       },
       {
         comparable: [makeRawPrimitiveAvailable(sr, EPrimitive.bool)],
-      },
-      {
-        comparable: [
-          makeRawPrimitiveAvailable(sr, EPrimitive.f32),
-          makeRawPrimitiveAvailable(sr, EPrimitive.f64),
-          makeRawPrimitiveAvailable(sr, EPrimitive.real),
-        ],
       },
     ];
     for (const c of comparisons) {

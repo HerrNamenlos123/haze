@@ -527,6 +527,55 @@ export class SemanticElaborator {
       }
 
       // Fall through to default comparison behavior
+      const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(left.type)
+      );
+      const resolvedRightTypeUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(_right2.type)
+      );
+      const leftTypeId = resolvedLeftTypeUse.type;
+      const rightTypeId = resolvedRightTypeUse.type;
+      const leftIsFloat = Conversion.isFloat(this.sr, leftTypeId);
+      const rightIsFloat = Conversion.isFloat(this.sr, rightTypeId);
+      const leftIsInteger = Conversion.isIntegerById(this.sr, leftTypeId);
+      const rightIsInteger = Conversion.isIntegerById(this.sr, rightTypeId);
+
+      if (leftIsFloat && rightIsInteger) {
+        const targetTypeUseId = makeTypeUse(
+          this.sr,
+          leftTypeId,
+          EDatatypeMutability.Const,
+          false,
+          binaryExpr.sourceloc
+        )[1];
+        rightId = Conversion.MakeConversionOrThrow(
+          this.sr,
+          rightId,
+          targetTypeUseId,
+          this.currentContext.constraints,
+          binaryExpr.sourceloc,
+          Conversion.Mode.Explicit,
+          inference?.unsafe ?? false
+        );
+      } else if (rightIsFloat && leftIsInteger) {
+        const targetTypeUseId = makeTypeUse(
+          this.sr,
+          rightTypeId,
+          EDatatypeMutability.Const,
+          false,
+          binaryExpr.sourceloc
+        )[1];
+        leftId = Conversion.MakeConversionOrThrow(
+          this.sr,
+          leftId,
+          targetTypeUseId,
+          this.currentContext.constraints,
+          binaryExpr.sourceloc,
+          Conversion.Mode.Explicit,
+          inference?.unsafe ?? false
+        );
+      }
+
       return this.sr.b.binaryExpr(
         leftId,
         rightId,
@@ -6099,7 +6148,10 @@ export class SemanticElaborator {
       innerTypeId,
       sourceloc
     );
-    const writes = this.sr.b.updateLHSDependencies(exprId, exprNode.instanceIds);
+    const writes = this.sr.b.updateLHSDependencies(
+      exprId,
+      exprNode.instanceIds
+    );
     return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.ReactiveWriteExpr,
       instanceIds: [...exprNode.instanceIds],
@@ -6130,7 +6182,14 @@ export class SemanticElaborator {
       lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
     ) {
       const opStr = preIncr.operation === EIncrOperation.Incr ? "++" : "--";
-      return this.incrReactiveExpr(exprNode, exprId, preIncr.operation, opStr, preIncr.sourceloc, inference);
+      return this.incrReactiveExpr(
+        exprNode,
+        exprId,
+        preIncr.operation,
+        opStr,
+        preIncr.sourceloc,
+        inference
+      );
     }
 
     const lhsIsInteger = Conversion.isIntegerById(this.sr, typeUse.type);
@@ -6172,7 +6231,14 @@ export class SemanticElaborator {
       lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
     ) {
       const opStr = postIncr.operation === EIncrOperation.Incr ? "++" : "--";
-      return this.incrReactiveExpr(exprNode, exprId, postIncr.operation, opStr, postIncr.sourceloc, inference);
+      return this.incrReactiveExpr(
+        exprNode,
+        exprId,
+        postIncr.operation,
+        opStr,
+        postIncr.sourceloc,
+        inference
+      );
     }
 
     const lhsIsInteger = Conversion.isIntegerById(this.sr, typeUse.type);
