@@ -2428,6 +2428,36 @@ export namespace Conversion {
     assert(false);
   }
 
+  export function CanImplicitlyConvert(
+    sr: Semantic.Context,
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    constraints: ConstraintSet,
+    sourceloc: SourceLoc
+  ): { ok: true } | { ok: false; error: string } {
+    const sourceExpr = sr.exprNodes.get(sourceExprId);
+    if (sourceExpr.variant === Semantic.ENode.IntrinsicSymbol) {
+      return {
+        ok: false,
+        error:
+          "Intrinsic functions cannot be assigned to variables. They may only be called directly.",
+      };
+    }
+    const plan = buildConversionPlan(
+      sr,
+      sourceExprId,
+      targetTypeUseId,
+      constraints,
+      sourceloc,
+      Mode.Implicit,
+      false
+    );
+    if (plan.kind === "error") {
+      return { ok: false, error: plan.message };
+    }
+    return { ok: true };
+  }
+
   export function MakeConversion(
     sr: Semantic.Context,
     sourceExprId: Semantic.ExprId,

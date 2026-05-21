@@ -1,25 +1,38 @@
 
-let g_renderStack: []RenderContext = [];
-let g_generation: int = 0;
-let g_effectQueue: [](() => void) = [];
+struct GlobalContext {
+    renderStack: []RenderContext = [];
+    generation: int = 0;
+    effectQueue: [](() => void) = [];
+    componentCache: []inline ComponentCache = [];
+    rootTemplate: rx.Computed<none> | null = null;
+    framecount: rx.Reactive<int> | null = null;
+}
+
+let g_globalContext: GlobalContext | null = null;
+
+fn getGlobalContext(): GlobalContext :: final {
+    if !g_globalContext {
+        g_globalContext = GlobalContext {};
+    }
+    assert(g_globalContext);
+    return g_globalContext;
+}
 
 fn currentContext(): RenderContext {
-    return g_renderStack[g_renderStack.length - 1];
+    return getGlobalContext().renderStack[getGlobalContext().renderStack.length - 1];
 }
 
 fn scheduleEffect(effect: () => void) {
-    g_effectQueue.push(effect);
+    getGlobalContext().effectQueue.push(effect);
 }
 
 fn pushRenderContext(ctx: RenderContext) {
-    g_renderStack.push(ctx);
+    getGlobalContext().renderStack.push(ctx);
 }
 
 fn popRenderContext() {
-    g_renderStack.pop();
+    getGlobalContext().renderStack.pop();
 }
-
-let g_componentCache: []inline ComponentCache = [];
 
 struct ComponentCache {
     id: int;
@@ -27,15 +40,21 @@ struct ComponentCache {
 }
 
 fn getOrCreateComponent(id: int): ComponentInstance {
-    for n in g_componentCache {
+    for n in getGlobalContext().componentCache {
         if n.id == id {
             return n.component;
         }
     }
     let newComponent = ComponentInstance {
         id: id,
+        rootNode: {
+            id: -1,
+            type: NodeType.Div,
+            generation: getGlobalContext().generation,
+            style: ui.DivStyle {},
+        }
     };
-    g_componentCache.push({
+    getGlobalContext().componentCache.push({
         id: id,
         component: newComponent,
     });
@@ -95,12 +114,7 @@ struct ComponentInstance {
     // nodesById: Map<u64, Node>;
     nodesById: []inline NodeCache = [];
 
-    rootNode: Node = {
-        id: -1,
-        type: NodeType.Div,
-        generation: g_generation,
-        style: ui.DivStyle {},
-    };
+    rootNode: Node;
 
     fn getNode(id: int) {
         for n in this.nodesById {
@@ -111,7 +125,7 @@ struct ComponentInstance {
         let newNode = Node {
             id: id,
             type: NodeType.Div,
-            generation: g_generation,
+            generation: getGlobalContext().generation,
             style: ui.DivStyle {},
         };
         this.nodesById.push({
@@ -150,7 +164,7 @@ fn div(props: DivProps, childrenFn: () => none) {
     // reconciliation preparation
     // node.newChildren.clear();
     node.newChildren = [];
-    node.generation = g_generation;
+    node.generation = getGlobalContext().generation;
 
     // descend into node
     pushRenderContext({
@@ -183,7 +197,7 @@ fn text(props: TextProps) {
     }
 
     node.text = props.text;
-    node.generation = g_generation;
+    node.generation = getGlobalContext().generation;
 
     // parent relationship
     node.parent = ctx.currentParent;
@@ -277,8 +291,6 @@ struct WatchOptions {
     deep?: bool;
 }
 
-let g_watchers: []rx.Computed<none> = [];
-
 fn watch<T>(
     getter: () => T,
     callback: () => none,
@@ -289,7 +301,7 @@ fn watch<T>(
         callback();
         return none;
     });
-    g_watchers.push(react);
+    scheduleEffect(() => rx.get(react));
 
     if options.immediate {
         callback();
@@ -297,23 +309,22 @@ fn watch<T>(
 }
 
 fn queuePopFront() {
-    let front = g_effectQueue[0];
+    let front = getGlobalContext().effectQueue[0];
     let newQueue: [](() => void) = [];
-    for (let i = 1; i < g_effectQueue.length; i++) {
-        newQueue.push(g_effectQueue[1]);
+    for (let i = 1; i < getGlobalContext().effectQueue.length; i++) {
+        newQueue.push(getGlobalContext().effectQueue[i]);
     }
-    g_effectQueue = newQueue;
+    getGlobalContext().effectQueue = newQueue;
     return front;
 }
 
 fn flushEffects() {
-    while g_effectQueue.length > 0 {
+    while getGlobalContext().effectQueue.length > 0 {
         let effect = queuePopFront();
         effect();
     }
 }
 
-let g_framecount = rx.reactive<int>(0);
 fn hover(): bool {
     return true;
 }
@@ -321,7 +332,9 @@ fn hover(): bool {
 fn Button(args: ButtonArgs) {
 
     let buttonLabel = rx.computed(() => {
-        return f"args.label #{g_framecount}";
+        let frame = getGlobalContext().framecount;
+        assert(frame);
+        return f"args.label #{frame}";
     })
 
     defineComponent({ id: args.id }, () => 
@@ -358,15 +371,27 @@ fn cleanupNodes() {
     // but currently splicing arrays is not supported yet
 }
 
-let g_rootTemplate = rx.computed(() => {
-    UI();
-});
-
 fn computeUI() {
-    g_generation += 1;
-    g_framecount++;
 
-    rx.get(g_rootTemplate);
+    let ctx = getGlobalContext();
+    if !ctx.rootTemplate {
+        ctx.rootTemplate = rx.computed<none>(() => {
+            UI();
+        });
+    }
+    assert(ctx.rootTemplate);
+
+    if !ctx.framecount {
+        ctx.framecount = rx.reactive<int>(0);
+    }
+    assert(ctx.framecount);
+
+    ctx.generation += 1;
+    ctx.framecount := ctx.framecount + 1;
+
+    flushEffects();
+
+    rx.get(ctx.rootTemplate);
 
     let root = getOrCreateComponent(0);
     printTree(root.rootNode);

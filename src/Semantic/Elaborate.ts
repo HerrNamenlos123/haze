@@ -1384,7 +1384,12 @@ export class SemanticElaborator {
       });
     };
 
-    assert(this.inFunction);
+    if (!this.inFunction) {
+      throw new CompilerError(
+        "Function calls are not allowed here. Struct member default values, global constant initializers, and other compile-time contexts cannot contain function calls.",
+        callExpr.sourceloc
+      );
+    }
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
@@ -3535,9 +3540,128 @@ export class SemanticElaborator {
       assert(signature.variant === Semantic.ENode.FunctionSignature);
       return signature.originalFunction;
     }
+
+    // When no exact/non-exact match was found, try a third tier: check whether all
+    // arguments can be implicitly converted to the parameter types.  If exactly one
+    // overload accepts all arguments under implicit-conversion rules, pick it.
     if (nonExactMatchingSignatures.filter((s) => s.matches).length === 0) {
-      let str = `No candidate for call to overloaded function '${overloadGroup.name}' matches arguments\n`;
-      for (const candidate of nonExactMatchingSignatures) {
+      const implicitMatchingSignatures = (() => {
+        const result = [] as {
+          matches: boolean;
+          signature: Semantic.SymbolId;
+          reason: string | null;
+        }[];
+        for (const overloadId of overloadGroup.overloads) {
+          const overload = this.sr.cc.symbolNodes.get(overloadId);
+          assert(overload.variant === Collect.ENode.FunctionSymbol);
+
+          if (overload.generics.length > 0) {
+            result.push({
+              matches: false,
+              signature: this.elaborateFunctionSignature(overloadId),
+              reason: "Contains generic parameters",
+            });
+            continue;
+          }
+
+          const signatureId = this.elaborateFunctionSignature(overloadId);
+          const signature = this.sr.symbolNodes.get(signatureId);
+          assert(signature.variant === Semantic.ENode.FunctionSignature);
+
+          if (funcSymHasParameterPack(this.sr.cc, overloadId)) {
+            result.push({
+              matches: false,
+              signature: signatureId,
+              reason: "Contains a parameter pack",
+            });
+            continue;
+          }
+
+          const argCount = calledWithArgs!.length;
+          let maxArgIndex = -1;
+          for (const arg of calledWithArgs!) {
+            if (arg.index > maxArgIndex) { maxArgIndex = arg.index; }
+          }
+
+          if (argCount > 0 && maxArgIndex >= signature.parameters.length) {
+            result.push({
+              matches: false,
+              signature: signatureId,
+              reason: "Too many parameters given",
+            });
+            continue;
+          }
+
+          const requiredParamCount = overload.parameters.filter((p) => {
+            if (p.kind === "param-pack") { return false; }
+            return !(p.defaultParameterValue !== null || p.optional);
+          }).length;
+
+          if (argCount < requiredParamCount) {
+            result.push({
+              matches: false,
+              signature: signatureId,
+              reason: `Not enough parameters given (requires ${requiredParamCount}, got ${argCount})`,
+            });
+            continue;
+          }
+
+          let matches = true;
+          let reason: string | null = null;
+          for (const [i, signatureParam] of signature.parameters.entries()) {
+            const passed = calledWithArgs!.find((a) => a.index === i);
+            if (!passed?.exprId || signatureParam.kind === "param-pack") {
+              continue;
+            }
+            const conversion = Conversion.CanImplicitlyConvert(
+              this.sr,
+              passed.exprId,
+              signatureParam.type,
+              ConstraintSet.empty(),
+              usageSourceLocation
+            );
+            if (!conversion.ok) {
+              matches = false;
+              reason = `Parameter #${i + 1} cannot be implicitly converted: ${conversion.error}`;
+              break;
+            }
+          }
+          result.push({ matches: matches, signature: signatureId, reason: reason });
+        }
+        return result;
+      })();
+
+      if (implicitMatchingSignatures.filter((s) => s.matches).length === 1) {
+        const signature = this.sr.symbolNodes.get(
+          implicitMatchingSignatures.find((s) => s.matches)!.signature
+        );
+        assert(signature.variant === Semantic.ENode.FunctionSignature);
+        return signature.originalFunction;
+      }
+
+      if (implicitMatchingSignatures.filter((s) => s.matches).length === 0) {
+        let str = `No candidate for call to overloaded function '${overloadGroup.name}' matches arguments\n`;
+        for (const candidate of nonExactMatchingSignatures) {
+          const signature = this.sr.symbolNodes.get(candidate.signature);
+          assert(signature.variant === Semantic.ENode.FunctionSignature);
+          const originalFunction = this.sr.cc.symbolNodes.get(
+            signature.originalFunction
+          );
+          assert(originalFunction.variant === Collect.ENode.FunctionSymbol);
+          str += `Candidate at ${
+            originalFunction.sourceloc
+              ? formatSourceLoc(originalFunction.sourceloc)
+              : "?"
+          }: ${Semantic.serializeFullSymbolName(this.sr, candidate.signature)} -> `;
+          assert(candidate.reason);
+          str += `Failed because: ${candidate.reason}\n`;
+        }
+        throw new CompilerError(str, usageSourceLocation);
+      }
+
+      let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
+      for (const candidate of implicitMatchingSignatures) {
+        if (!candidate.matches) { continue; }
         const signature = this.sr.symbolNodes.get(candidate.signature);
         assert(signature.variant === Semantic.ENode.FunctionSignature);
         const originalFunction = this.sr.cc.symbolNodes.get(
@@ -3548,12 +3672,13 @@ export class SemanticElaborator {
           originalFunction.sourceloc
             ? formatSourceLoc(originalFunction.sourceloc)
             : "?"
-        }: ${Semantic.serializeFullSymbolName(this.sr, candidate.signature)} -> `;
-        assert(candidate.reason);
-        str += `Failed because: ${candidate.reason}\n`;
+        }: ${Semantic.serializeFullSymbolName(this.sr, candidate.signature)}\n`;
       }
+      str +=
+        "You must use explicit type annotations to disambiguate the call\n";
       throw new CompilerError(str, usageSourceLocation);
     }
+
     let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
     for (const candidate of nonExactMatchingSignatures) {
       if (!candidate.matches) {
