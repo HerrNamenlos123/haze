@@ -28,7 +28,10 @@ hzstd_str_t stacktrace_hidden_functions[] = {
     HZSTD_STRING_FROM_CSTR("__libc_start_main"),
     HZSTD_STRING_FROM_CSTR("__libc_start_call_main"),
     HZSTD_STRING_FROM_CSTR("main"),
+    HZSTD_STRING_FROM_CSTR("invoke_main"),
+    HZSTD_STRING_FROM_CSTR("__scrt_common_main"),
     HZSTD_STRING_FROM_CSTR("__scrt_common_main_seh"),
+    HZSTD_STRING_FROM_CSTR("mainCRTStartup"),
     HZSTD_STRING_FROM_CSTR("BaseThreadInitThunk"),
     HZSTD_STRING_FROM_CSTR("RtlUserThreadStart"),
 };
