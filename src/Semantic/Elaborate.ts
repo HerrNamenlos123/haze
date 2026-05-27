@@ -1143,8 +1143,15 @@ export class SemanticElaborator {
     // SourceLocation() zero-arg constructor intrinsic: captures call site source location.
     // When called as a default argument, sourceLocationDefaultCallSite holds the outer
     // call site; otherwise we use the location of the SourceLocation() expression itself.
+    // The callee may be a DatatypeAsValueExpr or a SymbolValueExpr (TypeDefSymbol) depending
+    // on how the type alias was elaborated in the callee position.
+    const calledIsTypeDef =
+      calledExpr.variant === Semantic.ENode.DatatypeAsValueExpr ||
+      (calledExpr.variant === Semantic.ENode.SymbolValueExpr &&
+        this.sr.symbolNodes.get(calledExpr.symbol).variant ===
+          Semantic.ENode.TypeDefSymbol);
     if (
-      calledExpr.variant === Semantic.ENode.DatatypeAsValueExpr &&
+      calledIsTypeDef &&
       callExpr.arguments.length === 0 &&
       this.isSourceLocationTypeDef(calledExpr.type)
     ) {

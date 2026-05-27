@@ -28,6 +28,22 @@ export extern C noemit opaque inline struct hzstd_source_location_t {
     fn constructor(args: SourceLocationArgs): mut hzstd_source_location_t {
         if args.line   { assert(args.line   != 0, "SourceLocation: line cannot be 0"); }
         if args.column { assert(args.column != 0, "SourceLocation: column cannot be 0"); }
+
+        if args.column {
+            assert(args.line, "SourceLocation cannot be constructed with column info but missing line info");
+        }
+        if args.line {
+            assert(args.filename, "SourceLocation cannot be constructed with line info but missing filename");
+        }
+
+        // Valid configurations:
+        // None
+        // Filename
+        // Filename + Line
+        // Filename + Line + Column
+        //
+        // Every other combination is invalid
+
         return hzstd_source_location_t {
             _filename: args.filename ? args.filename : "",
             _line:     args.line     ? args.line     : 0,

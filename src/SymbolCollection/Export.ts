@@ -15,6 +15,28 @@ import {
   printCollectedExpr,
 } from "./SymbolCollection";
 
+function isSourceLocationDefaultValue(
+  sr: Semantic.Context,
+  exprId: Semantic.ExprId
+): boolean {
+  let id = exprId;
+  for (;;) {
+    const expr = sr.exprNodes.get(id);
+    if (expr.variant === Semantic.ENode.ExplicitCastExpr) {
+      id = expr.expr;
+    } else if (expr.variant === Semantic.ENode.StructLiteralExpr) {
+      const typeUse = sr.typeUseNodes.get(expr.type);
+      const typeDef = sr.typeDefNodes.get(typeUse.type);
+      return (
+        typeDef.variant === Semantic.ENode.StructDatatype &&
+        typeDef.name === "hzstd_source_location_t"
+      );
+    } else {
+      return false;
+    }
+  }
+}
+
 export function ExportCollectedTypeDefAlias(
   sr: Semantic.Context,
   typedefId: Collect.TypeDefId,
@@ -375,7 +397,13 @@ export function ExportSymbol(
                 (dv) => dv.parameterName === symbol.parameterNames[i]
               );
               if (defaultValue) {
-                paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+                // SourceLocation() is a compiler intrinsic: re-emit as SourceLocation()
+                // so re-elaboration doesn't hit the opaque struct literal check.
+                if (isSourceLocationDefaultValue(sr, defaultValue.value)) {
+                  paramStr += ` = SourceLocation()`;
+                } else {
+                  paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+                }
               }
               return paramStr;
             })
