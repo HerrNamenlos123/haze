@@ -3145,11 +3145,18 @@ function lowerTypeUse(
   const resolvedTypeUse = lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(typeId));
 
   const typeDef = lr.sr.typeDefNodes.get(resolvedTypeUse.type);
+  const originalTypeDef = lr.sr.typeDefNodes.get(typeUse.type);
   const id = Lowered.addTypeUse(lr, {
     variant: Lowered.ENode.TypeUse,
     mutability: typeUse.mutability,
     name: Semantic.makeNameSetTypeUse(lr.sr, typeId),
     pointer:
+      // Only apply pointer-wrapping when the original (pre-alias) TypeDef is
+      // itself a struct or dynamic array. If it is a TypeAlias that resolves
+      // to a struct, the alias typedef in C is already a pointer, so wrapping
+      // again would produce a double-pointer with a conflicting name.
+      (originalTypeDef.variant === Semantic.ENode.StructDatatype ||
+        originalTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) &&
       !resolvedTypeUse.inline &&
       (typeDef.variant === Semantic.ENode.StructDatatype ||
         typeDef.variant === Semantic.ENode.DynamicArrayDatatype),
