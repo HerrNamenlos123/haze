@@ -74,6 +74,7 @@ export class SemanticElaborator {
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
   metaFieldStructTypeId: Semantic.TypeDefId | null = null;
   metaTypeCategoryEnumTypeId: Semantic.TypeDefId | null = null;
+  sourceLocationDefaultCallSite: SourceLoc | null = null;
 
   constructor(
     public sr: Semantic.Context,
@@ -1139,6 +1140,18 @@ export class SemanticElaborator {
       return this.handleIntrinsicCall(calledExpr, callExpr, inference);
     }
 
+    // SourceLocation() zero-arg constructor intrinsic: captures call site source location.
+    // When called as a default argument, sourceLocationDefaultCallSite holds the outer
+    // call site; otherwise we use the location of the SourceLocation() expression itself.
+    if (
+      calledExpr.variant === Semantic.ENode.DatatypeAsValueExpr &&
+      callExpr.arguments.length === 0 &&
+      this.isSourceLocationTypeDef(calledExpr.type)
+    ) {
+      const site = this.sourceLocationDefaultCallSite ?? callExpr.sourceloc;
+      return this.synthesizeSourceLocationLiteral(calledExpr.type, site);
+    }
+
     const calledExprTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(calledExpr.type)
     );
@@ -1306,10 +1319,15 @@ export class SemanticElaborator {
                 collectedFunctionSymbol.parameters[i].sourceloc
               );
             } else {
+              // Thread the outer call site so SourceLocation() defaults capture
+              // where the enclosing function is called, not the definition site.
+              const prevDefaultSite = this.sourceLocationDefaultCallSite;
+              this.sourceLocationDefaultCallSite = callExpr.sourceloc;
               defaultExprId = this.expr(defaultParamValue, {
                 gonnaInstantiateStructWithType: paramType,
                 unsafe: false,
               })[1];
+              this.sourceLocationDefaultCallSite = prevDefaultSite;
             }
             const convertedDefault = Conversion.MakeConversionOrThrow(
               this.sr,
@@ -3580,7 +3598,9 @@ export class SemanticElaborator {
           const argCount = calledWithArgs!.length;
           let maxArgIndex = -1;
           for (const arg of calledWithArgs!) {
-            if (arg.index > maxArgIndex) { maxArgIndex = arg.index; }
+            if (arg.index > maxArgIndex) {
+              maxArgIndex = arg.index;
+            }
           }
 
           if (argCount > 0 && maxArgIndex >= signature.parameters.length) {
@@ -3593,7 +3613,9 @@ export class SemanticElaborator {
           }
 
           const requiredParamCount = overload.parameters.filter((p) => {
-            if (p.kind === "param-pack") { return false; }
+            if (p.kind === "param-pack") {
+              return false;
+            }
             return !(p.defaultParameterValue !== null || p.optional);
           }).length;
 
@@ -3626,7 +3648,11 @@ export class SemanticElaborator {
               break;
             }
           }
-          result.push({ matches: matches, signature: signatureId, reason: reason });
+          result.push({
+            matches: matches,
+            signature: signatureId,
+            reason: reason,
+          });
         }
         return result;
       })();
@@ -3661,7 +3687,9 @@ export class SemanticElaborator {
 
       let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
       for (const candidate of implicitMatchingSignatures) {
-        if (!candidate.matches) { continue; }
+        if (!candidate.matches) {
+          continue;
+        }
         const signature = this.sr.symbolNodes.get(candidate.signature);
         assert(signature.variant === Semantic.ENode.FunctionSignature);
         const originalFunction = this.sr.cc.symbolNodes.get(
@@ -6580,20 +6608,29 @@ export class SemanticElaborator {
           kind: "param-pack",
         };
       } else {
+        const isolatedContext = Semantic.isolateElaborationContext(
+          this.currentContext,
+          {
+            currentScope:
+              functionSymbol.functionScope || functionSymbol.parentScope,
+            genericsScope:
+              functionSymbol.functionScope || functionSymbol.parentScope,
+            constraints: ConstraintSet.empty(),
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
+          }
+        );
+        // Remove this function's own generic substitutions so they don't leak from
+        // an outer instantiation (e.g. format_to_proxy<T=X> nested via f-strings).
+        for (const gId of functionSymbol.generics) {
+          isolatedContext.substitute.delete(gId);
+        }
         const type = this.withContext(
           {
-            context: Semantic.isolateElaborationContext(this.currentContext, {
-              currentScope:
-                functionSymbol.functionScope || functionSymbol.parentScope,
-              genericsScope:
-                functionSymbol.functionScope || functionSymbol.parentScope,
-              constraints: ConstraintSet.empty(),
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            }),
+            context: isolatedContext,
             inAttemptExpr: null,
             inFunction: null,
           },
@@ -6911,7 +6948,7 @@ export class SemanticElaborator {
       let elaboratedStructCache = null as Semantic.StructDef | null;
       for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
         for (const entry of cache) {
-          if (entry.result === exprTypeUse.type) {
+          if (entry.result === resolvedExprTypeUse.type) {
             elaboratedStructCache = entry;
           }
         }
@@ -6970,7 +7007,7 @@ export class SemanticElaborator {
               type: "method",
               thisExprType: makeTypeUse(
                 this.sr,
-                exprTypeUse.type,
+                resolvedExprTypeUse.type,
                 EDatatypeMutability.Mut,
                 "force-no-inline",
                 sourceloc
@@ -8525,6 +8562,64 @@ export class SemanticElaborator {
       this.inFunction,
       allocator,
       sourceloc
+    );
+  }
+
+  isSourceLocationTypeDef(typeUseId: Semantic.TypeUseId): boolean {
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(typeUseId)
+    );
+    const typeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
+    return (
+      typeDef.variant === Semantic.ENode.StructDatatype &&
+      typeDef.name === "hzstd_source_location_t"
+    );
+  }
+
+  synthesizeSourceLocationLiteral(
+    typeUseId: Semantic.TypeUseId,
+    site: SourceLoc
+  ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
+    const filename = site?.filename ?? "";
+    const line = site?.start?.line ?? 0;
+    const column = site ? site.start.column + 1 : 0;
+
+    assert(
+      !(filename !== "" && line === 0),
+      "synthesizeSourceLocationLiteral: filename present but line is 0"
+    );
+    assert(
+      !(line !== 0 && column === 0),
+      "synthesizeSourceLocationLiteral: line present but column is 0"
+    );
+
+    const [, filenameId] = this.sr.b.literal(filename, site);
+    const [, lineId] = this.sr.b.literal(BigInt(line), site);
+    const [, columnId] = this.sr.b.literal(BigInt(column), site);
+
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(typeUseId)
+    );
+    const structTypeDefId = resolvedTypeUse.type;
+
+    const mutTypeUseId = makeTypeUse(
+      this.sr,
+      structTypeDefId,
+      EDatatypeMutability.Mut,
+      true,
+      site
+    )[1];
+
+    return this.sr.b.structLiteral(
+      mutTypeUseId,
+      [
+        { name: "_filename", value: filenameId },
+        { name: "_line", value: lineId },
+        { name: "_column", value: columnId },
+      ],
+      this.inFunction,
+      null,
+      site
     );
   }
 

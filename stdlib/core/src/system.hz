@@ -20,11 +20,15 @@ namespace sys {
     }
 }
 
-export fn assert(condition: bool, msg?: str) :: noreturn_if(!condition) {
-    if msg {
-        ffi.hzstd_assert_msg(condition, msg);
+export fn assert(condition: bool, msg?: str, location?: SourceLocation) :: noreturn_if(!condition) {
+    if condition { return; }
+    if location {
+        sys.panic(f"{location}: {msg ? msg : "assertion failed"}");
+    }
+    else if msg {
+        sys.panic(msg);
     }
     else {
-        ffi.hzstd_assert(condition);
+        sys.panic("Assertion failed");
     }
 }

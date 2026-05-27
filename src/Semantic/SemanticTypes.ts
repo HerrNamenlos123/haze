@@ -2388,6 +2388,33 @@ export namespace Semantic {
   ): { name: string; wasMangled: boolean } {
     const type = sr.typeDefNodes.get(typeId);
 
+    // Mangling scheme:
+    //
+    // These letters must not overlap from left to right, in any order, otherwise
+    // mangling is non reversible and demangling becomes impossible, and conflicts appear.
+    //
+    // Modifiers
+    // p -> pointer (for structs)
+    // i -> inline (for structs)
+    // c -> const
+    // m -> mutable
+    // r -> reactive clone (TODO: Is this still relevant with rx.Deep<T>?)
+    // Types
+    // N -> Start of Namespace
+    // I -> Start of Template
+    // Cl -> Callable
+    // F -> Function (and some other characters)
+    // A -> Static Array
+    // D -> Dynamic Array
+    // S -> Slice
+    // U -> UntaggedUnion
+    // T -> TaggedUnion
+    // R -> Reactive
+    // Rs -> ShallowReactive
+    // Rd -> rx.Deep<T>
+    // C -> Computed
+    // L -> Literal (including some other characters like b)
+
     switch (type.variant) {
       case Semantic.ENode.StructDatatype: {
         if (type.extern === EExternLanguage.Extern_C) {
@@ -2439,7 +2466,7 @@ export namespace Semantic {
         const func = mangleTypeDef(sr, type.functionType);
 
         return {
-          name: "CL" + func.name,
+          name: "Cl" + func.name,
           wasMangled: true,
         };
       }
@@ -2610,16 +2637,25 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.ReactiveDatatype:
-      case Semantic.ENode.ShallowReactiveDatatype: {
+      case Semantic.ENode.ReactiveDatatype: {
         return {
           name: "R" + mangleTypeUse(sr, type.wrappedType).name,
           wasMangled: true,
         };
       }
 
+      case Semantic.ENode.ShallowReactiveDatatype: {
+        return {
+          name: "Rs" + mangleTypeUse(sr, type.wrappedType).name,
+          wasMangled: true,
+        };
+      }
+
       case Semantic.ENode.DeepDatatype: {
-        return mangleTypeUse(sr, type.clonedType);
+        return {
+          name: "Rd" + mangleTypeUse(sr, type.clonedType).name,
+          wasMangled: true,
+        };
       }
 
       case Semantic.ENode.ComputedDatatype: {

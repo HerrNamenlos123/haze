@@ -1615,7 +1615,9 @@ export function lowerExpr(
 
       if (expr.envValue?.type === "method") {
         const thisExpr = lr.sr.exprNodes.get(expr.envValue.thisExpr);
-        const thisExprTypeUse = lr.sr.typeUseNodes.get(thisExpr.type);
+        const resolvedThisExprTypeUse = lr.sr.typeUseNodes.get(
+          lr.sr.e.resolveAlias(thisExpr.type)
+        );
 
         let loweredThisExpression = lowerExpr(
           lr,
@@ -1635,7 +1637,7 @@ export function lowerExpr(
           )[1];
         }
 
-        if (thisExprTypeUse.inline) {
+        if (resolvedThisExprTypeUse.inline) {
           loweredThisExpression = Lowered.addExpr(lr, {
             variant: Lowered.ENode.AddressOfExpr,
             expr: tempId,
@@ -3140,13 +3142,15 @@ function lowerTypeUse(
     return lr.loweredTypeUses.get(typeId)!;
   }
 
-  const typeDef = lr.sr.typeDefNodes.get(typeUse.type);
+  const resolvedTypeUse = lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(typeId));
+
+  const typeDef = lr.sr.typeDefNodes.get(resolvedTypeUse.type);
   const id = Lowered.addTypeUse(lr, {
     variant: Lowered.ENode.TypeUse,
     mutability: typeUse.mutability,
     name: Semantic.makeNameSetTypeUse(lr.sr, typeId),
     pointer:
-      !typeUse.inline &&
+      !resolvedTypeUse.inline &&
       (typeDef.variant === Semantic.ENode.StructDatatype ||
         typeDef.variant === Semantic.ENode.DynamicArrayDatatype),
     sourceloc: typeUse.sourceloc,

@@ -203,6 +203,28 @@ string = HZSTD_STRING_FROM_CSTR(buf);
         }
     }
 
+    export fn format_to(writer: mut StringWriter, value: SourceLocation, args: FormatArgs) {
+        let f = value.filename();
+        if f {
+            let l = value.line();
+            if l {
+                let c = value.column();
+                if c {
+                    writer.write(f"{f}:{l}:{c}");
+                }
+                else {
+                    writer.write(f"{f}:{l}");
+                }
+            }
+            else {
+                writer.write(f"{f}");
+            }
+        }
+        else {
+            writer.write("<no location>");
+        }
+    }
+
     export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
