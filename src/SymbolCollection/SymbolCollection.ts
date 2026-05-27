@@ -456,6 +456,9 @@ export namespace Collect {
     sharedInstance: Collect.NSSharedInstanceId;
     sourceloc: SourceLoc;
     namespaceScope: Collect.ScopeId;
+    isModuleNamespace: boolean;
+    moduleName: string;
+    moduleVersion: string; // "major.minor.patch"
   };
 
   export type TypeDef =
@@ -1209,6 +1212,9 @@ function collectTypeDef(
           namespaceScope: -1 as Collect.ScopeId,
           parentScope: args.currentParentScope,
           sourceloc: item.sourceloc,
+          isModuleNamespace: false,
+          moduleName: "",
+          moduleVersion: "",
         });
         namespaceSymbolId = Collect.makeSymbol(cc, {
           variant: Collect.ENode.TypeDefSymbol,
@@ -1497,6 +1503,32 @@ function collectTypeDef(
       });
     }
 
+    case "ModuleNamespaceDefinition": {
+      const canonicalName = getModuleGlobalNamespaceName(
+        item.moduleName,
+        item.moduleVersion
+      );
+      const symId = collectTypeDef(
+        cc,
+        {
+          variant: "NamespaceDefinition",
+          declarations: item.declarations,
+          export: item.export,
+          name: canonicalName,
+          sourceloc: item.sourceloc,
+        },
+        args
+      );
+      const sym = cc.symbolNodes.get(symId);
+      assert(sym.variant === Collect.ENode.TypeDefSymbol);
+      const td = cc.typeDefNodes.get(sym.typeDef);
+      assert(td.variant === Collect.ENode.NamespaceTypeDef);
+      td.isModuleNamespace = true;
+      td.moduleName = item.moduleName;
+      td.moduleVersion = item.moduleVersion;
+      return symId;
+    }
+
     default:
       assert(false, "All cases handled " + (item as ASTTypeDef).variant);
   }
@@ -1743,6 +1775,34 @@ function collectSymbol(
     case "NamespaceDefinition":
     case "StructDefinition": {
       return collectTypeDef(cc, item, args);
+    }
+
+    case "ModuleNamespaceDefinition": {
+      // Synthesize a NamespaceDefinition using the canonical name, then mark it as a module namespace
+      const canonicalName = getModuleGlobalNamespaceName(
+        item.moduleName,
+        item.moduleVersion
+      );
+      const symId = collectTypeDef(
+        cc,
+        {
+          variant: "NamespaceDefinition",
+          declarations: item.declarations,
+          export: item.export,
+          name: canonicalName,
+          sourceloc: item.sourceloc,
+        },
+        args
+      );
+      // Mark the created namespace as a module namespace with semantic version info
+      const sym = cc.symbolNodes.get(symId);
+      assert(sym.variant === Collect.ENode.TypeDefSymbol);
+      const td = cc.typeDefNodes.get(sym.typeDef);
+      assert(td.variant === Collect.ENode.NamespaceTypeDef);
+      td.isModuleNamespace = true;
+      td.moduleName = item.moduleName;
+      td.moduleVersion = item.moduleVersion;
+      return symId;
     }
 
     // =================================================================================================================
@@ -3325,7 +3385,7 @@ export function CollectFile(
     // Create or reuse the module namespace (e.g., Foo_v1_0_0)
     // The namespace is shared across all files in the same unit via NamespaceSharedInstance
     if (namespacedDeclarations.length > 0) {
-      const globalNamespaceId = collectTypeDef(
+      const globalNamespaceSymId = collectTypeDef(
         cc,
         {
           variant: "NamespaceDefinition",
@@ -3338,7 +3398,15 @@ export function CollectFile(
           currentParentScope: fileScopeId,
         }
       );
-      fileScope.symbols.add(globalNamespaceId);
+      // Mark this namespace as the module root namespace with semantic version info
+      const globalNsSym = cc.symbolNodes.get(globalNamespaceSymId);
+      assert(globalNsSym.variant === Collect.ENode.TypeDefSymbol);
+      const globalNsTd = cc.typeDefNodes.get(globalNsSym.typeDef);
+      assert(globalNsTd.variant === Collect.ENode.NamespaceTypeDef);
+      globalNsTd.isModuleNamespace = true;
+      globalNsTd.moduleName = moduleName;
+      globalNsTd.moduleVersion = moduleVersion;
+      fileScope.symbols.add(globalNamespaceSymId);
     }
   } else {
     assert(false, "Unknown collection mode");

@@ -11,6 +11,7 @@ ISNOT: 'is' [ \t\r\n]+ 'not';
 IS: 'is';
 FROM: 'from';
 NAMESPACE: 'namespace';
+MODULE_NAMESPACE: 'module_namespace';
 PUB: 'pub';
 NOEMIT: 'noemit';
 INLINEC: '__c__';

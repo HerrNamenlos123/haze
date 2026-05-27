@@ -12,6 +12,7 @@
       },
       "style": {
         "useAtIndex": "off",
+        "noInferrableTypes": "off",
         "noNestedTernary": "warn",
         "useEnumInitializers": "off",
         "noNonNullAssertion": "off",

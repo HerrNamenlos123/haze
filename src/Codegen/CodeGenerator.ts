@@ -13,6 +13,7 @@ import {
 } from "../shared/AST";
 import {
   getModuleGlobalNamespaceName,
+  getModuleNamespaceMangledSegment,
   type ModuleConfig,
   ModuleType,
 } from "../shared/Config";
@@ -152,9 +153,9 @@ class CodeGenerator {
       // this.out.function_definitions.writeLine(
       //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
       // );
-      const ns = getModuleGlobalNamespaceName(config.name, config.version);
+      const nsSeg = getModuleNamespaceMangledSegment(config.name, config.version);
       this.out.function_definitions
-        .writeLine(`return _HN${ns.length}${ns}4mainEv();`)
+        .writeLine(`return _HN${nsSeg}4mainEv();`)
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         // .writeLine(`return __hz_result;`)
         .popIndent()

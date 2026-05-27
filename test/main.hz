@@ -57,10 +57,19 @@ fn assertFoo(location: SourceLocation = SourceLocation()) {
     assert(a, "Foo failed", location);
 }
 
-fn foooooooo() {
+fn func(cb: () => none) {
+    cb();
+}
+
+fn foooooooo(data?: rx.Computed<ui.Element>) {
     let a = false;
-    assert(a, "My main assertion");
-    assertFoo();
+
+    // assert(a, "My main assertion");
+    // assertFoo();
+
+    func(() => {
+        assert(a, "NUKE");
+    });
 }
 
 fn main(): int {

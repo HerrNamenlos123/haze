@@ -37,6 +37,18 @@ function isSourceLocationDefaultValue(
   }
 }
 
+function nsOpenLine(ns: {
+  pretty: string;
+  isModuleNamespace: boolean;
+  moduleName: string;
+  moduleVersion: string;
+}): string {
+  if (ns.isModuleNamespace) {
+    return `module_namespace ${ns.moduleName} "${ns.moduleVersion}" {`;
+  }
+  return `namespace ${ns.pretty} {`;
+}
+
 export function ExportCollectedTypeDefAlias(
   sr: Semantic.Context,
   typedefId: Collect.TypeDefId,
@@ -113,7 +125,7 @@ export function ExportTypeDef(
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+          file.writeLine(nsOpenLine(ns)).pushIndent();
         }
       }
       assert(typedef.generics.length === 0);
@@ -305,7 +317,7 @@ export function ExportTypeDef(
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+          file.writeLine(nsOpenLine(ns)).pushIndent();
         }
       }
 
@@ -365,7 +377,7 @@ export function ExportSymbol(
       }
       const namespaces = Semantic.getNamespaceChainFromSymbol(sr, symbolId);
       for (const ns of namespaces.slice(0, -1)) {
-        file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+        file.writeLine(nsOpenLine(ns)).pushIndent();
       }
       assert(
         symbol.generics.length === 0 &&

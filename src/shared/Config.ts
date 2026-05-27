@@ -372,6 +372,21 @@ export function getModuleGlobalNamespaceName(
   return `${moduleName.replaceAll("-", "_")}_v${moduleVersion.replaceAll(".", "_")}`;
 }
 
+/** Build the mangled segment for a module namespace using the HM encoding.
+ *  Format: HM<nameLen><name><majorLen><major><minorLen><minor><patchLen><patch>
+ *  Example: "test" v0.1.0 → "HM4test101110"
+ */
+export function getModuleNamespaceMangledSegment(
+  moduleName: string,
+  moduleVersion: string
+): string {
+  const name = moduleName.replaceAll("-", "_");
+  const [major = "0", minor = "0", patch = "0"] = moduleVersion.split(".");
+  // Trailing '_' terminates the patch field; without it the next segment's
+  // leading digit would merge into the patch during demangling.
+  return `HM${name.length}${name}_${major}_${minor}_${patch}_`;
+}
+
 export class ConfigParser {
   configPath: string;
 

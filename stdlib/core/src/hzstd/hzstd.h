@@ -3,6 +3,7 @@
 #define HZSTD_H
 
 #include "hzstd_arithmetic.h"
+#include "hzstd_demangle.h"
 #include "hzstd_source_location.h"
 #include "hzstd_env.h"
 #include "hzstd_filesystem.h"

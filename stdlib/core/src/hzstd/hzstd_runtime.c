@@ -4,6 +4,7 @@
 #include "hzstd_array.h"
 #include "hzstd_string.h"
 #include "hzstd_platform.h"
+#include "hzstd_demangle.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -172,9 +173,26 @@ static hzstd_str_t loc_line_col(hzstd_str_t loc) {
 
 // ── Main panic report ─────────────────────────────────────────────────────────
 
+/* Return the display name for a frame: demangled if possible, else raw name.
+   The returned str is either a view into fp->name or allocated from `alloc`. */
+static hzstd_str_t frame_display_name(hzstd_allocator_t alloc,
+                                       hzstd_str_t raw) {
+  /* Need a null-terminated copy for the demangler */
+  char *tmp = (char *)hzstd_allocate(alloc, raw.length + 1);
+  if (!tmp) return raw;
+  memcpy(tmp, raw.data, raw.length);
+  tmp[raw.length] = '\0';
+
+  hzstd_demangle_result_t r = hzstd_demangle(alloc, tmp);
+  if (!r.success) return raw;
+  return hzstd_demangle_display(alloc, &r);
+}
+
 void hzstd_print_panic_report(hzstd_str_t reason,
                                hzstd_dynamic_array_t *frames,
                                hzstd_int_t skip_n_frames) {
+  hzstd_allocator_t alloc = hzstd_make_arena_allocator();
+
   // Current working directory for path relativisation
   char   cwd[4096] = {0};
   size_t cwd_len   = 0;
@@ -212,20 +230,22 @@ void hzstd_print_panic_report(hzstd_str_t reason,
     if (lc.length) { fputc(':', stderr); fwrite(lc.data, 1, lc.length, stderr); }
     fprintf(stderr, A_RESET "\n");
 
+    hzstd_str_t in_name = frame_display_name(alloc, first_user->name);
     fprintf(stderr, A_DIM "     in " A_RESET A_WHITE);
-    fwrite(first_user->name.data, 1, first_user->name.length, stderr);
+    fwrite(in_name.data, 1, in_name.length, stderr);
     fprintf(stderr, A_RESET "\n");
   }
 
   // ── Stack trace ───────────────────────────────────────────────────────────
   fprintf(stderr, "\n" A_WHITE_B "Stack trace:" A_RESET "\n\n");
 
-  // Pass 1: find the widest function name for column alignment
+  // Pass 1: find the widest display name for column alignment
   size_t name_col = 0;
   for (size_t i = (size_t)skip_n_frames; i < n_frames; i++) {
     hzstd_unwind_frame_t *fp;
     hzstd_dynamic_array_get(frames, i, &fp);
-    if (fp->name.length > name_col) name_col = fp->name.length;
+    hzstd_str_t dn = frame_display_name(alloc, fp->name);
+    if (dn.length > name_col) name_col = dn.length;
   }
   name_col += 3; /* minimum gap between name and location columns */
 
@@ -279,8 +299,9 @@ void hzstd_print_panic_report(hzstd_str_t reason,
       for (size_t k = 0; k < cyc_len; k++) {
         hzstd_unwind_frame_t *fr;
         hzstd_dynamic_array_get(frames, i + k, &fr);
+        hzstd_str_t dn = frame_display_name(alloc, fr->name);
         fprintf(stderr, A_DIM "      ");
-        fwrite(fr->name.data, 1, fr->name.length, stderr);
+        fwrite(dn.data, 1, dn.length, stderr);
         fprintf(stderr, A_RESET "\n");
       }
       i       += cyc_len * cyc_rep;
@@ -290,17 +311,18 @@ void hzstd_print_panic_report(hzstd_str_t reason,
 
     // ── Normal frame ──────────────────────────────────────────────────────
     const char *sys = frame_system(fp->name);
+    hzstd_str_t dn  = frame_display_name(alloc, fp->name);
 
     // Index
     fprintf(stderr, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
 
-    // Function name
+    // Function name (demangled)
     fprintf(stderr, sys ? A_DIM : A_WHITE);
-    fwrite(fp->name.data, 1, fp->name.length, stderr);
+    fwrite(dn.data, 1, dn.length, stderr);
     fprintf(stderr, A_RESET);
 
     // Padding to align the location column
-    size_t pad = (fp->name.length < name_col) ? name_col - fp->name.length : 1;
+    size_t pad = (dn.length < name_col) ? name_col - dn.length : 1;
     for (size_t p2 = 0; p2 < pad; p2++) fputc(' ', stderr);
 
     // Location or system tag

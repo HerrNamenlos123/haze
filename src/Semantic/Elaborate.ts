@@ -2147,7 +2147,10 @@ export class SemanticElaborator {
       namespace.name,
       parentNamespace ? this.sr.b.typeDefSymbol(parentNamespace)[1] : null,
       namespaceId,
-      namespace.export
+      namespace.export,
+      namespace.isModuleNamespace,
+      namespace.moduleName,
+      namespace.moduleVersion
     );
     this.sr.elaboratedNamespaceSymbols.push({
       originalSharedInstance: namespace.sharedInstance,
