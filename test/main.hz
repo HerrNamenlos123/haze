@@ -53,8 +53,8 @@ fn print<T>(value: T) {
 }
 
 fn main(): int {
-    computeUI();
-    return 0;
+    // computeUI();
+    // return 0;
 
     let flexboxLayoutTest = rx.computed(() => ui.TextElement {
         id: 16,
