@@ -1289,7 +1289,28 @@ export class SemanticElaborator {
             (dv) => dv.parameterName === paramName
           );
           if (defaultValue) {
-            result.push(defaultValue.value);
+            // SourceLocation defaults must capture the call site, not the definition site.
+            // Re-synthesize with the call site location and apply the parameter-type conversion.
+            if (this.isSourceLocationExprId(defaultValue.value)) {
+              const paramType = parameterTypes[i].type;
+              const [, litId] = this.synthesizeSourceLocationLiteral(
+                paramType,
+                callExpr.sourceloc
+              );
+              result.push(
+                Conversion.MakeConversionOrThrow(
+                  this.sr,
+                  litId,
+                  paramType,
+                  this.currentContext.constraints,
+                  callExpr.sourceloc,
+                  Conversion.Mode.Implicit,
+                  false
+                )
+              );
+            } else {
+              result.push(defaultValue.value);
+            }
             continue;
           }
         }
@@ -8570,6 +8591,20 @@ export class SemanticElaborator {
       allocator,
       sourceloc
     );
+  }
+
+  isSourceLocationExprId(exprId: Semantic.ExprId): boolean {
+    let id = exprId;
+    for (;;) {
+      const expr = this.sr.exprNodes.get(id);
+      if (expr.variant === Semantic.ENode.ExplicitCastExpr) {
+        id = expr.expr;
+      } else if (expr.variant === Semantic.ENode.StructLiteralExpr) {
+        return this.isSourceLocationTypeDef(expr.type);
+      } else {
+        return false;
+      }
+    }
   }
 
   isSourceLocationTypeDef(typeUseId: Semantic.TypeUseId): boolean {

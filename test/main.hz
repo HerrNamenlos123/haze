@@ -53,17 +53,20 @@ fn print<T>(value: T) {
 }
 
 fn assertFoo(location: SourceLocation = SourceLocation()) {
-    assert(true, "Foo failed", location);
+    let a = false;
+    assert(a, "Foo failed", location);
 }
 
 fn foooooooo() {
-    assert(true, "My main assertion");
+    let a = false;
+    assert(a, "My main assertion");
     assertFoo();
 }
 
 fn main(): int {
     // computeUI();
     // return 0;
+    foooooooo();
 
     let flexboxLayoutTest = rx.computed(() => ui.TextElement {
         id: 16,
