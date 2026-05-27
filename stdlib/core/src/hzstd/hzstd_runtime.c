@@ -88,22 +88,36 @@ _Noreturn void hzstd_unreachable(int skip_n_frames) {
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
-/* Strip cwd prefix from path, returning a view into path.data. */
-static hzstd_str_t relativize(hzstd_str_t path,
-                               const char *cwd, size_t cwd_len) {
-  if (cwd_len == 0 || path.length <= cwd_len) return path;
-  if (memcmp(path.data, cwd, cwd_len) != 0)   return path;
-  size_t skip = cwd_len;
-  if (skip < path.length &&
-      (path.data[skip] == '/' || path.data[skip] == '\\'))
-    skip++;
-  return (hzstd_str_t){.data = path.data + skip, .length = path.length - skip};
+/* Extract just the filename (no directory) from a path. */
+static hzstd_str_t basename_of(hzstd_str_t path) {
+  size_t sep = 0;
+  for (size_t i = 0; i < path.length; i++)
+    if (path.data[i] == '/' || path.data[i] == '\\') sep = i + 1;
+  return (hzstd_str_t){.data = path.data + sep, .length = path.length - sep};
 }
 
-/* Print a path, replacing backslashes with forward slashes. */
-static void print_path(hzstd_str_t path) {
-  for (size_t i = 0; i < path.length; i++)
-    fputc(path.data[i] == '\\' ? '/' : path.data[i], stderr);
+/* Print a path as a vscode:// OSC8 hyperlink.
+   Displayed text is "filename:line:col", URI is vscode://file/<full_path>:line:col
+   full_path  – the complete absolute path (may contain backslashes)
+   linecol    – "line:col" suffix string (may be empty / zero-length)  */
+static void print_path_hyperlink(hzstd_str_t full_path, hzstd_str_t linecol) {
+  /* Build the URI: vscode://file/<full_path_forward_slash>[:line:col] */
+  fprintf(stderr, "\033]8;;file:///");
+  for (size_t i = 0; i < full_path.length; i++) {
+    char c = full_path.data[i];
+    if (c == '\\') fputc('/', stderr);
+    else if (c == ' ') fputs("%20", stderr);
+    else fputc(c, stderr);
+  }
+  fprintf(stderr, "\033\\");
+
+  /* Visible text: only the filename is the link */
+  hzstd_str_t base = basename_of(full_path);
+  fwrite(base.data, 1, base.length, stderr);
+
+  /* Close OSC8, then print line:col outside the link */
+  fprintf(stderr, "\033]8;;\033\\");
+  if (linecol.length) { fputc(':', stderr); fwrite(linecol.data, 1, linecol.length, stderr); }
 }
 
 // ── Panic-message parser ──────────────────────────────────────────────────────
@@ -193,11 +207,6 @@ void hzstd_print_panic_report(hzstd_str_t reason,
                                hzstd_int_t skip_n_frames) {
   hzstd_allocator_t alloc = hzstd_make_arena_allocator();
 
-  // Current working directory for path relativisation
-  char   cwd[4096] = {0};
-  size_t cwd_len   = 0;
-  if (hzstd_get_cwd(cwd, sizeof(cwd)))
-    cwd_len = strlen(cwd);
 
   // ── Parse panic message ───────────────────────────────────────────────────
   hzstd_str_t loc_str = {.data = NULL, .length = 0};
@@ -222,12 +231,11 @@ void hzstd_print_panic_report(hzstd_str_t reason,
   }
 
   if (has_loc && first_user) {
-    hzstd_str_t p   = relativize(loc_path(loc_str), cwd, cwd_len);
+    hzstd_str_t p   = loc_path(loc_str);
     hzstd_str_t lc  = loc_line_col(loc_str);
 
     fprintf(stderr, "\n" A_DIM "  at " A_RESET A_YELLOW_B);
-    print_path(p);
-    if (lc.length) { fputc(':', stderr); fwrite(lc.data, 1, lc.length, stderr); }
+    print_path_hyperlink(p, lc);
     fprintf(stderr, A_RESET "\n");
 
     hzstd_str_t in_name = frame_display_name(alloc, first_user->name);
@@ -329,11 +337,15 @@ void hzstd_print_panic_report(hzstd_str_t reason,
     if (sys) {
       fprintf(stderr, A_DIM "<%s>" A_RESET, sys);
     } else if (fp->sourceloc._filename.length > 0) {
-      hzstd_str_t rel = relativize(fp->sourceloc._filename, cwd, cwd_len);
+      char linecol_buf[32] = {0};
+      hzstd_str_t linecol = {.data = linecol_buf, .length = 0};
+      if (fp->sourceloc._line != 0) {
+        int n = snprintf(linecol_buf, sizeof(linecol_buf), "%lld",
+                         (long long)fp->sourceloc._line);
+        if (n > 0) linecol.length = (size_t)n;
+      }
       fprintf(stderr, A_YELLOW);
-      print_path(rel);
-      if (fp->sourceloc._line != 0)
-        fprintf(stderr, ":%lld", (long long)fp->sourceloc._line);
+      print_path_hyperlink(fp->sourceloc._filename, linecol);
       fprintf(stderr, A_RESET);
     }
 
