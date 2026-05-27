@@ -168,6 +168,7 @@ static void *hzstd_panic_handler_thread(void *_) {
           .id = nextId++,
           .instructionPointer = (void *)pc,
           .name = name,
+          .sourceloc = {._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0},
       };
 
       hzstd_unwind_frame_t *framePtr =
@@ -179,10 +180,7 @@ static void *hzstd_panic_handler_thread(void *_) {
 
   } while (unw_step(&cursor) > 0);
 
-  fprintf(stderr, "\e[0;31m[FATAL] Thread panicked:\e[0m\n");
-  fwrite(panic_reason.data, panic_reason.length, 1, stderr);
-  fprintf(stderr, "\n\e[1;37mStack trace: \n\n\e[0m");
-  hzstd_print_stacktrace(frameArray, panic_skip_n_frames);
+  hzstd_print_panic_report(panic_reason, frameArray, panic_skip_n_frames);
 
   fflush(stdout);
   fflush(stderr);
@@ -193,6 +191,10 @@ static void *hzstd_panic_handler_thread(void *_) {
   // We no longer use abort() because it signals a crash and not just a
   // termination, therefore on Windows it spawns this atrocious popup window
   // that a process crashed and we don't want this.
+}
+
+bool hzstd_get_cwd(char *buf, size_t buf_size) {
+  return getcwd(buf, buf_size) != NULL;
 }
 
 void hzstd_setup_panic_handler() {

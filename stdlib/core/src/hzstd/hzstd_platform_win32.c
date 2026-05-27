@@ -278,9 +278,23 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
                       &displacement, // Stores offset from symbol base address
                       pSymbol))      // The initialized symbol structure
       {
-        size_t nameLength = strlen(pSymbol->Name);
-        // stackFrame2.AddrPC.Offset is the IP
         name = hzstd_str_from_cstr_dup(allocator, pSymbol->Name);
+      }
+
+      hzstd_source_location_t sourceloc = {
+          ._filename = HZSTD_STRING(NULL, 0),
+          ._line = 0,
+          ._column = 0,
+      };
+      IMAGEHLP_LINE64 lineInfo;
+      lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+      DWORD lineDisp = 0;
+      if (SymGetLineFromAddr64(GetCurrentProcess(),
+                               stackFrame2.AddrPC.Offset,
+                               &lineDisp, &lineInfo)) {
+        sourceloc._filename =
+            hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
+        sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
@@ -288,6 +302,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
           .id = nextId++,
           .instructionPointer = (void *)stackFrame2.AddrPC.Offset,
           .name = name,
+          .sourceloc = sourceloc,
       };
 
       hzstd_unwind_frame_t *framePtr =
@@ -303,10 +318,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
     }
   }
 
-  fprintf(stderr, "\e[0;31m[FATAL] Thread panicked:\e[0m\n");
-  fwrite(panic_reason.data, panic_reason.length, 1, stderr);
-  fprintf(stderr, "\n\e[1;37mStack trace: \n\n\e[0m");
-  hzstd_print_stacktrace(frameArray, panic_skip_n_frames);
+  hzstd_print_panic_report(panic_reason, frameArray, panic_skip_n_frames);
 
   fflush(stdout);
   fflush(stderr);
@@ -317,6 +329,11 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
   // We no longer use abort() because it signals a crash and not just a
   // termination, therefore on Windows it spawns this atrocious popup window
   // that a process crashed and we don't want this.
+}
+
+bool hzstd_get_cwd(char *buf, size_t buf_size) {
+  DWORD r = GetCurrentDirectoryA((DWORD)buf_size, buf);
+  return r > 0 && r < (DWORD)buf_size;
 }
 
 void test() {
