@@ -38,9 +38,10 @@ globalDeclarationWithSource
 
 globalDeclaration
     : functionDefinition
-    | typeDefinition 
-    | namespaceDefinition 
-    | globalVariableDef 
+    | typeDefinition
+    | namespaceDefinition
+    | moduleNamespaceDefinition
+    | globalVariableDef
     | typeDef SEMI
     | globalDeclarationWithSource
     // The cInjectDirective must be here in global and cannot be part of topLevel directly, because
@@ -53,6 +54,13 @@ globalDeclaration
 
 namespaceDefinition
     : (export=EXPORT)? NAMESPACE id (DOT id)* LCURLY globalDeclaration* RCURLY
+    ;
+
+// A module namespace definition carries the module name and semantic version.
+// Syntax: module_namespace <name> <version> { ... }
+// Example: module_namespace sdl 1.0.0 { ... }
+moduleNamespaceDefinition
+    : (export=EXPORT)? MODULE_NAMESPACE moduleName=id moduleVersion=STRING_LITERAL LCURLY globalDeclaration* RCURLY
     ;
 
 // Directives

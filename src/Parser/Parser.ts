@@ -45,6 +45,7 @@ import {
   type ASTLambdaExpr,
   type ASTLiteralExpr,
   type ASTModuleImport,
+  type ASTModuleNamespaceDefinition,
   type ASTMutTypeExpr,
   type ASTNamespaceDefinition,
   type ASTNodiscardTypeExpr,
@@ -135,6 +136,7 @@ import {
   type MultiplicativeContext,
   type NameExprContext,
   type NameSegmentContext,
+  type ModuleNamespaceDefinitionContext,
   type NamespaceDefinitionContext,
   type NestedStructDefinitionContext,
   type ParamContext,
@@ -2897,6 +2899,37 @@ class ASTBuilder extends HazeParserListener {
     }
 
     this.stack.push(current);
+  };
+
+  exitModuleNamespaceDefinition = (ctx: ModuleNamespaceDefinitionContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const declarations: any[] = [];
+    for (const x of produced) {
+      if (Array.isArray(x)) {
+        declarations.push(...x);
+      } else if (x != null) {
+        declarations.push(x);
+      }
+    }
+
+    const moduleName = ctx._moduleName.getText();
+    // _moduleVersion is a Token (STRING_LITERAL), use .text to get value
+    const moduleVersionRaw = ctx._moduleVersion?.text ?? '""';
+    // Strip surrounding quotes from the string literal
+    const moduleVersion = moduleVersionRaw.slice(1, -1);
+
+    const node: ASTModuleNamespaceDefinition = {
+      variant: "ModuleNamespaceDefinition",
+      declarations: declarations,
+      export: Boolean(ctx._export_),
+      moduleName: moduleName,
+      moduleVersion: moduleVersion,
+      sourceloc: this.loc(ctx),
+    };
+
+    this.stack.push(node);
   };
 
   integerFromDecimalOrHex(ctx: {

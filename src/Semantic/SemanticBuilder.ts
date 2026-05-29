@@ -1575,7 +1575,10 @@ export class SemanticBuilder {
     name: string,
     parentSymbolId: Semantic.SymbolId | null,
     collectedNamespace: Collect.TypeDefId,
-    _export: boolean
+    _export: boolean,
+    isModuleNamespace: boolean = false,
+    moduleName: string = "",
+    moduleVersion: string = ""
   ) {
     return this.addType<Semantic.NamespaceDatatypeDef>(this.sr, {
       variant: Semantic.ENode.NamespaceDatatype,
@@ -1585,6 +1588,9 @@ export class SemanticBuilder {
       export: _export,
       concrete: true,
       collectedNamespace: collectedNamespace,
+      isModuleNamespace: isModuleNamespace,
+      moduleName: moduleName,
+      moduleVersion: moduleVersion,
     });
   }
 

@@ -20,11 +20,7 @@ _Noreturn void hzstd_panic_n(hzstd_ccstr_t msg, int skip_n_frames);
 _Noreturn void hzstd_panic_str(hzstd_str_t msg);
 _Noreturn void hzstd_panic_str_n(hzstd_str_t msg, int skip_n_frames);
 
-_Noreturn void hzstd_unreachable();
-
-void hzstd_assert(hzstd_bool_t condition);
-void hzstd_assert_msg_cstr(hzstd_bool_t condition, hzstd_cstr_t message);
-void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message);
+_Noreturn void hzstd_unreachable(int skip_n_frames);
 
 // typedef struct hzstd_callable_t {
 //   void* (*fn)(void*);
@@ -36,8 +32,9 @@ void hzstd_assert_msg(hzstd_bool_t condition, hzstd_str_t message);
 
 // #define HZSTD_CALL_CALLABLE(callable) callable.fn(callable.env);
 
-void hzstd_print_stacktrace(hzstd_dynamic_array_t *frames,
-                            hzstd_int_t skip_n_frames);
+void hzstd_print_panic_report(hzstd_str_t reason,
+                              hzstd_dynamic_array_t *frames,
+                              hzstd_int_t skip_n_frames);
 
 // This function is cold, static and inline to make sure it is DUPLICATED in
 // every translation unit and not referenced from outside, to make sure it can

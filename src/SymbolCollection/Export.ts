@@ -15,6 +15,40 @@ import {
   printCollectedExpr,
 } from "./SymbolCollection";
 
+function isSourceLocationDefaultValue(
+  sr: Semantic.Context,
+  exprId: Semantic.ExprId
+): boolean {
+  let id = exprId;
+  for (;;) {
+    const expr = sr.exprNodes.get(id);
+    if (expr.variant === Semantic.ENode.ExplicitCastExpr) {
+      id = expr.expr;
+    } else if (expr.variant === Semantic.ENode.StructLiteralExpr) {
+      const typeUse = sr.typeUseNodes.get(expr.type);
+      const typeDef = sr.typeDefNodes.get(typeUse.type);
+      return (
+        typeDef.variant === Semantic.ENode.StructDatatype &&
+        typeDef.name === "hzstd_source_location_t"
+      );
+    } else {
+      return false;
+    }
+  }
+}
+
+function nsOpenLine(ns: {
+  pretty: string;
+  isModuleNamespace: boolean;
+  moduleName: string;
+  moduleVersion: string;
+}): string {
+  if (ns.isModuleNamespace) {
+    return `module_namespace ${ns.moduleName} "${ns.moduleVersion}" {`;
+  }
+  return `namespace ${ns.pretty} {`;
+}
+
 export function ExportCollectedTypeDefAlias(
   sr: Semantic.Context,
   typedefId: Collect.TypeDefId,
@@ -91,7 +125,7 @@ export function ExportTypeDef(
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+          file.writeLine(nsOpenLine(ns)).pushIndent();
         }
       }
       assert(typedef.generics.length === 0);
@@ -283,7 +317,7 @@ export function ExportTypeDef(
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
-          file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+          file.writeLine(nsOpenLine(ns)).pushIndent();
         }
       }
 
@@ -343,7 +377,7 @@ export function ExportSymbol(
       }
       const namespaces = Semantic.getNamespaceChainFromSymbol(sr, symbolId);
       for (const ns of namespaces.slice(0, -1)) {
-        file.writeLine("namespace " + ns.pretty + " {").pushIndent();
+        file.writeLine(nsOpenLine(ns)).pushIndent();
       }
       assert(
         symbol.generics.length === 0 &&
@@ -375,7 +409,13 @@ export function ExportSymbol(
                 (dv) => dv.parameterName === symbol.parameterNames[i]
               );
               if (defaultValue) {
-                paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+                // SourceLocation() is a compiler intrinsic: re-emit as SourceLocation()
+                // so re-elaboration doesn't hit the opaque struct literal check.
+                if (isSourceLocationDefaultValue(sr, defaultValue.value)) {
+                  paramStr += ` = SourceLocation()`;
+                } else {
+                  paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+                }
               }
               return paramStr;
             })

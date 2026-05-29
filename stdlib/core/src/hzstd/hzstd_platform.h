@@ -5,6 +5,7 @@
 #include "hzstd_common.h"
 
 #include "hzstd_string.h"
+#include "hzstd_source_location.h"
 
 #if defined(HAZE_PLATFORM_LINUX)
 #include "hzstd_platform_linux.h"
@@ -34,9 +35,14 @@ typedef struct {
   size_t id;
   hzstd_cptr_t instructionPointer;
   hzstd_str_t name;
+  hzstd_source_location_t sourceloc; /* absent when _filename.length == 0 */
 } hzstd_unwind_frame_t;
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames);
+
+/* Fill buf (of buf_size bytes) with the current working directory as a
+   null-terminated string. Returns true on success. */
+bool hzstd_get_cwd(char *buf, size_t buf_size);
 
 bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);

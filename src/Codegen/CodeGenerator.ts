@@ -13,6 +13,7 @@ import {
 } from "../shared/AST";
 import {
   getModuleGlobalNamespaceName,
+  getModuleNamespaceMangledSegment,
   type ModuleConfig,
   ModuleType,
 } from "../shared/Config";
@@ -152,9 +153,9 @@ class CodeGenerator {
       // this.out.function_definitions.writeLine(
       //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
       // );
-      const ns = getModuleGlobalNamespaceName(config.name, config.version);
+      const nsSeg = getModuleNamespaceMangledSegment(config.name, config.version);
       this.out.function_definitions
-        .writeLine(`return _HN${ns.length}${ns}4mainEv();`)
+        .writeLine(`return _HN${nsSeg}4mainEv();`)
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         // .writeLine(`return __hz_result;`)
         .popIndent()
@@ -781,11 +782,16 @@ class CodeGenerator {
         for (const m of type.members) {
           const type = this.lr.typeUseNodes.get(m.type);
           const typeDef = this.lr.typeDefNodes.get(type.type);
-          // Pointer do not matter, only direct usages are bad.
-          if (
-            typeDef.variant !== Lowered.ENode.PointerDatatype &&
-            typeDef.variant !== Lowered.ENode.DynamicArrayDatatype
-          ) {
+          // Pointer-like types do not matter, only direct usages are bad.
+          // Unions with optimizeAsRawPointer are emitted as pointer typedefs in C,
+          // so they don't create a struct-level dependency on the inner type.
+          const isPointerLike =
+            typeDef.variant === Lowered.ENode.PointerDatatype ||
+            typeDef.variant === Lowered.ENode.DynamicArrayDatatype ||
+            ((typeDef.variant === Lowered.ENode.UntaggedUnionDatatype ||
+              typeDef.variant === Lowered.ENode.TaggedUnionDatatype) &&
+              typeDef.optimizeAsRawPointer !== null);
+          if (!isPointerLike) {
             processTypeUse(m.type);
           }
         }
@@ -807,14 +813,22 @@ class CodeGenerator {
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.UntaggedUnionDatatype) {
         appliedTypes.add(type);
-        for (const m of type.members) {
-          processTypeUse(m);
+        if (type.optimizeAsRawPointer) {
+          processTypeUse(type.optimizeAsRawPointer);
+        } else {
+          for (const m of type.members) {
+            processTypeUse(m);
+          }
         }
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.TaggedUnionDatatype) {
         appliedTypes.add(type);
-        for (const m of type.members) {
-          processTypeUse(m.type);
+        if (type.optimizeAsRawPointer) {
+          processTypeUse(type.optimizeAsRawPointer);
+        } else {
+          for (const m of type.members) {
+            processTypeUse(m.type);
+          }
         }
         sortedLoweredTypes.push({ type: "def", id: typeId });
       } else if (type.variant === Lowered.ENode.EnumDatatype) {

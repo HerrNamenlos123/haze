@@ -373,26 +373,26 @@ fn cleanupNodes() {
 
 fn computeUI() {
 
-    let ctx = getGlobalContext();
-    if !ctx.rootTemplate {
-        ctx.rootTemplate = rx.computed<none>(() => {
-            UI();
-        });
-    }
-    assert(ctx.rootTemplate);
+    // let ctx = getGlobalContext();
+    // if !ctx.rootTemplate {
+    //     ctx.rootTemplate = rx.computed<none>(() => {
+    //         UI();
+    //     });
+    // }
+    // assert(ctx.rootTemplate);
 
-    if !ctx.framecount {
-        ctx.framecount = rx.reactive<int>(0);
-    }
-    assert(ctx.framecount);
+    // if !ctx.framecount {
+    //     ctx.framecount = rx.reactive<int>(0);
+    // }
+    // assert(ctx.framecount);
 
-    ctx.generation += 1;
-    ctx.framecount := ctx.framecount + 1;
+    // ctx.generation += 1;
+    // ctx.framecount := ctx.framecount + 1;
 
-    flushEffects();
+    // flushEffects();
 
-    rx.get(ctx.rootTemplate);
+    // rx.get(ctx.rootTemplate);
 
-    let root = getOrCreateComponent(0);
-    printTree(root.rootNode);
+    // let root = getOrCreateComponent(0);
+    // printTree(root.rootNode);
 }

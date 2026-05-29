@@ -774,6 +774,7 @@ export type ASTStructDefinition = {
 export type ASTTypeDef =
   | ASTStructDefinition
   | ASTNamespaceDefinition
+  | ASTModuleNamespaceDefinition
   | ASTTypeAlias
   | ASTEnumDefinition;
 
@@ -781,6 +782,15 @@ export type ASTNamespaceDefinition = {
   variant: "NamespaceDefinition";
   export: boolean;
   name: string;
+  declarations: ASTSymbolDefinition[];
+  sourceloc: SourceLoc;
+};
+
+export type ASTModuleNamespaceDefinition = {
+  variant: "ModuleNamespaceDefinition";
+  export: boolean;
+  moduleName: string;
+  moduleVersion: string; // "major.minor.patch"
   declarations: ASTSymbolDefinition[];
   sourceloc: SourceLoc;
 };
@@ -808,6 +818,7 @@ export type ASTSymbolDefinition =
   | ASTFunctionDefinition
   | ASTTypeDef
   | ASTNamespaceDefinition
+  | ASTModuleNamespaceDefinition
   | ASTTypeAlias
   | ASTGlobalVariableDefinition;
 

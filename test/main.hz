@@ -52,9 +52,30 @@ fn print<T>(value: T) {
     }
 }
 
+fn assertFoo(location: SourceLocation = SourceLocation()) {
+    let a = false;
+    assert(a, "Foo failed", location);
+}
+
+fn func(cb: () => none) {
+    cb();
+}
+
+fn foooooooo(data?: rx.Computed<ui.Element>) {
+    let a = false;
+
+    // assert(a, "My main assertion");
+    // assertFoo();
+
+    func(() => {
+        assert(a, "NUKE");
+    });
+}
+
 fn main(): int {
-    computeUI();
-    return 0;
+    // computeUI();
+    // return 0;
+    foooooooo();
 
     let flexboxLayoutTest = rx.computed(() => ui.TextElement {
         id: 16,

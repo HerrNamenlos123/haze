@@ -438,6 +438,9 @@ export namespace Semantic {
     symbols: Semantic.SymbolId[];
     collectedNamespace: Collect.TypeDefId;
     concrete: boolean; // For consistency, always true
+    isModuleNamespace: boolean;
+    moduleName: string;
+    moduleVersion: string; // "major.minor.patch"
   };
 
   export type TypeAliasDatatypeDef = {
@@ -1906,17 +1909,48 @@ export namespace Semantic {
           wasMangled: mangle.wasMangled,
           isMonomorphized: false,
           isExported: false,
+          isModuleNamespace: false,
+          moduleName: "",
+          moduleVersion: "",
         },
       ];
     }
 
+    let mangledSegment = type.name.length + type.name;
+    if (
+      type.variant === Semantic.ENode.NamespaceDatatype &&
+      type.isModuleNamespace
+    ) {
+      // Encode module namespace as HM<nameLen><name>_<major>_<minor>_<patch>_
+      // Each version part is separated by '_'; a trailing '_' terminates the
+      // patch field so the next segment's leading digit doesn't merge into it.
+      // Normal segments always start with a decimal digit, never '_', so the
+      // trailing underscore is unambiguous. "HM" prefix vs digit makes the
+      // two segment kinds unambiguous at parse time.
+      const [major, minor, patch] = type.moduleVersion.split(".");
+      const mj = major ?? "0";
+      const mn = minor ?? "0";
+      const pt = patch ?? "0";
+      mangledSegment =
+        `HM${type.moduleName.length}${type.moduleName}_${mj}_${mn}_${pt}_`;
+    }
+    const isModNs =
+      type.variant === Semantic.ENode.NamespaceDatatype &&
+      type.isModuleNamespace;
     const current = {
       pretty: type.name,
-      mangled: type.name.length + type.name,
+      mangled: mangledSegment,
       wasMangled: true,
       isMonomorphized: false,
       isExported:
         type.variant !== Semantic.ENode.TypeAliasDatatype && type.export,
+      isModuleNamespace: isModNs,
+      moduleName: isModNs
+        ? (type as Semantic.NamespaceDatatypeDef).moduleName
+        : "",
+      moduleVersion: isModNs
+        ? (type as Semantic.NamespaceDatatypeDef).moduleVersion
+        : "",
     };
     if (
       (type.variant === Semantic.ENode.StructDatatype ||
@@ -1985,6 +2019,9 @@ export namespace Semantic {
       isMonomorphized: false,
       isExported:
         symbol.variant !== Semantic.ENode.FunctionSignature && symbol.export,
+      isModuleNamespace: false,
+      moduleName: "",
+      moduleVersion: "",
     };
     if (
       symbol.variant === Semantic.ENode.FunctionSymbol &&
@@ -2388,6 +2425,33 @@ export namespace Semantic {
   ): { name: string; wasMangled: boolean } {
     const type = sr.typeDefNodes.get(typeId);
 
+    // Mangling scheme:
+    //
+    // These letters must not overlap from left to right, in any order, otherwise
+    // mangling is non reversible and demangling becomes impossible, and conflicts appear.
+    //
+    // Modifiers
+    // p -> pointer (for structs)
+    // i -> inline (for structs)
+    // c -> const
+    // m -> mutable
+    // r -> reactive clone (TODO: Is this still relevant with rx.Deep<T>?)
+    // Types
+    // N -> Start of Namespace
+    // I -> Start of Template
+    // Cl -> Callable
+    // F -> Function (and some other characters)
+    // A -> Static Array
+    // D -> Dynamic Array
+    // S -> Slice
+    // U -> UntaggedUnion
+    // T -> TaggedUnion
+    // R -> Reactive
+    // Rs -> ShallowReactive
+    // Rd -> rx.Deep<T>
+    // C -> Computed
+    // L -> Literal (including some other characters like b)
+
     switch (type.variant) {
       case Semantic.ENode.StructDatatype: {
         if (type.extern === EExternLanguage.Extern_C) {
@@ -2439,7 +2503,7 @@ export namespace Semantic {
         const func = mangleTypeDef(sr, type.functionType);
 
         return {
-          name: "CL" + func.name,
+          name: "Cl" + func.name,
           wasMangled: true,
         };
       }
@@ -2610,16 +2674,25 @@ export namespace Semantic {
         };
       }
 
-      case Semantic.ENode.ReactiveDatatype:
-      case Semantic.ENode.ShallowReactiveDatatype: {
+      case Semantic.ENode.ReactiveDatatype: {
         return {
           name: "R" + mangleTypeUse(sr, type.wrappedType).name,
           wasMangled: true,
         };
       }
 
+      case Semantic.ENode.ShallowReactiveDatatype: {
+        return {
+          name: "Rs" + mangleTypeUse(sr, type.wrappedType).name,
+          wasMangled: true,
+        };
+      }
+
       case Semantic.ENode.DeepDatatype: {
-        return mangleTypeUse(sr, type.clonedType);
+        return {
+          name: "Rd" + mangleTypeUse(sr, type.clonedType).name,
+          wasMangled: true,
+        };
       }
 
       case Semantic.ENode.ComputedDatatype: {
