@@ -20,6 +20,7 @@ namespace meta {
             hzstd_meta_type_category_parameter_pack = 15,
             hzstd_meta_type_category_dynamic_array = 16,
             hzstd_meta_type_category_deep = 17,
+            hzstd_meta_type_category_tagged_union = 18,
         }
     }
 
@@ -42,5 +43,6 @@ namespace meta {
         ParameterPack = ffi.hzstd_meta_type_category_parameter_pack,
         DynamicArray = ffi.hzstd_meta_type_category_dynamic_array,
         Deep = ffi.hzstd_meta_type_category_deep,
+        TaggedUnion = ffi.hzstd_meta_type_category_tagged_union,
     }
 }

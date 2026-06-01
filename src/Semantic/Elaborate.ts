@@ -74,6 +74,8 @@ export class SemanticElaborator {
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
   metaFieldStructTypeId: Semantic.TypeDefId | null = null;
   metaTypeCategoryEnumTypeId: Semantic.TypeDefId | null = null;
+  metaTypeValueStructTypeId: Semantic.TypeDefId | null = null;
+  metaTaggedMemberStructTypeId: Semantic.TypeDefId | null = null;
   sourceLocationDefaultCallSite: SourceLoc | null = null;
 
   constructor(
@@ -7279,6 +7281,16 @@ export class SemanticElaborator {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
         [expr, exprId] = this.sr.b.datatypeDefAsValue(symbol.datatype, sourceloc);
+      } else if (
+        symbol.variant === Semantic.ENode.VariableSymbol &&
+        symbol.comptime &&
+        symbol.comptimeValue !== null
+      ) {
+        const cvExpr = this.sr.exprNodes.get(symbol.comptimeValue);
+        if (cvExpr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+          expr = cvExpr;
+          exprId = symbol.comptimeValue;
+        }
       }
     }
 
@@ -7557,10 +7569,68 @@ export class SemanticElaborator {
         }
       }
 
+      if (
+        resolvedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+        name === "variants"
+      ) {
+        const memberExprs = resolvedTypeDef.members.map(
+          (typeUseId) => this.sr.b.datatypeUseAsValue(typeUseId, sourceloc)[1]
+        );
+        const elemType = this.ensureMetaTypeValueType(sourceloc);
+        const arrayType = makeStackArrayDatatypeAvailable(
+          this.sr,
+          elemType,
+          BigInt(memberExprs.length),
+          EDatatypeMutability.Const,
+          false,
+          sourceloc
+        );
+        return this.sr.b.arrayLiteral(
+          arrayType,
+          memberExprs,
+          this.inFunction,
+          null,
+          sourceloc
+        );
+      }
+
       if (resolvedTypeDef.variant === Semantic.ENode.TaggedUnionDatatype) {
         if (generics.length !== 0) {
           throw new CompilerError(
             `Unions cannot take generic arguments`,
+            sourceloc
+          );
+        }
+
+        if (name === "variants") {
+          const metaTaggedMemberType = this.ensureMetaTaggedMemberStructType(sourceloc);
+          const memberExprs = resolvedTypeDef.members.map((member) => {
+            const tagExprId = this.sr.b.literal(member.tag, sourceloc)[1];
+            const typeExprId = this.sr.b.datatypeUseAsValue(member.type, sourceloc)[1];
+            return this.sr.b.structLiteral(
+              metaTaggedMemberType,
+              [
+                { name: "tag", value: tagExprId },
+                { name: "type", value: typeExprId },
+              ],
+              this.inFunction,
+              null,
+              sourceloc
+            )[1];
+          });
+          const arrayType = makeStackArrayDatatypeAvailable(
+            this.sr,
+            metaTaggedMemberType,
+            BigInt(memberExprs.length),
+            EDatatypeMutability.Const,
+            false,
+            sourceloc
+          );
+          return this.sr.b.arrayLiteral(
+            arrayType,
+            memberExprs,
+            this.inFunction,
+            null,
             sourceloc
           );
         }
@@ -8767,6 +8837,138 @@ export class SemanticElaborator {
     )[1];
   }
 
+  ensureMetaTypeValueType(sourceloc: SourceLoc): Semantic.TypeUseId {
+    if (this.metaTypeValueStructTypeId !== null) {
+      return makeTypeUse(
+        this.sr,
+        this.metaTypeValueStructTypeId,
+        EDatatypeMutability.Const,
+        false,
+        sourceloc
+      )[1];
+    }
+    const [_, structId] = this.sr.b.addType<Semantic.StructDatatypeDef>(
+      this.sr,
+      {
+        variant: Semantic.ENode.StructDatatype,
+        name: "hzstd_meta_type_t",
+        noemit: true,
+        generics: [],
+        opaque: false,
+        plain: true,
+        reactiveClone: false,
+        inlineByDefault: false,
+        export: false,
+        extern: EExternLanguage.Extern_C,
+        members: [],
+        membersBuilt: true,
+        membersFinalized: true,
+        memberDefaultValues: [],
+        methods: [],
+        methodsInProgress: false,
+        methodsFinalized: true,
+        nestedStructs: [],
+        parentSymbolId: null,
+        sourceloc: sourceloc,
+        concrete: true,
+        originalCollectedDefinition: -1 as Collect.TypeDefId,
+        originalCollectedSymbol: -1 as Collect.SymbolId,
+      }
+    );
+    this.metaTypeValueStructTypeId = structId;
+    return makeTypeUse(
+      this.sr,
+      structId,
+      EDatatypeMutability.Const,
+      false,
+      sourceloc
+    )[1];
+  }
+
+  ensureMetaTaggedMemberStructType(sourceloc: SourceLoc): Semantic.TypeUseId {
+    if (this.metaTaggedMemberStructTypeId !== null) {
+      return makeTypeUse(
+        this.sr,
+        this.metaTaggedMemberStructTypeId,
+        EDatatypeMutability.Const,
+        false,
+        sourceloc
+      )[1];
+    }
+    const [metaTaggedMemberStruct, structId] =
+      this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
+        variant: Semantic.ENode.StructDatatype,
+        name: "hzstd_meta_tagged_member_t",
+        noemit: true,
+        generics: [],
+        opaque: false,
+        plain: true,
+        reactiveClone: false,
+        inlineByDefault: false,
+        export: false,
+        extern: EExternLanguage.Extern_C,
+        members: [],
+        membersBuilt: true,
+        membersFinalized: true,
+        memberDefaultValues: [],
+        methods: [],
+        methodsInProgress: false,
+        methodsFinalized: true,
+        nestedStructs: [],
+        parentSymbolId: null,
+        sourceloc: sourceloc,
+        concrete: true,
+        originalCollectedDefinition: -1 as Collect.TypeDefId,
+        originalCollectedSymbol: -1 as Collect.SymbolId,
+      });
+
+    const [_tag, tagMemberId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: true,
+      export: false,
+      extern: EExternLanguage.None,
+      requiresHoisting: false,
+      memberOfStruct: structId,
+      mutability: EVariableMutability.Const,
+      name: "tag",
+      parentSymbolId: null,
+      sourceloc: sourceloc,
+      type: this.sr.b.strType(),
+      variableContext: EVariableContext.MemberOfStruct,
+    } satisfies Semantic.VariableSymbol);
+    metaTaggedMemberStruct.members.push(tagMemberId);
+
+    const typeFieldType = this.ensureMetaTypeValueType(sourceloc);
+    const [_type, typeMemberId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: true,
+      export: false,
+      extern: EExternLanguage.None,
+      requiresHoisting: false,
+      memberOfStruct: structId,
+      mutability: EVariableMutability.Const,
+      name: "type",
+      parentSymbolId: null,
+      sourceloc: sourceloc,
+      type: typeFieldType,
+      variableContext: EVariableContext.MemberOfStruct,
+    } satisfies Semantic.VariableSymbol);
+    metaTaggedMemberStruct.members.push(typeMemberId);
+
+    this.metaTaggedMemberStructTypeId = structId;
+    return makeTypeUse(
+      this.sr,
+      structId,
+      EDatatypeMutability.Const,
+      false,
+      sourceloc
+    )[1];
+  }
+
   ensureMetaTypeCategoryEnumType(sourceloc: SourceLoc): Semantic.TypeDefId {
     if (this.metaTypeCategoryEnumTypeId !== null) {
       return this.metaTypeCategoryEnumTypeId;
@@ -8823,9 +9025,11 @@ export class SemanticElaborator {
         return "Slice";
 
       case Semantic.ENode.UntaggedUnionDatatype:
-      case Semantic.ENode.TaggedUnionDatatype:
       case Semantic.ENode.UnionTagRefDatatype:
         return "Union";
+
+      case Semantic.ENode.TaggedUnionDatatype:
+        return "TaggedUnion";
 
       case Semantic.ENode.ReactiveDatatype:
         return "Reactive";

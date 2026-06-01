@@ -54,9 +54,10 @@ namespace rx {
         }
 
         else if comptime 
-                T.baseType.category == meta.TypeCategory.Primitive || 
-                T.baseType.category == meta.TypeCategory.Union || 
-                T.baseType.category == meta.TypeCategory.Enum 
+                T.baseType.category == meta.TypeCategory.Primitive ||
+                T.baseType.category == meta.TypeCategory.Union ||
+                T.baseType.category == meta.TypeCategory.TaggedUnion ||
+                T.baseType.category == meta.TypeCategory.Enum
         {
             return do unsafe {
                 let result: rx.Reactive<T> = uninitialized;
