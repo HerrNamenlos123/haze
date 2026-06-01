@@ -1065,7 +1065,8 @@ export class SemanticBuilder {
       case Semantic.ENode.UnionToValueCastExpr: {
         const unionExpr = this.sr.exprNodes.get(lhs.expr);
         if (
-          unionExpr.variant !== Semantic.ENode.SymbolValueExpr ||
+          (unionExpr.variant !== Semantic.ENode.SymbolValueExpr &&
+            unionExpr.variant !== Semantic.ENode.MemberAccessExpr) ||
           !lhs.canBeUnwrappedForLHS
         ) {
           throw new CompilerError(
@@ -1080,7 +1081,8 @@ export class SemanticBuilder {
       case Semantic.ENode.UnionToUnionCastExpr: {
         const unionExpr = this.sr.exprNodes.get(lhs.expr);
         if (
-          unionExpr.variant !== Semantic.ENode.SymbolValueExpr ||
+          (unionExpr.variant !== Semantic.ENode.SymbolValueExpr &&
+            unionExpr.variant !== Semantic.ENode.MemberAccessExpr) ||
           !lhs.castComesFromNarrowingAndMayBeUnwrapped
         ) {
           throw new CompilerError(
