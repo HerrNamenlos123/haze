@@ -97,7 +97,7 @@ namespace rx {
         if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {
                 if value is Variant {
-                    return value as rx.UnwrapReactive<T>;
+                    return value as rx.UnwrapReactive<typeof(value)>;
                 }
             }
             sys.unreachable();
@@ -105,7 +105,7 @@ namespace rx {
         else if comptime T.category == meta.TypeCategory.TaggedUnion {
             for comptime Variant in T.variants {
                 if value is Variant.type {
-                    return value as rx.UnwrapReactive<T>;
+                    return value as rx.UnwrapReactive<typeof(value)>;
                 }
             }
             sys.unreachable();

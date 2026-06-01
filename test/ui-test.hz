@@ -169,6 +169,7 @@ fn defineComponent(
     if instance.templateComputed is none {
         instance.templateComputed = rx.computed(() => {
             instance.rootElement.children = [];
+            fmt.println(f"Recompute computed {props.id}");
 
             pushRenderContext({
                 currentComponent: instance,
