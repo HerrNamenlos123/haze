@@ -209,12 +209,6 @@ fn printTree(element: ui.Element, depth: int = 0): void :: final {
     }
 }
 
-struct ButtonArgs {
-    id: int;
-    label: str;
-    color: Color;
-}
-
 struct WatchOptions {
     immediate?: bool;
     deep?: bool;
@@ -254,43 +248,170 @@ fn flushEffects() {
     }
 }
 
-fn hover(): bool {
-    return true;
+struct HeaderArgs {
+    id: int;
+    title: str;
 }
 
-fn Button(args: ButtonArgs) {
-
-    let buttonLabel = rx.computed(() => {
-        let frame = getGlobalContext().framecount;
-        assert(frame);
-        return f"args.label #{frame}";
-    })
-
+fn Header(args: HeaderArgs) {
     defineComponent({ id: args.id }, () =>
         div({
             id: 1,
             style: {
-                textColor: hover() ? Color("#0000FF") : Color(args.color),
+                backgroundColor: Color(0.9, 0.2, 0.2, 1),
+                padding: ui.StylePaddingSimple { value: 20.0 },
+                align: ui.Align.Center,
+                cornerRadius: ui.StyleCornerRadiusSimple { value: 10.0 },
             }
         }, () => {
-            text({ id: 2, text: buttonLabel });
+            text({ id: 2, text: args.title, style: { fontSize: 42.0 } });
+        })
+    );
+}
+
+struct NavItemArgs {
+    id: int;
+    label: str;
+}
+
+fn NavItem(args: NavItemArgs) {
+    defineComponent({ id: args.id }, () =>
+        div({
+            id: 1,
+            style: {
+                backgroundColor: Color(0.15, 0.45, 0.75, 1),
+                padding: ui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
+                cornerRadius: ui.StyleCornerRadiusSimple { value: 6.0 },
+            }
+        }, () => {
+            text({ id: 2, text: args.label });
+        })
+    );
+}
+
+struct SidebarArgs {
+    id: int;
+}
+
+fn Sidebar(args: SidebarArgs) {
+    defineComponent({ id: args.id }, () =>
+        div({
+            id: 1,
+            style: {
+                backgroundColor: Color(0.2, 0.6, 0.9, 1),
+                padding: ui.StylePaddingSimple { value: 20.0 },
+                direction: ui.Direction.Column,
+                gap: 8.0,
+                width: 180.0,
+            }
+        }, () => {
+            text({ id: 2, text: "Menu" });
+            NavItem({ id: 21, label: "Dashboard" });
+            NavItem({ id: 22, label: "Settings" });
+            NavItem({ id: 23, label: "About" });
+        })
+    );
+}
+
+struct ContentAreaArgs {
+    id: int;
+}
+
+fn ContentArea(args: ContentAreaArgs) {
+    defineComponent({ id: args.id }, () =>
+        div({
+            id: 1,
+            style: {
+                backgroundColor: Color(0.2, 0.8, 0.4, 1),
+                padding: ui.StylePaddingSimple { value: 30.0 },
+                direction: ui.Direction.Column,
+                align: ui.Align.Center,
+                gap: 16.0,
+            }
+        }, () => {
+            text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
+            text({ id: 3, text: "This is rendered via the component system." });
+            text({ id: 4, text: "Flexbox layout powered by Clay." });
+        })
+    );
+}
+
+struct InfoBoxArgs {
+    id: int;
+}
+
+fn InfoBox(args: InfoBoxArgs) {
+    defineComponent({ id: args.id }, () =>
+        div({
+            id: 1,
+            style: {
+                backgroundColor: Color(0.9, 0.8, 0.2, 1),
+                padding: ui.StylePaddingSimple { value: 20.0 },
+                direction: ui.Direction.Column,
+                justify: ui.Justify.Center,
+                align: ui.Align.Center,
+                width: 160.0,
+                gap: 8.0,
+            }
+        }, () => {
+            text({ id: 2, text: "Info Box" });
+            text({ id: 3, text: "Aligned center" });
+        })
+    );
+}
+
+struct FooterArgs {
+    id: int;
+}
+
+fn Footer(args: FooterArgs) {
+    defineComponent({ id: args.id }, () =>
+        div({
+            id: 1,
+            style: {
+                backgroundColor: Color(0.4, 0.4, 0.9, 1),
+                padding: ui.StylePaddingSimple { value: 15.0 },
+                align: ui.Align.Center,
+            }
+        }, () => {
+            text({ id: 2, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
         })
     );
 }
 
 fn UI() {
-    let label = rx.reactive<str>("My Button");
-    let color = rx.shallowReactive<Color>(Color("#FF0000"));
-
     defineComponent({ id: 0 }, () =>
         div({
-            id: 3
+            id: 3,
+            style: {
+                backgroundColor: Color(0.15, 0.15, 0.15, 1),
+                padding: ui.StylePaddingSimple { value: 30.0 },
+                direction: ui.Direction.Column,
+                fontFamily: "roboto",
+                fontSize: 16.0,
+                textColor: Color(1, 1, 1, 1),
+                gap: 10.0,
+            }
         }, () => {
-            Button({
-                id: 20,
-                label: label,
-                color: color,
+            Header({ id: 10, title: "HAZE UI — Component System" });
+
+            div({
+                id: 4,
+                style: {
+                    direction: ui.Direction.Row,
+                    padding: ui.StylePaddingSimple { value: 20.0 },
+                    backgroundColor: Color(0.25, 0.25, 0.25, 1),
+                    justify: ui.Justify.SpaceBetween,
+                    cornerRadius: ui.StyleCornerRadiusSimple { value: 20.0 },
+                    gap: 30.0,
+                }
+            }, () => {
+                Sidebar({ id: 20 });
+                ContentArea({ id: 30 });
+                InfoBox({ id: 40 });
             });
+
+            Footer({ id: 50 });
         })
     );
 }
