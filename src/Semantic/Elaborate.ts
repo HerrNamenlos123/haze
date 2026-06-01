@@ -7249,6 +7249,16 @@ export class SemanticElaborator {
   ): [Semantic.Expression, Semantic.ExprId] {
     let expr = this.sr.exprNodes.get(exprId);
 
+    // A struct/type name used directly as a value (e.g. A.prettyName) produces a
+    // SymbolValueExpr(TypeDefSymbol). Normalize it to DatatypeAsValueExpr so that
+    // type-meta properties work identically to typeof(A).prettyName.
+    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+      const symbol = this.sr.symbolNodes.get(expr.symbol);
+      if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+        [expr, exprId] = this.sr.b.datatypeDefAsValue(symbol.datatype, sourceloc);
+      }
+    }
+
     // Handle datatypes BEFORE reactive unwrapping
     // TODO: Why? Can't remember
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
