@@ -113,5 +113,6 @@ namespace rx {
         else {
             return value as rx.UnwrapReactive<T>;
         }
+        sys.unreachable();
     }
 }
