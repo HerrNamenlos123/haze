@@ -6972,6 +6972,9 @@ export class SemanticElaborator {
       );
     }
 
+    if (exprTypeDef.originalCollectedDefinition === (-1 as Collect.TypeDefId)) {
+      return null;
+    }
     const collectedStruct = this.sr.cc.typeDefNodes.get(
       exprTypeDef.originalCollectedDefinition
     );
@@ -7280,7 +7283,10 @@ export class SemanticElaborator {
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
-        [expr, exprId] = this.sr.b.datatypeDefAsValue(symbol.datatype, sourceloc);
+        [expr, exprId] = this.sr.b.datatypeDefAsValue(
+          symbol.datatype,
+          sourceloc
+        );
       } else if (
         symbol.variant === Semantic.ENode.VariableSymbol &&
         symbol.comptime &&
@@ -7290,6 +7296,38 @@ export class SemanticElaborator {
         if (cvExpr.variant === Semantic.ENode.DatatypeAsValueExpr) {
           expr = cvExpr;
           exprId = symbol.comptimeValue;
+        }
+      }
+    }
+
+    // If the expression is a runtime value whose declared type is our comptime-only
+    // hzstd_meta_type_t placeholder, attempt compile-time evaluation. This handles
+    // cases like `variants[0].prettyName` (literal index, comptime-evaluable).
+    // If evaluation fails the index is non-comptime, which is a user error.
+    if (expr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      const exprTypeUseForCheck = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(expr.type)
+      );
+      const exprTypeDefForCheck = this.sr.typeDefNodes.get(
+        exprTypeUseForCheck.type
+      );
+      if (
+        exprTypeDefForCheck.variant === Semantic.ENode.StructDatatype &&
+        exprTypeDefForCheck.originalCollectedDefinition ===
+          (-1 as Collect.TypeDefId) &&
+        exprTypeDefForCheck.name === "hzstd_meta_type_t"
+      ) {
+        const ctResult = evalCT(this.sr, exprId);
+        if (ctResult !== null && ctResult.kind === "type") {
+          [expr, exprId] = this.sr.b.datatypeUseAsValue(
+            ctResult.typeUseId,
+            sourceloc
+          );
+        } else {
+          throw new CompilerError(
+            `Type values cannot exist at runtime; use 'for comptime' or a compile-time index to access type array elements`,
+            sourceloc
+          );
         }
       }
     }
@@ -7603,10 +7641,14 @@ export class SemanticElaborator {
         }
 
         if (name === "variants") {
-          const metaTaggedMemberType = this.ensureMetaTaggedMemberStructType(sourceloc);
+          const metaTaggedMemberType =
+            this.ensureMetaTaggedMemberStructType(sourceloc);
           const memberExprs = resolvedTypeDef.members.map((member) => {
             const tagExprId = this.sr.b.literal(member.tag, sourceloc)[1];
-            const typeExprId = this.sr.b.datatypeUseAsValue(member.type, sourceloc)[1];
+            const typeExprId = this.sr.b.datatypeUseAsValue(
+              member.type,
+              sourceloc
+            )[1];
             return this.sr.b.structLiteral(
               metaTaggedMemberType,
               [

@@ -74,20 +74,6 @@ fn foooooooo(data?: rx.Computed<ui.Element>) {
 
 fn main(): int {
 
-    let num: int | str | real = 42;
-    if comptime typeof(num).category == meta.TypeCategory.Union {
-        static_print(f"{typeof(num).prettyName}");
-        for comptime T, i in typeof(num).variants {
-            static_print(f"Union Member: #{i} = {T.prettyName}");
-        }
-        for (let i = 0; i < typeof(num).variants.length; i++) {
-            static_print(f"Union Member A: #{i} = {typeof(num).variants[i].prettyName}");
-        }
-    }
-
-    return 0;
-    // foooooooo();
-
     let flexboxLayoutTest = rx.computed(() => ui.TextElement {
         id: 16,
         text: "Flexbox layout test",
