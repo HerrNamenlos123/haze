@@ -347,8 +347,10 @@ fn main(): int {
             fs.pollEvents();
             renderer.beginFrame();
 
-            let tree = uiTree;
-            // let tree = computeUI();
+            // let tree = uiTree;
+            let tree = computeUI();
+            // static_print(f"{typeof(tree).prettyName}");
+            // static_print(f"{typeof(computeUI()).prettyName}");
 
             uiCtx.render(tree, {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {

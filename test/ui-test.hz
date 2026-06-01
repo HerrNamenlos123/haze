@@ -318,4 +318,5 @@ fn computeUI() {
 
     let root = getOrCreateComponent(0);
     printTree(root.rootElement);
+    return root.rootElement;
 }
