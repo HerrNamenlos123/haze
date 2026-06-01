@@ -48,6 +48,8 @@ struct ComponentInstance {
     id: int;
 
     templateComputed?: rx.Computed<none>;
+    currentTemplate: (() => none) | null = null;
+    propsVersion: rx.Reactive<int> | null = null;
 
     elementsById: []inline ElementCache = [];
     childComponents: []inline ComponentCache = [];
@@ -181,17 +183,27 @@ fn defineComponent(
     }
     assert(instance);
 
+    instance.currentTemplate = template;
+
+    if !instance.propsVersion {
+        instance.propsVersion = rx.reactive<int>(0);
+    }
+    assert(instance.propsVersion);
+    instance.propsVersion++;
+
     if instance.templateComputed is none {
         instance.templateComputed = rx.computed(() => {
+            rx.get(instance.propsVersion);
+
             instance.rootElement.children = [];
-            fmt.println(f"Recompute computed {props.id}");
 
             pushRenderContext({
                 currentComponent: instance,
                 currentParent: instance.rootElement,
             });
 
-            template();
+            assert(instance.currentTemplate);
+            instance.currentTemplate();
 
             popRenderContext();
 
@@ -408,7 +420,9 @@ fn UI() {
                 gap: 10.0,
             }
         }, () => {
-            Header({ id: 1, title: "HAZE UI — Component System" });
+            let fc = getGlobalContext().framecount;
+            assert(fc);
+            Header({ id: 1, title: f"HAZE UI — Component System (Frame #{fc})" });
 
             div({
                 id: 2,
@@ -453,6 +467,6 @@ fn computeUI() {
     rx.get(ctx.rootTemplate);
 
     assert(ctx.rootComponent);
-    printTree(ctx.rootComponent.rootElement);
+    // printTree(ctx.rootComponent.rootElement);
     return ctx.rootComponent.rootElement;
 }

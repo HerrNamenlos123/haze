@@ -200,6 +200,7 @@ export opaque struct Context {
         lineHeightStack: []LineHeight = [];
         textColorStack: []Color = [];
         elementBoxes: []Box<Element> = [];
+        idPath: str;
 
         fn validateEmpty() {
             assert(this.fontFamilyStack.length == 0);
@@ -319,18 +320,22 @@ export opaque struct Context {
                 __c__("elementPtr = elementBox;");
                 ctx.elementBoxes.push(elementBox);
 
-                let elementId = "...";
+                let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
+                let savedIdPath = ctx.idPath;
+                ctx.idPath = elementId;
 
                 ffi.hzui_clay_define_div_element(
                     func, env,
                     elementId,
-                    element.style.backgroundColor, 
-                    getPaddingValues(element.style.padding), 
+                    element.style.backgroundColor,
+                    getPaddingValues(element.style.padding),
                     getCornerRadiusValues(element.style.cornerRadius),
                     element.style.direction == Direction.Column,
                     element.style.gap,
                     elementPtr,
                 );
+
+                ctx.idPath = savedIdPath;
             });
         } 
         else if element is TextElement {
@@ -382,7 +387,7 @@ export opaque struct Context {
     fn render(element: Element, callbacks: RenderCallbacks) {
         ffi.Clay_BeginLayout();
 
-        let ctx = TreeTraverseContext {};
+        let ctx = TreeTraverseContext { idPath: "" };
 
         const DEFAULT_FONT_SIZE = 16.0;
         const DEFAULT_FONT_WEIGHT = 400.0;
