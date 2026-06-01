@@ -3,7 +3,7 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: usize, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: int, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
     extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
 
     extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
@@ -39,7 +39,7 @@ namespace ffi {
     }
 
     export extern C noemit inline struct hzui_define_text_element_t {
-        id: usize;
+        id: int;
         text: str;
         fontId: int;
         fontSize: real;
@@ -154,14 +154,14 @@ export inline struct RenderLayout {
 }
 
 export struct DivElement {
-    id: usize;
+    id: int;
     children: []Element = [];
     style: DivStyle = {};
     layout?: RenderLayout = none;
 }
 
 export struct TextElement {
-    id: usize;
+    id: int;
     text: str;
     style: TextStyle = {};
     layout?: RenderLayout = none;
@@ -199,6 +199,7 @@ export opaque struct Context {
         fontWeightStack: []real = [];
         lineHeightStack: []LineHeight = [];
         textColorStack: []Color = [];
+        elementBoxes: []Box<Element> = [];
 
         fn validateEmpty() {
             assert(this.fontFamilyStack.length == 0);
@@ -316,6 +317,7 @@ export opaque struct Context {
                 let elementBox = Box<Element>(element);
                 let elementPtr = none as cptr;
                 __c__("elementPtr = elementBox;");
+                ctx.elementBoxes.push(elementBox);
 
                 ffi.hzui_clay_define_div_element(
                     func, env, 
@@ -337,6 +339,7 @@ export opaque struct Context {
                 let elementBox = Box<Element>(element);
                 let elementPtr = none as cptr;
                 __c__("elementPtr = elementBox;");
+                ctx.elementBoxes.push(elementBox);
 
                 let fontSize = this.getCurrentFontSize(ctx);
 

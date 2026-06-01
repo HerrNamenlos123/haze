@@ -47,12 +47,10 @@ fn getOrCreateComponent(id: int): ComponentInstance {
     }
     let newComponent = ComponentInstance {
         id: id,
-        rootNode: {
-            id: -1,
-            type: NodeType.Div,
-            generation: getGlobalContext().generation,
-            style: ui.DivStyle {},
-        }
+        rootElement: ui.DivElement {
+            id: 0,
+            style: {},
+        },
     };
     getGlobalContext().componentCache.push({
         id: id,
@@ -61,25 +59,50 @@ fn getOrCreateComponent(id: int): ComponentInstance {
     return newComponent;
 }
 
-enum NodeType {
-    Div,
-    Text,
+struct ElementCache {
+    id: int;
+    element: mut ui.Element;
 }
 
-struct Node {
+struct ComponentInstance {
     id: int;
-    type: NodeType;
-    generation: int;
 
-    parent?: Node;
+    templateComputed?: rx.Computed<none>;
 
-    children: []Node = [];
-    newChildren: []Node = [];
-    text?: str;
+    elementsById: []inline ElementCache = [];
 
-    // layout: LayoutRect;
+    rootElement: ui.DivElement;
 
-    style: ui.DivStyle | ui.TextStyle;
+    fn getOrCreateDiv(id: int): mut ui.DivElement {
+        for n in this.elementsById {
+            if n.id == id {
+                static_print(f"{typeof(n.element).prettyName}");
+                assert(n.element is ui.DivElement, "Div expected but other node type encountered");
+                static_print(f"{typeof(n.element).prettyName}");
+                return n.element;
+            }
+        }
+        let newElement = ui.DivElement { id: id, style: {} };
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+
+    fn getOrCreateText(id: int): mut ui.TextElement {
+        for n in this.elementsById {
+            if n.id == id {
+                assert(n.element is ui.TextElement, "Text element expected but other node type encountered");
+                return n.element;
+            }
+        }
+        let newElement = ui.TextElement { id: id, text: "", style: {} };
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+}
+
+struct RenderContext {
+    currentComponent: ComponentInstance;
+    currentParent: ui.DivElement;
 }
 
 struct DivProps {
@@ -97,113 +120,42 @@ struct ComponentProps {
     id: int;
 }
 
-struct NodeCache {
-    id: int;
-    node: mut Node;
-}
-
-struct ComponentInstance {
-    id: int;
-
-    // refs
-    // watchers
-    // computeds
-    templateComputed?: rx.Computed<none>;
-    dirty: bool = true;
-
-    // nodesById: Map<u64, Node>;
-    nodesById: []inline NodeCache = [];
-
-    rootNode: Node;
-
-    fn getNode(id: int) {
-        for n in this.nodesById {
-            if n.id == id {
-                return n.node;
-            }
-        }
-        let newNode = Node {
-            id: id,
-            type: NodeType.Div,
-            generation: getGlobalContext().generation,
-            style: ui.DivStyle {},
-        };
-        this.nodesById.push({
-            id: id,
-            node: newNode,
-        });
-        return newNode;
-    }
-}
-
-struct RenderContext {
-    currentComponent: ComponentInstance;
-    currentParent: Node;
-}
-
 fn div(props: DivProps, childrenFn: () => none) {
-
     let ctx = currentContext();
-
-    // reconcile persistent node
-    let node = ctx.currentComponent.getNode(props.id);
-
-    node.id = props.id;
-    node.type = NodeType.Div;
+    let element = ctx.currentComponent.getOrCreateDiv(props.id);
 
     if props.style is not none {
-        node.style = props.style;
+        element.style = props.style;
     }
 
-    // parent relationship
-    node.parent = ctx.currentParent;
-
     // attach into current parent
-    ctx.currentParent.newChildren.push(node);
+    ctx.currentParent.children.push(element);
 
-    // reconciliation preparation
-    // node.newChildren.clear();
-    node.newChildren = [];
-    node.generation = getGlobalContext().generation;
+    // clear children for reconciliation
+    element.children = [];
 
-    // descend into node
+    // descend into element
     pushRenderContext({
         currentComponent: ctx.currentComponent,
-        currentParent: node,
+        currentParent: element,
     });
 
-    // build children
     childrenFn();
 
-    // finalize reconciliation
-    node.children = node.newChildren;
-
-    // leave node
     popRenderContext();
 }
 
 fn text(props: TextProps) {
-
     let ctx = currentContext();
+    let element = ctx.currentComponent.getOrCreateText(props.id);
 
-    // reconcile persistent node
-    let node = ctx.currentComponent.getNode(props.id);
-
-    node.id = props.id;
-    node.type = NodeType.Text;
-
+    element.text = props.text;
     if props.style is not none {
-        node.style = props.style;
+        element.style = props.style;
     }
 
-    node.text = props.text;
-    node.generation = getGlobalContext().generation;
-
-    // parent relationship
-    node.parent = ctx.currentParent;
-
     // attach into current parent
-    ctx.currentParent.newChildren.push(node);
+    ctx.currentParent.children.push(element);
 }
 
 fn defineComponent(
@@ -212,71 +164,46 @@ fn defineComponent(
 ) {
     let instance = getOrCreateComponent(props.id);
 
-    // prepare reconciliation
-    // instance.rootNode.newChildren.clear();
-    instance.rootNode.newChildren = [];
-
-    // enter component render scope
-    pushRenderContext({
-        currentComponent: instance,
-        currentParent: instance.rootNode,
-    });
-
-    // execute template
     if instance.templateComputed is none {
         instance.templateComputed = rx.computed(() => {
-
-            // instance.rootNode.newChildren.clear();
-            instance.rootNode.newChildren = [];
+            instance.rootElement.children = [];
 
             pushRenderContext({
                 currentComponent: instance,
-                currentParent: instance.rootNode,
+                currentParent: instance.rootElement,
             });
 
             template();
-
-            instance.rootNode.children =
-                instance.rootNode.newChildren;
 
             popRenderContext();
 
             return none;
         });
     }
-    
+
     rx.get(instance.templateComputed);
 
-    // finalize reconciliation
-    instance.rootNode.children =
-        instance.rootNode.newChildren;
-
-    // leave component render scope
-    popRenderContext();
+    // attach root element into current parent if there is one
+    let stack = getGlobalContext().renderStack;
+    if stack.length > 0 {
+        currentContext().currentParent.children.push(instance.rootElement);
+    }
 }
 
-fn printTree(node: Node, depth: int = 0): void :: final {
-
+fn printTree(element: ui.Element, depth: int = 0): void :: final {
     let indent = "";
     for (let i = 0; i < depth; i++) {
         indent = indent + "  ";
     }
 
-    if node.type == NodeType.Div {
-        fmt.println(f"{indent}Div({node.id})");
-    }
-
-    if node.type == NodeType.Text {
-        if node.text {
-            fmt.println(f"{indent}Text({node.id}): {node.text}");
-        }
-        else {
-            fmt.println(f"{indent}Text({node.id}): {node.text}");
+    if element is ui.DivElement {
+        fmt.println(f"{indent}Div({element.id})");
+        for child in element.children {
+            printTree(child, depth + 1);
         }
     }
-
-    for child in node.children {
-        printTree(child, depth + 1);
+    else if element is ui.TextElement {
+        fmt.println(f"{indent}Text({element.id}): {element.text}");
     }
 }
 
@@ -337,7 +264,7 @@ fn Button(args: ButtonArgs) {
         return f"args.label #{frame}";
     })
 
-    defineComponent({ id: args.id }, () => 
+    defineComponent({ id: args.id }, () =>
         div({
             id: 1,
             style: {
@@ -353,7 +280,7 @@ fn UI() {
     let label = rx.reactive<str>("My Button");
     let color = rx.shallowReactive<Color>(Color("#FF0000"));
 
-    defineComponent({ id: 0 }, () => 
+    defineComponent({ id: 0 }, () =>
         div({
             id: 3
         }, () => {
@@ -364,11 +291,6 @@ fn UI() {
             });
         })
     );
-}
-
-fn cleanupNodes() {
-    // TODO: Remove nodes with an old generation from the array
-    // but currently splicing arrays is not supported yet
 }
 
 fn computeUI() {
@@ -393,5 +315,5 @@ fn computeUI() {
     rx.get(ctx.rootTemplate);
 
     let root = getOrCreateComponent(0);
-    printTree(root.rootNode);
+    printTree(root.rootElement);
 }

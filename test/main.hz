@@ -73,8 +73,6 @@ fn foooooooo(data?: rx.Computed<ui.Element>) {
 }
 
 fn main(): int {
-    computeUI();
-    return 0;
     // foooooooo();
 
     let flexboxLayoutTest = rx.computed(() => ui.TextElement {
@@ -348,6 +346,8 @@ fn main(): int {
 
             fs.pollEvents();
             renderer.beginFrame();
+
+            computeUI();
 
             uiCtx.render(uiTree, {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
