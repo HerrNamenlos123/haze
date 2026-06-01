@@ -48,7 +48,7 @@ fn getOrCreateComponent(id: int): ComponentInstance {
     let newComponent = ComponentInstance {
         id: id,
         rootElement: ui.DivElement {
-            id: 0,
+            id: id,
             style: {},
         },
     };
@@ -63,10 +63,6 @@ struct ElementCache {
     id: int;
     element: mut ui.Element;
 }
-
-struct A {}
-struct B {}
-type C = A | B;
 
 struct ComponentInstance {
     id: int;

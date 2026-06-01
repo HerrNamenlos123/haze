@@ -320,8 +320,8 @@ export opaque struct Context {
                 ctx.elementBoxes.push(elementBox);
 
                 ffi.hzui_clay_define_div_element(
-                    func, env, 
-                    element.id, 
+                    func, env,
+                    element.id,
                     element.style.backgroundColor, 
                     getPaddingValues(element.style.padding), 
                     getCornerRadiusValues(element.style.cornerRadius),
@@ -355,7 +355,7 @@ export opaque struct Context {
 
                 ffi.hzui_clay_define_text_element(
                     {
-                        id: element.id, 
+                        id: element.id,
                         text: element.text,
                         color: this.getCurrentTextColor(ctx),
                         fontId: fontId,
