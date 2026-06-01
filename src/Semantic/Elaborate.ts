@@ -5196,6 +5196,29 @@ export class SemanticElaborator {
 
         switch (type.modifier) {
           case ETypeModifier.Mut: {
+            // Resolve through any alias chain to find the underlying type def.
+            // If it's a union, mut must distribute into each variant — the union
+            // container itself is never mutated directly (assignment replaces or
+            // narrows, never mutates the discriminant wrapper).
+            const resolvedTypeUseId = this.resolveAlias(typeUseId);
+            const resolvedTypeDef = this.sr.typeDefNodes.get(
+              this.sr.typeUseNodes.get(resolvedTypeUseId).type
+            );
+            if (
+              resolvedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+            ) {
+              const mutMembers = resolvedTypeDef.members.map((memberId) => {
+                const memberUse = this.sr.typeUseNodes.get(memberId);
+                return makeTypeUse(
+                  this.sr,
+                  memberUse.type,
+                  EDatatypeMutability.Mut,
+                  memberUse.inline,
+                  type.sourceloc
+                )[1];
+              });
+              return this.sr.b.untaggedUnionTypeUse(mutMembers, type.sourceloc);
+            }
             return makeTypeUse(
               this.sr,
               tUse.type,

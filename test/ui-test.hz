@@ -64,6 +64,10 @@ struct ElementCache {
     element: mut ui.Element;
 }
 
+struct A {}
+struct B {}
+type C = A | B;
+
 struct ComponentInstance {
     id: int;
 
@@ -76,9 +80,7 @@ struct ComponentInstance {
     fn getOrCreateDiv(id: int): mut ui.DivElement {
         for n in this.elementsById {
             if n.id == id {
-                static_print(f"{typeof(n.element).prettyName}");
-                assert(n.element is ui.DivElement, "Div expected but other node type encountered");
-                static_print(f"{typeof(n.element).prettyName}");
+                assert(n.element is mut ui.DivElement, "Div expected but other node type encountered");
                 return n.element;
             }
         }
@@ -90,7 +92,7 @@ struct ComponentInstance {
     fn getOrCreateText(id: int): mut ui.TextElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is ui.TextElement, "Text element expected but other node type encountered");
+                assert(n.element is mut ui.TextElement, "Text element expected but other node type encountered");
                 return n.element;
             }
         }
