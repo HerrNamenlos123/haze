@@ -27,7 +27,6 @@ typedef enum {
 } hzui_text_alignment_t;
 
 typedef struct {
-  hzstd_usize_t id;
   hzstd_str_t text;
   hzstd_int_t fontId;
   hzstd_real_t fontSize;

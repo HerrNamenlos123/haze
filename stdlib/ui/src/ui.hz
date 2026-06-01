@@ -3,8 +3,9 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: int, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: str, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
     extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+    extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
 
     extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
@@ -39,7 +40,6 @@ namespace ffi {
     }
 
     export extern C noemit inline struct hzui_define_text_element_t {
-        id: int;
         text: str;
         fontId: int;
         fontSize: real;
@@ -319,9 +319,11 @@ export opaque struct Context {
                 __c__("elementPtr = elementBox;");
                 ctx.elementBoxes.push(elementBox);
 
+                let elementId = "...";
+
                 ffi.hzui_clay_define_div_element(
                     func, env,
-                    element.id,
+                    elementId,
                     element.style.backgroundColor, 
                     getPaddingValues(element.style.padding), 
                     getCornerRadiusValues(element.style.cornerRadius),
@@ -355,7 +357,6 @@ export opaque struct Context {
 
                 ffi.hzui_clay_define_text_element(
                     {
-                        id: element.id,
                         text: element.text,
                         color: this.getCurrentTextColor(ctx),
                         fontId: fontId,

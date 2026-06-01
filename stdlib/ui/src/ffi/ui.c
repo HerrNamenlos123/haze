@@ -93,7 +93,7 @@ void hzui_clay_set_layout_dimensions(hzstd_int_t width, hzstd_int_t height)
   Clay_SetLayoutDimensions((Clay_Dimensions) { width, height });
 }
 
-Clay_ElementId make_id(hzstd_usize_t id)
+Clay_ElementId make_id_int(hzstd_int_t id)
 {
   char id_cstr[64];
   // TODO: Find a way to work directly with integer ids without requiring string formatting and string hashing
@@ -102,7 +102,13 @@ Clay_ElementId make_id(hzstd_usize_t id)
   return CLAY_SID(id_str);
 }
 
-hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_usize_t elementId)
+Clay_ElementId make_id(hzstd_str_t id)
+{
+  Clay_String str = (Clay_String) { .chars = id.data, .length = id.length };
+  return CLAY_SID(str);
+}
+
+hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elementId)
 {
   Clay_ElementData data = Clay_GetElementData(make_id(elementId));
   if (data.found) {
@@ -131,7 +137,7 @@ hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_usize_t el
 
 void hzui_clay_define_div_element(void* (*fn)(void*),
                                   void* env,
-                                  hzstd_usize_t id,
+                                  hzstd_str_t id,
                                   hzstd_color_t backgroundColor,
                                   PaddingValues padding,
                                   hzui_corner_radius_values_t cornerRadius,

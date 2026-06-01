@@ -3,7 +3,7 @@ struct GlobalContext {
     renderStack: []RenderContext = [];
     generation: int = 0;
     effectQueue: [](() => void) = [];
-    componentCache: []inline ComponentCache = [];
+    rootComponent: ComponentInstance | null = null;
     rootTemplate: rx.Computed<none> | null = null;
     framecount: rx.Reactive<int> | null = null;
 }
@@ -39,26 +39,6 @@ struct ComponentCache {
     component: ComponentInstance;
 }
 
-fn getOrCreateComponent(id: int): ComponentInstance {
-    for n in getGlobalContext().componentCache {
-        if n.id == id {
-            return n.component;
-        }
-    }
-    let newComponent = ComponentInstance {
-        id: id,
-        rootElement: ui.DivElement {
-            id: id,
-            style: {},
-        },
-    };
-    getGlobalContext().componentCache.push({
-        id: id,
-        component: newComponent,
-    });
-    return newComponent;
-}
-
 struct ElementCache {
     id: int;
     element: mut ui.Element;
@@ -70,6 +50,7 @@ struct ComponentInstance {
     templateComputed?: rx.Computed<none>;
 
     elementsById: []inline ElementCache = [];
+    childComponents: []inline ComponentCache = [];
 
     rootElement: ui.DivElement;
 
@@ -95,6 +76,26 @@ struct ComponentInstance {
         let newElement = ui.TextElement { id: id, text: "", style: {} };
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
+    }
+
+    fn getOrCreateChild(id: int): ComponentInstance {
+        for n in this.childComponents {
+            if n.id == id {
+                return n.component;
+            }
+        }
+        let newComponent = ComponentInstance {
+            id: id,
+            rootElement: ui.DivElement {
+                id: id,
+                style: {},
+            },
+        };
+        this.childComponents.push({
+            id: id,
+            component: newComponent,
+        });
+        return newComponent;
     }
 }
 
@@ -160,7 +161,25 @@ fn defineComponent(
     props: ComponentProps,
     template: () => none
 ) {
-    let instance = getOrCreateComponent(props.id);
+    let stack = getGlobalContext().renderStack;
+    let instance = null as ComponentInstance | null;
+
+    if stack.length > 0 {
+        instance = currentContext().currentComponent.getOrCreateChild(props.id);
+    } else {
+        if !getGlobalContext().rootComponent {
+            getGlobalContext().rootComponent = ComponentInstance {
+                id: props.id,
+                rootElement: ui.DivElement {
+                    id: props.id,
+                    style: {},
+                },
+            };
+        }
+        assert(getGlobalContext().rootComponent);
+        instance = getGlobalContext().rootComponent;
+    }
+    assert(instance);
 
     if instance.templateComputed is none {
         instance.templateComputed = rx.computed(() => {
@@ -183,7 +202,6 @@ fn defineComponent(
     rx.get(instance.templateComputed);
 
     // attach root element into current parent if there is one
-    let stack = getGlobalContext().renderStack;
     if stack.length > 0 {
         currentContext().currentParent.children.push(instance.rootElement);
     }
@@ -303,9 +321,9 @@ fn Sidebar(args: SidebarArgs) {
             }
         }, () => {
             text({ id: 2, text: "Menu" });
-            NavItem({ id: 21, label: "Dashboard" });
-            NavItem({ id: 22, label: "Settings" });
-            NavItem({ id: 23, label: "About" });
+            NavItem({ id: 1, label: "Dashboard" });
+            NavItem({ id: 2, label: "Settings" });
+            NavItem({ id: 3, label: "About" });
         })
     );
 }
@@ -379,7 +397,7 @@ fn Footer(args: FooterArgs) {
 fn UI() {
     defineComponent({ id: 0 }, () =>
         div({
-            id: 3,
+            id: 1,
             style: {
                 backgroundColor: Color(0.15, 0.15, 0.15, 1),
                 padding: ui.StylePaddingSimple { value: 30.0 },
@@ -390,10 +408,10 @@ fn UI() {
                 gap: 10.0,
             }
         }, () => {
-            Header({ id: 10, title: "HAZE UI — Component System" });
+            Header({ id: 1, title: "HAZE UI — Component System" });
 
             div({
-                id: 4,
+                id: 2,
                 style: {
                     direction: ui.Direction.Row,
                     padding: ui.StylePaddingSimple { value: 20.0 },
@@ -403,12 +421,12 @@ fn UI() {
                     gap: 30.0,
                 }
             }, () => {
-                Sidebar({ id: 20 });
-                ContentArea({ id: 30 });
-                InfoBox({ id: 40 });
+                Sidebar({ id: 2 });
+                ContentArea({ id: 3 });
+                InfoBox({ id: 4 });
             });
 
-            Footer({ id: 50 });
+            Footer({ id: 5 });
         })
     );
 }
@@ -434,7 +452,7 @@ fn computeUI() {
 
     rx.get(ctx.rootTemplate);
 
-    let root = getOrCreateComponent(0);
-    printTree(root.rootElement);
-    return root.rootElement;
+    assert(ctx.rootComponent);
+    printTree(ctx.rootComponent.rootElement);
+    return ctx.rootComponent.rootElement;
 }
