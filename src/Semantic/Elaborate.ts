@@ -1491,12 +1491,43 @@ export class SemanticElaborator {
         calledFunctionSymbol,
         calledCollectedFunctionSymbol
       );
-      const actualArgs = convertArguments(
+      let actualArgs = convertArguments(
         preparedArgs,
         calledExprType.parameters,
         calledExprType.vararg,
         hasParameterPack
       );
+
+      if (
+        calledFunctionSymbol?.envType?.type === "method" &&
+        calledFunctionSymbol.methodType === EMethodType.Method &&
+        !calledFunctionSymbol.staticMethod
+      ) {
+        const thisLookup = Semantic.lookupSymbol(this.sr, "this", {
+          startLookupInScope: this.currentContext.currentScope,
+          sourceloc: callExpr.sourceloc,
+        });
+        const thisExprId =
+          thisLookup.type === "semantic"
+            ? thisLookup.id
+            : this.explicitSymbolValue(
+                thisLookup.id,
+                [],
+                inference,
+                thisLookup.crossedLambdaScope,
+                callExpr.sourceloc
+              )[1];
+        const thisArg = Conversion.MakeConversionOrThrow(
+          this.sr,
+          thisExprId,
+          calledFunctionSymbol.envType.thisExprType,
+          this.currentContext.constraints,
+          callExpr.sourceloc,
+          Conversion.Mode.Implicit,
+          inference?.unsafe ?? false
+        );
+        actualArgs = [thisArg, ...actualArgs];
+      }
       return this.sr.b.callExpr(
         calledExprId,
         actualArgs,
@@ -6821,12 +6852,31 @@ export class SemanticElaborator {
         genericArgs = inferredArgs;
       }
     }
+    let env: Semantic.EnvBlockType = null;
+    if (funcsym.methodType === EMethodType.Method && !funcsym.staticMethod) {
+      assert(functionSignature.parentSymbolId);
+      const parentSymbol = this.sr.symbolNodes.get(
+        functionSignature.parentSymbolId
+      );
+      assert(parentSymbol.variant === Semantic.ENode.TypeDefSymbol);
+      env = {
+        type: "method",
+        thisExprType: makeTypeUse(
+          this.sr,
+          parentSymbol.datatype,
+          funcsym.methodRequiredMutability ?? EDatatypeMutability.Default,
+          "force-no-inline",
+          sourceloc
+        )[1],
+      };
+    }
+
     const functionSymbolId = this.elaborateFunctionSymbolWithGenerics(
       functionSignatureId,
       genericArgs,
       sourceloc,
       paramPackTypes,
-      null
+      env
     );
     const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
