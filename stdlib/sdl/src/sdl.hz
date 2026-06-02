@@ -161,8 +161,7 @@ export struct ResizeEvent {
 }
 
 export struct MouseMoveEvent {
-	x: f32;
-	y: f32;
+	pos: Vec2;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +238,7 @@ fn hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseMoveEvent { x: x, y: y };
+		let e = MouseMoveEvent { pos: Vec2(x as real, y as real) };
 		window.dispatchMouseMove(e);
 	};
 }

@@ -46,7 +46,7 @@ struct ComponentInstance {
                 return n.element;
             }
         }
-        let newElement = hzui.DivElement { id: id, style: {}, _renderFeedbackVersion: rx.reactive<bool>(false) };
+        let newElement = hzui.DivElement({ id: id, style: {} });
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -58,7 +58,7 @@ struct ComponentInstance {
                 return n.element;
             }
         }
-        let newElement = hzui.TextElement { id: id, text: "", style: {}, _renderFeedbackVersion: rx.reactive<bool>(false) };
+        let newElement = hzui.TextElement({ id: id, text: "", style: {} });
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -75,11 +75,10 @@ struct ComponentInstance {
     fn createChild(id: int): ComponentInstance {
         return ComponentInstance {
             id: id,
-            rootElement: hzui.DivElement {
+            rootElement: hzui.DivElement({
                 id: id,
                 style: {},
-                _renderFeedbackVersion: rx.reactive<bool>(false),
-            },
+            }),
             propsVersion: rx.reactive<int>(0),
         };
     }
@@ -91,6 +90,7 @@ struct RenderContext {
 }
 
 opaque struct UIContext {
+    _mousePos: (() => Vec2);
     renderStack: []RenderContext = [];
     effectQueue: [](() => void) = [];
     rootComponent: ComponentInstance | null = null;
@@ -101,7 +101,8 @@ opaque struct UIContext {
     _prevTime: real;
 
     inline struct UIContextArgs {
-        ui: ((ui: UIContext) => none)
+        ui: ((ui: UIContext) => none);
+        mousePos: () => Vec2;
     }
 
     fn constructor(args: UIContextArgs) {
@@ -111,6 +112,7 @@ opaque struct UIContext {
             _deltaTime: rx.reactive<real>(0),
             _timeNow: rx.reactive<real>(0),
             _prevTime: time.now(),
+            _mousePos: args.mousePos,
         };
 
         // UI Context depends on itself
@@ -133,6 +135,36 @@ opaque struct UIContext {
         return this._timeNow;
     }
 
+    fn applyHitTestAndScheduleEvents(element: hzui.Element, mousePos: Vec2): (() => none) :: final {
+        if element is hzui.DivElement {
+            let pos = element.position();
+            let size = element.size();
+
+            let hovered = false;
+            if pos && size {
+                hovered = 
+                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
+                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
+            }
+
+            if !element._inputFeedback {
+                element._inputFeedback = { 
+                    hover: false
+                };
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
+            assert(element._inputFeedback);
+
+            if element._inputFeedback.hover != hovered {
+                element._inputFeedback.hover = hovered;
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
+        }
+        else {
+
+        }
+    }
+
     fn process() {
         let now = time.now();
         let elapsed = now - this._prevTime;
@@ -141,6 +173,19 @@ opaque struct UIContext {
         this._framecount++;
         this._deltaTime := elapsed;
         this._timeNow := now;
+
+        let mousePos = this._mousePos();
+        fmt.println("Mouse Pos: ", mousePos);
+
+        // HIT TESTING PHASE
+        if (this.rootComponent) {
+            let prevTree = this.rootComponent.rootElement;
+            let events = this.applyHitTestAndScheduleEvents(prevTree, mousePos);
+        }
+
+        // EVENT PHASE
+
+        // FLUSH PHASE
 
         this.flushEffects();
 
@@ -501,7 +546,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
             if size {
                 fmt.println("Size: ", size);
             }
-            fmt.println("Hover: ", text.hover());
+            // fmt.println("Hover: ", text.hover());
 
             NavItem(ui, { id: 1, label: "Dashboard" });
             NavItem(ui, { id: 2, label: "Settings" });

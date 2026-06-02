@@ -154,8 +154,16 @@ fn main(): int {
             },
         });
 
+        let mousePosition = Vec2(0, 0);
+        window.onMouseMove((e: sdl.MouseMoveEvent) => {
+            mousePosition.x = e.pos.x;
+            mousePosition.y = e.pos.y;
+            return false;
+        });
+
         let ui = UIContext({
             ui: (ui: UIContext) => UI(ui),
+            mousePos: () => mousePosition as Vec2,
         });
 
         while !window.shouldClose() {
