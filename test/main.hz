@@ -42,13 +42,7 @@ fn print<T>(value: T) {
     }
 }
 
-extern C fn SDL(): void :: final;
-__c__("#include \"test.c\"")
-
 fn main(): int {
-
-    SDL();
-    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
