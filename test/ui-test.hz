@@ -15,7 +15,8 @@ struct ComponentInstance {
 
     templateComputed?: rx.Computed<none>;
     currentTemplate: (() => none) | null = null;
-    propsVersion: rx.Reactive<int> | null = null;
+    propsVersion: rx.Reactive<int>;
+    prevProps: cptr | null = null;
 
     struct ComponentCache {
         id: int;
@@ -78,6 +79,7 @@ struct ComponentInstance {
                 id: id,
                 style: {},
             },
+            propsVersion: rx.reactive<int>(0),
         };
     }
 }
@@ -185,6 +187,7 @@ opaque struct UIContext {
                         id: id,
                         style: {},
                     },
+                    propsVersion: rx.reactive<int>(0),
                 };
             }
             assert(this.rootComponent);
@@ -203,10 +206,6 @@ opaque struct UIContext {
     fn getCurrentParent() {
         assert(this.renderStack.length > 0);
         return this.renderStack[this.renderStack.length - 1].currentParent;
-    }
-
-    inline struct ComponentProps {
-        id: int;
     }
 
     fn destroyComponent(
@@ -228,19 +227,17 @@ opaque struct UIContext {
         component.newChildComponents = [];
     }
 
-    fn defineComponent(
-        props: ComponentProps,
+    fn defineComponentImpl(
+        id: int,
+        propsChanged: bool,
         template: () => none
     ) {
-        let instance = this.makeCurrentComponentAvailable(props.id);
+        let instance = this.makeCurrentComponentAvailable(id);
 
         instance.currentTemplate = template;
-
-        if !instance.propsVersion {
-            instance.propsVersion = rx.reactive<int>(0);
+        if (propsChanged) {
+            instance.propsVersion++;
         }
-        assert(instance.propsVersion);
-        instance.propsVersion++;
 
         if instance.templateComputed is none {
             instance.templateComputed = rx.computed(() => {
@@ -301,6 +298,34 @@ opaque struct UIContext {
         if this.renderStack.length > 0 {
             this.renderStack[this.renderStack.length - 1].currentParent.children.push(instance.rootElement);
         }
+    }
+
+    fn defineComponent<TProps>(
+        id: int,
+        props: TProps,
+        template: () => none
+    ) {
+        let instance = this.makeCurrentComponentAvailable(id);
+
+        do unsafe {
+            let propsChanged = true;
+
+            if instance.prevProps is not null {
+                let prevProps = instance.prevProps;
+                // TODO: Store the box and update its content, without allocating a new box every frame
+                let oldBox: Box<TProps> = uninitialized;
+                __c__("oldBox = prevProps;");
+                propsChanged = props != oldBox.value;
+            }
+
+            // TODO: Store the box and update its content, without allocating a new box every frame
+            let newBox = Box<TProps>(props);
+            let newPrevProps: cptr = uninitialized;
+            __c__("newPrevProps = newBox;");
+            instance.prevProps = newPrevProps as cptr | null;
+
+            return this.defineComponentImpl(id, propsChanged, template);
+        };
     }
 
     fn onMounted(callback: () => none) {
@@ -392,10 +417,14 @@ opaque struct UIContext {
 struct HeaderArgs {
     id: int;
     title: str;
+
+    fn operator!=(other: HeaderArgs) {
+        return this.id != other.id || this.title != other.title;
+    }
 }
 
 fn Header(ui: UIContext, args: HeaderArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -413,10 +442,14 @@ fn Header(ui: UIContext, args: HeaderArgs) {
 struct NavItemArgs {
     id: int;
     label: str;
+
+    fn operator!=(other: NavItemArgs) {
+        return this.id != other.id || this.label != other.label;
+    }
 }
 
 fn NavItem(ui: UIContext, args: NavItemArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -432,10 +465,14 @@ fn NavItem(ui: UIContext, args: NavItemArgs) {
 
 struct SidebarArgs {
     id: int;
+
+    fn operator!=(other: SidebarArgs) {
+        return this.id != other.id;
+    }
 }
 
 fn Sidebar(ui: UIContext, args: SidebarArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -446,6 +483,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
                 width: 180.0,
             }
         }, () => {
+            fmt.println("Sidebar rerender");
             ui.text({ id: 2, text: "Menu" });
             NavItem(ui, { id: 1, label: "Dashboard" });
             NavItem(ui, { id: 2, label: "Settings" });
@@ -456,10 +494,15 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
 
 struct ContentAreaArgs {
     id: int;
+    text: str;
+
+    fn operator!=(other: ContentAreaArgs) {
+        return this.id != other.id || this.text != other.text;
+    }
 }
 
 fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -470,19 +513,25 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 gap: 16.0,
             }
         }, () => {
+            fmt.println("Rerender sidebar");
             ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
             ui.text({ id: 3, text: "This is rendered via the component system." });
             ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
+            ui.text({ id: 5, text: args.text });
         })
     );
 }
 
 struct InfoBoxArgs {
     id: int;
+
+    fn operator!=(other: InfoBoxArgs) {
+        return this.id != other.id;
+    }
 }
 
 fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -503,10 +552,14 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
 
 struct FooterArgs {
     id: int;
+
+    fn operator!=(other: FooterArgs) {
+        return this.id != other.id;
+    }
 }
 
 fn Footer(ui: UIContext, args: FooterArgs) {
-    ui.defineComponent({ id: args.id }, () =>
+    ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
             style: {
@@ -520,8 +573,14 @@ fn Footer(ui: UIContext, args: FooterArgs) {
     );
 }
 
+struct RootArgs {
+    fn operator!=(other: RootArgs) {
+        return false;
+    }
+}
+
 fn UI(ui: UIContext) {
-    ui.defineComponent({ id: 0 }, () =>
+    ui.defineComponent(0, RootArgs {}, () =>
         ui.div({
             id: 1,
             style: {
@@ -534,7 +593,13 @@ fn UI(ui: UIContext) {
                 gap: 10.0,
             }
         }, () => {
+            fmt.println("Root rerender");
+            // Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{5})" });
             Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
+
+            let text = rx.computed(() => {
+                return f"This text is running since {ui.now() as int} seconds.";
+            });
 
             ui.div({
                 id: 2,
@@ -548,7 +613,7 @@ fn UI(ui: UIContext) {
                 }
             }, () => {
                 Sidebar(ui, { id: 2 });
-                ContentArea(ui, { id: 3 });
+                ContentArea(ui, { id: 3, text: text });
                 InfoBox(ui, { id: 4 });
             });
 
