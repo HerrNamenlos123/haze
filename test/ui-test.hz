@@ -19,7 +19,7 @@ struct ComponentInstance {
     setupDone: bool = false;
     currentTemplate: (() => void) | null = null;
     propsVersion: rx.Reactive<int>;
-    prevProps: cptr | null = null;
+    prevProps?: TypeErasedBox;
     instanceDataForCapturing?: TypeErasedBox;
 
     struct ComponentCache {
@@ -131,7 +131,6 @@ opaque struct UIContext {
 
         // UI Context depends on itself
         ctx.rootTemplate = rx.computed<none>(() => {
-            fmt.println("ROOT TEMPLATE");
             args.ui(ctx);
         });
 
@@ -335,7 +334,6 @@ opaque struct UIContext {
         if instance.templateComputed is none {
             instance.templateComputed = rx.computed(() => {
                 rx.get(instance.propsVersion);
-                fmt.println("ROOT COMPONENT TEMPLATE", id);
 
                 instance.newChildComponents = [];
                 instance.rootElement.children = [];
@@ -418,19 +416,16 @@ opaque struct UIContext {
         do unsafe {
             let propsChanged = true;
 
-            if instance.prevProps is not null {
-                let prevProps = instance.prevProps;
-                // TODO: Store the box and update its content, without allocating a new box every frame
-                let oldBox: Box<TProps> = uninitialized;
-                __c__("oldBox = prevProps;");
-                propsChanged = props != oldBox.value;
+            if instance.prevProps {
+                let prevProps = instance.prevProps.get<TProps>();
+                propsChanged = props != prevProps;
             }
 
-            // TODO: Store the box and update its content, without allocating a new box every frame
-            let newBox = Box<TProps>(props);
-            let newPrevProps: cptr = uninitialized;
-            __c__("newPrevProps = newBox;");
-            instance.prevProps = newPrevProps as cptr | null;
+            if !instance.prevProps {
+                instance.prevProps = TypeErasedBox<TProps>(props);
+            }
+            assert(instance.prevProps);
+            instance.prevProps.set<TProps>(props);
 
             return this.defineComponentImpl(id, propsChanged, () => {
                 return setupFn(instanceData);
@@ -619,7 +614,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
                     width: 180.0,
                 }
             }, (): void => {
-                fmt.println(f"Sidebar rerender {ui.framecount()}");
+                fmt.println(f"Sidebar rerender");
                 let r = rx.get(textRef);
                 fmt.println("Hover: ", r is not null ? r.hover() : null);
                 ui.text({ id: 2, ref: textRef, text: "Menu" });
@@ -668,12 +663,6 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 ui.text({ id: 3, text: "This is rendered via the component system." });
                 ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
                 ui.text({ id: 5, text: instance.props().text });
-
-                // if ((ui.now() as int) % 2 == 0) {
-                //     NavItem(ui, { id: 4, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-                //     NavItem(ui, { id: 5, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-                //     NavItem(ui, { id: 6, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-                // }
             });
         };
     });
@@ -761,7 +750,6 @@ fn UI(ui: UIContext) {
                     gap: 10.0,
                 }
             }, (): void => {
-                fmt.println("HEADER RERENDER", ui.framecount());
                 Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
                 ui.div({
