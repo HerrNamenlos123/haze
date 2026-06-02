@@ -62,7 +62,18 @@ export fn addressOf<T>(value: T) {
         };
         return addr;
     }
+    if comptime 
+            T.category == meta.TypeCategory.Reactive || 
+            T.category == meta.TypeCategory.Computed || 
+            T.category == meta.TypeCategory.DynamicArray || 
+            T.category == meta.TypeCategory.ShallowReactive {
+        let addr: u64 = 0;
+        do unsafe {
+            __c__(f"addr = (uint64_t)(void*)value;");
+        };
+        return addr;
+    }
     else {
-        static_assert(false, f"Type '{T.prettyName}' is not a struct and therefore not applicable to addressOf()");
+        static_assert(false, f"Type '{T.prettyName}' is not a pointer based structure and therefore not applicable to addressOf()");
     }
 }
