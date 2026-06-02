@@ -598,11 +598,23 @@ struct NavItemArgs {
 
 fn NavItem(ui: UIContext, args: NavItemArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<NavItemArgs>) => {
+
+        let divRef = ui.ref<hzui.DivElement>();
+
+        let hover = rx.computed(() => {
+            let element = rx.get(divRef);
+            if !element {
+                return false;
+            }
+            return element.hover();
+        })
+
         return (): void => {
             ui.div({
                 id: 1,
+                ref: divRef,
                 style: {
-                    backgroundColor: Color(0.15, 0.45, 0.75, 1),
+                    backgroundColor: hover ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
                     padding: hzui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
                     cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
                 }
@@ -623,9 +635,6 @@ struct SidebarArgs {
 
 fn Sidebar(ui: UIContext, args: SidebarArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<SidebarArgs>) => {
-        fmt.println("sidebar SETUP");
-
-        let textRef = ui.ref<hzui.TextElement>();
 
         return (): void => {
             ui.div({
@@ -638,20 +647,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
                     width: 180.0,
                 }
             }, (): void => {
-                fmt.println(f"Sidebar rerender");
-                let r = rx.get(textRef);
-                fmt.println("Hover: ", r is not null ? r.hover() : null);
-                ui.text({ id: 2, ref: textRef, text: "Menu" });
-
-                // let pos = text.position();
-                // if pos {
-                //     fmt.println("Position: ", pos);
-                // }
-                // let size = text.size();
-                // if size {
-                //     fmt.println("Size: ", size);
-                // }
-
+                ui.text({ id: 2, text: "Menu" });
                 NavItem(ui, { id: 10, label: "Dashboard" });
                 NavItem(ui, { id: 20, label: "Settings" });
                 NavItem(ui, { id: 30, label: "About" });
