@@ -1,10 +1,10 @@
 
-struct DivProps {
+inline struct DivProps {
     id: int;
     style?: hzui.DivStyle;
 }
 
-struct TextProps {
+inline struct TextProps {
     id: int;
     style?: hzui.TextStyle;
     text: str;
@@ -29,8 +29,14 @@ struct ComponentInstance {
 
     elementsById: []inline ElementCache = [];
     childComponents: []inline ComponentCache = [];
+    newChildComponents: []inline ComponentCache = [];
 
     rootElement: hzui.DivElement;
+
+    onMounted?: () => none;
+    onUnmount?: () => none;
+
+    mounted: bool = false;
 
     fn getOrCreateDiv(id: int): mut hzui.DivElement {
         for n in this.elementsById {
@@ -56,24 +62,23 @@ struct ComponentInstance {
         return newElement;
     }
 
-    fn getOrCreateChild(id: int): ComponentInstance {
+    fn findChild(id: int): ComponentInstance | null {
         for n in this.childComponents {
             if n.id == id {
                 return n.component;
             }
         }
-        let newComponent = ComponentInstance {
+        return none;
+    }
+
+    fn createChild(id: int): ComponentInstance {
+        return ComponentInstance {
             id: id,
             rootElement: hzui.DivElement {
                 id: id,
                 style: {},
             },
         };
-        this.childComponents.push({
-            id: id,
-            component: newComponent,
-        });
-        return newComponent;
     }
 }
 
@@ -127,7 +132,7 @@ opaque struct UIContext {
 
     fn process() {
         let now = time.now();
-        let elapsed = this._prevTime - now;
+        let elapsed = now - this._prevTime;
         this._prevTime = now;
 
         this._framecount++;
@@ -158,7 +163,23 @@ opaque struct UIContext {
         let instance = null as ComponentInstance | null;
 
         if this.renderStack.length > 0 {
-            instance = this.renderStack[this.renderStack.length - 1].currentComponent.getOrCreateChild(id);
+            let parent =
+                this.renderStack[this.renderStack.length - 1]
+                    .currentComponent;
+
+            let child =
+                parent.findChild(id);
+
+            if child is none {
+                child = parent.createChild(id);
+            }
+
+            parent.newChildComponents.push({
+                id: id,
+                component: child,
+            });
+
+            instance = child;
         } else {
             if !this.rootComponent {
                 this.rootComponent = ComponentInstance {
@@ -191,6 +212,25 @@ opaque struct UIContext {
         id: int;
     }
 
+    fn destroyComponent(
+        component: ComponentInstance
+    ) {
+
+        for child in component.childComponents {
+            destroyComponent(
+                child.component
+            );
+        }
+
+        if component.onUnmount {
+            component.onUnmount();
+        }
+
+        component.elementsById = [];
+        component.childComponents = [];
+        component.newChildComponents = [];
+    }
+
     fn defineComponent(
         props: ComponentProps,
         template: () => none
@@ -209,6 +249,7 @@ opaque struct UIContext {
             instance.templateComputed = rx.computed(() => {
                 rx.get(instance.propsVersion);
 
+                instance.newChildComponents = [];
                 instance.rootElement.children = [];
 
                 this.pushRenderContext({
@@ -219,6 +260,30 @@ opaque struct UIContext {
                 assert(instance.currentTemplate);
                 instance.currentTemplate();
 
+                let oldChildren =
+                    instance.childComponents;
+
+                instance.childComponents =
+                    instance.newChildComponents;
+
+                for old in oldChildren {
+
+                    let stillExists = false;
+
+                    for new in instance.childComponents {
+                        if new.id == old.id {
+                            stillExists = true;
+                            break;
+                        }
+                    }
+
+                    if !stillExists {
+                        destroyComponent(
+                            old.component
+                        );
+                    }
+                }
+
                 this.popRenderContext();
 
                 return none;
@@ -227,10 +292,27 @@ opaque struct UIContext {
 
         rx.get(instance.templateComputed);
 
+        if !instance.mounted {
+            instance.mounted = true;
+            if instance.onMounted {
+                instance.onMounted();
+            }
+        }
+
         // attach root element into current parent if there is one
         if this.renderStack.length > 0 {
             this.renderStack[this.renderStack.length - 1].currentParent.children.push(instance.rootElement);
         }
+    }
+
+    fn onMounted(callback: () => none) {
+        let component = this.getCurrentComponent();
+        component.onMounted = callback;
+    }
+
+    fn onUnmount(callback: () => none) {
+        let component = this.getCurrentComponent();
+        component.onUnmount = callback;
     }
 
     struct WatchOptions {
