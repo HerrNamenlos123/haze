@@ -94,7 +94,13 @@ struct RenderContext {
 }
 
 struct InstanceData<TProps> {
-    props: TProps;
+    _props: TProps;
+    _propsVersion: rx.Reactive<int>;
+
+    fn props() {
+        rx.get(this._propsVersion);
+        return this._props;
+    }
 }
 
 opaque struct UIContext {
@@ -401,11 +407,13 @@ opaque struct UIContext {
         // state of the props as long as it only captures the container and not the props themselves.
         if !instance.instanceDataForCapturing {
             instance.instanceDataForCapturing = TypeErasedBox<InstanceData<TProps>>(InstanceData<TProps> {
-                props: props,
+                _props: props,
+                _propsVersion: instance.propsVersion,
             });
         }
-        assert(isntance.instanceDataForCapturing);
-        instance.instanceDataForCapturing.get<InstanceData<TProps>>().props = props;
+        assert(instance.instanceDataForCapturing);
+        let instanceData = instance.instanceDataForCapturing.get<InstanceData<TProps>>();
+        instanceData._props = props;
 
         do unsafe {
             let propsChanged = true;
@@ -425,7 +433,7 @@ opaque struct UIContext {
             instance.prevProps = newPrevProps as cptr | null;
 
             return this.defineComponentImpl(id, propsChanged, () => {
-                return setupFn(instance.instanceDataForCapturing);
+                return setupFn(instanceData);
             });
         };
     }
@@ -555,7 +563,7 @@ fn Header(ui: UIContext, args: HeaderArgs) {
                     cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
                 }
             }, (): void => {
-                ui.text({ id: 2, text: instance.props.title, style: { fontSize: 42.0 } });
+                ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
             });
         };
     });
@@ -581,7 +589,7 @@ fn NavItem(ui: UIContext, args: NavItemArgs) {
                     cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
                 }
             }, (): void => {
-                ui.text({ id: 2, text: instance.props.label });
+                ui.text({ id: 2, text: instance.props().label });
             });
         };
     });
@@ -659,7 +667,7 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
                 ui.text({ id: 3, text: "This is rendered via the component system." });
                 ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
-                ui.text({ id: 5, text: instance.props.text });
+                ui.text({ id: 5, text: instance.props().text });
 
                 // if ((ui.now() as int) % 2 == 0) {
                 //     NavItem(ui, { id: 4, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
@@ -734,7 +742,7 @@ struct RootArgs {
 
 
 fn UI(ui: UIContext) {
-    ui.defineComponent(0, RootArgs {}, (instance: InstanceData<RootArgs>) => {
+    ui.defineComponent(0, {} as RootArgs, (instance: InstanceData<RootArgs>) => {
 
         let text = rx.computed(() => {
             return f"This text is running since {ui.now() as int} seconds.";

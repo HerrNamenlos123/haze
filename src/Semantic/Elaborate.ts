@@ -1118,6 +1118,34 @@ export class SemanticElaborator {
       }
     }
 
+    // Detect if the callee is a non-generic struct type called with generic args.
+    // In that case the generic args belong to the constructor, not the type itself.
+    // e.g. TypeErasedBox<T>(value) where TypeErasedBox has 0 type params but constructor<T>
+    let constructorCalleeGenericArgs: Collect.ExprId[] = [];
+    let constructorCalleeSymbol: { symbolId: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null } | null = null;
+    if (
+      collectedExpr.variant === Collect.ENode.SymbolValueExpr &&
+      collectedExpr.genericArgs.length > 0
+    ) {
+      const foundResult = Semantic.tryLookupSymbol(this.sr, collectedExpr.name, {
+        startLookupInScope: this.currentContext.currentScope,
+        sourceloc: collectedExpr.sourceloc,
+      });
+      if (foundResult && foundResult.type === "collect") {
+        const sym = this.sr.cc.symbolNodes.get(foundResult.id);
+        if (sym.variant === Collect.ENode.TypeDefSymbol) {
+          const typeDef = this.sr.cc.typeDefNodes.get(sym.typeDef);
+          if (typeDef.variant === Collect.ENode.StructTypeDef && typeDef.generics.length === 0) {
+            constructorCalleeGenericArgs = collectedExpr.genericArgs;
+            constructorCalleeSymbol = {
+              symbolId: foundResult.id,
+              crossedLambdaScope: foundResult.crossedLambdaScope,
+            };
+          }
+        }
+      }
+    }
+
     const decisiveArguments = [] as {
       index: number;
       exprId: Semantic.ExprId | null;
@@ -1137,10 +1165,18 @@ export class SemanticElaborator {
     });
 
     // Choose all arguments that can contribute to disambiguating an overloaded function call
-    const [calledExpr, calledExprId] = this.sr.e.expr(callExpr.calledExpr, {
-      gonnaCallFunctionWithParameterValues: decisiveArguments,
-      unsafe: inference?.unsafe,
-    });
+    const [calledExpr, calledExprId] = constructorCalleeSymbol === null
+      ? this.sr.e.expr(callExpr.calledExpr, {
+          gonnaCallFunctionWithParameterValues: decisiveArguments,
+          unsafe: inference?.unsafe,
+        })
+      : this.explicitSymbolValue(
+          constructorCalleeSymbol.symbolId,
+          [],
+          { gonnaCallFunctionWithParameterValues: decisiveArguments, unsafe: inference?.unsafe },
+          constructorCalleeSymbol.crossedLambdaScope,
+          collectedExpr.sourceloc
+        );
 
     // Handle intrinsic function calls
     if (calledExpr.variant === Semantic.ENode.IntrinsicSymbol) {
@@ -1616,7 +1652,7 @@ export class SemanticElaborator {
           assert(sig.variant === Semantic.ENode.FunctionSignature);
           return this.elaborateFunctionSymbolWithGenerics(
             signature,
-            [],
+            constructorCalleeGenericArgs.map((g) => this.expressionAsGenericArg(g)),
             callExpr.sourceloc,
             parameterPackTypes,
             {
