@@ -93,8 +93,8 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp)
   hzstd_computed_node_t* prev = g_current_computed;
   g_current_computed = comp;
 
-  comp->cached = comp->fn(comp->env);
   comp->dirty = 0;
+  comp->cached = comp->fn(comp->env);
 
   g_current_computed = prev;
 
