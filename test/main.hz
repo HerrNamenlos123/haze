@@ -5,7 +5,7 @@ import wgpu
 import sdl_wgpu
 
 // ui framework module (includes flexbox layout)
-import ui
+import hzui
 
 export extern C noemit fn wgpu_init(window: cptr) :: final;
 export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
@@ -133,7 +133,7 @@ fn main(): int {
             "test/Roboto-Regular.ttf"
         );
 
-        let fonts: []ui.FontEntry = [
+        let fonts: []hzui.FontEntry = [
             {
                 name: "default",
                 id: renderer.fontRenderer.defaultFont,
@@ -144,7 +144,7 @@ fn main(): int {
             }
         ];
 
-        let uiCtx = ui.Context({
+        let uiCtx = hzui.Context({
             width: windowState.logicalSize.x,
             height: windowState.logicalSize.y,
             fonts: fonts,
@@ -154,6 +154,9 @@ fn main(): int {
             },
         });
 
+        let ui = UIContext({
+            ui: (ui: UIContext) => UI(ui),
+        });
 
         while !window.shouldClose() {
             sdl.pollEvents();
@@ -172,17 +175,14 @@ fn main(): int {
                         alphaMode: caps.alphaModes[0],
                     });
                     renderer.updateWindowState(nextWindowState);
-                    ui.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
+                    hzui.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
                 }
             }
 
             fs.pollEvents();
             renderer.beginFrame();
 
-            // let tree = uiTree;
-            let tree = computeUI();
-            // static_print(f"{typeof(tree).prettyName}");
-            // static_print(f"{typeof(computeUI()).prettyName}");
+            let tree = ui.process();
 
             uiCtx.render(tree, {
                 renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {

@@ -1,4 +1,4 @@
-name = "ui"
+name = "hzui"
 version = "0.0.1"
 description = "Minimal UI framework: elements, trees, and draw command interface"
 license = "MIT"

@@ -31,7 +31,7 @@ sdl_wgpu = { path = "./sdl_wgpu" }
 
 # UI framework module (fontstash must come before ui since ui depends on it)
 fontstash = { path = "./fontstash" }
-ui = { path = "./ui" }
+hzui = { path = "./hzui" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }

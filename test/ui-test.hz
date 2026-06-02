@@ -1,47 +1,13 @@
 
-struct GlobalContext {
-    renderStack: []RenderContext = [];
-    generation: int = 0;
-    effectQueue: [](() => void) = [];
-    rootComponent: ComponentInstance | null = null;
-    rootTemplate: rx.Computed<none> | null = null;
-    framecount: rx.Reactive<int> | null = null;
-}
-
-let g_globalContext: GlobalContext | null = null;
-
-fn getGlobalContext(): GlobalContext :: final {
-    if !g_globalContext {
-        g_globalContext = GlobalContext {};
-    }
-    assert(g_globalContext);
-    return g_globalContext;
-}
-
-fn currentContext(): RenderContext {
-    return getGlobalContext().renderStack[getGlobalContext().renderStack.length - 1];
-}
-
-fn scheduleEffect(effect: () => void) {
-    getGlobalContext().effectQueue.push(effect);
-}
-
-fn pushRenderContext(ctx: RenderContext) {
-    getGlobalContext().renderStack.push(ctx);
-}
-
-fn popRenderContext() {
-    getGlobalContext().renderStack.pop();
-}
-
-struct ComponentCache {
+struct DivProps {
     id: int;
-    component: ComponentInstance;
+    style?: hzui.DivStyle;
 }
 
-struct ElementCache {
+struct TextProps {
     id: int;
-    element: mut ui.Element;
+    style?: hzui.TextStyle;
+    text: str;
 }
 
 struct ComponentInstance {
@@ -51,31 +17,41 @@ struct ComponentInstance {
     currentTemplate: (() => none) | null = null;
     propsVersion: rx.Reactive<int> | null = null;
 
+    struct ComponentCache {
+        id: int;
+        component: ComponentInstance;
+    }
+
+    struct ElementCache {
+        id: int;
+        element: mut hzui.Element;
+    }
+
     elementsById: []inline ElementCache = [];
     childComponents: []inline ComponentCache = [];
 
-    rootElement: ui.DivElement;
+    rootElement: hzui.DivElement;
 
-    fn getOrCreateDiv(id: int): mut ui.DivElement {
+    fn getOrCreateDiv(id: int): mut hzui.DivElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is mut ui.DivElement, "Div expected but other node type encountered");
+                assert(n.element is mut hzui.DivElement, "Div expected but other node type encountered");
                 return n.element;
             }
         }
-        let newElement = ui.DivElement { id: id, style: {} };
+        let newElement = hzui.DivElement { id: id, style: {} };
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
 
-    fn getOrCreateText(id: int): mut ui.TextElement {
+    fn getOrCreateText(id: int): mut hzui.TextElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is mut ui.TextElement, "Text element expected but other node type encountered");
+                assert(n.element is mut hzui.TextElement, "Text element expected but other node type encountered");
                 return n.element;
             }
         }
-        let newElement = ui.TextElement { id: id, text: "", style: {} };
+        let newElement = hzui.TextElement { id: id, text: "", style: {} };
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -88,7 +64,7 @@ struct ComponentInstance {
         }
         let newComponent = ComponentInstance {
             id: id,
-            rootElement: ui.DivElement {
+            rootElement: hzui.DivElement {
                 id: id,
                 style: {},
             },
@@ -103,175 +79,233 @@ struct ComponentInstance {
 
 struct RenderContext {
     currentComponent: ComponentInstance;
-    currentParent: ui.DivElement;
+    currentParent: hzui.DivElement;
 }
 
-struct DivProps {
-    id: int;
-    style?: ui.DivStyle;
-}
+opaque struct UIContext {
+    renderStack: []RenderContext = [];
+    effectQueue: [](() => void) = [];
+    rootComponent: ComponentInstance | null = null;
+    rootTemplate: rx.Computed<none>;
+    _framecount: rx.Reactive<int>;
+    _deltaTime: rx.Reactive<real>;
+    _timeNow: rx.Reactive<real>;
+    _prevTime: real;
 
-struct TextProps {
-    id: int;
-    style?: ui.TextStyle;
-    text: str;
-}
-
-struct ComponentProps {
-    id: int;
-}
-
-fn div(props: DivProps, childrenFn: () => none) {
-    let ctx = currentContext();
-    let element = ctx.currentComponent.getOrCreateDiv(props.id);
-
-    if props.style is not none {
-        element.style = props.style;
+    inline struct UIContextArgs {
+        ui: ((ui: UIContext) => none)
     }
 
-    // attach into current parent
-    ctx.currentParent.children.push(element);
+    fn constructor(args: UIContextArgs) {
+        let ctx = UIContext {
+            rootTemplate: rx.computed<none>(() => {}),
+            _framecount: rx.reactive<int>(0),
+            _deltaTime: rx.reactive<real>(0),
+            _timeNow: rx.reactive<real>(0),
+            _prevTime: time.now(),
+        };
 
-    // clear children for reconciliation
-    element.children = [];
+        // UI Context depends on itself
+        ctx.rootTemplate = rx.computed<none>(() => {
+            args.ui(ctx);
+        });
 
-    // descend into element
-    pushRenderContext({
-        currentComponent: ctx.currentComponent,
-        currentParent: element,
-    });
-
-    childrenFn();
-
-    popRenderContext();
-}
-
-fn text(props: TextProps) {
-    let ctx = currentContext();
-    let element = ctx.currentComponent.getOrCreateText(props.id);
-
-    element.text = props.text;
-    if props.style is not none {
-        element.style = props.style;
+        return ctx;
     }
 
-    // attach into current parent
-    ctx.currentParent.children.push(element);
-}
+    fn framecount(): int {
+        return this._framecount;
+    }
 
-fn defineComponent(
-    props: ComponentProps,
-    template: () => none
-) {
-    let stack = getGlobalContext().renderStack;
-    let instance = null as ComponentInstance | null;
+    fn deltaTime(): real {
+        return this._deltaTime;
+    }
 
-    if stack.length > 0 {
-        instance = currentContext().currentComponent.getOrCreateChild(props.id);
-    } else {
-        if !getGlobalContext().rootComponent {
-            getGlobalContext().rootComponent = ComponentInstance {
-                id: props.id,
-                rootElement: ui.DivElement {
-                    id: props.id,
-                    style: {},
-                },
-            };
+    fn now(): real {
+        return this._timeNow;
+    }
+
+    fn process() {
+        let now = time.now();
+        let elapsed = this._prevTime - now;
+        this._prevTime = now;
+
+        this._framecount++;
+        this._deltaTime := elapsed;
+        this._timeNow := now;
+
+        this.flushEffects();
+
+        rx.get(this.rootTemplate);
+
+        assert(this.rootComponent);
+        return this.rootComponent.rootElement;
+    }
+
+    fn scheduleEffect(effect: () => void) {
+        this.effectQueue.push(effect);
+    }
+
+    fn pushRenderContext(ctx: RenderContext) {
+        this.renderStack.push(ctx);
+    }
+
+    fn popRenderContext() {
+        this.renderStack.pop();
+    }
+
+    fn makeCurrentComponentAvailable(id: int) {
+        let instance = null as ComponentInstance | null;
+
+        if this.renderStack.length > 0 {
+            instance = this.renderStack[this.renderStack.length - 1].currentComponent.getOrCreateChild(id);
+        } else {
+            if !this.rootComponent {
+                this.rootComponent = ComponentInstance {
+                    id: id,
+                    rootElement: hzui.DivElement {
+                        id: id,
+                        style: {},
+                    },
+                };
+            }
+            assert(this.rootComponent);
+            instance = this.rootComponent;
         }
-        assert(getGlobalContext().rootComponent);
-        instance = getGlobalContext().rootComponent;
+        assert(instance);
+
+        return instance;
     }
-    assert(instance);
 
-    instance.currentTemplate = template;
-
-    if !instance.propsVersion {
-        instance.propsVersion = rx.reactive<int>(0);
+    fn getCurrentComponent() {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].currentComponent;
     }
-    assert(instance.propsVersion);
-    instance.propsVersion++;
 
-    if instance.templateComputed is none {
-        instance.templateComputed = rx.computed(() => {
-            rx.get(instance.propsVersion);
+    fn getCurrentParent() {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].currentParent;
+    }
 
-            instance.rootElement.children = [];
+    struct ComponentProps {
+        id: int;
+    }
 
-            pushRenderContext({
-                currentComponent: instance,
-                currentParent: instance.rootElement,
+    fn defineComponent(
+        props: ComponentProps,
+        template: () => none
+    ) {
+        let instance = this.makeCurrentComponentAvailable(props.id);
+
+        instance.currentTemplate = template;
+
+        if !instance.propsVersion {
+            instance.propsVersion = rx.reactive<int>(0);
+        }
+        assert(instance.propsVersion);
+        instance.propsVersion++;
+
+        if instance.templateComputed is none {
+            instance.templateComputed = rx.computed(() => {
+                rx.get(instance.propsVersion);
+
+                instance.rootElement.children = [];
+
+                this.pushRenderContext({
+                    currentComponent: instance,
+                    currentParent: instance.rootElement,
+                });
+
+                assert(instance.currentTemplate);
+                instance.currentTemplate();
+
+                this.popRenderContext();
+
+                return none;
             });
+        }
 
-            assert(instance.currentTemplate);
-            instance.currentTemplate();
+        rx.get(instance.templateComputed);
 
-            popRenderContext();
+        // attach root element into current parent if there is one
+        if this.renderStack.length > 0 {
+            this.renderStack[this.renderStack.length - 1].currentParent.children.push(instance.rootElement);
+        }
+    }
 
+    struct WatchOptions {
+        immediate?: bool;
+        deep?: bool;
+    }
+
+    fn watch<T>(
+        getter: () => T,
+        callback: () => none,
+        options: WatchOptions = {}
+    ) {
+        const react = rx.computed(() => {
+            getter();
+            callback();
             return none;
         });
-    }
+        this.scheduleEffect(() => rx.get(react));
 
-    rx.get(instance.templateComputed);
-
-    // attach root element into current parent if there is one
-    if stack.length > 0 {
-        currentContext().currentParent.children.push(instance.rootElement);
-    }
-}
-
-fn printTree(element: ui.Element, depth: int = 0): void :: final {
-    let indent = "";
-    for (let i = 0; i < depth; i++) {
-        indent = indent + "  ";
-    }
-
-    if element is ui.DivElement {
-        fmt.println(f"{indent}Div({element.id})");
-        for child in element.children {
-            printTree(child, depth + 1);
+        if options.immediate {
+            callback();
         }
     }
-    else if element is ui.TextElement {
-        fmt.println(f"{indent}Text({element.id}): {element.text}");
+
+    fn queuePopFront() {
+        let front = this.effectQueue[0];
+        let newQueue: [](() => void) = [];
+        for (let i = 1; i < this.effectQueue.length; i++) {
+            newQueue.push(this.effectQueue[i]);
+        }
+        this.effectQueue = newQueue;
+        return front;
     }
-}
 
-struct WatchOptions {
-    immediate?: bool;
-    deep?: bool;
-}
-
-fn watch<T>(
-    getter: () => T,
-    callback: () => none,
-    options: WatchOptions = {}
-) {
-    const react = rx.computed(() => {
-        getter();
-        callback();
-        return none;
-    });
-    scheduleEffect(() => rx.get(react));
-
-    if options.immediate {
-        callback();
+    fn flushEffects() {
+        while this.effectQueue.length > 0 {
+            let effect = queuePopFront();
+            effect();
+        }
     }
-}
 
-fn queuePopFront() {
-    let front = getGlobalContext().effectQueue[0];
-    let newQueue: [](() => void) = [];
-    for (let i = 1; i < getGlobalContext().effectQueue.length; i++) {
-        newQueue.push(getGlobalContext().effectQueue[i]);
+    fn div(props: DivProps, childrenFn: () => none) {
+        let element = this.getCurrentComponent().getOrCreateDiv(props.id);
+
+        if props.style is not none {
+            element.style = props.style;
+        }
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
+
+        // clear children for reconciliation
+        element.children = [];
+
+        // descend into element
+        this.pushRenderContext({
+            currentComponent: this.getCurrentComponent(),
+            currentParent: element,
+        });
+
+        childrenFn();
+
+        this.popRenderContext();
     }
-    getGlobalContext().effectQueue = newQueue;
-    return front;
-}
 
-fn flushEffects() {
-    while getGlobalContext().effectQueue.length > 0 {
-        let effect = queuePopFront();
-        effect();
+    fn text(props: TextProps) {
+        let element = this.getCurrentComponent().getOrCreateText(props.id);
+
+        element.text = props.text;
+        if props.style is not none {
+            element.style = props.style;
+        }
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
     }
 }
 
@@ -280,18 +314,18 @@ struct HeaderArgs {
     title: str;
 }
 
-fn Header(args: HeaderArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn Header(ui: UIContext, args: HeaderArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.9, 0.2, 0.2, 1),
-                padding: ui.StylePaddingSimple { value: 20.0 },
-                align: ui.Align.Center,
-                cornerRadius: ui.StyleCornerRadiusSimple { value: 10.0 },
+                padding: hzui.StylePaddingSimple { value: 20.0 },
+                align: hzui.Align.Center,
+                cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
             }
         }, () => {
-            text({ id: 2, text: args.title, style: { fontSize: 42.0 } });
+            ui.text({ id: 2, text: args.title, style: { fontSize: 42.0 } });
         })
     );
 }
@@ -301,17 +335,17 @@ struct NavItemArgs {
     label: str;
 }
 
-fn NavItem(args: NavItemArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn NavItem(ui: UIContext, args: NavItemArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.15, 0.45, 0.75, 1),
-                padding: ui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
-                cornerRadius: ui.StyleCornerRadiusSimple { value: 6.0 },
+                padding: hzui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
+                cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
             }
         }, () => {
-            text({ id: 2, text: args.label });
+            ui.text({ id: 2, text: args.label });
         })
     );
 }
@@ -320,22 +354,22 @@ struct SidebarArgs {
     id: int;
 }
 
-fn Sidebar(args: SidebarArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn Sidebar(ui: UIContext, args: SidebarArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.2, 0.6, 0.9, 1),
-                padding: ui.StylePaddingSimple { value: 20.0 },
-                direction: ui.Direction.Column,
+                padding: hzui.StylePaddingSimple { value: 20.0 },
+                direction: hzui.Direction.Column,
                 gap: 8.0,
                 width: 180.0,
             }
         }, () => {
-            text({ id: 2, text: "Menu" });
-            NavItem({ id: 1, label: "Dashboard" });
-            NavItem({ id: 2, label: "Settings" });
-            NavItem({ id: 3, label: "About" });
+            ui.text({ id: 2, text: "Menu" });
+            NavItem(ui, { id: 1, label: "Dashboard" });
+            NavItem(ui, { id: 2, label: "Settings" });
+            NavItem(ui, { id: 3, label: "About" });
         })
     );
 }
@@ -344,21 +378,21 @@ struct ContentAreaArgs {
     id: int;
 }
 
-fn ContentArea(args: ContentAreaArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.2, 0.8, 0.4, 1),
-                padding: ui.StylePaddingSimple { value: 30.0 },
-                direction: ui.Direction.Column,
-                align: ui.Align.Center,
+                padding: hzui.StylePaddingSimple { value: 30.0 },
+                direction: hzui.Direction.Column,
+                align: hzui.Align.Center,
                 gap: 16.0,
             }
         }, () => {
-            text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
-            text({ id: 3, text: "This is rendered via the component system." });
-            text({ id: 4, text: "Flexbox layout powered by Clay." });
+            ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
+            ui.text({ id: 3, text: "This is rendered via the component system." });
+            ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
         })
     );
 }
@@ -367,22 +401,22 @@ struct InfoBoxArgs {
     id: int;
 }
 
-fn InfoBox(args: InfoBoxArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.9, 0.8, 0.2, 1),
-                padding: ui.StylePaddingSimple { value: 20.0 },
-                direction: ui.Direction.Column,
-                justify: ui.Justify.Center,
-                align: ui.Align.Center,
+                padding: hzui.StylePaddingSimple { value: 20.0 },
+                direction: hzui.Direction.Column,
+                justify: hzui.Justify.Center,
+                align: hzui.Align.Center,
                 width: 160.0,
                 gap: 8.0,
             }
         }, () => {
-            text({ id: 2, text: "Info Box" });
-            text({ id: 3, text: "Aligned center" });
+            ui.text({ id: 2, text: "Info Box" });
+            ui.text({ id: 3, text: "Aligned center" });
         })
     );
 }
@@ -391,82 +425,54 @@ struct FooterArgs {
     id: int;
 }
 
-fn Footer(args: FooterArgs) {
-    defineComponent({ id: args.id }, () =>
-        div({
+fn Footer(ui: UIContext, args: FooterArgs) {
+    ui.defineComponent({ id: args.id }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.4, 0.4, 0.9, 1),
-                padding: ui.StylePaddingSimple { value: 15.0 },
-                align: ui.Align.Center,
+                padding: hzui.StylePaddingSimple { value: 15.0 },
+                align: hzui.Align.Center,
             }
         }, () => {
-            text({ id: 2, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
+            ui.text({ id: 2, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
         })
     );
 }
 
-fn UI() {
-    defineComponent({ id: 0 }, () =>
-        div({
+fn UI(ui: UIContext) {
+    ui.defineComponent({ id: 0 }, () =>
+        ui.div({
             id: 1,
             style: {
                 backgroundColor: Color(0.15, 0.15, 0.15, 1),
-                padding: ui.StylePaddingSimple { value: 30.0 },
-                direction: ui.Direction.Column,
+                padding: hzui.StylePaddingSimple { value: 30.0 },
+                direction: hzui.Direction.Column,
                 fontFamily: "roboto",
                 fontSize: 16.0,
                 textColor: Color(1, 1, 1, 1),
                 gap: 10.0,
             }
         }, () => {
-            let fc = getGlobalContext().framecount;
-            assert(fc);
-            Header({ id: 1, title: f"HAZE UI — Component System (Frame #{fc})" });
+            Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
-            div({
+            ui.div({
                 id: 2,
                 style: {
-                    direction: ui.Direction.Row,
-                    padding: ui.StylePaddingSimple { value: 20.0 },
+                    direction: hzui.Direction.Row,
+                    padding: hzui.StylePaddingSimple { value: 20.0 },
                     backgroundColor: Color(0.25, 0.25, 0.25, 1),
-                    justify: ui.Justify.SpaceBetween,
-                    cornerRadius: ui.StyleCornerRadiusSimple { value: 20.0 },
+                    justify: hzui.Justify.SpaceBetween,
+                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 20.0 },
                     gap: 30.0,
                 }
             }, () => {
-                Sidebar({ id: 2 });
-                ContentArea({ id: 3 });
-                InfoBox({ id: 4 });
+                Sidebar(ui, { id: 2 });
+                ContentArea(ui, { id: 3 });
+                InfoBox(ui, { id: 4 });
             });
 
-            Footer({ id: 5 });
+            Footer(ui, { id: 5 });
         })
     );
-}
-
-fn computeUI() {
-    let ctx = getGlobalContext();
-    if !ctx.rootTemplate {
-        ctx.rootTemplate = rx.computed<none>(() => {
-            UI();
-        });
-    }
-    assert(ctx.rootTemplate);
-
-    if !ctx.framecount {
-        ctx.framecount = rx.reactive<int>(0);
-    }
-    assert(ctx.framecount);
-
-    ctx.generation++;
-    ctx.framecount++;
-
-    flushEffects();
-
-    rx.get(ctx.rootTemplate);
-
-    assert(ctx.rootComponent);
-    // printTree(ctx.rootComponent.rootElement);
-    return ctx.rootComponent.rootElement;
 }
