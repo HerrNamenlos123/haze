@@ -281,10 +281,12 @@ export function makeStackArrayDatatypeAvailable(
   inline: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
+  const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
   for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.FixedArrayDatatype);
-    if (type.datatype !== datatype || type.length !== length) {
+    const cachedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype)).type;
+    if (cachedElemDefId !== resolvedElemDefId || type.length !== length) {
       continue;
     }
     return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
@@ -310,10 +312,12 @@ export function makeDynamicArrayDatatypeAvailable(
   inline: boolean,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
+  const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.DynamicArrayDatatype);
-    if (type.datatype !== datatype) {
+    const cachedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype)).type;
+    if (cachedElemDefId !== resolvedElemDefId) {
       continue;
     }
     return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
