@@ -1931,8 +1931,7 @@ export namespace Semantic {
       const mj = major ?? "0";
       const mn = minor ?? "0";
       const pt = patch ?? "0";
-      mangledSegment =
-        `HM${type.moduleName.length}${type.moduleName}_${mj}_${mn}_${pt}_`;
+      mangledSegment = `HM${type.moduleName.length}${type.moduleName}_${mj}_${mn}_${pt}_`;
     }
     const isModNs =
       type.variant === Semantic.ENode.NamespaceDatatype &&
