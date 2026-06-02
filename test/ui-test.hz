@@ -2,21 +2,22 @@
 inline struct DivProps {
     id: int;
     style?: hzui.DivStyle;
-    ref?: UIContext.ElementRef<hzui.DivElement>;
+    ref?: ElementRef<hzui.DivElement>;
 }
 
 inline struct TextProps {
     id: int;
     style?: hzui.TextStyle;
     text: str;
-    ref?: UIContext.ElementRef<hzui.TextElement>;
+    ref?: ElementRef<hzui.TextElement>;
 }
 
 struct ComponentInstance {
     id: int;
 
     templateComputed?: rx.Computed<none>;
-    currentTemplate: (() => none) | null = null;
+    setupDone: bool = false;
+    currentTemplate: (() => void) | null = null;
     propsVersion: rx.Reactive<int>;
     prevProps: cptr | null = null;
 
@@ -119,6 +120,7 @@ opaque struct UIContext {
 
         // UI Context depends on itself
         ctx.rootTemplate = rx.computed<none>(() => {
+            fmt.println("ROOT TEMPLATE");
             args.ui(ctx);
         });
 
@@ -306,11 +308,15 @@ opaque struct UIContext {
     fn defineComponentImpl(
         id: int,
         propsChanged: bool,
-        template: () => none
+        setupFn: () => (() => void)
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
-        instance.currentTemplate = template;
+        if !instance.setupDone {
+            instance.currentTemplate = setupFn();
+            instance.setupDone = true;
+        }
+
         if (propsChanged) {
             instance.propsVersion++;
         }
@@ -318,6 +324,7 @@ opaque struct UIContext {
         if instance.templateComputed is none {
             instance.templateComputed = rx.computed(() => {
                 rx.get(instance.propsVersion);
+                fmt.println("ROOT COMPONENT TEMPLATE", id);
 
                 instance.newChildComponents = [];
                 instance.rootElement.children = [];
@@ -376,33 +383,33 @@ opaque struct UIContext {
         }
     }
 
-    fn defineComponent<TProps, TRet>(
+    fn defineComponent<TProps>(
         id: int,
-        props: TProps,
-        template: () => TRet
+        props: () => TProps,
+        setupFn: () => (() => void)
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
         do unsafe {
             let propsChanged = true;
 
+            let currentProps = props();
+
             if instance.prevProps is not null {
                 let prevProps = instance.prevProps;
                 // TODO: Store the box and update its content, without allocating a new box every frame
                 let oldBox: Box<TProps> = uninitialized;
                 __c__("oldBox = prevProps;");
-                propsChanged = props != oldBox.value;
+                propsChanged = currentProps != oldBox.value;
             }
 
             // TODO: Store the box and update its content, without allocating a new box every frame
-            let newBox = Box<TProps>(props);
+            let newBox = Box<TProps>(currentProps);
             let newPrevProps: cptr = uninitialized;
             __c__("newPrevProps = newBox;");
             instance.prevProps = newPrevProps as cptr | null;
 
-            return this.defineComponentImpl(id, propsChanged, (): none => {
-                template();
-            });
+            return this.defineComponentImpl(id, propsChanged, setupFn);
         };
     }
 
@@ -455,7 +462,7 @@ opaque struct UIContext {
         }
     }
 
-    fn div(props: DivProps, childrenFn: () => none) {
+    fn div(props: DivProps, childrenFn: () => void) {
         let element = this.getCurrentComponent().getOrCreateDiv(props.id);
 
         if props.style is not none {
@@ -478,8 +485,8 @@ opaque struct UIContext {
 
         this.popRenderContext();
 
-        if props.ref {
-            props.ref.element = element;
+        if props.ref is not none {
+            props.ref := element;
         }
 
         return element;
@@ -496,23 +503,19 @@ opaque struct UIContext {
         // attach into current parent
         this.getCurrentParent().children.push(element);
 
-        if props.ref {
-            props.ref.element = element;
+        if props.ref is not none {
+            props.ref := element;
         }
 
         return element;
     }
 
-    struct ElementRef<T> {
-        element: T | null;
-    }
-
-    fn ref<T>() {
-        return ElementRef<T> {
-            element: null,
-        };
+    fn ref<T>(): ElementRef<T> {
+        return rx.shallowReactive<T | null>(null);
     }
 }
+
+type ElementRef<T> = rx.ShallowReactive<T | null>;
 
 struct HeaderArgs {
     id: int;
@@ -523,20 +526,22 @@ struct HeaderArgs {
     }
 }
 
-fn Header(ui: UIContext, args: HeaderArgs) {
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.9, 0.2, 0.2, 1),
-                padding: hzui.StylePaddingSimple { value: 20.0 },
-                align: hzui.Align.Center,
-                cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
-            }
-        }, () => {
-            ui.text({ id: 2, text: args.title, style: { fontSize: 42.0 } });
-        })
-    );
+fn Header(ui: UIContext, args: () => HeaderArgs) {
+    ui.defineComponent(args().id, args, () => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.9, 0.2, 0.2, 1),
+                    padding: hzui.StylePaddingSimple { value: 20.0 },
+                    align: hzui.Align.Center,
+                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: args().title, style: { fontSize: 42.0 } });
+            });
+        };
+    });
 }
 
 struct NavItemArgs {
@@ -548,19 +553,21 @@ struct NavItemArgs {
     }
 }
 
-fn NavItem(ui: UIContext, args: NavItemArgs) {
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.15, 0.45, 0.75, 1),
-                padding: hzui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
-                cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
-            }
-        }, () => {
-            ui.text({ id: 2, text: args.label });
-        })
-    );
+fn NavItem(ui: UIContext, args: () => NavItemArgs) {
+    ui.defineComponent(args().id, args, () => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.15, 0.45, 0.75, 1),
+                    padding: hzui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
+                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: args.label });
+            });
+        };
+    });
 }
 
 struct SidebarArgs {
@@ -571,40 +578,42 @@ struct SidebarArgs {
     }
 }
 
-fn Sidebar(ui: UIContext, args: SidebarArgs) {
+fn Sidebar(ui: UIContext, args: () => SidebarArgs) {
+    ui.defineComponent(args().id, args, () => {
 
-    let textRef = ui.ref<hzui.TextElement>();
+        let textRef = ui.ref<hzui.TextElement>();
 
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.2, 0.6, 0.9, 1),
-                padding: hzui.StylePaddingSimple { value: 20.0 },
-                direction: hzui.Direction.Column,
-                gap: 8.0,
-                width: 180.0,
-            }
-        }, () => {
-            fmt.println("Sidebar rerender");
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.2, 0.6, 0.9, 1),
+                    padding: hzui.StylePaddingSimple { value: 20.0 },
+                    direction: hzui.Direction.Column,
+                    gap: 8.0,
+                    width: 180.0,
+                }
+            }, (): void => {
+                fmt.println(f"Sidebar rerender {ui.framecount()}");
+                let r = rx.get(textRef);
+                fmt.println("Hover: ", r is not null ? r.hover() : null);
+                ui.text({ id: 2, ref: textRef, text: "Menu" });
 
-            fmt.println("Hover: ", textRef.element ? textRef.element.hover() : none);
-            let text = ui.text({ id: 2, ref: textRef, text: "Menu" });
+                // let pos = text.position();
+                // if pos {
+                //     fmt.println("Position: ", pos);
+                // }
+                // let size = text.size();
+                // if size {
+                //     fmt.println("Size: ", size);
+                // }
 
-            let pos = text.position();
-            if pos {
-                fmt.println("Position: ", pos);
-            }
-            let size = text.size();
-            if size {
-                fmt.println("Size: ", size);
-            }
-
-            NavItem(ui, { id: 1, label: "Dashboard" });
-            NavItem(ui, { id: 2, label: "Settings" });
-            NavItem(ui, { id: 3, label: "About" });
-        })
-    );
+                NavItem(ui, { id: 1, label: "Dashboard" });
+                NavItem(ui, { id: 2, label: "Settings" });
+                NavItem(ui, { id: 3, label: "About" });
+            });
+        };
+    });
 }
 
 struct ContentAreaArgs {
@@ -616,31 +625,33 @@ struct ContentAreaArgs {
     }
 }
 
-fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.2, 0.8, 0.4, 1),
-                padding: hzui.StylePaddingSimple { value: 30.0 },
-                direction: hzui.Direction.Column,
-                align: hzui.Align.Center,
-                gap: 16.0,
-            }
-        }, () => {
-            fmt.println("Rerender content area");
-            ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
-            ui.text({ id: 3, text: "This is rendered via the component system." });
-            ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
-            ui.text({ id: 5, text: args.text });
+fn ContentArea(ui: UIContext, args: () => ContentAreaArgs) {
+    ui.defineComponent(args().id, args, () => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.2, 0.8, 0.4, 1),
+                    padding: hzui.StylePaddingSimple { value: 30.0 },
+                    direction: hzui.Direction.Column,
+                    align: hzui.Align.Center,
+                    gap: 16.0,
+                }
+            }, (): void => {
+                fmt.println("Rerender content area");
+                ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
+                ui.text({ id: 3, text: "This is rendered via the component system." });
+                ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
+                ui.text({ id: 5, text: args.text });
 
-            // if ((ui.now() as int) % 2 == 0) {
-            //     NavItem(ui, { id: 4, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-            //     NavItem(ui, { id: 5, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-            //     NavItem(ui, { id: 6, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
-            // }
-        })
-    );
+                // if ((ui.now() as int) % 2 == 0) {
+                //     NavItem(ui, { id: 4, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+                //     NavItem(ui, { id: 5, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+                //     NavItem(ui, { id: 6, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+                // }
+            });
+        };
+    });
 }
 
 struct InfoBoxArgs {
@@ -651,24 +662,26 @@ struct InfoBoxArgs {
     }
 }
 
-fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.9, 0.8, 0.2, 1),
-                padding: hzui.StylePaddingSimple { value: 20.0 },
-                direction: hzui.Direction.Column,
-                justify: hzui.Justify.Center,
-                align: hzui.Align.Center,
-                width: 160.0,
-                gap: 8.0,
-            }
-        }, () => {
-            ui.text({ id: 2, text: "Info Box" });
-            ui.text({ id: 3, text: "Aligned center" });
-        })
-    );
+fn InfoBox(ui: UIContext, args: () => InfoBoxArgs) {
+    ui.defineComponent(args().id, args, () => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.9, 0.8, 0.2, 1),
+                    padding: hzui.StylePaddingSimple { value: 20.0 },
+                    direction: hzui.Direction.Column,
+                    justify: hzui.Justify.Center,
+                    align: hzui.Align.Center,
+                    width: 160.0,
+                    gap: 8.0,
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: "Info Box" });
+                ui.text({ id: 3, text: "Aligned center" });
+            });
+        };
+    });
 }
 
 struct FooterArgs {
@@ -679,19 +692,21 @@ struct FooterArgs {
     }
 }
 
-fn Footer(ui: UIContext, args: FooterArgs) {
-    ui.defineComponent(args.id, args, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.4, 0.4, 0.9, 1),
-                padding: hzui.StylePaddingSimple { value: 15.0 },
-                align: hzui.Align.Center,
-            }
-        }, () => {
-            ui.text({ id: 2, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
-        })
-    );
+fn Footer(ui: UIContext, args: () => FooterArgs) {
+    ui.defineComponent(args().id, args, () => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.4, 0.4, 0.9, 1),
+                    padding: hzui.StylePaddingSimple { value: 15.0 },
+                    align: hzui.Align.Center,
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
+            });
+        };
+    });
 }
 
 struct RootArgs {
@@ -700,44 +715,48 @@ struct RootArgs {
     }
 }
 
+
 fn UI(ui: UIContext) {
-    ui.defineComponent(0, RootArgs {}, () =>
-        ui.div({
-            id: 1,
-            style: {
-                backgroundColor: Color(0.15, 0.15, 0.15, 1),
-                padding: hzui.StylePaddingSimple { value: 30.0 },
-                direction: hzui.Direction.Column,
-                fontFamily: "roboto",
-                fontSize: 16.0,
-                textColor: Color(1, 1, 1, 1),
-                gap: 10.0,
-            }
-        }, () => {
-            // Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{5})" });
-            Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
+    ui.defineComponent(0, () => RootArgs {}, () => {
 
-            let text = rx.computed(() => {
-                return f"This text is running since {ui.now() as int} seconds.";
-            });
+        let text = rx.computed(() => {
+            return f"This text is running since {ui.now() as int} seconds.";
+        });
 
+        return (): void => {
             ui.div({
-                id: 2,
+                id: 1,
                 style: {
-                    direction: hzui.Direction.Row,
-                    padding: hzui.StylePaddingSimple { value: 20.0 },
-                    backgroundColor: Color(0.25, 0.25, 0.25, 1),
-                    justify: hzui.Justify.SpaceBetween,
-                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 20.0 },
-                    gap: 30.0,
+                    backgroundColor: Color(0.15, 0.15, 0.15, 1),
+                    padding: hzui.StylePaddingSimple { value: 30.0 },
+                    direction: hzui.Direction.Column,
+                    fontFamily: "roboto",
+                    fontSize: 16.0,
+                    textColor: Color(1, 1, 1, 1),
+                    gap: 10.0,
                 }
-            }, () => {
-                Sidebar(ui, { id: 2 });
-                ContentArea(ui, { id: 3, text: text });
-                InfoBox(ui, { id: 4 });
-            });
+            }, (): void => {
+                fmt.println("HEADER RERENDER", ui.framecount());
+                Header(ui, () => ({ id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" }));
 
-            Footer(ui, { id: 5 });
-        })
-    );
+                ui.div({
+                    id: 2,
+                    style: {
+                        direction: hzui.Direction.Row,
+                        padding: hzui.StylePaddingSimple { value: 20.0 },
+                        backgroundColor: Color(0.25, 0.25, 0.25, 1),
+                        justify: hzui.Justify.SpaceBetween,
+                        cornerRadius: hzui.StyleCornerRadiusSimple { value: 20.0 },
+                        gap: 30.0,
+                    }
+                }, (): void => {
+                    Sidebar(ui, () => ({ id: 2 }));
+                    ContentArea(ui, () => ({ id: 3, text: text }));
+                    InfoBox(ui, () => ({ id: 4 }));
+                });
+
+                Footer(ui, { id: 5 });
+            });
+        };
+    });
 }
