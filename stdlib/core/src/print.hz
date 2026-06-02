@@ -111,6 +111,20 @@ namespace fmt {
         else if comptime T.category == meta.TypeCategory.Computed {
             format_to_proxy<rx.UnwrapReactive<T>>(writer, rx.get(value), args);
         }
+        else if comptime T.category == meta.TypeCategory.Union {
+            for comptime Variant, i in T.variants {
+                if value is Variant {
+                    format_to_proxy<Variant>(writer, value, args);
+                }
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.TaggedUnion {
+            for comptime Variant, i in T.variants {
+                if value is Variant.type {
+                    format_to_proxy<Variant.type>(writer, value, args);
+                }
+            }
+        }
         else {
             format_to(writer, value as T.baseType, args);
         }

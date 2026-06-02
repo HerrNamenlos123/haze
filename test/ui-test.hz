@@ -588,7 +588,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
         }, () => {
             fmt.println("Sidebar rerender");
 
-            // fmt.println("Hover: ", textRef.element?.hover());
+            fmt.println("Hover: ", textRef.element ? textRef.element.hover() : none);
             let text = ui.text({ id: 2, ref: textRef, text: "Menu" });
 
             let pos = text.position();
