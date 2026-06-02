@@ -882,7 +882,7 @@ export class SemanticBuilder {
           path: [],
         };
       }
-      return null;
+      return this.extractConstraintPath(expr.value);
     }
 
     // Member access: obj.member
@@ -936,6 +936,32 @@ export class SemanticBuilder {
             { kind: "member" as const, member: memberSymbol },
           ],
         };
+      }
+
+      if (exprTypeDef.variant === Semantic.ENode.DeepDatatype) {
+        const clonedTypeDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(exprTypeDef.clonedType)
+          ).type
+        );
+        if (clonedTypeDef.variant === Semantic.ENode.StructDatatype) {
+          const memberSymbol = clonedTypeDef.members.find((m) => {
+            const sym = this.sr.symbolNodes.get(m);
+            return (
+              sym.variant === Semantic.ENode.VariableSymbol &&
+              sym.name === expr.memberName
+            );
+          });
+          if (memberSymbol) {
+            return {
+              root: basePath.root,
+              path: [
+                ...basePath.path,
+                { kind: "member" as const, member: memberSymbol },
+              ],
+            };
+          }
+        }
       }
 
       return null;

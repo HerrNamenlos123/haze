@@ -6033,8 +6033,9 @@ export class SemanticElaborator {
       assignment.operation === EAssignmentOperation.Assign &&
       lhsType.variant === Semantic.ENode.StructDatatype
     ) {
-      // Try to find exact overload
+      // Try to find a matching overload
       let exactMatchId: Semantic.SymbolId | undefined;
+      let convertedValueExprId: Semantic.ExprId = valueExprId;
       lhsType.methods.forEach((m) => {
         const method = this.sr.symbolNodes.get(m);
         assert(method.variant === Semantic.ENode.FunctionSymbol);
@@ -6046,13 +6047,21 @@ export class SemanticElaborator {
         const ftype = this.sr.typeDefNodes.get(method.type);
         assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
-        if (ftype.parameters.length !== 2) {
+        if (ftype.parameters.length !== 1) {
           return;
         }
-        if (
-          this.sr.typeUseNodes.get(ftype.parameters[1].type).type !==
-          this.sr.typeUseNodes.get(valueExpr.type).type
-        ) {
+
+        const unwrappedValueExprId = this.unwrapReactiveOrComputedIfPossible(valueExprId);
+        const conversion = Conversion.MakeConversion(
+          this.sr,
+          unwrappedValueExprId,
+          ftype.parameters[0].type,
+          this.currentContext.constraints,
+          assignment.sourceloc,
+          Conversion.Mode.Implicit,
+          inference?.unsafe ?? false
+        );
+        if (!conversion.ok) {
           return;
         }
 
@@ -6063,14 +6072,12 @@ export class SemanticElaborator {
           );
         }
         exactMatchId = m;
+        convertedValueExprId = conversion.expr;
       });
 
       if (exactMatchId) {
         const method = this.sr.symbolNodes.get(exactMatchId);
         assert(method.variant === Semantic.ENode.FunctionSymbol);
-
-        const ftype = this.sr.typeDefNodes.get(method.type);
-        assert(ftype.variant === Semantic.ENode.FunctionDatatype);
 
         const instanceIds: Semantic.InstanceId[] = [];
 
@@ -6109,7 +6116,7 @@ export class SemanticElaborator {
         assert(this.inFunction);
         return this.sr.b.callExpr(
           calledExpr,
-          [valueExprId],
+          [convertedValueExprId],
           this.inFunction,
           assignment.sourceloc
         );

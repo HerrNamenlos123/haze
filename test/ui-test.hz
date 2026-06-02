@@ -205,7 +205,7 @@ opaque struct UIContext {
         return this.renderStack[this.renderStack.length - 1].currentParent;
     }
 
-    struct ComponentProps {
+    inline struct ComponentProps {
         id: int;
     }
 
@@ -356,7 +356,7 @@ opaque struct UIContext {
         let element = this.getCurrentComponent().getOrCreateDiv(props.id);
 
         if props.style is not none {
-            element.style = props.style;
+            element.style := props.style;
         }
 
         // attach into current parent
@@ -379,9 +379,9 @@ opaque struct UIContext {
     fn text(props: TextProps) {
         let element = this.getCurrentComponent().getOrCreateText(props.id);
 
-        element.text = props.text;
+        element.text := props.text;
         if props.style is not none {
-            element.style = props.style;
+            element.style := props.style;
         }
 
         // attach into current parent

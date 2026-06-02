@@ -126,6 +126,53 @@ export inline struct DivStyle {
     letterSpacing?: real = none;
     textColor?: Color = none;
     // textAlign?: Color = none;
+
+    // TODO: We need to generate a default operator:= if none is specified, remove this
+    fn operator:=(other: DivStyle) {
+        this.width = other.width;
+        this.height = other.height;
+        this.padding = other.padding;
+        // this.flexGrow := other.flexGrow;
+        this.direction = other.direction;
+        this.justify = other.justify;
+        this.align = other.align;
+        this.cornerRadius = other.cornerRadius;
+        this.gap = other.gap;
+        this.backgroundColor = other.backgroundColor;
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+        // this.textAlign := other.textAlign;
+    }
+
+    fn operator==(other: DivStyle) {
+        return 
+            // this.width == other.width &&
+            // this.height == other.height &&
+            // this.padding == other.padding &&
+            // this.flexGrow == other.flexGrow &&
+            this.direction == other.direction &&
+            this.justify == other.justify &&
+            this.align == other.align &&
+            // this.cornerRadius == other.cornerRadius &&
+            this.gap == other.gap
+            // this.backgroundColor == other.backgroundColor &&
+            // this.fontFamily == other.fontFamily &&
+            // this.fontSize == other.fontSize &&
+            // this.fontWeight == other.fontWeight &&
+            // this.lineHeight == other.lineHeight &&
+            // this.letterSpacing == other.letterSpacing &&
+            // this.textColor == other.textColor
+            // this.textAlign= other.textAlign &&
+            ;
+    }
+
+    fn operator!=(other: DivStyle) {
+        return !(this == other);
+    }
 }
 
 export inline struct TextStyle {
@@ -136,6 +183,33 @@ export inline struct TextStyle {
     letterSpacing?: real = none;
     textColor?: Color = none;
     // textAlign?: Color = none;
+
+    fn operator:=(other: TextStyle) {
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+        // this.textAlign := other.textAlign;
+    }
+
+    fn operator==(other: TextStyle) {
+        return false;
+        // return 
+        //     this.fontFamily == other.fontFamily &&
+        //     this.fontSize == other.fontSize &&
+        //     this.fontWeight == other.fontWeight &&
+        //     this.lineHeight == other.lineHeight &&
+        //     this.letterSpacing == other.letterSpacing &&
+        //     this.textColor == other.textColor
+        //     // this.textAlign == other.textAlign &&
+        //     ;
+    }
+
+    fn operator!=(other: TextStyle) {
+        return !(this == other);
+    }
 }
 
 export enum Direction { Row, Column }

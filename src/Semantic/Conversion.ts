@@ -46,7 +46,7 @@ export namespace Conversion {
           path: [],
         };
       }
-      return null;
+      return extractConstraintPath(sr, expr.value);
     }
 
     // Unwrap union casts to extract path from the underlying expression
@@ -110,6 +110,27 @@ export namespace Conversion {
           root: basePath.root,
           path: [...basePath.path, { kind: "member", member: memberSymbol }],
         };
+      }
+
+      if (exprTypeDef.variant === Semantic.ENode.DeepDatatype) {
+        const clonedTypeDef = sr.typeDefNodes.get(
+          sr.typeUseNodes.get(sr.e.resolveAlias(exprTypeDef.clonedType)).type
+        );
+        if (clonedTypeDef.variant === Semantic.ENode.StructDatatype) {
+          const memberSymbol = clonedTypeDef.members.find((m) => {
+            const sym = sr.symbolNodes.get(m);
+            return (
+              sym.variant === Semantic.ENode.VariableSymbol &&
+              sym.name === expr.memberName
+            );
+          });
+          if (memberSymbol) {
+            return {
+              root: basePath.root,
+              path: [...basePath.path, { kind: "member", member: memberSymbol }],
+            };
+          }
+        }
       }
     }
 
