@@ -469,6 +469,14 @@ export type ASTExprMemberAccess = {
   sourceloc: SourceLoc;
 };
 
+export type ASTOptionalChainingExprMemberAccess = {
+  variant: "OptionalChainingExprMemberAccess";
+  expr: ASTExpr;
+  member: string;
+  generics: ASTExpr[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTExprComptimeMemberAccess = {
   variant: "ExprComptimeMemberAccess";
   expr: ASTExpr;
@@ -670,6 +678,7 @@ export type ASTExpr =
   | ASTPostIncrExpr
   | ASTExprCallExpr
   | ASTExprMemberAccess
+  | ASTOptionalChainingExprMemberAccess
   | ASTExprComptimeMemberAccess
   | ASTTernaryExpr
   | ASTAggregateLiteralExpr

@@ -1731,7 +1731,7 @@ class CodeGenerator {
               expr.expr
             ).out.get()}; ${expr.tags
               .map((t) => `value.tag ${operator} ${t}`)
-              .join(expr.invertCheck ? "&&" : "||")};)`
+              .join(expr.invertCheck ? " && " : " || ")}; })`
           );
         }
         return { out: outWriter, temp: tempWriter };

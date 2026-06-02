@@ -42,7 +42,23 @@ fn print<T>(value: T) {
     }
 }
 
+// struct Bar {
+//     bar: str;
+// }
+
+struct Foo {
+    value: str;
+}
+
 fn main(): int {
+
+    let foo = Foo { value: "Cool" } as Foo | null | none;
+    // assert(foo.value);
+    let value = foo?.value;
+    static_print(f"foo: {typeof(foo).prettyName}");
+    static_print(f"bar: {typeof(value).prettyName}");
+
+    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

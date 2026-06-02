@@ -2057,6 +2057,9 @@ export class SemanticElaborator {
       case Collect.ENode.MemberAccessExpr:
         return this.memberAccess(expr, inference);
 
+      case Collect.ENode.OptionalChainingMemberAccessExpr:
+        return this.optionalChainingMemberAccess(expr, inference);
+
       case Collect.ENode.ComptimeMemberAccessExpr:
         return this.comptimeMemberAccess(expr, inference);
 
@@ -2549,6 +2552,330 @@ export class SemanticElaborator {
     }
 
     return enumTypeId;
+  }
+
+  optionalChainingMemberAccess(
+    memberAccess: Collect.OptionalChainingMemberAccessExpr,
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    let [object, objectId] = this.expr(memberAccess.expr, inference);
+    let objectTypeUse = this.sr.typeUseNodes.get(object.type);
+    let objectTypeDef = this.sr.typeDefNodes.get(objectTypeUse.type);
+
+    if (
+      objectTypeDef.variant !== Semantic.ENode.UntaggedUnionDatatype &&
+      objectTypeDef.variant !== Semantic.ENode.TaggedUnionDatatype
+    ) {
+      throw new CompilerError(
+        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
+        memberAccess.sourceloc
+      );
+    }
+
+    const members =
+      objectTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+        ? objectTypeDef.members
+        : objectTypeDef.members.map((m) => m.type);
+
+    let nullIndex = members.findIndex((m) => m === this.sr.b.nullType());
+    let noneIndex = members.findIndex((m) => m === this.sr.b.noneType());
+
+    if (noneIndex === -1 && nullIndex === -1) {
+      throw new CompilerError(
+        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
+        memberAccess.sourceloc
+      );
+    }
+
+    let remainingMembers = new Set(members);
+    remainingMembers.delete(this.sr.b.nullType());
+    remainingMembers.delete(this.sr.b.noneType());
+
+    if (remainingMembers.size === 0) {
+      throw new CompilerError(
+        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant and at least one other variant.`,
+        memberAccess.sourceloc
+      );
+    }
+
+    // Example:
+    // foo?.bar
+    // should turn into
+    // do unsafe {
+    //   let tmp = foo;
+    //   let result = uninitialized;
+    //   if (tmp is not null && tmp is not none) {
+    //     result = tmp.bar;
+    //   }
+    //   else if (tmp is none) {
+    //     result = none;
+    //   }
+    //   else if (tmp is null) {
+    //     result = null;
+    //   }
+    //   else {
+    //     unreachable();
+    //   }
+    //   result;
+    // })
+
+    // Example:
+    // foo = Foo | null | none
+    // Foo.bar = str
+    // foo?.bar = str | null | none
+
+    // narrowedSourceType = Foo
+    const narrowedSourceType = this.sr.b.untaggedUnionTypeUse(
+      [...remainingMembers],
+      memberAccess.sourceloc
+    );
+
+    const [tempVariable, tempVariableId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: false,
+      export: false,
+      extern: EExternLanguage.None,
+      memberOfStruct: null,
+      mutability: EVariableMutability.Default,
+      requiresHoisting: false,
+      name: makeTempName(),
+      sourceloc: memberAccess.sourceloc,
+      parentSymbolId: null,
+      type: object.type,
+      consumed: false,
+      variableContext: EVariableContext.FunctionLocal,
+    });
+
+    // The condition for the IF
+    // condition = (foo is not null && foo is not none)
+    const narrowingTypes: Semantic.TypeUseId[] = [];
+    if (nullIndex !== -1) {
+      narrowingTypes.push(this.sr.b.nullType());
+    }
+    if (noneIndex !== -1) {
+      narrowingTypes.push(this.sr.b.noneType());
+    }
+    const [_, narrowingConditionId] = this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.UnionTagCheckExpr,
+      comparisonTypesAnd: narrowingTypes,
+      invertCheck: true,
+      expr: this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
+      flow: object.flow,
+      writes: object.writes,
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: memberAccess.sourceloc,
+      type: this.sr.b.boolType(),
+    });
+
+    const constraints = this.currentContext.constraints.clone();
+    this.sr.e.buildLogicalConstraintSet(constraints, narrowingConditionId);
+    // narrowedValueId = foo (actual Foo)
+    const narrowedValueId = Conversion.MakeConversionOrThrow(
+      this.sr,
+      this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
+      narrowedSourceType,
+      constraints,
+      memberAccess.sourceloc,
+      Conversion.Mode.Implicit,
+      false
+    );
+
+    // resultMember = foo.bar (string)
+    const [resultMember, resultMemberId] = this.resolveMemberAccess(
+      narrowedValueId,
+      memberAccess.memberName,
+      memberAccess.genericArgs,
+      inference,
+      memberAccess.sourceloc
+    );
+
+    const resultMembers = [resultMember.type];
+    if (nullIndex !== -1) {
+      resultMembers.push(this.sr.b.nullType());
+    }
+    if (noneIndex !== -1) {
+      resultMembers.push(this.sr.b.noneType());
+    }
+    // resultType = str | null | none
+    const resultType = this.sr.b.untaggedUnionTypeUse(
+      resultMembers,
+      memberAccess.sourceloc
+    );
+
+    // resultVariable = str | null | none
+    const [resultVariable, resultVariableId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: false,
+      export: false,
+      extern: EExternLanguage.None,
+      memberOfStruct: null,
+      mutability: EVariableMutability.Default,
+      requiresHoisting: false,
+      name: makeTempName(),
+      sourceloc: memberAccess.sourceloc,
+      parentSymbolId: null,
+      type: resultType,
+      consumed: false,
+      variableContext: EVariableContext.FunctionLocal,
+    });
+
+    const blockScopeId = this.sr.b.blockScope(
+      [
+        this.sr.b.addStatement(this.sr, {
+          variant: Semantic.ENode.VariableStatement,
+          name: tempVariable.name,
+          comptime: false,
+          sourceloc: memberAccess.sourceloc,
+          value: objectId,
+          intrinsicTakeAddrOfValue: false,
+          variableSymbol: tempVariableId,
+        })[1],
+        this.sr.b.addStatement(this.sr, {
+          variant: Semantic.ENode.VariableStatement,
+          name: resultVariable.name,
+          comptime: false,
+          sourceloc: memberAccess.sourceloc,
+          value: null,
+          intrinsicTakeAddrOfValue: false,
+          variableSymbol: resultVariableId,
+        })[1],
+        this.sr.b.addStatement(this.sr, {
+          variant: Semantic.ENode.IfStatement,
+          isLetBinding: false,
+          condition: narrowingConditionId,
+          elseIfs: (() => {
+            const elseIfs: {
+              condition: Semantic.ExprId;
+              thenBlock: Semantic.BlockScopeId;
+            }[] = [];
+
+            if (noneIndex !== -1) {
+              elseIfs.push({
+                condition: this.sr.b.addExpr(this.sr, {
+                  variant: Semantic.ENode.UnionTagCheckExpr,
+                  comparisonTypesAnd: [this.sr.b.noneType()],
+                  invertCheck: false,
+                  expr: this.sr.b.symbolValue(
+                    tempVariableId,
+                    memberAccess.sourceloc
+                  )[1],
+                  flow: object.flow,
+                  writes: object.writes,
+                  instanceIds: [],
+                  isTemporary: true,
+                  sourceloc: memberAccess.sourceloc,
+                  type: this.sr.b.boolType(),
+                })[1],
+                thenBlock: this.sr.b.blockScope(
+                  [
+                    this.sr.b.exprStatement(
+                      this.sr.b.assignment(
+                        this.sr.b.symbolValue(
+                          resultVariableId,
+                          memberAccess.sourceloc
+                        )[1],
+                        EAssignmentOperation.Rebind,
+                        this.sr.b.noneExpr()[1],
+                        constraints,
+                        memberAccess.sourceloc,
+                        inference
+                      )[1]
+                    )[1],
+                  ],
+                  this.sr.b.noneExpr()[1],
+                  memberAccess.sourceloc
+                )[1],
+              });
+            }
+
+            if (nullIndex !== -1) {
+              elseIfs.push({
+                condition: this.sr.b.addExpr(this.sr, {
+                  variant: Semantic.ENode.UnionTagCheckExpr,
+                  comparisonTypesAnd: [this.sr.b.nullType()],
+                  invertCheck: false,
+                  expr: this.sr.b.symbolValue(
+                    tempVariableId,
+                    memberAccess.sourceloc
+                  )[1],
+                  flow: object.flow,
+                  writes: object.writes,
+                  instanceIds: [],
+                  isTemporary: true,
+                  sourceloc: memberAccess.sourceloc,
+                  type: this.sr.b.boolType(),
+                })[1],
+                thenBlock: this.sr.b.blockScope(
+                  [
+                    this.sr.b.exprStatement(
+                      this.sr.b.assignment(
+                        this.sr.b.symbolValue(
+                          resultVariableId,
+                          memberAccess.sourceloc
+                        )[1],
+                        EAssignmentOperation.Rebind,
+                        this.sr.b.nullExpr()[1],
+                        constraints,
+                        memberAccess.sourceloc,
+                        inference
+                      )[1]
+                    )[1],
+                  ],
+                  this.sr.b.noneExpr()[1],
+                  memberAccess.sourceloc
+                )[1],
+              });
+            }
+
+            return elseIfs;
+          })(),
+          sourceloc: memberAccess.sourceloc,
+          thenBlock: this.sr.b.blockScope(
+            [
+              this.sr.b.exprStatement(
+                this.sr.b.assignment(
+                  this.sr.b.symbolValue(
+                    resultVariableId,
+                    memberAccess.sourceloc
+                  )[1],
+                  EAssignmentOperation.Rebind,
+                  resultMemberId,
+                  constraints,
+                  memberAccess.sourceloc,
+                  inference
+                )[1]
+              )[1],
+            ],
+            this.sr.b.noneExpr()[1],
+            memberAccess.sourceloc
+          )[1],
+          else: this.sr.b.blockScope(
+            [
+              this.sr.b.exprStatement(
+                this.sr.b.callUnreachable(memberAccess.sourceloc)[1]
+              )[1],
+            ],
+            this.sr.b.noneExpr()[1],
+            memberAccess.sourceloc
+          )[1],
+        })[1],
+      ],
+      this.sr.b.symbolValue(resultVariableId, memberAccess.sourceloc)[1],
+      memberAccess.sourceloc
+    )[1];
+
+    return this.sr.b.blockScopeExpr(
+      blockScopeId,
+      Semantic.FlowResult.fallthrough()
+        .with(Semantic.FlowType.Return)
+        .withAll(object.flow),
+      Semantic.WriteResult.empty().withAll(object.writes)
+    );
   }
 
   memberAccess(
@@ -6051,7 +6378,8 @@ export class SemanticElaborator {
           return;
         }
 
-        const unwrappedValueExprId = this.unwrapReactiveOrComputedIfPossible(valueExprId);
+        const unwrappedValueExprId =
+          this.unwrapReactiveOrComputedIfPossible(valueExprId);
         const conversion = Conversion.MakeConversion(
           this.sr,
           unwrappedValueExprId,

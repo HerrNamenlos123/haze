@@ -49,6 +49,7 @@ import {
   type ASTMutTypeExpr,
   type ASTNamespaceDefinition,
   type ASTNodiscardTypeExpr,
+  type ASTOptionalChainingExprMemberAccess,
   type ASTParam,
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
@@ -2031,7 +2032,7 @@ class ASTBuilder extends HazeParserListener {
         continue;
       }
 
-      if (postfix.DOT() || postfix.QUESTIONDOT()) {
+      if (postfix.DOT()) {
         if (i >= produced.length) {
           throw new InternalError("PostfixExpr member access missing segment");
         }
@@ -2049,6 +2050,25 @@ class ASTBuilder extends HazeParserListener {
           generics: segment.generics,
           sourceloc: this.loc(postfix),
         } satisfies ASTExprMemberAccess;
+        continue;
+      } else if (postfix.QUESTIONDOT()) {
+        if (i >= produced.length) {
+          throw new InternalError("PostfixExpr member access missing segment");
+        }
+
+        const segment = produced[i++] as {
+          name: string;
+          generics: ASTExpr[];
+          sourceloc: SourceLoc;
+        };
+
+        expr = {
+          variant: "OptionalChainingExprMemberAccess",
+          expr: expr,
+          member: segment.name,
+          generics: segment.generics,
+          sourceloc: this.loc(postfix),
+        } satisfies ASTOptionalChainingExprMemberAccess;
         continue;
       }
 
@@ -2914,6 +2934,7 @@ class ASTBuilder extends HazeParserListener {
       }
     }
 
+    assert(ctx._moduleName);
     const moduleName = ctx._moduleName.getText();
     // _moduleVersion is a Token (STRING_LITERAL), use .text to get value
     const moduleVersionRaw = ctx._moduleVersion?.text ?? '""';

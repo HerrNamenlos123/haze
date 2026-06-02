@@ -178,6 +178,7 @@ export namespace Collect {
     ExplicitCastExpr,
     ExprIsTypeExpr,
     MemberAccessExpr,
+    OptionalChainingMemberAccessExpr,
     ComptimeMemberAccessExpr,
     ExprAssignmentExpr,
     AggregateLiteralExpr,
@@ -687,6 +688,13 @@ export namespace Collect {
     genericArgs: Collect.ExprId[];
   };
 
+  export type OptionalChainingMemberAccessExpr = BaseExpr & {
+    variant: ENode.OptionalChainingMemberAccessExpr;
+    expr: Collect.ExprId;
+    memberName: string;
+    genericArgs: Collect.ExprId[];
+  };
+
   export type ComptimeMemberAccessExpr = BaseExpr & {
     variant: ENode.ComptimeMemberAccessExpr;
     expr: Collect.ExprId;
@@ -837,6 +845,7 @@ export namespace Collect {
     | AggregateLiteralExpr
     | ExprAssignmentExpr
     | ComptimeMemberAccessExpr
+    | OptionalChainingMemberAccessExpr
     | LiteralExpr
     | FStringExpr
     | ArraySubscriptExpr
@@ -2885,6 +2894,37 @@ function collectExpr(
     case "ExprMemberAccess":
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.MemberAccessExpr,
+        expr: collectExpr(cc, item.expr, args),
+        memberName: item.member,
+        genericArgs: item.generics.map((g) => {
+          if (g.variant === "LiteralExpr") {
+            return collectExpr(cc, g, args);
+          }
+
+          if (g.variant === "TypeValueExpr") {
+            return Collect.makeExpr(cc, {
+              variant: Collect.ENode.TypeLiteralExpr,
+              sourceloc: g.sourceloc,
+              datatype: collectExpr(cc, g.datatype, args),
+            })[1];
+          }
+
+          return Collect.makeExpr(cc, {
+            variant: Collect.ENode.TypeLiteralExpr,
+            sourceloc: item.sourceloc,
+            datatype: collectExpr(cc, g, args),
+          })[1];
+        }),
+        sourceloc: item.sourceloc,
+      })[1];
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "OptionalChainingExprMemberAccess":
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.OptionalChainingMemberAccessExpr,
         expr: collectExpr(cc, item.expr, args),
         memberName: item.member,
         genericArgs: item.generics.map((g) => {

@@ -48,6 +48,7 @@ export namespace Semantic {
   export enum EIntrinsicType {
     EmbedFileText,
     EmbedFileBinary,
+    Unreachable,
   }
 
   export enum ENode {
@@ -2664,6 +2665,11 @@ export namespace Semantic {
           name: `N${names.map((n) => n.mangled).join("")}E`,
           wasMangled: true,
         };
+      }
+
+      case Semantic.ENode.UnionTagRefDatatype: {
+        assert(false, "Union tag ref cannot be mangled");
+        throw new Error();
       }
 
       case Semantic.ENode.GenericParameterDatatype: {

@@ -769,6 +769,68 @@ export class SemanticBuilder {
     );
   }
 
+  makeUnreachableFunc(sourceloc: SourceLoc) {
+    const fmtNsId = Semantic.findBuiltinSymbolByName(this.sr, "sys", null);
+    const fmtNsDef = this.sr.cc.symbolNodes.get(fmtNsId);
+    assert(fmtNsDef.variant === Collect.ENode.TypeDefSymbol);
+    const fmtNs = this.sr.cc.typeDefNodes.get(fmtNsDef.typeDef);
+    assert(fmtNs.variant === Collect.ENode.NamespaceTypeDef);
+
+    const symbolId = Semantic.findBuiltinSymbolByName(
+      this.sr,
+      "sys.unreachable",
+      null
+    );
+    const chosenOverloadId = this.sr.e.FunctionOverloadChoose(
+      symbolId,
+      [],
+      sourceloc
+    );
+
+    let elaboratedNsContext = null as Semantic.ElaborationContext | null;
+    for (const cache of this.sr.elaboratedNamespaceSymbols) {
+      if (cache.originalSharedInstance === fmtNs.sharedInstance) {
+        elaboratedNsContext = cache.substitutionContext;
+      }
+    }
+    assert(elaboratedNsContext);
+
+    const elaboratedMethodId = this.sr.e.withContext(
+      {
+        context: Semantic.mergeSubstitutionContext(
+          elaboratedNsContext,
+          this.sr.e.currentContext,
+          {
+            currentScope: this.sr.e.currentContext.currentScope,
+            genericsScope: this.sr.e.currentContext.currentScope,
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
+          }
+        ),
+        inAttemptExpr: null,
+        inFunction: null,
+      },
+      () =>
+        this.sr.e.elaborateFunctionSymbolWithGenerics(
+          this.sr.e.elaborateFunctionSignature(chosenOverloadId),
+          [],
+          sourceloc,
+          [],
+          null
+        )
+    );
+    assert(elaboratedMethodId);
+    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+    const functype = this.sr.typeDefNodes.get(elaboratedMethod.type);
+    assert(functype.variant === Semantic.ENode.FunctionDatatype);
+    return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
+  }
+
   makeSysPanicFunc(sourceloc: SourceLoc) {
     const fmtNsId = Semantic.findBuiltinSymbolByName(this.sr, "sys", null);
     const fmtNsDef = this.sr.cc.symbolNodes.get(fmtNsId);
@@ -836,6 +898,16 @@ export class SemanticBuilder {
     return this.sr.b.callExpr(
       this.makeSysPanicFunc(sourceloc)[1],
       [this.literal(message, sourceloc)[1]],
+      this.sr.e.inFunction,
+      sourceloc
+    );
+  }
+
+  callUnreachable(sourceloc: SourceLoc) {
+    assert(this.sr.e.inFunction);
+    return this.sr.b.callExpr(
+      this.makeUnreachableFunc(sourceloc)[1],
+      [this.literal(0n, sourceloc)[1]],
       this.sr.e.inFunction,
       sourceloc
     );
@@ -1821,6 +1893,15 @@ export class SemanticBuilder {
       false,
       sourceloc
     )[1];
+  }
+
+  nullExpr() {
+    return this.literalValue(
+      {
+        type: EPrimitive.null,
+      },
+      null
+    );
   }
 
   noneExpr() {

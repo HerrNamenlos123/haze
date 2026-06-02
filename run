@@ -2,4 +2,4 @@
 set -e
 
 clear
-bun run dev run
+bun run dev run --no-sourceloc

@@ -2,12 +2,14 @@
 inline struct DivProps {
     id: int;
     style?: hzui.DivStyle;
+    ref?: UIContext.ElementRef<hzui.DivElement>;
 }
 
 inline struct TextProps {
     id: int;
     style?: hzui.TextStyle;
     text: str;
+    ref?: UIContext.ElementRef<hzui.TextElement>;
 }
 
 struct ComponentInstance {
@@ -475,6 +477,11 @@ opaque struct UIContext {
         childrenFn();
 
         this.popRenderContext();
+
+        if props.ref {
+            props.ref.element = element;
+        }
+
         return element;
     }
 
@@ -488,7 +495,22 @@ opaque struct UIContext {
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
+
+        if props.ref {
+            props.ref.element = element;
+        }
+
         return element;
+    }
+
+    struct ElementRef<T> {
+        element: T | null;
+    }
+
+    fn ref<T>() {
+        return ElementRef<T> {
+            element: null,
+        };
     }
 }
 
@@ -550,6 +572,9 @@ struct SidebarArgs {
 }
 
 fn Sidebar(ui: UIContext, args: SidebarArgs) {
+
+    let textRef = ui.ref<hzui.TextElement>();
+
     ui.defineComponent(args.id, args, () =>
         ui.div({
             id: 1,
@@ -563,7 +588,8 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
         }, () => {
             fmt.println("Sidebar rerender");
 
-            let text = ui.text({ id: 2, text: "Menu" });
+            // fmt.println("Hover: ", textRef.element?.hover());
+            let text = ui.text({ id: 2, ref: textRef, text: "Menu" });
 
             let pos = text.position();
             if pos {
@@ -573,7 +599,6 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
             if size {
                 fmt.println("Size: ", size);
             }
-            fmt.println("Hover: ", text.hover());
 
             NavItem(ui, { id: 1, label: "Dashboard" });
             NavItem(ui, { id: 2, label: "Settings" });
