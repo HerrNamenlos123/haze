@@ -8321,6 +8321,68 @@ export class SemanticElaborator {
     exprId = this.unwrapReactiveOrComputedIfPossible(exprId);
     expr = this.sr.exprNodes.get(exprId);
 
+    // Apply constraint-based narrowing for union types after reactive unwrap.
+    // This mirrors the narrowing done in symbolValue so that e.g. `props.ref.id`
+    // works correctly when `props.ref is not null` was checked in an enclosing &&.
+    {
+      const preNarrowTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
+      );
+      if (
+        preNarrowTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+        preNarrowTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+      ) {
+        const members =
+          preNarrowTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
+            ? preNarrowTypeDef.members.map((m) => this.sr.e.resolveAlias(m))
+            : preNarrowTypeDef.members.map((m) =>
+                this.sr.e.resolveAlias(m.type)
+              );
+        const narrowing = Conversion.typeNarrowing(this.sr);
+        narrowing.addVariants(members);
+        narrowing.constrainFromConstraints(
+          this.currentContext.constraints,
+          exprId
+        );
+        if (narrowing.possibleVariants.size === 1) {
+          const tag = members.findIndex(
+            (m) => m === [...narrowing.possibleVariants][0]
+          );
+          assert(tag !== -1);
+          exprId = this.sr.b.addExpr(this.sr, {
+            variant: Semantic.ENode.UnionToValueCastExpr,
+            instanceIds: [],
+            expr: exprId,
+            tag: tag,
+            isTemporary: false,
+            canBeUnwrappedForLHS: true,
+            sourceloc: sourceloc,
+            type: [...narrowing.possibleVariants][0],
+            flow: expr.flow,
+            writes: expr.writes,
+          })[1];
+          expr = this.sr.exprNodes.get(exprId);
+        } else if (narrowing.possibleVariants.size !== members.length) {
+          const newUnion = this.sr.b.untaggedUnionTypeUse(
+            [...narrowing.possibleVariants],
+            sourceloc
+          );
+          exprId = this.sr.b.addExpr(this.sr, {
+            variant: Semantic.ENode.UnionToUnionCastExpr,
+            instanceIds: [],
+            expr: exprId,
+            castComesFromNarrowingAndMayBeUnwrapped: true,
+            isTemporary: false,
+            sourceloc: sourceloc,
+            type: newUnion,
+            flow: expr.flow,
+            writes: expr.writes,
+          })[1];
+          expr = this.sr.exprNodes.get(exprId);
+        }
+      }
+    }
+
     const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
     const resolvedExprTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(expr.type)
