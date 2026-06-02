@@ -50,3 +50,19 @@ export fn sizeofTypeInBytes<T>() {
     };
     return size;
 }
+
+export fn addressOf<T>(value: T) {
+    if comptime T.category == meta.TypeCategory.Struct {
+        if comptime T.isInline {
+            static_assert(false, f"Struct '{T.prettyName}' is inline and therefore not applicable to addressOf()");
+        }
+        let addr: u64 = 0;
+        do unsafe {
+            __c__(f"addr = (uint64_t)(void*)value;");
+        };
+        return addr;
+    }
+    else {
+        static_assert(false, f"Type '{T.prettyName}' is not a struct and therefore not applicable to addressOf()");
+    }
+}
