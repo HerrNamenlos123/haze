@@ -22,6 +22,22 @@ fn main(): int {
             cwd: repoPath,
         })?!;
 
+        let requiredPackages: []str = [
+            "libdecor-0",
+        ];
+
+        for package in requiredPackages {
+            let result = process.run(
+                "pkg-config",
+                { "--exists", package },
+                process.Options {}
+            );
+
+            if !result {
+                raise f"Required system package '{package}' is missing";
+            }
+        }
+
         fs.createDirectory(f"{repoPath}/build")?!;
         process.run("cmake",
             {

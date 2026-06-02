@@ -135,7 +135,9 @@ opaque struct UIContext {
         return this._timeNow;
     }
 
-    fn applyHitTestAndScheduleEvents(element: hzui.Element, mousePos: Vec2): (() => none) :: final {
+    fn applyHitTestAndScheduleEvents(element: hzui.Element, mousePos: Vec2): [](() => none) :: final {
+        let events: [](() => none) = [];
+
         if element is hzui.DivElement {
             let pos = element.position();
             let size = element.size();
@@ -188,6 +190,8 @@ opaque struct UIContext {
                 element._inputFeedbackVersion := !element._inputFeedbackVersion;
             }
         }
+
+        return events;
     }
 
     fn process() {
