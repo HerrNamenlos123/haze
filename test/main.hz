@@ -44,10 +44,6 @@ fn print<T>(value: T) {
 
 fn main(): int {
 
-    let f = Result<int, str>.Ok(42);
-    fmt.println(f);
-    return 0;
-
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
