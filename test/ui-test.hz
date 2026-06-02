@@ -46,7 +46,7 @@ struct ComponentInstance {
                 return n.element;
             }
         }
-        let newElement = hzui.DivElement { id: id, style: {} };
+        let newElement = hzui.DivElement { id: id, style: {}, _renderFeedbackVersion: rx.reactive<bool>(false) };
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -58,7 +58,7 @@ struct ComponentInstance {
                 return n.element;
             }
         }
-        let newElement = hzui.TextElement { id: id, text: "", style: {} };
+        let newElement = hzui.TextElement { id: id, text: "", style: {}, _renderFeedbackVersion: rx.reactive<bool>(false) };
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -78,6 +78,7 @@ struct ComponentInstance {
             rootElement: hzui.DivElement {
                 id: id,
                 style: {},
+                _renderFeedbackVersion: rx.reactive<bool>(false),
             },
             propsVersion: rx.reactive<int>(0),
         };
@@ -186,6 +187,7 @@ opaque struct UIContext {
                     rootElement: hzui.DivElement {
                         id: id,
                         style: {},
+                        _renderFeedbackVersion: rx.reactive<bool>(false),
                     },
                     propsVersion: rx.reactive<int>(0),
                 };
@@ -300,10 +302,10 @@ opaque struct UIContext {
         }
     }
 
-    fn defineComponent<TProps>(
+    fn defineComponent<TProps, TRet>(
         id: int,
         props: TProps,
-        template: () => none
+        template: () => TRet
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
@@ -324,7 +326,9 @@ opaque struct UIContext {
             __c__("newPrevProps = newBox;");
             instance.prevProps = newPrevProps as cptr | null;
 
-            return this.defineComponentImpl(id, propsChanged, template);
+            return this.defineComponentImpl(id, propsChanged, (): none => {
+                template();
+            });
         };
     }
 
@@ -399,6 +403,7 @@ opaque struct UIContext {
         childrenFn();
 
         this.popRenderContext();
+        return element;
     }
 
     fn text(props: TextProps) {
@@ -411,6 +416,7 @@ opaque struct UIContext {
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
+        return element;
     }
 }
 
@@ -484,7 +490,19 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
             }
         }, () => {
             fmt.println("Sidebar rerender");
-            ui.text({ id: 2, text: "Menu" });
+
+            let text = ui.text({ id: 2, text: "Menu" });
+
+            let pos = text.position();
+            if pos {
+                fmt.println("Position: ", pos);
+            }
+            let size = text.size();
+            if size {
+                fmt.println("Size: ", size);
+            }
+            fmt.println("Hover: ", text.hover());
+
             NavItem(ui, { id: 1, label: "Dashboard" });
             NavItem(ui, { id: 2, label: "Settings" });
             NavItem(ui, { id: 3, label: "About" });
@@ -513,11 +531,17 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 gap: 16.0,
             }
         }, () => {
-            fmt.println("Rerender sidebar");
+            fmt.println("Rerender content area");
             ui.text({ id: 2, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
             ui.text({ id: 3, text: "This is rendered via the component system." });
             ui.text({ id: 4, text: "Flexbox layout powered by Clay." });
             ui.text({ id: 5, text: args.text });
+
+            // if ((ui.now() as int) % 2 == 0) {
+            //     NavItem(ui, { id: 4, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+            //     NavItem(ui, { id: 5, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+            //     NavItem(ui, { id: 6, label: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa" });
+            // }
         })
     );
 }

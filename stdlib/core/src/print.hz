@@ -176,6 +176,15 @@ namespace fmt {
         format_to(writer, value as f64, args);
     }
 
+    export fn format_to(writer: mut StringWriter, value: bool, args: FormatArgs) {
+        if value {
+            format_to(writer, "true", args);
+        }
+        else {
+            format_to(writer, "false", args);
+        }
+    }
+
     export fn format_to(writer: mut StringWriter, value: fs.Error, args: FormatArgs) {
         let num = 0;
         __c__("num = value;");
@@ -223,6 +232,14 @@ string = HZSTD_STRING_FROM_CSTR(buf);
         else {
             writer.write("<no location>");
         }
+    }
+
+    export fn format_to(writer: mut StringWriter, value: Vec2, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to(writer, value.y, args);
+        format_to(writer, ")", args);
     }
 
     export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
