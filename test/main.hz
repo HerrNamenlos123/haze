@@ -185,7 +185,7 @@ fn main(): int {
             let tree = ui.process();
 
             uiCtx.render(tree, {
-                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui.CornerRadiusValues): void => {
+                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: hzui.CornerRadiusValues): void => {
                     renderer.drawRect({
                         pos: position, 
                         size: size,
@@ -198,7 +198,7 @@ fn main(): int {
                         },
                     });
                 },
-                renderText: (element: ui.ffi.hzui_draw_text_element_t): void => {
+                renderText: (element: hzui.ffi.hzui_draw_text_element_t): void => {
                     renderer.drawText({
                         font: element.fontId,
                         size: element.fontSize,

@@ -153,7 +153,10 @@ class CodeGenerator {
       // this.out.function_definitions.writeLine(
       //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
       // );
-      const nsSeg = getModuleNamespaceMangledSegment(config.name, config.version);
+      const nsSeg = getModuleNamespaceMangledSegment(
+        config.name,
+        config.version
+      );
       this.out.function_definitions
         .writeLine(`return _HN${nsSeg}4mainEv();`)
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
@@ -2032,6 +2035,7 @@ class CodeGenerator {
           typeDef.variant === Lowered.ENode.FunctionDatatype ||
           typeDef.variant === Lowered.ENode.CallableDatatype ||
           typeDef.variant === Lowered.ENode.ReactiveDatatype ||
+          typeDef.variant === Lowered.ENode.ComputedDatatype ||
           typeDef.variant === Lowered.ENode.EnumDatatype
         ) {
           outWriter.write(
