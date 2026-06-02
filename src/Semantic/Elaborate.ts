@@ -158,6 +158,11 @@ export class SemanticElaborator {
   getFunctionSymbolReturnType(id: Semantic.SymbolId) {
     const sym = this.sr.symbolNodes.get(id);
     assert(sym.variant === Semantic.ENode.FunctionSymbol);
+    // annotatedReturnType is set before the body is elaborated; use it when
+    // the function type is still deferred (i.e. during body elaboration).
+    if (sym.annotatedReturnType) {
+      return sym.annotatedReturnType;
+    }
     const type = this.sr.typeDefNodes.get(sym.type);
     if (type.variant === Semantic.ENode.FunctionDatatype) {
       return type.returnType;
@@ -4794,7 +4799,9 @@ export class SemanticElaborator {
         );
 
         symbol.annotatedReturnType =
-          func.returnType && this.elaborateDatatype(func.returnType);
+          (func.returnType && this.elaborateDatatype(func.returnType)) ||
+          functionSignature.returnType ||
+          null;
 
         if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
           throw new CompilerError(
@@ -12849,12 +12856,34 @@ export class SemanticElaborator {
 
   callableExpr(
     callable: Collect.CallableExpr,
-    _inference: Semantic.Inference
+    inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     const functionSignatureId = this.elaborateFunctionSignature(
       callable.functionSymbol
     );
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
+    assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
+
+    // If the call site tells us what callable type is expected and the lambda has
+    // no explicit return-type annotation, inject the expected return type into the
+    // signature so that struct-literal inference works inside the body.
+    if (
+      inference?.gonnaInstantiateStructWithType &&
+      functionSignature.returnType === null
+    ) {
+      const expectedTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(inference.gonnaInstantiateStructWithType)
+      );
+      const expectedTypeDef = this.sr.typeDefNodes.get(expectedTypeUse.type);
+      if (expectedTypeDef.variant === Semantic.ENode.CallableDatatype) {
+        const funcTypeDef = this.sr.typeDefNodes.get(
+          expectedTypeDef.functionType
+        );
+        if (funcTypeDef.variant === Semantic.ENode.FunctionDatatype) {
+          functionSignature.returnType = funcTypeDef.returnType;
+        }
+      }
+    }
 
     const envType: Semantic.EnvBlockType = {
       type: "lambda",
@@ -12888,7 +12917,6 @@ export class SemanticElaborator {
       callableExprId
     );
 
-    assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
     const elaboratedFunctionId = this.elaborateFunctionSymbol(
       functionSignatureId,
       functionSignature.parentSymbolId,
@@ -13961,6 +13989,48 @@ export function IsExprDecisiveForOverloadResolution(
 
     case Collect.ENode.ParenthesisExpr: {
       return IsExprDecisiveForOverloadResolution(sr, expr.expr);
+    }
+
+    // A callable whose body is solely `return <anonymous-struct>` is NOT
+    // decisive: the anonymous struct requires the expected parameter type to
+    // infer its concrete type, so the callable must be elaborated after the
+    // overload is resolved and the parameter type is known.
+    case Collect.ENode.CallableExpr: {
+      const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
+      if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
+        return true;
+      }
+      if (funcSym.functionScope === null) {
+        return true;
+      }
+      const funcScope = sr.cc.scopeNodes.get(funcSym.functionScope);
+      if (funcScope.variant !== Collect.ENode.FunctionScope) {
+        return true;
+      }
+      const blockScope = sr.cc.scopeNodes.get(funcScope.blockScope);
+      if (blockScope.variant !== Collect.ENode.BlockScope) {
+        return true;
+      }
+      if (blockScope.statements.length !== 1) {
+        return true;
+      }
+      const stmt = sr.cc.statementNodes.get(blockScope.statements[0]);
+      if (stmt.variant !== Collect.ENode.ReturnStatement || !stmt.expr) {
+        return true;
+      }
+      const retExpr = sr.cc.exprNodes.get(stmt.expr);
+      // Unwrap parentheses
+      const innerExpr =
+        retExpr.variant === Collect.ENode.ParenthesisExpr
+          ? sr.cc.exprNodes.get(retExpr.expr)
+          : retExpr;
+      if (
+        innerExpr.variant === Collect.ENode.AggregateLiteralExpr &&
+        innerExpr.structType === null
+      ) {
+        return false;
+      }
+      return true;
     }
 
     default:
