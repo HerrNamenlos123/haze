@@ -385,7 +385,7 @@ opaque struct UIContext {
 
     fn defineComponent<TProps>(
         id: int,
-        props: () => TProps,
+        props: TProps,
         setupFn: () => (() => void)
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
@@ -393,18 +393,16 @@ opaque struct UIContext {
         do unsafe {
             let propsChanged = true;
 
-            let currentProps = props();
-
             if instance.prevProps is not null {
                 let prevProps = instance.prevProps;
                 // TODO: Store the box and update its content, without allocating a new box every frame
                 let oldBox: Box<TProps> = uninitialized;
                 __c__("oldBox = prevProps;");
-                propsChanged = currentProps != oldBox.value;
+                propsChanged = props != oldBox.value;
             }
 
             // TODO: Store the box and update its content, without allocating a new box every frame
-            let newBox = Box<TProps>(currentProps);
+            let newBox = Box<TProps>(props);
             let newPrevProps: cptr = uninitialized;
             __c__("newPrevProps = newBox;");
             instance.prevProps = newPrevProps as cptr | null;
@@ -526,8 +524,8 @@ struct HeaderArgs {
     }
 }
 
-fn Header(ui: UIContext, args: () => HeaderArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn Header(ui: UIContext, args: HeaderArgs) {
+    ui.defineComponent(args.id, args, () => {
         return (): void => {
             ui.div({
                 id: 1,
@@ -538,7 +536,7 @@ fn Header(ui: UIContext, args: () => HeaderArgs) {
                     cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
                 }
             }, (): void => {
-                ui.text({ id: 2, text: args().title, style: { fontSize: 42.0 } });
+                ui.text({ id: 2, text: args.title, style: { fontSize: 42.0 } });
             });
         };
     });
@@ -553,8 +551,8 @@ struct NavItemArgs {
     }
 }
 
-fn NavItem(ui: UIContext, args: () => NavItemArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn NavItem(ui: UIContext, args: NavItemArgs) {
+    ui.defineComponent(args.id, args, () => {
         return (): void => {
             ui.div({
                 id: 1,
@@ -578,8 +576,8 @@ struct SidebarArgs {
     }
 }
 
-fn Sidebar(ui: UIContext, args: () => SidebarArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn Sidebar(ui: UIContext, args: SidebarArgs) {
+    ui.defineComponent(args.id, args, () => {
 
         let textRef = ui.ref<hzui.TextElement>();
 
@@ -625,8 +623,8 @@ struct ContentAreaArgs {
     }
 }
 
-fn ContentArea(ui: UIContext, args: () => ContentAreaArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
+    ui.defineComponent(args.id, args, () => {
         return (): void => {
             ui.div({
                 id: 1,
@@ -662,8 +660,8 @@ struct InfoBoxArgs {
     }
 }
 
-fn InfoBox(ui: UIContext, args: () => InfoBoxArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
+    ui.defineComponent(args.id, args, () => {
         return (): void => {
             ui.div({
                 id: 1,
@@ -692,8 +690,8 @@ struct FooterArgs {
     }
 }
 
-fn Footer(ui: UIContext, args: () => FooterArgs) {
-    ui.defineComponent(args().id, args, () => {
+fn Footer(ui: UIContext, args: FooterArgs) {
+    ui.defineComponent(args.id, args, () => {
         return (): void => {
             ui.div({
                 id: 1,
@@ -717,7 +715,7 @@ struct RootArgs {
 
 
 fn UI(ui: UIContext) {
-    ui.defineComponent(0, () => RootArgs {}, () => {
+    ui.defineComponent(0, RootArgs {}, () => {
 
         let text = rx.computed(() => {
             return f"This text is running since {ui.now() as int} seconds.";
@@ -737,7 +735,7 @@ fn UI(ui: UIContext) {
                 }
             }, (): void => {
                 fmt.println("HEADER RERENDER", ui.framecount());
-                Header(ui, () => ({ id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" }));
+                Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
                 ui.div({
                     id: 2,
@@ -750,9 +748,9 @@ fn UI(ui: UIContext) {
                         gap: 30.0,
                     }
                 }, (): void => {
-                    Sidebar(ui, () => ({ id: 2 }));
-                    ContentArea(ui, () => ({ id: 3, text: text }));
-                    InfoBox(ui, () => ({ id: 4 }));
+                    Sidebar(ui, { id: 2 });
+                    ContentArea(ui, { id: 3, text: text });
+                    InfoBox(ui, { id: 4 });
                 });
 
                 Footer(ui, { id: 5 });
