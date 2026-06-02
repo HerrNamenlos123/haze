@@ -28,9 +28,12 @@
 #include <minwinbase.h>
 
 static hzstd_semaphore_t infinite_block_event;
+static int64_t startup_counter_qpc;
+static int64_t perf_frequency_qpc;
 
 void hzstd_initialize_platform() {
   assert(hzstd_create_semaphore(&infinite_block_event));
+  hzstd_time_now(); // force lazy init now so t=0 is application startup
 }
 
 _Noreturn void hzstd_block_thread_forever() {
@@ -629,16 +632,15 @@ void os_sleep_ns(uint64_t ns) {
 }
 
 double hzstd_time_now(void) {
-  static LARGE_INTEGER frequency;
-  static int initialized = 0;
-
-  if (!initialized) {
-    QueryPerformanceFrequency(&frequency);
-    initialized = 1;
-  }
-
   LARGE_INTEGER counter;
   QueryPerformanceCounter(&counter);
 
-  return (double)counter.QuadPart / (double)frequency.QuadPart;
+  if (!perf_frequency_qpc) {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    perf_frequency_qpc = freq.QuadPart;
+    startup_counter_qpc = counter.QuadPart;
+  }
+
+  return (double)(counter.QuadPart - startup_counter_qpc) / (double)perf_frequency_qpc;
 }

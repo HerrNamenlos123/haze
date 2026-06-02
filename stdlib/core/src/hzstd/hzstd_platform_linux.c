@@ -28,13 +28,16 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 extern char **environ;
 
 static hzstd_semaphore_t infinite_block_event;
+static struct timespec startup_ts;
 
 void hzstd_initialize_platform() {
   assert(hzstd_create_semaphore(&infinite_block_event));
+  clock_gettime(CLOCK_MONOTONIC, &startup_ts);
 }
 
 _Noreturn void hzstd_block_thread_forever() {
@@ -462,13 +465,8 @@ void os_sleep_ns(uint64_t ns) {
 
 double hzstd_time_now(void) {
   struct timespec ts;
-
-#if defined(CLOCK_MONOTONIC)
   clock_gettime(CLOCK_MONOTONIC, &ts);
-#else
-  // Fallback (rare, very old systems)
-  clock_gettime(CLOCK_REALTIME, &ts);
-#endif
-
-  return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+  int64_t delta_ns = ((int64_t)ts.tv_sec - (int64_t)startup_ts.tv_sec) * INT64_C(1000000000)
+                   + ((int64_t)ts.tv_nsec - (int64_t)startup_ts.tv_nsec);
+  return (double)delta_ns / 1e9;
 }
