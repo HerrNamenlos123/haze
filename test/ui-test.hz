@@ -159,9 +159,34 @@ opaque struct UIContext {
                 element._inputFeedback.hover = hovered;
                 element._inputFeedbackVersion := !element._inputFeedbackVersion;
             }
+
+            for child in element.children {
+                let childEvents = this.applyHitTestAndScheduleEvents(child, mousePos);
+            }
         }
         else {
+            let pos = element.position();
+            let size = element.size();
 
+            let hovered = false;
+            if pos && size {
+                hovered = 
+                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
+                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
+            }
+
+            if !element._inputFeedback {
+                element._inputFeedback = { 
+                    hover: false
+                };
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
+            assert(element._inputFeedback);
+
+            if element._inputFeedback.hover != hovered {
+                element._inputFeedback.hover = hovered;
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
         }
     }
 
@@ -175,7 +200,6 @@ opaque struct UIContext {
         this._timeNow := now;
 
         let mousePos = this._mousePos();
-        fmt.println("Mouse Pos: ", mousePos);
 
         // HIT TESTING PHASE
         if (this.rootComponent) {
@@ -545,7 +569,7 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
             if size {
                 fmt.println("Size: ", size);
             }
-            // fmt.println("Hover: ", text.hover());
+            fmt.println("Hover: ", text.hover());
 
             NavItem(ui, { id: 1, label: "Dashboard" });
             NavItem(ui, { id: 2, label: "Settings" });
@@ -661,7 +685,6 @@ fn UI(ui: UIContext) {
                 gap: 10.0,
             }
         }, () => {
-            fmt.println("Root rerender");
             // Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{5})" });
             Header(ui, { id: 1, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
