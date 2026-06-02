@@ -68,7 +68,7 @@ struct ComponentInstance {
                 return n.component;
             }
         }
-        return none;
+        return null;
     }
 
     fn createChild(id: int): ComponentInstance {
@@ -163,16 +163,13 @@ opaque struct UIContext {
         let instance = null as ComponentInstance | null;
 
         if this.renderStack.length > 0 {
-            let parent =
-                this.renderStack[this.renderStack.length - 1]
-                    .currentComponent;
+            let parent = this.renderStack[this.renderStack.length - 1].currentComponent;
+            let child = parent.findChild(id);
 
-            let child =
-                parent.findChild(id);
-
-            if child is none {
+            if child is null {
                 child = parent.createChild(id);
             }
+            assert(child);
 
             parent.newChildComponents.push({
                 id: id,
@@ -214,10 +211,10 @@ opaque struct UIContext {
 
     fn destroyComponent(
         component: ComponentInstance
-    ) {
+    ) :: final {
 
         for child in component.childComponents {
-            destroyComponent(
+            this.destroyComponent(
                 child.component
             );
         }
@@ -273,12 +270,13 @@ opaque struct UIContext {
                     for new in instance.childComponents {
                         if new.id == old.id {
                             stillExists = true;
-                            break;
+                            // TODO: Support "break" and use it here to optimize performance
+                            // break;
                         }
                     }
 
                     if !stillExists {
-                        destroyComponent(
+                        this.destroyComponent(
                             old.component
                         );
                     }

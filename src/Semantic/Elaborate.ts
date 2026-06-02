@@ -2112,6 +2112,12 @@ export class SemanticElaborator {
           expr.sourceloc
         );
 
+      case Collect.ENode.CallableTypeDefinitionExpr:
+        return this.sr.b.datatypeUseAsValue(
+          this.elaborateDatatype(exprId),
+          expr.sourceloc
+        );
+
       case Collect.ENode.DynamicArrayTypeDefinitionExpr: {
         return this.sr.b.datatypeUseAsValue(
           this.elaborateDatatype(exprId),
