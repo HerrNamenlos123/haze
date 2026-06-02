@@ -7330,29 +7330,22 @@ export class SemanticElaborator {
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
 
-      // Check if we're accessing a member of a comptime struct value
-      // If so, evaluate the member access at compile time
-      if (expr.variant === Semantic.ENode.SymbolValueExpr) {
-        const objectSymbol = this.sr.symbolNodes.get(expr.symbol);
-        // Check if this is a comptime symbol with a struct value
-        if (
-          objectSymbol.variant === Semantic.ENode.VariableSymbol &&
-          objectSymbol.comptime &&
-          objectSymbol.comptimeValue
-        ) {
-          try {
-            const ctValue = evalCT(this.sr, objectSymbol.comptimeValue);
-            if (ctValue !== null) {
-              const fieldValue = evalCTMemberAccess(this.sr, ctValue, name);
-              if (fieldValue !== null) {
-                // Convert the CTValue back to an expression
-                return ctValueToExpr(this.sr, fieldValue, sourceloc);
-              }
-            }
-          } catch {
-            // If evaluation fails, fall through to regular member access
+      // Check if we're accessing a member of a comptime struct value.
+      // Try to evaluate the object at compile time; this covers both the case
+      // where the object is a SymbolValueExpr pointing to a comptime variable
+      // and the case where symbolValue() already inlined the comptimeValue
+      // directly (e.g. a StructLiteralExpr), so the SymbolValueExpr wrapper
+      // is absent.
+      try {
+        const ctValue = evalCT(this.sr, exprId);
+        if (ctValue !== null) {
+          const fieldValue = evalCTMemberAccess(this.sr, ctValue, name);
+          if (fieldValue !== null) {
+            return ctValueToExpr(this.sr, fieldValue, sourceloc);
           }
         }
+      } catch {
+        // If evaluation fails, fall through to regular member access
       }
 
       return this.sr.b.memberAccess(
