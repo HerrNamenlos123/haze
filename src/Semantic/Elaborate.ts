@@ -254,12 +254,16 @@ export class SemanticElaborator {
       leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
       left = this.sr.exprNodes.get(leftId);
 
-      // This builds the constraints that apply to the expr itself, the right part of the AND
-      const constraints = this.currentContext.constraints.clone();
-      this.buildLogicalConstraintSet(constraints, leftId);
+      // Build only the DELTA constraints from the left side (not including the current context).
+      // The right side of || is evaluated when the left is false, so we invert the delta.
+      // We must NOT include the current context in the set being inverted, because
+      // withAdditionalConstraints already merges the current context — inverting outer guards
+      // (like "props.ref is not none") would corrupt narrowing on the right side.
+      const deltaConstraints = ConstraintSet.empty();
+      this.buildLogicalConstraintSet(deltaConstraints, leftId);
 
       let [right, rightId] = this.withAdditionalConstraints(
-        constraints.inverse(),
+        deltaConstraints.inverse(),
         () => this.expr(binaryExpr.right, inference)
       );
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);

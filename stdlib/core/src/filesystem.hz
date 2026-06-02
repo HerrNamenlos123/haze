@@ -490,7 +490,7 @@ export namespace fs {
                             if fileResult {
                                 let newContent = fileResult;
 
-                                if !w.lastContent || (w.lastContent && w.lastContent != newContent) {
+                                if !w.lastContent || w.lastContent != newContent {
                                     w.lastContent = newContent;
                                     w.lastState = newState;
                                     w.callback({
