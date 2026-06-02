@@ -336,3 +336,36 @@ export opaque inline struct Bytes {
         return !(this == other);
     }
 }
+
+export opaque inline struct TypeErasedBox {
+    _handle: cptr;
+
+    fn constructor<T>(value: T) {
+        do unsafe {
+            let box = Box<T>(value);
+            let handle: cptr = uninitialized;
+            __c__("handle = box;");
+            return TypeErasedBox {
+                _handle: handle,
+            };
+        };
+    }
+
+    fn set<T>(value: T) {
+        do unsafe {
+            let handle = this._handle;
+            let typedBox: Box<T> = uninitialized;
+            __c__("typedBox = handle;");
+            typedBox.value = value;
+        };
+    }
+
+    fn get<T>() {
+        do unsafe {
+            let handle = this._handle;
+            let typedBox: Box<T> = uninitialized;
+            __c__("typedBox = handle;");
+            return typedBox.value;
+        };
+    }
+}
