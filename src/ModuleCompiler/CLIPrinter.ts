@@ -135,6 +135,27 @@ export class CLIPrinter {
     this.updateInterval = setInterval(() => this.tick(), TICK_MS);
   }
 
+  /**
+   * Temporarily freeze the animation without destroying bar state.
+   * Call resume() to restart. Used to suppress output during generator builds.
+   */
+  pause() {
+    if (!this.updateInterval) {
+      return;
+    }
+    clearInterval(this.updateInterval);
+    this.updateInterval = null;
+  }
+
+  /** Restart the animation after a pause(). */
+  resume() {
+    if (this.updateInterval) {
+      return;
+    }
+    this.tick();
+    this.updateInterval = setInterval(() => this.tick(), TICK_MS);
+  }
+
   /** Stop the animation and freeze the output. */
   stop() {
     if (!this.updateInterval) {

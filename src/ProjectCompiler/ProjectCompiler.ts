@@ -247,6 +247,40 @@ export class ProjectCompiler {
     }
   }
 
+  /**
+   * Run the built executable with all stdout+stderr captured and returned.
+   * The caller is responsible for displaying or logging the output.
+   */
+  async runCaptured(
+    singleFilename?: string,
+    sourceloc?: boolean,
+    args?: string[]
+  ): Promise<{ exitCode: number; output: string }> {
+    const config = await this.getConfig(singleFilename, sourceloc);
+    if (!config) {
+      return { exitCode: -1, output: "Failed to load configuration\n" };
+    }
+    this.setEnv(config);
+
+    let moduleExecutable = join(
+      join(this.globalBuildDir, config.name, "bin"),
+      config.name
+    );
+    if (PLATFORM === Platform.Win32) {
+      moduleExecutable += ".exe";
+    }
+
+    const result = child_process.spawnSync(moduleExecutable, args ?? [], {
+      stdio: "pipe",
+      env: process.env,
+    });
+
+    const stdout = result.stdout ? result.stdout.toString("utf8") : "";
+    const stderr = result.stderr ? result.stderr.toString("utf8") : "";
+    const output = stderr ? stdout + stderr : stdout;
+    return { exitCode: result.status ?? -1, output: output };
+  }
+
   async run(
     singleFilename?: string,
     sourceloc?: boolean,

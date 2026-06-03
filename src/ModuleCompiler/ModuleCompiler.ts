@@ -1224,48 +1224,86 @@ export class ModuleCompiler {
     }
 
     assert(this.currentModuleRootDir);
-    console.log(`>> Running generator ${gen.name}...`);
     const sourceloc = this.config.includeSourceloc;
+
+    const logsDir = join(this.moduleDir, "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const logPath = join(logsDir, `${gen.name}.log`);
+
+    // Pause the outer printer and intercept stdout so that the nested
+    // ProjectCompiler printer and any other console output from the generator
+    // build goes to our buffer instead of the terminal.
+    this.printer?.pause();
+    const logChunks: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    (process.stdout as any).write = (
+      chunk: Buffer | string,
+      _encodingOrCb?: unknown,
+      _cb?: unknown
+    ): boolean => {
+      logChunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+      return true;
+    };
+
     const project = new ProjectCompiler(false, true, false);
-    if (!(await project.build(this.resolveExec(gen.exec), sourceloc, false))) {
-      throw new GeneralError(`Build of generator step ${gen.name} failed`);
+    let buildOk = false;
+    let runResult: { exitCode: number; output: string } | null = null;
+
+    try {
+      buildOk = await project.build(this.resolveExec(gen.exec), sourceloc, false);
+
+      if (buildOk) {
+        runResult = await withEnv(
+          {
+            HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
+            HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
+            HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+            HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+            HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+            HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+            HAZE_C_COMPILER: HAZE_C_COMPILER,
+            HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
+          },
+          () => project.runCaptured(this.resolveExec(gen.exec), sourceloc, [])
+        );
+        logChunks.push(runResult.output);
+      }
+    } finally {
+      (process.stdout as any).write = origWrite;
+      this.printer?.resume();
     }
 
-    await withEnv(
-      {
-        HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
-        HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
-        HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
-        HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
-        HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
-        HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-        HAZE_C_COMPILER: HAZE_C_COMPILER,
-        HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
-      },
-      async () => {
-        const exitCode = await project.run(
-          this.resolveExec(gen.exec),
-          sourceloc,
-          []
-        );
-        if (exitCode !== 0) {
-          throw new GeneralError(
-            `Generator step ${gen.name} failed with exit code ${exitCode}`
-          );
-        }
-      }
-    );
+    // Strip ANSI escape codes before writing to the log file so it is
+    // readable in any text editor.
+    const rawLog = logChunks.join("");
+    const ESC = String.fromCharCode(27);
+    const ansiPattern = new RegExp(ESC + "\[[0-9;]*[mGKJHF]", "g");
+    const cleanLog = rawLog.replace(ansiPattern, "");
+    writeFileSync(logPath, cleanLog, "utf8");
+
+    if (!buildOk) {
+      process.stdout.write(cleanLog);
+      throw new GeneralError(
+        `Generator "${gen.name}" failed to build — see ${logPath}`
+      );
+    }
+
+    if (runResult && runResult.exitCode !== 0) {
+      process.stdout.write(cleanLog);
+      throw new GeneralError(
+        `Generator "${gen.name}" failed with exit code ${runResult.exitCode} — see ${logPath}`
+      );
+    }
 
     for (const file of gen.outputs) {
-      const path = this.resolveGeneratorFile(file);
-      if (!existsSync(path)) {
+      const resolvedPath = this.resolveGeneratorFile(file);
+      if (!existsSync(resolvedPath)) {
+        process.stdout.write(cleanLog);
         throw new GeneralError(
-          `Generator step ${gen.name} claims to generate file '${path}', but it was not generated`
+          `Generator "${gen.name}" did not produce expected file "${resolvedPath}" — see ${logPath}`
         );
       }
     }
-
-    console.log(`>> Running generator ${gen.name}... Done`);
   }
 
   getModuleBinaryDir(moduleName: string) {
