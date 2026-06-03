@@ -1884,425 +1884,452 @@ export class ModuleCompiler {
         ? dirname(this.config.configFilePath)
         : process.cwd();
 
-      const env = process.env as any;
-      env.HAZE_WORKSPACE_DIR = this.hazeWorkspaceDirectory;
-      env.HAZE_MODULE_SOURCE_DIR = this.currentModuleRootDir;
-      env.HAZE_MODULE_BUILD_DIR = this.moduleDir + "/build";
-      env.HAZE_MODULE_BINARY_DIR = this.moduleDir + "/bin";
-      env.HAZE_MODULE_TMP_DIR = this.moduleDir + "/tmp";
-      env.HAZE_MODULE_AUTOGEN_DIR = this.moduleDir + "/autogen";
-      env.CC = HAZE_C_COMPILER;
-      env.CXX = HAZE_CXX_COMPILER;
+      await withEnv(
+        {
+          HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
+          HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
+          HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+          HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+          HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+          HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+          CC: HAZE_C_COMPILER,
+          CXX: HAZE_CXX_COMPILER,
+        },
+        async () => {
+          const buildCache = new ModuleBuildCache(
+            path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
+          );
+          buildCache.load();
 
-      const buildCache = new ModuleBuildCache(
-        path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
-      );
-      buildCache.load();
+          const compilerFingerprint = this.computeCompilerFingerprint();
+          const compilerKey = compilerFingerprint
+            ? `${version}:${compilerFingerprint}`
+            : `${version}`;
+          const cachedCompilerKey = buildCache.getModuleCompilerKey(
+            this.config.name
+          );
+          const compilerKeyChanged = cachedCompilerKey !== compilerKey;
+          const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
 
-      const compilerFingerprint = this.computeCompilerFingerprint();
-      const compilerKey = compilerFingerprint
-        ? `${version}:${compilerFingerprint}`
-        : `${version}`;
-      const cachedCompilerKey = buildCache.getModuleCompilerKey(
-        this.config.name
-      );
-      const compilerKeyChanged = cachedCompilerKey !== compilerKey;
-      const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
+          const initialRelevantFiles = await this.gatherModuleRelevantFiles();
+          const generatorsNeedRun = forceFullRebuild
+            ? true
+            : this.generatorsNeedRun();
+          const moduleChanged = forceFullRebuild
+            ? true
+            : buildCache.hasModuleChanged(
+                this.config.name,
+                initialRelevantFiles,
+                compilerKey
+              );
 
-      const initialRelevantFiles = await this.gatherModuleRelevantFiles();
-      const generatorsNeedRun = forceFullRebuild
-        ? true
-        : this.generatorsNeedRun();
-      const moduleChanged = forceFullRebuild
-        ? true
-        : buildCache.hasModuleChanged(
+          if (!(moduleChanged || generatorsNeedRun)) {
+            // console.log(`Skipping module ${this.config.name} (no changes)`);
+            this.maybeStripExecutable();
+            return;
+          }
+
+          const generatorsRan = generatorsNeedRun
+            ? await this.runAllGenerators(forceFullRebuild)
+            : false;
+
+          if (!(moduleChanged || generatorsRan)) {
+            // console.log(`Skipping module ${this.config.name} (no changes)`);
+            this.maybeStripExecutable();
+            return;
+          }
+
+          console.log(`Building module ${this.config.name}`);
+
+          await this.addInternalBuiltinSources();
+          await this.collectImports();
+          await this.addProjectSourceFiles();
+
+          // PrettyPrintCollected(this.cc);
+
+          const sr = Semantic.SemanticallyAnalyze(
+            this,
+            this.cc,
+            this.config.moduleType === ModuleType.Library,
             this.config.name,
-            initialRelevantFiles,
+            this.config.version
+          );
+          // Semantic.PrettyPrintAnalyzed(sr);
+          const lowered = LowerModule(sr);
+
+          const allModules: [string, string][] = [
+            [this.config.name, this.config.version],
+            ...(await this.loadDependencyModuleGraph()),
+          ];
+
+          const name = this.config.name;
+          const platform = this.config.platform;
+          const moduleCFile = join(
+            this.moduleDir,
+            `build/${name}-${platform}.c`
+          );
+          const moduleOFile = join(
+            this.moduleDir,
+            `build/${name}-${platform}.o`
+          );
+          const moduleAFile = join(
+            this.moduleDir,
+            `build/${name}-${platform}.a`
+          );
+          const moduleExecutable =
+            join(this.moduleDir, `bin/${name}`) +
+            (PLATFORM === Platform.Win32 ? ".exe" : "");
+
+          const moduleMetadataFile = join(
+            this.moduleDir,
+            "build/metadata.json"
+          );
+          const moduleOutputLib = join(
+            this.moduleDir,
+            "bin/" + this.config.name + ".hzlib"
+          );
+          const importFilePath = join(
+            this.moduleDir,
+            "build",
+            HAZE_LIB_IMPORT_FILE
+          );
+
+          await mkdir(join(this.moduleDir, "build/"), { recursive: true });
+          await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
+
+          const code = generateCode(
+            this.config,
+            this.moduleDir,
+            allModules,
+            lowered
+          );
+          await writeFile(moduleCFile, code);
+
+          const compilerFlags = this.config.compilerFlags;
+          const linkerFlags = this.config.linkerFlags;
+          const includeDirs = this.config.includeDirs;
+          const interfaceMacros = this.config.interfaceMacros;
+          const interfaceLinker = this.config.interfaceLinkerFlags;
+          compilerFlags.addAll("-Wno-parentheses-equality");
+          compilerFlags.addAll("-Wno-extra-tokens");
+
+          interfaceMacros.addAll("PCRE2_STATIC");
+
+          includeDirs.addAll(`${this.moduleDir}/bin/include`);
+          includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
+          compilerFlags.addAll("-fno-omit-frame-pointer");
+          linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
+          linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib64"`);
+
+          includeDirs.addAll(`${HAZE_GLOBAL_DIR}`);
+          linkerFlags.addLinux(
+            `"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`
+          );
+          linkerFlags.addLinux("-llzma");
+
+          includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
+          linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
+          linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
+          linkerFlags.addAll("-lgc");
+          // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
+
+          includeDirs.addAll(`${HAZE_GLOBAL_DIR}/pcre2/include`);
+          linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`);
+          linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib/"`);
+          linkerFlags.addAll("-lpcre2-8");
+          // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/pcre2/lib/gc.lib"`);
+
+          compilerFlags.addWin32("-D_CRT_SECURE_NO_WARNINGS");
+          linkerFlags.addWin32("-fuse-ld=lld");
+          linkerFlags.addWin32("-lntdll");
+          linkerFlags.addWin32("-lkernel32");
+          linkerFlags.addWin32("-luser32");
+          linkerFlags.addWin32("-ladvapi32");
+
+          compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
+          compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
+
+          compilerFlags.addLinux("-fPIC");
+
+          const compileCommands: CompileCommands =
+            await this.loadDependencyCompileCommands();
+          const debug = true;
+          if (debug) {
+            compilerFlags.addAll("-g");
+          }
+
+          if (this.config.source.type === "src-dir") {
+            includeDirs.addAll(this.config.source.dirpath);
+          } else {
+            includeDirs.addAll(dirname(this.config.source.filepath));
+          }
+
+          compilerFlags.addAll("-std=c11");
+
+          if (this.verbose) {
+            compilerFlags.addAll("-v");
+          }
+
+          const [
+            archives,
+            dependencyLinkerFlags,
+            dependencyIncludeDirs,
+            dependencyInterfaceMacros,
+            dependencyInterfaceLinker,
+          ] = await this.loadDependencyBinaries();
+
+          linkerFlags.merge(dependencyLinkerFlags);
+          includeDirs.merge(dependencyIncludeDirs);
+          interfaceMacros.merge(dependencyInterfaceMacros);
+          interfaceLinker.merge(dependencyInterfaceLinker);
+
+          if (this.config.moduleType === ModuleType.Executable) {
+            compilerFlags.addAll(archives.map((l) => `"${l}"`));
+          }
+
+          compilerFlags.addAll(
+            this.config.macros.getAll().map((dir) => `-D${dir}`)
+          );
+          compilerFlags.addLinux(
+            this.config.macros.getLinux().map((dir) => `-D${dir}`)
+          );
+          compilerFlags.addWin32(
+            this.config.macros.getWin32().map((dir) => `-D${dir}`)
+          );
+          compilerFlags.addAll(
+            interfaceMacros.getAll().map((dir) => `-D${dir}`)
+          );
+          compilerFlags.addLinux(
+            interfaceMacros.getLinux().map((dir) => `-D${dir}`)
+          );
+          compilerFlags.addWin32(
+            interfaceMacros.getWin32().map((dir) => `-D${dir}`)
+          );
+          linkerFlags.addWin32(
+            interfaceLinker.getWin32().map((dir) => `${dir}`)
+          );
+
+          linkerFlags.addWin32("-lucrtd");
+          linkerFlags.addWin32("-lvcruntimed");
+          linkerFlags.addWin32("-lmsvcrtd");
+
+          compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
+          compilerFlags.addLinux(
+            includeDirs.getLinux().map((dir) => `-I"${dir}"`)
+          );
+          compilerFlags.addWin32(
+            includeDirs.getWin32().map((dir) => `-I"${dir}"`)
+          );
+
+          const platformCompilerFlags = compilerFlags.combineForPlatform();
+          const platformLinkerFlags = linkerFlags.combineForPlatform();
+          // console.log(this.config.name, linkerFlags);
+
+          if (this.config.moduleType === ModuleType.Executable) {
+            const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
+            const filePreamble = "// clang-format off\n\n";
+            const filePostamble = "\n// clang-format on\n";
+            await writeFile(
+              moduleCFile,
+              filePreamble + (await readFile(moduleCFile)) + filePostamble
+            );
+
+            const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -o "${moduleExecutable}" ${flags}`;
+            // log(cmd);
+            // console.log(cmd);
+
+            compileCommands.push({
+              directory: cwd(),
+              file: moduleCFile,
+              command: cmd,
+              output: moduleExecutable,
+            });
+            await this.writeCompileCommands(isTopLevelModule, compileCommands);
+
+            exec(cmd);
+            if (this.strip) {
+              exec(`strip --strip-unneeded "${moduleExecutable}"`);
+            }
+          } else {
+            const flags = `${platformCompilerFlags.join(" ")}`;
+            const filePreamble = "// clang-format off\n\n";
+            const filePostamble = "\n// clang-format on\n";
+            await writeFile(
+              moduleCFile,
+              filePreamble + (await readFile(moduleCFile)) + filePostamble
+            );
+
+            const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -c -o "${moduleOFile}" ${flags}`;
+            // log(cmd);
+            // console.log(cmd);
+
+            compileCommands.push({
+              directory: cwd(),
+              file: moduleCFile,
+              command: cmd,
+              output: moduleOFile,
+            });
+            await this.writeCompileCommands(isTopLevelModule, compileCommands);
+
+            exec(cmd);
+
+            // if (fs.existsSync(moduleAFile)) {
+            //   await exec(`rm ${moduleAFile}`);
+            // }
+
+            if (PLATFORM === Platform.Linux) {
+              exec(
+                `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`
+              );
+            } else {
+              exec(
+                `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`
+              );
+            }
+
+            const makerel = (absolute: string) =>
+              absolute
+                .replaceAll("\\", "/")
+                .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
+
+            const moduleMetadata: ModuleMetadata = {
+              compilerVersion: version,
+              fileformatVersion: 1,
+              name: this.config.name,
+              version: this.config.version,
+              libs: [
+                {
+                  filename: makerel(moduleAFile),
+                  platform: this.config.platform,
+                  type: "static",
+                },
+              ],
+              linkerFlags: this.config.linkerFlags,
+              interfaceLinkerFlags: this.config.interfaceLinkerFlags,
+              includeDirs: includeDirs,
+              interfaceMacros: interfaceMacros,
+              compileCommands: compileCommands,
+              fullModuleGraph: allModules,
+              importFile: HAZE_LIB_IMPORT_FILE,
+            };
+            const moduleMetadataSerialized = {
+              ...moduleMetadata,
+              linkerFlags: {
+                all: moduleMetadata.linkerFlags.getAll(),
+                linux: moduleMetadata.linkerFlags.getLinux(),
+                win32: moduleMetadata.linkerFlags.getWin32(),
+              },
+              interfaceLinkerFlags: {
+                all: moduleMetadata.linkerFlags.getAll(),
+                linux: moduleMetadata.linkerFlags.getLinux(),
+                win32: moduleMetadata.linkerFlags.getWin32(),
+              },
+              includeDirs: {
+                all: moduleMetadata.includeDirs.getAll(),
+                linux: moduleMetadata.includeDirs.getLinux(),
+                win32: moduleMetadata.includeDirs.getWin32(),
+              },
+              interfaceMacros: {
+                all: moduleMetadata.interfaceMacros.getAll(),
+                linux: moduleMetadata.interfaceMacros.getLinux(),
+                win32: moduleMetadata.interfaceMacros.getWin32(),
+              },
+            };
+            await writeFile(
+              moduleMetadataFile,
+              JSON.stringify(moduleMetadataSerialized, undefined, 2)
+            );
+
+            const importFile = ExportSymbols(sr);
+            await writeFile(importFilePath, importFile);
+
+            if (fs.existsSync(moduleOutputLib)) {
+              fs.unlinkSync(moduleOutputLib);
+            }
+
+            await createTarGz(
+              `${this.moduleDir}/build`,
+              [
+                makerel(moduleAFile),
+                makerel(importFilePath),
+                makerel(moduleMetadataFile),
+              ],
+              moduleOutputLib
+            );
+          }
+          if (this.config.configFilePath) {
+            // await this.cache.compiledModule(
+            //   this.module.moduleConfig.projectName,
+            //   this.module.moduleConfig.srcDirectory,
+            //   this.module.moduleConfig.configFilePath,
+            // );
+          }
+
+          const finalRelevantFiles = await this.gatherModuleRelevantFiles();
+          buildCache.updateModule(
+            this.config.name,
+            finalRelevantFiles,
             compilerKey
           );
-
-      if (!(moduleChanged || generatorsNeedRun)) {
-        // console.log(`Skipping module ${this.config.name} (no changes)`);
-        this.maybeStripExecutable();
-        return;
-      }
-
-      const generatorsRan = generatorsNeedRun
-        ? await this.runAllGenerators(forceFullRebuild)
-        : false;
-
-      if (!(moduleChanged || generatorsRan)) {
-        // console.log(`Skipping module ${this.config.name} (no changes)`);
-        this.maybeStripExecutable();
-        return;
-      }
-
-      console.log(`Building module ${this.config.name}`);
-
-      await this.addInternalBuiltinSources();
-      await this.collectImports();
-      await this.addProjectSourceFiles();
-
-      // PrettyPrintCollected(this.cc);
-
-      const sr = Semantic.SemanticallyAnalyze(
-        this,
-        this.cc,
-        this.config.moduleType === ModuleType.Library,
-        this.config.name,
-        this.config.version
-      );
-      // Semantic.PrettyPrintAnalyzed(sr);
-      const lowered = LowerModule(sr);
-
-      const allModules: [string, string][] = [
-        [this.config.name, this.config.version],
-        ...(await this.loadDependencyModuleGraph()),
-      ];
-
-      const name = this.config.name;
-      const platform = this.config.platform;
-      const moduleCFile = join(this.moduleDir, `build/${name}-${platform}.c`);
-      const moduleOFile = join(this.moduleDir, `build/${name}-${platform}.o`);
-      const moduleAFile = join(this.moduleDir, `build/${name}-${platform}.a`);
-      const moduleExecutable =
-        join(this.moduleDir, `bin/${name}`) +
-        (PLATFORM === Platform.Win32 ? ".exe" : "");
-
-      const moduleMetadataFile = join(this.moduleDir, "build/metadata.json");
-      const moduleOutputLib = join(
-        this.moduleDir,
-        "bin/" + this.config.name + ".hzlib"
-      );
-      const importFilePath = join(
-        this.moduleDir,
-        "build",
-        HAZE_LIB_IMPORT_FILE
-      );
-
-      await mkdir(join(this.moduleDir, "build/"), { recursive: true });
-      await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
-
-      const code = generateCode(
-        this.config,
-        this.moduleDir,
-        allModules,
-        lowered
-      );
-      await writeFile(moduleCFile, code);
-
-      const compilerFlags = this.config.compilerFlags;
-      const linkerFlags = this.config.linkerFlags;
-      const includeDirs = this.config.includeDirs;
-      const interfaceMacros = this.config.interfaceMacros;
-      const interfaceLinker = this.config.interfaceLinkerFlags;
-      compilerFlags.addAll("-Wno-parentheses-equality");
-      compilerFlags.addAll("-Wno-extra-tokens");
-
-      interfaceMacros.addAll("PCRE2_STATIC");
-
-      includeDirs.addAll(`${this.moduleDir}/bin/include`);
-      includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
-      compilerFlags.addAll("-fno-omit-frame-pointer");
-      linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
-      linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib64"`);
-
-      includeDirs.addAll(`${HAZE_GLOBAL_DIR}`);
-      linkerFlags.addLinux(
-        `"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`
-      );
-      linkerFlags.addLinux("-llzma");
-
-      includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
-      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
-      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
-      linkerFlags.addAll("-lgc");
-      // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
-
-      includeDirs.addAll(`${HAZE_GLOBAL_DIR}/pcre2/include`);
-      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`);
-      linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib/"`);
-      linkerFlags.addAll("-lpcre2-8");
-      // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/pcre2/lib/gc.lib"`);
-
-      compilerFlags.addWin32("-D_CRT_SECURE_NO_WARNINGS");
-      linkerFlags.addWin32("-fuse-ld=lld");
-      linkerFlags.addWin32("-lntdll");
-      linkerFlags.addWin32("-lkernel32");
-      linkerFlags.addWin32("-luser32");
-      linkerFlags.addWin32("-ladvapi32");
-
-      compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
-      compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
-
-      compilerFlags.addLinux("-fPIC");
-
-      const compileCommands: CompileCommands =
-        await this.loadDependencyCompileCommands();
-      const writeCompileCommands = async () => {
-        if (isTopLevelModule) {
-          // If Top Level, remove all previous dirty hacks and write one clean entry.
-
-          const addedFiles = new Set<string>();
-          const cleanedCommands: CompileCommands = [];
-          for (const c of compileCommands) {
-            if (!addedFiles.has(c.file)) {
-              addedFiles.add(c.file);
-              cleanedCommands.push(c);
-            }
-          }
-
-          await writeFile(
-            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2)
-          );
-        } else {
-          // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
-
-          const addedFiles = new Set<string>();
-          let currentCommands: CompileCommands;
-          const cleanedCommands: CompileCommands = [];
-          try {
-            currentCommands = JSON.parse(
-              await readFile(
-                `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-                "utf-8"
-              )
-            );
-            for (const c of currentCommands) {
-              if (!addedFiles.has(c.file)) {
-                addedFiles.add(c.file);
-                cleanedCommands.push(c);
-              }
-            }
-          } catch {}
-
-          for (const c of compileCommands) {
-            if (!addedFiles.has(c.file)) {
-              addedFiles.add(c.file);
-              cleanedCommands.push(c);
-            }
-          }
-
-          await writeFile(
-            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            JSON.stringify(cleanedCommands, null, 2)
-          );
+          buildCache.save();
         }
-      };
-
-      const debug = true;
-      if (debug) {
-        compilerFlags.addAll("-g");
-      }
-
-      if (this.config.source.type === "src-dir") {
-        includeDirs.addAll(this.config.source.dirpath);
-      } else {
-        includeDirs.addAll(dirname(this.config.source.filepath));
-      }
-
-      compilerFlags.addAll("-std=c11");
-
-      if (this.verbose) {
-        compilerFlags.addAll("-v");
-      }
-
-      const [
-        archives,
-        dependencyLinkerFlags,
-        dependencyIncludeDirs,
-        dependencyInterfaceMacros,
-        dependencyInterfaceLinker,
-      ] = await this.loadDependencyBinaries();
-
-      linkerFlags.merge(dependencyLinkerFlags);
-      includeDirs.merge(dependencyIncludeDirs);
-      interfaceMacros.merge(dependencyInterfaceMacros);
-      interfaceLinker.merge(dependencyInterfaceLinker);
-
-      if (this.config.moduleType === ModuleType.Executable) {
-        compilerFlags.addAll(archives.map((l) => `"${l}"`));
-      }
-
-      compilerFlags.addAll(
-        this.config.macros.getAll().map((dir) => `-D${dir}`)
       );
-      compilerFlags.addLinux(
-        this.config.macros.getLinux().map((dir) => `-D${dir}`)
-      );
-      compilerFlags.addWin32(
-        this.config.macros.getWin32().map((dir) => `-D${dir}`)
-      );
-      compilerFlags.addAll(interfaceMacros.getAll().map((dir) => `-D${dir}`));
-      compilerFlags.addLinux(
-        interfaceMacros.getLinux().map((dir) => `-D${dir}`)
-      );
-      compilerFlags.addWin32(
-        interfaceMacros.getWin32().map((dir) => `-D${dir}`)
-      );
-      linkerFlags.addWin32(interfaceLinker.getWin32().map((dir) => `${dir}`));
-
-      linkerFlags.addWin32("-lucrtd");
-      linkerFlags.addWin32("-lvcruntimed");
-      linkerFlags.addWin32("-lmsvcrtd");
-
-      compilerFlags.addAll(includeDirs.getAll().map((dir) => `-I"${dir}"`));
-      compilerFlags.addLinux(includeDirs.getLinux().map((dir) => `-I"${dir}"`));
-      compilerFlags.addWin32(includeDirs.getWin32().map((dir) => `-I"${dir}"`));
-
-      const platformCompilerFlags = compilerFlags.combineForPlatform();
-      const platformLinkerFlags = linkerFlags.combineForPlatform();
-      // console.log(this.config.name, linkerFlags);
-
-      if (this.config.moduleType === ModuleType.Executable) {
-        const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
-        const filePreamble = "// clang-format off\n\n";
-        const filePostamble = "\n// clang-format on\n";
-        await writeFile(
-          moduleCFile,
-          filePreamble + (await readFile(moduleCFile)) + filePostamble
-        );
-
-        const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -o "${moduleExecutable}" ${flags}`;
-        // log(cmd);
-        // console.log(cmd);
-
-        compileCommands.push({
-          directory: cwd(),
-          file: moduleCFile,
-          command: cmd,
-          output: moduleExecutable,
-        });
-        await writeCompileCommands();
-
-        exec(cmd);
-        if (this.strip) {
-          exec(`strip --strip-unneeded "${moduleExecutable}"`);
-        }
-      } else {
-        const flags = `${platformCompilerFlags.join(" ")}`;
-        const filePreamble = "// clang-format off\n\n";
-        const filePostamble = "\n// clang-format on\n";
-        await writeFile(
-          moduleCFile,
-          filePreamble + (await readFile(moduleCFile)) + filePostamble
-        );
-
-        const cmd = `"${HAZE_C_COMPILER}" "${moduleCFile}" -c -o "${moduleOFile}" ${flags}`;
-        // log(cmd);
-        // console.log(cmd);
-
-        compileCommands.push({
-          directory: cwd(),
-          file: moduleCFile,
-          command: cmd,
-          output: moduleOFile,
-        });
-        await writeCompileCommands();
-
-        exec(cmd);
-
-        // if (fs.existsSync(moduleAFile)) {
-        //   await exec(`rm ${moduleAFile}`);
-        // }
-
-        if (PLATFORM === Platform.Linux) {
-          exec(
-            `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > /dev/null`
-          );
-        } else {
-          exec(
-            `"${ARCHIVE_TOOL}" r "${moduleAFile}" "${moduleOFile}" > NUL 2>&1`
-          );
-        }
-
-        const makerel = (absolute: string) =>
-          absolute
-            .replaceAll("\\", "/")
-            .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
-
-        const moduleMetadata: ModuleMetadata = {
-          compilerVersion: version,
-          fileformatVersion: 1,
-          name: this.config.name,
-          version: this.config.version,
-          libs: [
-            {
-              filename: makerel(moduleAFile),
-              platform: this.config.platform,
-              type: "static",
-            },
-          ],
-          linkerFlags: this.config.linkerFlags,
-          interfaceLinkerFlags: this.config.interfaceLinkerFlags,
-          includeDirs: includeDirs,
-          interfaceMacros: interfaceMacros,
-          compileCommands: compileCommands,
-          fullModuleGraph: allModules,
-          importFile: HAZE_LIB_IMPORT_FILE,
-        };
-        const moduleMetadataSerialized = {
-          ...moduleMetadata,
-          linkerFlags: {
-            all: moduleMetadata.linkerFlags.getAll(),
-            linux: moduleMetadata.linkerFlags.getLinux(),
-            win32: moduleMetadata.linkerFlags.getWin32(),
-          },
-          interfaceLinkerFlags: {
-            all: moduleMetadata.linkerFlags.getAll(),
-            linux: moduleMetadata.linkerFlags.getLinux(),
-            win32: moduleMetadata.linkerFlags.getWin32(),
-          },
-          includeDirs: {
-            all: moduleMetadata.includeDirs.getAll(),
-            linux: moduleMetadata.includeDirs.getLinux(),
-            win32: moduleMetadata.includeDirs.getWin32(),
-          },
-          interfaceMacros: {
-            all: moduleMetadata.interfaceMacros.getAll(),
-            linux: moduleMetadata.interfaceMacros.getLinux(),
-            win32: moduleMetadata.interfaceMacros.getWin32(),
-          },
-        };
-        await writeFile(
-          moduleMetadataFile,
-          JSON.stringify(moduleMetadataSerialized, undefined, 2)
-        );
-
-        const importFile = ExportSymbols(sr);
-        await writeFile(importFilePath, importFile);
-
-        if (fs.existsSync(moduleOutputLib)) {
-          fs.unlinkSync(moduleOutputLib);
-        }
-
-        await createTarGz(
-          `${this.moduleDir}/build`,
-          [
-            makerel(moduleAFile),
-            makerel(importFilePath),
-            makerel(moduleMetadataFile),
-          ],
-          moduleOutputLib
-        );
-      }
-      if (this.config.configFilePath) {
-        // await this.cache.compiledModule(
-        //   this.module.moduleConfig.projectName,
-        //   this.module.moduleConfig.srcDirectory,
-        //   this.module.moduleConfig.configFilePath,
-        // );
-      }
-
-      const finalRelevantFiles = await this.gatherModuleRelevantFiles();
-      buildCache.updateModule(
-        this.config.name,
-        finalRelevantFiles,
-        compilerKey
-      );
-      buildCache.save();
     });
+  }
+
+  private async writeCompileCommands(
+    isTopLevelModule: boolean,
+    compileCommands: CompileCommands
+  ) {
+    if (isTopLevelModule) {
+      // If Top Level, remove all previous dirty hacks and write one clean entry.
+
+      const addedFiles = new Set<string>();
+      const cleanedCommands: CompileCommands = [];
+      for (const c of compileCommands) {
+        if (!addedFiles.has(c.file)) {
+          addedFiles.add(c.file);
+          cleanedCommands.push(c);
+        }
+      }
+
+      await writeFile(
+        `${this.hazeWorkspaceDirectory}/compile_commands.json`,
+        JSON.stringify(cleanedCommands, null, 2)
+      );
+    } else {
+      // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
+
+      const addedFiles = new Set<string>();
+      let currentCommands: CompileCommands;
+      const cleanedCommands: CompileCommands = [];
+      try {
+        currentCommands = JSON.parse(
+          await readFile(
+            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
+            "utf-8"
+          )
+        );
+        for (const c of currentCommands) {
+          if (!addedFiles.has(c.file)) {
+            addedFiles.add(c.file);
+            cleanedCommands.push(c);
+          }
+        }
+      } catch {}
+
+      for (const c of compileCommands) {
+        if (!addedFiles.has(c.file)) {
+          addedFiles.add(c.file);
+          cleanedCommands.push(c);
+        }
+      }
+
+      await writeFile(
+        `${this.hazeWorkspaceDirectory}/compile_commands.json`,
+        JSON.stringify(cleanedCommands, null, 2)
+      );
+    }
   }
 
   private async loadDependencyModuleGraph() {
