@@ -116,7 +116,7 @@ export inline struct DivStyle {
     justify: Justify = Justify.Start;
     align: Align = Align.Start;
     cornerRadius: StyleCornerRadius = none;
-    gap: real = 0;
+    gap?: real;
     backgroundColor?: Color;
 
     fontFamily?: str = none;
@@ -140,6 +140,11 @@ export inline struct DivStyle {
             if preset is presets.BackgroundColorPreset {
                 if !style.backgroundColor {
                     style.backgroundColor = preset.color;
+                }
+            }
+            if preset is presets.GapPreset {
+                if !style.gap {
+                    style.gap = preset.value;
                 }
             }
         }
@@ -176,9 +181,9 @@ export inline struct DivStyle {
             // this.flexGrow == other.flexGrow &&
             this.direction == other.direction &&
             this.justify == other.justify &&
-            this.align == other.align &&
+            this.align == other.align
             // this.cornerRadius == other.cornerRadius &&
-            this.gap == other.gap
+            // this.gap == other.gap
             // this.backgroundColor == other.backgroundColor &&
             // this.fontFamily == other.fontFamily &&
             // this.fontSize == other.fontSize &&
@@ -502,6 +507,11 @@ export opaque struct Context {
                     style.backgroundColor = Color(0, 0, 0, 0);
                 }
                 assert(style.backgroundColor);
+
+                if !style.gap {
+                    style.gap = 0.0;
+                }
+                assert(style.gap);
 
                 ffi.hzui_clay_define_div_element(
                     func, env,

@@ -528,7 +528,14 @@ opaque struct UIContext {
         this.popRenderContext();
 
         if props.ref is not none {
-            props.ref := element;
+            // TODO: This should be an identity comparison in the future.
+            // Ids are not globally unique and this is not guaranteed to always work.
+            // In the ideal case, we should support TypeScript-like identity comparison 
+            // between objects, to compare that it is actually the same object.
+            // The ID comparison is a best guess.
+            if props.ref is null || props.ref.id != element.id {
+                props.ref := element;
+            }
         }
 
         return element;
@@ -674,17 +681,27 @@ struct ContentAreaArgs {
 
 fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<ContentAreaArgs>) => {
+
+        let divRef = ui.ref<hzui.DivElement>();
+        let h = rx.computed(() => {
+            if let ref = rx.get(divRef) {
+                return ref.hover();
+            }
+            return false;
+        })
+
         return (): void => {
             ui.div({
                 id: 100,
+                ref: divRef,
                 style: {
                     direction: hzui.Direction.Column,
                     align: hzui.Align.Center,
-                    gap: 16.0,
                 },
                 presets: [
                     presets.p(2),
                     presets.bg("#33CC66FF"),
+                    presets.gap(4),
                 ],
             }, (): void => {
                 fmt.println("Rerender content area");

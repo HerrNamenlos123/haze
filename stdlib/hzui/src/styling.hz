@@ -13,6 +13,18 @@ namespace presets {
         };
     }
 
+    // export fn m(value: real) {
+    //     return MarginPreset {
+    //         padding: StylePaddingSimple { value: size(value) },
+    //     };
+    // }
+
+    export fn gap(value: real) {
+        return GapPreset {
+            value: size(value),
+        };
+    }
+
     export fn bg(color: Color) {
         return BackgroundColorPreset {
             color: color,
@@ -27,5 +39,9 @@ namespace presets {
         padding: StylePadding;
     }
 
-    export type Preset = PaddingPreset | BackgroundColorPreset;
+    export struct GapPreset {
+        value: real;
+    }
+
+    export type Preset = PaddingPreset | BackgroundColorPreset | GapPreset;
 }
