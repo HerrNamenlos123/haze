@@ -1169,6 +1169,10 @@ export namespace Conversion {
       }
     | {
         kind: "clone-struct-to-target-type";
+      }
+    | {
+        kind: "construct-via-constructor";
+        unsafe: boolean;
       };
 
   type ConversionPlanError = {
@@ -2185,6 +2189,25 @@ export namespace Conversion {
       }
     }
 
+    // Implicit conversion via a struct constructor (like an implicit/non-explicit
+    // constructor in C++): if the target is a struct that provides a constructor
+    // callable with the source value (taking default parameter values into account),
+    // rewrite the conversion to a call to that constructor. Generic constructors do
+    // not count.
+    if (
+      resolvedTargetTypeDef.variant === Semantic.ENode.StructDatatype &&
+      sr.e.canImplicitlyConstructStructFrom(
+        sourceExprId,
+        rawTargetTypeUseId,
+        _sourceloc
+      )
+    ) {
+      return {
+        kind: "construct-via-constructor",
+        unsafe: unsafe,
+      };
+    }
+
     return {
       kind: "error",
       message: `No suitable conversion from ${sourceTypeText} to ${targetTypeText} is known`,
@@ -2301,6 +2324,15 @@ export namespace Conversion {
           flow: sourceExpr.flow,
           writes: sourceExpr.writes,
         })[1];
+      }
+
+      case "construct-via-constructor": {
+        return sr.e.buildImplicitConstructorConversion(
+          sourceExprId,
+          targetTypeId,
+          sourceloc,
+          conversionPlan.unsafe
+        );
       }
 
       case "keep": {

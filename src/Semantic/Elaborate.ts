@@ -77,6 +77,10 @@ export class SemanticElaborator {
   metaTypeValueStructTypeId: Semantic.TypeDefId | null = null;
   metaTaggedMemberStructTypeId: Semantic.TypeDefId | null = null;
   sourceLocationDefaultCallSite: SourceLoc | null = null;
+  // Guards against infinite recursion (and chained user-defined conversions) while
+  // resolving an implicit struct-constructor conversion. While set, the conversion
+  // machinery will not attempt another implicit constructor conversion.
+  disallowImplicitConstructorConversion: boolean = false;
 
   constructor(
     public sr: Semantic.Context,
@@ -1264,6 +1268,7 @@ export class SemanticElaborator {
     };
 
     // Helper: Validate argument count and return actual args (with defaults for optional)
+    // Thin wrapper around prepareCallArguments that supplies the call site location.
     const validateAndPrepareArguments = (
       givenArgs: Semantic.ExprId[],
       parameterTypes: {
@@ -1274,159 +1279,19 @@ export class SemanticElaborator {
       hasParameterPack: boolean,
       functionSymbol?: Semantic.FunctionSymbol,
       collectedFunctionSymbol?: Collect.FunctionSymbol
-    ): Semantic.ExprId[] => {
-      // Count required parameters (non-optional, non-pack, without defaults)
-      const requiredParams = parameterTypes.filter((p, i) => {
-        // Check if this parameter has a default value
-        // First try the elaborated function symbol's parameterDefaultValues
-        if (functionSymbol && i < functionSymbol.parameterNames.length) {
-          const paramName = functionSymbol.parameterNames[i];
-          if (
-            functionSymbol.parameterDefaultValues.some(
-              (dv) => dv.parameterName === paramName
-            )
-          ) {
-            return false; // Has default
-          }
-        }
-
-        // Fallback to the collected function symbol
-        if (
-          collectedFunctionSymbol &&
-          i < collectedFunctionSymbol.parameters.length
-        ) {
-          const param = collectedFunctionSymbol.parameters[i];
-          if (param.kind === "normal" && param.defaultParameterValue !== null) {
-            return false; // Has default
-          }
-        }
-
-        // No default, check if it's optional or a parameter pack
-        return !(p.optional || this.isParameterPackType(p.type));
-      });
-
-      // Check argument count
-      if (hasVararg || hasParameterPack) {
-        // Vararg and pack: at least required params needed
-        assertCompilerError(
-          givenArgs.length >= requiredParams.length,
-          `This call requires at least ${requiredParams.length} arguments but ${givenArgs.length} were given`,
-          calledExpr.sourceloc
-        );
-      } else {
-        // No vararg/pack: exact match or with optional params
-        const maxParams = parameterTypes.length;
-        const minParams = requiredParams.length;
-        assertCompilerError(
-          givenArgs.length >= minParams && givenArgs.length <= maxParams,
-          `This call requires ${minParams}${
-            minParams === maxParams ? "" : `-${maxParams}`
-          } arguments but ${givenArgs.length} were given`,
-          calledExpr.sourceloc
-        );
-      }
-
-      // Fill in missing arguments with defaults or `none` for optional
-      const result = [...givenArgs];
-      for (let i = givenArgs.length; i < parameterTypes.length; i++) {
-        // Try to get default from elaborated function symbol first
-        if (functionSymbol && i < functionSymbol.parameterNames.length) {
-          const paramName = functionSymbol.parameterNames[i];
-          const defaultValue = functionSymbol.parameterDefaultValues.find(
-            (dv) => dv.parameterName === paramName
-          );
-          if (defaultValue) {
-            // SourceLocation defaults must capture the call site, not the definition site.
-            // Re-synthesize with the call site location and apply the parameter-type conversion.
-            if (this.isSourceLocationExprId(defaultValue.value)) {
-              const paramType = parameterTypes[i].type;
-              const [, litId] = this.synthesizeSourceLocationLiteral(
-                paramType,
-                callExpr.sourceloc
-              );
-              result.push(
-                Conversion.MakeConversionOrThrow(
-                  this.sr,
-                  litId,
-                  paramType,
-                  this.currentContext.constraints,
-                  callExpr.sourceloc,
-                  Conversion.Mode.Implicit,
-                  false
-                )
-              );
-            } else {
-              result.push(defaultValue.value);
-            }
-            continue;
-          }
-        }
-
-        // If not in elaborated symbol, check collected function symbol
-        if (
-          collectedFunctionSymbol &&
-          i < collectedFunctionSymbol.parameters.length
-        ) {
-          const param = collectedFunctionSymbol.parameters[i];
-          assert(
-            param.kind === "normal",
-            "Function should be elaborated already"
-          );
-          if (param.defaultParameterValue !== null) {
-            const defaultParamValue = param.defaultParameterValue!;
-            const paramType = parameterTypes[i].type;
-
-            const value = this.sr.cc.exprNodes.get(defaultParamValue);
-            let defaultExprId: Semantic.ExprId;
-            if (
-              value.variant === Collect.ENode.SymbolValueExpr &&
-              value.name === "default"
-            ) {
-              if (value.genericArgs.length !== 0) {
-                throw new CompilerError(
-                  `'default' initializer cannot take any generics`,
-                  value.sourceloc
-                );
-              }
-              defaultExprId = Conversion.MakeDefaultValue(
-                this.sr,
-                paramType,
-                collectedFunctionSymbol.parameters[i].sourceloc
-              );
-            } else {
-              // Thread the outer call site so SourceLocation() defaults capture
-              // where the enclosing function is called, not the definition site.
-              const prevDefaultSite = this.sourceLocationDefaultCallSite;
-              this.sourceLocationDefaultCallSite = callExpr.sourceloc;
-              defaultExprId = this.expr(defaultParamValue, {
-                gonnaInstantiateStructWithType: paramType,
-                unsafe: false,
-              })[1];
-              this.sourceLocationDefaultCallSite = prevDefaultSite;
-            }
-            const convertedDefault = Conversion.MakeConversionOrThrow(
-              this.sr,
-              defaultExprId,
-              paramType,
-              this.currentContext.constraints,
-              collectedFunctionSymbol.parameters[i].sourceloc,
-              Conversion.Mode.Implicit,
-              false
-            );
-            result.push(convertedDefault);
-            continue;
-          }
-        }
-
-        if (parameterTypes[i].optional) {
-          result.push(this.sr.b.noneExpr()[1]);
-        }
-      }
-
-      return result;
-    };
+    ): Semantic.ExprId[] =>
+      this.prepareCallArguments(
+        givenArgs,
+        parameterTypes,
+        hasVararg,
+        hasParameterPack,
+        callExpr.sourceloc,
+        functionSymbol,
+        collectedFunctionSymbol
+      );
 
     // Helper: Insert implicit conversions for arguments
+    // Thin wrapper around convertCallArguments that supplies argument locations.
     const convertArguments = (
       givenArgs: Semantic.ExprId[],
       parameterTypes: {
@@ -1435,47 +1300,16 @@ export class SemanticElaborator {
       }[],
       hasVararg: boolean,
       hasParameterPack: boolean
-    ): Semantic.ExprId[] => {
-      const argumentSourcelocs = callExpr.arguments.map(
-        (a) => this.sr.cc.exprNodes.get(a).sourceloc
+    ): Semantic.ExprId[] =>
+      this.convertCallArguments(
+        givenArgs,
+        parameterTypes,
+        hasVararg,
+        hasParameterPack,
+        callExpr.arguments.map((a) => this.sr.cc.exprNodes.get(a).sourceloc),
+        calledExpr.sourceloc,
+        inference?.unsafe ?? false
       );
-
-      // Find the index of the parameter pack parameter (if any)
-      const packParameterIndex = hasParameterPack
-        ? parameterTypes.findIndex((p) => this.isParameterPackType(p.type))
-        : -1;
-
-      return givenArgs.map((arg, index) => {
-        // If this is the parameter pack position, keep args as-is (they'll be bundled by codegen)
-        if (index === packParameterIndex) {
-          return arg;
-        }
-
-        // Only convert if we have a corresponding non-pack parameter
-        if (
-          index < parameterTypes.length &&
-          !this.isParameterPackType(parameterTypes[index].type)
-        ) {
-          return Conversion.MakeConversionOrThrow(
-            this.sr,
-            arg,
-            parameterTypes[index].type,
-            this.currentContext.constraints,
-            index < argumentSourcelocs.length
-              ? argumentSourcelocs[index]
-              : calledExpr.sourceloc,
-            Conversion.Mode.Implicit,
-            inference?.unsafe ?? false
-          );
-        }
-        if (hasVararg && index >= parameterTypes.length) {
-          // Vararg: pass remaining args as-is
-          return arg;
-        }
-        // Default: pass as-is (shouldn't reach here if validation passed)
-        return arg;
-      });
-    };
 
     if (!this.inFunction) {
       throw new CompilerError(
@@ -1581,131 +1415,15 @@ export class SemanticElaborator {
       );
     }
     if (calledExprType.variant === Semantic.ENode.StructDatatype) {
-      const original = this.sr.cc.typeDefNodes.get(
-        calledExprType.originalCollectedDefinition
-      );
-      assert(original.variant === Collect.ENode.StructTypeDef);
-
-      const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
-      assert(structScope.variant === Collect.ENode.StructLexicalScope);
-
-      const constructorOverloadGroupId = [...structScope.symbols].find(
-        (mId) => {
-          const m = this.sr.cc.symbolNodes.get(mId);
-          return (
-            m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
-            m.name === "constructor"
-          );
-        }
-      );
-      if (!constructorOverloadGroupId) {
-        throw new CompilerError(
-          `Struct ${calledExprType.name} is called, but it does not provide a constructor`,
-          callExpr.sourceloc
-        );
-      }
-
-      const constructorId = this.FunctionOverloadChoose(
-        constructorOverloadGroupId,
+      return this.elaborateStructConstructorCall(
+        this.sr.e.resolveAlias(calledExpr.type),
+        calledExprType,
         decisiveArguments,
-        callExpr.sourceloc
-      );
-
-      const collectedMethod = this.sr.cc.symbolNodes.get(constructorId);
-      assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
-
-      let elaboratedStructCache = null as Semantic.StructDef | null;
-      for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
-        for (const entry of cache) {
-          if (entry.result === calledExprTypeUse.type) {
-            assert(elaboratedStructCache === null);
-            elaboratedStructCache = entry;
-          }
-        }
-      }
-      assert(elaboratedStructCache);
-
-      const parameterPackTypes = this.prepareParameterPackTypes(
-        "constructor",
-        collectedMethod.parameters,
-        inference?.gonnaCallFunctionWithParameterValues,
-        callExpr.sourceloc
-      );
-
-      const elaboratedMethodId = this.withContext(
-        {
-          context: Semantic.mergeSubstitutionContext(
-            elaboratedStructCache.substitutionContext,
-            this.currentContext,
-            {
-              currentScope: this.currentContext.currentScope,
-              genericsScope: this.currentContext.currentScope,
-              instanceDeps: {
-                instanceDependsOn: new Map(),
-                structMembersDependOn: new Map(),
-                symbolDependsOn: new Map(),
-              },
-            }
-          ),
-          inFunction: null,
-          inAttemptExpr: null,
-        },
-        () => {
-          const signature = this.elaborateFunctionSignature(constructorId);
-          const sig = this.sr.symbolNodes.get(signature);
-          assert(sig.variant === Semantic.ENode.FunctionSignature);
-          return this.elaborateFunctionSymbolWithGenerics(
-            signature,
-            constructorCalleeGenericArgs.map((g) => this.expressionAsGenericArg(g)),
-            callExpr.sourceloc,
-            parameterPackTypes,
-            {
-              type: "method",
-              thisExprType: makeTypeUse(
-                this.sr,
-                calledExprTypeUse.type,
-                EDatatypeMutability.Mut,
-                "force-no-inline",
-                callExpr.sourceloc
-              )[1],
-            }
-          );
-        }
-      );
-      assert(elaboratedMethodId);
-      const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
-      assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
-
-      const constructorFunctype = this.sr.typeDefNodes.get(
-        elaboratedMethod.type
-      );
-      assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
-      const hasParameterPack = constructorFunctype.parameters.some((p) =>
-        this.isParameterPackType(p.type)
-      );
-
-      const elaboratedArgs = elaborateCallingArguments(
-        constructorFunctype.parameters
-      );
-      const preparedArgs = validateAndPrepareArguments(
-        elaboratedArgs,
-        constructorFunctype.parameters,
-        constructorFunctype.vararg,
-        hasParameterPack,
-        elaboratedMethod,
-        undefined
-      );
-      const finalArgs = convertArguments(
-        preparedArgs,
-        constructorFunctype.parameters,
-        constructorFunctype.vararg,
-        hasParameterPack
-      );
-      return this.sr.b.callExpr(
-        this.sr.b.symbolValue(elaboratedMethodId, callExpr.sourceloc)[1],
-        finalArgs,
-        this.inFunction,
-        callExpr.sourceloc
+        constructorCalleeGenericArgs,
+        elaborateCallingArguments,
+        callExpr.arguments.map((a) => this.sr.cc.exprNodes.get(a).sourceloc),
+        callExpr.sourceloc,
+        inference?.unsafe ?? false
       );
     }
     if (calledExprType.variant === Semantic.ENode.UnionTagRefDatatype) {
@@ -1777,6 +1495,533 @@ export class SemanticElaborator {
       false,
       "All cases handled " + Semantic.ENode[calledExprType.variant]
     );
+  }
+
+  // Validate argument count and fill in missing trailing arguments with defaults
+  // (or `none` for optional parameters). Extracted from callExpr so it can be reused
+  // when synthesizing constructor calls for implicit struct-constructor conversions.
+  prepareCallArguments(
+    givenArgs: Semantic.ExprId[],
+    parameterTypes: {
+      optional: boolean;
+      type: Semantic.TypeUseId;
+    }[],
+    hasVararg: boolean,
+    hasParameterPack: boolean,
+    callSourceloc: SourceLoc,
+    functionSymbol?: Semantic.FunctionSymbol,
+    collectedFunctionSymbol?: Collect.FunctionSymbol
+  ): Semantic.ExprId[] {
+    // Count required parameters (non-optional, non-pack, without defaults)
+    const requiredParams = parameterTypes.filter((p, i) => {
+      // Check if this parameter has a default value
+      // First try the elaborated function symbol's parameterDefaultValues
+      if (functionSymbol && i < functionSymbol.parameterNames.length) {
+        const paramName = functionSymbol.parameterNames[i];
+        if (
+          functionSymbol.parameterDefaultValues.some(
+            (dv) => dv.parameterName === paramName
+          )
+        ) {
+          return false; // Has default
+        }
+      }
+
+      // Fallback to the collected function symbol
+      if (
+        collectedFunctionSymbol &&
+        i < collectedFunctionSymbol.parameters.length
+      ) {
+        const param = collectedFunctionSymbol.parameters[i];
+        if (param.kind === "normal" && param.defaultParameterValue !== null) {
+          return false; // Has default
+        }
+      }
+
+      // No default, check if it's optional or a parameter pack
+      return !(p.optional || this.isParameterPackType(p.type));
+    });
+
+    // Check argument count
+    if (hasVararg || hasParameterPack) {
+      // Vararg and pack: at least required params needed
+      assertCompilerError(
+        givenArgs.length >= requiredParams.length,
+        `This call requires at least ${requiredParams.length} arguments but ${givenArgs.length} were given`,
+        callSourceloc
+      );
+    } else {
+      // No vararg/pack: exact match or with optional params
+      const maxParams = parameterTypes.length;
+      const minParams = requiredParams.length;
+      assertCompilerError(
+        givenArgs.length >= minParams && givenArgs.length <= maxParams,
+        `This call requires ${minParams}${
+          minParams === maxParams ? "" : `-${maxParams}`
+        } arguments but ${givenArgs.length} were given`,
+        callSourceloc
+      );
+    }
+
+    // Fill in missing arguments with defaults or `none` for optional
+    const result = [...givenArgs];
+    for (let i = givenArgs.length; i < parameterTypes.length; i++) {
+      // Try to get default from elaborated function symbol first
+      if (functionSymbol && i < functionSymbol.parameterNames.length) {
+        const paramName = functionSymbol.parameterNames[i];
+        const defaultValue = functionSymbol.parameterDefaultValues.find(
+          (dv) => dv.parameterName === paramName
+        );
+        if (defaultValue) {
+          // SourceLocation defaults must capture the call site, not the definition site.
+          // Re-synthesize with the call site location and apply the parameter-type conversion.
+          if (this.isSourceLocationExprId(defaultValue.value)) {
+            const paramType = parameterTypes[i].type;
+            const [, litId] = this.synthesizeSourceLocationLiteral(
+              paramType,
+              callSourceloc
+            );
+            result.push(
+              Conversion.MakeConversionOrThrow(
+                this.sr,
+                litId,
+                paramType,
+                this.currentContext.constraints,
+                callSourceloc,
+                Conversion.Mode.Implicit,
+                false
+              )
+            );
+          } else {
+            result.push(defaultValue.value);
+          }
+          continue;
+        }
+      }
+
+      // If not in elaborated symbol, check collected function symbol
+      if (
+        collectedFunctionSymbol &&
+        i < collectedFunctionSymbol.parameters.length
+      ) {
+        const param = collectedFunctionSymbol.parameters[i];
+        assert(
+          param.kind === "normal",
+          "Function should be elaborated already"
+        );
+        if (param.defaultParameterValue !== null) {
+          const defaultParamValue = param.defaultParameterValue!;
+          const paramType = parameterTypes[i].type;
+
+          const value = this.sr.cc.exprNodes.get(defaultParamValue);
+          let defaultExprId: Semantic.ExprId;
+          if (
+            value.variant === Collect.ENode.SymbolValueExpr &&
+            value.name === "default"
+          ) {
+            if (value.genericArgs.length !== 0) {
+              throw new CompilerError(
+                `'default' initializer cannot take any generics`,
+                value.sourceloc
+              );
+            }
+            defaultExprId = Conversion.MakeDefaultValue(
+              this.sr,
+              paramType,
+              collectedFunctionSymbol.parameters[i].sourceloc
+            );
+          } else {
+            // Thread the outer call site so SourceLocation() defaults capture
+            // where the enclosing function is called, not the definition site.
+            const prevDefaultSite = this.sourceLocationDefaultCallSite;
+            this.sourceLocationDefaultCallSite = callSourceloc;
+            defaultExprId = this.expr(defaultParamValue, {
+              gonnaInstantiateStructWithType: paramType,
+              unsafe: false,
+            })[1];
+            this.sourceLocationDefaultCallSite = prevDefaultSite;
+          }
+          const convertedDefault = Conversion.MakeConversionOrThrow(
+            this.sr,
+            defaultExprId,
+            paramType,
+            this.currentContext.constraints,
+            collectedFunctionSymbol.parameters[i].sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          );
+          result.push(convertedDefault);
+          continue;
+        }
+      }
+
+      if (parameterTypes[i].optional) {
+        result.push(this.sr.b.noneExpr()[1]);
+      }
+    }
+
+    return result;
+  }
+
+  // Insert implicit conversions for each argument so it matches its parameter type.
+  // Extracted from callExpr so it can be reused for implicit constructor conversions.
+  convertCallArguments(
+    givenArgs: Semantic.ExprId[],
+    parameterTypes: {
+      optional: boolean;
+      type: Semantic.TypeUseId;
+    }[],
+    hasVararg: boolean,
+    hasParameterPack: boolean,
+    argumentSourcelocs: SourceLoc[],
+    fallbackSourceloc: SourceLoc,
+    unsafe: boolean
+  ): Semantic.ExprId[] {
+    // Find the index of the parameter pack parameter (if any)
+    const packParameterIndex = hasParameterPack
+      ? parameterTypes.findIndex((p) => this.isParameterPackType(p.type))
+      : -1;
+
+    return givenArgs.map((arg, index) => {
+      // If this is the parameter pack position, keep args as-is (they'll be bundled by codegen)
+      if (index === packParameterIndex) {
+        return arg;
+      }
+
+      // Only convert if we have a corresponding non-pack parameter
+      if (
+        index < parameterTypes.length &&
+        !this.isParameterPackType(parameterTypes[index].type)
+      ) {
+        return Conversion.MakeConversionOrThrow(
+          this.sr,
+          arg,
+          parameterTypes[index].type,
+          this.currentContext.constraints,
+          index < argumentSourcelocs.length
+            ? argumentSourcelocs[index]
+            : fallbackSourceloc,
+          Conversion.Mode.Implicit,
+          unsafe
+        );
+      }
+      if (hasVararg && index >= parameterTypes.length) {
+        // Vararg: pass remaining args as-is
+        return arg;
+      }
+      // Default: pass as-is (shouldn't reach here if validation passed)
+      return arg;
+    });
+  }
+
+  // Locate and elaborate the constructor of a struct for a given argument set.
+  // Returns null if the struct provides no constructor; throws (via FunctionOverloadChoose)
+  // if no overload matches the given arguments.
+  resolveStructConstructor(
+    calledExprTypeUseId: Semantic.TypeUseId,
+    calledExprType: Semantic.StructDatatypeDef,
+    decisiveArguments: { index: number; exprId: Semantic.ExprId | null }[],
+    constructorCalleeGenericArgs: Collect.ExprId[],
+    callSourceloc: SourceLoc
+  ): {
+    collectedMethod: Collect.FunctionSymbol;
+    elaboratedMethodId: Semantic.SymbolId;
+    constructorFunctype: Semantic.FunctionDatatypeDef;
+  } | null {
+    const original = this.sr.cc.typeDefNodes.get(
+      calledExprType.originalCollectedDefinition
+    );
+    assert(original.variant === Collect.ENode.StructTypeDef);
+
+    const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
+    assert(structScope.variant === Collect.ENode.StructLexicalScope);
+
+    const constructorOverloadGroupId = [...structScope.symbols].find((mId) => {
+      const m = this.sr.cc.symbolNodes.get(mId);
+      return (
+        m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+        m.name === "constructor"
+      );
+    });
+    if (!constructorOverloadGroupId) {
+      return null;
+    }
+
+    const constructorId = this.FunctionOverloadChoose(
+      constructorOverloadGroupId,
+      decisiveArguments,
+      callSourceloc
+    );
+
+    const collectedMethod = this.sr.cc.symbolNodes.get(constructorId);
+    assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+
+    let elaboratedStructCache = null as Semantic.StructDef | null;
+    for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+      for (const entry of cache) {
+        if (entry.result === this.sr.typeUseNodes.get(calledExprTypeUseId).type) {
+          assert(elaboratedStructCache === null);
+          elaboratedStructCache = entry;
+        }
+      }
+    }
+    assert(elaboratedStructCache);
+
+    const parameterPackTypes = this.prepareParameterPackTypes(
+      "constructor",
+      collectedMethod.parameters,
+      decisiveArguments,
+      callSourceloc
+    );
+
+    const elaboratedMethodId = this.withContext(
+      {
+        context: Semantic.mergeSubstitutionContext(
+          elaboratedStructCache.substitutionContext,
+          this.currentContext,
+          {
+            currentScope: this.currentContext.currentScope,
+            genericsScope: this.currentContext.currentScope,
+            instanceDeps: {
+              instanceDependsOn: new Map(),
+              structMembersDependOn: new Map(),
+              symbolDependsOn: new Map(),
+            },
+          }
+        ),
+        inFunction: null,
+        inAttemptExpr: null,
+      },
+      () => {
+        const signature = this.elaborateFunctionSignature(constructorId);
+        const sig = this.sr.symbolNodes.get(signature);
+        assert(sig.variant === Semantic.ENode.FunctionSignature);
+        return this.elaborateFunctionSymbolWithGenerics(
+          signature,
+          constructorCalleeGenericArgs.map((g) => this.expressionAsGenericArg(g)),
+          callSourceloc,
+          parameterPackTypes,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              this.sr.typeUseNodes.get(calledExprTypeUseId).type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              callSourceloc
+            )[1],
+          }
+        );
+      }
+    );
+    assert(elaboratedMethodId);
+    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+    const constructorFunctype = this.sr.typeDefNodes.get(elaboratedMethod.type);
+    assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
+
+    return {
+      collectedMethod: collectedMethod,
+      elaboratedMethodId: elaboratedMethodId,
+      constructorFunctype: constructorFunctype,
+    };
+  }
+
+  // Build a call to a struct's constructor, given a way to elaborate the calling arguments.
+  elaborateStructConstructorCall(
+    calledExprTypeUseId: Semantic.TypeUseId,
+    calledExprType: Semantic.StructDatatypeDef,
+    decisiveArguments: { index: number; exprId: Semantic.ExprId | null }[],
+    constructorCalleeGenericArgs: Collect.ExprId[],
+    elaborateCallingArguments: (
+      parameterTypes: { optional: boolean; type: Semantic.TypeUseId }[]
+    ) => Semantic.ExprId[],
+    argumentSourcelocs: SourceLoc[],
+    callSourceloc: SourceLoc,
+    unsafe: boolean
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const resolved = this.resolveStructConstructor(
+      calledExprTypeUseId,
+      calledExprType,
+      decisiveArguments,
+      constructorCalleeGenericArgs,
+      callSourceloc
+    );
+    if (!resolved) {
+      throw new CompilerError(
+        `Struct ${calledExprType.name} is called, but it does not provide a constructor`,
+        callSourceloc
+      );
+    }
+    const { elaboratedMethodId, constructorFunctype } = resolved;
+    const elaboratedMethod = this.sr.symbolNodes.get(elaboratedMethodId);
+    assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
+
+    const hasParameterPack = constructorFunctype.parameters.some((p) =>
+      this.isParameterPackType(p.type)
+    );
+
+    const elaboratedArgs = elaborateCallingArguments(
+      constructorFunctype.parameters
+    );
+    const preparedArgs = this.prepareCallArguments(
+      elaboratedArgs,
+      constructorFunctype.parameters,
+      constructorFunctype.vararg,
+      hasParameterPack,
+      callSourceloc,
+      elaboratedMethod,
+      undefined
+    );
+    const finalArgs = this.convertCallArguments(
+      preparedArgs,
+      constructorFunctype.parameters,
+      constructorFunctype.vararg,
+      hasParameterPack,
+      argumentSourcelocs,
+      callSourceloc,
+      unsafe
+    );
+    assert(this.inFunction);
+    return this.sr.b.callExpr(
+      this.sr.b.symbolValue(elaboratedMethodId, callSourceloc)[1],
+      finalArgs,
+      this.inFunction,
+      callSourceloc
+    );
+  }
+
+  // Determines whether `sourceExprId` can be implicitly converted to the struct type
+  // `targetTypeUseId` by calling one of the struct's constructors with the single value
+  // (taking default parameter values into account). Generic constructors do not count.
+  // Mirrors C++ implicit conversion via a non-explicit constructor.
+  canImplicitlyConstructStructFrom(
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): boolean {
+    // Prevent chained user-defined conversions and infinite recursion.
+    if (this.disallowImplicitConstructorConversion) {
+      return false;
+    }
+    // Constructor calls require a surrounding function context.
+    if (!this.inFunction) {
+      return false;
+    }
+
+    const targetUseId = this.sr.e.resolveAlias(targetTypeUseId);
+    const targetDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(targetUseId).type
+    );
+    if (targetDef.variant !== Semantic.ENode.StructDatatype) {
+      return false;
+    }
+
+    const prev = this.disallowImplicitConstructorConversion;
+    this.disallowImplicitConstructorConversion = true;
+    try {
+      const decisiveArguments = [{ index: 0, exprId: sourceExprId }];
+      let resolved: ReturnType<typeof this.resolveStructConstructor>;
+      try {
+        resolved = this.resolveStructConstructor(
+          targetUseId,
+          targetDef,
+          decisiveArguments,
+          [],
+          sourceloc
+        );
+      } catch {
+        // No constructor overload matched the given value.
+        return false;
+      }
+      if (!resolved) {
+        return false;
+      }
+      // Generic constructors do not count.
+      if (resolved.collectedMethod.generics.length > 0) {
+        return false;
+      }
+
+      const params = resolved.constructorFunctype.parameters;
+      if (params.length === 0 || this.isParameterPackType(params[0].type)) {
+        return false;
+      }
+
+      // The value must be convertible to the first parameter via a standard conversion
+      // (the recursion guard above ensures this does not chain through another constructor).
+      const canConvertFirst = Conversion.CanImplicitlyConvert(
+        this.sr,
+        sourceExprId,
+        params[0].type,
+        this.currentContext.constraints,
+        sourceloc
+      );
+      if (!canConvertFirst.ok) {
+        return false;
+      }
+
+      // All remaining parameters must be optional or have a default value.
+      for (let i = 1; i < resolved.collectedMethod.parameters.length; i++) {
+        const p = resolved.collectedMethod.parameters[i];
+        if (p.kind === "param-pack") {
+          continue;
+        }
+        if (!(p.optional || p.defaultParameterValue !== null)) {
+          return false;
+        }
+      }
+
+      return true;
+    } finally {
+      this.disallowImplicitConstructorConversion = prev;
+    }
+  }
+
+  // Build the actual constructor call that materializes an implicit struct-constructor
+  // conversion of `sourceExprId` to `targetTypeUseId`, e.g. rewriting `let a: Color = "#000"`
+  // into `let a: Color = Color("#000")`.
+  buildImplicitConstructorConversion(
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc,
+    unsafe: boolean
+  ): Semantic.ExprId {
+    const prev = this.disallowImplicitConstructorConversion;
+    this.disallowImplicitConstructorConversion = true;
+    try {
+      const targetUseId = this.sr.e.resolveAlias(targetTypeUseId);
+      const targetDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(targetUseId).type
+      );
+      assert(targetDef.variant === Semantic.ENode.StructDatatype);
+
+      const decisiveArguments = [{ index: 0, exprId: sourceExprId }];
+      const [, callId] = this.elaborateStructConstructorCall(
+        targetUseId,
+        targetDef,
+        decisiveArguments,
+        [],
+        () => [sourceExprId],
+        [sourceloc],
+        sourceloc,
+        unsafe
+      );
+
+      // The constructor returns the struct (possibly differing in mutability/inline-ness
+      // from the requested target); reconcile it with the actual target type.
+      return Conversion.MakeConversionOrThrow(
+        this.sr,
+        callId,
+        targetTypeUseId,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        unsafe
+      );
+    } finally {
+      this.disallowImplicitConstructorConversion = prev;
+    }
   }
 
   unaryExpr(
