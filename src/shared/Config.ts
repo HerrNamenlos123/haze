@@ -155,7 +155,7 @@ export type GeneratorGraphNode = {
 
 export type ModuleConfig = {
   name: string;
-  printerModule?: ModulePrintInfo;
+  // printerModule?: ModulePrintInfo;
   version: string;
   description?: string;
   license?: string;

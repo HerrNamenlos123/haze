@@ -22,6 +22,20 @@ const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
   [EModulePrintCompilerPhase.Done]: "Done         ",
 };
 
+const PHASE_SHORT: Partial<Record<EModulePrintCompilerPhase, string>> = {
+  [EModulePrintCompilerPhase.Parsing]:    "Parsing",
+  [EModulePrintCompilerPhase.Collecting]: "Collecting",
+  [EModulePrintCompilerPhase.Analyzing]:  "Analyzing",
+  [EModulePrintCompilerPhase.Lowering]:   "Lowering",
+  [EModulePrintCompilerPhase.Generating]: "Generating C",
+  [EModulePrintCompilerPhase.CCompiling]: "Compiling C",
+};
+
+type PhaseRecord = {
+  phase: EModulePrintCompilerPhase;
+  durationMs: number;
+};
+
 export type ModuleHandle = {
   readonly name: string;
 };
@@ -31,6 +45,8 @@ type ModuleState = ModuleHandle & {
   startTime: Date;
   endTime?: Date;
   bar?: SingleBar;
+  phaseStartTime: Date;
+  phaseHistory: PhaseRecord[];
 };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -41,8 +57,10 @@ export class CLIPrinter {
   private multibar: MultiBar;
   private updateInterval: NodeJS.Timeout | null = null;
   private spinnerIndex = 0;
+  private showTiming: boolean;
 
-  constructor() {
+  constructor(showTiming = false) {
+    this.showTiming = showTiming;
     this.multibar = new MultiBar(
       {
         clearOnComplete: false,
@@ -59,13 +77,16 @@ export class CLIPrinter {
 
   /**
    * Register a module. Can be called before or after start().
-   * Returns a handle to pass back to setPhase() / markDone().
+   * Returns a handle to pass back to setPhase().
    */
   addModule(name: string): ModuleHandle {
+    const now = new Date();
     const state: ModuleState = {
       name: name,
       phase: EModulePrintCompilerPhase.Parsing,
-      startTime: new Date(),
+      startTime: now,
+      phaseStartTime: now,
+      phaseHistory: [],
     };
     this.modules.push(state);
 
@@ -82,10 +103,19 @@ export class CLIPrinter {
     if (state.phase === EModulePrintCompilerPhase.Done) {
       throw new Error("Cannot set phase after Done");
     }
+
+    const now = new Date();
+    state.phaseHistory.push({
+      phase: state.phase,
+      durationMs: now.getTime() - state.phaseStartTime.getTime(),
+    });
+    state.phaseStartTime = now;
     state.phase = phase;
+
     if (phase === EModulePrintCompilerPhase.Done) {
-      state.endTime = new Date();
+      state.endTime = now;
     }
+
     this.refreshBar(state);
   }
 
@@ -114,10 +144,64 @@ export class CLIPrinter {
     this.updateInterval = null;
     this.tick();
     this.multibar.stop();
+    if (this.showTiming) {
+      this.printAllTimingReports();
+    }
   }
 
   log(message: string) {
     this.multibar.log(message + "\n");
+  }
+
+  private printAllTimingReports() {
+    const done = this.modules.filter((m) => m.endTime !== undefined);
+    if (done.length === 0) {
+      return;
+    }
+
+    const phases = [
+      EModulePrintCompilerPhase.Parsing,
+      EModulePrintCompilerPhase.Collecting,
+      EModulePrintCompilerPhase.Analyzing,
+      EModulePrintCompilerPhase.Lowering,
+      EModulePrintCompilerPhase.Generating,
+      EModulePrintCompilerPhase.CCompiling,
+    ];
+
+    // Per-column width: "Label 9999ms" — max across all modules for that phase.
+    const nameColWidth = Math.max(...done.map((m) => m.name.length));
+    const colWidths = phases.map((phase) => {
+      const label = PHASE_SHORT[phase]!;
+      const maxDurLen = Math.max(
+        ...done.map((m) => {
+          const r = m.phaseHistory.find((h) => h.phase === phase);
+          return r ? String(r.durationMs).length : 0;
+        })
+      );
+      return label.length + 1 + maxDurLen + 2; // "Label Xms  "
+    });
+    const totalColWidth =
+      Math.max(...done.map((m) => String(m.endTime!.getTime() - m.startTime.getTime()).length)) + 5; // "Xms total"
+
+    process.stdout.write("\n");
+    for (const m of done) {
+      const name = chalk.white(m.name.padEnd(nameColWidth));
+      const cols = phases.map((phase, i) => {
+        const r = m.phaseHistory.find((h) => h.phase === phase);
+        const label = PHASE_SHORT[phase]!;
+        const cell = r
+          ? `${chalk.gray(label)} ${chalk.white(`${r.durationMs}ms`)}`
+          : `${chalk.gray(label)} ${chalk.gray("-")}`;
+        // padEnd using visible length (strip ANSI for measurement)
+        const raw = r ? `${label} ${r.durationMs}ms` : `${label} -`;
+        const pad = " ".repeat(Math.max(0, colWidths[i] - raw.length));
+        return cell + pad;
+      });
+      const totalMs = m.endTime!.getTime() - m.startTime.getTime();
+      const totalCell = chalk.gray(`${totalMs}ms total`.padStart(totalColWidth));
+      process.stdout.write(`  ${name}  ${cols.join("")}${totalCell}\n`);
+    }
+    process.stdout.write("\n");
   }
 
   private createBar(state: ModuleState) {
@@ -171,7 +255,7 @@ export class CLIPrinter {
 // ---------------------------------------------------------------------------
 
 export async function testPrinter() {
-  const printer = new CLIPrinter();
+  const printer = new CLIPrinter(true /* showTiming */);
   printer.start();
 
   // --- Module 1 starts immediately ---

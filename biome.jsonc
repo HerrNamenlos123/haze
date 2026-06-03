@@ -1,76 +1,77 @@
 {
-  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  "extends": ["ultracite/biome/core"],
-  "assist": {
-    "actions": {
-      "source": {
-        "organizeImports": "off"
-      }
-    }
-  },
-  "linter": {
-    "rules": {
-      "suspicious": {
-        "useIterableCallbackReturn": "off",
-        "useErrorMessage": "off",
-        "noShadowRestrictedNames": "off",
-        "noExplicitAny": "off",
-        "noEmptyBlockStatements": "off",
-        "useAwait": "off"
-      },
-      "style": {
-        "useAtIndex": "off",
-        "noInferrableTypes": "off",
-        "noNestedTernary": "warn",
-        "useEnumInitializers": "off",
-        "noNonNullAssertion": "off",
-        "useConsistentObjectDefinitions": {
-          "level": "warn",
-          "options": {
-            "syntax": "explicit"
-          }
-        },
-        "noUnusedTemplateLiteral": "off",
-        "useConsistentArrowReturn": "off",
-        "noUselessElse": "off",
-        "useFilenamingConvention": "off",
-        "noEnum": "off",
-        "noNamespace": "off",
-        "useTemplate": "off",
-        "useConsistentTypeDefinitions": {
-          "level": "warn",
-          "options": {
-            "style": "type"
-          }
-        },
-        "useConsistentMemberAccessibility": "off",
-        "noParameterProperties": "off",
-        "useCollapsedIf": "off",
-        "useCollapsedElseIf": "off",
-        "noParameterAssign": "off",
-        "useForOf": "off",
-        "useReadonlyClassProperties": "off",
-        "useConst": "off"
-      },
-      "performance": {
-        "noNamespaceImport": "off",
-        "useTopLevelRegex": "off"
-      },
-      "complexity": {
-        "noExcessiveCognitiveComplexity": "off",
-        "noForEach": "off",
-        "useIndexOf": "off",
-        "useOptionalChain": "off",
-        "noUselessConstructor": "off",
-        "noVoid": "off",
-        "useLiteralKeys": "off",
-        "noUselessContinue": "off"
-      },
-      "correctness": {
-        "noUnusedVariables": "warn",
-        "noUnusedFunctionParameters": "warn",
-        "noUnusedImports": "off"
-      }
-    }
-  }
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"extends": ["ultracite/biome/core"],
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "off"
+			}
+		}
+	},
+	"linter": {
+		"rules": {
+			"suspicious": {
+				"useIterableCallbackReturn": "off",
+				"useErrorMessage": "off",
+				"noShadowRestrictedNames": "off",
+				"noExplicitAny": "off",
+				"noEmptyBlockStatements": "off",
+				"useAwait": "off"
+			},
+			"style": {
+				"useAtIndex": "off",
+				"noInferrableTypes": "off",
+				"noNestedTernary": "warn",
+				"useEnumInitializers": "off",
+				"noNonNullAssertion": "off",
+				"useConsistentObjectDefinitions": {
+					"level": "warn",
+					"options": {
+						"syntax": "explicit"
+					}
+				},
+				"noUnusedTemplateLiteral": "off",
+				"useConsistentArrowReturn": "off",
+				"noUselessElse": "off",
+				"useFilenamingConvention": "off",
+				"noEnum": "off",
+				"noNamespace": "off",
+				"useTemplate": "off",
+				"useConsistentTypeDefinitions": {
+					"level": "warn",
+					"options": {
+						"style": "type"
+					}
+				},
+				"useConsistentMemberAccessibility": "off",
+				"noParameterProperties": "off",
+				"useCollapsedIf": "off",
+				"useCollapsedElseIf": "off",
+				"noParameterAssign": "off",
+				"useForOf": "off",
+				"useReadonlyClassProperties": "off",
+				"useConst": "off"
+			},
+			"performance": {
+				"noNamespaceImport": "off",
+				"useTopLevelRegex": "off"
+			},
+			"complexity": {
+				"useSimplifiedLogicExpression": "off",
+				"noExcessiveCognitiveComplexity": "off",
+				"noForEach": "off",
+				"useIndexOf": "off",
+				"useOptionalChain": "off",
+				"noUselessConstructor": "off",
+				"noVoid": "off",
+				"useLiteralKeys": "off",
+				"noUselessContinue": "off"
+			},
+			"correctness": {
+				"noUnusedVariables": "warn",
+				"noUnusedFunctionParameters": "warn",
+				"noUnusedImports": "off"
+			}
+		}
+	}
 }

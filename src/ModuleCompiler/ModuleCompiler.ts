@@ -782,19 +782,19 @@ export class ProjectCompiler {
           this.strip
         );
 
-        const c = new CLIPrinter();
-        c.modules.push({
-          name: stdlibModule.config.name,
-          phase: EModulePrintCompilerPhase.Analyzing,
-          startTime: new Date(),
-          printer: c,
-        });
-        stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
-        c.start();
+        // const c = new CLIPrinter();
+        // c.modules.push({
+        //   name: stdlibModule.config.name,
+        //   phase: EModulePrintCompilerPhase.Analyzing,
+        //   startTime: new Date(),
+        //   printer: c,
+        // });
+        // stdlibModule.config.printerModule = c.modules[c.modules.length - 1];
+        // c.start();
         if (!(await stdlibModule.build(false, fullRebuild))) {
           return false;
         }
-        c.stopAndFinishAll();
+        // c.stopAndFinishAll();
       }
 
       if (!singleFilename) {
@@ -816,37 +816,37 @@ export class ProjectCompiler {
             this.strip
           );
 
-          const c = new CLIPrinter();
-          c.modules.push({
-            name: depModule.config.name,
-            phase: EModulePrintCompilerPhase.Analyzing,
-            startTime: new Date(),
-            printer: c,
-          });
-          depModule.config.printerModule = c.modules[c.modules.length - 1];
-          c.start();
+          // const c = new CLIPrinter();
+          // c.modules.push({
+          //   name: depModule.config.name,
+          //   phase: EModulePrintCompilerPhase.Analyzing,
+          //   startTime: new Date(),
+          //   printer: c,
+          // });
+          // depModule.config.printerModule = c.modules[c.modules.length - 1];
+          // c.start();
           if (!(await depModule.build(false, fullRebuild))) {
             return false;
           }
-          c.stopAndFinishAll();
+          // c.stopAndFinishAll();
         }
       }
 
-      const c = new CLIPrinter();
-      c.modules.push({
-        name: mainModule.config.name,
-        phase: EModulePrintCompilerPhase.Analyzing,
-        startTime: new Date(),
-        printer: c,
-      });
-      mainModule.config.printerModule = c.modules[c.modules.length - 1];
-      c.start();
+      // const c = new CLIPrinter();
+      // c.modules.push({
+      //   name: mainModule.config.name,
+      //   phase: EModulePrintCompilerPhase.Analyzing,
+      //   startTime: new Date(),
+      //   printer: c,
+      // });
+      // mainModule.config.printerModule = c.modules[c.modules.length - 1];
+      // c.start();
 
       if (!(await mainModule.build(true, fullRebuild || this.strip))) {
         return false;
       }
 
-      c.stopAndFinishAll();
+      // c.stopAndFinishAll();
 
       if (!singleFilename) {
         await this.cache.save();
@@ -1841,32 +1841,29 @@ export class ModuleCompiler {
     return join(this.hazeWorkspaceDirectory, moduleName, "build");
   }
 
+  private maybeStripExecutable() {
+    if (!this.strip) {
+      return;
+    }
+    if (this.config.moduleType !== ModuleType.Executable) {
+      return;
+    }
+    if (PLATFORM !== Platform.Linux) {
+      return;
+    }
+    const moduleExecutable = join(this.moduleDir, `bin/${this.config.name}`);
+    if (!existsSync(moduleExecutable)) {
+      return;
+    }
+    exec(`strip --strip-unneeded "${moduleExecutable}"`);
+  }
+
   async build(isTopLevelModule: boolean, fullRebuild?: boolean) {
     return await catchErrors(async () => {
-      const log = (msg: string) => {
-        assert(this.config.printerModule);
-        this.config.printerModule.printer.log(msg);
-      };
-
-      const maybeStripExecutable = () => {
-        if (!(isTopLevelModule && this.strip)) {
-          return;
-        }
-        if (this.config.moduleType !== ModuleType.Executable) {
-          return;
-        }
-        if (PLATFORM !== Platform.Linux) {
-          return;
-        }
-        const moduleExecutable = join(
-          this.moduleDir,
-          `bin/${this.config.name}`
-        );
-        if (!existsSync(moduleExecutable)) {
-          return;
-        }
-        exec(`strip --strip-unneeded "${moduleExecutable}"`);
-      };
+      // const log = (msg: string) => {
+      //   assert(this.config.printerModule);
+      //   this.config.printerModule.printer.log(msg);
+      // };
 
       // if (this.config.configFilePath) {
       //   if (
@@ -1926,7 +1923,7 @@ export class ModuleCompiler {
 
       if (!(moduleChanged || generatorsNeedRun)) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
-        maybeStripExecutable();
+        this.maybeStripExecutable();
         return;
       }
 
@@ -1936,7 +1933,7 @@ export class ModuleCompiler {
 
       if (!(moduleChanged || generatorsRan)) {
         // console.log(`Skipping module ${this.config.name} (no changes)`);
-        maybeStripExecutable();
+        this.maybeStripExecutable();
         return;
       }
 
