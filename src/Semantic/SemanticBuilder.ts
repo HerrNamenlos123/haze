@@ -1,7 +1,7 @@
 import { Collect } from "../SymbolCollection/SymbolCollection";
 import {
   type EAssignmentOperation,
-  type EBinaryOperation,
+  EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
   type EUnaryOperation,
@@ -80,27 +80,114 @@ export class SemanticBuilder {
     return pushBrandedNode(sr.exprNodes, n) as [T, Semantic.ExprId];
   }
 
+  private binaryChain(
+    exprs: Semantic.ExprId[],
+    operation: EBinaryOperation,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    assert(exprs.length > 0);
+
+    if (exprs.length === 1) {
+      return [this.sr.exprNodes.get(exprs[0]), exprs[0]];
+    }
+
+    let exprId = this.sr.b.binaryExpr(
+      exprs[0],
+      operation,
+      exprs[1],
+      sourceloc
+    )[1];
+    for (let i = 2; i < exprs.length; i++) {
+      exprId = this.sr.b.binaryExpr(exprId, operation, exprs[i], sourceloc)[1];
+    }
+    return [this.sr.exprNodes.get(exprId), exprId];
+  }
+
+  binaryAnd(exprs: Semantic.ExprId[], sourceloc: SourceLoc) {
+    return this.binaryChain(exprs, EBinaryOperation.BoolAnd, sourceloc);
+  }
+
+  binaryOr(exprs: Semantic.ExprId[], sourceloc: SourceLoc) {
+    return this.binaryChain(exprs, EBinaryOperation.BoolOr, sourceloc);
+  }
+
   binaryExpr(
     leftId: Semantic.ExprId,
-    rightId: Semantic.ExprId,
     operation: EBinaryOperation,
-    resultType: Semantic.TypeUseId,
+    rightId: Semantic.ExprId,
     sourceloc: SourceLoc
   ) {
     const left = this.sr.exprNodes.get(leftId);
     const right = this.sr.exprNodes.get(rightId);
-    return this.addExpr(this.sr, {
-      variant: Semantic.ENode.BinaryExpr,
-      instanceIds: [],
-      left: leftId,
-      operation: operation,
-      right: rightId,
-      type: resultType,
-      isTemporary: true,
-      sourceloc: sourceloc,
-      flow: left.flow.withAll(right.flow),
-      writes: left.writes.withAll(right.writes),
-    });
+
+    const produceExpr = (resultType: Semantic.TypeUseId) => {
+      return this.addExpr(this.sr, {
+        variant: Semantic.ENode.BinaryExpr,
+        instanceIds: [],
+        left: leftId,
+        operation: operation,
+        right: rightId,
+        type: resultType,
+        isTemporary: true,
+        sourceloc: sourceloc,
+        flow: left.flow.withAll(right.flow),
+        writes: left.writes.withAll(right.writes),
+      });
+    };
+
+    if (
+      operation === EBinaryOperation.Equal ||
+      operation === EBinaryOperation.NotEqual
+    ) {
+      const leftTypeUse = this.sr.typeUseNodes.get(left.type);
+      const leftType = this.sr.typeDefNodes.get(leftTypeUse.type);
+      const rightTypeUse = this.sr.typeUseNodes.get(right.type);
+      const rightType = this.sr.typeDefNodes.get(rightTypeUse.type);
+      if (
+        leftType.variant === Semantic.ENode.PrimitiveDatatype &&
+        rightType.variant === Semantic.ENode.PrimitiveDatatype
+      ) {
+        if (
+          leftType.primitive === EPrimitive.none &&
+          rightType.primitive === EPrimitive.none
+        ) {
+          return this.sr.b.literal(
+            operation === EBinaryOperation.Equal,
+            sourceloc
+          );
+        }
+        if (
+          leftType.primitive === EPrimitive.null &&
+          rightType.primitive === EPrimitive.null
+        ) {
+          return this.sr.b.literal(
+            operation === EBinaryOperation.Equal,
+            sourceloc
+          );
+        }
+      }
+    }
+
+    if (operation === EBinaryOperation.BitwiseOr) {
+      return produceExpr(left.type);
+    }
+
+    if (
+      operation === EBinaryOperation.BoolAnd ||
+      operation === EBinaryOperation.BoolOr
+    ) {
+      return produceExpr(this.sr.b.boolType());
+    }
+
+    return produceExpr(
+      Conversion.makeBinaryResultType(
+        this.sr,
+        leftId,
+        rightId,
+        operation,
+        sourceloc
+      )
+    );
   }
 
   exprStatement(exprId: Semantic.ExprId) {
@@ -1971,6 +2058,92 @@ export class SemanticBuilder {
 
   noneTypeDef() {
     return makeRawPrimitiveAvailable(this.sr, EPrimitive.none);
+  }
+
+  unionTagCheckTypeIs(
+    exprId: Semantic.ExprId,
+    comparedWith: Semantic.TypeUseId
+  ) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const exprTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
+    const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
+
+    if (exprType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const members = new Set(exprType.members);
+      assert(
+        members.has(comparedWith),
+        "Union does not contain the type it is compared with"
+      );
+    } else if (exprType.variant === Semantic.ENode.TaggedUnionDatatype) {
+      const members = new Set(exprType.members.map((m) => m.type));
+      assert(
+        members.has(comparedWith),
+        "Union does not contain the type it is compared with"
+      );
+    } else {
+      console.log(
+        Semantic.serializeTypeUse(this.sr, expr.type),
+        Semantic.serializeTypeUse(this.sr, comparedWith)
+      );
+      assert(false, "Union comparison on a non-union");
+    }
+
+    return this.addExpr(this.sr, {
+      variant: Semantic.ENode.UnionTagCheckExpr,
+      expr: exprId,
+      comparisonTypesAnd: [comparedWith],
+      invertCheck: false,
+      isTemporary: true,
+      sourceloc: expr.sourceloc,
+      type: this.sr.b.boolType(),
+      instanceIds: [],
+      flow: expr.flow,
+      writes: expr.writes,
+    });
+  }
+
+  unionTagCheckTypeIsNeitherOf(
+    exprId: Semantic.ExprId,
+    comparedWith: Semantic.TypeUseId[]
+  ) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
+    const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
+
+    if (exprType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const members = new Set(exprType.members);
+      for (const id of comparedWith) {
+        assert(
+          members.has(id),
+          "Union does not contain the type it is compared with"
+        );
+      }
+    } else if (exprType.variant === Semantic.ENode.TaggedUnionDatatype) {
+      const members = new Set(exprType.members.map((m) => m.type));
+      for (const id of comparedWith) {
+        assert(
+          members.has(id),
+          "Union does not contain the type it is compared with"
+        );
+      }
+    } else {
+      assert(false, "Union comparison on a non-union");
+    }
+
+    return this.addExpr(this.sr, {
+      variant: Semantic.ENode.UnionTagCheckExpr,
+      expr: exprId,
+      comparisonTypesAnd: comparedWith,
+      invertCheck: true,
+      isTemporary: true,
+      sourceloc: expr.sourceloc,
+      type: this.sr.b.boolType(),
+      instanceIds: [],
+      flow: expr.flow,
+      writes: expr.writes,
+    });
   }
 
   unionTagRefTypeDef() {

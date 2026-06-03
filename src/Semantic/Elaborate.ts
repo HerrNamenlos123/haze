@@ -229,6 +229,7 @@ export class SemanticElaborator {
       right = this.sr.exprNodes.get(rightId);
       this.assertNotIntrinsic(right, "used in binary operations");
 
+      // TODO: This was return type bool, maybe it doesn't know
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -239,6 +240,7 @@ export class SemanticElaborator {
           Conversion.Mode.Implicit,
           inference?.unsafe ?? false
         ),
+        binaryExpr.operation,
         Conversion.MakeConversionOrThrow(
           this.sr,
           rightId,
@@ -248,8 +250,6 @@ export class SemanticElaborator {
           Conversion.Mode.Implicit,
           inference?.unsafe ?? false
         ),
-        binaryExpr.operation,
-        this.sr.b.boolType(),
         binaryExpr.sourceloc
       );
     }
@@ -273,6 +273,7 @@ export class SemanticElaborator {
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
       right = this.sr.exprNodes.get(rightId);
 
+      // TODO: This was return type bool, maybe it doesn't know
       return this.sr.b.binaryExpr(
         Conversion.MakeConversionOrThrow(
           this.sr,
@@ -283,6 +284,7 @@ export class SemanticElaborator {
           Conversion.Mode.Implicit,
           inference?.unsafe ?? false
         ),
+        binaryExpr.operation,
         Conversion.MakeConversionOrThrow(
           this.sr,
           rightId,
@@ -292,8 +294,6 @@ export class SemanticElaborator {
           Conversion.Mode.Implicit,
           inference?.unsafe ?? false
         ),
-        binaryExpr.operation,
-        this.sr.b.boolType(),
         binaryExpr.sourceloc
       );
     }
@@ -333,9 +333,8 @@ export class SemanticElaborator {
 
         return this.sr.b.binaryExpr(
           leftId,
-          rightId,
           EBinaryOperation.BitwiseOr,
-          left.type,
+          rightId,
           binaryExpr.sourceloc
         );
       }
@@ -543,14 +542,18 @@ export class SemanticElaborator {
       }
 
       // Fall through to default comparison behavior
+      const resolvedLeftTypeUseId = this.resolveAlias(left.type);
       const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
-        this.resolveAlias(left.type)
+        resolvedLeftTypeUseId
       );
+      const resolvedRightTypeUseId = this.resolveAlias(_right2.type);
       const resolvedRightTypeUse = this.sr.typeUseNodes.get(
-        this.resolveAlias(_right2.type)
+        resolvedRightTypeUseId
       );
       const leftTypeId = resolvedLeftTypeUse.type;
       const rightTypeId = resolvedRightTypeUse.type;
+      const leftType = this.sr.typeDefNodes.get(leftTypeId);
+      const rightType = this.sr.typeDefNodes.get(rightTypeId);
       const leftIsFloat = Conversion.isFloat(this.sr, leftTypeId);
       const rightIsFloat = Conversion.isFloat(this.sr, rightTypeId);
       const leftIsInteger = Conversion.isIntegerById(this.sr, leftTypeId);
@@ -592,17 +595,101 @@ export class SemanticElaborator {
         );
       }
 
+      if (
+        binaryExpr.operation === EBinaryOperation.Equal ||
+        binaryExpr.operation === EBinaryOperation.NotEqual
+      ) {
+        if (
+          (leftType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+            leftType.variant === Semantic.ENode.TaggedUnionDatatype) &&
+          (rightType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+            rightType.variant === Semantic.ENode.TaggedUnionDatatype)
+        ) {
+          const leftMembers = new Set(
+            leftType.variant === Semantic.ENode.TaggedUnionDatatype
+              ? leftType.members.map((m) => m.type)
+              : leftType.members
+          );
+          const rightMembers = new Set(
+            rightType.variant === Semantic.ENode.TaggedUnionDatatype
+              ? rightType.members.map((m) => m.type)
+              : rightType.members
+          );
+
+          if (leftMembers.difference(rightMembers).size !== 0) {
+            throw new CompilerError(
+              `Cannot compare unions of incompatible types '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedLeftTypeUseId)}' and '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedRightTypeUseId)}'`,
+              binaryExpr.sourceloc
+            );
+          }
+
+          // let a: (int | null | none)
+          // let b: (int | null | none)
+          // a == b
+          // Should turn into
+          // ((a is int && b is int) && a == b) || ((a is null && b is null) && a == b) || ((a is none && b is none) && a == b)
+          // a != b
+          // Should turn into
+          // ((a is int && b is int) && a != b) || ((a is null && b is null) && a != b) || ((a is none && b is none) && a != b)
+
+          const members = leftMembers;
+          const comparisons: Semantic.ExprId[] = [];
+          for (const member of members) {
+            // This is (a is int && b is int)
+            const narrowingCondition = this.sr.b.binaryExpr(
+              this.sr.b.unionTagCheckTypeIs(leftId, member)[1],
+              EBinaryOperation.BoolAnd,
+              this.sr.b.unionTagCheckTypeIs(rightId, member)[1],
+              binaryExpr.sourceloc
+            )[1];
+
+            const constraints = this.currentContext.constraints.clone();
+            this.buildLogicalConstraintSet(constraints, narrowingCondition);
+
+            // This is ((...) && a == b) or ((...) && a != b)
+            const actualCondition = this.sr.b.binaryExpr(
+              Conversion.MakeConversionOrThrow(
+                this.sr,
+                leftId,
+                member,
+                constraints,
+                binaryExpr.sourceloc,
+                Conversion.Mode.Implicit,
+                false
+              ),
+              binaryExpr.operation,
+              Conversion.MakeConversionOrThrow(
+                this.sr,
+                rightId,
+                member,
+                constraints,
+                binaryExpr.sourceloc,
+                Conversion.Mode.Implicit,
+                false
+              ),
+              binaryExpr.sourceloc
+            )[1];
+
+            // This is ((...) && ...)
+            comparisons.push(
+              this.sr.b.binaryExpr(
+                narrowingCondition,
+                EBinaryOperation.BoolAnd,
+                actualCondition,
+                binaryExpr.sourceloc
+              )[1]
+            );
+          }
+
+          // Now combine all of those using OR
+          return this.sr.b.binaryOr(comparisons, binaryExpr.sourceloc);
+        }
+      }
+
       return this.sr.b.binaryExpr(
         leftId,
-        rightId,
         binaryExpr.operation,
-        Conversion.makeBinaryResultType(
-          this.sr,
-          leftId,
-          rightId,
-          binaryExpr.operation,
-          binaryExpr.sourceloc
-        ),
+        rightId,
         binaryExpr.sourceloc
       );
     }
@@ -670,15 +757,8 @@ export class SemanticElaborator {
 
     return this.sr.b.binaryExpr(
       leftId,
-      rightId,
       binaryExpr.operation,
-      Conversion.makeBinaryResultType(
-        this.sr,
-        leftId,
-        rightId,
-        binaryExpr.operation,
-        binaryExpr.sourceloc
-      ),
+      rightId,
       binaryExpr.sourceloc
     );
   }
@@ -1130,20 +1210,30 @@ export class SemanticElaborator {
     // In that case the generic args belong to the constructor, not the type itself.
     // e.g. TypeErasedBox<T>(value) where TypeErasedBox has 0 type params but constructor<T>
     let constructorCalleeGenericArgs: Collect.ExprId[] = [];
-    let constructorCalleeSymbol: { symbolId: Collect.SymbolId; crossedLambdaScope: Collect.ScopeId | null } | null = null;
+    let constructorCalleeSymbol: {
+      symbolId: Collect.SymbolId;
+      crossedLambdaScope: Collect.ScopeId | null;
+    } | null = null;
     if (
       collectedExpr.variant === Collect.ENode.SymbolValueExpr &&
       collectedExpr.genericArgs.length > 0
     ) {
-      const foundResult = Semantic.tryLookupSymbol(this.sr, collectedExpr.name, {
-        startLookupInScope: this.currentContext.currentScope,
-        sourceloc: collectedExpr.sourceloc,
-      });
+      const foundResult = Semantic.tryLookupSymbol(
+        this.sr,
+        collectedExpr.name,
+        {
+          startLookupInScope: this.currentContext.currentScope,
+          sourceloc: collectedExpr.sourceloc,
+        }
+      );
       if (foundResult && foundResult.type === "collect") {
         const sym = this.sr.cc.symbolNodes.get(foundResult.id);
         if (sym.variant === Collect.ENode.TypeDefSymbol) {
           const typeDef = this.sr.cc.typeDefNodes.get(sym.typeDef);
-          if (typeDef.variant === Collect.ENode.StructTypeDef && typeDef.generics.length === 0) {
+          if (
+            typeDef.variant === Collect.ENode.StructTypeDef &&
+            typeDef.generics.length === 0
+          ) {
             constructorCalleeGenericArgs = collectedExpr.genericArgs;
             constructorCalleeSymbol = {
               symbolId: foundResult.id,
@@ -1173,18 +1263,22 @@ export class SemanticElaborator {
     });
 
     // Choose all arguments that can contribute to disambiguating an overloaded function call
-    const [calledExpr, calledExprId] = constructorCalleeSymbol === null
-      ? this.sr.e.expr(callExpr.calledExpr, {
-          gonnaCallFunctionWithParameterValues: decisiveArguments,
-          unsafe: inference?.unsafe,
-        })
-      : this.explicitSymbolValue(
-          constructorCalleeSymbol.symbolId,
-          [],
-          { gonnaCallFunctionWithParameterValues: decisiveArguments, unsafe: inference?.unsafe },
-          constructorCalleeSymbol.crossedLambdaScope,
-          collectedExpr.sourceloc
-        );
+    const [calledExpr, calledExprId] =
+      constructorCalleeSymbol === null
+        ? this.sr.e.expr(callExpr.calledExpr, {
+            gonnaCallFunctionWithParameterValues: decisiveArguments,
+            unsafe: inference?.unsafe,
+          })
+        : this.explicitSymbolValue(
+            constructorCalleeSymbol.symbolId,
+            [],
+            {
+              gonnaCallFunctionWithParameterValues: decisiveArguments,
+              unsafe: inference?.unsafe,
+            },
+            constructorCalleeSymbol.crossedLambdaScope,
+            collectedExpr.sourceloc
+          );
 
     // Handle intrinsic function calls
     if (calledExpr.variant === Semantic.ENode.IntrinsicSymbol) {
@@ -1759,7 +1853,9 @@ export class SemanticElaborator {
     let elaboratedStructCache = null as Semantic.StructDef | null;
     for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
       for (const entry of cache) {
-        if (entry.result === this.sr.typeUseNodes.get(calledExprTypeUseId).type) {
+        if (
+          entry.result === this.sr.typeUseNodes.get(calledExprTypeUseId).type
+        ) {
           assert(elaboratedStructCache === null);
           elaboratedStructCache = entry;
         }
@@ -1798,7 +1894,9 @@ export class SemanticElaborator {
         assert(sig.variant === Semantic.ENode.FunctionSignature);
         return this.elaborateFunctionSymbolWithGenerics(
           signature,
-          constructorCalleeGenericArgs.map((g) => this.expressionAsGenericArg(g)),
+          constructorCalleeGenericArgs.map((g) =>
+            this.expressionAsGenericArg(g)
+          ),
           callSourceloc,
           parameterPackTypes,
           {
@@ -2079,6 +2177,7 @@ export class SemanticElaborator {
         resultTypeDef.primitive === EPrimitive.int ||
         resultTypeDef.primitive === EPrimitive.usize
       ) {
+        // resultType
         return this.sr.b.binaryExpr(
           this.sr.b.literalValue(
             {
@@ -2088,9 +2187,8 @@ export class SemanticElaborator {
             },
             unaryExpr.sourceloc
           )[1],
-          eId,
           EBinaryOperation.Subtract,
-          resultType,
+          eId,
           unaryExpr.sourceloc
         );
       }
@@ -2100,6 +2198,7 @@ export class SemanticElaborator {
         resultTypeDef.primitive === EPrimitive.real
       ) {
         return this.sr.b.binaryExpr(
+          // resultType
           this.sr.b.literalValue(
             {
               type: resultTypeDef.primitive,
@@ -2108,9 +2207,8 @@ export class SemanticElaborator {
             },
             unaryExpr.sourceloc
           )[1],
-          eId,
           EBinaryOperation.Subtract,
-          resultType,
+          eId,
           unaryExpr.sourceloc
         );
       }
@@ -2123,18 +2221,7 @@ export class SemanticElaborator {
         const okTag = aDef.members.find((m) => m.tag === "Ok");
         const errTag = aDef.members.find((m) => m.tag === "Err");
         if (okTag && errTag) {
-          return this.sr.b.addExpr(this.sr, {
-            variant: Semantic.ENode.UnionTagCheckExpr,
-            expr: eId,
-            instanceIds: [],
-            comparisonTypesAnd: [errTag.type],
-            invertCheck: false,
-            isTemporary: true,
-            sourceloc: e.sourceloc,
-            type: this.sr.b.boolType(),
-            flow: e.flow,
-            writes: e.writes,
-          });
+          return this.sr.b.unionTagCheckTypeIs(eId, errTag.type);
         }
       }
 
@@ -2959,18 +3046,10 @@ export class SemanticElaborator {
     if (noneIndex !== -1) {
       narrowingTypes.push(this.sr.b.noneType());
     }
-    const [_, narrowingConditionId] = this.sr.b.addExpr(this.sr, {
-      variant: Semantic.ENode.UnionTagCheckExpr,
-      comparisonTypesAnd: narrowingTypes,
-      invertCheck: true,
-      expr: this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
-      flow: object.flow,
-      writes: object.writes,
-      instanceIds: [],
-      isTemporary: true,
-      sourceloc: memberAccess.sourceloc,
-      type: this.sr.b.boolType(),
-    });
+    const [_, narrowingConditionId] = this.sr.b.unionTagCheckTypeIsNeitherOf(
+      this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
+      narrowingTypes
+    );
 
     const constraints = this.currentContext.constraints.clone();
     this.sr.e.buildLogicalConstraintSet(constraints, narrowingConditionId);
@@ -3058,21 +3137,13 @@ export class SemanticElaborator {
 
             if (noneIndex !== -1) {
               elseIfs.push({
-                condition: this.sr.b.addExpr(this.sr, {
-                  variant: Semantic.ENode.UnionTagCheckExpr,
-                  comparisonTypesAnd: [this.sr.b.noneType()],
-                  invertCheck: false,
-                  expr: this.sr.b.symbolValue(
+                condition: this.sr.b.unionTagCheckTypeIs(
+                  this.sr.b.symbolValue(
                     tempVariableId,
                     memberAccess.sourceloc
                   )[1],
-                  flow: object.flow,
-                  writes: object.writes,
-                  instanceIds: [],
-                  isTemporary: true,
-                  sourceloc: memberAccess.sourceloc,
-                  type: this.sr.b.boolType(),
-                })[1],
+                  this.sr.b.noneType()
+                )[1],
                 thenBlock: this.sr.b.blockScope(
                   [
                     this.sr.b.exprStatement(
@@ -3097,21 +3168,13 @@ export class SemanticElaborator {
 
             if (nullIndex !== -1) {
               elseIfs.push({
-                condition: this.sr.b.addExpr(this.sr, {
-                  variant: Semantic.ENode.UnionTagCheckExpr,
-                  comparisonTypesAnd: [this.sr.b.nullType()],
-                  invertCheck: false,
-                  expr: this.sr.b.symbolValue(
+                condition: this.sr.b.unionTagCheckTypeIs(
+                  this.sr.b.symbolValue(
                     tempVariableId,
                     memberAccess.sourceloc
                   )[1],
-                  flow: object.flow,
-                  writes: object.writes,
-                  instanceIds: [],
-                  isTemporary: true,
-                  sourceloc: memberAccess.sourceloc,
-                  type: this.sr.b.boolType(),
-                })[1],
+                  this.sr.b.nullType()
+                )[1],
                 thenBlock: this.sr.b.blockScope(
                   [
                     this.sr.b.exprStatement(
@@ -3884,7 +3947,9 @@ export class SemanticElaborator {
       });
 
       if (definedStructType.export && struct.generics.length === 0) {
-        const parentScope = this.sr.cc.scopeNodes.get(definedStructType.parentScope);
+        const parentScope = this.sr.cc.scopeNodes.get(
+          definedStructType.parentScope
+        );
         if (parentScope.variant !== Collect.ENode.StructLexicalScope) {
           const [_, id] = this.sr.b.typeDefSymbol(structId);
           this.sr.exportedSymbols.add(id);
@@ -6879,11 +6944,11 @@ export class SemanticElaborator {
         [EAssignmentOperation.Divide]: EBinaryOperation.Divide,
         [EAssignmentOperation.Modulo]: EBinaryOperation.Modulo,
       };
+      // innerTypeId
       const [__, sumId] = this.sr.b.binaryExpr(
         readId,
-        convertedValueId,
         opToBinary[assignment.operation],
-        innerTypeId,
+        convertedValueId,
         assignment.sourceloc
       );
       const writes = this.sr.b.updateLHSDependencies(
@@ -7049,11 +7114,11 @@ export class SemanticElaborator {
       operation === EIncrOperation.Incr
         ? EBinaryOperation.Add
         : EBinaryOperation.Subtract;
+    // innerTypeId,
     const [__, sumId] = this.sr.b.binaryExpr(
       readId,
-      oneId,
       binaryOp,
-      innerTypeId,
+      oneId,
       sourceloc
     );
     const writes = this.sr.b.updateLHSDependencies(
@@ -10246,19 +10311,19 @@ export class SemanticElaborator {
               resultingConditionId = this.withAdditionalConstraints(
                 thenConstraints,
                 () =>
-                  this.sr.b.binaryExpr(
-                    conditionFromLet,
-                    Conversion.MakeConversionOrThrow(
-                      this.sr,
-                      guardExprId,
-                      this.sr.b.boolType(),
-                      this.currentContext.constraints,
-                      s.sourceloc,
-                      Conversion.Mode.Implicit,
-                      false
-                    ),
-                    EBinaryOperation.BoolAnd,
-                    this.sr.b.boolType(),
+                  this.sr.b.binaryAnd(
+                    [
+                      conditionFromLet,
+                      Conversion.MakeConversionOrThrow(
+                        this.sr,
+                        guardExprId,
+                        this.sr.b.boolType(),
+                        this.currentContext.constraints,
+                        s.sourceloc,
+                        Conversion.Mode.Implicit,
+                        false
+                      ),
+                    ],
                     s.sourceloc
                   )[1]
               );
@@ -10549,19 +10614,19 @@ export class SemanticElaborator {
               resultingConditionId = this.withAdditionalConstraints(
                 conditionConstraints,
                 () =>
-                  this.sr.b.binaryExpr(
-                    conditionFromLet,
-                    Conversion.MakeConversionOrThrow(
-                      this.sr,
-                      guardExprId,
-                      this.sr.b.boolType(),
-                      this.currentContext.constraints,
-                      s.sourceloc,
-                      Conversion.Mode.Implicit,
-                      false
-                    ),
-                    EBinaryOperation.BoolAnd,
-                    this.sr.b.boolType(),
+                  this.sr.b.binaryAnd(
+                    [
+                      conditionFromLet,
+                      Conversion.MakeConversionOrThrow(
+                        this.sr,
+                        guardExprId,
+                        this.sr.b.boolType(),
+                        this.currentContext.constraints,
+                        s.sourceloc,
+                        Conversion.Mode.Implicit,
+                        false
+                      ),
+                    ],
                     s.sourceloc
                   )[1]
               );
@@ -11821,10 +11886,11 @@ export class SemanticElaborator {
         const def = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(typeUseId).type
         );
-        if (def.variant !== Semantic.ENode.PrimitiveDatatype) { return false; }
+        if (def.variant !== Semantic.ENode.PrimitiveDatatype) {
+          return false;
+        }
         return (
-          def.primitive === EPrimitive.none ||
-          def.primitive === EPrimitive.null
+          def.primitive === EPrimitive.none || def.primitive === EPrimitive.null
         );
       };
 
@@ -12570,18 +12636,10 @@ export class SemanticElaborator {
         this.sr.b.addStatement(this.sr, {
           variant: Semantic.ENode.IfStatement,
           isLetBinding: false,
-          condition: this.sr.b.addExpr(this.sr, {
-            variant: Semantic.ENode.UnionTagCheckExpr,
-            expr: leftExprId,
-            instanceIds: [],
-            isTemporary: true,
-            sourceloc: errPropExpr.sourceloc,
-            type: this.sr.b.boolType(),
-            invertCheck: false,
-            comparisonTypesAnd: [srcErrTag.type],
-            flow: leftExpr.flow,
-            writes: leftExpr.writes,
-          })[1],
+          condition: this.sr.b.unionTagCheckTypeIs(
+            leftExprId,
+            srcErrTag.type
+          )[1],
           elseIfs: [],
           sourceloc: errPropExpr.sourceloc,
           thenBlock: this.sr.b.blockScope(
@@ -12656,19 +12714,9 @@ export class SemanticElaborator {
         );
       }
 
-      return this.sr.b.addExpr(this.sr, {
-        variant: Semantic.ENode.UnionTagCheckExpr,
-        instanceIds: [],
-        expr: sourceExprId,
-        type: this.sr.b.boolType(),
-        // Use the actual union member TypeUseId so the lowerer can find the correct tag index
-        comparisonTypesAnd: [matchingMember],
-        sourceloc: exprIsType.sourceloc,
-        invertCheck: exprIsType.inverted,
-        isTemporary: true,
-        flow: sourceExpr.flow,
-        writes: sourceExpr.writes,
-      });
+      return exprIsType.inverted
+        ? this.sr.b.unionTagCheckTypeIsNeitherOf(sourceExprId, [matchingMember])
+        : this.sr.b.unionTagCheckTypeIs(sourceExprId, matchingMember);
     }
     // It is not a union, so the 'is' operator is not meaningful to distinguish anything, therefore
     // all other types will result in a compile time true/false constant.

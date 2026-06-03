@@ -127,7 +127,10 @@ export namespace Conversion {
           if (memberSymbol) {
             return {
               root: basePath.root,
-              path: [...basePath.path, { kind: "member", member: memberSymbol }],
+              path: [
+                ...basePath.path,
+                { kind: "member", member: memberSymbol },
+              ],
             };
           }
         }

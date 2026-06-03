@@ -181,9 +181,9 @@ export inline struct DivStyle {
             // this.flexGrow == other.flexGrow &&
             this.direction == other.direction &&
             this.justify == other.justify &&
-            this.align == other.align
+            this.align == other.align &&
             // this.cornerRadius == other.cornerRadius &&
-            // this.gap == other.gap
+            this.gap == other.gap
             // this.backgroundColor == other.backgroundColor &&
             // this.fontFamily == other.fontFamily &&
             // this.fontSize == other.fontSize &&
