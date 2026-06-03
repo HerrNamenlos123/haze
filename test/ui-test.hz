@@ -678,13 +678,13 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
             ui.div({
                 id: 100,
                 style: {
-                    backgroundColor: Color(0.2, 0.8, 0.4, 1),
                     direction: hzui.Direction.Column,
                     align: hzui.Align.Center,
                     gap: 16.0,
                 },
                 presets: [
-                    presets.p(1),
+                    presets.p(2),
+                    presets.bg(Color("#33CC66FF")),
                 ],
             }, (): void => {
                 fmt.println("Rerender content area");

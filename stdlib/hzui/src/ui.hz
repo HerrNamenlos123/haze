@@ -117,7 +117,7 @@ export inline struct DivStyle {
     align: Align = Align.Start;
     cornerRadius: StyleCornerRadius = none;
     gap: real = 0;
-    backgroundColor: Color = Color { r: 0, g: 0, b: 0, a: 0 };
+    backgroundColor?: Color;
 
     fontFamily?: str = none;
     fontSize?: real = none;
@@ -135,6 +135,11 @@ export inline struct DivStyle {
             if preset is presets.PaddingPreset {
                 if !style.padding {
                     style.padding = preset.padding;
+                }
+            }
+            if preset is presets.BackgroundColorPreset {
+                if !style.backgroundColor {
+                    style.backgroundColor = preset.color;
                 }
             }
         }
@@ -492,6 +497,11 @@ export opaque struct Context {
                 ctx.idPath = elementId;
 
                 let style = element.presets ? element.style.combineWithPresets(element.presets) : element.style;
+
+                if !style.backgroundColor {
+                    style.backgroundColor = Color(0, 0, 0, 0);
+                }
+                assert(style.backgroundColor);
 
                 ffi.hzui_clay_define_div_element(
                     func, env,
