@@ -12,7 +12,10 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
 
-import { ModuleCompiler, ProjectCompiler } from "./Module";
+import {
+  ModuleCompiler,
+  ProjectCompiler,
+} from "./ModuleCompiler/ModuleCompiler";
 import { Semantic } from "./Semantic/SemanticTypes";
 import { ModuleType } from "./shared/Config";
 import {

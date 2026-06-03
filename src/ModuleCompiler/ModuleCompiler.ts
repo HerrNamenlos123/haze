@@ -23,19 +23,19 @@ import fg from "fast-glob";
 import gunzip from "gunzip-maybe";
 import tarFs from "tar-fs";
 import which from "which";
-import { version } from "../package.json";
-import { generateCode } from "./Codegen/CodeGenerator";
-import { LowerModule } from "./Lower/Lower";
-import { Parser } from "./Parser/Parser";
-import { Semantic } from "./Semantic/SemanticTypes";
-import { ExportCollectedSymbols as ExportSymbols } from "./SymbolCollection/Export";
+import { version } from "../../package.json";
+import { generateCode } from "../Codegen/CodeGenerator";
+import { LowerModule } from "../Lower/Lower";
+import { Parser } from "../Parser/Parser";
+import { Semantic } from "../Semantic/SemanticTypes";
+import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
 import {
   Collect,
   CollectFile,
   CollectImmediate,
   type CollectionContext,
   makeCollectionContext,
-} from "./SymbolCollection/SymbolCollection";
+} from "../SymbolCollection/SymbolCollection";
 import {
   type CompileCommands,
   ConfigParser,
@@ -51,7 +51,7 @@ import {
   Platform,
   PlatformStrings,
   parseModuleMetadata,
-} from "./shared/Config";
+} from "../shared/Config";
 import {
   assert,
   CmdFailed,
@@ -61,7 +61,8 @@ import {
   InternalError,
   SyntaxError,
   UnreachableCode,
-} from "./shared/Errors";
+} from "../shared/Errors";
+import { acquireBuildLock } from "./Lock";
 
 export enum EModulePrintCompilerPhase {
   Parsing = 0,
@@ -81,103 +82,6 @@ export type ModulePrintInfo = {
   bar?: SingleBar;
   printer: CLIPrinter;
 };
-
-function copyFile(source: string, targetFolder: string) {
-  const parent = dirname(targetFolder);
-  if (!fs.existsSync(parent)) {
-    fs.mkdirSync(parent, { recursive: true });
-  }
-
-  fs.copyFileSync(source, targetFolder);
-}
-
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-function isProcessAlive(pid: number) {
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: any) {
-    if (err?.code === "ESRCH") {
-      return false;
-    }
-    return true;
-  }
-}
-
-async function acquireBuildLock(lockPath: string) {
-  const start = Date.now();
-
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, "wx");
-      const payload = {
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        cwd: process.cwd(),
-      };
-      fs.writeFileSync(fd, JSON.stringify(payload), "utf8");
-      fs.closeSync(fd);
-
-      return () => {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // ignore
-        }
-      };
-    } catch (err: any) {
-      if (err?.code !== "EEXIST") {
-        throw err;
-      }
-
-      let shouldClear = false;
-      try {
-        const raw = fs.readFileSync(lockPath, "utf8");
-        const data = JSON.parse(raw);
-        const pid = typeof data?.pid === "number" ? data.pid : null;
-        if (pid !== null && !isProcessAlive(pid)) {
-          shouldClear = true;
-        }
-      } catch {
-        // ignore parse/read errors
-      }
-
-      if (!shouldClear) {
-        try {
-          const stat = fs.statSync(lockPath);
-          if (Date.now() - stat.mtimeMs > HAZE_BUILD_LOCK_TIMEOUT_MS) {
-            shouldClear = true;
-          }
-        } catch {
-          // ignore stat errors
-        }
-      }
-
-      if (shouldClear) {
-        try {
-          fs.unlinkSync(lockPath);
-          continue;
-        } catch {
-          // ignore unlink failures and continue to wait
-        }
-      }
-
-      if (Date.now() - start > HAZE_BUILD_LOCK_TIMEOUT_MS) {
-        throw new GeneralError(
-          `Timed out waiting for build lock at ${lockPath}. Another build may still be running.`
-        );
-      }
-
-      await sleep(HAZE_BUILD_LOCK_RETRY_MS);
-    }
-  }
-}
 
 /**
  * Temporarily sets environment variables for an async callback.
@@ -342,8 +246,6 @@ export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
 export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "/musl-toolchain.cmake";
 const HAZE_BUILD_LOCKFILE = "build.lock";
-const HAZE_BUILD_LOCK_TIMEOUT_MS = 60_000;
-const HAZE_BUILD_LOCK_RETRY_MS = 200;
 
 async function createTarGz(cwd: string, files: string[], outPath: string) {
   const output = fs.createWriteStream(outPath);
@@ -460,7 +362,7 @@ async function getStdlibDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "stdlib/");
   }
-  return join(import.meta.dirname, "../stdlib");
+  return join(import.meta.dirname, "../../stdlib");
 }
 
 async function getToolsDirectory() {

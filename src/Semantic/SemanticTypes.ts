@@ -1,4 +1,7 @@
-import { HAZE_STDLIB_NAME, type ModuleCompiler } from "../Module";
+import {
+  HAZE_STDLIB_NAME,
+  type ModuleCompiler,
+} from "../ModuleCompiler/ModuleCompiler";
 import {
   Collect,
   type CollectionContext,

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
-import { HAZE_GLOBAL_DIR } from "../Module";
+import { HAZE_GLOBAL_DIR } from "../ModuleCompiler/ModuleCompiler";
 import { Conversion } from "../Semantic/Conversion";
 import type { Semantic } from "../Semantic/SemanticTypes";
 import {

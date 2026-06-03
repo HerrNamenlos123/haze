@@ -2,7 +2,7 @@ import path, { join } from "node:path";
 import { ArgumentParser, REMAINDER } from "argparse";
 import pkg from "../package.json" with { type: "json" };
 import { startLsp } from "./lsp";
-import { getFile, ProjectCompiler } from "./Module";
+import { getFile, ProjectCompiler } from "./ModuleCompiler/ModuleCompiler";
 import { GeneralError, SilentError } from "./shared/Errors";
 
 const version = pkg.version;

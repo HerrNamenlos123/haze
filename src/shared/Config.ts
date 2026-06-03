@@ -2,7 +2,10 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parse } from "@ltd/j-toml";
-import { getCurrentPlatform, type ModulePrintInfo } from "../Module";
+import {
+  getCurrentPlatform,
+  type ModulePrintInfo,
+} from "../ModuleCompiler/ModuleCompiler";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { assert, GeneralError } from "./Errors";
 

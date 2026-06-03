@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ModuleCompiler } from "../Module";
+import type { ModuleCompiler } from "../ModuleCompiler/ModuleCompiler";
 import {
   type ASTBinaryExpr,
   type ASTCInjectDirective,
