@@ -1,6 +1,13 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/biome/core"],
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
   "linter": {
     "rules": {
       "suspicious": {
@@ -8,7 +15,8 @@
         "useErrorMessage": "off",
         "noShadowRestrictedNames": "off",
         "noExplicitAny": "off",
-        "noEmptyBlockStatements": "off"
+        "noEmptyBlockStatements": "off",
+        "useAwait": "off"
       },
       "style": {
         "useAtIndex": "off",
@@ -60,7 +68,8 @@
       },
       "correctness": {
         "noUnusedVariables": "warn",
-        "noUnusedFunctionParameters": "warn"
+        "noUnusedFunctionParameters": "warn",
+        "noUnusedImports": "off"
       }
     }
   }

@@ -4,11 +4,15 @@ import pkg from "../package.json" with { type: "json" };
 import { startLsp } from "./lsp";
 import { getFile, ProjectCompiler } from "./ModuleCompiler/ModuleCompiler";
 import { GeneralError, SilentError } from "./shared/Errors";
+import { testPrinter } from "./ModuleCompiler/CLIPrinter";
 
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
 
 async function main(): Promise<number> {
+  await testPrinter();
+  return 0;
+
   const parser = new ArgumentParser({ add_help: false });
   parser.add_argument("--version", { action: "version", version: "1.0.0" });
 
@@ -216,12 +220,4 @@ if ((process.env as any).HAZE_EXEC_MODE === "profiling") {
       }
     })
     .catch(() => {});
-}
-
-export function sleep(ms: number) {
-  return new Promise<void>((res, _rej) => {
-    setTimeout(() => {
-      res();
-    }, ms);
-  });
 }

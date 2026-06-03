@@ -17,8 +17,6 @@ import os from "node:os";
 import path, { basename, dirname, extname, join } from "node:path";
 import { cwd, stdout } from "node:process";
 import archiver from "archiver";
-import chalk from "chalk";
-import { MultiBar, Presets, type SingleBar } from "cli-progress";
 import fg from "fast-glob";
 import gunzip from "gunzip-maybe";
 import tarFs from "tar-fs";
@@ -64,25 +62,6 @@ import {
 } from "../shared/Errors";
 import { acquireBuildLock } from "./Lock";
 
-export enum EModulePrintCompilerPhase {
-  Parsing = 0,
-  Collecting = 1,
-  Analyzing = 2,
-  Lowering = 3,
-  Generating = 4,
-  CCompiling = 5,
-  Done = 6,
-}
-
-export type ModulePrintInfo = {
-  name: string;
-  phase: EModulePrintCompilerPhase;
-  startTime: Date;
-  endTime?: Date;
-  bar?: SingleBar;
-  printer: CLIPrinter;
-};
-
 /**
  * Temporarily sets environment variables for an async callback.
  *
@@ -114,126 +93,6 @@ export async function withEnv<T>(
         process.env[key] = old;
       }
     }
-  }
-}
-
-export class CLIPrinter {
-  modules: ModulePrintInfo[] = [];
-  multibar: MultiBar;
-  updateInterval: NodeJS.Timeout | null = null;
-
-  static spinnerIndex = 0; // synchronized
-
-  static SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-
-  constructor() {
-    this.multibar = new MultiBar(
-      {
-        clearOnComplete: false,
-        hideCursor: true,
-        format: (options, params, payload) =>
-          this.createCustomFormat(payload.module, payload.spinnerIndex),
-      },
-      Presets.shades_classic
-    );
-  }
-
-  createCustomFormat(module: ModulePrintInfo, spinnerIndex: number) {
-    const index = this.modules.findIndex((m) => m === module);
-    const indexStr = chalk.gray(`[${index + 1}/${this.modules.length}]`);
-    const actionStr = chalk.greenBright("Compiling");
-    const nameStr = chalk.white(module.name.padEnd(14));
-    const timeStr = chalk.gray(
-      `${Date.now() - module.startTime.getTime()}ms`.padStart(7)
-    );
-    const DONE_GLYPH = chalk.green("✔");
-
-    let phaseBlock: string;
-
-    if (module.endTime) {
-      const doneText = `Done     ${DONE_GLYPH}`;
-      phaseBlock = `[${doneText}]`;
-    } else {
-      // State: ACTIVE (Spinning)
-      let text = "";
-      switch (module.phase) {
-        case EModulePrintCompilerPhase.Parsing:
-          text = "Parsing      ";
-          break;
-        case EModulePrintCompilerPhase.Collecting:
-          text = "Collecting   ";
-          break;
-        case EModulePrintCompilerPhase.Analyzing:
-          text = "Analyzing    ";
-          break;
-        case EModulePrintCompilerPhase.Lowering:
-          text = "Lowering     ";
-          break;
-        case EModulePrintCompilerPhase.Generating:
-          text = "Generating C ";
-          break;
-        case EModulePrintCompilerPhase.CCompiling:
-          text = "Compiling C  ";
-          break;
-        default:
-          assert(false);
-          break;
-      }
-      phaseBlock = `[${chalk.cyan(text)}${chalk.cyan(CLIPrinter.SPINNER[spinnerIndex])}]`;
-    }
-
-    return `${indexStr} ${actionStr} ${nameStr} ${phaseBlock} ${timeStr}`;
-  }
-
-  log(message: string) {
-    this.multibar.log(message + "\n");
-  }
-
-  loop() {
-    CLIPrinter.spinnerIndex =
-      (CLIPrinter.spinnerIndex + 1) % CLIPrinter.SPINNER.length;
-
-    this.modules.forEach((m) => {
-      // Update the bar using the custom payload and the new time
-      m.bar?.update(0, {
-        module: m,
-        spinnerIndex: CLIPrinter.spinnerIndex,
-      });
-    });
-  }
-
-  start() {
-    // if (this.updateInterval) return;
-    // this.modules.forEach((m) => {
-    //   if (m.bar) return;
-    //   // The total value doesn't matter much since we are manually controlling the output,
-    //   // but we set it up anyway.
-    //   const total = 0; // Dont understand what total is
-    //   m.bar = this.multibar.create(
-    //     total,
-    //     0,
-    //     {
-    //       module: m, // Attach the module state to the bar payload
-    //       spinnerIndex: 0,
-    //     },
-    //     {}
-    //   );
-    // });
-    // console.log("Starting");
-    // this.loop();
-    // this.updateInterval = setInterval(() => {
-    //   this.loop();
-    // }, 50);
-  }
-
-  stopAndFinishAll() {
-    // if (this.updateInterval) {
-    //   clearInterval(this.updateInterval);
-    //   this.updateInterval = null;
-    //   // this.loop();
-    //   this.multibar.stop();
-    //   console.log("Stopping");
-    // }
   }
 }
 

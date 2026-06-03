@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { GeneralError } from "../shared/Errors";
+import { sleep } from "../utils";
 
 const HAZE_BUILD_LOCK_TIMEOUT_MS = 60_000;
 const HAZE_BUILD_LOCK_RETRY_MS = 200;
@@ -12,10 +13,6 @@ const HAZE_BUILD_LOCK_RETRY_MS = 200;
 
 //   fs.copyFileSync(source, targetFolder);
 // }
-
-function sleep(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
 
 function isProcessAlive(pid: number) {
   if (!Number.isFinite(pid) || pid <= 0) {
