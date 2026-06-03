@@ -716,6 +716,13 @@ export class ModuleCompiler {
     }
   }
 
+  private printCmd(cmd: string) {
+    // Pause the printer so the command prints above the bars cleanly.
+    this.printer?.pause();
+    process.stdout.write(`\n  $ ${cmd}\n\n`);
+    this.printer?.resume();
+  }
+
   private get effectiveDependencies() {
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
@@ -1449,11 +1456,6 @@ export class ModuleCompiler {
 
     const compileCommands: CompileCommands =
       await this.loadDependencyCompileCommands();
-    const debug = true;
-    if (debug) {
-      compilerFlags.addAll("-g");
-    }
-
     if (this.config.source.type === "src-dir") {
       includeDirs.addAll(this.config.source.dirpath);
     } else {
@@ -1461,10 +1463,7 @@ export class ModuleCompiler {
     }
 
     compilerFlags.addAll("-std=c11");
-
-    if (this.verbose) {
-      compilerFlags.addAll("-v");
-    }
+    compilerFlags.addAll("-g");
 
     const [
       archives,
@@ -1525,9 +1524,16 @@ export class ModuleCompiler {
       });
       await this.writeCompileCommands(isTopLevelModule, compileCommands);
 
+      if (this.verbose) {
+        this.printCmd(cmd);
+      }
       exec(cmd);
       if (this.strip) {
-        exec(`strip --strip-unneeded "${paths.moduleExecutable}"`);
+        const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
+        if (this.verbose) {
+          this.printCmd(stripCmd);
+        }
+        exec(stripCmd);
       }
     } else {
       const flags = `${platformCompilerFlags.join(" ")}`;
@@ -1548,17 +1554,19 @@ export class ModuleCompiler {
       });
       await this.writeCompileCommands(isTopLevelModule, compileCommands);
 
+      if (this.verbose) {
+        this.printCmd(cmd);
+      }
       exec(cmd);
 
-      if (PLATFORM === Platform.Linux) {
-        exec(
-          `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
-        );
-      } else {
-        exec(
-          `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`
-        );
+      const archiveCmd =
+        PLATFORM === Platform.Linux
+          ? `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
+          : `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`;
+      if (this.verbose) {
+        this.printCmd(archiveCmd);
       }
+      exec(archiveCmd);
 
       const makerel = (absolute: string) =>
         absolute
