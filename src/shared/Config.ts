@@ -2,10 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parse } from "@ltd/j-toml";
-import {
-  getCurrentPlatform,
-  type ModulePrintInfo,
-} from "../ModuleCompiler/ModuleCompiler";
+import { getCurrentPlatform } from "../ModuleCompiler/ModuleCompiler";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { assert, GeneralError } from "./Errors";
 
@@ -155,7 +152,6 @@ export type GeneratorGraphNode = {
 
 export type ModuleConfig = {
   name: string;
-  // printerModule?: ModulePrintInfo;
   version: string;
   description?: string;
   license?: string;

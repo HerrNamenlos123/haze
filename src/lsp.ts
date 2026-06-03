@@ -12,10 +12,8 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
 
-import {
-  ModuleCompiler,
-  ProjectCompiler,
-} from "./ModuleCompiler/ModuleCompiler";
+import { ModuleCompiler } from "./ModuleCompiler/ModuleCompiler";
+import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
 import { Semantic } from "./Semantic/SemanticTypes";
 import { ModuleType } from "./shared/Config";
 import {

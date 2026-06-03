@@ -23,10 +23,10 @@ const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
 };
 
 const PHASE_SHORT: Partial<Record<EModulePrintCompilerPhase, string>> = {
-  [EModulePrintCompilerPhase.Parsing]:    "Parsing",
+  [EModulePrintCompilerPhase.Parsing]: "Parsing",
   [EModulePrintCompilerPhase.Collecting]: "Collecting",
-  [EModulePrintCompilerPhase.Analyzing]:  "Analyzing",
-  [EModulePrintCompilerPhase.Lowering]:   "Lowering",
+  [EModulePrintCompilerPhase.Analyzing]: "Analyzing",
+  [EModulePrintCompilerPhase.Lowering]: "Lowering",
   [EModulePrintCompilerPhase.Generating]: "Generating C",
   [EModulePrintCompilerPhase.CCompiling]: "Compiling C",
 };
@@ -181,7 +181,11 @@ export class CLIPrinter {
       return label.length + 1 + maxDurLen + 2; // "Label Xms  "
     });
     const totalColWidth =
-      Math.max(...done.map((m) => String(m.endTime!.getTime() - m.startTime.getTime()).length)) + 5; // "Xms total"
+      Math.max(
+        ...done.map(
+          (m) => String(m.endTime!.getTime() - m.startTime.getTime()).length
+        )
+      ) + 5; // "Xms total"
 
     process.stdout.write("\n");
     for (const m of done) {
@@ -198,7 +202,9 @@ export class CLIPrinter {
         return cell + pad;
       });
       const totalMs = m.endTime!.getTime() - m.startTime.getTime();
-      const totalCell = chalk.gray(`${totalMs}ms total`.padStart(totalColWidth));
+      const totalCell = chalk.gray(
+        `${totalMs}ms total`.padStart(totalColWidth)
+      );
       process.stdout.write(`  ${name}  ${cols.join("")}${totalCell}\n`);
     }
     process.stdout.write("\n");
@@ -251,7 +257,7 @@ export class CLIPrinter {
 }
 
 // ---------------------------------------------------------------------------
-// Test — run with: npx tsx src/ModuleCompiler/CLIPrinter.ts
+// Test —
 // ---------------------------------------------------------------------------
 
 export async function testPrinter() {
