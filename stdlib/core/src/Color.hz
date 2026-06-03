@@ -1,22 +1,54 @@
 
+namespace ffi {
+    extern C fn hzstd_color_from_hex(hex: str, error: hzstd_str_ref_t): inline hzstd_color_t :: final;
+    extern C fn hzstd_color_to_hex(color: inline hzstd_color_t, omitAlphaIfOpaque: bool): str :: final;
+}
+
 export extern C noemit inline struct hzstd_color_t {
     r: real = 0;
     g: real = 0;
     b: real = 0;
     a: real = 0;
 
-    fn constructor(color: str): mut Color {
-        let r = 0.0;
-        let g = 0.0;
-        let b = 0.0;
-        let a = 0.0;
-        fmt.println("Warning: Color(str) is not implemented yet!");
-        return Color {
-            r: r,
-            g: g,
-            b: b,
-            a: a,
-        };
+    // struct ColorArgs {
+
+    // };
+
+    // Parses a hex color string (RGB, RGBA, RRGGBB, RRGGBBAA, with or without leading '#').
+    // Returns the color on success. On failure, returns an error string describing what went wrong.
+    fn constructor(color: str) {
+        return Color.fromHexOrDefault(color);
+    }
+
+    static fn fromHex(color: str): Result<Color, str> {
+        let error = ffi.hzstd_str_ref_t { data: "" };
+        let result = ffi.hzstd_color_from_hex(color, error);
+
+        if error.data.length > 0 {
+            return Result<Color, str>.Err(error.data);
+        }
+
+        return Result<Color, str>.Ok(Color {
+            r: result.r,
+            g: result.g,
+            b: result.b,
+            a: result.a,
+        });
+    }
+
+    static fn fromHexOrDefault(color: str, default: Color = {}) {
+        let result = Color.fromHex(color);
+        if result {
+            return result;
+        }
+        return default;
+    }
+
+    // Serializes this color to a lowercase hex string (RRGGBBAA), without a leading '#'.
+    // Each channel is clamped to [0, 1] before conversion.
+    // If omitAlphaIfOpaque is true and alpha is 1, the output is 6 characters (RRGGBB).
+    fn hex(omitAlphaIfOpaque: bool = false): str {
+        return ffi.hzstd_color_to_hex(this, omitAlphaIfOpaque);
     }
 
     fn constructor(color: rx.Reactive<Color>): mut Color {
@@ -61,18 +93,34 @@ export extern C noemit inline struct hzstd_colorf_t {
     b: f32 = 0;
     a: f32 = 0;
 
-    fn constructor(color: str): mut Colorf {
-        let r: f32 = 0;
-        let g: f32 = 0;
-        let b: f32 = 0;
-        let a: f32 = 0;
-        fmt.println("Warning: Color(str) is not implemented yet!");
-        return Colorf {
-            r: r,
-            g: g,
-            b: b,
-            a: a,
-        };
+    // Parses a hex color string (RGB, RGBA, RRGGBB, RRGGBBAA, with or without leading '#').
+    // Returns the color on success. On failure, returns an error string describing what went wrong.
+    fn constructor(color: str): Result<Colorf, str> {
+        let error = ffi.hzstd_str_ref_t { data: "" };
+        let result = ffi.hzstd_color_from_hex(color, error);
+
+        if error.data.length > 0 {
+            return Result<Colorf, str>.Err(error.data);
+        }
+
+        return Result<Colorf, str>.Ok(Colorf {
+            r: result.r as f32,
+            g: result.g as f32,
+            b: result.b as f32,
+            a: result.a as f32,
+        });
+    }
+
+    // Serializes this color to a lowercase hex string (RRGGBBAA), without a leading '#'.
+    // Each channel is clamped to [0, 1] before conversion.
+    // If omitAlphaIfOpaque is true and alpha is 1, the output is 6 characters (RRGGBB).
+    fn hex(omitAlphaIfOpaque: bool = false): str {
+        return ffi.hzstd_color_to_hex(Color {
+            r: this.r as real,
+            g: this.g as real,
+            b: this.b as real,
+            a: this.a as real,
+        }, omitAlphaIfOpaque);
     }
 
     fn constructor(color: rx.Reactive<Colorf>): mut Colorf {

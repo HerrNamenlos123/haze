@@ -684,7 +684,7 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 },
                 presets: [
                     presets.p(2),
-                    presets.bg(Color("#33CC66FF")),
+                    presets.bg(Color.fromHexOrDefault("#33CC66FF")),
                 ],
             }, (): void => {
                 fmt.println("Rerender content area");

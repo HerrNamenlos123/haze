@@ -11,6 +11,7 @@
 #include "hzstd_regex.c"
 #include "hzstd_runtime.c"
 #include "hzstd_string.c"
+#include "hzstd_utils.c"
 
 #if defined(HAZE_PLATFORM_LINUX)
 #include "hzstd_platform_linux.c"
