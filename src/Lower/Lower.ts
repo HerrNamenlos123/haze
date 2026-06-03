@@ -1682,7 +1682,7 @@ export function lowerExpr(
 
       let callableFunc = loweredFuncId;
 
-      if (expr.envValue !== undefined) {
+      if (expr.envValue != null) {
         const loweredFunc = lr.functionNodes.get(loweredFuncId);
         assert(loweredFunc.variant === Lowered.ENode.FunctionSymbol);
         assert(loweredFunc.closureTrampoline);

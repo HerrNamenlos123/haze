@@ -36,12 +36,12 @@ export extern C noemit inline struct hzstd_color_t {
         });
     }
 
-    static fn fromHexOrDefault(color: str, default: Color = {}) {
+    static fn fromHexOrDefault(color: str, fallback: Color = {}): Color {
         let result = Color.fromHex(color);
         if result {
             return result;
         }
-        return default;
+        return fallback;
     }
 
     // Serializes this color to a lowercase hex string (RRGGBBAA), without a leading '#'.

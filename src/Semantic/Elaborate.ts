@@ -7349,7 +7349,8 @@ export class SemanticElaborator {
     name: string,
     generics: Collect.ExprId[],
     inference: Semantic.Inference,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
+    isTypeAccess: boolean = false
   ): [Semantic.Expression, Semantic.ExprId] | null {
     let genericArgs = generics.map((g) => this.expressionAsGenericArg(g));
 
@@ -7488,21 +7489,24 @@ export class SemanticElaborator {
             }
           }
 
+          const methodEnv: Semantic.EnvBlockType = collectedMethod.staticMethod
+            ? null
+            : {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  resolvedExprTypeUse.type,
+                  EDatatypeMutability.Mut,
+                  "force-no-inline",
+                  sourceloc
+                )[1],
+              };
           return this.elaborateFunctionSymbolWithGenerics(
             functionSignatureId,
             genericArgs,
             sourceloc,
             parameterPackTypes,
-            {
-              type: "method",
-              thisExprType: makeTypeUse(
-                this.sr,
-                resolvedExprTypeUse.type,
-                EDatatypeMutability.Mut,
-                "force-no-inline",
-                sourceloc
-              )[1],
-            }
+            methodEnv
           );
         }
       );
@@ -7511,13 +7515,16 @@ export class SemanticElaborator {
       assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
 
       if (elaboratedMethod.staticMethod) {
-        throw new CompilerError(
-          `Method ${Semantic.serializeFullSymbolName(
-            this.sr,
-            elaboratedMethodId
-          )}() is static but is called through an object`,
-          sourceloc
-        );
+        if (!isTypeAccess) {
+          throw new CompilerError(
+            `Method ${Semantic.serializeFullSymbolName(
+              this.sr,
+              elaboratedMethodId
+            )}() is static but is called through an object`,
+            sourceloc
+          );
+        }
+        return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
       }
 
       if (
@@ -7997,7 +8004,8 @@ export class SemanticElaborator {
           name,
           generics,
           inference,
-          sourceloc
+          sourceloc,
+          true
         );
         if (result) {
           return result;

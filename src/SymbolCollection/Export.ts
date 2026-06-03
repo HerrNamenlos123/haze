@@ -177,12 +177,22 @@ export function ExportTypeDef(
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
           const parameters = functype.parameters
-            .map(
-              (p, i) =>
-                `${method.parameterNames[i]}${
-                  p.optional ? "?" : ""
-                }: ${Semantic.serializeTypeUse(sr, p.type)}`
-            )
+            .map((p, i) => {
+              let paramStr = `${method.parameterNames[i]}${
+                p.optional ? "?" : ""
+              }: ${Semantic.serializeTypeUse(sr, p.type)}`;
+              const defaultValue = method.parameterDefaultValues.find(
+                (dv) => dv.parameterName === method.parameterNames[i]
+              );
+              if (defaultValue) {
+                if (isSourceLocationDefaultValue(sr, defaultValue.value)) {
+                  paramStr += ` = SourceLocation()`;
+                } else {
+                  paramStr += ` = ${Semantic.serializeExpr(sr, defaultValue.value)}`;
+                }
+              }
+              return paramStr;
+            })
             .join(", ");
           let methodName = method.name;
 
