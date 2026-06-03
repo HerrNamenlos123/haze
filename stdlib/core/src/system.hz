@@ -33,3 +33,41 @@ export fn assert(condition: bool, msg?: str, location: SourceLocation = SourceLo
         sys.panic("Assertion failed", 1);
     }
 }
+
+namespace ffi {
+    extern C noemit enum unscoped hzstd_platform_runtime_t {
+        // WARNING: This must match with hzstd_platform.h!!!
+        hzstd_platform_runtime_unknown = 0,
+        hzstd_platform_runtime_linux = 1,
+        hzstd_platform_runtime_win32 = 2,
+    };
+
+    extern C noemit fn hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
+}
+
+namespace sys {
+    export enum unscoped Platform {
+        Unknown = ffi.hzstd_platform_runtime_unknown,
+        Linux = ffi.hzstd_platform_runtime_linux,
+        Win32 = ffi.hzstd_platform_runtime_win32,
+    }
+
+    export fn platform() {
+        let platform = ffi.hzstd_platform_runtime();
+        if platform == ffi.hzstd_platform_runtime_linux {
+            return Platform.Linux;
+        }
+        else if platform == ffi.hzstd_platform_runtime_win32 {
+            return Platform.Win32;
+        }
+        sys.panic("Unknown platform");
+    }
+
+    export fn isLinux() {
+        return sys.platform() == Platform.Linux;
+    }
+
+    export fn isWin32() {
+        return sys.platform() == Platform.Win32;
+    }
+}

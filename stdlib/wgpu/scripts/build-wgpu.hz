@@ -27,7 +27,7 @@ fn main(): int {
         }
         else {
             let msg = "curl https://sh.rustup.rs -sSf | sh -s -- -y";
-            if platform.isWin32() {
+            if sys.isWin32() {
                 msg = "winget install Rustlang.Rustup";
             }
             raise f"Cargo is not installed. Please install the 'cargo' Rust build system, it is required to build WebGPU-Native. Your best bet is: '{msg}'";
@@ -39,7 +39,7 @@ fn main(): int {
         })?!;
 
         let filename = "libwgpu_native.a";
-        if platform.isWin32() {
+        if sys.isWin32() {
             filename = "wgpu_native.lib";
         }
         fs.copyFile(f"{repoPath}/target/release/{filename}", f"{binaryDir}/lib/{filename}", {
