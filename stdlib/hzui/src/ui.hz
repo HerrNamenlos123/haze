@@ -127,6 +127,21 @@ export inline struct DivStyle {
     textColor?: Color = none;
     // textAlign?: Color = none;
 
+    fn combineWithPresets(_presets: []presets.Preset) {
+        // Should do a full copy
+        let style: inline DivStyle = this;
+
+        for preset in _presets {
+            if preset is presets.PaddingPreset {
+                if !style.padding {
+                    style.padding = preset.padding;
+                }
+            }
+        }
+
+        return style;
+    }
+
     // TODO: We need to generate a default operator:= if none is specified, remove this
     fn operator:=(other: DivStyle) {
         this.width = other.width;
@@ -235,12 +250,14 @@ export struct DivElementArgs {
     id: int;
     children: []Element = [];
     style: DivStyle = {};
+    presets?: []presets.Preset;
 }
 
 export struct DivElement {
     id: int;
     children: []Element = [];
     style: DivStyle = {};
+    presets?: []presets.Preset;
     _renderFeedback?: RenderFeedback = none;
     _renderFeedbackVersion: rx.Reactive<bool>;
     _inputFeedback?: InputFeedback = none;
@@ -251,6 +268,7 @@ export struct DivElement {
             id: args.id,
             children: args.children,
             style: args.style,
+            presets: args.presets,
             _renderFeedbackVersion: rx.reactive<bool>(false),
             _inputFeedbackVersion: rx.reactive<bool>(false),
         };
@@ -276,12 +294,14 @@ export struct TextElementArgs {
     id: int;
     text: str;
     style: TextStyle = {};
+    presets?: []presets.Preset;
 }
 
 export struct TextElement {
     id: int;
     text: str;
     style: TextStyle = {};
+    presets?: []presets.Preset;
     _renderFeedback?: RenderFeedback = none;
     _renderFeedbackVersion: rx.Reactive<bool>;
     _inputFeedback?: InputFeedback = none;
@@ -292,6 +312,7 @@ export struct TextElement {
             id: args.id,
             text: args.text,
             style: args.style,
+            presets: args.presets,
             _renderFeedbackVersion: rx.reactive<bool>(false),
             _inputFeedbackVersion: rx.reactive<bool>(false),
         };
@@ -470,14 +491,16 @@ export opaque struct Context {
                 let savedIdPath = ctx.idPath;
                 ctx.idPath = elementId;
 
+                let style = element.presets ? element.style.combineWithPresets(element.presets) : element.style;
+
                 ffi.hzui_clay_define_div_element(
                     func, env,
                     elementId,
-                    element.style.backgroundColor,
-                    getPaddingValues(element.style.padding),
-                    getCornerRadiusValues(element.style.cornerRadius),
-                    element.style.direction == Direction.Column,
-                    element.style.gap,
+                    style.backgroundColor,
+                    getPaddingValues(style.padding),
+                    getCornerRadiusValues(style.cornerRadius),
+                    style.direction == Direction.Column,
+                    style.gap,
                     elementPtr,
                 );
 
@@ -485,10 +508,7 @@ export opaque struct Context {
             });
         } 
         else if element is TextElement {
-            let capturedElement = element; // TODO: Fix compiler error, an unwrapped union cannot be captured in lambda
             this.withCascadingStackApplied(ctx, element, () => {
-                let element = capturedElement;
-
                 let elementBox = Box<Element>(element);
                 let elementPtr = none as cptr;
                 __c__("elementPtr = elementBox;");
@@ -505,6 +525,8 @@ export opaque struct Context {
                 else if lineHeightMode.mode == LineHeightMode.Pixels {
                     lineHeightPx = lineHeightMode.value;
                 }
+
+                // let style = element.style.combineWithPresets(element.presets);
 
                 ffi.hzui_clay_define_text_element(
                     {

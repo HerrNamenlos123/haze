@@ -1,7 +1,11 @@
 
+import hzui
+type presets = hzui.presets;
+
 inline struct DivProps {
     id: int;
     style?: hzui.DivStyle;
+    presets?: []presets.Preset;
     ref?: ElementRef<hzui.DivElement>;
 }
 
@@ -9,6 +13,7 @@ inline struct TextProps {
     id: int;
     style?: hzui.TextStyle;
     text: str;
+    presets?: []presets.Preset;
     ref?: ElementRef<hzui.TextElement>;
 }
 
@@ -504,6 +509,7 @@ opaque struct UIContext {
         if props.style is not none {
             element.style := props.style;
         }
+        element.presets = props.presets;
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -535,6 +541,7 @@ opaque struct UIContext {
         if props.style is not none {
             element.style := props.style;
         }
+        element.presets = props.presets;
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -672,11 +679,13 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 id: 100,
                 style: {
                     backgroundColor: Color(0.2, 0.8, 0.4, 1),
-                    padding: hzui.StylePaddingSimple { value: 30.0 },
                     direction: hzui.Direction.Column,
                     align: hzui.Align.Center,
                     gap: 16.0,
-                }
+                },
+                presets: [
+                    presets.p(1),
+                ],
             }, (): void => {
                 fmt.println("Rerender content area");
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });

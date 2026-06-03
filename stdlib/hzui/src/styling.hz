@@ -1,0 +1,19 @@
+
+namespace presets {
+    // Tailwind Number to PX: w-<number> -> width: calc(var(--spacing) * <number>);
+    export const baseSpacing = 4.0;
+    export fn size(number: real) {
+        return number * baseSpacing;
+    }
+    export fn p(value: real) {
+        return PaddingPreset {
+            padding: StylePaddingSimple { value: size(value) },
+        };
+    }
+
+    export struct PaddingPreset {
+        padding: StylePadding;
+    }
+
+    export type Preset = PaddingPreset;
+}
