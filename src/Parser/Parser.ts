@@ -1578,6 +1578,10 @@ class ASTBuilder extends HazeParserListener {
           declarations.push(c);
           break;
 
+        case "EnumDefinition":
+          declarations.push(c);
+          break;
+
         default:
           throw new InternalError(
             "StructDefinition produced unexpected child: " + String(c?.variant)
