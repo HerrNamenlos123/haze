@@ -229,7 +229,7 @@ export async function getToolsDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "tools/");
   }
-  return join(import.meta.dirname, "../tools");
+  return join(import.meta.dirname, "../../tools");
 }
 
 export async function catchErrors(fn: () => Promise<void>) {
