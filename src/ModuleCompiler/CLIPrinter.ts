@@ -47,6 +47,8 @@ type ModuleState = ModuleHandle & {
   bar?: SingleBar;
   phaseStartTime: Date;
   phaseHistory: PhaseRecord[];
+  /** False until build() begins — bar is not created until then. */
+  active: boolean;
 };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -76,26 +78,39 @@ export class CLIPrinter {
   }
 
   /**
-   * Register a module. Can be called before or after start().
-   * Returns a handle to pass back to setPhase().
+   * Register a module for index counting ([1/N] total).
+   * The bar is NOT created here — call beginModule() when build() actually starts.
    */
   addModule(name: string): ModuleHandle {
-    const now = new Date();
     const state: ModuleState = {
       name: name,
       phase: EModulePrintCompilerPhase.Parsing,
-      startTime: now,
-      phaseStartTime: now,
+      startTime: new Date(),
+      phaseStartTime: new Date(),
       phaseHistory: [],
+      active: false,
     };
     this.modules.push(state);
+    return state;
+  }
 
-    if (this.updateInterval !== null) {
+  /**
+   * Mark a module as actively building: reveals its bar, resets all timers to
+   * now, and clears any accumulated phase history from the wait period.
+   * Call this at the start of ModuleCompiler.build().
+   */
+  beginModule(handle: ModuleHandle) {
+    const state = handle as ModuleState;
+    const now = new Date();
+    state.startTime = now;
+    state.phaseStartTime = now;
+    state.phaseHistory = [];
+    state.active = true;
+
+    if (this.updateInterval !== null && !state.bar) {
       this.createBar(state);
       this.tick();
     }
-
-    return state;
   }
 
   setPhase(handle: ModuleHandle, phase: EModulePrintCompilerPhase) {
@@ -119,18 +134,11 @@ export class CLIPrinter {
     this.refreshBar(state);
   }
 
-  /** Begin rendering. Must be called after all initial modules are registered, or addModule() will add rows on the fly. */
+  /** Begin the animation loop. Bars only appear when beginModule() is called. */
   start() {
     if (this.updateInterval) {
       return;
     }
-
-    for (const m of this.modules) {
-      if (!m.bar) {
-        this.createBar(m);
-      }
-    }
-
     this.tick();
     this.updateInterval = setInterval(() => this.tick(), TICK_MS);
   }
@@ -199,7 +207,7 @@ export class CLIPrinter {
           return r ? String(r.durationMs).length : 0;
         })
       );
-      return label.length + 1 + maxDurLen + 2; // "Label Xms  "
+      return label.length + 1 + maxDurLen + 2 + 2; // "Label Xms" + "ms"(2) + 2 spaces gap
     });
     const totalColWidth =
       Math.max(

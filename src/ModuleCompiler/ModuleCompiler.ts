@@ -710,6 +710,12 @@ export class ModuleCompiler {
     }
   }
 
+  private markBuildStart() {
+    if (this.printer && this.printerHandle) {
+      this.printer.beginModule(this.printerHandle);
+    }
+  }
+
   private get effectiveDependencies() {
     const deps = [...this.config.dependencies];
     if (this.config.name !== HAZE_STDLIB_NAME && !this.config.nostdlib) {
@@ -1241,7 +1247,9 @@ export class ModuleCompiler {
       _encodingOrCb?: unknown,
       _cb?: unknown
     ): boolean => {
-      logChunks.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+      logChunks.push(
+        Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+      );
       return true;
     };
 
@@ -1250,7 +1258,11 @@ export class ModuleCompiler {
     let runResult: { exitCode: number; output: string } | null = null;
 
     try {
-      buildOk = await project.build(this.resolveExec(gen.exec), sourceloc, false);
+      buildOk = await project.build(
+        this.resolveExec(gen.exec),
+        sourceloc,
+        false
+      );
 
       if (buildOk) {
         runResult = await withEnv(
@@ -1277,7 +1289,7 @@ export class ModuleCompiler {
     // readable in any text editor.
     const rawLog = logChunks.join("");
     const ESC = String.fromCharCode(27);
-    const ansiPattern = new RegExp(ESC + "\[[0-9;]*[mGKJHF]", "g");
+    const ansiPattern = new RegExp(ESC + "[[0-9;]*[mGKJHF]", "g");
     const cleanLog = rawLog.replace(ansiPattern, "");
     writeFileSync(logPath, cleanLog, "utf8");
 
@@ -1638,6 +1650,10 @@ export class ModuleCompiler {
           CXX: HAZE_CXX_COMPILER,
         },
         async () => {
+          // Reset phase timer to now so that Parsing/Collecting/etc. durations
+          // reflect actual work time, not time spent waiting for prior modules.
+          this.markBuildStart();
+
           const buildCache = new ModuleBuildCache(
             path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
           );
