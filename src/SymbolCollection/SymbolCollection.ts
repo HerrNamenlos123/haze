@@ -1368,7 +1368,7 @@ function collectTypeDef(
       const fieldScopeId = Collect.makeScope<Collect.StructFieldScope>(cc, {
         variant: Collect.ENode.StructFieldScope,
         owningSymbol: structSymbolId,
-        parentScope: args.currentParentScope,
+        parentScope: lexicalScopeId,
         sourceloc: item.sourceloc,
         symbols: new Set(),
       })[1];

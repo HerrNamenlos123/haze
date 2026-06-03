@@ -2291,6 +2291,15 @@ export class SemanticElaborator {
         namespaceSymbol.typeDef
       );
       parentNamespace = this.sr.b.typeDefSymbol(parentNamespaceId)[1];
+    } else if (parentScope.variant === Collect.ENode.StructLexicalScope) {
+      const structSymbol = this.sr.cc.symbolNodes.get(parentScope.owningSymbol);
+      assert(structSymbol.variant === Collect.ENode.TypeDefSymbol);
+      const parentStructId = this.instantiateAndElaborateStructWithGenerics(
+        structSymbol.typeDef,
+        [],
+        enumValue.sourceloc
+      );
+      parentNamespace = this.sr.b.typeDefSymbol(parentStructId)[1];
     }
 
     const found = getFromEnumDefCache(this.sr, enumId, {
@@ -2328,7 +2337,10 @@ export class SemanticElaborator {
     });
 
     if (enumValue.export) {
-      this.sr.exportedSymbols.add(enumSymbolId);
+      const parentScope = this.sr.cc.scopeNodes.get(enumValue.parentScope);
+      if (parentScope.variant !== Collect.ENode.StructLexicalScope) {
+        this.sr.exportedSymbols.add(enumSymbolId);
+      }
     }
 
     const resolveEnumValueLiteral = (
@@ -3380,6 +3392,9 @@ export class SemanticElaborator {
             def.sourceloc
           );
           semanticStruct.nestedStructs.push(subStructId);
+        } else if (def.variant === Collect.ENode.EnumTypeDef) {
+          const enumTypeId = this.sr.e.elaborateEnum(symbol.typeDef);
+          semanticStruct.nestedStructs.push(enumTypeId);
         }
       }
     });
@@ -3463,10 +3478,27 @@ export class SemanticElaborator {
           symbol.sourceloc
         );
       } else {
-        defaultExprId = this.expr(defaultValue.value, {
-          gonnaInstantiateStructWithType: variable.type,
-          unsafe: false,
-        })[1];
+        defaultExprId = this.withContext(
+          {
+            context: Semantic.isolateElaborationContext(this.currentContext, {
+              currentScope: structType.lexicalScope,
+              genericsScope: structType.lexicalScope,
+              constraints: ConstraintSet.empty(),
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }),
+            inAttemptExpr: null,
+            inFunction: null,
+          },
+          () =>
+            this.expr(defaultValue.value, {
+              gonnaInstantiateStructWithType: variable.type,
+              unsafe: false,
+            })[1]
+        );
       }
       semanticStruct.memberDefaultValues.push({
         memberName: variable.name,
@@ -3607,8 +3639,11 @@ export class SemanticElaborator {
       });
 
       if (definedStructType.export && struct.generics.length === 0) {
-        const [_, id] = this.sr.b.typeDefSymbol(structId);
-        this.sr.exportedSymbols.add(id);
+        const parentScope = this.sr.cc.scopeNodes.get(definedStructType.parentScope);
+        if (parentScope.variant !== Collect.ENode.StructLexicalScope) {
+          const [_, id] = this.sr.b.typeDefSymbol(structId);
+          this.sr.exportedSymbols.add(id);
+        }
       }
 
       const lexicalScope = this.sr.cc.scopeNodes.get(
