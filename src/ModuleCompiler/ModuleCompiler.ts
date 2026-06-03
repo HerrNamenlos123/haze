@@ -62,6 +62,11 @@ import {
 } from "../shared/Errors";
 import { acquireBuildLock } from "./Lock";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
+import {
+  type CLIPrinter,
+  EModulePrintCompilerPhase,
+  type ModuleHandle,
+} from "./CLIPrinter";
 
 /**
  * Temporarily sets environment variables for an async callback.
@@ -679,6 +684,8 @@ export class ModuleCompiler {
   currentModuleRootDir: string | null = null;
   currentUnitScope: Collect.ScopeId | null = null;
   private cachedDependencyMetadata: ModuleMetadata[] | null = null;
+  private printer: CLIPrinter | null = null;
+  private printerHandle: ModuleHandle | null = null;
 
   constructor(
     public config: ModuleConfig,
@@ -690,6 +697,17 @@ export class ModuleCompiler {
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
+  }
+
+  setPrinter(printer: CLIPrinter, handle: ModuleHandle) {
+    this.printer = printer;
+    this.printerHandle = handle;
+  }
+
+  private advancePhase(phase: EModulePrintCompilerPhase) {
+    if (this.printer && this.printerHandle) {
+      this.printer.setPhase(this.printerHandle, phase);
+    }
   }
 
   private get effectiveDependencies() {
@@ -1609,6 +1627,7 @@ export class ModuleCompiler {
 
           if (!(moduleChanged || generatorsNeedRun)) {
             this.maybeStripExecutable();
+            this.advancePhase(EModulePrintCompilerPhase.Done);
             return;
           }
 
@@ -1618,13 +1637,17 @@ export class ModuleCompiler {
 
           if (!(moduleChanged || generatorsRan)) {
             this.maybeStripExecutable();
+            this.advancePhase(EModulePrintCompilerPhase.Done);
             return;
           }
 
-          console.log(`Building module ${this.config.name}`);
-
+          this.advancePhase(EModulePrintCompilerPhase.Collecting);
           await this.phaseCollect();
+
+          this.advancePhase(EModulePrintCompilerPhase.Analyzing);
           const sr = this.phaseAnalyze();
+
+          this.advancePhase(EModulePrintCompilerPhase.Lowering);
           const lowered = this.phaseLower(sr);
 
           const allModules: [string, string][] = [
@@ -1633,8 +1656,14 @@ export class ModuleCompiler {
           ];
 
           const paths = this.computeBuildPaths();
+
+          this.advancePhase(EModulePrintCompilerPhase.Generating);
           await this.phaseGenerate(lowered, allModules, paths);
+
+          this.advancePhase(EModulePrintCompilerPhase.CCompiling);
           await this.phaseCCompile(sr, paths, allModules, isTopLevelModule);
+
+          this.advancePhase(EModulePrintCompilerPhase.Done);
 
           const finalRelevantFiles = await this.gatherModuleRelevantFiles();
           buildCache.updateModule(

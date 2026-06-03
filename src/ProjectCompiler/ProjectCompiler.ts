@@ -35,6 +35,7 @@ import {
   ModuleCompiler,
   parseConfig,
 } from "../ModuleCompiler/ModuleCompiler";
+import { CLIPrinter } from "../ModuleCompiler/CLIPrinter";
 
 const HAZE_BUILD_LOCKFILE = "build.lock";
 
@@ -87,11 +88,13 @@ export class ProjectCompiler {
   verbose: boolean;
   ignoreLock: boolean;
   strip: boolean;
+  showTiming: boolean;
 
-  constructor(verbose = false, ignoreLock = false, strip = false) {
+  constructor(verbose = false, ignoreLock = false, strip = false, showTiming = false) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
     this.strip = strip;
+    this.showTiming = showTiming;
   }
 
   async getConfig(singleFilename?: string, sourceloc?: boolean) {
@@ -163,19 +166,28 @@ export class ProjectCompiler {
       ? null
       : await acquireBuildLock(join(this.globalBuildDir, HAZE_BUILD_LOCKFILE));
 
+    const printer = new CLIPrinter(this.showTiming);
+
     try {
       if (!singleFilename) {
         await this.cache.load(join(this.globalBuildDir, "cache.json"));
       }
-      const mainModule = new ModuleCompiler(
-        config,
-        this.cache,
-        this.globalBuildDir,
-        join(this.globalBuildDir, config.name),
-        this.verbose,
-        this.strip
-      );
 
+      const makeModule = (c: typeof config) =>
+        new ModuleCompiler(
+          c,
+          this.cache,
+          this.globalBuildDir,
+          join(this.globalBuildDir, c.name),
+          this.verbose,
+          this.strip
+        );
+
+      const mainModule = makeModule(config);
+
+      // Load all dependency configs upfront so every module is visible in the
+      // printer from the start (correct [1/N] totals throughout the build).
+      let stdlibModule: ModuleCompiler | undefined;
       if (!mainModule.config.nostdlib) {
         const stdlibConfig = await parseConfig(
           join(await getStdlibDirectory(), "core"),
@@ -184,43 +196,43 @@ export class ProjectCompiler {
         if (!stdlibConfig) {
           return false;
         }
-        const stdlibModule = new ModuleCompiler(
-          stdlibConfig,
-          this.cache,
-          this.globalBuildDir,
-          join(this.globalBuildDir, stdlibConfig.name),
-          this.verbose,
-          this.strip
-        );
-        if (!(await stdlibModule.build(false, fullRebuild))) {
-          return false;
-        }
+        stdlibModule = makeModule(stdlibConfig);
       }
 
+      const depModules: ModuleCompiler[] = [];
       if (!singleFilename) {
-        const deps = mainModule.config.dependencies;
-        for (const dep of deps) {
-          const depdir = join(await getStdlibDirectory(), dep.path);
-
-          const depConfig = await parseConfig(depdir, sourceloc);
+        for (const dep of mainModule.config.dependencies) {
+          const depConfig = await parseConfig(
+            join(await getStdlibDirectory(), dep.path),
+            sourceloc
+          );
           if (!depConfig) {
             return false;
           }
-
-          const depModule = new ModuleCompiler(
-            depConfig,
-            this.cache,
-            this.globalBuildDir,
-            join(this.globalBuildDir, depConfig.name),
-            this.verbose,
-            this.strip
-          );
-          if (!(await depModule.build(false, fullRebuild))) {
-            return false;
-          }
+          depModules.push(makeModule(depConfig));
         }
       }
 
+      // Register all modules with the printer in build order so the spinner
+      // shows the full module list with correct indices from the start.
+      if (stdlibModule) {
+        stdlibModule.setPrinter(printer, printer.addModule(stdlibModule.config.name));
+      }
+      for (const m of depModules) {
+        m.setPrinter(printer, printer.addModule(m.config.name));
+      }
+      mainModule.setPrinter(printer, printer.addModule(mainModule.config.name));
+
+      printer.start();
+
+      if (stdlibModule && !(await stdlibModule.build(false, fullRebuild))) {
+        return false;
+      }
+      for (const m of depModules) {
+        if (!(await m.build(false, fullRebuild))) {
+          return false;
+        }
+      }
       if (!(await mainModule.build(true, fullRebuild || this.strip))) {
         return false;
       }
@@ -230,6 +242,7 @@ export class ProjectCompiler {
       }
       return true;
     } finally {
+      printer.stop();
       releaseBuildLock?.();
     }
   }

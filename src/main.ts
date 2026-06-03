@@ -47,6 +47,11 @@ async function main(): Promise<number> {
     dest: "strip",
     help: "Strip the final executable after building",
   });
+  build_parser.add_argument("--show-timing", {
+    action: "store_true",
+    dest: "showTiming",
+    help: "Print per-phase timing for each module after the build",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -84,6 +89,11 @@ async function main(): Promise<number> {
     dest: "strip",
     help: "Strip the final executable after building",
   });
+  run_parser.add_argument("--show-timing", {
+    action: "store_true",
+    dest: "showTiming",
+    help: "Print per-phase timing for each module after the build",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -112,6 +122,11 @@ async function main(): Promise<number> {
     action: "store_true",
     dest: "strip",
     help: "Strip the final executable after building",
+  });
+  exec_parser.add_argument("--show-timing", {
+    action: "store_true",
+    dest: "showTiming",
+    help: "Print per-phase timing for each module after the build",
   });
   exec_parser.add_argument("filename", {
     nargs: "?",
@@ -146,7 +161,8 @@ async function main(): Promise<number> {
       const project = new ProjectCompiler(
         Boolean(args.verbose),
         Boolean(args.ignoreLock),
-        Boolean(args.strip)
+        Boolean(args.strip),
+        Boolean(args.showTiming)
       );
 
       if (
