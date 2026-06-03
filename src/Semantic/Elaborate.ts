@@ -11528,42 +11528,54 @@ export class SemanticElaborator {
       );
     }
 
-    if (
-      struct.variant === Semantic.ENode.UntaggedUnionDatatype &&
-      struct.members.length === 2
-    ) {
-      const a = struct.members[0];
-      const b = struct.members[1];
-      const aUse = this.sr.typeUseNodes.get(a);
-      const bUse = this.sr.typeUseNodes.get(b);
+    if (struct.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const isNullOrNone = (typeUseId: Semantic.TypeUseId): boolean => {
+        const def = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(typeUseId).type
+        );
+        if (def.variant !== Semantic.ENode.PrimitiveDatatype) { return false; }
+        return (
+          def.primitive === EPrimitive.none ||
+          def.primitive === EPrimitive.null
+        );
+      };
+
+      const nonNullMembers = struct.members.filter((m) => !isNullOrNone(m));
 
       if (
-        Conversion.isStruct(this.sr, aUse.type) &&
-        Conversion.isNoneById(this.sr, b)
+        nonNullMembers.length === 1 &&
+        nonNullMembers.length < struct.members.length
       ) {
-        return this.makeStructLiteral(
-          a,
-          structInst.elements,
-          structInst.allocator
-            ? this.expr(structInst.allocator, undefined)[1]
-            : null,
-          structInst.sourceloc,
-          inference
-        );
-      }
-      if (
-        Conversion.isStruct(this.sr, bUse.type) &&
-        Conversion.isNoneById(this.sr, a)
-      ) {
-        return this.makeStructLiteral(
-          b,
-          structInst.elements,
-          structInst.allocator
-            ? this.expr(structInst.allocator, undefined)[1]
-            : null,
-          structInst.sourceloc,
-          inference
-        );
+        const picked = nonNullMembers[0];
+        const pickedUse = this.sr.typeUseNodes.get(picked);
+        const pickedDef = this.sr.typeDefNodes.get(pickedUse.type);
+
+        if (Conversion.isStruct(this.sr, pickedUse.type)) {
+          return this.makeStructLiteral(
+            picked,
+            structInst.elements,
+            structInst.allocator
+              ? this.expr(structInst.allocator, undefined)[1]
+              : null,
+            structInst.sourceloc,
+            inference
+          );
+        }
+
+        if (
+          pickedDef.variant === Semantic.ENode.FixedArrayDatatype ||
+          pickedDef.variant === Semantic.ENode.DynamicArrayDatatype
+        ) {
+          return this.makeArrayLiteral(
+            picked,
+            structInst.elements,
+            structInst.allocator
+              ? this.expr(structInst.allocator, undefined)[1]
+              : null,
+            structInst.sourceloc,
+            inference
+          );
+        }
       }
     }
 
