@@ -1,7 +1,7 @@
 
 namespace ffi {
-    extern C fn hzstd_color_from_hex(hex: str, error: hzstd_str_ref_t): inline hzstd_color_t :: final;
-    extern C fn hzstd_color_to_hex(color: inline hzstd_color_t, omitAlphaIfOpaque: bool): str :: final;
+    extern C fn hzstd_color_from_hex(hex: str, error: hzstd_str_ref_t, argbMode: bool): inline hzstd_color_t :: final;
+    extern C fn hzstd_color_to_hex(color: inline hzstd_color_t, omitAlphaIfOpaque: bool, argbMode: bool): str :: final;
 }
 
 export extern C noemit inline struct hzstd_color_t {
@@ -10,19 +10,29 @@ export extern C noemit inline struct hzstd_color_t {
     b: real = 0;
     a: real = 0;
 
-    // struct ColorArgs {
-
-    // };
-
-    // Parses a hex color string (RGB, RGBA, RRGGBB, RRGGBBAA, with or without leading '#').
-    // Returns the color on success. On failure, returns an error string describing what went wrong.
-    fn constructor(color: str) {
-        return Color.fromHexOrDefault(color);
+    // Whether the hex string is in RRGGBB[AA] order or AARRGGBB order.
+    export enum HexMode {
+        RGBA,
+        ARGB
     }
 
-    static fn fromHex(color: str): Result<Color, str> {
+    // Options for hex parsing and serialization.
+    export inline struct ColorArgs {
+        mode: HexMode = HexMode.RGBA;
+        omitAlphaIfOpaque: bool = true;
+    };
+
+    // Parses a hex color string (RGB, RGBA, RRGGBB, RRGGBBAA, with or without leading '#').
+    // Respects args.mode for channel ordering of 4- and 8-char forms.
+    // Returns the color on success. On failure, returns an error string.
+    fn constructor(color: str, args: ColorArgs = {}) {
+        return Color.fromHexOrDefault(color, {}, args);
+    }
+
+    // Parses a hex color string. Returns Ok(Color) on success, Err(message) on failure.
+    static fn fromHex(color: str, args: ColorArgs = {}): Result<Color, str> {
         let error = ffi.hzstd_str_ref_t { data: "" };
-        let result = ffi.hzstd_color_from_hex(color, error);
+        let result = ffi.hzstd_color_from_hex(color, error, args.mode == HexMode.ARGB);
 
         if error.data.length > 0 {
             return Result<Color, str>.Err(error.data);
@@ -36,19 +46,20 @@ export extern C noemit inline struct hzstd_color_t {
         });
     }
 
-    static fn fromHexOrDefault(color: str, fallback: Color = {}): Color {
-        let result = Color.fromHex(color);
-        if result {
-            return result;
+    // Parses a hex color string. Returns the parsed color on success, or fallback on failure.
+    static fn fromHexOrDefault(color: str, fallback: Color = {}, args: ColorArgs = {}): Color {
+        if let c = hzstd_color_t.fromHex(color, args) {
+            return c;
         }
         return fallback;
     }
 
-    // Serializes this color to a lowercase hex string (RRGGBBAA), without a leading '#'.
+    // Serializes this color to a lowercase hex string without a leading '#'.
     // Each channel is clamped to [0, 1] before conversion.
-    // If omitAlphaIfOpaque is true and alpha is 1, the output is 6 characters (RRGGBB).
-    fn hex(omitAlphaIfOpaque: bool = false): str {
-        return ffi.hzstd_color_to_hex(this, omitAlphaIfOpaque);
+    // args.omitAlphaIfOpaque: if true and alpha == 1, emits 6 chars (RRGGBB) instead of 8.
+    // args.mode: controls channel order (RRGGBBAA vs AARRGGBB).
+    fn hex(args: ColorArgs = {}): str {
+        return ffi.hzstd_color_to_hex(this, args.omitAlphaIfOpaque, args.mode == HexMode.ARGB);
     }
 
     fn constructor(color: rx.Reactive<Color>): mut Color {
@@ -93,11 +104,16 @@ export extern C noemit inline struct hzstd_colorf_t {
     b: f32 = 0;
     a: f32 = 0;
 
-    // Parses a hex color string (RGB, RGBA, RRGGBB, RRGGBBAA, with or without leading '#').
-    // Returns the color on success. On failure, returns an error string describing what went wrong.
-    fn constructor(color: str): Result<Colorf, str> {
+    // Parses a hex color string. Respects args.mode for channel ordering.
+    // Returns Ok(Colorf) on success, Err(message) on failure.
+    fn constructor(color: str, args: Color.ColorArgs = {}) {
+        return Colorf.fromHexOrDefault(color, {}, args);
+    }
+
+    // Parses a hex color string. Returns Ok(Colorf) on success, Err(message) on failure.
+    static fn fromHex(color: str, args: Color.ColorArgs = {}): Result<Colorf, str> {
         let error = ffi.hzstd_str_ref_t { data: "" };
-        let result = ffi.hzstd_color_from_hex(color, error);
+        let result = ffi.hzstd_color_from_hex(color, error, args.mode == Color.HexMode.ARGB);
 
         if error.data.length > 0 {
             return Result<Colorf, str>.Err(error.data);
@@ -111,16 +127,23 @@ export extern C noemit inline struct hzstd_colorf_t {
         });
     }
 
-    // Serializes this color to a lowercase hex string (RRGGBBAA), without a leading '#'.
-    // Each channel is clamped to [0, 1] before conversion.
-    // If omitAlphaIfOpaque is true and alpha is 1, the output is 6 characters (RRGGBB).
-    fn hex(omitAlphaIfOpaque: bool = false): str {
+    // Parses a hex color string. Returns the parsed color on success, or fallback on failure.
+    static fn fromHexOrDefault(color: str, fallback: Colorf = {}, args: Color.ColorArgs = {}): Colorf {
+        if let c = hzstd_colorf_t.fromHex(color, args) {
+            return c;
+        }
+        return fallback;
+    }
+
+    // Serializes this color to a lowercase hex string without a leading '#'.
+    // See Color.hex for full documentation — behavior is identical, precision is f32.
+    fn hex(args: Color.ColorArgs = {}): str {
         return ffi.hzstd_color_to_hex(Color {
             r: this.r as real,
             g: this.g as real,
             b: this.b as real,
             a: this.a as real,
-        }, omitAlphaIfOpaque);
+        }, args.omitAlphaIfOpaque, args.mode == Color.HexMode.ARGB);
     }
 
     fn constructor(color: rx.Reactive<Colorf>): mut Colorf {
