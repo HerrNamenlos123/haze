@@ -11,7 +11,6 @@ import {
   type ASTAggregateLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTAttemptExpr,
-  type ASTRecoverExpr,
   type ASTBinaryExpr,
   type ASTBinaryUnionTypeExpr,
   type ASTBlockScopeExpr,
@@ -2266,32 +2265,39 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     if (ctx.ATTEMPT()) {
-      if (produced.length !== 2) {
+      const attemptBodies = ctx.attemptBody();
+      if (produced.length !== 1 + attemptBodies.length) {
         throw new InternalError("Ternary attempt stack mismatch");
+      }
+
+      let elseScope: ASTScope | null = null;
+      let elseVar: string | null = null;
+      let recoverScope: ASTScope | null = null;
+      let recoverVar: string | null = null;
+
+      for (let i = 0; i < attemptBodies.length; i++) {
+        const body = attemptBodies[i];
+        const scope = produced[i + 1] as ASTScope;
+        if (body.ELSE()) {
+          if (elseScope !== null) { throw new InternalError("Duplicate else in attempt"); }
+          elseScope = scope;
+          elseVar = body.id() ? body.id()!.getText() : null;
+        } else if (body.RECOVER()) {
+          if (recoverScope !== null) { throw new InternalError("Duplicate recover in attempt"); }
+          recoverScope = scope;
+          recoverVar = body.id() ? body.id()!.getText() : null;
+        }
       }
 
       this.stack.push({
         variant: "AttemptExpr",
         attemptScope: produced[0] as ASTScope,
-        elseScope: produced[1] as ASTScope,
-        elseVar: ctx.id() ? ctx.id()!.getText() : null,
+        elseScope: elseScope,
+        elseVar: elseVar,
+        recoverScope: recoverScope,
+        recoverVar: recoverVar,
         sourceloc: this.loc(ctx),
       } satisfies ASTAttemptExpr);
-      return;
-    }
-
-    if (ctx.RECOVER()) {
-      if (produced.length !== 2) {
-        throw new InternalError("Ternary recover stack mismatch");
-      }
-
-      this.stack.push({
-        variant: "RecoverExpr",
-        recoverScope: produced[0] as ASTScope,
-        elseScope: produced[1] as ASTScope,
-        elseVar: ctx.id() ? ctx.id()!.getText() : null,
-        sourceloc: this.loc(ctx),
-      } satisfies ASTRecoverExpr);
       return;
     }
 

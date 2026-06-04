@@ -19,8 +19,11 @@
       allocator, sizeof(elementType),                                          \
       HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY))
 
+// TODO: If something goes wrong during pushing, we crash. We should handle this
+// more gracefully and at least panic instead so it's recoverable
 #define HZSTD_DYNAMIC_ARRAY_PUSH(array, elem)                                  \
-  hzstd_dynamic_array_push(array, &elem)
+  ((void)assert(hzstd_dynamic_array_push(array, &elem) ==                      \
+                hzstd_dynamic_array_result_ok))
 
 #define HZSTD_DYNAMIC_ARRAY_GET(array, elementType, index)                     \
   *({                                                                          \

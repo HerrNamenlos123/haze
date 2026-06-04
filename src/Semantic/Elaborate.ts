@@ -13544,6 +13544,10 @@ export class SemanticElaborator {
     // ───────────────────────────────────────────────────────────────────────────
     // Else block
     // ───────────────────────────────────────────────────────────────────────────
+    if (attempt.recoverScope !== null) {
+      throw new InternalError("recover block in attempt is not yet implemented in elaboration");
+    }
+
     const errorUnion =
       attemptExpr.errorTypesCaught.size > 0
         ? this.sr.b.untaggedUnionTypeUse(
@@ -13551,6 +13555,8 @@ export class SemanticElaborator {
             attempt.sourceloc
           )
         : this.sr.b.noneType();
+
+    assert(attempt.elseScope !== null);
 
     const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
     assert(elseBlockScope.variant === Collect.ENode.BlockScope);
@@ -13576,7 +13582,7 @@ export class SemanticElaborator {
             errorUnion
           );
         }
-        return this.makeAndElaborateBlockScope(attempt.elseScope, {
+        return this.makeAndElaborateBlockScope(attempt.elseScope!, {
           lastExprIsEmit: true,
           unsafe: inference?.unsafe,
         });

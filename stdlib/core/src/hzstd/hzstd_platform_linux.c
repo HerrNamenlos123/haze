@@ -131,7 +131,7 @@ static void *hzstd_panic_handler_thread(void *_) {
   // Now do the actual work
   size_t nextId = 1;
   hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      allocator, sizeof(hzstd_stackframe_t *), numberOfFrames);
+      allocator, sizeof(hzstd_stackframe_t), numberOfFrames);
   unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     unw_word_t pc;
@@ -141,14 +141,12 @@ static void *hzstd_panic_handler_thread(void *_) {
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_stackframe_t *framePtr;
-      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
-      if (framePtr->instructionPointer == (hzstd_cptr_t)pc) {
+      hzstd_stackframe_t frame =
+          HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
+      if (frame.instructionPointer == (hzstd_cptr_t)pc) {
         // Frame with same function found, push new frame but reuse the function
         // name (retrieving name is slow)
-        assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-               hzstd_dynamic_array_result_ok);
+        HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frame);
         pushed = true;
         break;
       }
@@ -176,11 +174,7 @@ static void *hzstd_panic_handler_thread(void *_) {
                         ._column = 0},
       };
 
-      hzstd_stackframe_t *framePtr =
-          HZSTD_ALLOC_STRUCT(allocator, hzstd_stackframe_t, frameStruct);
-
-      assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
+      HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frameStruct);
     }
 
   } while (unw_step(&cursor) > 0);

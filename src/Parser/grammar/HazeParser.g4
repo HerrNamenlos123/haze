@@ -313,10 +313,14 @@ logical
     : equality ((DOUBLEAND|DOUBLEOR|SINGLEOR) equality)*
     ;
 
+attemptBody
+    : ELSE id? rawScope
+    | RECOVER id? rawScope
+    ;
+
 ternary
     : logical (QUESTIONMARK expr COLON ternary)?
-    | ATTEMPT rawScope ELSE id? rawScope
-    | RECOVER rawScope ELSE id? rawScope
+    | ATTEMPT rawScope attemptBody+
     ;
 
 assignment

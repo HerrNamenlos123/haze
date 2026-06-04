@@ -252,7 +252,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
   // Now do the actual work
   size_t nextId = 1;
   hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      allocator, sizeof(hzstd_stackframe_t *), numberOfFrames);
+      allocator, sizeof(hzstd_stackframe_t), numberOfFrames);
   while (StackWalk64(machineType, hProcess, hThread, &stackFrame2,
                      &panicContext2, NULL, SymFunctionTableAccess64,
                      SymGetModuleBase64, NULL)) {
@@ -261,15 +261,12 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_stackframe_t *framePtr;
-      assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
-      if (framePtr->instructionPointer ==
-          (hzstd_cptr_t)stackFrame2.AddrPC.Offset) {
+      hzstd_stackframe_t frame =
+          HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
+      if (frame.instructionPointer == (hzstd_cptr_t)stackFrame2.AddrPC.Offset) {
         // Frame with same function found, push new frame but reuse the function
         // name (retrieving name is slow)
-        assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-               hzstd_dynamic_array_result_ok);
+        HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frame);
         pushed = true;
         break;
       }
@@ -307,19 +304,13 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
         sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
       }
 
-      // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_stackframe_t frameStruct = (hzstd_stackframe_t){
+      hzstd_stackframe_t frameStruct = {
           .id = nextId++,
           .instructionPointer = (void *)stackFrame2.AddrPC.Offset,
           .name = name,
           .sourceloc = sourceloc,
       };
-
-      hzstd_stackframe_t *framePtr =
-          HZSTD_ALLOC_STRUCT(allocator, hzstd_stackframe_t, frameStruct);
-
-      assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
-             hzstd_dynamic_array_result_ok);
+      HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frameStruct);
     }
 
     if (stackFrame2.AddrPC.Offset == 0) {

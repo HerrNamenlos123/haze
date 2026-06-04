@@ -4,6 +4,7 @@
 #include "hzstd_array.h"
 #include "hzstd_demangle.h"
 #include "hzstd_platform.h"
+#include "hzstd_runtime.h"
 #include "hzstd_string.h"
 
 #include <stdarg.h>
@@ -245,17 +246,19 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
 
   // ── "at … / in …" summary ────────────────────────────────────────────────
   size_t n_frames = hzstd_dynamic_array_size(frames);
-  const hzstd_stackframe_t *first_user = NULL;
+  hzstd_stackframe_t first_user = {};
+  bool has_first_user = false;
   for (size_t i = (size_t)skip_n_frames; i < n_frames; i++) {
-    hzstd_stackframe_t *fp;
-    hzstd_dynamic_array_get(frames, i, &fp);
-    if (!frame_system(fp->name)) {
-      first_user = fp;
+    hzstd_stackframe_t frame =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    if (!frame_system(frame.name)) {
+      first_user = frame;
+      has_first_user = true;
       break;
     }
   }
 
-  if (has_loc && first_user) {
+  if (has_loc && has_first_user) {
     hzstd_str_t p = loc_path(loc_str);
     hzstd_str_t lc = loc_line_col(loc_str);
 
@@ -263,7 +266,7 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
     print_path_hyperlink(p, lc);
     fprintf(stderr, A_RESET "\n");
 
-    hzstd_str_t in_name = frame_display_name(alloc, first_user->name);
+    hzstd_str_t in_name = frame_display_name(alloc, first_user.name);
     fprintf(stderr, A_DIM "     in " A_RESET A_WHITE);
     fwrite(in_name.data, 1, in_name.length, stderr);
     fprintf(stderr, A_RESET "\n");
@@ -275,9 +278,9 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
   // Pass 1: find the widest display name for column alignment
   size_t name_col = 0;
   for (size_t i = (size_t)skip_n_frames; i < n_frames; i++) {
-    hzstd_stackframe_t *fp;
-    hzstd_dynamic_array_get(frames, i, &fp);
-    hzstd_str_t dn = frame_display_name(alloc, fp->name);
+    hzstd_stackframe_t frame =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    hzstd_str_t dn = frame_display_name(alloc, frame.name);
     if (dn.length > name_col)
       name_col = dn.length;
   }
@@ -291,8 +294,8 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
   // Pass 2: print frames
   size_t vis_idx = 0;
   for (size_t i = (size_t)skip_n_frames; i < n_frames;) {
-    hzstd_stackframe_t *fp;
-    hzstd_dynamic_array_get(frames, i, &fp);
+    hzstd_stackframe_t frame =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
 
     // ── Cycle detection ───────────────────────────────────────────────────
     size_t max_L = (n_frames - i < 32) ? n_frames - i : 32;
@@ -301,10 +304,11 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
     for (size_t L = 1; L <= max_L && i + 2 * L <= n_frames; L++) {
       bool match = true;
       for (size_t k = 0; k < L && match; k++) {
-        hzstd_stackframe_t *a, *b;
-        hzstd_dynamic_array_get(frames, i + k, &a);
-        hzstd_dynamic_array_get(frames, i + L + k, &b);
-        if (a->id != b->id)
+        hzstd_stackframe_t a =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+        hzstd_stackframe_t b =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + L + k);
+        if (a.id != b.id)
           match = false;
       }
       if (!match)
@@ -314,10 +318,11 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
       while (i + cnt * L + L <= n_frames) {
         bool m2 = true;
         for (size_t k = 0; k < L && m2; k++) {
-          hzstd_stackframe_t *a, *b;
-          hzstd_dynamic_array_get(frames, i + k, &a);
-          hzstd_dynamic_array_get(frames, i + cnt * L + k, &b);
-          if (a->id != b->id)
+          hzstd_stackframe_t a =
+              HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+          hzstd_stackframe_t b = HZSTD_DYNAMIC_ARRAY_GET(
+              frames, hzstd_stackframe_t, i + cnt * L + k);
+          if (a.id != b.id)
             m2 = false;
         }
         if (!m2)
@@ -339,9 +344,9 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
               cyc_rep, cyc_len, cyc_len == 1 ? "" : "s");
 
       for (size_t k = 0; k < cyc_len; k++) {
-        hzstd_stackframe_t *fr;
-        hzstd_dynamic_array_get(frames, i + k, &fr);
-        hzstd_str_t dn = frame_display_name(alloc, fr->name);
+        hzstd_stackframe_t fr =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+        hzstd_str_t dn = frame_display_name(alloc, fr.name);
         fprintf(stderr, A_DIM "      ");
         fwrite(dn.data, 1, dn.length, stderr);
         fprintf(stderr, A_RESET "\n");
@@ -352,8 +357,8 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
     }
 
     // ── Normal frame ──────────────────────────────────────────────────────
-    const char *sys = frame_system(fp->name);
-    hzstd_str_t dn = frame_display_name(alloc, fp->name);
+    const char *sys = frame_system(frame.name);
+    hzstd_str_t dn = frame_display_name(alloc, frame.name);
 
     // Index
     fprintf(stderr, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
@@ -371,17 +376,17 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
     // Location or system tag
     if (sys) {
       fprintf(stderr, A_DIM "<%s>" A_RESET, sys);
-    } else if (fp->sourceloc._filename.length > 0) {
+    } else if (frame.sourceloc._filename.length > 0) {
       char linecol_buf[32] = {0};
       hzstd_str_t linecol = {.data = linecol_buf, .length = 0};
-      if (fp->sourceloc._line != 0) {
+      if (frame.sourceloc._line != 0) {
         int n = snprintf(linecol_buf, sizeof(linecol_buf), "%lld",
-                         (long long)fp->sourceloc._line);
+                         (long long)frame.sourceloc._line);
         if (n > 0)
           linecol.length = (size_t)n;
       }
       fprintf(stderr, A_YELLOW);
-      print_path_hyperlink(fp->sourceloc._filename, linecol);
+      print_path_hyperlink(frame.sourceloc._filename, linecol);
       fprintf(stderr, A_RESET);
     }
 

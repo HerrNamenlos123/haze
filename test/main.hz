@@ -47,10 +47,10 @@ fn other() {
 }
 
 fn foo() {
-    recover {
+    attempt {
         other();
     }
-    else e {
+    recover e {
         fmt.println("panic handled: ");
     };
 }

@@ -40,7 +40,7 @@ typedef struct {
 } hzstd_stackframe_t;
 
 typedef struct {
-  // (hzstd_stackframe_t*)[] -> Array of Pointers
+  // hzstd_stackframe_t[] -> Array of inline structs
   hzstd_dynamic_array_t stackframes;
   hzstd_str_t message;
 } hzstd_stack_t;

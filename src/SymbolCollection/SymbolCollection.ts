@@ -186,7 +186,6 @@ export namespace Collect {
     TypeLiteralExpr,
     TypeModifierExpr,
     AttemptExpr,
-    RecoverExpr,
     PreIncrExpr,
     PostIncrExpr,
     // Specials
@@ -747,15 +746,10 @@ export namespace Collect {
   export type AttemptExpr = BaseExpr & {
     variant: ENode.AttemptExpr;
     attemptScope: Collect.ScopeId;
-    elseScope: Collect.ScopeId;
+    elseScope: Collect.ScopeId | null;
     elseVar: string | null;
-  };
-
-  export type RecoverExpr = BaseExpr & {
-    variant: ENode.RecoverExpr;
-    recoverScope: Collect.ScopeId;
-    elseScope: Collect.ScopeId;
-    elseVar: string | null;
+    recoverScope: Collect.ScopeId | null;
+    recoverVar: string | null;
   };
 
   export type CallableExpr = BaseExpr & {
@@ -861,7 +855,6 @@ export namespace Collect {
     | TypeLiteralExpr
     | TypeModifierExpr
     | AttemptExpr
-    | RecoverExpr
     | MemberAccessExpr
     | CallableTypeDefinitionExpr
     | FunctionTypeDefinitionExpr
@@ -3278,105 +3271,59 @@ function collectExpr(
     // =================================================================================================================
 
     case "AttemptExpr": {
-      const outerElseScope = collectScope(
-        cc,
-        {
-          variant: "Scope",
-          unsafe: true,
-          statements: [
-            ...(item.elseVar
-              ? [
-                  {
-                    variant: "VariableDefinitionStatement",
-                    name: item.elseVar,
-                    comptime: false,
-                    mutability: EVariableMutability.Let,
-                    sourceloc: item.sourceloc,
-                    variableContext: EVariableContext.FunctionLocal,
-                    datatype: undefined,
-                    expr: {
-                      variant: "SymbolValueExpr",
-                      generics: [],
-                      name: "uninitialized",
+      const wrapScope = (
+        innerScope: ASTScope,
+        varName: string | null
+      ): Collect.ScopeId =>
+        collectScope(
+          cc,
+          {
+            variant: "Scope",
+            unsafe: true,
+            statements: [
+              ...(varName
+                ? [
+                    {
+                      variant: "VariableDefinitionStatement",
+                      name: varName,
+                      comptime: false,
+                      mutability: EVariableMutability.Let,
                       sourceloc: item.sourceloc,
-                    },
-                  } as ASTVariableDefinitionStatement,
-                ]
-              : []),
-            {
-              variant: "ExprStatement",
-              expr: {
-                variant: "BlockScopeExpr",
-                scope: item.elseScope,
+                      variableContext: EVariableContext.FunctionLocal,
+                      datatype: undefined,
+                      expr: {
+                        variant: "SymbolValueExpr",
+                        generics: [],
+                        name: "uninitialized",
+                        sourceloc: item.sourceloc,
+                      },
+                    } as ASTVariableDefinitionStatement,
+                  ]
+                : []),
+              {
+                variant: "ExprStatement",
+                expr: {
+                  variant: "BlockScopeExpr",
+                  scope: innerScope,
+                  sourceloc: item.sourceloc,
+                },
                 sourceloc: item.sourceloc,
               },
-              sourceloc: item.sourceloc,
-            },
-          ],
-          sourceloc: item.sourceloc,
-        },
-        {
-          currentParentScope: args.currentParentScope,
-        }
-      );
+            ],
+            sourceloc: item.sourceloc,
+          },
+          { currentParentScope: args.currentParentScope }
+        );
 
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.AttemptExpr,
         attemptScope: collectScope(cc, item.attemptScope, args),
-        elseScope: outerElseScope,
+        elseScope: item.elseScope ? wrapScope(item.elseScope, item.elseVar) : null,
         elseVar: item.elseVar,
-        sourceloc: item.sourceloc,
-      })[1];
-    }
-
-    case "RecoverExpr": {
-      const outerElseScope = collectScope(
-        cc,
-        {
-          variant: "Scope",
-          unsafe: true,
-          statements: [
-            ...(item.elseVar
-              ? [
-                  {
-                    variant: "VariableDefinitionStatement",
-                    name: item.elseVar,
-                    comptime: false,
-                    mutability: EVariableMutability.Let,
-                    sourceloc: item.sourceloc,
-                    variableContext: EVariableContext.FunctionLocal,
-                    datatype: undefined,
-                    expr: {
-                      variant: "SymbolValueExpr",
-                      generics: [],
-                      name: "uninitialized",
-                      sourceloc: item.sourceloc,
-                    },
-                  } as ASTVariableDefinitionStatement,
-                ]
-              : []),
-            {
-              variant: "ExprStatement",
-              expr: {
-                variant: "BlockScopeExpr",
-                scope: item.elseScope,
-                sourceloc: item.sourceloc,
-              },
-              sourceloc: item.sourceloc,
-            },
-          ],
-          sourceloc: item.sourceloc,
-        },
-        {
-          currentParentScope: args.currentParentScope,
-        }
-      );
-
-      return Collect.makeExpr(cc, {
-        variant: Collect.ENode.RecoverExpr,
-        recoverScope: collectScope(cc, item.recoverScope, args),
-        elseScope: outerElseScope,
-        elseVar: item.elseVar,
+        recoverScope: item.recoverScope
+          ? wrapScope(item.recoverScope, item.recoverVar)
+          : null,
+        recoverVar: item.recoverVar,
         sourceloc: item.sourceloc,
       })[1];
     }
