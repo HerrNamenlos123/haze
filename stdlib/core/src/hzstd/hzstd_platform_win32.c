@@ -77,6 +77,8 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
   hzstd_block_thread_forever();
 }
 
+int GUARANTEED_VEH_STACK_SIZE = 16384;
+
 // VEH handlers absolutely suck on Windows for detecting stack overflows,
 // because they always run on the same stack as the crashed thread, which means
 // the handler would crash again since the stack is already overflowed.
@@ -85,8 +87,15 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
 // So fuck it, Windows Support for stack traces is limited to non-stack-overflow
 // access violations, during a stack overflow accept the fact that it crashes.
 LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
+  // Since we call SetThreadStackGuarantee(), we have GUARANTEED_VEH_STACK_SIZE
+  // many bytes of stack space remaining, maybe more, which we can use in this
+  // function. We do not know how much stack we still need for unwinding, so we
+  // still use the watchdog thread to unwind the stack. But this now the budget
+  // VectoredHandler is allowed to use
   if (ExceptionInfo->ExceptionRecord->ExceptionCode ==
-      EXCEPTION_ACCESS_VIOLATION) {
+          EXCEPTION_ACCESS_VIOLATION ||
+      ExceptionInfo->ExceptionRecord->ExceptionCode ==
+          EXCEPTION_STACK_OVERFLOW) {
     // During an access violation, we assume that the stack is still intact, so
     // we can call normal functions. But to be sure, we still use the watchdog
     // thread like on linux.
@@ -101,24 +110,23 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
       PEXCEPTION_RECORD rec = ExceptionInfo->ExceptionRecord;
       switch (rec->ExceptionCode) {
 
+      case EXCEPTION_STACK_OVERFLOW: {
+        panic_reason =
+            HZSTD_STRING_FROM_CSTR("Stack Overflow (likely due to recursion)");
+        break;
+      }
+
       case EXCEPTION_ACCESS_VIOLATION: {
         ULONG_PTR type = rec->ExceptionInformation[0];
-        ULONG_PTR addr = rec->ExceptionInformation[1];
-
-        const char *typeStr = (type == 0)   ? "Read"
-                              : (type == 1) ? "Write"
-                              : (type == 8) ? "Execute"
-                                            : "Unknown";
-
         if (type == 0) {
           panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Read Access Violation ");
+              "Segmentation Fault: Read Access Violation");
         } else if (type == 1) {
           panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Write Access Violation ");
+              "Segmentation Fault: Write Access Violation");
         } else if (type == 8) {
           panic_reason = HZSTD_STRING_FROM_CSTR(
-              "Segmentation Fault: Execute Access Violation ");
+              "Segmentation Fault: Execute Access Violation");
         } else {
           panic_reason = HZSTD_STRING_FROM_CSTR(
               "Segmentation Fault: Access Violation of unknown type");
@@ -292,8 +300,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       IMAGEHLP_LINE64 lineInfo;
       lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
       DWORD lineDisp = 0;
-      if (SymGetLineFromAddr64(GetCurrentProcess(),
-                               stackFrame2.AddrPC.Offset,
+      if (SymGetLineFromAddr64(GetCurrentProcess(), stackFrame2.AddrPC.Offset,
                                &lineDisp, &lineInfo)) {
         sourceloc._filename =
             hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
@@ -339,11 +346,6 @@ bool hzstd_get_cwd(char *buf, size_t buf_size) {
   return r > 0 && r < (DWORD)buf_size;
 }
 
-void test() {
-  int *a = NULL;
-  int b = *a;
-}
-
 void hzstd_setup_panic_handler() {
   static thread_local char altstack_buf[8192];
   // This function registers a signal handler for the SIGSEGV signal (segfault).
@@ -374,12 +376,17 @@ void hzstd_setup_panic_handler() {
   HANDLE hWatchdog =
       CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
 
+  ULONG bytes = GUARANTEED_VEH_STACK_SIZE;
+  if (!SetThreadStackGuarantee(&bytes)) {
+    hzstd_panic(
+        "Internal Runtime Error: Failed to set guaranteed stack size\n");
+    return;
+  }
+
   PVOID Handle = AddVectoredExceptionHandler(1, VectoredHandler);
   if (Handle == NULL) {
-    fprintf(stderr,
-            "Internal Runtime Error: Failed to register Vectored Exception "
-            "Handler (VEH). Segmentation faults will not be caught.\n");
-    return;
+    hzstd_panic("Internal Runtime Error: Failed to register Vectored Exception "
+                "Handler (VEH). Segmentation faults will not be caught.\n");
   }
 }
 
@@ -642,5 +649,6 @@ double hzstd_time_now(void) {
     startup_counter_qpc = counter.QuadPart;
   }
 
-  return (double)(counter.QuadPart - startup_counter_qpc) / (double)perf_frequency_qpc;
+  return (double)(counter.QuadPart - startup_counter_qpc) /
+         (double)perf_frequency_qpc;
 }
