@@ -320,7 +320,7 @@ attemptBody
 
 ternary
     : logical (QUESTIONMARK expr COLON ternary)?
-    | ATTEMPT rawScope attemptBody+
+    | ATTEMPT rawScope attemptBody
     ;
 
 assignment
