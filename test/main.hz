@@ -52,7 +52,7 @@ fn foo() {
     }
     else e {
         fmt.println("panic handled: ");
-    }
+    };
 }
 
 fn main(): int {
