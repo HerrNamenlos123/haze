@@ -430,6 +430,14 @@ export type ASTAttemptExpr = {
   sourceloc: SourceLoc;
 };
 
+export type ASTRecoverExpr = {
+  variant: "RecoverExpr";
+  recoverScope: ASTScope;
+  elseScope: ASTScope;
+  elseVar: string | null;
+  sourceloc: SourceLoc;
+};
+
 export type ASTLiteralExpr = {
   variant: "LiteralExpr";
   literal: LiteralValue;
@@ -673,6 +681,7 @@ export type ASTExpr =
   | ASTBlockScopeExpr
   | ASTLambdaExpr
   | ASTAttemptExpr
+  | ASTRecoverExpr
   | ASTLiteralExpr
   | ASTFStringExpr
   | ASTPostIncrExpr

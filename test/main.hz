@@ -42,7 +42,22 @@ fn print<T>(value: T) {
     }
 }
 
+fn other() {
+    sys.panic("OH NO");
+}
+
+fn foo() {
+    recover {
+        other();
+    }
+    else e {
+        fmt.println("panic handled: ");
+    }
+}
+
 fn main(): int {
+
+    foo();
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

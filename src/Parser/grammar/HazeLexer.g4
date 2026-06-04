@@ -30,6 +30,7 @@ RAISE: 'raise';
 EMIT: 'emit';
 INLINE: 'inline';
 ATTEMPT: 'attempt';
+RECOVER: 'recover';
 NORETURN: 'noreturn';
 NORETURNIF: 'noreturn_if';
 WITH: 'with';

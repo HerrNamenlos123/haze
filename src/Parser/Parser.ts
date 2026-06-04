@@ -11,6 +11,7 @@ import {
   type ASTAggregateLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTAttemptExpr,
+  type ASTRecoverExpr,
   type ASTBinaryExpr,
   type ASTBinaryUnionTypeExpr,
   type ASTBlockScopeExpr,
@@ -2276,6 +2277,21 @@ class ASTBuilder extends HazeParserListener {
         elseVar: ctx.id() ? ctx.id()!.getText() : null,
         sourceloc: this.loc(ctx),
       } satisfies ASTAttemptExpr);
+      return;
+    }
+
+    if (ctx.RECOVER()) {
+      if (produced.length !== 2) {
+        throw new InternalError("Ternary recover stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "RecoverExpr",
+        recoverScope: produced[0] as ASTScope,
+        elseScope: produced[1] as ASTScope,
+        elseVar: ctx.id() ? ctx.id()!.getText() : null,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTRecoverExpr);
       return;
     }
 
