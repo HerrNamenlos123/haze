@@ -2,6 +2,7 @@
 #ifndef HZSTD_PLATFORM_H
 #define HZSTD_PLATFORM_H
 
+#include "hzstd_array.h"
 #include "hzstd_common.h"
 
 #include "hzstd_source_location.h"
@@ -36,7 +37,13 @@ typedef struct {
   hzstd_cptr_t instructionPointer;
   hzstd_str_t name;
   hzstd_source_location_t sourceloc; /* absent when _filename.length == 0 */
-} hzstd_unwind_frame_t;
+} hzstd_stackframe_t;
+
+typedef struct {
+  // (hzstd_stackframe_t*)[] -> Array of Pointers
+  hzstd_dynamic_array_t stackframes;
+  hzstd_str_t message;
+} hzstd_stack_t;
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
                                            hzstd_int_t skip_n_frames);

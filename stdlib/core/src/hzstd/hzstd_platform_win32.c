@@ -252,7 +252,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
   // Now do the actual work
   size_t nextId = 1;
   hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      allocator, sizeof(hzstd_unwind_frame_t *), numberOfFrames);
+      allocator, sizeof(hzstd_stackframe_t *), numberOfFrames);
   while (StackWalk64(machineType, hProcess, hThread, &stackFrame2,
                      &panicContext2, NULL, SymFunctionTableAccess64,
                      SymGetModuleBase64, NULL)) {
@@ -261,7 +261,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_unwind_frame_t *framePtr;
+      hzstd_stackframe_t *framePtr;
       assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
              hzstd_dynamic_array_result_ok);
       if (framePtr->instructionPointer ==
@@ -308,15 +308,15 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t){
+      hzstd_stackframe_t frameStruct = (hzstd_stackframe_t){
           .id = nextId++,
           .instructionPointer = (void *)stackFrame2.AddrPC.Offset,
           .name = name,
           .sourceloc = sourceloc,
       };
 
-      hzstd_unwind_frame_t *framePtr =
-          HZSTD_ALLOC_STRUCT(allocator, hzstd_unwind_frame_t, frameStruct);
+      hzstd_stackframe_t *framePtr =
+          HZSTD_ALLOC_STRUCT(allocator, hzstd_stackframe_t, frameStruct);
 
       assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
              hzstd_dynamic_array_result_ok);

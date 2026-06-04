@@ -131,7 +131,7 @@ static void *hzstd_panic_handler_thread(void *_) {
   // Now do the actual work
   size_t nextId = 1;
   hzstd_dynamic_array_t *frameArray = hzstd_dynamic_array_create(
-      allocator, sizeof(hzstd_unwind_frame_t *), numberOfFrames);
+      allocator, sizeof(hzstd_stackframe_t *), numberOfFrames);
   unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
   do {
     unw_word_t pc;
@@ -141,7 +141,7 @@ static void *hzstd_panic_handler_thread(void *_) {
     // recursion, it is likely that they repeat)
     bool pushed = false;
     for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_unwind_frame_t *framePtr;
+      hzstd_stackframe_t *framePtr;
       assert(hzstd_dynamic_array_get(frameArray, i, &framePtr) ==
              hzstd_dynamic_array_result_ok);
       if (framePtr->instructionPointer == (hzstd_cptr_t)pc) {
@@ -167,15 +167,17 @@ static void *hzstd_panic_handler_thread(void *_) {
       }
 
       // Doesn't work inline in HZSTD_ALLOC_STRUCT_RAW
-      hzstd_unwind_frame_t frameStruct = (hzstd_unwind_frame_t){
+      hzstd_stackframe_t frameStruct = (hzstd_stackframe_t){
           .id = nextId++,
           .instructionPointer = (void *)pc,
           .name = name,
-          .sourceloc = {._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0},
+          .sourceloc = {._filename = HZSTD_STRING(NULL, 0),
+                        ._line = 0,
+                        ._column = 0},
       };
 
-      hzstd_unwind_frame_t *framePtr =
-          HZSTD_ALLOC_STRUCT(allocator, hzstd_unwind_frame_t, frameStruct);
+      hzstd_stackframe_t *framePtr =
+          HZSTD_ALLOC_STRUCT(allocator, hzstd_stackframe_t, frameStruct);
 
       assert(hzstd_dynamic_array_push(frameArray, &framePtr) ==
              hzstd_dynamic_array_result_ok);
@@ -466,7 +468,8 @@ void os_sleep_ns(uint64_t ns) {
 double hzstd_time_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
-  int64_t delta_ns = ((int64_t)ts.tv_sec - (int64_t)startup_ts.tv_sec) * INT64_C(1000000000)
-                   + ((int64_t)ts.tv_nsec - (int64_t)startup_ts.tv_nsec);
+  int64_t delta_ns =
+      ((int64_t)ts.tv_sec - (int64_t)startup_ts.tv_sec) * INT64_C(1000000000) +
+      ((int64_t)ts.tv_nsec - (int64_t)startup_ts.tv_nsec);
   return (double)delta_ns / 1e9;
 }
