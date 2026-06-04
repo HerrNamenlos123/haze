@@ -43,6 +43,27 @@ namespace ffi {
     };
 
     extern C noemit fn hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
+
+    export extern C noemit enum unscoped hzstd_panic_type_t {
+        // WARNING: This must match with hzstd_platform.h!!!
+        hzstd_panic_type_unknown = 0,
+        hzstd_panic_type_user = 1,
+        hzstd_panic_type_segfault = 2,
+        hzstd_panic_type_stackoverflow = 3,
+    };
+
+    export extern C noemit opaque struct hzstd_stackframe_t {
+        id: int;
+        instructionPointer: int;
+        name: str;
+        sourceloc: SourceLocation;
+    };
+
+    export extern C noemit opaque struct hzstd_panic_info_t {
+        stackframes: []hzstd_stackframe_t;
+        message: str;
+        type: hzstd_panic_type_t;
+    };
 }
 
 namespace sys {
@@ -70,4 +91,10 @@ namespace sys {
     export fn isWin32() {
         return sys.platform() == Platform.Win32;
     }
+}
+
+namespace sys {
+    export type PanicInfo = ffi.hzstd_panic_info_t;
+    export type StackFrame = ffi.hzstd_stackframe_t;
+    export type PanicType = ffi.hzstd_panic_type_t;
 }

@@ -126,7 +126,7 @@ hzstd_trap_str(hzstd_str_t msg) {
 // Panic Recovery
 
 typedef struct {
-  cleanups;
+  hzstd_dynamic_array_t *cleanup_handlers;
 } hzstd_panic_recovery_frame_t;
 
 #endif // HZSTD_RUNTIME_H

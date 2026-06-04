@@ -13495,32 +13495,43 @@ export class SemanticElaborator {
   }
 
   attemptExpr(attempt: Collect.AttemptExpr, inference: Semantic.Inference) {
+    if (attempt.elseScope === null && attempt.recoverScope === null) {
+      throw new InternalError("attempt without else or recover block is not yet implemented in elaboration");
+    }
+
     const uniqueId = makeTempId();
     const [attemptExpr, attemptExprId] =
       this.sr.b.addExpr<Semantic.AttemptExpr>(this.sr, {
         variant: Semantic.ENode.AttemptExpr,
         attemptScopeExpr: -1 as Semantic.ExprId,
-        elseScopeExpr: -1 as Semantic.ExprId,
+        elseScopeExpr: null,
+        recoverScopeExpr: null,
         instanceIds: [],
         attemptScopeReturnsType: null,
         elseScopeReturnsType: null,
+        recoverScopeReturnsType: null,
         errorTypesCaught: new Set(),
         uniqueId: uniqueId,
         errorLabel: `__attempt_error_label_${uniqueId}`,
+        recoverLabel: `__attempt_recover_label_${uniqueId}`,
         resultLabel: `__attempt_result_label_${uniqueId}`,
         errorResultVarname: `__attempt_error_${uniqueId}`,
+        panicInfoVarname: `__attempt_panic_info_${uniqueId}`,
         isTemporary: true,
         hasErrorVar: Boolean(attempt.elseVar),
+        hasRecoverVar: Boolean(attempt.recoverVar),
         sourceloc: attempt.sourceloc,
         type: -1 as Semantic.TypeUseId,
         errorResultTypeIsUnion: false,
         errorResultType: -1 as Semantic.TypeUseId,
+        panicInfoType: null,
         flow: Semantic.FlowResult.empty(),
         writes: Semantic.WriteResult.empty(),
       });
 
     // ───────────────────────────────────────────────────────────────────────────
     // Attempt block
+    // raise statements inside register with this attempt only when else handles them
     // ───────────────────────────────────────────────────────────────────────────
     const {
       flow: attemptFlow,
@@ -13533,7 +13544,9 @@ export class SemanticElaborator {
         genericsScope: attempt.attemptScope,
       },
       () => {
-        this.inAttemptExpr = attemptExprId;
+        if (attempt.elseScope !== null) {
+          this.inAttemptExpr = attemptExprId;
+        }
         return this.makeAndElaborateBlockScope(attempt.attemptScope, {
           lastExprIsEmit: true,
           unsafe: inference?.unsafe,
@@ -13542,16 +13555,8 @@ export class SemanticElaborator {
     );
 
     // ───────────────────────────────────────────────────────────────────────────
-    // Else block
+    // Else block (handles raise errors)
     // ───────────────────────────────────────────────────────────────────────────
-    if (attempt.recoverScope !== null) {
-      throw new InternalError("recover block in attempt is not yet implemented in elaboration");
-    }
-
-    if (attempt.elseScope === null) {
-      throw new InternalError("attempt without else block is not yet implemented in elaboration");
-    }
-
     const errorUnion =
       attemptExpr.errorTypesCaught.size > 0
         ? this.sr.b.untaggedUnionTypeUse(
@@ -13560,47 +13565,141 @@ export class SemanticElaborator {
           )
         : this.sr.b.noneType();
 
-    const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
-    assert(elseBlockScope.variant === Collect.ENode.BlockScope);
+    attemptExpr.errorResultType = errorUnion;
 
-    let errorVarDefStatement: Collect.VariableDefinitionStatement | null = null;
-    if (elseBlockScope.statements.length === 2) {
-      const s = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
-      assert(s.variant === Collect.ENode.VariableDefinitionStatement);
-      errorVarDefStatement = s;
+    const errorResultTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(errorUnion)
+    );
+    const errorResultTypeDef = this.sr.typeDefNodes.get(
+      errorResultTypeUse.type
+    );
+    // TODO: Verify that this line ACTUALLY is correct, and cannot incorrectly trigger
+    // when the return type happens to be a union, not because the union was created, but
+    // because only one path returns and this one path happens to be a union, then the union
+    // must not be created during lowering because it already has been.
+    attemptExpr.errorResultTypeIsUnion =
+      errorResultTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype;
+
+    let elseFlow = Semantic.FlowResult.empty();
+    let elseWrites = Semantic.WriteResult.empty();
+    let elseScope: Semantic.BlockScope | null = null;
+    let elseScopeId: Semantic.BlockScopeId = -1 as Semantic.BlockScopeId;
+
+    if (attempt.elseScope !== null) {
+      const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
+      assert(elseBlockScope.variant === Collect.ENode.BlockScope);
+
+      let errorVarDefStatement: Collect.VariableDefinitionStatement | null = null;
+      if (elseBlockScope.statements.length === 2) {
+        const s = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
+        assert(s.variant === Collect.ENode.VariableDefinitionStatement);
+        errorVarDefStatement = s;
+      }
+
+      const elseResult = this.withScopes(
+        { currentScope: attempt.elseScope, genericsScope: attempt.elseScope },
+        () => {
+          if (errorVarDefStatement) {
+            this.currentContext.elaborationTypeOverride.set(
+              errorVarDefStatement.variableSymbol,
+              errorUnion
+            );
+          }
+          return this.makeAndElaborateBlockScope(attempt.elseScope!, {
+            lastExprIsEmit: true,
+            unsafe: inference?.unsafe,
+          });
+        }
+      );
+      elseFlow = elseResult.flow;
+      elseWrites = elseResult.writes;
+      elseScope = elseResult.scope;
+      elseScopeId = elseResult.scopeId;
     }
 
-    const {
-      flow: elseFlow,
-      writes: elseWrites,
-      scope: elseScope,
-      scopeId: elseScopeId,
-    } = this.withScopes(
-      { currentScope: attempt.elseScope, genericsScope: attempt.elseScope },
-      () => {
-        if (errorVarDefStatement) {
-          this.currentContext.elaborationTypeOverride.set(
-            errorVarDefStatement.variableSymbol,
-            errorUnion
-          );
-        }
-        return this.makeAndElaborateBlockScope(attempt.elseScope!, {
-          lastExprIsEmit: true,
-          unsafe: inference?.unsafe,
-        });
+    // ───────────────────────────────────────────────────────────────────────────
+    // Recover block (handles panics — PanicInfo | none error variable)
+    // ───────────────────────────────────────────────────────────────────────────
+    let recoverFlow = Semantic.FlowResult.empty();
+    let recoverWrites = Semantic.WriteResult.empty();
+    let recoverScope: Semantic.BlockScope | null = null;
+    let recoverScopeId: Semantic.BlockScopeId = -1 as Semantic.BlockScopeId;
+
+    if (attempt.recoverScope !== null) {
+      // Resolve ffi.hzstd_panic_info_t and elaborate it to build PanicInfo | none.
+      const panicInfoCollectSymbolId = Semantic.findBuiltinSymbolByName(
+        this.sr,
+        "sys.PanicInfo",
+        attempt.sourceloc
+      );
+      const panicInfoCollectSymbol = this.sr.cc.symbolNodes.get(panicInfoCollectSymbolId);
+      assert(panicInfoCollectSymbol.variant === Collect.ENode.TypeDefSymbol);
+      const panicInfoSemanticSymbolId = this.elaborateTypeDef(
+        panicInfoCollectSymbol,
+        [],
+        attempt.sourceloc
+      );
+      const panicInfoSemanticSymbol = this.sr.symbolNodes.get(panicInfoSemanticSymbolId);
+      assert(panicInfoSemanticSymbol.variant === Semantic.ENode.TypeDefSymbol);
+      const panicInfoTypeUse = makeTypeUse(
+        this.sr,
+        panicInfoSemanticSymbol.datatype,
+        EDatatypeMutability.Const,
+        false,
+        attempt.sourceloc
+      )[1];
+      const panicInfoOrNone = this.sr.b.untaggedUnionTypeUse(
+        [panicInfoTypeUse, this.sr.b.noneType()],
+        attempt.sourceloc
+      );
+      attemptExpr.panicInfoType = panicInfoOrNone;
+
+      const recoverBlockScope = this.sr.cc.scopeNodes.get(attempt.recoverScope);
+      assert(recoverBlockScope.variant === Collect.ENode.BlockScope);
+
+      let recoverVarDefStatement: Collect.VariableDefinitionStatement | null = null;
+      if (recoverBlockScope.statements.length === 2) {
+        const s = this.sr.cc.statementNodes.get(recoverBlockScope.statements[0]);
+        assert(s.variant === Collect.ENode.VariableDefinitionStatement);
+        recoverVarDefStatement = s;
       }
-    );
+
+      const recoverResult = this.withScopes(
+        {
+          currentScope: attempt.recoverScope,
+          genericsScope: attempt.recoverScope,
+        },
+        () => {
+          if (recoverVarDefStatement) {
+            this.currentContext.elaborationTypeOverride.set(
+              recoverVarDefStatement.variableSymbol,
+              panicInfoOrNone
+            );
+          }
+          return this.makeAndElaborateBlockScope(attempt.recoverScope!, {
+            lastExprIsEmit: true,
+            unsafe: inference?.unsafe,
+          });
+        }
+      );
+      recoverFlow = recoverResult.flow;
+      recoverWrites = recoverResult.writes;
+      recoverScope = recoverResult.scope;
+      recoverScopeId = recoverResult.scopeId;
+    }
 
     // ───────────────────────────────────────────────────────────────────────────
     // FLOW + WRITES
     // ───────────────────────────────────────────────────────────────────────────
     const resultFlow = Semantic.FlowResult.empty();
     resultFlow.addAll(attemptFlow);
-    resultFlow.addAll(elseFlow);
+    if (attempt.elseScope !== null) { resultFlow.addAll(elseFlow); }
+    if (attempt.recoverScope !== null) { resultFlow.addAll(recoverFlow); }
 
     const canFallthrough =
       attemptFlow.has(Semantic.FlowType.Fallthrough) ||
-      elseFlow.has(Semantic.FlowType.Fallthrough);
+      (attempt.elseScope !== null && elseFlow.has(Semantic.FlowType.Fallthrough)) ||
+      (attempt.recoverScope !== null && recoverFlow.has(Semantic.FlowType.Fallthrough));
 
     if (canFallthrough) {
       resultFlow.add(Semantic.FlowType.Fallthrough);
@@ -13610,7 +13709,8 @@ export class SemanticElaborator {
 
     const resultWrites = Semantic.WriteResult.empty();
     resultWrites.addAll(attemptWrites);
-    resultWrites.addAll(elseWrites);
+    if (attempt.elseScope !== null) { resultWrites.addAll(elseWrites); }
+    if (attempt.recoverScope !== null) { resultWrites.addAll(recoverWrites); }
 
     attemptExpr.flow = resultFlow;
     attemptExpr.writes = resultWrites;
@@ -13627,11 +13727,20 @@ export class SemanticElaborator {
       memberSet.add(attemptExpr.attemptScopeReturnsType);
     }
 
-    if (elseFlow.has(Semantic.FlowType.Fallthrough)) {
+    if (attempt.elseScope !== null && elseFlow.has(Semantic.FlowType.Fallthrough)) {
+      assert(elseScope !== null);
       attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(
         elseScope.emittedExpr
       ).type;
       memberSet.add(attemptExpr.elseScopeReturnsType);
+    }
+
+    if (attempt.recoverScope !== null && recoverFlow.has(Semantic.FlowType.Fallthrough)) {
+      assert(recoverScope !== null);
+      attemptExpr.recoverScopeReturnsType = this.sr.exprNodes.get(
+        recoverScope.emittedExpr
+      ).type;
+      memberSet.add(attemptExpr.recoverScopeReturnsType);
     }
 
     const resultType =
@@ -13640,22 +13749,6 @@ export class SemanticElaborator {
         : this.sr.b.noneType();
 
     attemptExpr.type = resultType;
-    attemptExpr.errorResultType = errorUnion;
-
-    const errorResultTypeUse = this.sr.typeUseNodes.get(
-      this.sr.e.resolveAlias(errorUnion)
-    );
-    const errorResultTypeDef = this.sr.typeDefNodes.get(
-      errorResultTypeUse.type
-    );
-
-    // TODO: Verify that this line ACTUALLY is correct, and cannot incorrectly trigger
-    // when the return type happens to be a union, not because the union was created, but
-    // because only one path returns and this one path happens to be a union, then the union
-    // must not be created during lowering because it already has been.
-    // Not sure if this is a real thing that can happen.
-    attemptExpr.errorResultTypeIsUnion =
-      errorResultTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype;
 
     // ───────────────────────────────────────────────────────────────────────────
     // BLOCK EXPRESSIONS
@@ -13678,28 +13771,51 @@ export class SemanticElaborator {
         )
       : attemptScopeExprId;
 
-    const elseExprId = this.sr.b.blockScopeExpr(
-      elseScopeId,
-      elseFlow,
-      elseWrites
-    )[1];
+    if (attempt.elseScope !== null) {
+      const elseExprId = this.sr.b.blockScopeExpr(
+        elseScopeId,
+        elseFlow,
+        elseWrites
+      )[1];
 
-    attemptExpr.elseScopeExpr = attemptExpr.elseScopeReturnsType
-      ? Conversion.MakeConversionOrThrow(
-          this.sr,
-          elseExprId,
-          resultType,
-          this.currentContext.constraints,
-          elseScope.sourceloc,
-          Conversion.Mode.Implicit,
-          false
-        )
-      : elseExprId;
+      attemptExpr.elseScopeExpr = attemptExpr.elseScopeReturnsType
+        ? Conversion.MakeConversionOrThrow(
+            this.sr,
+            elseExprId,
+            resultType,
+            this.currentContext.constraints,
+            elseScope!.sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          )
+        : elseExprId;
+    }
+
+    if (attempt.recoverScope !== null) {
+      const recoverExprId = this.sr.b.blockScopeExpr(
+        recoverScopeId,
+        recoverFlow,
+        recoverWrites
+      )[1];
+
+      attemptExpr.recoverScopeExpr = attemptExpr.recoverScopeReturnsType
+        ? Conversion.MakeConversionOrThrow(
+            this.sr,
+            recoverExprId,
+            resultType,
+            this.currentContext.constraints,
+            recoverScope!.sourceloc,
+            Conversion.Mode.Implicit,
+            false
+          )
+        : recoverExprId;
+    }
 
     // ───────────────────────────────────────────────────────────────────────────
-    // ERROR VARIABLE
+    // ERROR VARIABLE (else block)
     // ───────────────────────────────────────────────────────────────────────────
     if (attemptExpr.hasErrorVar) {
+      assert(elseScope !== null);
       assert(elseScope.statements.length === 1);
       const vardef = this.sr.statementNodes.get(elseScope.statements[0]);
       assert(vardef.variant === Semantic.ENode.VariableStatement);
@@ -13721,6 +13837,35 @@ export class SemanticElaborator {
         flow: Semantic.FlowResult.fallthrough(),
         writes: Semantic.WriteResult.empty(),
         type: errorUnion,
+      })[1];
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // RECOVER VARIABLE (recover block)
+    // ───────────────────────────────────────────────────────────────────────────
+    if (attemptExpr.hasRecoverVar) {
+      assert(recoverScope !== null);
+      assert(recoverScope.statements.length === 1);
+      const vardef = this.sr.statementNodes.get(recoverScope.statements[0]);
+      assert(vardef.variant === Semantic.ENode.VariableStatement);
+
+      vardef.value = this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.SymbolValueExpr,
+        instanceIds: [],
+        isTemporary: false,
+        sourceloc: attemptExpr.sourceloc,
+        symbol: this.sr.b.variableSymbol(
+          attemptExpr.panicInfoVarname,
+          attemptExpr.panicInfoType!,
+          false,
+          null,
+          EVariableMutability.Let,
+          null,
+          attemptExpr.sourceloc
+        )[1],
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+        type: attemptExpr.panicInfoType!,
       })[1];
     }
 

@@ -2483,7 +2483,6 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         });
 
       const attemptResultType = lowerTypeUse(lr, expr.type);
-      const attemptErrorType = lowerTypeUse(lr, expr.errorResultType);
 
       const resultVarId = storeInTempVarAndGet(
         lr,
@@ -2495,21 +2494,57 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       )[1];
       enclosingBlockScope.emittedExpr = resultVarId;
 
-      const errorVarId = storeInTempVarAndGet(
+      // Internal error variable for raise/else flow
+      storeInTempVarAndGet(
         lr,
         lowerTypeUse(lr, expr.errorResultType),
         null,
         expr.sourceloc,
         enclosingBlockScope.statements,
         expr.errorResultVarname
-      )[1];
+      );
 
+      // Internal panic info variable for recover flow
+      const hasRecover = expr.recoverScopeExpr !== null;
+      if (hasRecover) {
+        storeInTempVarAndGet(
+          lr,
+          lowerTypeUse(lr, expr.panicInfoType!),
+          null,
+          expr.sourceloc,
+          enclosingBlockScope.statements,
+          expr.panicInfoVarname
+        );
+
+        // Wrap attempt body in recovery macro so the platform can intercept panics
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.InlineCStatement,
+            value: `HAZE_ATTEMPT_BEGIN(${expr.uniqueId}ULL, ${expr.recoverLabel});`,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      }
+
+      // ── Attempt scope ──────────────────────────────────────────────────────
       const loweredAttemptScopeExpr = lowerExpr(
         lr,
         expr.attemptScopeExpr,
         enclosingBlockScope.statements,
         instanceInfo
       );
+
+      if (hasRecover) {
+        // Pop recovery frame before branching away (fallthrough or noreturn)
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.InlineCStatement,
+            value: `HAZE_ATTEMPT_END(${expr.uniqueId}ULL);`,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      }
+
       if (expr.attemptScopeReturnsType) {
         assert(resultVarId);
         enclosingBlockScope.statements.push(
@@ -2525,7 +2560,6 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             sourceloc: expr.sourceloc,
           })[1]
         );
-        // Jump to yield and produce a value
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.LabelJumpStatement,
@@ -2534,7 +2568,6 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           })[1]
         );
       } else {
-        // Does not return
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.ExprStatement,
@@ -2552,60 +2585,121 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         );
       }
 
-      enclosingBlockScope.statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.LabelDefinitionStatement,
-          labelName: expr.errorLabel,
-          sourceloc: expr.sourceloc,
-        })[1]
-      );
-      const loweredElseScopeExpr = lowerExpr(
-        lr,
-        expr.elseScopeExpr,
-        enclosingBlockScope.statements,
-        instanceInfo
-      );
+      // ── Else scope (raise error handler) ───────────────────────────────────
+      const hasElse = expr.elseScopeExpr !== null;
+      if (hasElse) {
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.LabelDefinitionStatement,
+            labelName: expr.errorLabel,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
 
-      if (expr.elseScopeReturnsType) {
-        assert(resultVarId);
+        const loweredElseScopeExpr = lowerExpr(
+          lr,
+          expr.elseScopeExpr!,
+          enclosingBlockScope.statements,
+          instanceInfo
+        );
+
+        if (expr.elseScopeReturnsType) {
+          assert(resultVarId);
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.ExprStatement,
+              expr: Lowered.addExpr(lr, {
+                variant: Lowered.ENode.ExprAssignmentExpr,
+                assignRefTarget: false,
+                target: resultVarId,
+                type: attemptResultType,
+                value: loweredElseScopeExpr[1],
+              })[1],
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.LabelJumpStatement,
+              labelName: expr.resultLabel,
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+        } else {
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.ExprStatement,
+              expr: loweredElseScopeExpr[1],
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+          enclosingBlockScope.statements.push(
+            callSysPanic(
+              lr,
+              "noreturn function tried to return",
+              0n,
+              instanceInfo
+            )
+          );
+        }
+      }
+
+      // ── Recover scope (panic handler) ──────────────────────────────────────
+      if (hasRecover) {
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
-            variant: Lowered.ENode.ExprStatement,
-            expr: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.ExprAssignmentExpr,
-              assignRefTarget: false,
-              target: resultVarId,
-              type: attemptResultType,
-              value: loweredElseScopeExpr[1],
-            })[1],
+            variant: Lowered.ENode.LabelDefinitionStatement,
+            labelName: expr.recoverLabel,
             sourceloc: expr.sourceloc,
           })[1]
         );
-        // Jump to error and produce a value
-        enclosingBlockScope.statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.LabelJumpStatement,
-            labelName: expr.resultLabel,
-            sourceloc: expr.sourceloc,
-          })[1]
+
+        const loweredRecoverScopeExpr = lowerExpr(
+          lr,
+          expr.recoverScopeExpr!,
+          enclosingBlockScope.statements,
+          instanceInfo
         );
-      } else {
-        // Does not return
-        enclosingBlockScope.statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.ExprStatement,
-            expr: loweredElseScopeExpr[1],
-            sourceloc: expr.sourceloc,
-          })[1]
-        );
-        enclosingBlockScope.statements.push(
-          callSysPanic(
-            lr,
-            "noreturn function tried to return",
-            0n,
-            instanceInfo
-          )
-        );
+
+        if (expr.recoverScopeReturnsType) {
+          assert(resultVarId);
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.ExprStatement,
+              expr: Lowered.addExpr(lr, {
+                variant: Lowered.ENode.ExprAssignmentExpr,
+                assignRefTarget: false,
+                target: resultVarId,
+                type: attemptResultType,
+                value: loweredRecoverScopeExpr[1],
+              })[1],
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.LabelJumpStatement,
+              labelName: expr.resultLabel,
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+        } else {
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.ExprStatement,
+              expr: loweredRecoverScopeExpr[1],
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+          enclosingBlockScope.statements.push(
+            callSysPanic(
+              lr,
+              "noreturn function tried to return",
+              0n,
+              instanceInfo
+            )
+          );
+        }
       }
 
       enclosingBlockScope.statements.push(

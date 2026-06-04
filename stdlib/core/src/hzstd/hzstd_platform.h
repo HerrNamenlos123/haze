@@ -4,6 +4,7 @@
 
 #include "hzstd_array.h"
 #include "hzstd_common.h"
+#include "hzstd_runtime.h"
 
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
@@ -83,5 +84,17 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
 void os_sleep_ns(uint64_t nanoseconds);
 
 double hzstd_time_now(void);
+
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame();
+hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame();
+hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame();
+
+void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env);
+void hzstd_panic_recovery_frame_pop_cleanup();
+void hzstd_panic_recovery_frame_run_cleanup(
+    hzstd_panic_recovery_frame_t *frame);
+
+#define HAZE_ATTEMPT_BEGIN(uid, recover_label) hzstd_push_panic_recovery_frame()
+#define HAZE_ATTEMPT_END(uid) hzstd_pop_panic_recovery_frame()
 
 #endif // HZSTD_PLATFORM_H

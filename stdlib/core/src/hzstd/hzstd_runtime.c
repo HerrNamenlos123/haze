@@ -406,6 +406,11 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
 static hzstd_dynamic_array_t *panic_recovery_frames;
 static bool panic_recovery_frames_initialized = false;
 
+typedef struct {
+  void (*fn)(void *);
+  void *env;
+} hzstd_panic_recovery_frame_cleanup_entry_t;
+
 static void hzstd_init_panic_recovery_frames() {
   if (!panic_recovery_frames_initialized) {
     panic_recovery_frames_initialized = true;
@@ -417,12 +422,69 @@ static void hzstd_init_panic_recovery_frames() {
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame() {
   hzstd_init_panic_recovery_frames();
 
-  hzstd_panic_recovery_frame_t frame = {};
+  hzstd_panic_recovery_frame_t frame = {
+      .cleanup_handlers = HZSTD_DYNAMIC_ARRAY_CREATE(
+          hzstd_make_heap_allocator(),
+          hzstd_panic_recovery_frame_cleanup_entry_t, 1),
+  };
 
   hzstd_panic_recovery_frame_t *framePtr = HZSTD_ALLOC_STRUCT(
       hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t, frame);
 
   HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, framePtr);
+  return framePtr;
 }
 
-void hzstd_pop_panic_recovery_frame() { hzstd_init_panic_recovery_frames(); }
+hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame() {
+  hzstd_init_panic_recovery_frames();
+  int length = hzstd_dynamic_array_size(panic_recovery_frames);
+  if (length == 0) {
+    hzstd_panic("popping panic recovery frame failed: No frame available");
+  }
+
+  hzstd_panic_recovery_frame_t *frame;
+  hzstd_dynamic_array_pop(panic_recovery_frames, &frame);
+  return frame;
+}
+
+hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame() {
+  hzstd_init_panic_recovery_frames();
+  int length = hzstd_dynamic_array_size(panic_recovery_frames);
+  if (length == 0) {
+    hzstd_panic("getting panic recovery frame failed: No frame available");
+  }
+
+  hzstd_panic_recovery_frame_t *frame = HZSTD_DYNAMIC_ARRAY_GET(
+      panic_recovery_frames, hzstd_panic_recovery_frame_t *, length - 1);
+  return frame;
+}
+
+void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {
+  hzstd_panic_recovery_frame_t *frame =
+      hzstd_get_current_panic_recovery_frame();
+
+  hzstd_panic_recovery_frame_cleanup_entry_t entry = {
+      .fn = fn,
+      .env = env,
+  };
+
+  HZSTD_DYNAMIC_ARRAY_PUSH(frame->cleanup_handlers, entry);
+}
+
+void hzstd_panic_recovery_frame_pop_cleanup() {
+  hzstd_panic_recovery_frame_t *frame =
+      hzstd_get_current_panic_recovery_frame();
+
+  hzstd_dynamic_array_pop(frame->cleanup_handlers, NULL);
+}
+
+void hzstd_panic_recovery_frame_run_cleanup(
+    hzstd_panic_recovery_frame_t *frame) {
+  for (size_t i = 0; i < hzstd_dynamic_array_size(frame->cleanup_handlers);
+       i++) {
+    hzstd_panic_recovery_frame_cleanup_entry_t entry = HZSTD_DYNAMIC_ARRAY_GET(
+        frame->cleanup_handlers, hzstd_panic_recovery_frame_cleanup_entry_t, i);
+
+    entry.fn(entry.env);
+  }
+}

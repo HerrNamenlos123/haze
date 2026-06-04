@@ -629,16 +629,22 @@ export namespace Semantic {
     instanceIds: InstanceId[];
     attemptScopeExpr: ExprId;
     attemptScopeReturnsType: TypeUseId | null;
-    elseScopeExpr: ExprId;
+    elseScopeExpr: ExprId | null;
     elseScopeReturnsType: TypeUseId | null;
+    recoverScopeExpr: ExprId | null;
+    recoverScopeReturnsType: TypeUseId | null;
     errorTypesCaught: Set<TypeUseId>;
     errorLabel: string;
+    recoverLabel: string;
     resultLabel: string;
     errorResultVarname: string;
     errorResultType: TypeUseId;
     errorResultTypeIsUnion: boolean;
+    panicInfoVarname: string;
+    panicInfoType: TypeUseId | null;
     uniqueId: bigint;
     hasErrorVar: boolean;
+    hasRecoverVar: boolean;
   };
 
   export type ValueToUnionCastExpr = BaseExpr & {
