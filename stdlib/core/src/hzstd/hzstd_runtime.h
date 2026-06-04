@@ -27,13 +27,12 @@ _Noreturn void hzstd_unreachable(int skip_n_frames);
 //   void* env;
 // } hzstd_callable_t;
 
-// #define HZSTD_CALLABLE(callable)                                                                                       \
+// #define HZSTD_CALLABLE(callable) \
 //   (hzstd_callable_t) { .fn = (void*)callable.fn, .env = (void*)callable.env }
 
 // #define HZSTD_CALL_CALLABLE(callable) callable.fn(callable.env);
 
-void hzstd_print_panic_report(hzstd_str_t reason,
-                              hzstd_dynamic_array_t *frames,
+void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
                               hzstd_int_t skip_n_frames);
 
 // This function is cold, static and inline to make sure it is DUPLICATED in
@@ -123,5 +122,11 @@ hzstd_trap_str(hzstd_str_t msg) {
           (target_name), __hz_tmp);                                            \
     (target_type) __hz_tmp;                                                    \
   }))
+
+// Panic Recovery
+
+typedef struct {
+  cleanups;
+} hzstd_panic_recovery_frame_t;
 
 #endif // HZSTD_RUNTIME_H

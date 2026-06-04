@@ -1,8 +1,10 @@
 
+#include "hzstd/hzstd_memory.h"
 #include "hzstd_common.h"
 
 #include "hzstd_array.h"
 #include "hzstd_demangle.h"
+#include "hzstd_memory.h"
 #include "hzstd_platform.h"
 #include "hzstd_runtime.h"
 #include "hzstd_string.h"
@@ -398,3 +400,29 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
   fprintf(stderr, "\n");
   fflush(stderr);
 }
+
+// Panic Recovery
+
+static hzstd_dynamic_array_t *panic_recovery_frames;
+static bool panic_recovery_frames_initialized = false;
+
+static void hzstd_init_panic_recovery_frames() {
+  if (!panic_recovery_frames_initialized) {
+    panic_recovery_frames_initialized = true;
+    panic_recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(
+        hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 4);
+  }
+}
+
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame() {
+  hzstd_init_panic_recovery_frames();
+
+  hzstd_panic_recovery_frame_t frame = {};
+
+  hzstd_panic_recovery_frame_t *framePtr = HZSTD_ALLOC_STRUCT(
+      hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t, frame);
+
+  HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, framePtr);
+}
+
+void hzstd_pop_panic_recovery_frame() { hzstd_init_panic_recovery_frames(); }

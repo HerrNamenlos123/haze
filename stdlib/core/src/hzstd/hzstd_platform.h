@@ -39,11 +39,19 @@ typedef struct {
   hzstd_source_location_t sourceloc; /* absent when _filename.length == 0 */
 } hzstd_stackframe_t;
 
+typedef enum {
+  hzstd_panic_type_unknown = 0,
+  hzstd_panic_type_user = 1,
+  hzstd_panic_type_segfault = 2,
+  hzstd_panic_type_stackoverflow = 3,
+} hzstd_panic_type_t;
+
 typedef struct {
   // hzstd_stackframe_t[] -> Array of inline structs
   hzstd_dynamic_array_t stackframes;
   hzstd_str_t message;
-} hzstd_stack_t;
+  hzstd_panic_type_t type;
+} hzstd_panic_info_t;
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
                                            hzstd_int_t skip_n_frames);
