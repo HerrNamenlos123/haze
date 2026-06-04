@@ -13548,6 +13548,10 @@ export class SemanticElaborator {
       throw new InternalError("recover block in attempt is not yet implemented in elaboration");
     }
 
+    if (attempt.elseScope === null) {
+      throw new InternalError("attempt without else block is not yet implemented in elaboration");
+    }
+
     const errorUnion =
       attemptExpr.errorTypesCaught.size > 0
         ? this.sr.b.untaggedUnionTypeUse(
@@ -13555,8 +13559,6 @@ export class SemanticElaborator {
             attempt.sourceloc
           )
         : this.sr.b.noneType();
-
-    assert(attempt.elseScope !== null);
 
     const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
     assert(elseBlockScope.variant === Collect.ENode.BlockScope);
