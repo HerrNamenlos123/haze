@@ -3,7 +3,8 @@
     "allow": [
       "Bash(bun run *)",
       "Bash(grep -v \"//\")",
-      "Bash(xargs grep -l \"CodeGenerator\\\\|Lowered\\\\|BlockScope\")"
+      "Bash(xargs grep -l \"CodeGenerator\\\\|Lowered\\\\|BlockScope\")",
+      "Bash(grep -v \"//\\\\|definesVariables\\\\|addBlock\\\\|id\\\\b\")"
     ]
   }
 }
