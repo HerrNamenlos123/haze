@@ -375,6 +375,8 @@ opaque struct UIContext {
                     return none;
                 }
 
+                let stackDepthBefore = this.renderStack.length;
+
                 this.pushRenderContext({
                     currentComponent: instance,
                     currentParent: instance.rootElement,
@@ -386,7 +388,14 @@ opaque struct UIContext {
                 } recover e {
                     instance.crashed = true;
                     instance.crashMessage = e.message;
-                    this.popRenderContext();
+                    fmt.println(f"[crash] component {instance.id}: {instance.crashMessage}");
+                    while this.renderStack.length > stackDepthBefore {
+                        this.popRenderContext();
+                    }
+                    let errEl = instance.getOrCreateText(-1);
+                    errEl.text := f"Component error: {instance.crashMessage}";
+                    errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
+                    instance.rootElement.children.push(errEl);
                     return none;
                 };
 
