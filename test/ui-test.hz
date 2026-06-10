@@ -386,6 +386,8 @@ opaque struct UIContext {
                 } recover e {
                     instance.crashed = true;
                     instance.crashMessage = e.message;
+                    this.popRenderContext();
+                    return none;
                 };
 
                 let oldChildren =
@@ -642,7 +644,7 @@ fn NavItem(ui: UIContext, args: NavItemArgs) {
                 return false;
             }
             if (element.hover()) {
-                let a: str[] = [];
+                let a: []str = [];
                 a.pop();
             }
             return element.hover();

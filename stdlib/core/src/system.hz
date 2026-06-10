@@ -67,12 +67,28 @@ namespace ffi {
 
     export extern C noemit opaque inline struct hzstd_stacktrace_t {
         frames: []hzstd_stackframe_t;
+
+        fn stringify(): str {
+            return ffi.hzstd_stringify_stacktrace(hzstd_make_heap_allocator(), this);
+        }
+
+        fn print() {
+            ffi.hzstd_print_stacktrace(this);
+        }
     };
 
     export extern C noemit opaque inline struct hzstd_panic_info_t {
         stacktrace: hzstd_stacktrace_t;
         message: str;
         type: hzstd_panic_type_t;
+
+        fn stringify(): str {
+            return ffi.hzstd_stringify_panic_info(hzstd_make_heap_allocator(), this);
+        }
+
+        fn print() {
+            ffi.hzstd_print_panic_info(this);
+        }
     };
 }
 
@@ -114,34 +130,14 @@ namespace sys {
     export fn buildStacktrace(skip_n_frames: int = 0) {
         return ffi.hzstd_build_stacktrace(1 + skip_n_frames);
     }
-
-    // Render only the "Stack trace:" frames section as a string.
-    export fn stringify(st: Stacktrace): str {
-        return ffi.hzstd_stringify_stacktrace(hzstd_make_heap_allocator(), st);
-    }
-
-    // Render the full panic report (header + message + frames) as a string.
-    export fn stringify(info: PanicInfo): str {
-        return ffi.hzstd_stringify_panic_info(hzstd_make_heap_allocator(), info);
-    }
-
-    // Print only the "Stack trace:" frames section to stderr.
-    export fn printStacktrace(st: Stacktrace) {
-        ffi.hzstd_print_stacktrace(st);
-    }
-
-    // Print the full panic report to stderr.
-    export fn printPanicInfo(info: PanicInfo) {
-        ffi.hzstd_print_panic_info(info);
-    }
 }
 
 namespace fmt {
     export fn format_to(writer: mut StringWriter, value: sys.Stacktrace, args: FormatArgs) {
-        writer.write(sys.stringify(value));
+        writer.write(value.stringify());
     }
 
     export fn format_to(writer: mut StringWriter, value: sys.PanicInfo, args: FormatArgs) {
-        writer.write(sys.stringify(value));
+        writer.write(value.stringify());
     }
 }
