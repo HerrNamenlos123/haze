@@ -51,8 +51,11 @@ fn foo() {
         other();
     }
     recover e {
-        fmt.println("panic handled: ");
+        static_print(f"{typeof(e).prettyName}");
+        fmt.println("panic handled: ", e);
     };
+
+    fmt.println("Let's continue to work now!");
 }
 
 fn main(): int {

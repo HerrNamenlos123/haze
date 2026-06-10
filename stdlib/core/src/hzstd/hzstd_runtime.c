@@ -184,6 +184,59 @@ static hzstd_str_t frame_display_name(hzstd_allocator_t alloc, hzstd_str_t raw) 
   return hzstd_demangle_display(alloc, &r);
 }
 
+// ── Growable string builder ───────────────────────────────────────────────────
+
+typedef struct {
+  hzstd_allocator_t alloc;
+  char             *data;
+  size_t            len;
+  size_t            cap;
+} hzstd_sbuf_t;
+
+static void sbuf_init(hzstd_sbuf_t *b, hzstd_allocator_t alloc) {
+  b->alloc = alloc;
+  b->cap   = 512;
+  b->data  = (char *)hzstd_allocate(alloc, b->cap);
+  b->len   = 0;
+}
+
+static void sbuf_grow(hzstd_sbuf_t *b, size_t need) {
+  while (b->len + need > b->cap) {
+    size_t new_cap  = b->cap * 2;
+    char  *new_data = (char *)hzstd_allocate(b->alloc, new_cap);
+    memcpy(new_data, b->data, b->len);
+    b->cap  = new_cap;
+    b->data = new_data;
+  }
+}
+
+static void sbuf_write(hzstd_sbuf_t *b, const char *data, size_t len) {
+  sbuf_grow(b, len);
+  memcpy(b->data + b->len, data, len);
+  b->len += len;
+}
+
+static void sbuf_cstr(hzstd_sbuf_t *b, const char *s) {
+  if (s) sbuf_write(b, s, strlen(s));
+}
+
+static void sbuf_str(hzstd_sbuf_t *b, hzstd_str_t s) {
+  sbuf_write(b, s.data, s.length);
+}
+
+static void sbuf_fmt(hzstd_sbuf_t *b, const char *fmt, ...) {
+  char    tmp[512];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+  va_end(ap);
+  if (n > 0) sbuf_write(b, tmp, (size_t)n);
+}
+
+static hzstd_str_t sbuf_finish(hzstd_sbuf_t *b) {
+  return (hzstd_str_t){.data = b->data, .length = b->len};
+}
+
 // ── Main panic report ─────────────────────────────────────────────────────────
 
 void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
@@ -328,11 +381,160 @@ void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,
   fflush(stderr);
 }
 
-// ── hzstd_print_stacktrace / hzstd_free_stacktrace ───────────────────────────
+// ── hzstd_print_stacktrace / hzstd_stringify_stacktrace ──────────────────────
 
 void hzstd_print_stacktrace(hzstd_stacktrace_t *st) {
   if (!st) return;
   hzstd_print_panic_report(st->message, st->frames, st->skip_n_frames);
+}
+
+hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
+                                        hzstd_stacktrace_t *st) {
+  hzstd_sbuf_t b;
+  sbuf_init(&b, alloc);
+
+  if (!st) {
+    sbuf_cstr(&b, A_RED_B "[FATAL] (null stacktrace)" A_RESET "\n");
+    return sbuf_finish(&b);
+  }
+
+  hzstd_allocator_t scratch = hzstd_make_arena_allocator();
+
+  hzstd_str_t loc_str = {.data = NULL, .length = 0};
+  hzstd_str_t body    = st->message;
+  bool        has_loc = split_panic_message(st->message, &loc_str, &body);
+
+  sbuf_cstr(&b, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
+  sbuf_cstr(&b, A_WHITE_B);
+  sbuf_str(&b, body);
+  sbuf_cstr(&b, A_RESET "\n");
+
+  hzstd_dynamic_array_t *frames   = st->frames;
+  size_t                  n_frames = hzstd_dynamic_array_size(frames);
+
+  hzstd_stackframe_t first_user    = {0};
+  bool               has_first_user = false;
+  for (size_t i = (size_t)st->skip_n_frames; i < n_frames; i++) {
+    hzstd_stackframe_t fr =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    if (!frame_system(fr.name)) {
+      first_user     = fr;
+      has_first_user = true;
+      break;
+    }
+  }
+
+  if (has_loc && has_first_user) {
+    hzstd_str_t p  = loc_path(loc_str);
+    hzstd_str_t lc = loc_line_col(loc_str);
+    sbuf_cstr(&b, "\n" A_DIM "  at " A_RESET A_YELLOW_B);
+    sbuf_str(&b, basename_of(p));
+    if (lc.length) { sbuf_cstr(&b, ":"); sbuf_str(&b, lc); }
+    sbuf_cstr(&b, A_RESET "\n");
+    hzstd_str_t in_name = frame_display_name(scratch, first_user.name);
+    sbuf_cstr(&b, A_DIM "     in " A_RESET A_WHITE);
+    sbuf_str(&b, in_name);
+    sbuf_cstr(&b, A_RESET "\n");
+  }
+
+  sbuf_cstr(&b, "\n" A_WHITE_B "Stack trace:" A_RESET "\n\n");
+
+  size_t name_col = 0;
+  for (size_t i = (size_t)st->skip_n_frames; i < n_frames; i++) {
+    hzstd_stackframe_t fr =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    hzstd_str_t dn = frame_display_name(scratch, fr.name);
+    if (dn.length > name_col) name_col = dn.length;
+  }
+  name_col += 3;
+
+  size_t visible =
+      n_frames > (size_t)st->skip_n_frames
+          ? n_frames - (size_t)st->skip_n_frames
+          : 0;
+  int idx_w = visible < 10 ? 1 : visible < 100 ? 2 : 3;
+
+  size_t vis_idx = 0;
+  for (size_t i = (size_t)st->skip_n_frames; i < n_frames;) {
+    hzstd_stackframe_t fr =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+
+    size_t max_L  = (n_frames - i < 32) ? n_frames - i : 32;
+    size_t cyc_len = 0, cyc_rep = 1;
+    for (size_t L = 1; L <= max_L && i + 2 * L <= n_frames; L++) {
+      bool match = true;
+      for (size_t k = 0; k < L && match; k++) {
+        hzstd_stackframe_t a =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+        hzstd_stackframe_t bb =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + L + k);
+        if (a.id != bb.id) match = false;
+      }
+      if (!match) continue;
+      size_t cnt = 2;
+      while (i + cnt * L + L <= n_frames) {
+        bool m2 = true;
+        for (size_t k = 0; k < L && m2; k++) {
+          hzstd_stackframe_t a =
+              HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+          hzstd_stackframe_t bb2 = HZSTD_DYNAMIC_ARRAY_GET(
+              frames, hzstd_stackframe_t, i + cnt * L + k);
+          if (a.id != bb2.id) m2 = false;
+        }
+        if (!m2) break;
+        cnt++;
+      }
+      if (cnt > 1) { cyc_len = L; cyc_rep = cnt; break; }
+    }
+
+    if (cyc_len > 0) {
+      sbuf_fmt(&b,
+               A_DIM " [" A_RESET A_YELLOW "↻" A_RESET A_DIM
+                     "] " A_RESET A_YELLOW "%zu×" A_RESET A_WHITE_B
+                     " recursion" A_RESET A_DIM " (%zu frame%s each)\n" A_RESET,
+               cyc_rep, cyc_len, cyc_len == 1 ? "" : "s");
+      for (size_t k = 0; k < cyc_len; k++) {
+        hzstd_stackframe_t ffr =
+            HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
+        hzstd_str_t dn = frame_display_name(scratch, ffr.name);
+        sbuf_cstr(&b, A_DIM "      ");
+        sbuf_str(&b, dn);
+        sbuf_cstr(&b, A_RESET "\n");
+      }
+      i += cyc_len * cyc_rep;
+      vis_idx += cyc_len * cyc_rep;
+      continue;
+    }
+
+    const char *sys = frame_system(fr.name);
+    hzstd_str_t dn  = frame_display_name(scratch, fr.name);
+
+    sbuf_fmt(&b, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
+    sbuf_cstr(&b, sys ? A_DIM : A_WHITE);
+    sbuf_str(&b, dn);
+    sbuf_cstr(&b, A_RESET);
+
+    size_t pad = (dn.length < name_col) ? name_col - dn.length : 1;
+    for (size_t p2 = 0; p2 < pad; p2++) sbuf_cstr(&b, " ");
+
+    if (sys) {
+      sbuf_fmt(&b, A_DIM "<%s>" A_RESET, sys);
+    } else if (fr.sourceloc._filename.length > 0) {
+      sbuf_cstr(&b, A_YELLOW);
+      sbuf_str(&b, basename_of(fr.sourceloc._filename));
+      if (fr.sourceloc._line != 0) {
+        sbuf_fmt(&b, ":%lld", (long long)fr.sourceloc._line);
+      }
+      sbuf_cstr(&b, A_RESET);
+    }
+
+    sbuf_cstr(&b, "\n");
+    i++;
+    vis_idx++;
+  }
+
+  sbuf_cstr(&b, "\n");
+  return sbuf_finish(&b);
 }
 
 // ── Panic recovery frame stack ────────────────────────────────────────────────

@@ -154,8 +154,13 @@ _Noreturn void hzstd_unreachable(int skip_n_frames);
 hzstd_stacktrace_t *hzstd_build_stacktrace(int skip_n_frames);
 
 // Print a stacktrace previously obtained from hzstd_build_stacktrace or a
-// recovery frame's _hz_panic_stacktrace.
+// recovery frame's _hz_panic_stacktrace.  Output goes to stderr with ANSI colour.
 void hzstd_print_stacktrace(hzstd_stacktrace_t *st);
+
+// Stringify a stacktrace into an allocated hzstd_str_t (same content as
+// hzstd_print_stacktrace but returned as a string instead of written to stderr).
+// Pass hzstd_make_heap_allocator() for a persistent result.
+hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc, hzstd_stacktrace_t *st);
 
 // ── Low-level panic report (used internally by the worker thread) ────────────
 void hzstd_print_panic_report(hzstd_str_t reason, hzstd_dynamic_array_t *frames,

@@ -2655,6 +2655,16 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           })[1]
         );
 
+        // Populate the PanicInfo variable from the TLS stacktrace set by the
+        // panic machinery before the longjmp.  Always non-NULL at this point.
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.InlineCStatement,
+            value: `${expr.panicInfoVarname} = _hz_panic_stacktrace; _hz_panic_stacktrace = NULL;`,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+
         const loweredRecoverScopeExpr = lowerExpr(
           lr,
           expr.recoverScopeExpr!,

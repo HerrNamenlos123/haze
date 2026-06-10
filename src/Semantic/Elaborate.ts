@@ -13631,7 +13631,9 @@ export class SemanticElaborator {
     let recoverScopeId: Semantic.BlockScopeId = -1 as Semantic.BlockScopeId;
 
     if (attempt.recoverScope !== null) {
-      // Resolve ffi.hzstd_panic_info_t and elaborate it to build PanicInfo | none.
+      // Resolve ffi.hzstd_panic_info_t.  The recover block is only ever reached
+      // via the panic longjmp, which unconditionally sets _hz_panic_stacktrace
+      // before jumping, so the PanicInfo is always present — no | none needed.
       const panicInfoCollectSymbolId = Semantic.findBuiltinSymbolByName(
         this.sr,
         "sys.PanicInfo",
@@ -13657,11 +13659,7 @@ export class SemanticElaborator {
         false,
         attempt.sourceloc
       )[1];
-      const panicInfoOrNone = this.sr.b.untaggedUnionTypeUse(
-        [panicInfoTypeUse, this.sr.b.noneType()],
-        attempt.sourceloc
-      );
-      attemptExpr.panicInfoType = panicInfoOrNone;
+      attemptExpr.panicInfoType = panicInfoTypeUse;
 
       const recoverBlockScope = this.sr.cc.scopeNodes.get(attempt.recoverScope);
       assert(recoverBlockScope.variant === Collect.ENode.BlockScope);
@@ -13685,7 +13683,7 @@ export class SemanticElaborator {
           if (recoverVarDefStatement) {
             this.currentContext.elaborationTypeOverride.set(
               recoverVarDefStatement.variableSymbol,
-              panicInfoOrNone
+              panicInfoTypeUse
             );
           }
           return this.makeAndElaborateBlockScope(attempt.recoverScope!, {
