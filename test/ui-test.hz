@@ -48,7 +48,7 @@ struct ComponentInstance {
 
     mounted: bool = false;
     crashed: bool = false;
-    crashMessage: str = "";
+    crashInfo: sys.PanicInfo | none = none;
 
     fn getOrCreateDiv(id: int): mut hzui.DivElement {
         for n in this.elementsById {
@@ -351,7 +351,7 @@ opaque struct UIContext {
                 instance.setupDone = true;
             } recover e {
                 instance.crashed = true;
-                instance.crashMessage = e.message;
+                instance.crashInfo = e;
                 instance.setupDone = true;
             };
         }
@@ -367,9 +367,9 @@ opaque struct UIContext {
                 instance.newChildComponents = [];
                 instance.rootElement.children = [];
 
-                if instance.crashed {
+                if instance.crashed && instance.crashInfo {
                     let errEl = instance.getOrCreateText(-1);
-                    errEl.text := f"Component error: {instance.crashMessage}";
+                    errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
                     instance.rootElement.children.push(errEl);
                     return none;
@@ -387,13 +387,14 @@ opaque struct UIContext {
                     instance.currentTemplate();
                 } recover e {
                     instance.crashed = true;
-                    instance.crashMessage = e.message;
-                    fmt.println(f"[crash] component {instance.id}: {instance.crashMessage}");
+                    instance.crashInfo = e;
+                    fmt.println(f"[crash] component {instance.id}:");
+                    e.print();
                     while this.renderStack.length > stackDepthBefore {
                         this.popRenderContext();
                     }
                     let errEl = instance.getOrCreateText(-1);
-                    errEl.text := f"Component error: {instance.crashMessage}";
+                    errEl.text := f"Component error: {e.message}";
                     errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
                     instance.rootElement.children.push(errEl);
                     return none;
