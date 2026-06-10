@@ -54,7 +54,7 @@ fn foo() {
         other();
     }
     recover e {
-        fmt.println("panic handled: ");
+        fmt.println("panic handled: ", e);
     };
 }
 

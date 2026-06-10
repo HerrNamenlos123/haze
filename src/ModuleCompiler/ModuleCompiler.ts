@@ -66,6 +66,7 @@ import {
   type CLIPrinter,
   EModulePrintCompilerPhase,
   type ModuleHandle,
+  printLine,
 } from "./CLIPrinter";
 
 /**
@@ -238,21 +239,22 @@ export async function catchErrors(fn: () => Promise<void>) {
     return true;
   } catch (e) {
     if (e instanceof GeneralError) {
-      console.error(e.message);
+      printLine(e.message);
     } else if (e instanceof InternalError) {
-      console.error(e.message);
-      console.log(e.stack?.split("\n").slice(1, undefined).join("\n"));
+      printLine(e.message);
+      const stack = e.stack?.split("\n").slice(1).join("\n");
+      if (stack) { printLine(stack); }
     } else if (e instanceof CompilerError) {
-      console.error(e.message);
+      printLine(e.message);
     } else if (e instanceof UnreachableCode) {
-      console.error(e.message);
+      printLine(e.message);
     } else if (e instanceof SyntaxError) {
       return false;
     } else if (e instanceof CmdFailed) {
-      console.error("Build failed");
+      printLine("Build failed");
       return false;
     } else {
-      console.error(e);
+      printLine(String(e));
     }
     return false;
   }
@@ -1243,11 +1245,14 @@ export class ModuleCompiler {
     mkdirSync(logsDir, { recursive: true });
     const logPath = join(logsDir, `${gen.name}.log`);
 
-    // Pause the outer printer and intercept stdout so that the nested
-    // ProjectCompiler printer and any other console output from the generator
-    // build goes to our buffer instead of the terminal.
-    this.printer?.pause();
+
     const logChunks: string[] = [];
+    const project = new ProjectCompiler(false, true, false, false, true);
+    let buildOk = false;
+    let runResult: { exitCode: number; output: string } | null = null;
+
+    // Capture generator build output to a buffer so it stays off the terminal.
+    // The captured log is written to disk and shown only on failure.
     const origWrite = process.stdout.write.bind(process.stdout);
     (process.stdout as any).write = (
       chunk: Buffer | string,
@@ -1259,10 +1264,6 @@ export class ModuleCompiler {
       );
       return true;
     };
-
-    const project = new ProjectCompiler(false, true, false);
-    let buildOk = false;
-    let runResult: { exitCode: number; output: string } | null = null;
 
     try {
       buildOk = await project.build(
@@ -1289,7 +1290,6 @@ export class ModuleCompiler {
       }
     } finally {
       (process.stdout as any).write = origWrite;
-      this.printer?.resume();
     }
 
     // Strip ANSI escape codes before writing to the log file so it is

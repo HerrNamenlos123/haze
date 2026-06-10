@@ -89,12 +89,14 @@ export class ProjectCompiler {
   ignoreLock: boolean;
   strip: boolean;
   showTiming: boolean;
+  silent: boolean;
 
-  constructor(verbose = false, ignoreLock = false, strip = false, showTiming = false) {
+  constructor(verbose = false, ignoreLock = false, strip = false, showTiming = false, silent = false) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
     this.strip = strip;
     this.showTiming = showTiming;
+    this.silent = silent;
   }
 
   async getConfig(singleFilename?: string, sourceloc?: boolean) {
@@ -166,7 +168,7 @@ export class ProjectCompiler {
       ? null
       : await acquireBuildLock(join(this.globalBuildDir, HAZE_BUILD_LOCKFILE));
 
-    const printer = new CLIPrinter(this.showTiming);
+    const printer = this.silent ? null : new CLIPrinter(this.showTiming);
 
     try {
       if (!singleFilename) {
@@ -213,17 +215,18 @@ export class ProjectCompiler {
         }
       }
 
-      // Register all modules with the printer in build order so the spinner
-      // shows the full module list with correct indices from the start.
-      if (stdlibModule) {
-        stdlibModule.setPrinter(printer, printer.addModule(stdlibModule.config.name));
+      if (printer) {
+        // Register all modules with the printer in build order so the spinner
+        // shows the full module list with correct indices from the start.
+        if (stdlibModule) {
+          stdlibModule.setPrinter(printer, printer.addModule(stdlibModule.config.name));
+        }
+        for (const m of depModules) {
+          m.setPrinter(printer, printer.addModule(m.config.name));
+        }
+        mainModule.setPrinter(printer, printer.addModule(mainModule.config.name));
+        printer.start();
       }
-      for (const m of depModules) {
-        m.setPrinter(printer, printer.addModule(m.config.name));
-      }
-      mainModule.setPrinter(printer, printer.addModule(mainModule.config.name));
-
-      printer.start();
 
       if (stdlibModule && !(await stdlibModule.build(false, fullRebuild))) {
         return false;
@@ -242,7 +245,7 @@ export class ProjectCompiler {
       }
       return true;
     } finally {
-      printer.stop();
+      printer?.stop();
       releaseBuildLock?.();
     }
   }

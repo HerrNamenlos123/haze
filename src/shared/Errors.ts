@@ -1,3 +1,5 @@
+import { printLine } from "../ModuleCompiler/CLIPrinter";
+
 export enum ErrorType {
   Error = 0,
   Warning = 1,
@@ -86,7 +88,7 @@ export function printCompilerMessage(
     });
     return;
   }
-  console.log(formatCompilerMessage(type, error, msg, loc));
+  printLine(formatCompilerMessage(type, error, msg, loc));
 }
 
 export function formatErrorMessage(msg: string, loc?: SourceLoc): string {

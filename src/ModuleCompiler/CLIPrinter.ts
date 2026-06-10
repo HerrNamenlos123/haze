@@ -49,10 +49,25 @@ type ModuleState = ModuleHandle & {
   phaseHistory: PhaseRecord[];
   /** False until build() begins — bar is not created until then. */
   active: boolean;
+  failed: boolean;
 };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const TICK_MS = 80;
+
+let _activePrinter: CLIPrinter | null = null;
+
+/**
+ * Print a line of text. If a CLIPrinter is active, inserts the line above the
+ * progress bars without truncation. Otherwise writes directly to stdout.
+ */
+export function printLine(message: string) {
+  if (_activePrinter) {
+    _activePrinter.log(message);
+  } else {
+    process.stdout.write(message + "\n");
+  }
+}
 
 export class CLIPrinter {
   private modules: ModuleState[] = [];
@@ -89,6 +104,7 @@ export class CLIPrinter {
       phaseStartTime: new Date(),
       phaseHistory: [],
       active: false,
+      failed: false,
     };
     this.modules.push(state);
     return state;
@@ -139,6 +155,13 @@ export class CLIPrinter {
     if (this.updateInterval) {
       return;
     }
+    // Only register as the active printer if none is already running.
+    // Generator sub-builds create their own CLIPrinter while the outer build's
+    // printer is still active; we must not clobber the outer reference.
+    if (_activePrinter === null) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      _activePrinter = this;
+    }
     this.tick();
     this.updateInterval = setInterval(() => this.tick(), TICK_MS);
   }
@@ -166,20 +189,49 @@ export class CLIPrinter {
 
   /** Stop the animation and freeze the output. */
   stop() {
-    if (!this.updateInterval) {
-      return;
-    }
-    clearInterval(this.updateInterval);
-    this.updateInterval = null;
-    this.tick();
-    this.multibar.stop();
+    this.stopBars();
     if (this.showTiming) {
       this.printAllTimingReports();
     }
   }
 
+  /** Freeze bars and print message — use for errors. */
   log(message: string) {
+    for (const m of this.modules) {
+      if (m.active && m.phase !== EModulePrintCompilerPhase.Done) {
+        m.failed = true;
+      }
+    }
+    this.stopBars();
+    process.stdout.write(message + "\n");
+  }
+
+  /** Insert a status line above the live bars without stopping them. */
+  logInfo(message: string) {
     this.multibar.log(message + "\n");
+  }
+
+  private stopBars() {
+    if (this.updateInterval === null) {
+      return;
+    }
+    clearInterval(this.updateInterval);
+    this.updateInterval = null;
+    if (_activePrinter === this) {
+      _activePrinter = null;
+    }
+    this.tick();
+
+    // multibar.stop() re-enables line-wrapping before it renders the final
+    // bars.  After that, terminal.write() uses substr(0, columns) on the raw
+    // string (including ANSI codes), which truncates the last bar mid-sequence.
+    // Patching write() to always use rawWrite=true skips the truncation so the
+    // full bar content is displayed, then we restore immediately after.
+    const terminal = (this.multibar as any).terminal;
+    const origWrite = terminal.write.bind(terminal) as (s: string, raw?: boolean) => void;
+    terminal.write = (s: string, _raw?: boolean) => origWrite(s, true);
+    this.multibar.stop();
+    terminal.write = origWrite;
   }
 
   private printAllTimingReports() {
@@ -274,7 +326,9 @@ export class CLIPrinter {
     const timeStr = chalk.gray(`${elapsedMs}ms`.padStart(8));
 
     let phaseBlock: string;
-    if (state.endTime) {
+    if (state.failed) {
+      phaseBlock = `[${chalk.red("Error         ✘")}]`;
+    } else if (state.endTime) {
       phaseBlock = `[${chalk.green("Done          ✔")}]`;
     } else {
       const label = PHASE_LABEL[state.phase];
