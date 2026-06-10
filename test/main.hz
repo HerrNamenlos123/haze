@@ -61,6 +61,7 @@ fn foo() {
 fn main(): int {
 
     foo();
+    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
