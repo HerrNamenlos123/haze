@@ -97,7 +97,8 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 static hzstd_semaphore_t panic_trigger;
 static hzstd_semaphore_t panic_response;
 
-static hzstd_stacktrace_t *panic_built_stacktrace = NULL; /* build-only mode result */
+static hzstd_stacktrace_t  panic_built_stacktrace; /* build-only mode result (value) */
+static hzstd_panic_info_t  panic_info_storage;     /* panic mode result (value)      */
 
 // Guaranteed extra stack available inside the VEH handler.
 static int GUARANTEED_VEH_STACK_SIZE = 16384;
@@ -229,11 +230,8 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
 
     if (build_only) {
       // Caller just wants frames — no message or type needed.
-      hzstd_stacktrace_t *st =
-          (hzstd_stacktrace_t *)hzstd_allocate(allocator, sizeof(hzstd_stacktrace_t));
-      st->frames        = frameArray;
-      st->skip_n_frames = panic_skip_n_frames;
-      panic_built_stacktrace = st;
+      panic_built_stacktrace.frames        = frameArray;
+      panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
       atomic_store(&panic_in_progress, 0);
       hzstd_trigger_semaphore(&panic_response);
     } else {
@@ -243,19 +241,17 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
-      hzstd_panic_info_t *info =
-          (hzstd_panic_info_t *)hzstd_allocate(allocator, sizeof(hzstd_panic_info_t));
-      info->stacktrace.frames        = frameArray;
-      info->stacktrace.skip_n_frames = panic_skip_n_frames;
-      info->message = (hzstd_str_t){.data = reason_data, .length = reason_len};
-      info->type    = panic_type;
+      panic_info_storage.stacktrace.frames        = frameArray;
+      panic_info_storage.stacktrace.skip_n_frames = panic_skip_n_frames;
+      panic_info_storage.message = (hzstd_str_t){.data = reason_data, .length = reason_len};
+      panic_info_storage.type    = panic_type;
 
       if (has_recovery) {
-        panic_recovery_target->_hz_panic_stacktrace = info;
+        panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
         atomic_store(&panic_in_progress, 0);
         hzstd_trigger_semaphore(&panic_response);
       } else {
-        hzstd_print_panic_report(info);
+        hzstd_print_panic_report(&panic_info_storage);
         fflush(stdout);
         fflush(stderr);
         _exit(-1);
@@ -374,7 +370,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
 
 // ── hzstd_build_stacktrace ────────────────────────────────────────────────────
 
-hzstd_stacktrace_t *hzstd_build_stacktrace(int skip_n_frames) {
+hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames) {
   int expected = 0;
   while (!atomic_compare_exchange_weak(&panic_in_progress, &expected, 1))
     expected = 0;

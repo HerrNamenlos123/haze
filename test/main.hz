@@ -42,8 +42,16 @@ fn print<T>(value: T) {
     }
 }
 
-fn other() {
-    sys.panic("OH NO");
+fn other() :: final {
+    do unsafe {
+        __c__("volatile int a = 0;");
+    };
+    // sys.panic("OH NO");
+    // do unsafe {
+    //     __c__("int* a = NULL;");
+    //     __c__("int b = *a;");
+    // };
+    other();
 }
 
 fn foo() {
@@ -51,10 +59,7 @@ fn foo() {
         other();
     }
     recover e {
-        let s = e.stacktrace;
-        static_print(f"{typeof(e).prettyName}");
-        static_print(f"{typeof(s).prettyName}");
-        fmt.println("panic handled: ", s);
+        fmt.println(f"panic handled: {e.message} ({e.stacktrace.frames.length} frames)");
     };
 
     fmt.println("Let's continue to work now!");

@@ -25,16 +25,14 @@ typedef enum {
   hzstd_panic_type_stackoverflow = 3,
 } hzstd_panic_type_t;
 
-// Heap-allocated stacktrace — just the captured frames.
-// Produced by hzstd_build_stacktrace() or the panic worker; valid until freed.
+// Captured stack frames (value type — no heap allocation for the wrapper).
+// The frames array inside IS heap-allocated; the struct itself is a value.
 typedef struct {
   hzstd_dynamic_array_t *frames; /* hzstd_stackframe_t[], heap-allocated */
   hzstd_int_t skip_n_frames;
 } hzstd_stacktrace_t;
 
-// Full panic context: message, panic type, and a stacktrace.
-// Produced by the panic worker thread when a panic occurs; all fields are
-// stable after construction (message is heap-copied before longjmp).
+// Full panic context: message, type, and frames (value type).
 typedef struct {
   hzstd_stacktrace_t stacktrace;
   hzstd_str_t message;
@@ -56,7 +54,7 @@ typedef struct {
 // The panic machinery sets this on the panicking thread before longjmping to
 // the nearest recovery frame.  Read it from the recover: label that follows a
 // HAZE_ATTEMPT block.  NULL if no panic has reached this thread.
-extern _Thread_local hzstd_panic_info_t *_hz_panic_stacktrace;
+extern _Thread_local hzstd_panic_info_t _hz_panic_stacktrace;
 
 // ── Panic recovery frame ─────────────────────────────────────────────────────
 
@@ -69,7 +67,7 @@ typedef struct {
   hzstd_dynamic_array_t
       *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
   HZSTD_JMP_BUF recovery_point;
-  hzstd_panic_info_t *_hz_panic_stacktrace; /* filled before longjmp */
+  hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
 } hzstd_panic_recovery_frame_t;
 
 // ── Recovery frame API ───────────────────────────────────────────────────────
@@ -148,25 +146,25 @@ _Noreturn void hzstd_unreachable(int skip_n_frames);
 // ── Stacktrace API ───────────────────────────────────────────────────────────
 //
 // hzstd_build_stacktrace: capture the current call stack (frames only).
-//   Stack-walking runs on the panic worker thread.  Blocks until complete.
+//   Returns hzstd_stacktrace_t by value; frames array inside is heap-allocated.
 //   skip_n_frames: innermost frames to skip (pass 1 to hide this function).
 //   NOT async-signal-safe.
-hzstd_stacktrace_t *hzstd_build_stacktrace(int skip_n_frames);
+hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames);
 
-// Print only the "Stack trace:" section for a stacktrace (no message/type header).
-void hzstd_print_stacktrace(hzstd_stacktrace_t *st);
+// Print only the "Stack trace:" section (no message/type header).
+void hzstd_print_stacktrace(hzstd_stacktrace_t st);
 
 // Stringify only the "Stack trace:" section (no message/type header).
 // Pass hzstd_make_heap_allocator() for a persistent result.
 hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
-                                        hzstd_stacktrace_t *st);
+                                        hzstd_stacktrace_t st);
 
 // Print the full panic report: "[FATAL]" header + message + "Stack trace:" + frames.
-void hzstd_print_panic_info(hzstd_panic_info_t *info);
+void hzstd_print_panic_info(hzstd_panic_info_t info);
 
 // Stringify the full panic report (same layout as hzstd_print_panic_info).
 hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
-                                        hzstd_panic_info_t *info);
+                                        hzstd_panic_info_t info);
 
 // ── Internal: used by the worker thread ──────────────────────────────────────
 void hzstd_print_panic_report(hzstd_panic_info_t *info);

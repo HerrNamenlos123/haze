@@ -4,7 +4,7 @@ namespace ffi {
     extern C noemit fn hzstd_panic_n(msg: ccstr, skip: int) :: final, noreturn;
     extern C noemit fn hzstd_unreachable(skip: int) :: final, noreturn;
 
-    extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): mut hzstd_stacktrace_t | none :: final;
+    extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): hzstd_stacktrace_t :: final;
     extern C noemit fn hzstd_print_stacktrace(st: hzstd_stacktrace_t) :: final;
     extern C noemit fn hzstd_stringify_stacktrace(allocator: Allocator, st: hzstd_stacktrace_t): str :: final;
     extern C noemit fn hzstd_print_panic_info(info: hzstd_panic_info_t) :: final;
@@ -58,18 +58,18 @@ namespace ffi {
         hzstd_panic_type_stackoverflow = 3,
     };
 
-    export extern C noemit opaque struct hzstd_stackframe_t {
+    export extern C noemit opaque inline struct hzstd_stackframe_t {
         id: int;
         instructionPointer: int;
         name: str;
         sourceloc: SourceLocation;
     };
 
-    export extern C noemit opaque struct hzstd_stacktrace_t {
+    export extern C noemit opaque inline struct hzstd_stacktrace_t {
         frames: []hzstd_stackframe_t;
     };
 
-    export extern C noemit opaque struct hzstd_panic_info_t {
+    export extern C noemit opaque inline struct hzstd_panic_info_t {
         stacktrace: hzstd_stacktrace_t;
         message: str;
         type: hzstd_panic_type_t;

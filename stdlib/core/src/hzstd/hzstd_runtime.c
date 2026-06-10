@@ -18,7 +18,7 @@
 // Set by the panic machinery on the panicking thread before longjmping to the
 // nearest recovery frame.  Read from the recover: label after HAZE_ATTEMPT.
 
-_Thread_local hzstd_panic_info_t *_hz_panic_stacktrace = NULL;
+_Thread_local hzstd_panic_info_t _hz_panic_stacktrace = {0};
 
 // ── ANSI colours ─────────────────────────────────────────────────────────────
 
@@ -451,22 +451,21 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // Prints the full panic report: header + message + "at" location + frames.
-void hzstd_print_panic_info(hzstd_panic_info_t *info) {
-  if (!info) return;
+void hzstd_print_panic_info(hzstd_panic_info_t info) {
   hzstd_allocator_t alloc = hzstd_make_arena_allocator();
 
   hzstd_str_t loc_str = {.data = NULL, .length = 0};
-  hzstd_str_t body    = info->message;
-  bool        has_loc = split_panic_message(info->message, &loc_str, &body);
+  hzstd_str_t body    = info.message;
+  bool        has_loc = split_panic_message(info.message, &loc_str, &body);
 
   fprintf(stderr, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
   fprintf(stderr, A_WHITE_B);
   fwrite(body.data, 1, body.length, stderr);
   fprintf(stderr, A_RESET "\n");
 
-  hzstd_dynamic_array_t *frames   = info->stacktrace.frames;
-  size_t                  n_frames = hzstd_dynamic_array_size(frames);
-  hzstd_int_t             skip    = info->stacktrace.skip_n_frames;
+  hzstd_dynamic_array_t *frames = info.stacktrace.frames;
+  size_t                 n_frames = hzstd_dynamic_array_size(frames);
+  hzstd_int_t            skip    = info.stacktrace.skip_n_frames;
 
   hzstd_stackframe_t first_user    = {0};
   bool               has_first_user = false;
@@ -498,42 +497,36 @@ void hzstd_print_panic_info(hzstd_panic_info_t *info) {
 
 // Alias used by the panic worker thread.
 void hzstd_print_panic_report(hzstd_panic_info_t *info) {
-  hzstd_print_panic_info(info);
+  hzstd_print_panic_info(*info);
 }
 
 // Prints only the "Stack trace:" section (no message/type header).
-void hzstd_print_stacktrace(hzstd_stacktrace_t *st) {
-  if (!st) return;
+void hzstd_print_stacktrace(hzstd_stacktrace_t st) {
   hzstd_allocator_t alloc = hzstd_make_arena_allocator();
-  print_frames_to_stderr(alloc, st->frames, st->skip_n_frames);
+  print_frames_to_stderr(alloc, st.frames, st.skip_n_frames);
   fflush(stderr);
 }
 
 // Stringifies the full panic report (header + message + frames).
 hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
-                                        hzstd_panic_info_t *info) {
+                                        hzstd_panic_info_t info) {
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
-
-  if (!info) {
-    sbuf_cstr(&b, A_RED_B "[FATAL] (null panic info)" A_RESET "\n");
-    return sbuf_finish(&b);
-  }
 
   hzstd_allocator_t scratch = hzstd_make_arena_allocator();
 
   hzstd_str_t loc_str = {.data = NULL, .length = 0};
-  hzstd_str_t body    = info->message;
-  bool        has_loc = split_panic_message(info->message, &loc_str, &body);
+  hzstd_str_t body    = info.message;
+  bool        has_loc = split_panic_message(info.message, &loc_str, &body);
 
   sbuf_cstr(&b, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
   sbuf_cstr(&b, A_WHITE_B);
   sbuf_str(&b, body);
   sbuf_cstr(&b, A_RESET "\n");
 
-  hzstd_dynamic_array_t *frames   = info->stacktrace.frames;
-  size_t                  n_frames = hzstd_dynamic_array_size(frames);
-  hzstd_int_t             skip    = info->stacktrace.skip_n_frames;
+  hzstd_dynamic_array_t *frames = info.stacktrace.frames;
+  size_t                 n_frames = hzstd_dynamic_array_size(frames);
+  hzstd_int_t            skip    = info.stacktrace.skip_n_frames;
 
   hzstd_stackframe_t first_user    = {0};
   bool               has_first_user = false;
@@ -566,17 +559,11 @@ hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
 
 // Stringifies only the "Stack trace:" section (no message/type header).
 hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
-                                        hzstd_stacktrace_t *st) {
+                                        hzstd_stacktrace_t st) {
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
-
-  if (!st) {
-    sbuf_cstr(&b, A_DIM "(null stacktrace)" A_RESET "\n");
-    return sbuf_finish(&b);
-  }
-
   hzstd_allocator_t scratch = hzstd_make_arena_allocator();
-  sbuf_frames(&b, scratch, st->frames, st->skip_n_frames);
+  sbuf_frames(&b, scratch, st.frames, st.skip_n_frames);
   return sbuf_finish(&b);
 }
 
@@ -600,7 +587,7 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void) {
       .cleanup_handlers = HZSTD_DYNAMIC_ARRAY_CREATE(
           hzstd_make_heap_allocator(),
           hzstd_panic_recovery_cleanup_entry_t, 1),
-      ._hz_panic_stacktrace = NULL,
+      ._hz_panic_stacktrace = {0},
   };
 
   hzstd_panic_recovery_frame_t *framePtr = HZSTD_ALLOC_STRUCT(

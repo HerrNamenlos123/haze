@@ -2660,7 +2660,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.InlineCStatement,
-            value: `${expr.panicInfoVarname} = _hz_panic_stacktrace; _hz_panic_stacktrace = NULL;`,
+            value: `${expr.panicInfoVarname} = _hz_panic_stacktrace;`,
             sourceloc: expr.sourceloc,
           })[1]
         );
