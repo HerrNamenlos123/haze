@@ -43,7 +43,10 @@ fn print<T>(value: T) {
 }
 
 fn other() {
-    sys.panic("OH NO");
+    let a = true;
+    if a {
+        sys.panic("OH NO");
+    }
 }
 
 fn foo() {

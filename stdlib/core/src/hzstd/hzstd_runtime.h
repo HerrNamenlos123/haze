@@ -4,6 +4,7 @@
 
 #include "hzstd_array.h"
 #include "hzstd_string.h"
+#include <setjmp.h>
 #include <stdio.h>
 
 hzstd_str_t hzstd_errno_to_str(int err);
@@ -127,6 +128,41 @@ hzstd_trap_str(hzstd_str_t msg) {
 
 typedef struct {
   hzstd_dynamic_array_t *cleanup_handlers;
+  jmp_buf recovery_point;
 } hzstd_panic_recovery_frame_t;
+
+int hzstd_panic_recovery_frame_count();
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame();
+hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame();
+hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame();
+
+void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env);
+void hzstd_panic_recovery_frame_pop_cleanup();
+void hzstd_panic_recovery_frame_run_cleanup();
+
+#define HAZE_ATTEMPT(id, recovery_label, body)                                 \
+  do {                                                                         \
+    hzstd_panic_recovery_frame_t *frame = hzstd_push_panic_recovery_frame();   \
+    int __hz_setjmp_result_ = setjmp(frame->recovery_point);                   \
+    if (__hz_setjmp_result_ == 0) {                                            \
+      body;                                                                    \
+    } else if (__hz_setjmp_result_ == 1) {                                     \
+      hzstd_panic_recovery_frame_run_cleanup();                                \
+      hzstd_pop_panic_recovery_frame();                                        \
+      goto recovery_label;                                                     \
+    } else {                                                                   \
+      HZSTD_PANIC_FMT("Unexpected longjmp result");                            \
+    }                                                                          \
+    hzstd_pop_panic_recovery_frame();                                          \
+  } while (0);
+
+#define HAZE_LONGJMP_TO_PANIC_RECOVERY_IF_POSSIBLE()                           \
+  do {                                                                         \
+    if (hzstd_panic_recovery_frame_count() > 0) {                              \
+      hzstd_panic_recovery_frame_t *frame =                                    \
+          hzstd_get_current_panic_recovery_frame();                            \
+      longjmp(frame->recovery_point, 1);                                       \
+    }                                                                          \
+  } while (0);
 
 #endif // HZSTD_RUNTIME_H

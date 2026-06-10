@@ -447,6 +447,12 @@ hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame() {
   return frame;
 }
 
+int hzstd_panic_recovery_frame_count() {
+  hzstd_init_panic_recovery_frames();
+  int length = hzstd_dynamic_array_size(panic_recovery_frames);
+  return length;
+}
+
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame() {
   hzstd_init_panic_recovery_frames();
   int length = hzstd_dynamic_array_size(panic_recovery_frames);
@@ -478,8 +484,10 @@ void hzstd_panic_recovery_frame_pop_cleanup() {
   hzstd_dynamic_array_pop(frame->cleanup_handlers, NULL);
 }
 
-void hzstd_panic_recovery_frame_run_cleanup(
-    hzstd_panic_recovery_frame_t *frame) {
+void hzstd_panic_recovery_frame_run_cleanup() {
+  hzstd_panic_recovery_frame_t *frame =
+      hzstd_get_current_panic_recovery_frame();
+
   for (size_t i = 0; i < hzstd_dynamic_array_size(frame->cleanup_handlers);
        i++) {
     hzstd_panic_recovery_frame_cleanup_entry_t entry = HZSTD_DYNAMIC_ARRAY_GET(

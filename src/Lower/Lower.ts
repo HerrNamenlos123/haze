@@ -2516,11 +2516,12 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           expr.panicInfoVarname
         );
 
-        // Wrap attempt body in recovery macro so the platform can intercept panics
+        // Open wrapping macro — the attempt body runs inside this macro call so
+        // the platform can intercept panics and jump to the recover label.
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.InlineCStatement,
-            value: `HAZE_ATTEMPT_BEGIN(${expr.uniqueId}ULL, ${expr.recoverLabel});`,
+            value: `HAZE_ATTEMPT(${expr.uniqueId}ULL, ${expr.recoverLabel}, ({`,
             sourceloc: expr.sourceloc,
           })[1]
         );
@@ -2533,17 +2534,6 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         enclosingBlockScope.statements,
         instanceInfo
       );
-
-      if (hasRecover) {
-        // Pop recovery frame before branching away (fallthrough or noreturn)
-        enclosingBlockScope.statements.push(
-          Lowered.addStatement(lr, {
-            variant: Lowered.ENode.InlineCStatement,
-            value: `HAZE_ATTEMPT_END(${expr.uniqueId}ULL);`,
-            sourceloc: expr.sourceloc,
-          })[1]
-        );
-      }
 
       if (expr.attemptScopeReturnsType) {
         assert(resultVarId);
@@ -2582,6 +2572,17 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             0n,
             instanceInfo
           )
+        );
+      }
+
+      if (hasRecover) {
+        // Close the HAZE_ATTEMPT macro — everything above ran inside the macro.
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.InlineCStatement,
+            value: `}));`,
+            sourceloc: expr.sourceloc,
+          })[1]
         );
       }
 
