@@ -68,6 +68,7 @@ import {
   type GeneratorHandle,
   type ModuleHandle,
   printLine,
+  printLineWarning,
 } from "./CLIPrinter";
 
 /**
@@ -629,10 +630,20 @@ export function getCurrentPlatform() {
 // ProjectCompiler has moved to src/ProjectCompiler/ProjectCompiler.ts
 
 export function exec(str: string) {
-  try {
-    child_process.execSync(str);
-  } catch {
+  const proc = child_process.spawnSync(str, {
+    stdio: ["inherit", "inherit", "pipe"],
+    shell: true,
+    env: process.env,
+  });
+  const stderr = proc.stderr?.toString() ?? "";
+  if (proc.status !== 0) {
+    if (stderr.trim()) {
+      printLine(stderr.trimEnd());
+    }
     throw new CmdFailed();
+  }
+  if (stderr.trim()) {
+    printLineWarning(stderr.trimEnd());
   }
 }
 
