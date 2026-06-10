@@ -47,6 +47,8 @@ struct ComponentInstance {
     onUnmount?: () => none;
 
     mounted: bool = false;
+    crashed: bool = false;
+    crashMessage: str = "";
 
     fn getOrCreateDiv(id: int): mut hzui.DivElement {
         for n in this.elementsById {
@@ -344,8 +346,14 @@ opaque struct UIContext {
         let instance = this.makeCurrentComponentAvailable(id);
 
         if !instance.setupDone {
-            instance.currentTemplate = setupFn();
-            instance.setupDone = true;
+            attempt {
+                instance.currentTemplate = setupFn();
+                instance.setupDone = true;
+            } recover e {
+                instance.crashed = true;
+                instance.crashMessage = e.message;
+                instance.setupDone = true;
+            };
         }
 
         if (propsChanged) {
@@ -359,13 +367,26 @@ opaque struct UIContext {
                 instance.newChildComponents = [];
                 instance.rootElement.children = [];
 
+                if instance.crashed {
+                    let errEl = instance.getOrCreateText(-1);
+                    errEl.text := f"Component error: {instance.crashMessage}";
+                    errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
+                    instance.rootElement.children.push(errEl);
+                    return none;
+                }
+
                 this.pushRenderContext({
                     currentComponent: instance,
                     currentParent: instance.rootElement,
                 });
 
                 assert(instance.currentTemplate);
-                instance.currentTemplate();
+                attempt {
+                    instance.currentTemplate();
+                } recover e {
+                    instance.crashed = true;
+                    instance.crashMessage = e.message;
+                };
 
                 let oldChildren =
                     instance.childComponents;
@@ -620,8 +641,12 @@ fn NavItem(ui: UIContext, args: NavItemArgs) {
             if !element {
                 return false;
             }
+            if (element.hover()) {
+                let a: str[] = [];
+                a.pop();
+            }
             return element.hover();
-        })
+        });
 
         return (): void => {
             ui.div({

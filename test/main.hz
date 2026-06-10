@@ -42,33 +42,7 @@ fn print<T>(value: T) {
     }
 }
 
-fn other() :: final {
-    do unsafe {
-        __c__("volatile int a = 0;");
-    };
-    // sys.panic("OH NO");
-    // do unsafe {
-    //     __c__("int* a = NULL;");
-    //     __c__("int b = *a;");
-    // };
-    other();
-}
-
-fn foo() {
-    attempt {
-        other();
-    }
-    recover e {
-        fmt.println(f"panic handled: {e.message} ({e.stacktrace.frames.length} frames)");
-    };
-
-    fmt.println("Let's continue to work now!");
-}
-
 fn main(): int {
-
-    foo();
-    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }

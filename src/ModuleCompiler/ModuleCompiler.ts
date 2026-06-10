@@ -698,6 +698,7 @@ export class ModuleCompiler {
   currentModuleRootDir: string | null = null;
   currentUnitScope: Collect.ScopeId | null = null;
   private cachedDependencyMetadata: ModuleMetadata[] | null = null;
+  private collectedDepModules: Set<string> = new Set();
   private printer: CLIPrinter | null = null;
   private printerHandle: ModuleHandle | null = null;
 
@@ -801,9 +802,19 @@ export class ModuleCompiler {
 
   async collectDirectory(dirpath: string, collectionMode: ECollectionMode) {
     for (const file of readdirSync(dirpath)) {
+      if (file === "__haze__") {
+        continue;
+      }
       const fullPath = join(dirpath, file);
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
+        const isDepModule = basename(dirpath) === "__deps";
+        if (isDepModule) {
+          if (this.collectedDepModules.has(file)) {
+            continue;
+          }
+          this.collectedDepModules.add(file);
+        }
         await this.collectDirectory(fullPath, collectionMode);
       } else if (extname(fullPath) === ".hz") {
         await this.collectFile(fullPath, collectionMode);
