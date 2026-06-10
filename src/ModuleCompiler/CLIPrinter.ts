@@ -52,6 +52,15 @@ type ModuleState = ModuleHandle & {
   failed: boolean;
 };
 
+type GeneratorState = {
+  moduleName: string;
+  genName: string;
+  startTime: Date;
+  bar?: SingleBar;
+};
+
+export type GeneratorHandle = GeneratorState;
+
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const TICK_MS = 80;
 
@@ -71,6 +80,7 @@ export function printLine(message: string) {
 
 export class CLIPrinter {
   private modules: ModuleState[] = [];
+  private generators: GeneratorState[] = [];
   private multibar: MultiBar;
   private updateInterval: NodeJS.Timeout | null = null;
   private spinnerIndex = 0;
@@ -83,10 +93,15 @@ export class CLIPrinter {
         clearOnComplete: false,
         hideCursor: true,
         format: (_options, _params, payload) =>
-          this.renderRow(
-            payload.module as ModuleState,
-            payload.spinnerIndex as number
-          ),
+          payload.gen
+            ? this.renderGeneratorRow(
+                payload.gen as GeneratorState,
+                payload.spinnerIndex as number
+              )
+            : this.renderRow(
+                payload.module as ModuleState,
+                payload.spinnerIndex as number
+              ),
       },
       Presets.shades_classic
     );
@@ -305,20 +320,69 @@ export class CLIPrinter {
     });
   }
 
+  beginGenerator(moduleName: string, genName: string): GeneratorHandle {
+    const state: GeneratorState = {
+      moduleName: moduleName,
+      genName: genName,
+      startTime: new Date(),
+    };
+    this.generators.push(state);
+    if (this.updateInterval !== null) {
+      state.bar = this.multibar.create(100, 0, {
+        gen: state,
+        spinnerIndex: this.spinnerIndex,
+      });
+    }
+    return state;
+  }
+
+  endGenerator(handle: GeneratorHandle) {
+    const state = handle as GeneratorState;
+    const idx = this.generators.indexOf(state);
+    if (idx >= 0) { this.generators.splice(idx, 1); }
+    if (state.bar) {
+      this.multibar.remove(state.bar);
+      state.bar = undefined;
+    }
+  }
+
+  private refreshGeneratorBar(state: GeneratorState) {
+    state.bar?.update(0, { gen: state, spinnerIndex: this.spinnerIndex });
+  }
+
   private tick() {
     this.spinnerIndex = (this.spinnerIndex + 1) % SPINNER.length;
     for (const m of this.modules) {
       this.refreshBar(m);
     }
+    for (const g of this.generators) {
+      this.refreshGeneratorBar(g);
+    }
+  }
+
+  private renderGeneratorRow(state: GeneratorState, spinnerIndex: number): string {
+    // Aligns with module bars: 5-char tag + 1 space + 32-char name field + 1 space = 39 before phase block
+    const tag = chalk.blue("[gen]");
+    const rawCombined = `${state.moduleName} › ${state.genName}`;
+    const visName = chalk.blue(state.moduleName) + chalk.dim(" › ") + chalk.blueBright(state.genName) +
+      " ".repeat(Math.max(0, 32 - rawCombined.length));
+    const phaseBlock = `[${chalk.blue("Running      ")}${chalk.blue(SPINNER[spinnerIndex])}]`;
+    const elapsedMs = Date.now() - state.startTime.getTime();
+    const timeStr = chalk.blue(`${elapsedMs}ms`.padStart(8));
+    return `${tag} ${visName} ${phaseBlock} ${timeStr}`;
   }
 
   private renderRow(state: ModuleState, spinnerIndex: number): string {
     const index = this.modules.indexOf(state);
     const total = this.modules.length;
 
-    const indexStr = chalk.gray(`[${index + 1}/${total}]`);
-    const actionStr = chalk.greenBright("Compiling");
-    const nameStr = chalk.white(state.name.padEnd(20));
+    // Pad index to match width of total so columns stay fixed (e.g. [ 1/10] vs [10/10])
+    const totalStr = String(total);
+    const indexLabel = `[${String(index + 1).padStart(totalStr.length)}/${totalStr}]`;
+    const indexStr = chalk.gray(indexLabel);
+    // Pad index tag to 5 chars minimum so it aligns with [gen]
+    const indexPad = " ".repeat(Math.max(0, 5 - indexLabel.length));
+    const nameStr = chalk.white(state.name.padEnd(32));
 
     const elapsedMs = state.endTime
       ? state.endTime.getTime() - state.startTime.getTime()
@@ -335,7 +399,7 @@ export class CLIPrinter {
       phaseBlock = `[${chalk.cyan(label)}${chalk.cyan(SPINNER[spinnerIndex])}]`;
     }
 
-    return `${indexStr} ${actionStr} ${nameStr} ${phaseBlock} ${timeStr}`;
+    return `${indexStr}${indexPad} ${nameStr} ${phaseBlock} ${timeStr}`;
   }
 }
 

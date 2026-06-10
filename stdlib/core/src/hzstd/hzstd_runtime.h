@@ -19,9 +19,9 @@ typedef struct {
 } hzstd_stackframe_t;
 
 typedef enum {
-  hzstd_panic_type_unknown      = 0,
-  hzstd_panic_type_user         = 1,
-  hzstd_panic_type_segfault     = 2,
+  hzstd_panic_type_unknown = 0,
+  hzstd_panic_type_user = 1,
+  hzstd_panic_type_segfault = 2,
   hzstd_panic_type_stackoverflow = 3,
 } hzstd_panic_type_t;
 
@@ -31,9 +31,9 @@ typedef enum {
 // of the message so it survives the longjmp that sent us here.
 typedef struct {
   hzstd_dynamic_array_t *frames; /* hzstd_stackframe_t[], heap-allocated */
-  hzstd_str_t            message;
-  hzstd_int_t            skip_n_frames;
-  hzstd_panic_type_t     type;
+  hzstd_str_t message;
+  hzstd_int_t skip_n_frames;
+  hzstd_panic_type_t type;
 } hzstd_stacktrace_t;
 
 // ── longjmp shim ─────────────────────────────────────────────────────────────
@@ -42,8 +42,8 @@ typedef struct {
 // signal mask is restored manually after longjmp (see hzstd_platform_linux.c)
 // so sigjmp_buf is not needed in this shared header.
 
-#define HZSTD_JMP_BUF         jmp_buf
-#define HZSTD_SETJMP(buf)     setjmp(buf)
+#define HZSTD_JMP_BUF jmp_buf
+#define HZSTD_SETJMP(buf) setjmp(buf)
 #define HZSTD_LONGJMP(buf, v) longjmp((buf), (v))
 
 // ── Thread-local panic stacktrace ────────────────────────────────────────────
@@ -61,14 +61,15 @@ typedef struct {
 } hzstd_panic_recovery_cleanup_entry_t;
 
 typedef struct {
-  hzstd_dynamic_array_t *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
-  HZSTD_JMP_BUF          recovery_point;
-  hzstd_stacktrace_t    *_hz_panic_stacktrace; /* filled before longjmp */
+  hzstd_dynamic_array_t
+      *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
+  HZSTD_JMP_BUF recovery_point;
+  hzstd_stacktrace_t *_hz_panic_stacktrace; /* filled before longjmp */
 } hzstd_panic_recovery_frame_t;
 
 // ── Recovery frame API ───────────────────────────────────────────────────────
 
-int                          hzstd_panic_recovery_frame_count(void);
+int hzstd_panic_recovery_frame_count(void);
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void);
 hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(void);
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void);
@@ -79,7 +80,8 @@ void hzstd_panic_recovery_frame_pop_cleanup(void);
 // Run all cleanup handlers registered on `frame` in registration order.
 // Pass the frame explicitly so it can be called in the recovery path before
 // the frame is popped.
-void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame);
+void hzstd_panic_recovery_frame_run_cleanup(
+    hzstd_panic_recovery_frame_t *frame);
 
 // ── HAZE_ATTEMPT macro ───────────────────────────────────────────────────────
 //
@@ -112,7 +114,7 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
       hzstd_pop_panic_recovery_frame();                                        \
       goto recovery_label;                                                     \
     } else {                                                                   \
-      HZSTD_PANIC_FMT("Unexpected longjmp result: %d", __hz_jmp_##id);        \
+      HZSTD_PANIC_FMT("Unexpected longjmp result: %d", __hz_jmp_##id);         \
     }                                                                          \
     hzstd_pop_panic_recovery_frame();                                          \
   } while (0)
@@ -120,8 +122,9 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
 // ── Panic functions ──────────────────────────────────────────────────────────
 //
 // All of these are safe to call from anywhere EXCEPT from signal/exception
-// handlers on a thread with no remaining stack — use hzstd_panic_with_stacktrace
-// directly there, which only touches globals (no meaningful stack allocation).
+// handlers on a thread with no remaining stack — use
+// hzstd_panic_with_stacktrace directly there, which only touches globals (no
+// meaningful stack allocation).
 
 #define HZSTD_PANIC_FMT(fmt, ...)                                              \
   do {                                                                         \
@@ -232,8 +235,9 @@ hzstd_trap_str(hzstd_str_t msg) {
 
 hzstd_str_t hzstd_errno_to_str(int err);
 
-// ── Compatibility alias ───────────────────────────────────────────────────────
-// hzstd_panic_info_t is exposed to Haze code as the opaque PanicInfo type.
+// ── Compatibility alias
+// ─────────────────────────────────────────────────────── hzstd_panic_info_t is
+// exposed to Haze code as the opaque PanicInfo type.
 typedef hzstd_stacktrace_t hzstd_panic_info_t;
 
 #endif // HZSTD_RUNTIME_H

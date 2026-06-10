@@ -65,6 +65,7 @@ import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
 import {
   type CLIPrinter,
   EModulePrintCompilerPhase,
+  type GeneratorHandle,
   type ModuleHandle,
   printLine,
 } from "./CLIPrinter";
@@ -1246,6 +1247,7 @@ export class ModuleCompiler {
     const logPath = join(logsDir, `${gen.name}.log`);
 
 
+    const genHandle = this.printer?.beginGenerator(this.config.name, gen.name);
     const logChunks: string[] = [];
     const project = new ProjectCompiler(false, true, false, false, true);
     let buildOk = false;
@@ -1290,6 +1292,7 @@ export class ModuleCompiler {
       }
     } finally {
       (process.stdout as any).write = origWrite;
+      if (genHandle) { this.printer?.endGenerator(genHandle); }
     }
 
     // Strip ANSI escape codes before writing to the log file so it is
