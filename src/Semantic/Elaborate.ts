@@ -5739,7 +5739,9 @@ export class SemanticElaborator {
                     !(func.requires.final || symbol.isImpure),
                   noreturn:
                     func.requires.noreturn ||
-                    flow.has(Semantic.FlowType.NoReturn),
+                    (flow.has(Semantic.FlowType.NoReturn) &&
+                      !flow.has(Semantic.FlowType.Fallthrough) &&
+                      !flow.has(Semantic.FlowType.Return)),
                   noreturnIf: noreturnIf,
                 },
                 sourceloc: func.sourceloc,
@@ -13496,7 +13498,9 @@ export class SemanticElaborator {
 
   attemptExpr(attempt: Collect.AttemptExpr, inference: Semantic.Inference) {
     if (attempt.elseScope === null && attempt.recoverScope === null) {
-      throw new InternalError("attempt without else or recover block is not yet implemented in elaboration");
+      throw new InternalError(
+        "attempt without else or recover block is not yet implemented in elaboration"
+      );
     }
 
     const uniqueId = makeTempId();
@@ -13589,7 +13593,8 @@ export class SemanticElaborator {
       const elseBlockScope = this.sr.cc.scopeNodes.get(attempt.elseScope);
       assert(elseBlockScope.variant === Collect.ENode.BlockScope);
 
-      let errorVarDefStatement: Collect.VariableDefinitionStatement | null = null;
+      let errorVarDefStatement: Collect.VariableDefinitionStatement | null =
+        null;
       if (elseBlockScope.statements.length === 2) {
         const s = this.sr.cc.statementNodes.get(elseBlockScope.statements[0]);
         assert(s.variant === Collect.ENode.VariableDefinitionStatement);
@@ -13632,14 +13637,18 @@ export class SemanticElaborator {
         "sys.PanicInfo",
         attempt.sourceloc
       );
-      const panicInfoCollectSymbol = this.sr.cc.symbolNodes.get(panicInfoCollectSymbolId);
+      const panicInfoCollectSymbol = this.sr.cc.symbolNodes.get(
+        panicInfoCollectSymbolId
+      );
       assert(panicInfoCollectSymbol.variant === Collect.ENode.TypeDefSymbol);
       const panicInfoSemanticSymbolId = this.elaborateTypeDef(
         panicInfoCollectSymbol,
         [],
         attempt.sourceloc
       );
-      const panicInfoSemanticSymbol = this.sr.symbolNodes.get(panicInfoSemanticSymbolId);
+      const panicInfoSemanticSymbol = this.sr.symbolNodes.get(
+        panicInfoSemanticSymbolId
+      );
       assert(panicInfoSemanticSymbol.variant === Semantic.ENode.TypeDefSymbol);
       const panicInfoTypeUse = makeTypeUse(
         this.sr,
@@ -13657,9 +13666,12 @@ export class SemanticElaborator {
       const recoverBlockScope = this.sr.cc.scopeNodes.get(attempt.recoverScope);
       assert(recoverBlockScope.variant === Collect.ENode.BlockScope);
 
-      let recoverVarDefStatement: Collect.VariableDefinitionStatement | null = null;
+      let recoverVarDefStatement: Collect.VariableDefinitionStatement | null =
+        null;
       if (recoverBlockScope.statements.length === 2) {
-        const s = this.sr.cc.statementNodes.get(recoverBlockScope.statements[0]);
+        const s = this.sr.cc.statementNodes.get(
+          recoverBlockScope.statements[0]
+        );
         assert(s.variant === Collect.ENode.VariableDefinitionStatement);
         recoverVarDefStatement = s;
       }
@@ -13693,13 +13705,19 @@ export class SemanticElaborator {
     // ───────────────────────────────────────────────────────────────────────────
     const resultFlow = Semantic.FlowResult.empty();
     resultFlow.addAll(attemptFlow);
-    if (attempt.elseScope !== null) { resultFlow.addAll(elseFlow); }
-    if (attempt.recoverScope !== null) { resultFlow.addAll(recoverFlow); }
+    if (attempt.elseScope !== null) {
+      resultFlow.addAll(elseFlow);
+    }
+    if (attempt.recoverScope !== null) {
+      resultFlow.addAll(recoverFlow);
+    }
 
     const canFallthrough =
       attemptFlow.has(Semantic.FlowType.Fallthrough) ||
-      (attempt.elseScope !== null && elseFlow.has(Semantic.FlowType.Fallthrough)) ||
-      (attempt.recoverScope !== null && recoverFlow.has(Semantic.FlowType.Fallthrough));
+      (attempt.elseScope !== null &&
+        elseFlow.has(Semantic.FlowType.Fallthrough)) ||
+      (attempt.recoverScope !== null &&
+        recoverFlow.has(Semantic.FlowType.Fallthrough));
 
     if (canFallthrough) {
       resultFlow.add(Semantic.FlowType.Fallthrough);
@@ -13709,8 +13727,12 @@ export class SemanticElaborator {
 
     const resultWrites = Semantic.WriteResult.empty();
     resultWrites.addAll(attemptWrites);
-    if (attempt.elseScope !== null) { resultWrites.addAll(elseWrites); }
-    if (attempt.recoverScope !== null) { resultWrites.addAll(recoverWrites); }
+    if (attempt.elseScope !== null) {
+      resultWrites.addAll(elseWrites);
+    }
+    if (attempt.recoverScope !== null) {
+      resultWrites.addAll(recoverWrites);
+    }
 
     attemptExpr.flow = resultFlow;
     attemptExpr.writes = resultWrites;
@@ -13727,7 +13749,10 @@ export class SemanticElaborator {
       memberSet.add(attemptExpr.attemptScopeReturnsType);
     }
 
-    if (attempt.elseScope !== null && elseFlow.has(Semantic.FlowType.Fallthrough)) {
+    if (
+      attempt.elseScope !== null &&
+      elseFlow.has(Semantic.FlowType.Fallthrough)
+    ) {
       assert(elseScope !== null);
       attemptExpr.elseScopeReturnsType = this.sr.exprNodes.get(
         elseScope.emittedExpr
@@ -13735,7 +13760,10 @@ export class SemanticElaborator {
       memberSet.add(attemptExpr.elseScopeReturnsType);
     }
 
-    if (attempt.recoverScope !== null && recoverFlow.has(Semantic.FlowType.Fallthrough)) {
+    if (
+      attempt.recoverScope !== null &&
+      recoverFlow.has(Semantic.FlowType.Fallthrough)
+    ) {
       assert(recoverScope !== null);
       attemptExpr.recoverScopeReturnsType = this.sr.exprNodes.get(
         recoverScope.emittedExpr

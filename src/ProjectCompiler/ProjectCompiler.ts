@@ -309,6 +309,7 @@ export class ProjectCompiler {
       if (PLATFORM === Platform.Win32) {
         moduleExecutable += ".exe";
       }
+      process.stdout.write("\n");
       child_process.execSync(`"${moduleExecutable}" ${args?.join(" ")}`, {
         stdio: "inherit",
         env: process.env,

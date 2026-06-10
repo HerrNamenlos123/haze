@@ -1,4 +1,4 @@
-import { printLine } from "../ModuleCompiler/CLIPrinter";
+import { printLine, printLineWarning } from "../ModuleCompiler/CLIPrinter";
 
 export enum ErrorType {
   Error = 0,
@@ -88,7 +88,11 @@ export function printCompilerMessage(
     });
     return;
   }
-  printLine(formatCompilerMessage(type, error, msg, loc));
+  if (type === ErrorType.Error) {
+    printLine(formatCompilerMessage(type, error, msg, loc));
+  } else {
+    printLineWarning(formatCompilerMessage(type, error, msg, loc));
+  }
 }
 
 export function formatErrorMessage(msg: string, loc?: SourceLoc): string {

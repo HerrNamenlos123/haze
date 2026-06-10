@@ -66,13 +66,19 @@ const TICK_MS = 80;
 
 let _activePrinter: CLIPrinter | null = null;
 
-/**
- * Print a line of text. If a CLIPrinter is active, inserts the line above the
- * progress bars without truncation. Otherwise writes directly to stdout.
- */
+/** Print an error line: stops the active bars and marks the current module failed. */
 export function printLine(message: string) {
   if (_activePrinter) {
     _activePrinter.log(message);
+  } else {
+    process.stdout.write(message + "\n");
+  }
+}
+
+/** Print a warning/info line. Buffered until bars stop so it appears below them, not above. */
+export function printLineWarning(message: string) {
+  if (_activePrinter) {
+    _activePrinter.bufferWarning(message);
   } else {
     process.stdout.write(message + "\n");
   }
@@ -85,6 +91,7 @@ export class CLIPrinter {
   private updateInterval: NodeJS.Timeout | null = null;
   private spinnerIndex = 0;
   private showTiming: boolean;
+  private warningBuffer: string[] = [];
 
   constructor(showTiming = false) {
     this.showTiming = showTiming;
@@ -221,6 +228,11 @@ export class CLIPrinter {
     process.stdout.write(message + "\n");
   }
 
+  /** Buffer a warning to be printed after bars stop, so it appears below them. */
+  bufferWarning(message: string) {
+    this.warningBuffer.push(message);
+  }
+
   /** Insert a status line above the live bars without stopping them. */
   logInfo(message: string) {
     this.multibar.log(message + "\n");
@@ -247,6 +259,11 @@ export class CLIPrinter {
     terminal.write = (s: string, _raw?: boolean) => origWrite(s, true);
     this.multibar.stop();
     terminal.write = origWrite;
+
+    for (const w of this.warningBuffer) {
+      process.stdout.write(w + "\n");
+    }
+    this.warningBuffer = [];
   }
 
   private printAllTimingReports() {
