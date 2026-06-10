@@ -4,9 +4,11 @@ namespace ffi {
     extern C noemit fn hzstd_panic_n(msg: ccstr, skip: int) :: final, noreturn;
     extern C noemit fn hzstd_unreachable(skip: int) :: final, noreturn;
 
-    extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): mut hzstd_panic_info_t | none :: final;
-    extern C noemit fn hzstd_print_stacktrace(info: hzstd_panic_info_t) :: final;
-    extern C noemit fn hzstd_stringify_stacktrace(allocator: Allocator, info: hzstd_panic_info_t): str :: final;
+    extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): mut hzstd_stacktrace_t | none :: final;
+    extern C noemit fn hzstd_print_stacktrace(st: hzstd_stacktrace_t) :: final;
+    extern C noemit fn hzstd_stringify_stacktrace(allocator: Allocator, st: hzstd_stacktrace_t): str :: final;
+    extern C noemit fn hzstd_print_panic_info(info: hzstd_panic_info_t) :: final;
+    extern C noemit fn hzstd_stringify_panic_info(allocator: Allocator, info: hzstd_panic_info_t): str :: final;
 }
 
 namespace sys {
@@ -63,8 +65,12 @@ namespace ffi {
         sourceloc: SourceLocation;
     };
 
+    export extern C noemit opaque struct hzstd_stacktrace_t {
+        frames: []hzstd_stackframe_t;
+    };
+
     export extern C noemit opaque struct hzstd_panic_info_t {
-        stackframes: []hzstd_stackframe_t;
+        stacktrace: hzstd_stacktrace_t;
         message: str;
         type: hzstd_panic_type_t;
     };
@@ -99,28 +105,42 @@ namespace sys {
 
 namespace sys {
     export type PanicInfo = ffi.hzstd_panic_info_t;
+    export type Stacktrace = ffi.hzstd_stacktrace_t;
     export type StackFrame = ffi.hzstd_stackframe_t;
     export type PanicType = ffi.hzstd_panic_type_t;
 
-    // Capture the current call stack.  skip_n_frames=0 hides only internal
-    // hzstd frames; pass a higher value to also hide your own wrapper frames.
+    // Capture the current call stack (frames only, no message/type).
+    // skip_n_frames=0 hides only internal hzstd frames.
     export fn buildStacktrace(skip_n_frames: int = 0) {
         return ffi.hzstd_build_stacktrace(1 + skip_n_frames);
     }
 
-    // Render a PanicInfo to a string (ANSI-coloured, same layout as the
-    // unhandled-panic screen).  Uses the heap allocator; result is stable.
-    export fn stringify(info: PanicInfo): str {
-        return ffi.hzstd_stringify_stacktrace(hzstd_make_heap_allocator(), info);
+    // Render only the "Stack trace:" frames section as a string.
+    export fn stringify(st: Stacktrace): str {
+        return ffi.hzstd_stringify_stacktrace(hzstd_make_heap_allocator(), st);
     }
 
-    // Print a PanicInfo to stderr exactly as an unhandled panic would look.
+    // Render the full panic report (header + message + frames) as a string.
+    export fn stringify(info: PanicInfo): str {
+        return ffi.hzstd_stringify_panic_info(hzstd_make_heap_allocator(), info);
+    }
+
+    // Print only the "Stack trace:" frames section to stderr.
+    export fn printStacktrace(st: Stacktrace) {
+        ffi.hzstd_print_stacktrace(st);
+    }
+
+    // Print the full panic report to stderr.
     export fn printPanicInfo(info: PanicInfo) {
-        ffi.hzstd_print_stacktrace(info);
+        ffi.hzstd_print_panic_info(info);
     }
 }
 
 namespace fmt {
+    export fn format_to(writer: mut StringWriter, value: sys.Stacktrace, args: FormatArgs) {
+        writer.write(sys.stringify(value));
+    }
+
     export fn format_to(writer: mut StringWriter, value: sys.PanicInfo, args: FormatArgs) {
         writer.write(sys.stringify(value));
     }

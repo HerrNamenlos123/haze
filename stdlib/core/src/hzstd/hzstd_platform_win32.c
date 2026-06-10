@@ -97,7 +97,7 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 static hzstd_semaphore_t panic_trigger;
 static hzstd_semaphore_t panic_response;
 
-static hzstd_stacktrace_t *panic_built_stacktrace = NULL;
+static hzstd_stacktrace_t *panic_built_stacktrace = NULL; /* build-only mode result */
 
 // Guaranteed extra stack available inside the VEH handler.
 static int GUARANTEED_VEH_STACK_SIZE = 16384;
@@ -224,35 +224,42 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       if (sf2.AddrPC.Offset == 0) break;
     }
 
-    // Heap-allocate a stable copy of the reason string.
-    size_t reason_len  = panic_reason.length;
-    char  *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1);
-    memcpy(reason_data, panic_reason.data, reason_len);
-    reason_data[reason_len] = '\0';
-
-    hzstd_stacktrace_t *st =
-        (hzstd_stacktrace_t *)hzstd_allocate(allocator, sizeof(hzstd_stacktrace_t));
-    st->frames        = frameArray;
-    st->message       = (hzstd_str_t){.data = reason_data, .length = reason_len};
-    st->skip_n_frames = panic_skip_n_frames;
-    st->type          = panic_type;
-
-    panic_built_stacktrace = st;
-
     bool has_recovery = (panic_recovery_target != NULL);
     bool build_only   = (panic_mode == PANIC_MODE_BUILD_ONLY);
 
-    if (has_recovery || build_only) {
-      if (has_recovery)
-        panic_recovery_target->_hz_panic_stacktrace = st;
+    if (build_only) {
+      // Caller just wants frames — no message or type needed.
+      hzstd_stacktrace_t *st =
+          (hzstd_stacktrace_t *)hzstd_allocate(allocator, sizeof(hzstd_stacktrace_t));
+      st->frames        = frameArray;
+      st->skip_n_frames = panic_skip_n_frames;
+      panic_built_stacktrace = st;
       atomic_store(&panic_in_progress, 0);
       hzstd_trigger_semaphore(&panic_response);
-      // Loop back; do NOT exit — the process is recovering.
     } else {
-      hzstd_print_panic_report(st->message, st->frames, st->skip_n_frames);
-      fflush(stdout);
-      fflush(stderr);
-      _exit(-1);
+      // Panic path — heap-copy the reason string so it survives longjmp.
+      size_t reason_len  = panic_reason.length;
+      char  *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1);
+      memcpy(reason_data, panic_reason.data, reason_len);
+      reason_data[reason_len] = '\0';
+
+      hzstd_panic_info_t *info =
+          (hzstd_panic_info_t *)hzstd_allocate(allocator, sizeof(hzstd_panic_info_t));
+      info->stacktrace.frames        = frameArray;
+      info->stacktrace.skip_n_frames = panic_skip_n_frames;
+      info->message = (hzstd_str_t){.data = reason_data, .length = reason_len};
+      info->type    = panic_type;
+
+      if (has_recovery) {
+        panic_recovery_target->_hz_panic_stacktrace = info;
+        atomic_store(&panic_in_progress, 0);
+        hzstd_trigger_semaphore(&panic_response);
+      } else {
+        hzstd_print_panic_report(info);
+        fflush(stdout);
+        fflush(stderr);
+        _exit(-1);
+      }
     }
   }
 }

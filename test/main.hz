@@ -51,8 +51,10 @@ fn foo() {
         other();
     }
     recover e {
+        let s = e.stacktrace;
         static_print(f"{typeof(e).prettyName}");
-        fmt.println("panic handled: ", e);
+        static_print(f"{typeof(s).prettyName}");
+        fmt.println("panic handled: ", s);
     };
 
     fmt.println("Let's continue to work now!");
