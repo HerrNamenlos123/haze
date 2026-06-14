@@ -227,6 +227,7 @@ namespace json {
         if !ffi.hzstd_json_is_object(node) { sys.panic("JSON type mismatch: expected object"); }
         do unsafe {
             let result: T = uninitialized;
+            __c__("result = hzstd_allocate(allocator, sizeof(*result)); memset(result, 0, sizeof(*result));");
             for comptime field in T.fields {
                 let child = ffi.hzstd_json_get_object_item(allocator, node, field.name);
                 if !child { sys.panic(f"JSON missing field: {field.name}"); }
