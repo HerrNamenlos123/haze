@@ -256,12 +256,15 @@ fn main(): int {
         });
 
         // Tessellate outlines once before the loop
+        let start = time.now();
         let tesselatedShapes: []tesselate.TesselationResult = [];
         let outlineText = fs.readText("test-raw-outline.tsk");
+        let count = 0;
         if outlineText {
             let outlineData = json.structuredParse<OutlineFile>(outlineText);
             if outlineData {
                 let tess = tesselate.Tesselator();
+                count = outlineData.shapes.length;
                 for (let s = 0; s < outlineData.shapes.length; s++) {
                     let shape = outlineData.shapes[s];
                     if shape.outline.length > 0 {
@@ -279,6 +282,8 @@ fn main(): int {
                 fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
             }
         }
+        let end = time.now();
+        fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
 
         let down = false;
         let mousePosition = Vec2(0, 0);
