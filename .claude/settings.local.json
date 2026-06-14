@@ -4,7 +4,12 @@
       "Bash(bun run *)",
       "Bash(grep -v \"//\")",
       "Bash(xargs grep -l \"CodeGenerator\\\\|Lowered\\\\|BlockScope\")",
-      "Bash(grep -v \"//\\\\|definesVariables\\\\|addBlock\\\\|id\\\\b\")"
+      "Bash(grep -v \"//\\\\|definesVariables\\\\|addBlock\\\\|id\\\\b\")",
+      "Bash(mkdir -p \"c:/Users/fzachs/Documents/haze/stdlib/tesselate/lyon/src\" \"c:/Users/fzachs/Documents/haze/stdlib/tesselate/lyon/include\")",
+      "Bash(cargo build *)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\fzachs\\Documents\\haze\\stdlib\\tesselate\\lyon"
     ]
   }
 }

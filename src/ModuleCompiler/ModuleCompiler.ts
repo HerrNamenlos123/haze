@@ -1236,12 +1236,12 @@ export class ModuleCompiler {
         break;
 
       case EModuleFileDir.SourceDir:
-        assert(false);
-        throw new Error();
+        dir = this.getModuleSourceDir(moduleName);
+        break;
 
       case EModuleFileDir.ModuleRootDir:
-        assert(false);
-        throw new Error();
+        dir = this.getModuleRootDir(moduleName);
+        break;
 
       default:
         assert(false);
@@ -1360,6 +1360,20 @@ export class ModuleCompiler {
 
   getModuleBuildDir(moduleName: string) {
     return join(this.hazeWorkspaceDirectory, moduleName, "build");
+  }
+
+  getModuleRootDir(moduleName: string) {
+    if (moduleName !== this.config.name) {
+      throw new GeneralError(
+        `dir="root" is only supported for module="this", not "${moduleName}"`
+      );
+    }
+    assert(this.currentModuleRootDir);
+    return this.currentModuleRootDir;
+  }
+
+  getModuleSourceDir(moduleName: string) {
+    return join(this.getModuleRootDir(moduleName), "src");
   }
 
   private maybeStripExecutable() {

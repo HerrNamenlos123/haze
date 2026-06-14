@@ -1,0 +1,19 @@
+name = "tesselate"
+version = "1.0.0"
+description = "Experimental Tesselation primitives for Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[generator.build-tesselator]
+exec = "scripts/build-tesselator.hz"
+inputs = [
+    { module="this", dir="root", path="**" },
+]
+outputs = [
+    { module="this", dir="bin", path="include/tesselator.h" },
+    { module="this", dir="bin", path="lib/tesselator.lib" },
+]
+
+[linker]
+flags = ["-ltesselator"]
