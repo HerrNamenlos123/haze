@@ -223,6 +223,20 @@ namespace json {
         return arr;
     }
 
+    export fn parseJsonFixedArray<T>(allocator: Allocator, node: ffi.cJSON): T {
+        if !ffi.hzstd_json_is_array(node) { sys.panic("JSON type mismatch: expected array"); }
+        let actual = ffi.hzstd_json_get_array_size(allocator, node) as usize;
+        if actual != T.length as usize { sys.panic(f"JSON fixed array length mismatch: expected {T.length}, got {actual}"); }
+        do unsafe {
+            let arr: T = uninitialized;
+            __c__("memset(&arr, 0, sizeof(arr));");
+            for (let i: usize = 0; i < T.length as usize; i++) {
+                arr[i] = parseJsonNode<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i));
+            }
+            return arr;
+        };
+    }
+
     export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.cJSON): T {
         if !ffi.hzstd_json_is_object(node) { sys.panic("JSON type mismatch: expected object"); }
         do unsafe {
@@ -258,6 +272,9 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.DynamicArray {
             return parseJsonArray<T>(allocator, node);
+        }
+        else if comptime T.category == meta.TypeCategory.Array {
+            return parseJsonFixedArray<T>(allocator, node);
         }
         else if comptime T.category == meta.TypeCategory.Struct {
             return parseJsonStruct<T>(allocator, node);

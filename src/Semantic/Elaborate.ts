@@ -8275,6 +8275,20 @@ export class SemanticElaborator {
         );
       }
 
+      if (
+        name === "length" &&
+        resolvedTypeDef.variant === Semantic.ENode.FixedArrayDatatype
+      ) {
+        return this.sr.b.literalValue(
+          {
+            type: EPrimitive.int,
+            unit: null,
+            value: resolvedTypeDef.length,
+          },
+          sourceloc
+        );
+      }
+
       if (resolvedTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
         if (name === "length") {
           if (resolvedTypeDef.parameters === null) {
