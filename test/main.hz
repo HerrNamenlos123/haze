@@ -104,6 +104,7 @@ fn loadTskOutlines() {
     let result = json.structuredParse<OutlineFile>(file);
     if result {
         fmt.println("Parsed successfully");
+        fmt.println(f"{result.shapes.length} shapes");
     }
     else {
         fmt.println("Failed parsing: ", result);
