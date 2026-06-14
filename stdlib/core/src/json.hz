@@ -46,81 +46,112 @@ namespace json {
             attribute: str | int;
 
             fn to<T>() {
-                if comptime T is str {
-                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
-                    if obj {
+                let attr = this.attribute;
+                if attr is str {
+                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, attr);
+                    if !obj { sys.panic("JSON object does not have attribute"); }
+                    if comptime T is str {
                         let value = ffi.hzstd_json_get_string_value(this.json.allocator, obj);
-                        if value {
-                            return value.data;
-                        }
+                        if value { return value.data; }
                         sys.panic("JSON value is not of type String");
                     }
-                    sys.panic("JSON object does not have attribute");
-                } 
-                else if comptime T is real {
-                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
-                    if obj {
-                        let value = ffi.hzstd_json_get_number_value(this.json.allocator, obj);
-                        return value;
+                    else if comptime T is real {
+                        return ffi.hzstd_json_get_number_value(this.json.allocator, obj);
                     }
-                    sys.panic("JSON object does not have attribute");
+                    else if comptime T is int {
+                        return ffi.hzstd_json_get_number_value(this.json.allocator, obj) as int;
+                    }
+                    else if comptime T is bool {
+                        return ffi.hzstd_json_is_true(obj);
+                    }
+                    else {
+                        static_assert(false, "to<T>: unsupported type — use chained [] for objects/arrays");
+                    }
                 }
                 else {
-                    static_assert(false, "Type not supported");
+                    sys.panic("to<T>() is not supported for integer-indexed proxies");
                 }
             }
 
             fn operator[](index: str): Result<Proxy, Error> {
                 // String access to a proxy, so the parent must be an object
-                if ffi.hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-                    // Already exists, check type
-                    if !ffi.hzstd_json_is_object(this.json.data) {
-                        sys.panic("JSON was expected to be an object");
+                let attr = this.attribute;
+                if attr is str {
+                    if ffi.hzstd_json_object_has_attribute(this.json.data, attr) {
+                        let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, attr);
+                        if obj {
+                            if !ffi.hzstd_json_is_object(obj) {
+                                sys.panic("JSON was expected to be an object");
+                            }
+                            return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: obj }, attribute: index });
+                        }
+                        sys.panic("JSON object does not have attribute");
                     }
-
-                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
-                    if obj {
-                        return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: obj }, attribute: index });
+                    else {
+                        // Does not exist yet, create
+                        let newObj = ffi.hzstd_json_create_object(this.json.allocator);
+                        ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, attr, newObj);
+                        return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: newObj }, attribute: index });
                     }
-                    sys.panic("JSON object does not have attribute");
                 }
                 else {
-                    // Does not exist yet, create
-                    let newObj = ffi.hzstd_json_create_object(this.json.allocator);
-                    ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, newObj);
-                    return Result<Proxy, Error>.Ok({ json: { allocator: this.json.allocator, data: newObj }, attribute: index });
+                    sys.panic("chained [] on integer-indexed proxy not supported");
                 }
             }
 
             fn operator:=(value: str): void {
-                let item = ffi.hzstd_json_create_string(this.json.allocator, value);
-                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
-                assert(success);
+                let attr = this.attribute;
+                if attr is str {
+                    let item = ffi.hzstd_json_create_string(this.json.allocator, value);
+                    let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, attr, item);
+                    assert(success);
+                }
+                else {
+                    sys.panic("operator:=(str) not supported for integer-indexed proxies");
+                }
             }
 
             fn operator:=(value: real): void {
-                let item = ffi.hzstd_json_create_number(this.json.allocator, value);
-                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, item);
-                assert(success);
+                let attr = this.attribute;
+                if attr is str {
+                    let item = ffi.hzstd_json_create_number(this.json.allocator, value);
+                    let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, attr, item);
+                    assert(success);
+                }
+                else {
+                    sys.panic("operator:=(real) not supported for integer-indexed proxies");
+                }
             }
 
             fn operator:=(value: Value): void {
-                let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, this.attribute, value.data);
-                assert(success);
+                let attr = this.attribute;
+                if attr is str {
+                    let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, attr, value.data);
+                    assert(success);
+                }
+                else {
+                    sys.panic("operator:=(Value) not supported for integer-indexed proxies");
+                }
             }
 
             fn push(value: Value): void {
-                if ffi.hzstd_json_object_has_attribute(this.json.data, this.attribute) {
-                    let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, this.attribute);
-                    if obj {
-                        assert(ffi.hzstd_json_is_array(obj));
-                        ffi.hzstd_json_add_item_to_array(this.json.allocator, obj, value.data);
-                        return;
+                let attr = this.attribute;
+                if attr is str {
+                    if ffi.hzstd_json_object_has_attribute(this.json.data, attr) {
+                        let obj = ffi.hzstd_json_get_object_item(this.json.allocator, this.json.data, attr);
+                        if obj {
+                            assert(ffi.hzstd_json_is_array(obj));
+                            ffi.hzstd_json_add_item_to_array(this.json.allocator, obj, value.data);
+                            return;
+                        }
+                        sys.panic("JSON object does not have attribute");
                     }
-                    sys.panic("JSON object does not have attribute");
+                    else {
+                        sys.panic("JSON attribute to push into does not exist");
+                    }
                 }
                 else {
-                    sys.panic("JSON attribute to push into does not exist");
+                    sys.panic("push() not supported for integer-indexed proxies");
                 }
             }
         }
@@ -128,7 +159,7 @@ namespace json {
         fn operator[](index: int): Result<Proxy, Error> {
             return Result<Proxy, Error>.Ok({
                 json: this,
-                attribute: "test",
+                attribute: index,
             });
         }
 
@@ -182,20 +213,62 @@ namespace json {
         return { allocator: allocator, data: obj };
     }
 
-    export fn structuredParse<T>(value: json.Value): Result<T, Error> {
-        if comptime typeof(value).category == meta.TypeCategory.Struct {
-            let topLevelStruct = value;
-            do unsafe {
-                let resultStruct: T = uninitialized;
-                for comptime field in typeof(topLevelStruct).fields {
-                    resultStruct.[field.name] = topLevelStruct[field.name]?!.to<typeof(resultStruct.[field.name])>();
-                }
-                return resultStruct;
-            };
+    export fn parseJsonArray<T>(allocator: Allocator, node: ffi.cJSON): T {
+        if !ffi.hzstd_json_is_array(node) { sys.panic("JSON type mismatch: expected array"); }
+        let arr: T = [];
+        let count = ffi.hzstd_json_get_array_size(allocator, node);
+        for (let i: usize = 0; i < count; i++) {
+            arr.push(parseJsonNode<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i)));
+        }
+        return arr;
+    }
+
+    export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.cJSON): T {
+        if !ffi.hzstd_json_is_object(node) { sys.panic("JSON type mismatch: expected object"); }
+        do unsafe {
+            let result: T = uninitialized;
+            for comptime field in T.fields {
+                let child = ffi.hzstd_json_get_object_item(allocator, node, field.name);
+                if !child { sys.panic(f"JSON missing field: {field.name}"); }
+                result.[field.name] = parseJsonNode<typeof(result.[field.name])>(allocator, child);
+            }
+            return result;
+        };
+    }
+
+    export fn parseJsonNode<T>(allocator: Allocator, node: ffi.cJSON): T {
+        if comptime T is str {
+            if !ffi.hzstd_json_is_string(node) { sys.panic("JSON type mismatch: expected string"); }
+            let value = ffi.hzstd_json_get_string_value(allocator, node);
+            if value { return value.data; }
+            sys.panic("JSON: failed to read string value");
+        }
+        else if comptime T is int {
+            if !ffi.hzstd_json_is_number(node) { sys.panic("JSON type mismatch: expected number (int)"); }
+            return ffi.hzstd_json_get_number_value(allocator, node) as int;
+        }
+        else if comptime T is real {
+            if !ffi.hzstd_json_is_number(node) { sys.panic("JSON type mismatch: expected number (real)"); }
+            return ffi.hzstd_json_get_number_value(allocator, node);
+        }
+        else if comptime T is bool {
+            if !ffi.hzstd_json_is_bool(node) { sys.panic("JSON type mismatch: expected bool"); }
+            return ffi.hzstd_json_is_true(node);
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            return parseJsonArray<T>(allocator, node);
+        }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            return parseJsonStruct<T>(allocator, node);
         }
         else {
-            static_assert(false, f"json.structuredParse() can only be used on struct types");
+            sys.panic("json.structuredParse: unsupported type");
         }
+        sys.unreachable();
+    }
+
+    export fn structuredParse<T>(value: json.Value): Result<T, Error> {
+        return Result<T, Error>.Ok(parseJsonNode<T>(value.allocator, value.data));
     }
 
     export fn structuredParse<T>(data: str): Result<T, Error> {

@@ -3455,6 +3455,16 @@ export function CollectFile(
       globalNsTd.moduleName = moduleName;
       globalNsTd.moduleVersion = moduleVersion;
       fileScope.symbols.add(globalNamespaceSymId);
+
+      // Also register in the ModuleScope so that synthetic functions injected
+      // at module-root level (e.g. for array push) can resolve cross-module
+      // type names such as test_v0_1_0.Page from any scope.
+      const unitScopeNode = cc.scopeNodes.get(parentScope);
+      assert(unitScopeNode.variant === Collect.ENode.UnitScope);
+      const moduleScopeNode = cc.scopeNodes.get(unitScopeNode.parentScope);
+      if (moduleScopeNode.variant === Collect.ENode.ModuleScope) {
+        moduleScopeNode.symbols.add(globalNamespaceSymId);
+      }
     }
   } else {
     assert(false, "Unknown collection mode");

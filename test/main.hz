@@ -58,10 +58,20 @@ struct FileData {
     pages: []Page;
 }
 
+struct Test2 {}
+
 struct File {
     filetype: str;
     fileVersion: int;
     data: FileData;
+}
+
+struct ShapeOutline {
+    outline: [][]real;
+}
+
+struct OutlineFile {
+    shapes: []ShapeOutline;
 }
 
 fn loadTskTest() {
@@ -77,6 +87,22 @@ fn loadTskTest() {
     let result = json.structuredParse<File>(file);
     if result {
         let data: File = result;
+        fmt.println("Parsed successfully");
+    }
+    else {
+        fmt.println("Failed parsing: ", result);
+    }
+}
+
+fn loadTskOutlines() {
+    let file = fs.readText("test-raw-outline.tsk");
+    if !file {
+        fmt.println("File loading failed");
+        return;
+    }
+
+    let result = json.structuredParse<OutlineFile>(file);
+    if result {
         fmt.println("Parsed successfully");
     }
     else {
@@ -118,7 +144,8 @@ fn testTesselator() {
 }
 
 fn main(): int {
-    loadTskTest();
+    // loadTskTest();
+    loadTskOutlines();
     // testTesselator();
     return 0;
 
