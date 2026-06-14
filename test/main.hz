@@ -67,7 +67,7 @@ struct File {
 }
 
 struct ShapeOutline {
-    outline: [][]real;
+    outline: [][2]real;
 }
 
 struct OutlineFile {

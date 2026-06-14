@@ -263,7 +263,7 @@ namespace json {
             return parseJsonStruct<T>(allocator, node);
         }
         else {
-            sys.panic("json.structuredParse: unsupported type");
+            static_assert(false, f"json.structuredParse(): type {T.prettyName} is not supported");
         }
         sys.unreachable();
     }
