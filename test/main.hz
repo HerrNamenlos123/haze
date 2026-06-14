@@ -280,10 +280,21 @@ fn main(): int {
             }
         }
 
+        let down = false;
         let mousePosition = Vec2(0, 0);
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
             mousePosition.x = e.pos.x;
             mousePosition.y = e.pos.y;
+            return false;
+        });
+
+        window.onKeyDown((e: sdl.KeyEvent) => {
+            down = true;
+            return false;
+        });
+
+        window.onKeyUp((e: sdl.KeyEvent) => {
+            down = false;
             return false;
         });
 
@@ -292,8 +303,22 @@ fn main(): int {
             mousePos: () => mousePosition as Vec2,
         });
 
+        for (let s = 0; s < tesselatedShapes.length; s++) {
+            let shape = tesselatedShapes[s];
+
+            for (let i = 0; i < shape.vertices.length; i++) {
+                shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
+                shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
+            }
+        }
+
+        let pMousePosition = Vec2(0, 0);
+        let dMousePosition = Vec2(0, 0);
         while !window.shouldClose() {
             sdl.pollEvents();
+            dMousePosition.x = mousePosition.x - pMousePosition.x;
+            dMousePosition.y = mousePosition.y - pMousePosition.y;
+            pMousePosition = mousePosition;
 
             if window.consumeSizeChanged() {
                 let now = time.now();
@@ -346,7 +371,16 @@ fn main(): int {
             // Render tessellated shapes
             for (let s = 0; s < tesselatedShapes.length; s++) {
                 let shape = tesselatedShapes[s];
-                renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
+
+                for (let i = 0; i < shape.vertices.length; i++) {
+                    if (down) {
+                        shape.vertices[i].x = shape.vertices[i].x + dMousePosition.x;
+                        shape.vertices[i].y = shape.vertices[i].y + dMousePosition.y;
+                    }
+                }
+
+                // renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
+                renderer.addTriangles(shape.vertices, shape.indices, "#000");
             }
 
             renderer.endFrame();

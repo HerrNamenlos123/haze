@@ -1,3 +1,4 @@
+use lyon::path::FillRule;
 use std::os::raw::{c_float, c_int, c_uint};
 
 use lyon::math::Point;
@@ -167,11 +168,12 @@ pub unsafe extern "C" fn tesselator_tessellate_fill(
     let mut geometry: VertexBuffers<Point, u16> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
 
-    let options = if tolerance > 0.0 {
+    let mut options = if tolerance > 0.0 {
         FillOptions::default().with_tolerance(tolerance)
     } else {
         FillOptions::default()
     };
+    options.fill_rule = FillRule::NonZero;
 
     match tessellator.tessellate_path(&path, &options, &mut simple_builder(&mut geometry)) {
         Ok(_) => {
