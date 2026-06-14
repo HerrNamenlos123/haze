@@ -43,6 +43,27 @@ fn print<T>(value: T) {
     }
 }
 
+struct Shape {
+    variant: str;
+}
+
+struct Page {
+    shapes: []Shape;
+}
+
+struct FileData {
+    pageColor: str;
+    gridColor: str;
+    gridType: str;
+    pages: []Page;
+}
+
+struct File {
+    filetype: str;
+    fileVersion: int;
+    data: FileData;
+}
+
 fn loadTskTest() {
     let file = fs.readText("Test.tsk");
     if !file {
@@ -51,7 +72,16 @@ fn loadTskTest() {
     }
 
     let j = json.parse(file);
-    fmt.println(j);
+    // fmt.println(j);
+
+    let result = json.structuredParse<File>(file);
+    if result {
+        let data: File = result;
+        fmt.println("Parsed successfully");
+    }
+    else {
+        fmt.println("Failed parsing: ", result);
+    }
 }
 
 fn testTesselator() {

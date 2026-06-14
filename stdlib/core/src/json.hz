@@ -199,7 +199,7 @@ namespace json {
     }
 
     export fn structuredParse<T>(data: str): Result<T, Error> {
-        return structuredParse(parse(data)?!);
+        return structuredParse<T>(parse(data)?!);
     }
 }
 
