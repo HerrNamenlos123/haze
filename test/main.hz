@@ -343,6 +343,12 @@ fn main(): int {
                 }
             });
 
+            // Render tessellated shapes
+            for (let s = 0; s < tesselatedShapes.length; s++) {
+                let shape = tesselatedShapes[s];
+                renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
+            }
+
             renderer.endFrame();
         }
 

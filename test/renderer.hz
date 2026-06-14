@@ -44,6 +44,11 @@ inline struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
+inline struct MeshVertex {
+    pos: Vec2f;
+    color: Colorf;
+};
+
 inline struct WindowState {
     logicalSize: Vec2i;
     framebufferSize: Vec2i;
@@ -154,6 +159,11 @@ opaque struct Renderer {
     instanceBufferSize: int = 0;
     vertexBuffer: mut wgpu.Buffer;
     indexBuffer: mut wgpu.Buffer;
+
+    triPipeline: rx.Computed<mut wgpu.RenderPipeline>;
+    meshVertices: []MeshVertex = [];
+    meshVertexBuffer?: mut wgpu.Buffer = none;
+    meshVertexBufferSize: int = 0;
 
     // Font rendering
     fontAtlasTexture: mut wgpu.Texture;
@@ -340,6 +350,54 @@ opaque struct Renderer {
 
         let fontRenderer = TextRenderer();
 
+        let meshVertexLayout = wgpu.VertexBufferLayout {
+            arrayStride: sizeofTypeInBytes<MeshVertex>(),
+            stepMode: wgpu.VertexStepMode.Vertex,
+            attributes: {
+                { shaderLocation: 0, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
+                { shaderLocation: 1, offset: 8, format: wgpu.VertexFormat.Float32x4 }, // color
+            },
+        };
+
+        let triPipelineLayout = options.device.createPipelineLayout({
+            bindGroupLayouts: { globalsLayout },
+        });
+
+        let triPipeline = rx.computed(() => {
+            return options.device.createRenderPipeline({
+                layout: triPipelineLayout,
+                vertex: {
+                    module: shader,
+                    entryPoint: "tri_vs",
+                    buffers: { meshVertexLayout },
+                },
+                fragment: {
+                    module: shader,
+                    entryPoint: "tri_fs",
+                    targets: {
+                        {
+                            format: options.surfaceFormats[0],
+                            blend: {
+                                color: {
+                                    srcFactor: wgpu.BlendFactor.SrcAlpha,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                                alpha: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                            },
+                        },
+                    },
+                },
+                primitive: {
+                    topology: wgpu.PrimitiveTopology.TriangleList,
+                },
+            });
+        });
+
         return Renderer {
             windowState: options.windowState,
             device: options.device,
@@ -355,6 +413,7 @@ opaque struct Renderer {
             fontAtlasSampler: fontAtlasSampler,
             fontAtlasBindGroup: fontAtlasBindGroup,
             fontRenderer: fontRenderer,
+            triPipeline: triPipeline,
         };
     }
 
@@ -458,8 +517,23 @@ opaque struct Renderer {
         );
     }
 
+    fn addTriangle(v0: Vec2, v1: Vec2, v2: Vec2, c0: Color, c1: Color, c2: Color) {
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v0.x as f32, v0.y as f32), color: Colorf { r: c0.r as f32, g: c0.g as f32, b: c0.b as f32, a: c0.a as f32 } });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v1.x as f32, v1.y as f32), color: Colorf { r: c1.r as f32, g: c1.g as f32, b: c1.b as f32, a: c1.a as f32 } });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v2.x as f32, v2.y as f32), color: Colorf { r: c2.r as f32, g: c2.g as f32, b: c2.b as f32, a: c2.a as f32 } });
+    }
+
+    fn addTriangles(vertices: []Vec2, indices: []i32, color: Color) {
+        let cf = Colorf { r: color.r as f32, g: color.g as f32, b: color.b as f32, a: color.a as f32 };
+        for (let i = 0; i < indices.length; i++) {
+            let v = vertices[indices[i] as int];
+            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf });
+        }
+    }
+
     fn beginFrame() {
         this.primitives = [];
+        this.meshVertices = [];
     }
 
     fn updateWindowState(nextState: WindowState) {
@@ -553,6 +627,37 @@ opaque struct Renderer {
         renderPass.drawIndexed(6, this.primitives.length, 0, 0, 0);
 
         renderPass.end();
+
+        // Triangle mesh pass — real geometry, seamless, rendered on top of the SDF layer
+        if this.meshVertices.length > 0 {
+            let reqVtx = sizeofTypeInBytes<MeshVertex>() * this.meshVertices.length;
+            if !this.meshVertexBuffer || reqVtx > this.meshVertexBufferSize {
+                this.meshVertexBufferSize = max(reqVtx, this.meshVertexBufferSize * 2);
+                this.meshVertexBuffer = this.device.createBuffer({
+                    size: this.meshVertexBufferSize,
+                    usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
+                });
+            }
+            assert(this.meshVertexBuffer);
+            this.queue.writeBuffer<MeshVertex>(this.meshVertexBuffer, this.meshVertices);
+
+            let triAttachment = wgpu.RenderPassColorAttachment {
+                view: backbuffer,
+                clearValue: Color(0, 0, 0, 0),
+                loadOp: wgpu.LoadOp.Load,
+                storeOp: wgpu.StoreOp.Store,
+            };
+            let triPass = encoder.beginRenderPass({ colorAttachments: { triAttachment } });
+            if triPass {
+                triPass.setPipeline(rx.get(this.triPipeline));
+                triPass.setBindGroup(0, this.globalsBindGroup);
+                triPass.setViewport(0, 0, this.windowState.framebufferSize.x as real, this.windowState.framebufferSize.y as real, 0.0, 1.0);
+                triPass.setScissorRect(0, 0, this.windowState.framebufferSize.x, this.windowState.framebufferSize.y);
+                triPass.setVertexBuffer(0, this.meshVertexBuffer);
+                triPass.draw(this.meshVertices.length, 1, 0, 0);
+                triPass.end();
+            }
+        }
 
         let commandBuffer = encoder.finish();
         if !commandBuffer { 
