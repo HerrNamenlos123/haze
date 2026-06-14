@@ -1,50 +1,49 @@
 
 namespace ffi {
-    extern C noemit struct cJSON {};
+    export extern C noemit struct cJSON {};
 
-    fn foo(): none :: final;
-    extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
-    extern C fn hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
-    extern C fn hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
-    extern C fn hzstd_json_create_object(allocator: Allocator): cJSON :: final;
-    extern C fn hzstd_json_create_array(allocator: Allocator): cJSON :: final;
+    export extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
+    export extern C fn hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
+    export extern C fn hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
+    export extern C fn hzstd_json_create_object(allocator: Allocator): cJSON :: final;
+    export extern C fn hzstd_json_create_array(allocator: Allocator): cJSON :: final;
 
-    extern C fn hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
-    extern C fn hzstd_json_is_string(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_object(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_bool(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_true(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_false(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_number(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_array(json: cJSON): bool :: final;
-    extern C fn hzstd_json_is_null(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
+    export extern C fn hzstd_json_is_string(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_object(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_bool(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_true(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_false(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_number(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_array(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_is_null(json: cJSON): bool :: final;
 
-    extern C fn hzstd_json_get_string_value(allocator: Allocator, json: cJSON): ffi.hzstd_str_ref_t | none :: final;
-    extern C fn hzstd_json_get_number_value(allocator: Allocator, json: cJSON): real :: final;
+    export extern C fn hzstd_json_get_string_value(allocator: Allocator, json: cJSON): ffi.hzstd_str_ref_t | none :: final;
+    export extern C fn hzstd_json_get_number_value(allocator: Allocator, json: cJSON): real :: final;
 
-    extern C fn hzstd_json_get_object_item(allocator: Allocator, json: cJSON, name: str): cJSON | none :: final;
-    extern C fn hzstd_json_get_array_size(allocator: Allocator, json: cJSON): usize :: final;
-    extern C fn hzstd_json_get_array_item(allocator: Allocator, json: cJSON, index: usize): cJSON :: final;
+    export extern C fn hzstd_json_get_object_item(allocator: Allocator, json: cJSON, name: str): cJSON | none :: final;
+    export extern C fn hzstd_json_get_array_size(allocator: Allocator, json: cJSON): usize :: final;
+    export extern C fn hzstd_json_get_array_item(allocator: Allocator, json: cJSON, index: usize): cJSON :: final;
 
-    extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: cJSON, name: str, item: cJSON): bool :: final;
-    extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: cJSON, item: cJSON): bool :: final;
+    export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: cJSON, name: str, item: cJSON): bool :: final;
+    export extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: cJSON, item: cJSON): bool :: final;
 
-    extern C fn hzstd_json_print_unformatted(allocator: Allocator, json: cJSON): str :: final;
-    extern C fn hzstd_json_print(allocator: Allocator, json: cJSON): str :: final;
+    export extern C fn hzstd_json_print_unformatted(allocator: Allocator, json: cJSON): str :: final;
+    export extern C fn hzstd_json_print(allocator: Allocator, json: cJSON): str :: final;
 }
 
 namespace json {
-    struct Error {
+    export struct Error {
         error: str;
     };
 
-    struct Value {
+    export struct Value {
         allocator: Allocator;
         data: ffi.cJSON;
 
         struct Proxy {
             json: Value;
-            attribute: str;
+            attribute: str | int;
 
             fn to<T>() {
                 if comptime T is str {
@@ -155,11 +154,11 @@ namespace json {
 
     }
 
-    fn parse(data: str): Result<Value, Error> {
-        return parseWithAllocator(Alloc.arena(), data);
+    export fn parse(data: str): Result<Value, Error> {
+        return parse(Alloc.arena(), data);
     }
 
-    fn parseWithAllocator(allocator: Allocator, data: str): Result<Value, Error> {
+    export fn parse(allocator: Allocator, data: str): Result<Value, Error> {
         let error = ffi.hzstd_str_ref_t { data: "" };
         const cjson = ffi.hzstd_json_parse(allocator, data, error);
         if cjson {
@@ -171,16 +170,45 @@ namespace json {
         return Result<Value, Error>.Err({ error: error.data });
     }
 
-    fn object(): Value {
+    export fn object(): Value {
         let allocator = Alloc.arena();
         let obj = ffi.hzstd_json_create_object(allocator);
         return { allocator: allocator, data: obj };
     }
 
-    fn array(): Value {
+    export fn array(): Value {
         let allocator = Alloc.arena();
         let obj = ffi.hzstd_json_create_array(allocator);
         return { allocator: allocator, data: obj };
     }
+
+    export fn structuredParse<T>(value: json.Value): Result<T, Error> {
+        if comptime typeof(value).category == meta.TypeCategory.Struct {
+            let topLevelStruct = value;
+            do unsafe {
+                let resultStruct: T = uninitialized;
+                for comptime field in typeof(topLevelStruct).fields {
+                    resultStruct.[field.name] = topLevelStruct[field.name]?!.to<typeof(resultStruct.[field.name])>();
+                }
+                return resultStruct;
+            };
+        }
+        else {
+            static_assert(false, f"json.structuredParse() can only be used on struct types");
+        }
+    }
+
+    export fn structuredParse<T>(data: str): Result<T, Error> {
+        return structuredParse(parse(data)?!);
+    }
 }
 
+namespace fmt {
+    export fn format_to(writer: mut StringWriter, value: json.Value, args: FormatArgs) {
+        format_to(writer, value.print({ pretty: true }), args);
+    }
+
+    export fn format_to(writer: mut StringWriter, value: json.Error, args: FormatArgs) {
+        format_to(writer, f"json error: {value.error}", args);
+    }
+}

@@ -43,6 +43,17 @@ fn print<T>(value: T) {
     }
 }
 
+fn loadTskTest() {
+    let file = fs.readText("Test.tsk");
+    if !file {
+        fmt.println("File loading failed");
+        return;
+    }
+
+    let j = json.parse(file);
+    fmt.println(j);
+}
+
 fn testTesselator() {
     fmt.println("--- Tesselator test ---");
 
@@ -77,7 +88,9 @@ fn testTesselator() {
 }
 
 fn main(): int {
-    testTesselator();
+    loadTskTest();
+    // testTesselator();
+    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
