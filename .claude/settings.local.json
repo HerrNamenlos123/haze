@@ -7,7 +7,8 @@
       "Bash(grep -v \"//\\\\|definesVariables\\\\|addBlock\\\\|id\\\\b\")",
       "Bash(mkdir -p \"c:/Users/fzachs/Documents/haze/stdlib/tesselate/lyon/src\" \"c:/Users/fzachs/Documents/haze/stdlib/tesselate/lyon/include\")",
       "Bash(cargo build *)",
-      "Bash(grep -v \"//\\\\|reactiveClone\")"
+      "Bash(grep -v \"//\\\\|reactiveClone\")",
+      "Bash(python -c ' *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\fzachs\\Documents\\haze\\stdlib\\tesselate\\lyon"
