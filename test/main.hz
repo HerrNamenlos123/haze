@@ -1,4 +1,5 @@
 
+import tesselate
 import sdl
 import gl
 import wgpu
@@ -42,7 +43,41 @@ fn print<T>(value: T) {
     }
 }
 
+fn testTesselator() {
+    fmt.println("--- Tesselator test ---");
+
+    let tess = tesselate.Tesselator();
+    tess.beginPath();
+    tess.moveTo(Vec2(0.0, 0.0));
+    tess.lineTo(Vec2(100.0, 0.0));
+    tess.lineTo(Vec2(100.0, 100.0));
+    tess.lineTo(Vec2(0.0, 100.0));
+    tess.closePath();
+
+    let result = tess.tessellate(0.1);
+    if result {
+        fmt.println(f"  {result.vertices.length} vertices, {result.indices.length / 3} triangles:");
+        let i = 0;
+        while i < result.vertices.length {
+            fmt.println(f"  v[{i}] = ({result.vertices[i].x}, {result.vertices[i].y})");
+            i++;
+        }
+        i = 0;
+        while i < result.indices.length / 3 {
+            fmt.println(f"  tri[{i}] = {result.indices[i * 3]}, {result.indices[i * 3 + 1]}, {result.indices[i * 3 + 2]}");
+            i++;
+        }
+    }
+    else {
+        fmt.println("  Tessellation failed");
+    }
+
+    tess.destroy();
+    fmt.println("-----------------------");
+}
+
 fn main(): int {
+    testTesselator();
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
