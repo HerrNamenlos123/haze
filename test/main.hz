@@ -44,8 +44,15 @@ fn print<T>(value: T) {
     }
 }
 
+struct Point {
+    x: real;
+    y: real;
+    pressure: real;
+}
+
 struct Shape {
     variant: str;
+    points: []Point;
 }
 
 struct Page {
@@ -291,32 +298,77 @@ fn main(): int {
             },
         });
 
+        // Load TSK Shapes
+        let testTsk = fs.readText("Test.tsk");
+        if !testTsk {
+            fmt.println("File loading failed");
+            return 0;
+        }
+
+        let result = json.structuredParse<File>(testTsk);
+
         // Tessellate outlines once before the loop
         let start = time.now();
         let tesselatedShapes: []tesselate.TesselationResult = [];
-        let outlineText = fs.readText("test-raw-outline.tsk");
         let count = 0;
-        if outlineText {
-            let outlineData = json.structuredParse<OutlineFile>(outlineText);
-            if outlineData {
-                let tess = tesselate.Tesselator();
-                count = outlineData.shapes.length;
-                for (let s = 0; s < outlineData.shapes.length; s++) {
-                    let shape = outlineData.shapes[s];
-                    if shape.outline.length > 0 {
-                        tess.beginPath();
-                        tess.moveTo(Vec2(shape.outline[0][0], shape.outline[0][1]));
-                        for (let p = 1; p < shape.outline.length; p++) {
-                            tess.lineTo(Vec2(shape.outline[p][0], shape.outline[p][1]));
-                        }
-                        tess.closePath();
-                        let result = tess.tessellate(0.25);
-                        if result { tesselatedShapes.push(result); }
-                    }
+
+        if result {
+            let data: File = result;
+            let page = data.data.pages[0];
+            fmt.println("Parsed successfully");
+
+            let tess = tesselate.Tesselator();
+            count = page.shapes.length;
+            for (let s = 0; s < page.shapes.length; s++) {
+                let shape = page.shapes[s];
+
+                // Perfect Freehand
+                let pf = perfect_freehand.PerfectFreehand(perfect_freehand.StrokeOptions {
+                    size: 0.5,
+                    thinning: 0.1,
+                    smoothing: 0.0,
+                    streamline: 0.6,
+                    simulatePressure: true,
+                    last: true,
+                });
+
+                for point in shape.points {
+                    pf.addPoint({
+                        x: point.x,
+                        y: point.y,
+                    });
                 }
-                tess.destroy();
-                fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+
+                let points: []Vec2 = [];
+                let outline = pf.compute();
+                if outline {
+                    fmt.println(f"  Outline has {outline.length} points");
+                    points = outline;
+                }
+                else {
+                    fmt.println("  PerfectFreehand compute failed");
+                }
+
+                pf.destroy();
+                fmt.println("----------------------------");
+
+                // Now tesselate
+                if points.length > 0 {
+                    tess.beginPath();
+                    tess.moveTo(Vec2(points[0].x, points[0].y));
+                    for (let p = 1; p < points.length; p++) {
+                        tess.lineTo(Vec2(points[p].x, points[p].y));
+                    }
+                    tess.closePath();
+                    let result = tess.tessellate(0.25);
+                    if result { tesselatedShapes.push(result); }
+                }
             }
+            tess.destroy();
+            fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+        }
+        else {
+            fmt.println("Failed parsing: ", result);
         }
         let end = time.now();
         fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
