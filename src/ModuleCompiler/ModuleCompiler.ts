@@ -26,6 +26,7 @@ import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
+import type { ASTRoot } from "../shared/AST";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
 import {
@@ -631,6 +632,89 @@ export function getCurrentPlatform() {
   return "win32-x64";
 }
 
+// ---------------------------------------------------------------------------
+// ImportASTCache — shared across all ModuleCompiler instances in one build.
+//
+// Two layers:
+//   1. In-memory: avoids re-parsing the same dep within a parallel build.
+//   2. On-disk:   avoids re-parsing across consecutive builds when nothing
+//                 has changed in a .hzlib dependency.
+//
+// Cache key: (depName, libMtimeMs, relPath) where relPath is the path of
+// the .hz file relative to the dep's extracted directory.  Using the
+// .hzlib mtime rather than the extracted file mtime means the key is
+// stable across modules that each maintain their own __deps copy.
+// ---------------------------------------------------------------------------
+
+type ASTCacheEntry = {
+  libMtimeMs: number;
+  files: Record<string, ASTRoot>;
+};
+
+export class ImportASTCache {
+  private memory = new Map<string, ASTRoot>();
+
+  constructor(private readonly diskCacheDir: string) {}
+
+  private memKey(depName: string, libMtimeMs: number, relPath: string) {
+    return `${depName}:${libMtimeMs}:${relPath}`;
+  }
+
+  get(depName: string, libMtimeMs: number, relPath: string): ASTRoot | undefined {
+    const key = this.memKey(depName, libMtimeMs, relPath);
+    if (this.memory.has(key)) {
+      return this.memory.get(key);
+    }
+
+    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
+    if (!fs.existsSync(diskPath)) {
+      return;
+    }
+    try {
+      const entry = JSON.parse(
+        fs.readFileSync(diskPath, "utf8")
+      ) as ASTCacheEntry;
+      if (entry.libMtimeMs !== libMtimeMs) {
+        return;
+      }
+      // Warm the in-memory cache with everything from this disk entry.
+      for (const [rel, ast] of Object.entries(entry.files)) {
+        this.memory.set(this.memKey(depName, libMtimeMs, rel), ast);
+      }
+      return this.memory.get(key);
+    } catch {
+      return;
+    }
+  }
+
+  set(depName: string, libMtimeMs: number, relPath: string, ast: ASTRoot): void {
+    const key = this.memKey(depName, libMtimeMs, relPath);
+    this.memory.set(key, ast);
+
+    // Persist to disk, merging with any other files already stored for this dep.
+    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
+    let entry: ASTCacheEntry = { libMtimeMs: libMtimeMs, files: {} };
+    if (fs.existsSync(diskPath)) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(diskPath, "utf8")) as ASTCacheEntry;
+        if (prev.libMtimeMs === libMtimeMs) {
+          entry = prev;
+        }
+      } catch {
+        // Corrupt or stale — start fresh.
+      }
+    }
+    entry.files[relPath] = ast;
+
+    try {
+      fs.mkdirSync(this.diskCacheDir, { recursive: true });
+      fs.writeFileSync(diskPath, JSON.stringify(entry), "utf8");
+    } catch {
+      // Non-fatal: in-memory cache still works.
+    }
+  }
+}
+
 // ProjectCompiler has moved to src/ProjectCompiler/ProjectCompiler.ts
 
 export function exec(str: string) {
@@ -737,6 +821,7 @@ export class ModuleCompiler {
   private collectedDepModules: Set<string> = new Set();
   private printer: CLIPrinter | null = null;
   private printerHandle: ModuleHandle | null = null;
+  importASTCache: ImportASTCache | null = null;
 
   constructor(
     public config: ModuleConfig,
@@ -748,6 +833,44 @@ export class ModuleCompiler {
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
+  }
+
+  // -------------------------------------------------------------------------
+  // Extraction stamp helpers — track the mtime of each dep's .hzlib at the
+  // time it was last extracted so we can skip re-extraction when unchanged.
+  // Stamps are stored per-module in __deps/.stamps.json.
+  // -------------------------------------------------------------------------
+
+  private get extractionStampsPath() {
+    return path.join(this.moduleDir, "__deps", ".stamps.json");
+  }
+
+  private loadExtractionStamps(): Record<string, number> {
+    try {
+      return JSON.parse(fs.readFileSync(this.extractionStampsPath, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  private isExtractionCurrent(depName: string, libMtimeMs: number): boolean {
+    const depDir = path.join(this.moduleDir, "__deps", depName);
+    if (!fs.existsSync(depDir)) {
+      return false;
+    }
+    const stamps = this.loadExtractionStamps();
+    return stamps[depName] === libMtimeMs;
+  }
+
+  private saveExtractionStamp(depName: string, libMtimeMs: number): void {
+    const stamps = this.loadExtractionStamps();
+    stamps[depName] = libMtimeMs;
+    try {
+      fs.mkdirSync(path.dirname(this.extractionStampsPath), { recursive: true });
+      fs.writeFileSync(this.extractionStampsPath, JSON.stringify(stamps), "utf8");
+    } catch {
+      // Non-fatal.
+    }
   }
 
   setPrinter(printer: CLIPrinter, handle: ModuleHandle) {
@@ -857,6 +980,59 @@ export class ModuleCompiler {
         await this.collectFile(fullPath, collectionMode);
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Dep-import collection — mirrors collectDirectory/collectFile but uses the
+  // ImportASTCache so that ANTLR is only invoked when the dep's .hzlib has
+  // actually changed.
+  // -------------------------------------------------------------------------
+
+  private async collectDepDirectory(
+    dirpath: string,
+    depName: string,
+    libMtimeMs: number
+  ) {
+    for (const file of readdirSync(dirpath)) {
+      if (file === "__haze__") {
+        continue;
+      }
+      const fullPath = join(dirpath, file);
+      if (statSync(fullPath).isDirectory()) {
+        await this.collectDepDirectory(fullPath, depName, libMtimeMs);
+      } else if (extname(fullPath) === ".hz") {
+        await this.collectDepFile(fullPath, depName, libMtimeMs);
+      }
+    }
+  }
+
+  private async collectDepFile(
+    filepath: string,
+    depName: string,
+    libMtimeMs: number
+  ) {
+    const depDir = join(this.moduleDir, "__deps", depName);
+    const relPath = path.relative(depDir, filepath);
+
+    const cached = this.importASTCache?.get(depName, libMtimeMs, relPath);
+    let ast: ASTRoot;
+    if (cached) {
+      ast = cached;
+    } else {
+      const fileText = await readFile(filepath, "utf-8");
+      ast = Parser.parseTextToAST(this.config, fileText, filepath);
+      this.importASTCache?.set(depName, libMtimeMs, relPath, ast);
+    }
+
+    CollectFile(
+      this.cc,
+      ast,
+      this.cc.moduleScopeId,
+      filepath,
+      this.config.name,
+      this.config.version,
+      ECollectionMode.ImportUnderRootDirectly
+    );
   }
 
   collectImmediate(
@@ -1989,7 +2165,13 @@ export class ModuleCompiler {
   private async loadSingleDependencyMetadata(libpath: string, libname: string) {
     const tempdir = join(this.moduleDir, "__deps", libname);
     fs.mkdirSync(tempdir, { recursive: true });
-    await extractTarGz(libpath, tempdir);
+
+    const libMtimeMs = fs.statSync(libpath).mtimeMs;
+    if (!this.isExtractionCurrent(libname, libMtimeMs)) {
+      await extractTarGz(libpath, tempdir);
+      this.saveExtractionStamp(libname, libMtimeMs);
+    }
+
     return parseModuleMetadata(
       await readFile(join(tempdir, "metadata.json"), "utf-8")
     );
@@ -2002,12 +2184,15 @@ export class ModuleCompiler {
         "bin",
         dep.name + ".hzlib"
       );
-      // WARNING: For some weird reason this is required
-      const _ = await this.loadSingleDependencyMetadata(libpath, dep.name);
-      await this.collectDirectory(
-        join(this.moduleDir, "__deps", dep.name),
-        ECollectionMode.ImportUnderRootDirectly
-      );
+      const libMtimeMs = fs.statSync(libpath).mtimeMs;
+
+      // Ensure the dep is extracted (skipped when stamp is current).
+      await this.loadSingleDependencyMetadata(libpath, dep.name);
+
+      // Collect .hz import files, using the AST cache to skip re-parsing
+      // files that have not changed since the last build.
+      const depDir = join(this.moduleDir, "__deps", dep.name);
+      await this.collectDepDirectory(depDir, dep.name, libMtimeMs);
     }
   }
 
