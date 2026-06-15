@@ -651,6 +651,38 @@ export function exec(str: string) {
   }
 }
 
+export function execAsync(str: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = child_process.spawn(str, {
+      stdio: ["inherit", "pipe", "pipe"],
+      shell: true,
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("close", (code: number | null) => {
+      if (code !== 0) {
+        if (stdout.trim()) printLine(stdout.trimEnd());
+        if (stderr.trim()) printLine(stderr.trimEnd());
+        reject(new CmdFailed());
+      } else {
+        if (stderr.trim()) printLineWarning(stderr.trimEnd());
+        resolve();
+      }
+    });
+
+    proc.on("error", reject);
+  });
+}
+
 function execSync(cmd: string, args: string[], dir?: string) {
   if (dir) {
     fs.mkdirSync(dir, {
@@ -1605,7 +1637,7 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(compileCmd);
       }
-      exec(compileCmd);
+      await execAsync(compileCmd);
 
       this.advancePhase(EModulePrintCompilerPhase.Linking);
 
@@ -1613,14 +1645,14 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(linkCmd);
       }
-      exec(linkCmd);
+      await execAsync(linkCmd);
 
       if (this.strip) {
         const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
         if (this.verbose) {
           this.printCmd(stripCmd);
         }
-        exec(stripCmd);
+        await execAsync(stripCmd);
       }
     } else {
       const flags = `${platformCompilerFlags.join(" ")}`;
@@ -1644,7 +1676,7 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(cmd);
       }
-      exec(cmd);
+      await execAsync(cmd);
 
       const archiveCmd =
         PLATFORM === Platform.Linux
@@ -1653,7 +1685,7 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(archiveCmd);
       }
-      exec(archiveCmd);
+      await execAsync(archiveCmd);
 
       const makerel = (absolute: string) =>
         absolute
@@ -1750,7 +1782,11 @@ export class ModuleCompiler {
           this.markBuildStart();
 
           const buildCache = new ModuleBuildCache(
-            path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
+            path.join(
+              this.hazeWorkspaceDirectory,
+              "build-cache",
+              `${this.config.name}.json`
+            )
           );
           buildCache.load();
 

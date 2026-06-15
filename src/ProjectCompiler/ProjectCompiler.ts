@@ -31,6 +31,7 @@ import {
   HAZE_CXX_COMPILER,
   HAZE_GLOBAL_DIR,
   HAZE_MUSL_SYSROOT,
+  HAZE_STDLIB_NAME,
   HAZE_TMP_DIR,
   ModuleCompiler,
   parseConfig,
@@ -175,7 +176,9 @@ export class ProjectCompiler {
         await this.cache.load(join(this.globalBuildDir, "cache.json"));
       }
 
-      const makeModule = (c: typeof config) =>
+      const stdlibDir = await getStdlibDirectory();
+
+      const makeModule = (c: ModuleConfig) =>
         new ModuleCompiler(
           c,
           this.cache,
@@ -185,69 +188,205 @@ export class ProjectCompiler {
           this.strip
         );
 
-      const mainModule = makeModule(config);
+      // -----------------------------------------------------------------------
+      // Discover all modules (main + stdlib + transitive deps) recursively.
+      // Insertion order: main first, then deps discovered depth-first.
+      // -----------------------------------------------------------------------
+      type ModuleEntry = {
+        config: ModuleConfig;
+        compiler: ModuleCompiler;
+        effectiveDeps: string[];
+      };
+      const modules = new Map<string, ModuleEntry>();
 
-      // Load all dependency configs upfront so every module is visible in the
-      // printer from the start (correct [1/N] totals throughout the build).
-      let stdlibModule: ModuleCompiler | undefined;
-      if (!mainModule.config.nostdlib) {
-        const stdlibConfig = await parseConfig(
-          join(await getStdlibDirectory(), "core"),
-          sourceloc
-        );
-        if (!stdlibConfig) {
-          return false;
+      const loadModule = async (cfg: ModuleConfig): Promise<void> => {
+        if (modules.has(cfg.name)) {
+          return;
         }
-        stdlibModule = makeModule(stdlibConfig);
-      }
 
-      const depModules: ModuleCompiler[] = [];
-      if (!singleFilename) {
-        for (const dep of mainModule.config.dependencies) {
-          const depConfig = await parseConfig(
-            join(await getStdlibDirectory(), dep.path),
+        // Compute direct dependency names (stdlib is implicit unless nostdlib).
+        const effectiveDeps: string[] = cfg.dependencies.map((d) => d.name);
+        if (cfg.name !== HAZE_STDLIB_NAME && !cfg.nostdlib) {
+          effectiveDeps.push(HAZE_STDLIB_NAME);
+        }
+
+        modules.set(cfg.name, {
+          config: cfg,
+          compiler: makeModule(cfg),
+          effectiveDeps: effectiveDeps,
+        });
+
+        // Load stdlib first so it is available as a dependency.
+        if (
+          cfg.name !== HAZE_STDLIB_NAME &&
+          !cfg.nostdlib &&
+          !modules.has(HAZE_STDLIB_NAME)
+        ) {
+          const stdlibConfig = await parseConfig(
+            join(stdlibDir, "core"),
             sourceloc
           );
-          if (!depConfig) {
-            return false;
+          if (!stdlibConfig) {
+            throw new GeneralError("Failed to load stdlib configuration");
           }
-          depModules.push(makeModule(depConfig));
+          await loadModule(stdlibConfig);
         }
-      }
 
+        // Load explicit deps recursively (project builds only).
+        if (!singleFilename) {
+          for (const dep of cfg.dependencies) {
+            if (!modules.has(dep.name)) {
+              const depConfig = await parseConfig(
+                join(stdlibDir, dep.path),
+                sourceloc
+              );
+              if (!depConfig) {
+                throw new GeneralError(
+                  `Failed to load dependency '${dep.name}'`
+                );
+              }
+              await loadModule(depConfig);
+            }
+          }
+        }
+      };
+
+      await loadModule(config);
+
+      // -----------------------------------------------------------------------
+      // Register all modules with the printer in topological order so indices
+      // ([1/N]) are stable and correct from the very first frame.
+      // -----------------------------------------------------------------------
       if (printer) {
-        // Register all modules with the printer in build order so the spinner
-        // shows the full module list with correct indices from the start.
-        if (stdlibModule) {
-          stdlibModule.setPrinter(printer, printer.addModule(stdlibModule.config.name));
+        for (const name of this.topoSortModules(modules)) {
+          const { compiler } = modules.get(name)!;
+          compiler.setPrinter(printer, printer.addModule(compiler.config.name));
         }
-        for (const m of depModules) {
-          m.setPrinter(printer, printer.addModule(m.config.name));
-        }
-        mainModule.setPrinter(printer, printer.addModule(mainModule.config.name));
         printer.start();
       }
 
-      if (stdlibModule && !(await stdlibModule.build(false, fullRebuild))) {
-        return false;
-      }
-      for (const m of depModules) {
-        if (!(await m.build(false, fullRebuild))) {
-          return false;
-        }
-      }
-      if (!(await mainModule.build(true, fullRebuild || this.strip))) {
-        return false;
-      }
+      // -----------------------------------------------------------------------
+      // Build in parallel, starting each module the moment its deps finish.
+      // -----------------------------------------------------------------------
+      const success = await this.buildInParallel(
+        modules,
+        config.name,
+        fullRebuild
+      );
 
       if (!singleFilename) {
         await this.cache.save();
       }
-      return true;
+      return success;
     } finally {
       printer?.stop();
       releaseBuildLock?.();
     }
+  }
+
+  /**
+   * Topological sort (post-order DFS) over the module dependency graph.
+   * Returns module names in an order where every dependency precedes its
+   * dependents — suitable for printer registration and display.
+   */
+  private topoSortModules(
+    modules: Map<string, { effectiveDeps: string[] }>
+  ): string[] {
+    const visited = new Set<string>();
+    const order: string[] = [];
+
+    const visit = (name: string) => {
+      if (visited.has(name)) {
+        return;
+      }
+      visited.add(name);
+      const entry = modules.get(name);
+      if (entry) {
+        for (const dep of entry.effectiveDeps) {
+          visit(dep);
+        }
+      }
+      order.push(name);
+    };
+
+    for (const name of modules.keys()) {
+      visit(name);
+    }
+
+    return order;
+  }
+
+  /**
+   * Build all modules concurrently, respecting the dependency graph.
+   * A module starts building the instant all of its direct deps complete —
+   * no waiting for an entire "layer" to finish.
+   */
+  private async buildInParallel(
+    modules: Map<
+      string,
+      { config: ModuleConfig; compiler: ModuleCompiler; effectiveDeps: string[] }
+    >,
+    mainModuleName: string,
+    fullRebuild: boolean | undefined
+  ): Promise<boolean> {
+    type BuildResult = { name: string; success: boolean };
+
+    const completed = new Set<string>();
+    const running = new Map<string, Promise<BuildResult>>();
+    let anyFailed = false;
+
+    const startReady = () => {
+      for (const [name, { compiler, effectiveDeps }] of modules) {
+        if (completed.has(name) || running.has(name)) {
+          continue;
+        }
+        if (effectiveDeps.some((d) => !completed.has(d))) {
+          continue;
+        }
+        const isTopLevel = name === mainModuleName;
+        // The top-level module is forced to rebuild when strip is on (same
+        // behaviour as the old serial build).
+        const forceRebuild = isTopLevel
+          ? (fullRebuild ?? false) || this.strip
+          : fullRebuild;
+
+        running.set(
+          name,
+          compiler
+            .build(isTopLevel, forceRebuild)
+            .then((success) => ({ name: name, success: !!success }))
+            .catch(() => ({ name: name, success: false }))
+        );
+      }
+    };
+
+    startReady();
+
+    while (running.size > 0) {
+      // Wait for whichever in-flight build finishes first.
+      const result = await Promise.race([...running.values()]);
+      running.delete(result.name);
+
+      if (result.success) {
+        completed.add(result.name);
+      } else {
+        anyFailed = true;
+      }
+
+      // Start any modules newly unblocked by this completion.
+      if (!anyFailed) {
+        startReady();
+      }
+    }
+
+    if (!anyFailed && completed.size < modules.size) {
+      // Some modules never became runnable — dependency cycle.
+      throw new GeneralError(
+        "Build graph has a dependency cycle or unresolvable dependency"
+      );
+    }
+
+    return !anyFailed;
   }
 
   /**
