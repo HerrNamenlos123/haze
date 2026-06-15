@@ -479,7 +479,6 @@ export class FileChangeCache {
     if (!fs.existsSync(abs)) {
       delete this.data[abs];
       this.dirty = true;
-      console.log("del");
       return;
     }
 
