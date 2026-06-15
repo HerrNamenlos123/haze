@@ -22,6 +22,8 @@
     "open": "^11.0.0",
     "typescript-eslint": "^8.53.0",
     "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12",
+    "vscode-uri": "^3.1.0",
     "which": "^5.0.0"
   },
   "devDependencies": {
