@@ -235,7 +235,22 @@ export class CLIPrinter {
 
   /** Insert a status line above the live bars without stopping them. */
   logInfo(message: string) {
-    this.multibar.log(message + "\n");
+    const terminal = (this.multibar as any).terminal;
+    const origWrite = terminal.write.bind(terminal) as (s: string, raw?: boolean) => void;
+    // cli-progress sends \x1B[?7l on start (linewrap:false default), which makes
+    // the terminal emulator itself clip long lines regardless of what we write.
+    // Temporarily re-enable it so the message wraps instead of being cut.
+    // Also force rawWrite=true so cli-progress's own substr truncation is skipped
+    // for both the log line and the bar re-render triggered by update().
+    terminal.write = (s: string, _raw?: boolean) => origWrite(s, true);
+    terminal.stream.write("\x1B[?7h");
+    try {
+      this.multibar.log(message + "\n");
+      (this.multibar as any).update(); // flush immediately while wrapping is on
+    } finally {
+      terminal.stream.write("\x1B[?7l");
+      terminal.write = origWrite;
+    }
   }
 
   private stopBars() {

@@ -736,10 +736,11 @@ export class ModuleCompiler {
   }
 
   private printCmd(cmd: string) {
-    // Pause the printer so the command prints above the bars cleanly.
-    this.printer?.pause();
-    process.stdout.write(`\n  $ ${cmd}\n\n`);
-    this.printer?.resume();
+    if (this.printer) {
+      this.printer.logInfo(`\n  $ ${cmd}\n`);
+    } else {
+      process.stdout.write(`\n  $ ${cmd}\n\n`);
+    }
   }
 
   private get effectiveDependencies() {
