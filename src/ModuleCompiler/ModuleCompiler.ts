@@ -1028,7 +1028,10 @@ export class ModuleCompiler {
       return;
     }
 
-    const compilerRootDir = join(dirname(fileURLToPath(import.meta.url)), "../..");
+    const compilerRootDir = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../.."
+    );
     const compilerSrcDir = join(compilerRootDir, "src");
     if (!existsSync(compilerSrcDir)) {
       return "missing-src";
