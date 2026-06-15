@@ -1,0 +1,58 @@
+fn main(): int {
+    attempt {
+        let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
+        if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let sourceDir = env.get("HAZE_MODULE_SOURCE_DIR");
+        if !sourceDir { raise f"HAZE_MODULE_SOURCE_DIR not defined"; }
+
+        let cCompiler = env.get("HAZE_C_COMPILER");
+        if !cCompiler { raise f"HAZE_C_COMPILER not defined"; }
+
+        let cxxCompiler = env.get("HAZE_CXX_COMPILER");
+        if !cxxCompiler { raise f"HAZE_CXX_COMPILER not defined"; }
+
+        process.run("cargo",
+            {
+                "build",
+            },
+            process.Options {
+                inherit_stdio: true,
+                cwd: f"{sourceDir}/perfect_freehand",
+            }
+        )?!;
+
+        let libFilename = "libperfect_freehand.a";
+        if sys.isWin32() {
+            libFilename = "perfect_freehand.lib";
+        }
+
+        fs.createDirectory(f"{binaryDir}/lib")?!;
+        fs.copyFile(f"{sourceDir}/perfect_freehand/target/debug/{libFilename}", f"{binaryDir}/lib/{libFilename}", {
+            overwrite: true
+        })?!;
+
+        fs.createDirectory(f"{binaryDir}/include")?!;
+        fs.copyFile(f"{sourceDir}/perfect_freehand/include/perfect_freehand.h", f"{binaryDir}/include/perfect_freehand.h", {
+            overwrite: true
+        })?!;
+    }
+    else e {
+        // if e is fs.Error {
+        //     fmt.println(f"build-tesselator step failed:", e);
+        //     return 1;
+        // }
+        // else 
+        if e is str {
+            fmt.println(f"build-perfect-freehand step failed: {e}");
+            return 1;
+        }
+        else if e is int {
+            fmt.println(f"build-perfect-freehand step failed: Process exited with code {e}");
+            return 1;
+        }
+        assert(false);
+    };
+
+    return 0;
+}

@@ -1,5 +1,6 @@
 
 import tesselate
+import perfect_freehand
 import sdl
 import gl
 import wgpu
@@ -142,6 +143,41 @@ fn testTesselator() {
 
     tess.destroy();
     fmt.println("-----------------------");
+}
+
+fn testPerfectFreehand() {
+    fmt.println("--- PerfectFreehand test ---");
+
+    let pf = perfect_freehand.PerfectFreehand(perfect_freehand.StrokeOptions {
+        size: 16.0,
+        thinning: 0.5,
+        smoothing: 0.5,
+        streamline: 0.5,
+        simulatePressure: true,
+        last: true,
+    });
+
+    pf.addPoint(Vec2(0.0, 0.0));
+    pf.addPoint(Vec2(50.0, 25.0));
+    pf.addPoint(Vec2(100.0, 0.0));
+    pf.addPoint(Vec2(150.0, 50.0));
+    pf.addPoint(Vec2(200.0, 0.0));
+
+    let outline = pf.compute();
+    if outline {
+        fmt.println(f"  Outline has {outline.length} points");
+        let i = 0;
+        while i < outline.length && i < 5 {
+            fmt.println(f"  pt[{i}] = ({outline[i].x}, {outline[i].y})");
+            i++;
+        }
+    }
+    else {
+        fmt.println("  PerfectFreehand compute failed");
+    }
+
+    pf.destroy();
+    fmt.println("----------------------------");
 }
 
 fn main(): int {

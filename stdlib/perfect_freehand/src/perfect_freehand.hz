@@ -1,0 +1,104 @@
+__c__("#include \"perfect_freehand.h\"");
+
+namespace ffi {
+	export extern C struct PfContext {};
+
+	extern C fn pf_create(): PfContext :: final;
+	extern C fn pf_destroy(ctx: PfContext): void :: final;
+	extern C fn pf_clear_points(ctx: PfContext): void :: final;
+	extern C fn pf_add_point(ctx: PfContext, x: f64, y: f64, pressure: f64): void :: final;
+	extern C fn pf_set_size(ctx: PfContext, size: f64): void :: final;
+	extern C fn pf_set_thinning(ctx: PfContext, thinning: f64): void :: final;
+	extern C fn pf_set_smoothing(ctx: PfContext, smoothing: f64): void :: final;
+	extern C fn pf_set_streamline(ctx: PfContext, streamline: f64): void :: final;
+	extern C fn pf_set_simulate_pressure(ctx: PfContext, val: i32): void :: final;
+	extern C fn pf_set_last(ctx: PfContext, val: i32): void :: final;
+	extern C fn pf_compute(ctx: PfContext): i32 :: final;
+	extern C fn pf_get_outline_count(ctx: PfContext): i32 :: final;
+	extern C fn pf_get_outline_x(ctx: PfContext, index: i32): f64 :: final;
+	extern C fn pf_get_outline_y(ctx: PfContext, index: i32): f64 :: final;
+}
+
+export struct StrokeOptions {
+	size: real;
+	thinning: real;
+	smoothing: real;
+	streamline: real;
+	simulatePressure: bool;
+	last: bool;
+
+	fn constructor(): StrokeOptions {
+		return StrokeOptions {
+			size: 16.0,
+			thinning: 0.5,
+			smoothing: 0.5,
+			streamline: 0.5,
+			simulatePressure: true,
+			last: false,
+		};
+	}
+}
+
+export struct PerfectFreehand {
+	handle: ffi.PfContext;
+
+	fn constructor(options: StrokeOptions): PerfectFreehand {
+		let ctx = ffi.pf_create();
+		ffi.pf_set_size(ctx, options.size as f64);
+		ffi.pf_set_thinning(ctx, options.thinning as f64);
+		ffi.pf_set_smoothing(ctx, options.smoothing as f64);
+		ffi.pf_set_streamline(ctx, options.streamline as f64);
+		ffi.pf_set_simulate_pressure(ctx, options.simulatePressure ? (1 as i32) : (0 as i32));
+		ffi.pf_set_last(ctx, options.last ? (1 as i32) : (0 as i32));
+		return PerfectFreehand { handle: ctx };
+	}
+
+	fn setOptions(options: StrokeOptions) {
+		ffi.pf_set_size(this.handle, options.size as f64);
+		ffi.pf_set_thinning(this.handle, options.thinning as f64);
+		ffi.pf_set_smoothing(this.handle, options.smoothing as f64);
+		ffi.pf_set_streamline(this.handle, options.streamline as f64);
+		ffi.pf_set_simulate_pressure(this.handle, options.simulatePressure ? (1 as i32) : (0 as i32));
+		ffi.pf_set_last(this.handle, options.last ? (1 as i32) : (0 as i32));
+	}
+
+	fn setLast(val: bool) {
+		ffi.pf_set_last(this.handle, val ? (1 as i32) : (0 as i32));
+	}
+
+	fn clearPoints() {
+		ffi.pf_clear_points(this.handle);
+	}
+
+	fn addPoint(pos: Vec2) {
+		ffi.pf_add_point(this.handle, pos.x as f64, pos.y as f64, -1.0);
+	}
+
+	fn addPointWithPressure(pos: Vec2, pressure: real) {
+		ffi.pf_add_point(this.handle, pos.x as f64, pos.y as f64, pressure as f64);
+	}
+
+	fn compute(): []Vec2 | none {
+		let status = ffi.pf_compute(this.handle);
+		if status != 0 {
+			return none;
+		}
+
+		let count = ffi.pf_get_outline_count(this.handle) as int;
+		let result: []Vec2 = [];
+
+		let i: i32 = 0;
+		while i < count {
+			let x = ffi.pf_get_outline_x(this.handle, i) as real;
+			let y = ffi.pf_get_outline_y(this.handle, i) as real;
+			result.push(Vec2(x, y));
+			i++;
+		}
+
+		return result;
+	}
+
+	fn destroy() {
+		ffi.pf_destroy(this.handle);
+	}
+}

@@ -1,0 +1,11 @@
+[package]
+name = "perfect_freehand"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "perfect_freehand"
+crate-type = ["staticlib"]
+
+[dependencies]
+perfect_freehand = "0.1.1"

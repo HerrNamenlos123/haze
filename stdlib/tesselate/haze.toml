@@ -7,9 +7,7 @@ type = "lib"
 
 [generator.build-tesselator]
 exec = "scripts/build-tesselator.hz"
-inputs = [
-    { module="this", dir="root", path="**" },
-]
+inputs = []
 outputs = [
     { module="this", dir="bin", path="include/tesselator.h" },
     { module="this", dir="bin", path="lib/tesselator.lib", platform="win32" },
