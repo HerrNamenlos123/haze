@@ -41,6 +41,7 @@ import {
   EModuleFileDir,
   type GeneratorConfig,
   type GeneratorFile,
+  type GeneratorFilePlatform,
   type GeneratorGraphNode,
   type ModuleConfig,
   type ModuleMetadata,
@@ -893,6 +894,9 @@ export class ModuleCompiler {
         if (out.type !== "module-file") {
           continue;
         }
+        if (!this.isFileForCurrentPlatform(out)) {
+          continue;
+        }
 
         const key = this.generatorFileKey(out);
 
@@ -916,6 +920,9 @@ export class ModuleCompiler {
 
       for (const input of gen.inputs) {
         if (input.type !== "module-file") {
+          continue;
+        }
+        if (!this.isFileForCurrentPlatform(input)) {
           continue;
         }
 
@@ -967,12 +974,12 @@ export class ModuleCompiler {
       if (gen.config.type !== "exec") {
         throw new Error("Not implemented");
       }
-      const inputPaths = gen.config.inputs.map((i) =>
-        this.resolveGeneratorFile(i)
-      );
-      const outputPaths = gen.config.outputs.map((i) =>
-        this.resolveGeneratorFile(i)
-      );
+      const inputPaths = gen.config.inputs
+        .filter((i) => this.isFileForCurrentPlatform(i))
+        .map((i) => this.resolveGeneratorFile(i));
+      const outputPaths = gen.config.outputs
+        .filter((i) => this.isFileForCurrentPlatform(i))
+        .map((i) => this.resolveGeneratorFile(i));
 
       if (
         force ||
@@ -1073,13 +1080,13 @@ export class ModuleCompiler {
       }
       files.add(this.resolveExec(gen.exec));
       for (const input of gen.inputs) {
-        if (input.type !== "module-file") {
+        if (input.type !== "module-file" || !this.isFileForCurrentPlatform(input)) {
           continue;
         }
         files.add(this.resolveGeneratorFile(input));
       }
       for (const output of gen.outputs) {
-        if (output.type !== "module-file") {
+        if (output.type !== "module-file" || !this.isFileForCurrentPlatform(output)) {
           continue;
         }
         files.add(this.resolveGeneratorFile(output));
@@ -1106,6 +1113,20 @@ export class ModuleCompiler {
     if (existsSync(autogenDir)) {
       await this.collectDirectory(autogenDir, mode);
     }
+  }
+
+  private isFileForCurrentPlatform(file: GeneratorFile): boolean {
+    if (file.type !== "module-file") {
+      return true;
+    }
+    if (!file.platform) {
+      return true;
+    }
+    const platformMap: Record<GeneratorFilePlatform, Platform> = {
+      linux: Platform.Linux,
+      win32: Platform.Win32,
+    };
+    return PLATFORM === platformMap[file.platform];
   }
 
   generatorFileKey(file: GeneratorFile): string {
@@ -1340,6 +1361,9 @@ export class ModuleCompiler {
     }
 
     for (const file of gen.outputs) {
+      if (!this.isFileForCurrentPlatform(file)) {
+        continue;
+      }
       const resolvedPath = this.resolveGeneratorFile(file);
       if (!existsSync(resolvedPath)) {
         process.stdout.write(cleanLog);

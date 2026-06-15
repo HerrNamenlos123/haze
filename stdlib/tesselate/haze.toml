@@ -12,7 +12,8 @@ inputs = [
 ]
 outputs = [
     { module="this", dir="bin", path="include/tesselator.h" },
-    { module="this", dir="bin", path="lib/tesselator.lib" },
+    { module="this", dir="bin", path="lib/tesselator.lib", platform="win32" },
+    { module="this", dir="bin", path="lib/tesselator.a", platform="linux" },
 ]
 
 [linker]

@@ -120,12 +120,15 @@ export enum EModuleFileDir {
   AutogenDir = "autogen",
 }
 
+export type GeneratorFilePlatform = "linux" | "win32";
+
 export type GeneratorFile =
   | {
       type: "module-file";
       module: string;
       dir: EModuleFileDir;
       path: string;
+      platform?: GeneratorFilePlatform;
     }
   | {
       type: "placeholder";
@@ -783,11 +786,21 @@ export class ConfigParser {
                   `Generator '${key}' defines an invalid ${type}: 'dir' property can only be: ["bin", "root", "src"]`
                 );
             }
+            let filePlatform: GeneratorFilePlatform | undefined;
+            if (file["platform"] !== undefined) {
+              if (file["platform"] !== "linux" && file["platform"] !== "win32") {
+                throw new GeneralError(
+                  `Generator '${key}' defines an invalid ${type}: 'platform' must be "linux" or "win32", got "${file["platform"]}"`
+                );
+              }
+              filePlatform = file["platform"] as GeneratorFilePlatform;
+            }
             const f: GeneratorFile = {
               module: file["module"] as string,
               dir: dir,
               type: "module-file",
               path: file["path"] as string,
+              platform: filePlatform,
             };
             return f;
           }
