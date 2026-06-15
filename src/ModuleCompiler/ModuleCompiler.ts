@@ -208,6 +208,9 @@ export async function parseConfig(startDir?: string, sourceloc?: boolean) {
 }
 
 export async function getStdlibDirectory() {
+  if (process.env["HAZE_STDLIB_DIR"]) {
+    return process.env["HAZE_STDLIB_DIR"];
+  }
   if (process.env["NODE_ENV"] === "production") {
     let whichHz = null as string | null;
     try {
