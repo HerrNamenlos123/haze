@@ -179,3 +179,5 @@ __haze__
 .idea
 
 *.tsk
+
+*.cpuprofile

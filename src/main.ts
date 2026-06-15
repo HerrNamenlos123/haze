@@ -219,9 +219,9 @@ if ((process.env as any).HAZE_EXEC_MODE === "profiling") {
       // intentionally ignored for profiling
     }
 
-    setTimeout(() => {
-      void runMain();
-    }, 5000);
+    // setTimeout(() => {
+    //   void runMain();
+    // }, 5000);
   }
 
   void runMain();
