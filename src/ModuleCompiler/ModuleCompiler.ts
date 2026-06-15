@@ -16,6 +16,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path, { basename, dirname, extname, join } from "node:path";
 import { cwd, stdout } from "node:process";
+import { fileURLToPath } from "node:url";
 import archiver from "archiver";
 import fg from "fast-glob";
 import gunzip from "gunzip-maybe";
@@ -61,12 +62,10 @@ import {
   SyntaxError,
   UnreachableCode,
 } from "../shared/Errors";
-import { acquireBuildLock } from "./Lock";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
 import {
   type CLIPrinter,
   EModulePrintCompilerPhase,
-  type GeneratorHandle,
   type ModuleHandle,
   printLine,
   printLineWarning,
@@ -219,7 +218,7 @@ export async function getStdlibDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "stdlib/");
   }
-  return join(import.meta.dirname, "../../stdlib");
+  return join(dirname(fileURLToPath(import.meta.url)), "../../stdlib");
 }
 
 export async function getToolsDirectory() {
@@ -233,7 +232,7 @@ export async function getToolsDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "tools/");
   }
-  return join(import.meta.dirname, "../../tools");
+  return join(dirname(fileURLToPath(import.meta.url)), "../../tools");
 }
 
 export async function catchErrors(fn: () => Promise<void>) {
@@ -246,7 +245,9 @@ export async function catchErrors(fn: () => Promise<void>) {
     } else if (e instanceof InternalError) {
       printLine(e.message);
       const stack = e.stack?.split("\n").slice(1).join("\n");
-      if (stack) { printLine(stack); }
+      if (stack) {
+        printLine(stack);
+      }
     } else if (e instanceof CompilerError) {
       printLine(e.message);
     } else if (e instanceof UnreachableCode) {
@@ -1024,7 +1025,7 @@ export class ModuleCompiler {
       return;
     }
 
-    const compilerRootDir = join(import.meta.dirname, "../..");
+    const compilerRootDir = join(dirname(fileURLToPath(import.meta.url)), "../..");
     const compilerSrcDir = join(compilerRootDir, "src");
     if (!existsSync(compilerSrcDir)) {
       return "missing-src";
@@ -1080,13 +1081,19 @@ export class ModuleCompiler {
       }
       files.add(this.resolveExec(gen.exec));
       for (const input of gen.inputs) {
-        if (input.type !== "module-file" || !this.isFileForCurrentPlatform(input)) {
+        if (
+          input.type !== "module-file" ||
+          !this.isFileForCurrentPlatform(input)
+        ) {
           continue;
         }
         files.add(this.resolveGeneratorFile(input));
       }
       for (const output of gen.outputs) {
-        if (output.type !== "module-file" || !this.isFileForCurrentPlatform(output)) {
+        if (
+          output.type !== "module-file" ||
+          !this.isFileForCurrentPlatform(output)
+        ) {
           continue;
         }
         files.add(this.resolveGeneratorFile(output));
@@ -1289,7 +1296,6 @@ export class ModuleCompiler {
     mkdirSync(logsDir, { recursive: true });
     const logPath = join(logsDir, `${gen.name}.log`);
 
-
     const genHandle = this.printer?.beginGenerator(this.config.name, gen.name);
     const logChunks: string[] = [];
     const project = new ProjectCompiler(false, true, false, false, true);
@@ -1335,7 +1341,9 @@ export class ModuleCompiler {
       }
     } finally {
       (process.stdout as any).write = origWrite;
-      if (genHandle) { this.printer?.endGenerator(genHandle); }
+      if (genHandle) {
+        this.printer?.endGenerator(genHandle);
+      }
     }
 
     // Strip ANSI escape codes before writing to the log file so it is
