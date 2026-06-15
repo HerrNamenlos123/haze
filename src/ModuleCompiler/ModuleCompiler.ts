@@ -1555,10 +1555,6 @@ export class ModuleCompiler {
     interfaceMacros.merge(dependencyInterfaceMacros);
     interfaceLinker.merge(dependencyInterfaceLinker);
 
-    if (this.config.moduleType === ModuleType.Executable) {
-      compilerFlags.addAll(archives.map((l) => `"${l}"`));
-    }
-
     compilerFlags.addAll(this.config.macros.getAll().map((dir) => `-D${dir}`));
     compilerFlags.addLinux(
       this.config.macros.getLinux().map((dir) => `-D${dir}`)
@@ -1583,7 +1579,12 @@ export class ModuleCompiler {
     const platformLinkerFlags = linkerFlags.combineForPlatform();
 
     if (this.config.moduleType === ModuleType.Executable) {
-      const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
+      const compileFlags = platformCompilerFlags.join(" ");
+      const linkFlags = [
+        ...archives.map((l) => `"${l}"`),
+        ...platformLinkerFlags,
+      ].join(" ");
+
       const filePreamble = "// clang-format off\n\n";
       const filePostamble = "\n// clang-format on\n";
       await writeFile(
@@ -1591,20 +1592,29 @@ export class ModuleCompiler {
         filePreamble + (await readFile(paths.moduleCFile)) + filePostamble
       );
 
-      const cmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -o "${paths.moduleExecutable}" ${flags}`;
+      const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
 
       compileCommands.push({
         directory: cwd(),
         file: paths.moduleCFile,
-        command: cmd,
-        output: paths.moduleExecutable,
+        command: compileCmd,
+        output: paths.moduleOFile,
       });
       await this.writeCompileCommands(isTopLevelModule, compileCommands);
 
       if (this.verbose) {
-        this.printCmd(cmd);
+        this.printCmd(compileCmd);
       }
-      exec(cmd);
+      exec(compileCmd);
+
+      this.advancePhase(EModulePrintCompilerPhase.Linking);
+
+      const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
+      if (this.verbose) {
+        this.printCmd(linkCmd);
+      }
+      exec(linkCmd);
+
       if (this.strip) {
         const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
         if (this.verbose) {

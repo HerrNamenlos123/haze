@@ -9,7 +9,8 @@ export enum EModulePrintCompilerPhase {
   Lowering = 3,
   Generating = 4,
   CCompiling = 5,
-  Done = 6,
+  Linking = 6,
+  Done = 7,
 }
 
 const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
@@ -19,6 +20,7 @@ const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
   [EModulePrintCompilerPhase.Lowering]: "Lowering     ",
   [EModulePrintCompilerPhase.Generating]: "Generating C ",
   [EModulePrintCompilerPhase.CCompiling]: "Compiling C  ",
+  [EModulePrintCompilerPhase.Linking]: "Linking      ",
   [EModulePrintCompilerPhase.Done]: "Done         ",
 };
 
@@ -29,6 +31,7 @@ const PHASE_SHORT: Partial<Record<EModulePrintCompilerPhase, string>> = {
   [EModulePrintCompilerPhase.Lowering]: "Lowering",
   [EModulePrintCompilerPhase.Generating]: "Generating C",
   [EModulePrintCompilerPhase.CCompiling]: "Compiling C",
+  [EModulePrintCompilerPhase.Linking]: "Linking",
 };
 
 type PhaseRecord = {
@@ -294,6 +297,7 @@ export class CLIPrinter {
       EModulePrintCompilerPhase.Lowering,
       EModulePrintCompilerPhase.Generating,
       EModulePrintCompilerPhase.CCompiling,
+      EModulePrintCompilerPhase.Linking,
     ];
 
     // Per-column width: "Label 9999ms" — max across all modules for that phase.
