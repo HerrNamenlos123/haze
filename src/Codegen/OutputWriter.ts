@@ -1,5 +1,6 @@
 export class OutputWriter {
-  private content = "";
+  private parts: string[] = [];
+  private lastChar = "";
   private indent = 0;
 
   constructor(private indentWidth = 2) {}
@@ -25,11 +26,12 @@ export class OutputWriter {
       }
 
       // Indenting
-      if (this.content[this.content.length - 1] === "\n") {
-        this.content += " ".repeat(this.indent * this.indentWidth);
+      if (this.lastChar === "\n") {
+        this.parts.push(" ".repeat(this.indent * this.indentWidth));
       }
 
-      this.content += line;
+      this.parts.push(line);
+      this.lastChar = line[line.length - 1];
     }
 
     return this;
@@ -45,6 +47,6 @@ export class OutputWriter {
   }
 
   get() {
-    return this.content;
+    return this.parts.join("");
   }
 }

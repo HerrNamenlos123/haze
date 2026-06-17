@@ -1,0 +1,20 @@
+name = "perfect_freehand"
+version = "1.0.0"
+description = "perfect-freehand bindings for Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[generator.build-perfect-freehand]
+exec = "scripts/build-perfect-freehand.hz"
+inputs = [
+    { module="this", dir="root", path="**" },
+]
+outputs = [
+    { module="this", dir="bin", path="include/perfect_freehand.h" },
+    { module="this", dir="bin", path="lib/perfect_freehand.lib", platform="win32" },
+    { module="this", dir="bin", path="lib/libperfect_freehand.a", platform="linux" },
+]
+
+[linker]
+flags = ["-lperfect_freehand"]

@@ -200,11 +200,41 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     }
     else if (in._type == 1u) { // Outlined Rounded Rectangle
         return process_rounded_rect_outline(in);
-    } 
+    }
     else if (in._type == 2u) { // Glyph
         return process_glyph(in);
-    } 
+    }
     else {
         return vec4(0, 0, 0, 0);
     }
+}
+
+
+// ================================
+// Triangle mesh pass (real geometry, no SDF — seamless, MSAA-ready)
+// ================================
+
+struct TriVSOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn tri_vs(
+    @location(0) pos: vec2<f32>,
+    @location(1) color: vec4<f32>,
+) -> TriVSOut {
+    var o: TriVSOut;
+    o.pos = vec4<f32>(
+        pos.x / globals.screenSize.x * 2.0 - 1.0,
+        1.0 - pos.y / globals.screenSize.y * 2.0,
+        0.0, 1.0,
+    );
+    o.color = color;
+    return o;
+}
+
+@fragment
+fn tri_fs(in: TriVSOut) -> @location(0) vec4<f32> {
+    return in.color;
 }

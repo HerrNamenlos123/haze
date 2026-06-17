@@ -16,6 +16,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path, { basename, dirname, extname, join } from "node:path";
 import { cwd, stdout } from "node:process";
+import { fileURLToPath } from "node:url";
 import archiver from "archiver";
 import fg from "fast-glob";
 import gunzip from "gunzip-maybe";
@@ -25,6 +26,7 @@ import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
+import type { ASTRoot } from "../shared/AST";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
 import {
@@ -41,6 +43,7 @@ import {
   EModuleFileDir,
   type GeneratorConfig,
   type GeneratorFile,
+  type GeneratorFilePlatform,
   type GeneratorGraphNode,
   type ModuleConfig,
   type ModuleMetadata,
@@ -60,12 +63,10 @@ import {
   SyntaxError,
   UnreachableCode,
 } from "../shared/Errors";
-import { acquireBuildLock } from "./Lock";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
 import {
   type CLIPrinter,
   EModulePrintCompilerPhase,
-  type GeneratorHandle,
   type ModuleHandle,
   printLine,
   printLineWarning,
@@ -208,6 +209,9 @@ export async function parseConfig(startDir?: string, sourceloc?: boolean) {
 }
 
 export async function getStdlibDirectory() {
+  if (process.env["HAZE_STDLIB_DIR"]) {
+    return process.env["HAZE_STDLIB_DIR"];
+  }
   if (process.env["NODE_ENV"] === "production") {
     let whichHz = null as string | null;
     try {
@@ -218,7 +222,7 @@ export async function getStdlibDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "stdlib/");
   }
-  return join(import.meta.dirname, "../../stdlib");
+  return join(dirname(fileURLToPath(import.meta.url)), "../../stdlib");
 }
 
 export async function getToolsDirectory() {
@@ -232,7 +236,7 @@ export async function getToolsDirectory() {
     const realHz = realpathSync(whichHz);
     return join(dirname(realHz), "tools/");
   }
-  return join(import.meta.dirname, "../../tools");
+  return join(dirname(fileURLToPath(import.meta.url)), "../../tools");
 }
 
 export async function catchErrors(fn: () => Promise<void>) {
@@ -245,7 +249,9 @@ export async function catchErrors(fn: () => Promise<void>) {
     } else if (e instanceof InternalError) {
       printLine(e.message);
       const stack = e.stack?.split("\n").slice(1).join("\n");
-      if (stack) { printLine(stack); }
+      if (stack) {
+        printLine(stack);
+      }
     } else if (e instanceof CompilerError) {
       printLine(e.message);
     } else if (e instanceof UnreachableCode) {
@@ -474,7 +480,6 @@ export class FileChangeCache {
     if (!fs.existsSync(abs)) {
       delete this.data[abs];
       this.dirty = true;
-      console.log("del");
       return;
     }
 
@@ -627,6 +632,89 @@ export function getCurrentPlatform() {
   return "win32-x64";
 }
 
+// ---------------------------------------------------------------------------
+// ImportASTCache — shared across all ModuleCompiler instances in one build.
+//
+// Two layers:
+//   1. In-memory: avoids re-parsing the same dep within a parallel build.
+//   2. On-disk:   avoids re-parsing across consecutive builds when nothing
+//                 has changed in a .hzlib dependency.
+//
+// Cache key: (depName, libMtimeMs, relPath) where relPath is the path of
+// the .hz file relative to the dep's extracted directory.  Using the
+// .hzlib mtime rather than the extracted file mtime means the key is
+// stable across modules that each maintain their own __deps copy.
+// ---------------------------------------------------------------------------
+
+type ASTCacheEntry = {
+  libMtimeMs: number;
+  files: Record<string, ASTRoot>;
+};
+
+export class ImportASTCache {
+  private memory = new Map<string, ASTRoot>();
+
+  constructor(private readonly diskCacheDir: string) {}
+
+  private memKey(depName: string, libMtimeMs: number, relPath: string) {
+    return `${depName}:${libMtimeMs}:${relPath}`;
+  }
+
+  get(depName: string, libMtimeMs: number, relPath: string): ASTRoot | undefined {
+    const key = this.memKey(depName, libMtimeMs, relPath);
+    if (this.memory.has(key)) {
+      return this.memory.get(key);
+    }
+
+    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
+    if (!fs.existsSync(diskPath)) {
+      return;
+    }
+    try {
+      const entry = JSON.parse(
+        fs.readFileSync(diskPath, "utf8")
+      ) as ASTCacheEntry;
+      if (entry.libMtimeMs !== libMtimeMs) {
+        return;
+      }
+      // Warm the in-memory cache with everything from this disk entry.
+      for (const [rel, ast] of Object.entries(entry.files)) {
+        this.memory.set(this.memKey(depName, libMtimeMs, rel), ast);
+      }
+      return this.memory.get(key);
+    } catch {
+      return;
+    }
+  }
+
+  set(depName: string, libMtimeMs: number, relPath: string, ast: ASTRoot): void {
+    const key = this.memKey(depName, libMtimeMs, relPath);
+    this.memory.set(key, ast);
+
+    // Persist to disk, merging with any other files already stored for this dep.
+    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
+    let entry: ASTCacheEntry = { libMtimeMs: libMtimeMs, files: {} };
+    if (fs.existsSync(diskPath)) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(diskPath, "utf8")) as ASTCacheEntry;
+        if (prev.libMtimeMs === libMtimeMs) {
+          entry = prev;
+        }
+      } catch {
+        // Corrupt or stale — start fresh.
+      }
+    }
+    entry.files[relPath] = ast;
+
+    try {
+      fs.mkdirSync(this.diskCacheDir, { recursive: true });
+      fs.writeFileSync(diskPath, JSON.stringify(entry), "utf8");
+    } catch {
+      // Non-fatal: in-memory cache still works.
+    }
+  }
+}
+
 // ProjectCompiler has moved to src/ProjectCompiler/ProjectCompiler.ts
 
 export function exec(str: string) {
@@ -645,6 +733,38 @@ export function exec(str: string) {
   if (stderr.trim()) {
     printLineWarning(stderr.trimEnd());
   }
+}
+
+export function execAsync(str: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = child_process.spawn(str, {
+      stdio: ["inherit", "pipe", "pipe"],
+      shell: true,
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("close", (code: number | null) => {
+      if (code !== 0) {
+        if (stdout.trim()) printLine(stdout.trimEnd());
+        if (stderr.trim()) printLine(stderr.trimEnd());
+        reject(new CmdFailed());
+      } else {
+        if (stderr.trim()) printLineWarning(stderr.trimEnd());
+        resolve();
+      }
+    });
+
+    proc.on("error", reject);
+  });
 }
 
 function execSync(cmd: string, args: string[], dir?: string) {
@@ -701,6 +821,7 @@ export class ModuleCompiler {
   private collectedDepModules: Set<string> = new Set();
   private printer: CLIPrinter | null = null;
   private printerHandle: ModuleHandle | null = null;
+  importASTCache: ImportASTCache | null = null;
 
   constructor(
     public config: ModuleConfig,
@@ -712,6 +833,44 @@ export class ModuleCompiler {
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
+  }
+
+  // -------------------------------------------------------------------------
+  // Extraction stamp helpers — track the mtime of each dep's .hzlib at the
+  // time it was last extracted so we can skip re-extraction when unchanged.
+  // Stamps are stored per-module in __deps/.stamps.json.
+  // -------------------------------------------------------------------------
+
+  private get extractionStampsPath() {
+    return path.join(this.moduleDir, "__deps", ".stamps.json");
+  }
+
+  private loadExtractionStamps(): Record<string, number> {
+    try {
+      return JSON.parse(fs.readFileSync(this.extractionStampsPath, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  private isExtractionCurrent(depName: string, libMtimeMs: number): boolean {
+    const depDir = path.join(this.moduleDir, "__deps", depName);
+    if (!fs.existsSync(depDir)) {
+      return false;
+    }
+    const stamps = this.loadExtractionStamps();
+    return stamps[depName] === libMtimeMs;
+  }
+
+  private saveExtractionStamp(depName: string, libMtimeMs: number): void {
+    const stamps = this.loadExtractionStamps();
+    stamps[depName] = libMtimeMs;
+    try {
+      fs.mkdirSync(path.dirname(this.extractionStampsPath), { recursive: true });
+      fs.writeFileSync(this.extractionStampsPath, JSON.stringify(stamps), "utf8");
+    } catch {
+      // Non-fatal.
+    }
   }
 
   setPrinter(printer: CLIPrinter, handle: ModuleHandle) {
@@ -732,10 +891,11 @@ export class ModuleCompiler {
   }
 
   private printCmd(cmd: string) {
-    // Pause the printer so the command prints above the bars cleanly.
-    this.printer?.pause();
-    process.stdout.write(`\n  $ ${cmd}\n\n`);
-    this.printer?.resume();
+    if (this.printer) {
+      this.printer.logInfo(`\n  $ ${cmd}\n`);
+    } else {
+      process.stdout.write(`\n  $ ${cmd}\n\n`);
+    }
   }
 
   private get effectiveDependencies() {
@@ -822,6 +982,59 @@ export class ModuleCompiler {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Dep-import collection — mirrors collectDirectory/collectFile but uses the
+  // ImportASTCache so that ANTLR is only invoked when the dep's .hzlib has
+  // actually changed.
+  // -------------------------------------------------------------------------
+
+  private async collectDepDirectory(
+    dirpath: string,
+    depName: string,
+    libMtimeMs: number
+  ) {
+    for (const file of readdirSync(dirpath)) {
+      if (file === "__haze__") {
+        continue;
+      }
+      const fullPath = join(dirpath, file);
+      if (statSync(fullPath).isDirectory()) {
+        await this.collectDepDirectory(fullPath, depName, libMtimeMs);
+      } else if (extname(fullPath) === ".hz") {
+        await this.collectDepFile(fullPath, depName, libMtimeMs);
+      }
+    }
+  }
+
+  private async collectDepFile(
+    filepath: string,
+    depName: string,
+    libMtimeMs: number
+  ) {
+    const depDir = join(this.moduleDir, "__deps", depName);
+    const relPath = path.relative(depDir, filepath);
+
+    const cached = this.importASTCache?.get(depName, libMtimeMs, relPath);
+    let ast: ASTRoot;
+    if (cached) {
+      ast = cached;
+    } else {
+      const fileText = await readFile(filepath, "utf-8");
+      ast = Parser.parseTextToAST(this.config, fileText, filepath);
+      this.importASTCache?.set(depName, libMtimeMs, relPath, ast);
+    }
+
+    CollectFile(
+      this.cc,
+      ast,
+      this.cc.moduleScopeId,
+      filepath,
+      this.config.name,
+      this.config.version,
+      ECollectionMode.ImportUnderRootDirectly
+    );
+  }
+
   collectImmediate(
     sourceCode: string,
     args: {
@@ -893,6 +1106,9 @@ export class ModuleCompiler {
         if (out.type !== "module-file") {
           continue;
         }
+        if (!this.isFileForCurrentPlatform(out)) {
+          continue;
+        }
 
         const key = this.generatorFileKey(out);
 
@@ -916,6 +1132,9 @@ export class ModuleCompiler {
 
       for (const input of gen.inputs) {
         if (input.type !== "module-file") {
+          continue;
+        }
+        if (!this.isFileForCurrentPlatform(input)) {
           continue;
         }
 
@@ -967,12 +1186,12 @@ export class ModuleCompiler {
       if (gen.config.type !== "exec") {
         throw new Error("Not implemented");
       }
-      const inputPaths = gen.config.inputs.map((i) =>
-        this.resolveGeneratorFile(i)
-      );
-      const outputPaths = gen.config.outputs.map((i) =>
-        this.resolveGeneratorFile(i)
-      );
+      const inputPaths = gen.config.inputs
+        .filter((i) => this.isFileForCurrentPlatform(i))
+        .map((i) => this.resolveGeneratorFile(i));
+      const outputPaths = gen.config.outputs
+        .filter((i) => this.isFileForCurrentPlatform(i))
+        .map((i) => this.resolveGeneratorFile(i));
 
       if (
         force ||
@@ -1017,7 +1236,10 @@ export class ModuleCompiler {
       return;
     }
 
-    const compilerRootDir = join(import.meta.dirname, "../..");
+    const compilerRootDir = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../.."
+    );
     const compilerSrcDir = join(compilerRootDir, "src");
     if (!existsSync(compilerSrcDir)) {
       return "missing-src";
@@ -1073,13 +1295,19 @@ export class ModuleCompiler {
       }
       files.add(this.resolveExec(gen.exec));
       for (const input of gen.inputs) {
-        if (input.type !== "module-file") {
+        if (
+          input.type !== "module-file" ||
+          !this.isFileForCurrentPlatform(input)
+        ) {
           continue;
         }
         files.add(this.resolveGeneratorFile(input));
       }
       for (const output of gen.outputs) {
-        if (output.type !== "module-file") {
+        if (
+          output.type !== "module-file" ||
+          !this.isFileForCurrentPlatform(output)
+        ) {
           continue;
         }
         files.add(this.resolveGeneratorFile(output));
@@ -1106,6 +1334,20 @@ export class ModuleCompiler {
     if (existsSync(autogenDir)) {
       await this.collectDirectory(autogenDir, mode);
     }
+  }
+
+  private isFileForCurrentPlatform(file: GeneratorFile): boolean {
+    if (file.type !== "module-file") {
+      return true;
+    }
+    if (!file.platform) {
+      return true;
+    }
+    const platformMap: Record<GeneratorFilePlatform, Platform> = {
+      linux: Platform.Linux,
+      win32: Platform.Win32,
+    };
+    return PLATFORM === platformMap[file.platform];
   }
 
   generatorFileKey(file: GeneratorFile): string {
@@ -1236,12 +1478,12 @@ export class ModuleCompiler {
         break;
 
       case EModuleFileDir.SourceDir:
-        assert(false);
-        throw new Error();
+        dir = this.getModuleSourceDir(moduleName);
+        break;
 
       case EModuleFileDir.ModuleRootDir:
-        assert(false);
-        throw new Error();
+        dir = this.getModuleRootDir(moduleName);
+        break;
 
       default:
         assert(false);
@@ -1267,7 +1509,6 @@ export class ModuleCompiler {
     const logsDir = join(this.moduleDir, "logs");
     mkdirSync(logsDir, { recursive: true });
     const logPath = join(logsDir, `${gen.name}.log`);
-
 
     const genHandle = this.printer?.beginGenerator(this.config.name, gen.name);
     const logChunks: string[] = [];
@@ -1314,7 +1555,9 @@ export class ModuleCompiler {
       }
     } finally {
       (process.stdout as any).write = origWrite;
-      if (genHandle) { this.printer?.endGenerator(genHandle); }
+      if (genHandle) {
+        this.printer?.endGenerator(genHandle);
+      }
     }
 
     // Strip ANSI escape codes before writing to the log file so it is
@@ -1340,6 +1583,9 @@ export class ModuleCompiler {
     }
 
     for (const file of gen.outputs) {
+      if (!this.isFileForCurrentPlatform(file)) {
+        continue;
+      }
       const resolvedPath = this.resolveGeneratorFile(file);
       if (!existsSync(resolvedPath)) {
         process.stdout.write(cleanLog);
@@ -1360,6 +1606,20 @@ export class ModuleCompiler {
 
   getModuleBuildDir(moduleName: string) {
     return join(this.hazeWorkspaceDirectory, moduleName, "build");
+  }
+
+  getModuleRootDir(moduleName: string) {
+    if (moduleName !== this.config.name) {
+      throw new GeneralError(
+        `dir="root" is only supported for module="this", not "${moduleName}"`
+      );
+    }
+    assert(this.currentModuleRootDir);
+    return this.currentModuleRootDir;
+  }
+
+  getModuleSourceDir(moduleName: string) {
+    return join(this.getModuleRootDir(moduleName), "src");
   }
 
   private maybeStripExecutable() {
@@ -1503,10 +1763,6 @@ export class ModuleCompiler {
     interfaceMacros.merge(dependencyInterfaceMacros);
     interfaceLinker.merge(dependencyInterfaceLinker);
 
-    if (this.config.moduleType === ModuleType.Executable) {
-      compilerFlags.addAll(archives.map((l) => `"${l}"`));
-    }
-
     compilerFlags.addAll(this.config.macros.getAll().map((dir) => `-D${dir}`));
     compilerFlags.addLinux(
       this.config.macros.getLinux().map((dir) => `-D${dir}`)
@@ -1531,7 +1787,12 @@ export class ModuleCompiler {
     const platformLinkerFlags = linkerFlags.combineForPlatform();
 
     if (this.config.moduleType === ModuleType.Executable) {
-      const flags = `${platformCompilerFlags.join(" ")} ${platformLinkerFlags.join(" ")}`;
+      const compileFlags = platformCompilerFlags.join(" ");
+      const linkFlags = [
+        ...archives.map((l) => `"${l}"`),
+        ...platformLinkerFlags,
+      ].join(" ");
+
       const filePreamble = "// clang-format off\n\n";
       const filePostamble = "\n// clang-format on\n";
       await writeFile(
@@ -1539,26 +1800,35 @@ export class ModuleCompiler {
         filePreamble + (await readFile(paths.moduleCFile)) + filePostamble
       );
 
-      const cmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -o "${paths.moduleExecutable}" ${flags}`;
+      const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
 
       compileCommands.push({
         directory: cwd(),
         file: paths.moduleCFile,
-        command: cmd,
-        output: paths.moduleExecutable,
+        command: compileCmd,
+        output: paths.moduleOFile,
       });
       await this.writeCompileCommands(isTopLevelModule, compileCommands);
 
       if (this.verbose) {
-        this.printCmd(cmd);
+        this.printCmd(compileCmd);
       }
-      exec(cmd);
+      await execAsync(compileCmd);
+
+      this.advancePhase(EModulePrintCompilerPhase.Linking);
+
+      const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
+      if (this.verbose) {
+        this.printCmd(linkCmd);
+      }
+      await execAsync(linkCmd);
+
       if (this.strip) {
         const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
         if (this.verbose) {
           this.printCmd(stripCmd);
         }
-        exec(stripCmd);
+        await execAsync(stripCmd);
       }
     } else {
       const flags = `${platformCompilerFlags.join(" ")}`;
@@ -1582,7 +1852,7 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(cmd);
       }
-      exec(cmd);
+      await execAsync(cmd);
 
       const archiveCmd =
         PLATFORM === Platform.Linux
@@ -1591,7 +1861,7 @@ export class ModuleCompiler {
       if (this.verbose) {
         this.printCmd(archiveCmd);
       }
-      exec(archiveCmd);
+      await execAsync(archiveCmd);
 
       const makerel = (absolute: string) =>
         absolute
@@ -1688,7 +1958,11 @@ export class ModuleCompiler {
           this.markBuildStart();
 
           const buildCache = new ModuleBuildCache(
-            path.join(this.hazeWorkspaceDirectory, "module-build.cache.json")
+            path.join(
+              this.hazeWorkspaceDirectory,
+              "build-cache",
+              `${this.config.name}.json`
+            )
           );
           buildCache.load();
 
@@ -1891,7 +2165,13 @@ export class ModuleCompiler {
   private async loadSingleDependencyMetadata(libpath: string, libname: string) {
     const tempdir = join(this.moduleDir, "__deps", libname);
     fs.mkdirSync(tempdir, { recursive: true });
-    await extractTarGz(libpath, tempdir);
+
+    const libMtimeMs = fs.statSync(libpath).mtimeMs;
+    if (!this.isExtractionCurrent(libname, libMtimeMs)) {
+      await extractTarGz(libpath, tempdir);
+      this.saveExtractionStamp(libname, libMtimeMs);
+    }
+
     return parseModuleMetadata(
       await readFile(join(tempdir, "metadata.json"), "utf-8")
     );
@@ -1904,12 +2184,15 @@ export class ModuleCompiler {
         "bin",
         dep.name + ".hzlib"
       );
-      // WARNING: For some weird reason this is required
-      const _ = await this.loadSingleDependencyMetadata(libpath, dep.name);
-      await this.collectDirectory(
-        join(this.moduleDir, "__deps", dep.name),
-        ECollectionMode.ImportUnderRootDirectly
-      );
+      const libMtimeMs = fs.statSync(libpath).mtimeMs;
+
+      // Ensure the dep is extracted (skipped when stamp is current).
+      await this.loadSingleDependencyMetadata(libpath, dep.name);
+
+      // Collect .hz import files, using the AST cache to skip re-parsing
+      // files that have not changed since the last build.
+      const depDir = join(this.moduleDir, "__deps", dep.name);
+      await this.collectDepDirectory(depDir, dep.name, libMtimeMs);
     }
   }
 

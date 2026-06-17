@@ -1,6 +1,6 @@
 
 namespace ffi {
-    extern C noemit struct hzstd_str_ref_t {
+    export extern C noemit struct hzstd_str_ref_t {
         data: str = "";
     };
 

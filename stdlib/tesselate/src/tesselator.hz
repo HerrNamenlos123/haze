@@ -1,0 +1,99 @@
+__c__("#include \"tesselator.h\"");
+
+namespace ffi {
+	export extern C struct TesselatorContext {};
+
+	extern C fn tesselator_create(): TesselatorContext :: final;
+	extern C fn tesselator_destroy(ctx: TesselatorContext): void :: final;
+	extern C fn tesselator_begin_path(ctx: TesselatorContext): void :: final;
+	extern C fn tesselator_move_to(ctx: TesselatorContext, x: f32, y: f32): void :: final;
+	extern C fn tesselator_line_to(ctx: TesselatorContext, x: f32, y: f32): void :: final;
+	extern C fn tesselator_quadratic_bezier_to(ctx: TesselatorContext, cx: f32, cy: f32, x: f32, y: f32): void :: final;
+	extern C fn tesselator_cubic_bezier_to(ctx: TesselatorContext, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32): void :: final;
+	extern C fn tesselator_close_path(ctx: TesselatorContext): void :: final;
+	extern C fn tesselator_tessellate_fill(ctx: TesselatorContext, tolerance: f32): i32 :: final;
+	extern C fn tesselator_get_vertex_count(ctx: TesselatorContext): i32 :: final;
+	extern C fn tesselator_get_index_count(ctx: TesselatorContext): i32 :: final;
+	extern C fn tesselator_vertex_x(ctx: TesselatorContext, index: i32): f32 :: final;
+	extern C fn tesselator_vertex_y(ctx: TesselatorContext, index: i32): f32 :: final;
+	extern C fn tesselator_index_at(ctx: TesselatorContext, index: i32): i32 :: final;
+}
+
+export struct TesselationResult {
+	vertices: []Vec2;
+	indices: []i32;
+}
+
+export struct Tesselator {
+	handle: ffi.TesselatorContext;
+
+
+	fn constructor() {
+		return Tesselator { handle: ffi.tesselator_create() };
+	}
+
+	fn beginPath() {
+		ffi.tesselator_begin_path(this.handle);
+	}
+
+	fn moveTo(pos: Vec2) {
+		ffi.tesselator_move_to(this.handle, pos.x as f32, pos.y as f32);
+	}
+
+	fn lineTo(pos: Vec2) {
+		ffi.tesselator_line_to(this.handle, pos.x as f32, pos.y as f32);
+	}
+
+	fn quadraticBezierTo(control: Vec2, to: Vec2) {
+		ffi.tesselator_quadratic_bezier_to(
+			this.handle,
+			control.x as f32, control.y as f32,
+			to.x as f32, to.y as f32
+		);
+	}
+
+	fn cubicBezierTo(control1: Vec2, control2: Vec2, to: Vec2) {
+		ffi.tesselator_cubic_bezier_to(
+			this.handle,
+			control1.x as f32, control1.y as f32,
+			control2.x as f32, control2.y as f32,
+			to.x as f32, to.y as f32
+		);
+	}
+
+	fn closePath() {
+		ffi.tesselator_close_path(this.handle);
+	}
+
+	fn tessellate(tolerance: real): TesselationResult | none {
+		let status = ffi.tesselator_tessellate_fill(this.handle, tolerance as f32);
+		if status != 0 {
+			return none;
+		}
+
+		let vertCount = ffi.tesselator_get_vertex_count(this.handle) as int;
+		let idxCount = ffi.tesselator_get_index_count(this.handle) as int;
+
+		let result = TesselationResult { vertices: [], indices: [] };
+
+		let i: i32 = 0;
+		while i < vertCount {
+			let x = ffi.tesselator_vertex_x(this.handle, i) as real;
+			let y = ffi.tesselator_vertex_y(this.handle, i) as real;
+			result.vertices.push(Vec2(x, y));
+			i++;
+		}
+
+		i = 0;
+		while i < idxCount {
+			result.indices.push(ffi.tesselator_index_at(this.handle, i));
+			i++;
+		}
+
+		return result;
+	}
+
+	fn destroy() {
+		ffi.tesselator_destroy(this.handle);
+	}
+}

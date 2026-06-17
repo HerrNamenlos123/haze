@@ -2304,90 +2304,6 @@ class CodeGenerator {
         return { out: outWriter, temp: tempWriter };
       }
 
-      // switch (expr.) {
-      //   case "LiteralConstant":
-      //     if (expr.constantSymbol.unit) {
-      //       let value = 0;
-      //       switch (expr.constantSymbol.unit) {
-      //         case "ns":
-      //           value = expr.constantSymbol.value;
-      //           break;
-
-      //         case "us":
-      //           value = expr.constantSymbol.value * 1000;
-      //           break;
-
-      //         case "ms":
-      //           value = expr.constantSymbol.value * 1000 * 1000;
-      //           break;
-
-      //         case "s":
-      //           value = expr.constantSymbol.value * 1000 * 1000 * 1000;
-      //           break;
-
-      //         case "m":
-      //           value = expr.constantSymbol.value * 60 * 1000 * 1000 * 1000;
-      //           break;
-
-      //         case "h":
-      //           value = expr.constantSymbol.value * 3600 * 1000 * 1000 * 1000;
-      //           break;
-
-      //         case "d":
-      //           value = expr.constantSymbol.value * 24 * 3600 * 1000 * 1000 * 1000;
-      //           break;
-
-      //         default:
-      //           throw new InternalError(`Unknown unit ${expr.constantSymbol.unit}`);
-      //       }
-      //       if (expr.constantSymbol.type.variant !== "Struct") {
-      //         throw new ImpossibleSituation();
-      //       }
-      //       const durationExpr: ObjectExpression = {
-      //         variant: "Object",
-      //         type: expr.constantSymbol.type,
-      //         ctx: expr.ctx,
-      //         members: [
-      //           [
-      //             expr.constantSymbol.type.members[0] as VariableSymbol,
-      //             {
-      //               variant: "Constant",
-      //               constantSymbol: {
-      //                 variant: "LiteralConstant",
-      //                 type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
-      //                 value: value,
-      //                 location: expr.constantSymbol.location,
-      //               },
-      //               ctx: expr.ctx,
-      //               type: (expr.constantSymbol.type.members[0] as VariableSymbol).type,
-      //               location: expr.constantSymbol.location,
-      //             },
-      //           ],
-      //         ],
-      //         location: expr.constantSymbol.location,
-      //       };
-      //       const exprWriter = this.emitExpr(durationExpr);
-      //       tempWriter.write(exprWriter.temp);
-      //       outWriter.write(exprWriter.out.get());
-      //     } else {
-      //       outWriter.write(expr.constantSymbol.value.toString());
-      //     }
-      //     return { out: outWriter, temp: tempWriter };
-
-      //   case "BooleanConstant":
-      //     outWriter.write(expr.constantSymbol.value ? "1" : "0");
-      //     return { out: outWriter, temp: tempWriter };
-
-      //   case "StringConstant":
-      //     outWriter.write(expr.constantSymbol.value);
-      //     return { out: outWriter, temp: tempWriter };
-
-      // default:
-      //   throw new InternalError(
-      //     `Unknown constant type ${typeof expr.constantSymbol.value}`,
-      //   );
-      // }
-
       default:
         assert(
           false,
@@ -2395,21 +2311,6 @@ class CodeGenerator {
         );
     }
   }
-
-  //   generateDatatypeUse(datatype: DatatypeSymbol) {
-  //     if (!this.out.type_declarations[mangleSymbol(datatype)]) {
-  //       this.init(mangleSymbol(datatype), this.out.type_declarations);
-  //       this.out.type_declarations[mangleSymbol(datatype)].write(
-  //         generateDeclarationCCode(datatype, this.module),
-  //       );
-  //     }
-  //     if (!this.out.type_definitions[mangleSymbol(datatype)]) {
-  //       this.init(mangleSymbol(datatype), this.out.type_definitions);
-  //       this.out.type_definitions[mangleSymbol(datatype)].write(
-  //         generateDefinitionCCode(datatype, this.module),
-  //       );
-  //     }
-  //   }
 }
 
 type IntComparisonPlan = {

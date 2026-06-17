@@ -33,6 +33,9 @@ sdl_wgpu = { path = "./sdl_wgpu" }
 fontstash = { path = "./fontstash" }
 hzui = { path = "./hzui" }
 
+tesselate = { path = "./tesselate" }
+perfect_freehand = { path = "./perfect_freehand" }
+
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }
 # ember = { path = "./ember" }

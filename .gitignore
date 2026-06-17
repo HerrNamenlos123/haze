@@ -177,3 +177,7 @@ package-lock.json
 bun.lock
 __haze__
 .idea
+
+*.tsk
+
+*.cpuprofile

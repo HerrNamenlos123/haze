@@ -9,7 +9,8 @@ export enum EModulePrintCompilerPhase {
   Lowering = 3,
   Generating = 4,
   CCompiling = 5,
-  Done = 6,
+  Linking = 6,
+  Done = 7,
 }
 
 const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
@@ -19,6 +20,7 @@ const PHASE_LABEL: Record<EModulePrintCompilerPhase, string> = {
   [EModulePrintCompilerPhase.Lowering]: "Lowering     ",
   [EModulePrintCompilerPhase.Generating]: "Generating C ",
   [EModulePrintCompilerPhase.CCompiling]: "Compiling C  ",
+  [EModulePrintCompilerPhase.Linking]: "Linking      ",
   [EModulePrintCompilerPhase.Done]: "Done         ",
 };
 
@@ -29,6 +31,7 @@ const PHASE_SHORT: Partial<Record<EModulePrintCompilerPhase, string>> = {
   [EModulePrintCompilerPhase.Lowering]: "Lowering",
   [EModulePrintCompilerPhase.Generating]: "Generating C",
   [EModulePrintCompilerPhase.CCompiling]: "Compiling C",
+  [EModulePrintCompilerPhase.Linking]: "Linking",
 };
 
 type PhaseRecord = {
@@ -235,7 +238,22 @@ export class CLIPrinter {
 
   /** Insert a status line above the live bars without stopping them. */
   logInfo(message: string) {
-    this.multibar.log(message + "\n");
+    const terminal = (this.multibar as any).terminal;
+    const origWrite = terminal.write.bind(terminal) as (s: string, raw?: boolean) => void;
+    // cli-progress sends \x1B[?7l on start (linewrap:false default), which makes
+    // the terminal emulator itself clip long lines regardless of what we write.
+    // Temporarily re-enable it so the message wraps instead of being cut.
+    // Also force rawWrite=true so cli-progress's own substr truncation is skipped
+    // for both the log line and the bar re-render triggered by update().
+    terminal.write = (s: string, _raw?: boolean) => origWrite(s, true);
+    terminal.stream.write("\x1B[?7h");
+    try {
+      this.multibar.log(message + "\n");
+      (this.multibar as any).update(); // flush immediately while wrapping is on
+    } finally {
+      terminal.stream.write("\x1B[?7l");
+      terminal.write = origWrite;
+    }
   }
 
   private stopBars() {
@@ -279,6 +297,7 @@ export class CLIPrinter {
       EModulePrintCompilerPhase.Lowering,
       EModulePrintCompilerPhase.Generating,
       EModulePrintCompilerPhase.CCompiling,
+      EModulePrintCompilerPhase.Linking,
     ];
 
     // Per-column width: "Label 9999ms" — max across all modules for that phase.

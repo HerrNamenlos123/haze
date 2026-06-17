@@ -1,0 +1,11 @@
+[package]
+name = "tesselator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tesselator"
+crate-type = ["staticlib"]
+
+[dependencies]
+lyon = "1.0.19"

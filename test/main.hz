@@ -1,4 +1,6 @@
 
+import tesselate
+import perfect_freehand
 import sdl
 import gl
 import wgpu
@@ -42,8 +44,150 @@ fn print<T>(value: T) {
     }
 }
 
-fn main(): int {
+struct Point {
+    x: real;
+    y: real;
+    pressure: real;
+}
 
+struct Shape {
+    variant: str;
+    points: []Point;
+}
+
+struct Page {
+    shapes: []Shape;
+}
+
+struct FileData {
+    pageColor: str;
+    gridColor: str;
+    gridType: str;
+    pages: []Page;
+}
+
+struct Test2 {}
+
+struct File {
+    filetype: str;
+    fileVersion: int;
+    data: FileData;
+}
+
+struct ShapeOutline {
+    outline: [][2]real;
+}
+
+struct OutlineFile {
+    shapes: []ShapeOutline;
+}
+
+fn loadTskTest() {
+    let file = fs.readText("Test.tsk");
+    if !file {
+        fmt.println("File loading failed");
+        return;
+    }
+
+    let j = json.parse(file);
+    // fmt.println(j);
+
+    let result = json.structuredParse<File>(file);
+    if result {
+        let data: File = result;
+        fmt.println("Parsed successfully");
+    }
+    else {
+        fmt.println("Failed parsing: ", result);
+    }
+}
+
+fn loadTskOutlines() {
+    let file = fs.readText("test-raw-outline.tsk");
+    if !file {
+        fmt.println("File loading failed");
+        return;
+    }
+
+    let result = json.structuredParse<OutlineFile>(file);
+    if result {
+        fmt.println("Parsed successfully");
+        fmt.println(f"{result.shapes.length} shapes");
+    }
+    else {
+        fmt.println("Failed parsing: ", result);
+    }
+}
+
+fn testTesselator() {
+    fmt.println("--- Tesselator test ---");
+
+    let tess = tesselate.Tesselator();
+    tess.beginPath();
+    tess.moveTo(Vec2(0.0, 0.0));
+    tess.lineTo(Vec2(100.0, 0.0));
+    tess.lineTo(Vec2(100.0, 100.0));
+    tess.lineTo(Vec2(0.0, 100.0));
+    tess.closePath();
+
+    let result = tess.tessellate(0.1);
+    if result {
+        fmt.println(f"  {result.vertices.length} vertices, {result.indices.length / 3} triangles:");
+        let i = 0;
+        while i < result.vertices.length {
+            fmt.println(f"  v[{i}] = ({result.vertices[i].x}, {result.vertices[i].y})");
+            i++;
+        }
+        i = 0;
+        while i < result.indices.length / 3 {
+            fmt.println(f"  tri[{i}] = {result.indices[i * 3]}, {result.indices[i * 3 + 1]}, {result.indices[i * 3 + 2]}");
+            i++;
+        }
+    }
+    else {
+        fmt.println("  Tessellation failed");
+    }
+
+    tess.destroy();
+    fmt.println("-----------------------");
+}
+
+fn testPerfectFreehand() {
+    fmt.println("--- PerfectFreehand test ---");
+
+    let pf = perfect_freehand.PerfectFreehand(perfect_freehand.StrokeOptions {
+        size: 16.0,
+        thinning: 0.5,
+        smoothing: 0.5,
+        streamline: 0.5,
+        simulatePressure: true,
+        last: true,
+    });
+
+    pf.addPoint(Vec2(0.0, 0.0));
+    pf.addPoint(Vec2(50.0, 25.0));
+    pf.addPoint(Vec2(100.0, 0.0));
+    pf.addPoint(Vec2(150.0, 50.0));
+    pf.addPoint(Vec2(200.0, 0.0));
+
+    let outline = pf.compute();
+    if outline {
+        fmt.println(f"  Outline has {outline.length} points");
+        let i = 0;
+        while i < outline.length && i < 5 {
+            fmt.println(f"  pt[{i}] = ({outline[i].x}, {outline[i].y})");
+            i++;
+        }
+    }
+    else {
+        fmt.println("  PerfectFreehand compute failed");
+    }
+
+    pf.destroy();
+    fmt.println("----------------------------");
+}
+
+fn main(): int {
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
@@ -154,10 +298,96 @@ fn main(): int {
             },
         });
 
+        // Load TSK Shapes
+        let testTsk = fs.readText("Test.tsk");
+        if !testTsk {
+            fmt.println("File loading failed");
+            return 0;
+        }
+
+        let result = json.structuredParse<File>(testTsk);
+
+        // Tessellate outlines once before the loop
+        let start = time.now();
+        let tesselatedShapes: []tesselate.TesselationResult = [];
+        let count = 0;
+
+        if result {
+            let data: File = result;
+            let page = data.data.pages[0];
+            fmt.println("Parsed successfully");
+
+            let tess = tesselate.Tesselator();
+            count = page.shapes.length;
+            for (let s = 0; s < page.shapes.length; s++) {
+                let shape = page.shapes[s];
+
+                // Perfect Freehand
+                let pf = perfect_freehand.PerfectFreehand(perfect_freehand.StrokeOptions {
+                    size: 0.5,
+                    thinning: 0.1,
+                    smoothing: 0.0,
+                    streamline: 0.6,
+                    simulatePressure: true,
+                    last: true,
+                });
+
+                for point in shape.points {
+                    pf.addPoint({
+                        x: point.x,
+                        y: point.y,
+                    });
+                }
+
+                let points: []Vec2 = [];
+                let outline = pf.compute();
+                if outline {
+                    fmt.println(f"  Outline has {outline.length} points");
+                    points = outline;
+                }
+                else {
+                    fmt.println("  PerfectFreehand compute failed");
+                }
+
+                pf.destroy();
+                fmt.println("----------------------------");
+
+                // Now tesselate
+                if points.length > 0 {
+                    tess.beginPath();
+                    tess.moveTo(Vec2(points[0].x, points[0].y));
+                    for (let p = 1; p < points.length; p++) {
+                        tess.lineTo(Vec2(points[p].x, points[p].y));
+                    }
+                    tess.closePath();
+                    let result = tess.tessellate(0.25);
+                    if result { tesselatedShapes.push(result); }
+                }
+            }
+            tess.destroy();
+            fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+        }
+        else {
+            fmt.println("Failed parsing: ", result);
+        }
+        let end = time.now();
+        fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
+
+        let down = false;
         let mousePosition = Vec2(0, 0);
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
             mousePosition.x = e.pos.x;
             mousePosition.y = e.pos.y;
+            return false;
+        });
+
+        window.onKeyDown((e: sdl.KeyEvent) => {
+            down = true;
+            return false;
+        });
+
+        window.onKeyUp((e: sdl.KeyEvent) => {
+            down = false;
             return false;
         });
 
@@ -166,8 +396,22 @@ fn main(): int {
             mousePos: () => mousePosition as Vec2,
         });
 
+        for (let s = 0; s < tesselatedShapes.length; s++) {
+            let shape = tesselatedShapes[s];
+
+            for (let i = 0; i < shape.vertices.length; i++) {
+                shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
+                shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
+            }
+        }
+
+        let pMousePosition = Vec2(0, 0);
+        let dMousePosition = Vec2(0, 0);
         while !window.shouldClose() {
             sdl.pollEvents();
+            dMousePosition.x = mousePosition.x - pMousePosition.x;
+            dMousePosition.y = mousePosition.y - pMousePosition.y;
+            pMousePosition = mousePosition;
 
             if window.consumeSizeChanged() {
                 let now = time.now();
@@ -216,6 +460,21 @@ fn main(): int {
                     });
                 }
             });
+
+            // Render tessellated shapes
+            for (let s = 0; s < tesselatedShapes.length; s++) {
+                let shape = tesselatedShapes[s];
+
+                for (let i = 0; i < shape.vertices.length; i++) {
+                    if (down) {
+                        shape.vertices[i].x = shape.vertices[i].x + dMousePosition.x;
+                        shape.vertices[i].y = shape.vertices[i].y + dMousePosition.y;
+                    }
+                }
+
+                // renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
+                renderer.addTriangles(shape.vertices, shape.indices, "#000");
+            }
 
             renderer.endFrame();
         }
