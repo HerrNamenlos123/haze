@@ -74,12 +74,10 @@ void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
 
   if (!arena->first_chunk) {
     arena->first_chunk = hzstd_arena_create_chunk(chunk_size);
+    arena->last_chunk = arena->first_chunk;
   }
 
-  hzstd_arena_chunk_t* chunk = arena->first_chunk;
-  while (chunk->next_chunk) {
-    chunk = chunk->next_chunk;
-  }
+  hzstd_arena_chunk_t* chunk = arena->last_chunk;
 
   uintptr_t base = (uintptr_t)(chunk + 1);
   uintptr_t current = base + chunk->used;
@@ -89,6 +87,7 @@ void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
 
   if (new_used > chunk->capacity) {
     chunk = hzstd_arena_enlarge(chunk, chunk_size);
+    arena->last_chunk = chunk;
     base = (uintptr_t)(chunk + 1);
     aligned = (base + (alignment - 1)) & ~(alignment - 1);
     new_used = (aligned - base) + size;

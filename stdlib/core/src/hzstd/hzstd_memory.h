@@ -18,7 +18,7 @@ void *hzstd_heap_realloc(void *buffer, size_t size);
 void hzstd_memzero(void *target, size_t size);
 void hzstd_init_gc();
 
-#define HZSTD_DEFAULT_ARENA_CHUNK_SIZE 1024
+#define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
 
 #define HZSTD_ALLOC_STRUCT(allocator, struct_t, value)                         \
   ({                                                                           \
@@ -51,6 +51,7 @@ typedef struct hzstd_arena_chunk_t {
 
 typedef struct hzstd_arena_t {
   hzstd_arena_chunk_t *first_chunk;
+  hzstd_arena_chunk_t *last_chunk;
 } hzstd_arena_t;
 
 hzstd_arena_t *hzstd_arena_create();
