@@ -1,13 +1,6 @@
 import fontstash;
 
-inline struct Vertex {
-    pos: Vec3f = {};
-    color: Colorf = {};
-}
-
-inline struct Globals {
-    screenSize: inline Vec2f;
-}
+export namespace gfx {
 
 fn max<T>(a: T, b: T): T => {
     if a >= b {
@@ -16,11 +9,8 @@ fn max<T>(a: T, b: T): T => {
     return b;
 }
 
-fn min<T>(a: T, b: T): T => {
-    if a <= b {
-        return a;
-    }
-    return b;
+inline struct Globals {
+    screenSize: inline Vec2f;
 }
 
 inline struct PrimitiveInstance {
@@ -33,11 +23,13 @@ inline struct PrimitiveInstance {
     borderThickness: f32;  // 0 = no border
     fillColor: Colorf;
     borderColor: Colorf;
-    type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle
+    type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle, 2 = Glyph, 3 = Textured Quad
 
-    // For glyph rendering:
+    // For glyph/texture rendering:
     uvMin: Vec2f;
     uvMax: Vec2f;
+
+    depth: f32;             // NDC depth derived from zIndex; GPU depth test resolves draw order
 };
 
 inline struct QuadVertex {
@@ -47,26 +39,54 @@ inline struct QuadVertex {
 inline struct MeshVertex {
     pos: Vec2f;
     color: Colorf;
+    depth: f32;
 };
 
-inline struct WindowState {
-    logicalSize: Vec2i;
-    framebufferSize: Vec2i;
-    dpiScale: f32;
+// Maps an arbitrary zIndex to an NDC depth in the open interval (0, 1), where
+// higher zIndex -> smaller depth -> wins the GPU depth test (drawn on top).
+// Uses a bounded "softsign" curve so it never saturates to exactly 0 or 1
+// regardless of how large |zIndex| gets, which would otherwise risk z-fighting
+// or clipping at the extremes.
+fn zIndexToDepth(zIndex: real): f32 {
+    let absZ = zIndex < 0.0 ? -zIndex : zIndex;
+    let softsign = zIndex / (1.0 + absZ);
+    return (0.5 - 0.5 * softsign) as f32;
 }
 
-inline struct RendererOptions {
-    windowState: WindowState;
-    device: mut wgpu.Device;
-    surface: mut wgpu.Surface;
-    surfaceFormats: []wgpu.TextureFormat;
-    shadercode: rx.Reactive<str>;
+// Logical/pixel sizing for a render target. logicalSize is the coordinate
+// space draw calls are issued in; framebufferSize is the actual pixel size
+// of the target used for the viewport/scissor (they differ under DPI scaling).
+export inline struct CanvasSize {
+    logicalSize: Vec2i;
+    framebufferSize: Vec2i;
+    dpiScale: f32 = 1.0;
+}
+
+// A GPU texture plus the bind group needed to sample it through the shared
+// "group 1" texture/sampler layout. Cheap to copy around (a handful of handles).
+export opaque struct Texture {
+    id: int;
+    texture: mut wgpu.Texture;
+    view: mut wgpu.TextureView;
+    bindGroup: mut wgpu.BindGroup;
+    width: int;
+    height: int;
+
+    fn constructor(id: int, texture: mut wgpu.Texture, view: mut wgpu.TextureView, bindGroup: mut wgpu.BindGroup, width: int, height: int) {
+        return Texture {
+            id: id,
+            texture: texture,
+            view: view,
+            bindGroup: bindGroup,
+            width: width,
+            height: height,
+        };
+    }
 }
 
 struct TextRenderer {
     fs: fontstash.FontStash;
     glyphBuffer: []fontstash.Glyph;
-    atlasUploaded: bool = false;
     defaultFont: int;
 
     fn constructor() {
@@ -84,99 +104,83 @@ struct TextRenderer {
             defaultFont: defaultFont,
         };
     }
-
-    fn drawText(
-        renderer: Renderer,
-        font: int,
-        size: f32,
-        x: f32,
-        y: f32,
-        text: str,
-        color: Color
-    ) {
-        // TODO: Add ability to reset/clear an array in-place instead of replacing it, for better memory efficiency
-        this.glyphBuffer = [];
-
-        let metrics = this.fs.getMetrics(font, size);
-        let baseline = y as real + metrics.ascender;
-
-        this.fs.layoutText(
-            font,
-            size,
-            x as f32,
-            baseline as f32,
-            text,
-            this.glyphBuffer
-        );
-
-        for glyph in this.glyphBuffer {
-            let w: real = glyph.x1 - glyph.x0;
-            let h: real = glyph.y1 - glyph.y0;
-
-            renderer.primitives.push({
-                type: 2,
-
-                pos: {
-                    x: (glyph.x0 as real + w / 2.0) as f32,
-                    y: (glyph.y0 as real + h / 2.0) as f32
-                },
-
-                size: { x: w as f32, y: h as f32 },
-
-                radiusTopLeft: 0,
-                radiusTopRight: 0,
-                radiusBottomLeft: 0,
-                radiusBottomRight: 0,
-
-                borderThickness: 0,
-
-                fillColor: {
-                    r: color.r as f32,
-                    g: color.g as f32,
-                    b: color.b as f32,
-                    a: color.a as f32,
-                },
-
-                borderColor: { r: 0, g: 0, b: 0, a: 0 },
-
-                uvMin: { x: glyph.s0, y: glyph.t0 },
-                uvMax: { x: glyph.s1, y: glyph.t1 }
-            });
-        }
-    }
 }
 
-opaque struct Renderer {
-    windowState: WindowState;
-    queue: mut wgpu.Queue;
+export struct ContextOptions {
     device: mut wgpu.Device;
-    surface: mut wgpu.Surface;
+    targetFormat: wgpu.TextureFormat;
+    shadercode: rx.Reactive<str>;
+}
+
+export inline struct RenderTexture {
+    texture: mut wgpu.Texture;
+    view: mut wgpu.TextureView;
+}
+
+fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.TextureFormat, usage: wgpu.TextureUsage): RenderTexture {
+    let texture = device.createTexture({
+        size: { width: size.x, height: size.y, depthOrArrayLayers: 1 },
+        format: format,
+        usage: usage,
+        mipLevelCount: 1,
+        sampleCount: 1,
+    });
+    let view = texture.createView();
+    assert(view);
+    return RenderTexture { texture: texture, view: view };
+}
+
+const depthFormat = wgpu.TextureFormat.Depth32Float;
+
+fn depthStencilState(): wgpu.DepthStencilState {
+    let disabledStencilFace = wgpu.StencilFaceState {
+        compare: wgpu.CompareFunction.Always,
+        failOp: wgpu.StencilOperation.Keep,
+        depthFailOp: wgpu.StencilOperation.Keep,
+        passOp: wgpu.StencilOperation.Keep,
+    };
+    return wgpu.DepthStencilState {
+        format: depthFormat,
+        depthWriteEnabled: true,
+        depthCompare: wgpu.CompareFunction.Always,
+        stencilFront: disabledStencilFace,
+        stencilBack: disabledStencilFace,
+        stencilReadMask: 0xFFFFFFFF,
+        stencilWriteMask: 0xFFFFFFFF,
+        depthBias: 0,
+        depthBiasSlopeScale: 0,
+        depthBiasClamp: 0,
+    };
+}
+
+// Everything that is independent of *where* you draw: pipelines, shared
+// geometry, bind group layouts, and the (shared, target-independent) font
+// atlas. Created once for the application; Canvas and Renderer both borrow it.
+export opaque struct Context {
+    device: mut wgpu.Device;
+    queue: mut wgpu.Queue;
+    targetFormat: wgpu.TextureFormat;
+
+    globalsLayout: mut wgpu.BindGroupLayout;
+    textureLayout: mut wgpu.BindGroupLayout;
+
     pipeline: rx.Computed<mut wgpu.RenderPipeline>;
-    globalsBuffer: mut wgpu.Buffer;
-    globalsBindGroup: mut wgpu.BindGroup;
-
-    instanceBuffer?: mut wgpu.Buffer = none;
-    instanceBufferSize: int = 0;
-    vertexBuffer: mut wgpu.Buffer;
-    indexBuffer: mut wgpu.Buffer;
-
     triPipeline: rx.Computed<mut wgpu.RenderPipeline>;
-    meshVertices: []MeshVertex = [];
-    meshVertexBuffer?: mut wgpu.Buffer = none;
-    meshVertexBufferSize: int = 0;
 
-    // Font rendering
-    fontAtlasTexture: mut wgpu.Texture;
-    fontAtlasView: mut wgpu.TextureView;
-    fontAtlasSampler: mut wgpu.Sampler;
-    fontAtlasBindGroup: mut wgpu.BindGroup;
+    quadVertexBuffer: mut wgpu.Buffer;
+    quadIndexBuffer: mut wgpu.Buffer;
+
+    defaultSampler: mut wgpu.Sampler;
+
     fontRenderer: mut TextRenderer;
+    fontAtlas: Texture;
 
-    primitives: []PrimitiveInstance = [];
+    fontAtlasDirty: bool = true;
+    nextTextureId: int = 0;
 
-    fn constructor(options: RendererOptions) {
+    fn constructor(options: ContextOptions) {
         let queue = options.device.getQueue();
-        if !queue { 
+        if !queue {
             sys.panic("Failed to get queue");
         }
 
@@ -208,8 +212,9 @@ opaque struct Renderer {
                 { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32x4 }, // fillColor
                 { shaderLocation: 9, offset: 52, format: wgpu.VertexFormat.Float32x4 }, // borderColor
                 { shaderLocation: 10, offset: 68, format: wgpu.VertexFormat.Uint32 },   // type
-                { shaderLocation: 11, offset: 72, format: wgpu.VertexFormat.Float32x2 },
-                { shaderLocation: 12, offset: 80, format: wgpu.VertexFormat.Float32x2 },
+                { shaderLocation: 11, offset: 72, format: wgpu.VertexFormat.Float32x2 }, // uvMin
+                { shaderLocation: 12, offset: 80, format: wgpu.VertexFormat.Float32x2 }, // uvMax
+                { shaderLocation: 13, offset: 88, format: wgpu.VertexFormat.Float32 },   // depth
             },
         };
 
@@ -223,24 +228,7 @@ opaque struct Renderer {
             },
         });
 
-        let globalsBuffer = options.device.createBuffer({
-            usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
-            size: sizeofTypeInBytes<Globals>(),
-        });
-
-        let globalsBindGroup = options.device.createBindGroup({
-            layout: globalsLayout,
-            entries: {
-                {
-                    binding: 0,
-                    buffer: globalsBuffer,
-                    offset: 0,
-                    size: sizeofTypeInBytes<Globals>(),
-                },
-            },
-        });
-
-        let textLayout = options.device.createBindGroupLayout({
+        let textureLayout = options.device.createBindGroupLayout({
             entries: {
                 {
                     binding: 0,
@@ -260,7 +248,7 @@ opaque struct Renderer {
         });
 
         let pipelineLayout = options.device.createPipelineLayout({
-            bindGroupLayouts: { globalsLayout, textLayout },
+            bindGroupLayouts: { globalsLayout, textureLayout },
         });
 
         let shader = rx.computed(() => {
@@ -281,8 +269,8 @@ opaque struct Renderer {
                     module: shader,
                     entryPoint: "fs_main",
                     targets: {
-                        { 
-                            format: options.surfaceFormats[0],
+                        {
+                            format: options.targetFormat,
                             blend: {
                                 color: {
                                     srcFactor: wgpu.BlendFactor.SrcAlpha,
@@ -301,25 +289,32 @@ opaque struct Renderer {
                 primitive: {
                     topology: wgpu.PrimitiveTopology.TriangleList,
                 },
+                depthStencil: depthStencilState(),
             });
         });
 
-        let vertexBuffer = options.device.createBuffer({
+        let quadVertexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
             size: sizeofTypeInBytes<QuadVertex>() * 4,
         });
-        queue.writeBuffer<QuadVertex>(vertexBuffer, [
+        queue.writeBuffer<QuadVertex>(quadVertexBuffer, [
             { pos: Vec2f(-0.5, -0.5) },
             { pos: Vec2f(0.5, -0.5) },
             { pos: Vec2f(0.5, 0.5) },
             { pos: Vec2f(-0.5, 0.5) },
         ]);
 
-        let indexBuffer = options.device.createBuffer({
+        let quadIndexBuffer = options.device.createBuffer({
             usage: wgpu.BufferUsage.Index | wgpu.BufferUsage.CopyDst,
             size: sizeofTypeInBytes<u32>() * 6,
         });
-        queue.writeBuffer<u32>(indexBuffer, [0, 1, 2, 0, 2, 3]);
+        queue.writeBuffer<u32>(quadIndexBuffer, [0, 1, 2, 0, 2, 3]);
+
+        let defaultSampler = options.device.createSampler({
+            minFilter: wgpu.FilterMode.Linear,
+            magFilter: wgpu.FilterMode.Linear,
+            maxAnisotropy: 1,
+        });
 
         let atlasSize = 1024;
 
@@ -334,19 +329,15 @@ opaque struct Renderer {
         let fontAtlasView = fontAtlasTexture.createView();
         assert(fontAtlasView);
 
-        let fontAtlasSampler = options.device.createSampler({
-            minFilter: wgpu.FilterMode.Linear,
-            magFilter: wgpu.FilterMode.Linear,
-            maxAnisotropy: 1,
-        });
-
         let fontAtlasBindGroup = options.device.createBindGroup({
-            layout: textLayout,
+            layout: textureLayout,
             entries: {
                 { binding: 0, textureView: fontAtlasView },
-                { binding: 1, sampler: fontAtlasSampler },
+                { binding: 1, sampler: defaultSampler },
             },
         });
+
+        let fontAtlas = Texture(0, fontAtlasTexture, fontAtlasView, fontAtlasBindGroup, atlasSize, atlasSize);
 
         let fontRenderer = TextRenderer();
 
@@ -356,6 +347,7 @@ opaque struct Renderer {
             attributes: {
                 { shaderLocation: 0, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
                 { shaderLocation: 1, offset: 8, format: wgpu.VertexFormat.Float32x4 }, // color
+                { shaderLocation: 2, offset: 24, format: wgpu.VertexFormat.Float32 },  // depth
             },
         };
 
@@ -376,7 +368,7 @@ opaque struct Renderer {
                     entryPoint: "tri_fs",
                     targets: {
                         {
-                            format: options.surfaceFormats[0],
+                            format: options.targetFormat,
                             blend: {
                                 color: {
                                     srcFactor: wgpu.BlendFactor.SrcAlpha,
@@ -395,50 +387,294 @@ opaque struct Renderer {
                 primitive: {
                     topology: wgpu.PrimitiveTopology.TriangleList,
                 },
+                depthStencil: depthStencilState(),
             });
         });
 
-        return Renderer {
-            windowState: options.windowState,
+        return Context {
             device: options.device,
             queue: queue,
-            surface: options.surface,
+            targetFormat: options.targetFormat,
+            globalsLayout: globalsLayout,
+            textureLayout: textureLayout,
             pipeline: pipeline,
-            vertexBuffer: vertexBuffer,
-            indexBuffer: indexBuffer,
-            globalsBuffer: globalsBuffer,
-            globalsBindGroup: globalsBindGroup,
-            fontAtlasTexture: fontAtlasTexture,
-            fontAtlasView: fontAtlasView,
-            fontAtlasSampler: fontAtlasSampler,
-            fontAtlasBindGroup: fontAtlasBindGroup,
-            fontRenderer: fontRenderer,
             triPipeline: triPipeline,
+            quadVertexBuffer: quadVertexBuffer,
+            quadIndexBuffer: quadIndexBuffer,
+            defaultSampler: defaultSampler,
+            fontRenderer: fontRenderer,
+            fontAtlas: fontAtlas,
         };
     }
 
-    struct TriangleVertex {
-        pos: Vec2;
-        color: Color;
-    };
+    fn allocTextureId(): int {
+        this.nextTextureId += 1;
+        return this.nextTextureId;
+    }
 
-    struct CornerRadius {
-        topLeft: real = 0;
-        topRight: real = 0;
-        bottomLeft: real = 0;
-        bottomRight: real = 0;
-    };
+    // Re-uploads the font atlas to the GPU if any text was drawn (through any
+    // Renderer/Canvas) since the last upload. Cheap no-op otherwise, and only
+    // ever runs once per real frame even if several canvases commit per frame.
+    fn updateFontAtlasIfDirty() {
+        if !this.fontAtlasDirty {
+            return;
+        }
 
-    struct RectOpts {
-        pos: Vec2;
-        size: Vec2;
-        fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
-        cornerRadius: CornerRadius = {};
-        borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
-        borderThickness: real = 0;
-    };
+        let atlas = this.fontRenderer.fs.getAtlas();
+        this.queue.writeTexture(
+            { texture: this.fontAtlas.texture },
+            atlas.pixels,
+            atlas.width * atlas.height,
+            { offset: 0, bytesPerRow: atlas.width, rowsPerImage: atlas.height },
+            { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 }
+        );
+        this.fontAtlasDirty = false;
+    }
+}
+
+export struct CanvasOptions {
+    gfx: mut Context;
+    size: CanvasSize;
+    surface?: mut wgpu.Surface; // omit for an offscreen (render-to-texture) canvas
+}
+
+// A persistent render target: either a window surface or an offscreen
+// texture. Owns the GPU resources whose lifetime tracks the target itself
+// (globals buffer, depth buffer, growable instance/mesh buffers) rather than
+// a single frame, so a fresh Renderer can be created against it every frame
+// for free.
+export opaque struct Canvas {
+    gfx: mut Context;
+    size: CanvasSize;
+    surface: mut wgpu.Surface | none;
+
+    offscreenTexture: mut wgpu.Texture | none;
+    offscreenView: mut wgpu.TextureView | none;
+    cachedTexture: Texture | none;
+
+    depthTexture: mut wgpu.Texture;
+    depthView: mut wgpu.TextureView;
+
+    globalsBuffer: mut wgpu.Buffer;
+    globalsBindGroup: mut wgpu.BindGroup;
+
+    instanceBuffer?: mut wgpu.Buffer = none;
+    instanceBufferSize: int = 0;
+    meshVertexBuffer?: mut wgpu.Buffer = none;
+    meshVertexBufferSize: int = 0;
+
+    fn constructor(options: CanvasOptions) {
+        let globalsBuffer = options.gfx.device.createBuffer({
+            usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
+            size: sizeofTypeInBytes<Globals>(),
+        });
+        let globalsBindGroup = options.gfx.device.createBindGroup({
+            layout: options.gfx.globalsLayout,
+            entries: {
+                {
+                    binding: 0,
+                    buffer: globalsBuffer,
+                    offset: 0,
+                    size: sizeofTypeInBytes<Globals>(),
+                },
+            },
+        });
+
+        let offscreenTexture = none as mut wgpu.Texture | none;
+        let offscreenView = none as mut wgpu.TextureView | none;
+
+        if !options.surface {
+            let target = createRenderTexture(
+                options.gfx.device,
+                options.size.framebufferSize,
+                options.gfx.targetFormat,
+                wgpu.TextureUsage.RenderAttachment | wgpu.TextureUsage.TextureBinding
+            );
+            offscreenTexture = target.texture;
+            offscreenView = target.view;
+        }
+
+        let depthTarget = createRenderTexture(
+            options.gfx.device,
+            options.size.framebufferSize,
+            depthFormat,
+            wgpu.TextureUsage.RenderAttachment
+        );
+
+        return Canvas {
+            gfx: options.gfx,
+            size: options.size,
+            surface: options.surface,
+            offscreenTexture: offscreenTexture,
+            offscreenView: offscreenView,
+            cachedTexture: none,
+            depthTexture: depthTarget.texture,
+            depthView: depthTarget.view,
+            globalsBuffer: globalsBuffer,
+            globalsBindGroup: globalsBindGroup,
+        };
+    }
+
+    // Updates the logical/pixel size of this canvas, recreating the depth
+    // buffer (and, for an offscreen canvas, the color target) to match. For a
+    // window canvas the caller is responsible for re-configuring the
+    // wgpu.Surface itself.
+    fn resize(size: CanvasSize) {
+        this.size = size;
+
+        if !this.surface {
+            let target = createRenderTexture(
+                this.gfx.device,
+                size.framebufferSize,
+                this.gfx.targetFormat,
+                wgpu.TextureUsage.RenderAttachment | wgpu.TextureUsage.TextureBinding
+            );
+            this.offscreenTexture = target.texture;
+            this.offscreenView = target.view;
+            this.cachedTexture = none;
+        }
+
+        let depthTarget = createRenderTexture(this.gfx.device, size.framebufferSize, depthFormat, wgpu.TextureUsage.RenderAttachment);
+        this.depthTexture = depthTarget.texture;
+        this.depthView = depthTarget.view;
+    }
+
+    fn currentView(): mut wgpu.TextureView | none {
+        if this.surface {
+            let surfaceTexture = this.surface.getCurrentTexture();
+            if !surfaceTexture.texture {
+                return none;
+            }
+            if let view = surfaceTexture.texture.createView() {
+                return view;
+            }
+            return none;
+        }
+        return this.offscreenView;
+    }
+
+    fn present() {
+        if this.surface {
+            if !this.surface.present() {
+                fmt.println("gfx: surface present failed");
+            }
+        }
+    }
+
+    // Exposes this canvas's render target as a sampleable Texture, so another
+    // Renderer/Canvas can draw it (e.g. a UI panel rendered offscreen and then
+    // composited into the main window). Only valid for offscreen canvases.
+    fn asTexture(): Texture {
+        assert(!this.surface, "Canvas.asTexture() is only valid for offscreen canvases");
+
+        if !this.cachedTexture {
+            let texture = this.offscreenTexture;
+            let view = this.offscreenView;
+            assert(texture && view, "asTexture() called before the offscreen target was created");
+
+            let bindGroup = this.gfx.device.createBindGroup({
+                layout: this.gfx.textureLayout,
+                entries: {
+                    { binding: 0, textureView: view },
+                    { binding: 1, sampler: this.gfx.defaultSampler },
+                },
+            });
+            this.cachedTexture = Texture(
+                this.gfx.allocTextureId(),
+                texture,
+                view,
+                bindGroup,
+                this.size.framebufferSize.x,
+                this.size.framebufferSize.y
+            );
+        }
+
+        let texture = this.cachedTexture;
+        assert(texture);
+        return texture;
+    }
+}
+
+// A run of `count` consecutive PrimitiveInstance entries (starting at
+// `start`) that all need `texture` bound at group 1 (glyphs -> font atlas,
+// textured quads -> their own texture). Plain rects need no run at all: they
+// don't sample group 1, so they're free to sit in the gaps between runs and
+// draw with whatever happens to be bound.
+inline struct TextureRun {
+    start: int;
+    count: int;
+    texture: Texture;
+}
+
+struct CornerRadius {
+    topLeft: real = 0;
+    topRight: real = 0;
+    bottomLeft: real = 0;
+    bottomRight: real = 0;
+};
+
+struct RectOpts {
+    pos: Vec2;
+    size: Vec2;
+    fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
+    cornerRadius: CornerRadius = {};
+    borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
+    borderThickness: real = 0;
+    zIndex: real = 0;
+};
+
+struct TextOpts {
+    font: int;
+    position: Vec2;
+    size: real;
+    text: str;
+    color: Color;
+    zIndex: real = 0;
+}
+
+struct TextureOpts {
+    texture: Texture;
+    pos: Vec2;
+    size: Vec2;
+    tint: Color = { r: 1, g: 1, b: 1, a: 1 };
+    zIndex: real = 0;
+}
+
+// The cheap, frame-scoped value: `let renderer = Renderer(canvas)` every
+// frame. It owns no GPU resources of its own, only the command lists
+// accumulated this frame; commit() flushes them into the canvas it was given.
+// Draw order between primitives and triangles, and between different
+// zIndex values, is resolved entirely by the GPU depth test -- there is no
+// CPU-side sorting of draw calls.
+export opaque struct Renderer {
+    canvas: mut Canvas;
+    primitives: []PrimitiveInstance = [];
+    meshVertices: []MeshVertex = [];
+    textureRuns: []TextureRun = [];
+
+    fn constructor(canvas: mut Canvas) {
+        return Renderer { canvas: canvas };
+    }
+
+    // Records that primitives[start..start+count) need `texture` bound at
+    // group 1. Merges with the previous run when it's for the same texture
+    // and directly adjacent, so back-to-back same-texture draws (e.g. two
+    // drawText calls in a row) still end up as a single draw call.
+    fn recordTextureRun(start: int, count: int, texture: Texture) {
+        if this.textureRuns.length > 0 {
+            let lastIndex = this.textureRuns.length - 1;
+            let last = this.textureRuns[lastIndex];
+            if last.start + last.count == start && last.texture.id == texture.id {
+                this.textureRuns[lastIndex] = { start: last.start, count: last.count + count, texture: texture };
+                return;
+            }
+        }
+        this.textureRuns.push({ start: start, count: count, texture: texture });
+    }
 
     fn drawRect(opts: RectOpts) {
+        let depth = zIndexToDepth(opts.zIndex);
+
         if opts.fillColor.a != 0.0 {
             this.primitives.push({
                 type: 0, // Filled Rounded Rectangle
@@ -458,6 +694,7 @@ opaque struct Renderer {
                 borderColor: { r: 0, g: 0, b: 0, a: 0 },
                 uvMin: { x: 0, y: 0 },
                 uvMax: { x: 0, y: 0 },
+                depth: depth,
             });
         }
         if opts.borderColor.a != 0.0 && opts.borderThickness > 0.0 {
@@ -479,196 +716,271 @@ opaque struct Renderer {
                 },
                 uvMin: { x: 0, y: 0 },
                 uvMax: { x: 0, y: 0 },
+                depth: depth,
             });
         }
     }
 
-    struct TextOpts {
-        font: int;
-        position: Vec2;
-        size: real;
-        text: str;
-        color: Color;
-    }
+    fn drawText(opts: TextOpts) {
+        let tr = this.canvas.gfx.fontRenderer;
 
-    fn drawText(
-        opts: TextOpts
-    ) {
-        this.fontRenderer.drawText(
-            this,
+        // TODO: Add ability to reset/clear an array in-place instead of replacing it, for better memory efficiency
+        tr.glyphBuffer = [];
+
+        let metrics = tr.fs.getMetrics(opts.font, opts.size as f32);
+        let baseline = opts.position.y as real + metrics.ascender;
+
+        tr.fs.layoutText(
             opts.font,
             opts.size as f32,
             opts.position.x as f32,
-            opts.position.y as f32,
+            baseline as f32,
             opts.text,
-            opts.color
+            tr.glyphBuffer
         );
+
+        let depth = zIndexToDepth(opts.zIndex);
+        let start = this.primitives.length;
+
+        for glyph in tr.glyphBuffer {
+            let w: real = glyph.x1 - glyph.x0;
+            let h: real = glyph.y1 - glyph.y0;
+
+            this.primitives.push({
+                type: 2,
+
+                pos: {
+                    x: (glyph.x0 as real + w / 2.0) as f32,
+                    y: (glyph.y0 as real + h / 2.0) as f32
+                },
+
+                size: { x: w as f32, y: h as f32 },
+
+                radiusTopLeft: 0,
+                radiusTopRight: 0,
+                radiusBottomLeft: 0,
+                radiusBottomRight: 0,
+
+                borderThickness: 0,
+
+                fillColor: {
+                    r: opts.color.r as f32,
+                    g: opts.color.g as f32,
+                    b: opts.color.b as f32,
+                    a: opts.color.a as f32,
+                },
+
+                borderColor: { r: 0, g: 0, b: 0, a: 0 },
+
+                uvMin: { x: glyph.s0, y: glyph.t0 },
+                uvMax: { x: glyph.s1, y: glyph.t1 },
+                depth: depth,
+            });
+        }
+
+        let count = this.primitives.length - start;
+        if count > 0 {
+            this.canvas.gfx.fontAtlasDirty = true;
+            this.recordTextureRun(start, count, this.canvas.gfx.fontAtlas);
+        }
     }
 
-    fn updateAtlas() {
-        let atlas = this.fontRenderer.fs.getAtlas()
+    // Draws an arbitrary texture (e.g. the output of another Canvas) as a
+    // tinted quad. This is what makes "render a UI element to its own canvas,
+    // then composite it into the main canvas" possible.
+    fn drawTexture(opts: TextureOpts) {
+        let start = this.primitives.length;
 
-        this.queue.writeTexture(
-            { texture: this.fontAtlasTexture },
-            atlas.pixels,
-            atlas.width * atlas.height,
-            { offset: 0, bytesPerRow: atlas.width, rowsPerImage: atlas.height },
-            { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 }
-        );
+        this.primitives.push({
+            type: 3, // Textured Quad
+            pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
+            size: { x: opts.size.x as f32, y: opts.size.y as f32 },
+            radiusTopLeft: 0,
+            radiusTopRight: 0,
+            radiusBottomLeft: 0,
+            radiusBottomRight: 0,
+            borderThickness: 0,
+            fillColor: {
+                r: opts.tint.r as f32,
+                g: opts.tint.g as f32,
+                b: opts.tint.b as f32,
+                a: opts.tint.a as f32,
+            },
+            borderColor: { r: 0, g: 0, b: 0, a: 0 },
+            uvMin: { x: 0, y: 0 },
+            uvMax: { x: 1, y: 1 },
+            depth: zIndexToDepth(opts.zIndex),
+        });
+
+        this.recordTextureRun(start, 1, opts.texture);
     }
 
-    fn addTriangle(v0: Vec2, v1: Vec2, v2: Vec2, c0: Color, c1: Color, c2: Color) {
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v0.x as f32, v0.y as f32), color: Colorf { r: c0.r as f32, g: c0.g as f32, b: c0.b as f32, a: c0.a as f32 } });
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v1.x as f32, v1.y as f32), color: Colorf { r: c1.r as f32, g: c1.g as f32, b: c1.b as f32, a: c1.a as f32 } });
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v2.x as f32, v2.y as f32), color: Colorf { r: c2.r as f32, g: c2.g as f32, b: c2.b as f32, a: c2.a as f32 } });
+    fn addTriangle(v0: Vec2, v1: Vec2, v2: Vec2, c0: Color, c1: Color, c2: Color, zIndex: real = 0) {
+        let depth = zIndexToDepth(zIndex);
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v0.x as f32, v0.y as f32), color: Colorf { r: c0.r as f32, g: c0.g as f32, b: c0.b as f32, a: c0.a as f32 }, depth: depth });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v1.x as f32, v1.y as f32), color: Colorf { r: c1.r as f32, g: c1.g as f32, b: c1.b as f32, a: c1.a as f32 }, depth: depth });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v2.x as f32, v2.y as f32), color: Colorf { r: c2.r as f32, g: c2.g as f32, b: c2.b as f32, a: c2.a as f32 }, depth: depth });
     }
 
-    fn addTriangles(vertices: []Vec2, indices: []i32, color: Color) {
+    fn addTriangles(vertices: []Vec2, indices: []i32, color: Color, zIndex: real = 0) {
+        let depth = zIndexToDepth(zIndex);
         let cf = Colorf { r: color.r as f32, g: color.g as f32, b: color.b as f32, a: color.a as f32 };
         for (let i = 0; i < indices.length; i++) {
             let v = vertices[indices[i] as int];
-            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf });
+            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf, depth: depth });
         }
     }
 
-    fn beginFrame() {
-        this.primitives = [];
-        this.meshVertices = [];
-    }
+    // Flushes everything into the canvas in one render pass. Primitives and
+    // triangles can be drawn in any order -- front-to-back ordering between
+    // them, and between different zIndex values, comes entirely from the
+    // GPU depth test against the canvas's depth buffer. The only reason to
+    // ever split a draw call here is a texture/bind-group change, never z
+    // order, so a frame that doesn't mix textures costs one draw call for
+    // all primitives and one for all triangles, regardless of zIndex usage.
+    fn commit() {
+        let canvas = this.canvas;
+        let gfx = canvas.gfx;
 
-    fn updateWindowState(nextState: WindowState) {
-        this.windowState = nextState;
-    }
+        gfx.updateFontAtlasIfDirty();
 
-    fn endFrame() {
-        let pipelineValue = rx.get(this.pipeline);
+        gfx.queue.writeBuffer<Globals>(canvas.globalsBuffer, [
+            {
+                screenSize: Vec2f(
+                    canvas.size.logicalSize.x as f32,
+                    canvas.size.logicalSize.y as f32
+                ),
+            }
+        ]);
 
-        this.updateAtlas();
+        if this.primitives.length > 0 {
+            let required = sizeofTypeInBytes<PrimitiveInstance>() * this.primitives.length;
+            if !canvas.instanceBuffer || required > canvas.instanceBufferSize {
+                canvas.instanceBufferSize = max(required, canvas.instanceBufferSize * 2);
+                canvas.instanceBuffer = gfx.device.createBuffer({
+                    size: canvas.instanceBufferSize,
+                    usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
+                });
+            }
+            let instanceBuffer = canvas.instanceBuffer;
+            assert(instanceBuffer);
+            gfx.queue.writeBuffer<PrimitiveInstance>(instanceBuffer, this.primitives);
+        }
 
-        let surfaceTexture = this.surface.getCurrentTexture();
-        if !surfaceTexture.texture { 
-            fmt.println("Failed to get surface texture"); 
+        if this.meshVertices.length > 0 {
+            let required = sizeofTypeInBytes<MeshVertex>() * this.meshVertices.length;
+            if !canvas.meshVertexBuffer || required > canvas.meshVertexBufferSize {
+                canvas.meshVertexBufferSize = max(required, canvas.meshVertexBufferSize * 2);
+                canvas.meshVertexBuffer = gfx.device.createBuffer({
+                    size: canvas.meshVertexBufferSize,
+                    usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
+                });
+            }
+            let meshVertexBuffer = canvas.meshVertexBuffer;
+            assert(meshVertexBuffer);
+            gfx.queue.writeBuffer<MeshVertex>(meshVertexBuffer, this.meshVertices);
+        }
+
+        let targetView = canvas.currentView();
+        if !targetView {
+            fmt.println("gfx: failed to acquire target view for canvas");
             return;
         }
 
-        let backbuffer = surfaceTexture.texture.createView();
-        if !backbuffer { 
-            fmt.println("Failed to create texture view"); 
+        let encoder = gfx.device.createCommandEncoder();
+        if !encoder {
+            fmt.println("gfx: failed to create command encoder");
             return;
         }
-
-        let encoder = this.device.createCommandEncoder();
-        if !encoder { 
-            fmt.println("Failed to create command encoder"); 
-            return;
-        }
-
-        this.queue.writeBuffer<Globals>(
-            this.globalsBuffer,
-            [
-                {
-                    screenSize: Vec2f(
-                        this.windowState.logicalSize.x as f32,
-                        this.windowState.logicalSize.y as f32
-                    ),
-                }
-            ]
-        );
-
-        let requiredInstanceBufferSize = sizeofTypeInBytes<PrimitiveInstance>() * this.primitives.length;
-        if (!this.instanceBuffer || requiredInstanceBufferSize > this.instanceBufferSize) {
-            // Grow efficiently, at least double, or more if required
-            this.instanceBufferSize = max(requiredInstanceBufferSize, this.instanceBufferSize * 2);
-            this.instanceBuffer = this.device.createBuffer({
-                size: this.instanceBufferSize,
-                usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
-            });
-        }
-        assert(this.instanceBuffer);
-        this.queue.writeBuffer<PrimitiveInstance>(this.instanceBuffer, this.primitives);
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
-            view: backbuffer,
+            view: targetView,
             clearValue: Color(0.0, 0.0, 0.0, 0.0),
             loadOp: wgpu.LoadOp.Clear,
             storeOp: wgpu.StoreOp.Store,
         };
 
-        let renderPassDescriptor = wgpu.RenderPassDescriptor {
-            colorAttachments: {
-                colorAttachment,
-            },
+        let depthAttachment = wgpu.RenderPassDepthStencilAttachment {
+            view: canvas.depthView,
+            depthLoadOp: wgpu.LoadOp.Clear,
+            depthStoreOp: wgpu.StoreOp.Discard,
+            depthClearValue: 1.0,
+            depthReadOnly: false,
+            stencilLoadOp: wgpu.LoadOp.Undefined,
+            stencilStoreOp: wgpu.StoreOp.Undefined,
+            stencilClearValue: 0,
+            stencilReadOnly: true,
         };
-        let renderPass = encoder.beginRenderPass(renderPassDescriptor);
-        if !renderPass { 
-            fmt.println("Failed to create render pass"); 
+
+        let pass = encoder.beginRenderPass({
+            colorAttachments: { colorAttachment },
+            depthStencilAttachment: depthAttachment,
+        });
+        if !pass {
+            fmt.println("gfx: failed to create render pass");
             return;
         }
 
-        renderPass.setPipeline(pipelineValue);
-        renderPass.setVertexBuffer(0, this.vertexBuffer);
-
-        renderPass.setBindGroup(0, this.globalsBindGroup);
-        renderPass.setBindGroup(1, this.fontAtlasBindGroup);
-
-        renderPass.setViewport(
-            0,
-            0,
-            this.windowState.framebufferSize.x as real,
-            this.windowState.framebufferSize.y as real,
-            0.0,
-            1.0
+        pass.setViewport(
+            0, 0,
+            canvas.size.framebufferSize.x as real,
+            canvas.size.framebufferSize.y as real,
+            0.0, 1.0
         );
-        renderPass.setScissorRect(0, 0, this.windowState.framebufferSize.x, this.windowState.framebufferSize.y);
+        pass.setScissorRect(0, 0, canvas.size.framebufferSize.x, canvas.size.framebufferSize.y);
+        pass.setBindGroup(0, canvas.globalsBindGroup);
 
-        renderPass.setIndexBuffer(this.indexBuffer, wgpu.IndexFormat.Uint32);
-        renderPass.setVertexBuffer(1, this.instanceBuffer);
+        if this.primitives.length > 0 {
+            let instanceBuffer = canvas.instanceBuffer;
+            assert(instanceBuffer);
 
-        renderPass.drawIndexed(6, this.primitives.length, 0, 0, 0);
+            pass.setPipeline(rx.get(gfx.pipeline));
+            pass.setVertexBuffer(0, gfx.quadVertexBuffer);
+            pass.setIndexBuffer(gfx.quadIndexBuffer, wgpu.IndexFormat.Uint32);
+            pass.setVertexBuffer(1, instanceBuffer);
+            // Plain rects don't sample group 1 at all, so bind something valid
+            // up front (the font atlas, always available) and only switch when
+            // a run actually needs a different texture.
+            pass.setBindGroup(1, gfx.fontAtlas.bindGroup);
+            let boundTextureId = gfx.fontAtlas.id;
 
-        renderPass.end();
-
-        // Triangle mesh pass — real geometry, seamless, rendered on top of the SDF layer
-        if this.meshVertices.length > 0 {
-            let reqVtx = sizeofTypeInBytes<MeshVertex>() * this.meshVertices.length;
-            if !this.meshVertexBuffer || reqVtx > this.meshVertexBufferSize {
-                this.meshVertexBufferSize = max(reqVtx, this.meshVertexBufferSize * 2);
-                this.meshVertexBuffer = this.device.createBuffer({
-                    size: this.meshVertexBufferSize,
-                    usage: wgpu.BufferUsage.Vertex | wgpu.BufferUsage.CopyDst,
-                });
+            let cursor = 0;
+            for run in this.textureRuns {
+                if run.start > cursor {
+                    pass.drawIndexed(6, run.start - cursor, 0, 0, cursor);
+                }
+                if run.texture.id != boundTextureId {
+                    pass.setBindGroup(1, run.texture.bindGroup);
+                    boundTextureId = run.texture.id;
+                }
+                pass.drawIndexed(6, run.count, 0, 0, run.start);
+                cursor = run.start + run.count;
             }
-            assert(this.meshVertexBuffer);
-            this.queue.writeBuffer<MeshVertex>(this.meshVertexBuffer, this.meshVertices);
-
-            let triAttachment = wgpu.RenderPassColorAttachment {
-                view: backbuffer,
-                clearValue: Color(0, 0, 0, 0),
-                loadOp: wgpu.LoadOp.Load,
-                storeOp: wgpu.StoreOp.Store,
-            };
-            let triPass = encoder.beginRenderPass({ colorAttachments: { triAttachment } });
-            if triPass {
-                triPass.setPipeline(rx.get(this.triPipeline));
-                triPass.setBindGroup(0, this.globalsBindGroup);
-                triPass.setViewport(0, 0, this.windowState.framebufferSize.x as real, this.windowState.framebufferSize.y as real, 0.0, 1.0);
-                triPass.setScissorRect(0, 0, this.windowState.framebufferSize.x, this.windowState.framebufferSize.y);
-                triPass.setVertexBuffer(0, this.meshVertexBuffer);
-                triPass.draw(this.meshVertices.length, 1, 0, 0);
-                triPass.end();
+            if cursor < this.primitives.length {
+                pass.drawIndexed(6, this.primitives.length - cursor, 0, 0, cursor);
             }
         }
+
+        if this.meshVertices.length > 0 {
+            let meshVertexBuffer = canvas.meshVertexBuffer;
+            assert(meshVertexBuffer);
+
+            pass.setPipeline(rx.get(gfx.triPipeline));
+            pass.setVertexBuffer(0, meshVertexBuffer);
+            pass.draw(this.meshVertices.length, 1, 0, 0);
+        }
+
+        pass.end();
 
         let commandBuffer = encoder.finish();
-        if !commandBuffer { 
-            fmt.println("Failed to finish render pass and get command buffer"); 
+        if !commandBuffer {
+            fmt.println("gfx: failed to finish command buffer");
             return;
         }
 
-        this.queue.submit({ commandBuffer });
-        if !this.surface.present() {
-            fmt.println("Surface present failed");
-            return;
-        }
+        gfx.queue.submit({ commandBuffer });
+        canvas.present();
     }
+}
+
 }

@@ -41,6 +41,7 @@ fn vs_main(
     @location(10) _type: u32,
     @location(11) uvMin: vec2<f32>,
     @location(12) uvMax: vec2<f32>,
+    @location(13) depth: f32,
 ) -> VSOut {
     var o: VSOut;
 
@@ -49,7 +50,7 @@ fn vs_main(
         o.pos = vec4(
             (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
             1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            0.0, 1.0
+            depth, 1.0
         );
         o.localPos = quadPos;
         o.fillColor = fillColor;
@@ -72,7 +73,7 @@ fn vs_main(
         o.pos = vec4(
             (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
             1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            0.0, 1.0
+            depth, 1.0
         );
         o.localPos = quadPos * (vec2(1, 1) + paddingFraction);
         o.fillColor = fillColor;
@@ -93,7 +94,7 @@ fn vs_main(
         o.pos = vec4(
             (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
             1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            0.0, 1.0
+            depth, 1.0
         );
         o.localPos = quadPos;
         o.fillColor = fillColor;
@@ -217,12 +218,13 @@ struct TriVSOut {
 fn tri_vs(
     @location(0) pos: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) depth: f32,
 ) -> TriVSOut {
     var o: TriVSOut;
     o.pos = vec4<f32>(
         pos.x / globals.screenSize.x * 2.0 - 1.0,
         1.0 - pos.y / globals.screenSize.y * 2.0,
-        0.0, 1.0,
+        depth, 1.0,
     );
     o.color = color;
     return o;

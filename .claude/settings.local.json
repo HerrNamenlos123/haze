@@ -16,7 +16,13 @@
       "Bash(xargs grep -l \"struct.*Renderer\\\\|opaque struct.*Renderer\")",
       "Bash(bun --version)",
       "Bash(powershell -NoProfile -Command 'Get-Process | Where-Object { $_.StartTime -gt \\(Get-Date\\).AddMinutes\\(-3\\) } | Select-Object ProcessName,Id,StartTime,Path | Format-Table -AutoSize')",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(find / -iname \"wgpu-bindings.hz\" 2>/dev/null | grep -v node_modules | head -5)",
+      "Read(//c//**)",
+      "Bash(powershell -NoProfile -Command 'Get-Process | Where-Object { $_.ProcessName -match '\\\\''bun|test_v0|haze'\\\\'' } | Select-Object ProcessName,Id,StartTime')",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq 6920 -or $_.Name -match '\\\\''test|WebGPU'\\\\'' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine')",
+      "Bash(powershell -NoProfile -Command \"Get-Process -Id 21044 | Select-Object ProcessName,CPU,WorkingSet,Responding\")",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id 21044 -Force -ErrorAction SilentlyContinue; Stop-Process -Id 6920 -Force -ErrorAction SilentlyContinue\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\fzachs\\Documents\\haze\\stdlib\\tesselate\\lyon"

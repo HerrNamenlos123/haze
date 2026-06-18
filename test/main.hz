@@ -13,7 +13,7 @@ export extern C noemit fn wgpu_init(window: cptr) :: final;
 export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C fn wgpu_end(window: cptr) :: final;
 
-fn getWindowState(window: sdl.Window): WindowState {
+fn getWindowState(window: sdl.Window): gfx.CanvasSize {
     let logicalSize = window.getLogicalSize();
     let framebufferSize = window.getFramebufferSize();
 
@@ -23,7 +23,7 @@ fn getWindowState(window: sdl.Window): WindowState {
     // SDL typically reports uniform scale factors on desktop systems.
     let dpiScale = (dpiScaleX + dpiScaleY) / 2.0;
 
-    return WindowState {
+    return gfx.CanvasSize {
         logicalSize: logicalSize,
         framebufferSize: framebufferSize,
         dpiScale: dpiScale as f32,
@@ -262,19 +262,24 @@ fn main(): int {
             height: windowState.framebufferSize.y,
             presentMode: wgpu.PresentMode.Fifo, // VSYNC=ON
             // presentMode: wgpu.PresentMode.Mailbox, // VSYNC=OFF
+            // presentMode: wgpu.PresentMode.Immediate, // VSYNC=OFF
             alphaMode: caps.alphaModes[0],
         });
 
         const comptime enableShaderHotreload = true;
-        let renderer = Renderer({
-            windowState: windowState,
-            device: device, 
-            surface: surface, 
-            surfaceFormats: caps.formats,
+        let gfxCtx = gfx.Context({
+            device: device,
+            targetFormat: caps.formats[0],
             shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
         });
 
-        let font = renderer.fontRenderer.fs.addFont(
+        let canvas = gfx.Canvas({
+            gfx: gfxCtx,
+            size: windowState,
+            surface: surface,
+        });
+
+        let font = gfxCtx.fontRenderer.fs.addFont(
             "roboto-regular",
             "test/Roboto-Regular.ttf"
         );
@@ -282,7 +287,7 @@ fn main(): int {
         let fonts: []hzui.FontEntry = [
             {
                 name: "default",
-                id: renderer.fontRenderer.defaultFont,
+                id: gfxCtx.fontRenderer.defaultFont,
             },
             {
                 name: "roboto",
@@ -295,7 +300,7 @@ fn main(): int {
             height: windowState.logicalSize.y,
             fonts: fonts,
             getFontLineHeight: (fontId: int, fontSize: real): real => {
-                let metrics = renderer.fontRenderer.fs.getMetrics(fontId, fontSize);
+                let metrics = gfxCtx.fontRenderer.fs.getMetrics(fontId, fontSize);
                 return metrics.lineh;
             },
         });
@@ -307,7 +312,13 @@ fn main(): int {
             return 0;
         }
 
+        let s1 = time.now();
+        json.parse(testTsk);
+        fmt.println(f"Parsed raw json in {time.now() - s1} seconds");
+
+        let s2 = time.now();
         let result = json.structuredParse<File>(testTsk);
+        fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
 
         // Tessellate outlines once before the loop
         let start = time.now();
@@ -429,13 +440,13 @@ fn main(): int {
                         presentMode: wgpu.PresentMode.Fifo,
                         alphaMode: caps.alphaModes[0],
                     });
-                    renderer.updateWindowState(nextWindowState);
+                    canvas.resize(nextWindowState);
                     hzui.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
                 }
             }
 
             fs.pollEvents();
-            renderer.beginFrame();
+            let renderer = gfx.Renderer(canvas);
 
             let tree = ui.process();
 
@@ -479,7 +490,7 @@ fn main(): int {
                 renderer.addTriangles(shape.vertices, shape.indices, "#000");
             }
 
-            renderer.endFrame();
+            renderer.commit();
         }
 
         window.destroy();
