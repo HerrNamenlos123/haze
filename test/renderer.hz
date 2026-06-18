@@ -142,7 +142,12 @@ fn depthStencilState(): wgpu.DepthStencilState {
     return wgpu.DepthStencilState {
         format: depthFormat,
         depthWriteEnabled: true,
-        depthCompare: wgpu.CompareFunction.Always,
+        // LessEqual (not Less): most draws share the same default zIndex (0)
+        // and therefore the same depth value. Equal depth must still pass so
+        // same-depth content paints over in submission order (normal 2D
+        // painter's algorithm); only an actually-different zIndex should
+        // occlude based on depth.
+        depthCompare: wgpu.CompareFunction.LessEqual,
         stencilFront: disabledStencilFace,
         stencilBack: disabledStencilFace,
         stencilReadMask: 0xFFFFFFFF,
