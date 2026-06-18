@@ -13,7 +13,10 @@
       "Bash(python3 -m *)",
       "Bash(python3 -c *)",
       "Read(//home/fzachs/haze/test/**)",
-      "Bash(xargs grep -l \"struct.*Renderer\\\\|opaque struct.*Renderer\")"
+      "Bash(xargs grep -l \"struct.*Renderer\\\\|opaque struct.*Renderer\")",
+      "Bash(bun --version)",
+      "Bash(powershell -NoProfile -Command 'Get-Process | Where-Object { $_.StartTime -gt \\(Get-Date\\).AddMinutes\\(-3\\) } | Select-Object ProcessName,Id,StartTime,Path | Format-Table -AutoSize')",
+      "Read(//tmp/**)"
     ],
     "additionalDirectories": [
       "c:\\Users\\fzachs\\Documents\\haze\\stdlib\\tesselate\\lyon"

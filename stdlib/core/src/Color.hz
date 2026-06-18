@@ -75,8 +75,8 @@ export extern C noemit inline struct hzstd_color_t {
         return color;
     }
 
-    fn constructor(color: Colorf): mut Colorf {
-        return Colorf {
+    fn constructor(color: Colorf): mut Color {
+        return Color {
             r: color.r as real,
             g: color.g as real,
             b: color.b as real,
