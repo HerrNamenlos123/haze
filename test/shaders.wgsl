@@ -21,10 +21,10 @@ struct Globals {
 var<uniform> globals: Globals;
 
 @group(1) @binding(0)
-var fontAtlas: texture_2d<f32>;
+var colorTexture: texture_2d<f32>;
 
 @group(1) @binding(1)
-var fontSampler: sampler;
+var colorSampler: sampler;
 
 @vertex
 fn vs_main(
@@ -88,7 +88,7 @@ fn vs_main(
         o.instSize = instSize;
         o.uv = vec2(0, 0);
     }
-    else if (_type == 2u) { // Glyph
+    else if (_type == 2u || _type == 3u) { // Glyph or Textured Quad
         let scaledPos = quadPos * instSize + instPos;
         o.pos = vec4(
             (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
@@ -172,25 +172,16 @@ fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
 }
 
 fn process_glyph(in: VSOut) -> vec4<f32> {
-
-    // let dist = textureSample(fontAtlas,fontSampler,in.uv).r;
-
-    // let fw = fwidth(dist);
-    // let alpha = smoothstep(0.5-fw,0.5+fw,dist);
-
-    // Apparently fixed smoothing works better than fwidth for fontstash (?)
-    // let alpha = smoothstep(0.5 - 0.1, 0.5 + 0.1, dist);
-
-    // let dist = textureSample(fontAtlas, fontSampler, in.uv).r;
-    // let w = fwidth(dist);
-    // let alpha = smoothstep(0.5 - w, 0.5 + w, dist);
-
-    let alpha = textureSample(fontAtlas,fontSampler,in.uv).r;
+    let alpha = textureSample(colorTexture,colorSampler,in.uv).r;
     if(alpha <= 0.0){
         discard;
     }
 
     return vec4(in.fillColor.rgb, in.fillColor.a * alpha);
+}
+
+fn process_textured_quad(in: VSOut) -> vec4<f32> {
+    return textureSample(colorTexture,colorSampler,in.uv) * in.fillColor;
 }
 
 @fragment
@@ -203,6 +194,9 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     }
     else if (in._type == 2u) { // Glyph
         return process_glyph(in);
+    }
+    else if (in._type == 3u) { // Textured Quad
+        return process_textured_quad(in);
     }
     else {
         return vec4(0, 0, 0, 0);
