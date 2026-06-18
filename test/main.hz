@@ -53,6 +53,8 @@ struct Point {
 struct Shape {
     variant: str;
     points: []Point;
+    penThickness: real;
+    penColor: str;
 }
 
 struct Page {
@@ -317,25 +319,26 @@ fn main(): int {
             let page = data.data.pages[0];
             fmt.println("Parsed successfully");
 
+            let accuracyScaling = 10.0;
             let tess = tesselate.Tesselator();
             count = page.shapes.length;
             for (let s = 0; s < page.shapes.length; s++) {
                 let shape = page.shapes[s];
 
                 // Perfect Freehand
-                let pf = perfect_freehand.PerfectFreehand(perfect_freehand.StrokeOptions {
-                    size: 0.5,
+                let pf = perfect_freehand.PerfectFreehand({
+                    size: shape.penThickness * accuracyScaling,
                     thinning: 0.1,
                     smoothing: 0.0,
                     streamline: 0.6,
-                    simulatePressure: true,
+                    simulatePressure: false,
                     last: true,
                 });
 
                 for point in shape.points {
                     pf.addPoint({
-                        x: point.x,
-                        y: point.y,
+                        x: point.x * accuracyScaling,
+                        y: point.y * accuracyScaling,
                     });
                 }
 
@@ -355,9 +358,9 @@ fn main(): int {
                 // Now tesselate
                 if points.length > 0 {
                     tess.beginPath();
-                    tess.moveTo(Vec2(points[0].x, points[0].y));
+                    tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
                     for (let p = 1; p < points.length; p++) {
-                        tess.lineTo(Vec2(points[p].x, points[p].y));
+                        tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
                     }
                     tess.closePath();
                     let result = tess.tessellate(0.25);
