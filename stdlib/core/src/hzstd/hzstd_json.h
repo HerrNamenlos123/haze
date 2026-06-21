@@ -10,6 +10,7 @@
 cJSON* hzstd_json_parse(hzstd_allocator_t allocator, hzstd_str_t data, hzstd_str_ref_t* error);
 cJSON* hzstd_json_create_string(hzstd_allocator_t allocator, hzstd_str_t data);
 cJSON* hzstd_json_create_number(hzstd_allocator_t allocator, hzstd_real_t data);
+cJSON* hzstd_json_create_bool(hzstd_allocator_t allocator, hzstd_bool_t data);
 cJSON* hzstd_json_create_object(hzstd_allocator_t allocator);
 cJSON* hzstd_json_create_array(hzstd_allocator_t allocator);
 

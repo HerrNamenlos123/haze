@@ -176,6 +176,7 @@ hzstd_profiling_context_t* hzstd_profiling_start()
 
 typedef struct {
   Dwarf_Addr address; // link-time address (i.e. relative to this module's load bias)
+  Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs to (exclusive)
   hzstd_str_t filename;
   hzstd_int_t line;
 } hzstd_profiling_dwarf_line_t;
@@ -270,13 +271,35 @@ static void hzstd_profiling_dwarf_build_line_table(void)
       Dwarf_Line* lineBuf = NULL;
       Dwarf_Signed lineCount = 0;
       if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount, &error) == DW_DLV_OK) {
+        // DWARF line tables are a series of contiguous code ranges ("sequences"), each
+        // terminated by a synthetic end_sequence row. Addresses are only meaningfully
+        // comparable within the same sequence — a function with no debug info at all (crt
+        // startup code, a vendored dependency without -g, ...) leaves a gap that a naive
+        // "nearest address below" search would otherwise bridge, attributing it to whatever
+        // unrelated function happens to sort right before it. `sequenceStart` tracks where the
+        // current sequence's entries begin in `lines`, backfilled with the real end address
+        // once the end_sequence row for that range is seen.
+        size_t sequenceStart = count;
         for (Dwarf_Signed i = 0; i < lineCount; i++) {
           Dwarf_Addr addr = 0;
-          Dwarf_Unsigned lineno = 0;
-          char* filename = NULL;
           if (dwarf_lineaddr(lineBuf[i], &addr, &error) != DW_DLV_OK) {
             continue;
           }
+
+          Dwarf_Bool isEndSequence = false;
+          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) != DW_DLV_OK) {
+            isEndSequence = false;
+          }
+          if (isEndSequence) {
+            for (size_t k = sequenceStart; k < count; k++) {
+              lines[k].sequence_end = addr;
+            }
+            sequenceStart = count;
+            continue;
+          }
+
+          Dwarf_Unsigned lineno = 0;
+          char* filename = NULL;
           if (dwarf_lineno(lineBuf[i], &lineno, &error) != DW_DLV_OK) {
             continue;
           }
@@ -293,6 +316,7 @@ static void hzstd_profiling_dwarf_build_line_table(void)
           }
 
           lines[count].address = addr;
+          lines[count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
           lines[count].filename = hzstd_str_from_cstr_dup(allocator, filename);
           lines[count].line = (hzstd_int_t)lineno;
           count++;
@@ -350,6 +374,14 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
   }
 
   hzstd_profiling_dwarf_line_t* match = &g_dwarf_lines[lo - 1];
+
+  // The match is only valid if `target` actually falls within the same contiguous code range
+  // (sequence) that line belongs to. Otherwise it's a gap (e.g. code with no debug info at all)
+  // and a match here would just be the nearest unrelated function that happened to sort before it.
+  if (target >= match->sequence_end) {
+    return absent;
+  }
+
   return (hzstd_source_location_t) {
     ._filename = match->filename,
     ._line = match->line,
@@ -359,14 +391,23 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
 
 // Resolve the function name belonging to `address` via libunwind's address-space API (works on a
 // raw saved PC, no live unwind cursor needed) and demangle it into a clean display name.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address)
+//
+// `isLeaf` distinguishes the innermost frame (whose pc is the actual suspended instruction) from
+// every caller frame above it (whose pc is a *return address* — the instruction right after the
+// `call`, which may belong to the next line/sequence entirely, or even sit exactly on a sequence
+// boundary). The standard fix every unwinder/symbolizer applies is to look up `pc - 1` for those,
+// so the lookup lands on the call instruction itself rather than whatever follows it.
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool isLeaf)
 {
+  void* lookupAddress = isLeaf ? address : (void*)((uintptr_t)address - 1);
+
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
 
   char rawName[4096];
   unw_word_t offset;
-  if (unw_get_proc_name_by_ip(unw_local_addr_space, (unw_word_t)address, rawName, sizeof(rawName), &offset, NULL)
+  if (unw_get_proc_name_by_ip(
+          unw_local_addr_space, (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset, NULL)
       == 0) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
     name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
@@ -376,13 +417,14 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address)
   return (hzstd_profiling_frame_t) {
     .address = address,
     .name = name,
-    .sourceloc = hzstd_profiling_resolve_sourceloc(address),
+    .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
   };
 }
 
 // Intern `address` into `frames`, deduplicating by instruction pointer (the same function hit by
-// many samples must only be resolved/stored once), and return its index.
-static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* address)
+// many samples must only be resolved/stored once), and return its index. See
+// hzstd_profiling_resolve_frame for what `isLeaf` is for.
+static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* address, bool isLeaf)
 {
   for (size_t i = 0; i < hzstd_dynamic_array_size(frames); i++) {
     hzstd_profiling_frame_t existing = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
@@ -391,7 +433,7 @@ static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* 
     }
   }
 
-  hzstd_profiling_frame_t frame = hzstd_profiling_resolve_frame(address);
+  hzstd_profiling_frame_t frame = hzstd_profiling_resolve_frame(address, isLeaf);
   HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
   return hzstd_dynamic_array_size(frames) - 1;
 }
@@ -405,7 +447,7 @@ static hzstd_profiling_sample_t hzstd_profiling_build_sample(
       = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
-    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, raw.pcs[i]);
+    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, raw.pcs[i], i == 0);
     HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, index);
   }
 

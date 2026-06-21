@@ -229,6 +229,15 @@ fn main(): int {
         fmt.println(f"  sample[0] t={sample.timestamp}s overhead={sample.sampling_duration}s depth={sample.frames.length}");
     }
 
+    let cpuprofilePath = "profile.cpuprofile";
+    let writeResult = profiling.writeCpuProfile(result, cpuprofilePath);
+    if writeResult is none {
+        fmt.println(f"Wrote flamegraph data to {cpuprofilePath}");
+    }
+    else {
+        fmt.println(f"Failed to write {cpuprofilePath}");
+    }
+
     return 0;
 
     attempt {

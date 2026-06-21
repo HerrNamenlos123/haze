@@ -48,6 +48,11 @@ cJSON *hzstd_json_create_number(hzstd_allocator_t allocator,
   return cJSON_CreateNumber(data);
 }
 
+cJSON *hzstd_json_create_bool(hzstd_allocator_t allocator, hzstd_bool_t data) {
+  hzstd_json_use_arena(allocator);
+  return cJSON_CreateBool(data);
+}
+
 cJSON *hzstd_json_create_object(hzstd_allocator_t allocator) {
   hzstd_json_use_arena(allocator);
   return cJSON_CreateObject();

@@ -5,6 +5,7 @@ namespace ffi {
     export extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
     export extern C fn hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
     export extern C fn hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
+    export extern C fn hzstd_json_create_bool(allocator: Allocator, data: bool): cJSON :: final;
     export extern C fn hzstd_json_create_object(allocator: Allocator): cJSON :: final;
     export extern C fn hzstd_json_create_array(allocator: Allocator): cJSON :: final;
 
@@ -291,6 +292,70 @@ namespace json {
 
     export fn structuredParse<T>(data: str): Result<T, Error> {
         return structuredParse<T>(parse(data)?!);
+    }
+
+    export fn dumpJsonArray<T>(allocator: Allocator, value: T): ffi.cJSON {
+        let arr = ffi.hzstd_json_create_array(allocator);
+        for (let i = 0; i < value.length; i++) {
+            let item = dumpJsonNode<T.elementType>(allocator, value[i]);
+            ffi.hzstd_json_add_item_to_array(allocator, arr, item);
+        }
+        return arr;
+    }
+
+    export fn dumpJsonFixedArray<T>(allocator: Allocator, value: T): ffi.cJSON {
+        let arr = ffi.hzstd_json_create_array(allocator);
+        for (let i = 0; i < T.length; i++) {
+            let item = dumpJsonNode<T.elementType>(allocator, value[i]);
+            ffi.hzstd_json_add_item_to_array(allocator, arr, item);
+        }
+        return arr;
+    }
+
+    export fn dumpJsonStruct<T>(allocator: Allocator, value: T): ffi.cJSON {
+        let obj = ffi.hzstd_json_create_object(allocator);
+        for comptime field in T.fields {
+            let fieldValue = value.[field.name];
+            ffi.hzstd_json_add_item_to_object(allocator, obj, field.name, dumpJsonNode<typeof(fieldValue)>(allocator, fieldValue));
+        }
+        return obj;
+    }
+
+    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON {
+        if comptime T is str {
+            return ffi.hzstd_json_create_string(allocator, value);
+        }
+        else if comptime T is int {
+            return ffi.hzstd_json_create_number(allocator, value as real);
+        }
+        else if comptime T is real {
+            return ffi.hzstd_json_create_number(allocator, value);
+        }
+        else if comptime T is bool {
+            return ffi.hzstd_json_create_bool(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            return dumpJsonArray<T>(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.Array {
+            return dumpJsonFixedArray<T>(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            return dumpJsonStruct<T>(allocator, value);
+        }
+        else {
+            static_assert(false, f"json.structuredDump(): type {T.prettyName} is not supported");
+        }
+        sys.unreachable();
+    }
+
+    export fn structuredDump<T>(allocator: Allocator, value: T): json.Value {
+        return { allocator: allocator, data: dumpJsonNode<T>(allocator, value) };
+    }
+
+    export fn structuredDump<T>(value: T): str {
+        let dumped = structuredDump<T>(Alloc.arena(), value);
+        return dumped.print({ pretty: false });
     }
 }
 
