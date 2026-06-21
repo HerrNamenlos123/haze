@@ -221,7 +221,8 @@ fn main(): int {
         do unsafe {
             __c__("address = (hzstd_int_t)frame.address;");
         };
-        let loc = frame.sourceloc.filename() ? f"{frame.sourceloc.filename()}:{frame.sourceloc.line()}" : "<no source info>";
+        let filename = frame.sourceloc.filename();
+        let loc = filename ? f"{filename}:{frame.sourceloc.line()}" : "<no source info>";
         fmt.println(f"  frame[{i}] {frame.name} @ {address} ({loc})");
     }
     if result.samples.length > 0 {
