@@ -16,13 +16,17 @@
 #error Unsupported platform for Haze stdlib, compiler defines are not set correctly
 #endif
 
+typedef hzstd_u64_t hzstd_thread_id_t;
+typedef hzstd_u64_t hzstd_process_id_t;
+
 typedef enum {
   hzstd_platform_runtime_unknown = 0,
-  hzstd_platform_runtime_linux   = 1,
-  hzstd_platform_runtime_win32   = 2,
+  hzstd_platform_runtime_linux = 1,
+  hzstd_platform_runtime_win32 = 2,
 } hzstd_platform_runtime_t;
 
-static inline hzstd_platform_runtime_t hzstd_platform_runtime(void) {
+static inline hzstd_platform_runtime_t hzstd_platform_runtime(void)
+{
 #if defined(HAZE_PLATFORM_WIN32)
   return hzstd_platform_runtime_win32;
 #elif defined(HAZE_PLATFORM_LINUX)
@@ -41,32 +45,34 @@ static inline hzstd_platform_runtime_t hzstd_platform_runtime(void) {
 // use (stores directly into a global), signals the panic worker thread, then
 // either longjmps to the nearest recovery frame or blocks until the worker
 // kills the process.  _Noreturn: never returns to its caller.
-_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
-                                           hzstd_int_t skip_n_frames);
+_Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames);
 
-bool hzstd_get_cwd(char *buf, size_t buf_size);
+bool hzstd_get_cwd(char* buf, size_t buf_size);
 
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore);
-bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore);
-void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore);
+bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
+bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
 
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);
 
 typedef struct {
-  int   exit_code;
-  char *stdout_data;
-  char *stderr_data;
+  int exit_code;
+  char* stdout_data;
+  char* stderr_data;
 } hzstd_process_result_t;
 
-int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
-                        hzstd_str_t *envp, /* may be NULL → inherit */
+int hzstd_spawn_process(hzstd_str_t exe,
+                        hzstd_str_t* argv,
+                        size_t argc,
+                        hzstd_str_t* envp, /* may be NULL → inherit */
                         size_t envc,
-                        hzstd_str_t *cwd, /* may be NULL */
-                        bool inherit_stdio, hzstd_process_result_t *out);
+                        hzstd_str_t* cwd, /* may be NULL */
+                        bool inherit_stdio,
+                        hzstd_process_result_t* out);
 
-void   os_sleep_ns(uint64_t nanoseconds);
+void os_sleep_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
 
 #endif // HZSTD_PLATFORM_H

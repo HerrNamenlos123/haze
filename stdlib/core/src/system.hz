@@ -56,6 +56,7 @@ namespace ffi {
         hzstd_panic_type_user = 1,
         hzstd_panic_type_segfault = 2,
         hzstd_panic_type_stackoverflow = 3,
+        hzstd_panic_type_arithmetic = 4,
     };
 
     export extern C noemit opaque inline struct hzstd_stackframe_t {

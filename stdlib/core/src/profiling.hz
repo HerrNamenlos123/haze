@@ -1,0 +1,29 @@
+namespace ffi {
+    extern C noemit fn hzstd_profiling_start(): hzstd_profiling_context_t :: final;
+    extern C noemit fn hzstd_profiling_end(context: hzstd_profiling_context_t): hzstd_profiling_result_t :: final;
+
+    export extern C noemit struct hzstd_profiling_context_t {};
+    export extern C noemit struct hzstd_profiling_result_t {
+        hits: int;
+    };
+}
+
+namespace profiling {
+    export type Result = ffi.hzstd_profiling_result_t;
+}
+
+export struct Profiler {
+    context: ffi.hzstd_profiling_context_t;
+
+    fn constructor() {
+        let context = ffi.hzstd_profiling_start();
+        return Profiler {
+            context: context,
+        };
+    }
+
+    // TODO: This profiler must turn into a resource so it's panic recovery safe
+    fn end(): profiling.Result {
+        return ffi.hzstd_profiling_end(this.context);
+    }
+}

@@ -1,12 +1,14 @@
 
 #include "hzstd.h"
 
+#include "hzstd/hzstd_profiling.h"
 #include "hzstd_array.c"
 #include "hzstd_demangle.c"
 #include "hzstd_env.c"
 #include "hzstd_filesystem.c"
 #include "hzstd_json.c"
 #include "hzstd_memory.c"
+#include "hzstd_profiling.c"
 #include "hzstd_reactive.c"
 #include "hzstd_regex.c"
 #include "hzstd_runtime.c"

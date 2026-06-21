@@ -202,13 +202,19 @@ fn heavyWork() {
 
 fn main(): int {
 
+    let profiler = Profiler();
+
     let start = time.now();
     fmt.println(f"Running");
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < 100; i++) {
         fmt.println(f"Iteration {i}");
         heavyWork();
     }
     fmt.println(f"Done, ran for {time.now() - start} seconds");
+
+    let result = profiler.end();    
+
+    fmt.println(f"Profiling done, {result.hits} hits");
 
     return 0;
 
