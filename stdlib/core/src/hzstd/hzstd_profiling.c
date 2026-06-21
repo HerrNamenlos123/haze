@@ -131,9 +131,8 @@ static hzstd_profiling_context_t* g_profiling_context = NULL;
 
 static void install_profiler_handler(void);
 
-hzstd_profiling_context_t* hzstd_profiling_start()
+hzstd_profiling_context_t* hzstd_profiling_start(int samplingRateHz)
 {
-  int samplingRateHz = 10;
   int initialSamplingCapacityPeriodSeconds = 30;
   int initialSamples = samplingRateHz * initialSamplingCapacityPeriodSeconds;
   hzstd_thread_id_t tid = hzstd_profiling_get_current_thread_id();

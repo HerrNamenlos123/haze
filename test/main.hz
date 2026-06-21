@@ -202,7 +202,7 @@ fn heavyWork() {
 
 fn main(): int {
 
-    let profiler = Profiler();
+    let profiler = Profiler({ samplingRateHz: 100 });
 
     let start = time.now();
     fmt.println(f"Running");

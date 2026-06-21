@@ -45,7 +45,7 @@ typedef struct {
   hzstd_int_t sampling_rate_hz;
 } hzstd_profiling_result_t;
 
-hzstd_profiling_context_t* hzstd_profiling_start();
+hzstd_profiling_context_t* hzstd_profiling_start(int sampling_rate_hz);
 hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context);
 
 #endif // HZSTD_PROFILING_H
