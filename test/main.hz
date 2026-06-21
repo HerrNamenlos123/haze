@@ -189,7 +189,29 @@ fn testPerfectFreehand() {
     fmt.println("----------------------------");
 }
 
+fn heavierWork(v: Box<int>) {
+    v.value++;
+}
+
+fn heavyWork() {
+    let v = Box<int>(0); 
+    for (let i = 0; i < 1000000; i++) {
+        heavierWork(v);
+    }
+}
+
 fn main(): int {
+
+    let start = time.now();
+    fmt.println(f"Running");
+    for (let i = 0; i < 5000; i++) {
+        fmt.println(f"Iteration {i}");
+        heavyWork();
+    }
+    fmt.println(f"Done, ran for {time.now() - start} seconds");
+
+    return 0;
+
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
