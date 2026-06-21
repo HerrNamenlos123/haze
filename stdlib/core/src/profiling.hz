@@ -3,12 +3,29 @@ namespace ffi {
     extern C noemit fn hzstd_profiling_end(context: hzstd_profiling_context_t): hzstd_profiling_result_t :: final;
 
     export extern C noemit struct hzstd_profiling_context_t {};
-    export extern C noemit struct hzstd_profiling_result_t {
-        hits: int;
+
+    export extern C noemit opaque inline struct hzstd_profiling_frame_t {
+        address: cptr;
+        name: str;
+        sourceloc: SourceLocation;
+    };
+
+    export extern C noemit opaque inline struct hzstd_profiling_sample_t {
+        timestamp: real;
+        sampling_duration: real;
+        frames: []int;
+    };
+
+    export extern C noemit opaque inline struct hzstd_profiling_result_t {
+        frames: []hzstd_profiling_frame_t;
+        samples: []hzstd_profiling_sample_t;
+        sampling_rate_hz: int;
     };
 }
 
 namespace profiling {
+    export type Frame = ffi.hzstd_profiling_frame_t;
+    export type Sample = ffi.hzstd_profiling_sample_t;
     export type Result = ffi.hzstd_profiling_result_t;
 }
 

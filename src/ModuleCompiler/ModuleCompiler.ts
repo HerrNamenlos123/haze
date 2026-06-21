@@ -1715,6 +1715,11 @@ export class ModuleCompiler {
     linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
     linkerFlags.addLinux("-llzma");
 
+    // Used by the profiler to resolve source locations (file/line) from instruction pointers by
+    // reading .debug_line directly, in-process, instead of shelling out to addr2line.
+    includeDirs.addLinux("/usr/include/libdwarf-0");
+    linkerFlags.addLinux("-ldwarf");
+
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/"`);
