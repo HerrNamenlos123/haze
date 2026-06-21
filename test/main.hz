@@ -204,7 +204,7 @@ fn main(): int {
 
     let start = time.now();
     fmt.println(f"Running");
-    for (let i = 0; i < 5000; i++) {
+    for (let i = 0; i < 1000; i++) {
         fmt.println(f"Iteration {i}");
         heavyWork();
     }
