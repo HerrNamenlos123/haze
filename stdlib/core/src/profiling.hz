@@ -176,4 +176,9 @@ export struct Profiler {
     fn end(): profiling.ProfilingResult {
         return ffi.hzstd_profiling_end(this.context);
     }
+
+    fn endAndWrite(path: str) {
+        const result = this.end();
+        return profiling.writeCpuProfile(result, path);
+    }
 }
