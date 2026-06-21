@@ -174,6 +174,32 @@ void hzui_clay_define_div_element(void* (*fn)(void*),
   }
 }
 
+void hzui_clay_define_canvas_element(hzstd_str_t id,
+                                     hzstd_color_t backgroundColor,
+                                     hzui_corner_radius_values_t cornerRadius,
+                                     hzstd_real_t width,
+                                     bool hasWidth,
+                                     hzstd_real_t height,
+                                     bool hasHeight,
+                                     void* elementPtr)
+{
+  CLAY({ .id = make_id(id),
+         .userData = elementPtr,
+         .layout = { .sizing = {
+             .width = hasWidth ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_GROW(0),
+             .height = hasHeight ? CLAY_SIZING_FIXED(height) : CLAY_SIZING_GROW(0),
+         } },
+         .cornerRadius = {
+             .topLeft = cornerRadius.topLeft,
+             .topRight = cornerRadius.topRight,
+             .bottomLeft = cornerRadius.bottomLeft,
+             .bottomRight = cornerRadius.bottomRight,
+         },
+         .backgroundColor = (Clay_Color) {
+             .r = backgroundColor.r, .g = backgroundColor.g, .b = backgroundColor.b, .a = backgroundColor.a },
+         .custom = { .customData = elementPtr } });
+}
+
 void hzui_clay_define_text_element(hzui_define_text_element_t element)
 {
   Clay_String clay_text = (Clay_String) { .chars = element.text.data, .length = element.text.length };

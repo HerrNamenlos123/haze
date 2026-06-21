@@ -843,7 +843,7 @@ export opaque struct Renderer {
     // ever split a draw call here is a texture/bind-group change, never z
     // order, so a frame that doesn't mix textures costs one draw call for
     // all primitives and one for all triangles, regardless of zIndex usage.
-    fn commit() {
+    fn commit(clear: bool = true) {
         let canvas = this.canvas;
         let gfx = canvas.gfx;
 
@@ -901,7 +901,7 @@ export opaque struct Renderer {
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: targetView,
             clearValue: Color(0.0, 0.0, 0.0, 0.0),
-            loadOp: wgpu.LoadOp.Clear,
+            loadOp: clear ? wgpu.LoadOp.Clear : wgpu.LoadOp.Load,
             storeOp: wgpu.StoreOp.Store,
         };
 

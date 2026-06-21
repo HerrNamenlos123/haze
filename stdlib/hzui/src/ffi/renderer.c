@@ -28,6 +28,8 @@ typedef struct {
   void* renderFilledRectUserdata;
   void (*renderText)(void* userdata, hzui_draw_text_element_t element);
   void* renderTextUserdata;
+  void (*renderCustom)(void* userdata, void* elementPtr, double x, double y, double w, double h);
+  void* renderCustomUserdata;
   void (*applyBoundingBox)(void* elementPtr, double x, double y, double w, double h);
 } ClayCallbacks;
 
@@ -233,6 +235,12 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
       // SDL_Texture* texture = (SDL_Texture*)rcmd->renderData.image.imageData;
       // const SDL_FRect dest = { rect.x, rect.y, rect.w, rect.h };
       // SDL_RenderTexture(rendererData->renderer, texture, NULL, &dest);
+    } break;
+    case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
+      if (callbacks.applyBoundingBox && rcmd->userData) {
+        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+      }
+      callbacks.renderCustom(callbacks.renderCustomUserdata, rcmd->userData, x, y, w, h);
     } break;
     default:
       printf("Unknown render command type: %d\n", rcmd->commandType);

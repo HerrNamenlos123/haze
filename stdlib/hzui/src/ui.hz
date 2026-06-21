@@ -5,6 +5,7 @@ export __c__("#include \"ffi/hzui_public.h\"");
 namespace ffi {
     extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: str, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
     extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+    extern C noemit fn hzui_clay_define_canvas_element(id: str, backgroundColor: Color, cornerRadius: CornerRadiusValues, width: real, hasWidth: bool, height: real, hasHeight: bool, elementPtr: cptr): void :: final;
     extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
 
     extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
@@ -19,6 +20,8 @@ namespace ffi {
         renderFilledRectUserdata: cptr;
         renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
         renderTextUserdata: cptr;
+        renderCustom: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        renderCustomUserdata: cptr;
         applyBoundingBox: (elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
     };
 
@@ -343,7 +346,57 @@ export struct TextElement {
     }
 }
 
-export type Element = DivElement | TextElement;
+export struct CanvasElementArgs {
+    id: int;
+    style: DivStyle = {};
+    presets?: []presets.Preset;
+}
+
+// A standalone leaf element, like TextElement, but with no Clay-managed
+// visual content of its own: the renderer owns an opaque, persistent GPU
+// canvas behind `_handle` and an opaque per-frame draw closure behind
+// `_drawFn`. hzui never inspects either -- it only plumbs them through to
+// the RenderCanvasCB callback once this element's bounding box is known for
+// the frame, exactly like the existing _renderFeedback plumbing for
+// Div/Text.
+export struct CanvasElement {
+    id: int;
+    style: DivStyle = {};
+    presets?: []presets.Preset;
+    _renderFeedback?: RenderFeedback = none;
+    _renderFeedbackVersion: rx.Reactive<bool>;
+    _inputFeedback?: InputFeedback = none;
+    _inputFeedbackVersion: rx.Reactive<bool>;
+    _handle?: TypeErasedBox;
+    _drawFn?: TypeErasedBox;
+
+    fn constructor(args: CanvasElementArgs) {
+        return CanvasElement {
+            id: args.id,
+            style: args.style,
+            presets: args.presets,
+            _renderFeedbackVersion: rx.reactive<bool>(false),
+            _inputFeedbackVersion: rx.reactive<bool>(false),
+        };
+    }
+
+    fn position() {
+        rx.get(this._renderFeedbackVersion);
+        return this._renderFeedback ? this._renderFeedback.position : none;
+    }
+
+    fn size() {
+        rx.get(this._renderFeedbackVersion);
+        return this._renderFeedback ? this._renderFeedback.size : none;
+    }
+
+    fn hover() {
+        rx.get(this._inputFeedbackVersion);
+        return this._inputFeedback ? this._inputFeedback.hover : false;
+    }
+}
+
+export type Element = DivElement | TextElement | CanvasElement;
 
 export inline struct FontEntry {
     name: str;
@@ -387,7 +440,7 @@ export opaque struct Context {
         }
     }
 
-    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: Element, func: () => none) {
+    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: DivElement | TextElement, func: () => none) {
         let fontFamily = element is DivElement ? element.style.fontFamily : element.style.fontFamily;
         let fontSize = element is DivElement ? element.style.fontSize : element.style.fontSize;
         let fontWeight = element is DivElement ? element.style.fontWeight : element.style.fontWeight;
@@ -561,6 +614,35 @@ export opaque struct Context {
                 );
             });
         }
+        else if element is CanvasElement {
+            // No cascading font/text-color stack: a canvas has no children
+            // and renders no Clay-managed text, so none of that state is
+            // relevant to it. No idPath descent either, for the same reason.
+            let elementBox = Box<Element>(element);
+            let elementPtr = none as cptr;
+            __c__("elementPtr = elementBox;");
+            ctx.elementBoxes.push(elementBox);
+
+            let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
+
+            let style = element.presets ? element.style.combineWithPresets(element.presets) : element.style;
+
+            if !style.backgroundColor {
+                style.backgroundColor = Color(0, 0, 0, 0);
+            }
+            assert(style.backgroundColor);
+
+            ffi.hzui_clay_define_canvas_element(
+                elementId,
+                style.backgroundColor,
+                getCornerRadiusValues(style.cornerRadius),
+                style.width ? style.width : 0.0,
+                style.width is not none,
+                style.height ? style.height : 0.0,
+                style.height is not none,
+                elementPtr,
+            );
+        }
     }
 
     fn render(element: rx.Computed<Element>, callbacks: RenderCallbacks) {
@@ -612,12 +694,17 @@ export opaque struct Context {
             let renderText = Box<RenderTextCB>(callbacks.renderText);
             let renderTextUserdata = none as cptr;
             __c__("renderTextUserdata = renderText;");
+            let renderCanvas = Box<RenderCanvasCB>(callbacks.renderCanvas);
+            let renderCustomUserdata = none as cptr;
+            __c__("renderCustomUserdata = renderCanvas;");
 
             ffi.Clay_RenderClayCommands({
                 renderFilledRect: renderFilledRectTrampoline,
                 renderFilledRectUserdata: renderFilledRectUserdata,
                 renderText: renderTextTrampoline,
                 renderTextUserdata: renderTextUserdata,
+                renderCustom: renderCustomTrampoline,
+                renderCustomUserdata: renderCustomUserdata,
                 applyBoundingBox: applyBoundingBoxTrampoline,
             }, clayRenderCommandsPtr);
         };
@@ -680,10 +767,12 @@ fn getCornerRadiusValues(cornerRadius: StyleCornerRadius) {
 
 export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;
 export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
+export type RenderCanvasCB = (element: CanvasElement) => void;
 
 export struct RenderCallbacks {
     renderFilledRectangle: RenderFilledRectCB;
     renderText: RenderTextCB;
+    renderCanvas: RenderCanvasCB;
 }
 
 fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
@@ -699,6 +788,20 @@ fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): 
         let callable: Box<RenderTextCB> = uninitialized;
         __c__("callable = userdata;");
         callable.value(element);
+    };
+}
+
+fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+    do unsafe {
+        let callable: Box<RenderCanvasCB> = uninitialized;
+        __c__("callable = userdata;");
+
+        let box: Box<Element> = uninitialized;
+        __c__("box = elementPtr;");
+        let element = box.value;
+        if element is CanvasElement {
+            callable.value(element);
+        }
     };
 }
 
@@ -731,6 +834,29 @@ fn applyBoundingBoxTrampoline(elementPtr: cptr, x: real, y: real, w: real, h: re
             }
         }
         else if element is TextElement {
+            if !element._renderFeedback {
+                element._renderFeedback = { position: Vec2(0, 0), size: Vec2(0, 0) };
+                element._renderFeedbackVersion := !element._renderFeedbackVersion;
+            }
+            assert(element._renderFeedback);
+            if element._renderFeedback.position.x != x {
+                element._renderFeedback.position.x = x;
+                element._renderFeedbackVersion := !element._renderFeedbackVersion;
+            }
+            if element._renderFeedback.position.y != y {
+                element._renderFeedback.position.y = y;
+                element._renderFeedbackVersion := !element._renderFeedbackVersion;
+            }
+            if element._renderFeedback.size.x != w {
+                element._renderFeedback.size.x = w;
+                element._renderFeedbackVersion := !element._renderFeedbackVersion;
+            }
+            if element._renderFeedback.size.y != h {
+                element._renderFeedback.size.y = h;
+                element._renderFeedbackVersion := !element._renderFeedbackVersion;
+            }
+        }
+        else if element is CanvasElement {
             if !element._renderFeedback {
                 element._renderFeedback = { position: Vec2(0, 0), size: Vec2(0, 0) };
                 element._renderFeedbackVersion := !element._renderFeedbackVersion;

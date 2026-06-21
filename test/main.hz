@@ -30,6 +30,30 @@ fn getWindowState(window: sdl.Window): gfx.CanvasSize {
     };
 }
 
+// Runs this frame's declarative drawFn (if any) into the canvas element's
+// offscreen canvas, then composites the canvas's current content onto the
+// main screen renderer at the element's current bounding box. Shared by
+// both the "just created" and "already exists" paths in the renderCanvas
+// callback below.
+fn drawCanvasElementAndComposite(element: hzui.CanvasElement, handle: CanvasHandle, feedback: hzui.RenderFeedback, size: Vec2, renderer: mut gfx.Renderer) {
+    // Declarative per-frame redraw: clears first, since a drawFn is
+    // expected to paint the whole canvas itself. Imperative drawing
+    // (ui.drawToCanvas) is the path for content that should persist
+    // instead.
+    if element._drawFn {
+        let drawFn = element._drawFn.get<CanvasDrawFn>();
+        let r = gfx.Renderer(handle.canvas);
+        drawFn(r);
+        r.commit(true);
+    }
+
+    renderer.drawTexture({
+        texture: handle.canvas.asTexture(),
+        pos: feedback.position,
+        size: size,
+    });
+}
+
 fn print<T>(value: T) {
     if comptime typeof(value).category == meta.TypeCategory.Struct {
         let s = "{\n";
@@ -67,8 +91,6 @@ struct FileData {
     gridType: str;
     pages: []Page;
 }
-
-struct Test2 {}
 
 struct File {
     filetype: str;
@@ -381,6 +403,16 @@ fn main(): int {
         else {
             fmt.println("Failed parsing: ", result);
         }
+
+        for (let s = 0; s < tesselatedShapes.length; s++) {
+            let shape = tesselatedShapes[s];
+
+            for (let i = 0; i < shape.vertices.length; i++) {
+                shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
+                shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
+            }
+        }
+
         let end = time.now();
         fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
 
@@ -406,15 +438,6 @@ fn main(): int {
             ui: (ui: UIContext) => UI(ui),
             mousePos: () => mousePosition as Vec2,
         });
-
-        for (let s = 0; s < tesselatedShapes.length; s++) {
-            let shape = tesselatedShapes[s];
-
-            for (let i = 0; i < shape.vertices.length; i++) {
-                shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
-                shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
-            }
-        }
 
         let pMousePosition = Vec2(0, 0);
         let dMousePosition = Vec2(0, 0);
@@ -469,6 +492,47 @@ fn main(): int {
                         text: element.text,
                         color: element.color,
                     });
+                },
+                renderCanvas: (element: hzui.CanvasElement): void => {
+                    let feedback = element._renderFeedback;
+                    assert(feedback);
+                    let size = feedback.size;
+                    let dpiScale = windowState.dpiScale as real;
+                    let fbSize = Vec2i(
+                        (size.x * dpiScale) as i32,
+                        (size.y * dpiScale) as i32
+                    );
+                    if fbSize.x <= 0 || fbSize.y <= 0 {
+                        return;
+                    }
+
+                    let canvasSize = gfx.CanvasSize {
+                        logicalSize: Vec2i(size.x as i32, size.y as i32),
+                        framebufferSize: fbSize,
+                        dpiScale: windowState.dpiScale,
+                    };
+
+                    if !element._handle {
+                        let offscreen = gfx.Canvas({ gfx: gfxCtx, size: canvasSize });
+                        let handle = CanvasHandle { canvas: offscreen };
+                        element._handle = TypeErasedBox<CanvasHandle>(handle);
+
+                        // A brand new offscreen texture has undefined
+                        // contents -- always start it from transparent
+                        // before anything else touches it this frame.
+                        gfx.Renderer(handle.canvas).commit(true);
+
+                        drawCanvasElementAndComposite(element, handle, feedback, size, renderer);
+                    } else {
+                        let handle = element._handle.get<CanvasHandle>();
+                        if handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y {
+                            handle.canvas.resize(canvasSize);
+                            // A freshly resized texture has undefined contents too.
+                            gfx.Renderer(handle.canvas).commit(true);
+                        }
+
+                        drawCanvasElementAndComposite(element, handle, feedback, size, renderer);
+                    }
                 }
             });
 

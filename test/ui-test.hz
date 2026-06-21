@@ -17,6 +17,27 @@ inline struct TextProps {
     ref?: ElementRef<hzui.TextElement>;
 }
 
+inline struct CanvasProps {
+    id: int;
+    style?: hzui.DivStyle;
+    presets?: []presets.Preset;
+    ref?: ElementRef<hzui.CanvasElement>;
+}
+
+// The concrete renderer handle stored, type-erased, inside
+// hzui.CanvasElement._handle. hzui never reads this -- only this app layer
+// (here and in main.hz's renderCanvas callback) does, via
+// TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
+// agree on this exact type: TypeErasedBox has no runtime type tag.
+struct CanvasHandle {
+    canvas: mut gfx.Canvas;
+}
+
+// The concrete type stored, type-erased, inside hzui.CanvasElement._drawFn.
+// Named so it can be used as a generic argument to TypeErasedBox<T> (a bare
+// function-type literal there doesn't parse).
+type CanvasDrawFn = (r: mut gfx.Renderer) => void;
+
 struct ComponentInstance {
     id: int;
 
@@ -74,6 +95,18 @@ struct ComponentInstance {
         return newElement;
     }
 
+    fn getOrCreateCanvas(id: int): mut hzui.CanvasElement {
+        for n in this.elementsById {
+            if n.id == id {
+                assert(n.element is mut hzui.CanvasElement, "Canvas element expected but other node type encountered");
+                return n.element;
+            }
+        }
+        let newElement = hzui.CanvasElement({ id: id, style: {} });
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+
     fn findChild(id: int): ComponentInstance | null {
         for n in this.childComponents {
             if n.id == id {
@@ -111,7 +144,7 @@ struct InstanceData<TProps> {
 }
 
 opaque struct UIContext {
-    _mousePos: (() => Vec2);
+    _mousePosCb: (() => Vec2);
     renderStack: []RenderContext = [];
     effectQueue: [](() => void) = [];
     rootComponent: ComponentInstance | null = null;
@@ -120,6 +153,10 @@ opaque struct UIContext {
     _deltaTime: rx.Reactive<real>;
     _timeNow: rx.Reactive<real>;
     _prevTime: real;
+
+    mousePos: Vec2 = {};
+    pmousePos: Vec2 = {};
+    dmousePos: Vec2 = {};
 
     inline struct UIContextArgs {
         ui: ((ui: UIContext) => none);
@@ -133,7 +170,7 @@ opaque struct UIContext {
             _deltaTime: rx.reactive<real>(0),
             _timeNow: rx.reactive<real>(0),
             _prevTime: time.now(),
-            _mousePos: args.mousePos,
+            _mousePosCb: args.mousePos,
         };
 
         // UI Context depends on itself
@@ -187,19 +224,43 @@ opaque struct UIContext {
                 let childEvents = this.applyHitTestAndScheduleEvents(child, mousePos);
             }
         }
-        else {
+        else if element is hzui.TextElement {
             let pos = element.position();
             let size = element.size();
 
             let hovered = false;
             if pos && size {
-                hovered = 
+                hovered =
                     (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
                     (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
             }
 
             if !element._inputFeedback {
-                element._inputFeedback = { 
+                element._inputFeedback = {
+                    hover: false
+                };
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
+            assert(element._inputFeedback);
+
+            if element._inputFeedback.hover != hovered {
+                element._inputFeedback.hover = hovered;
+                element._inputFeedbackVersion := !element._inputFeedbackVersion;
+            }
+        }
+        else if element is hzui.CanvasElement {
+            let pos = element.position();
+            let size = element.size();
+
+            let hovered = false;
+            if pos && size {
+                hovered =
+                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
+                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
+            }
+
+            if !element._inputFeedback {
+                element._inputFeedback = {
                     hover: false
                 };
                 element._inputFeedbackVersion := !element._inputFeedbackVersion;
@@ -224,12 +285,17 @@ opaque struct UIContext {
         this._deltaTime := elapsed;
         this._timeNow := now;
 
-        let mousePos = this._mousePos();
+        this.pmousePos = this.mousePos;
+        this.mousePos = this._mousePosCb();
+        this.dmousePos = {
+            x: this.mousePos.x - this.pmousePos.x,
+            y: this.mousePos.y - this.pmousePos.y,
+        };
 
         // HIT TESTING PHASE
         if (this.rootComponent) {
             let prevTree = this.rootComponent.rootElement;
-            let events = this.applyHitTestAndScheduleEvents(prevTree, mousePos);
+            let events = this.applyHitTestAndScheduleEvents(prevTree, this.mousePos);
         }
 
         // EVENT PHASE
@@ -589,7 +655,7 @@ opaque struct UIContext {
         if props.ref is not none {
             // TODO: This should be an identity comparison in the future.
             // Ids are not globally unique and this is not guaranteed to always work.
-            // In the ideal case, we should support TypeScript-like identity comparison 
+            // In the ideal case, we should support TypeScript-like identity comparison
             // between objects, to compare that it is actually the same object.
             // The ID comparison is a best guess.
             if props.ref is null || props.ref.id != element.id {
@@ -598,6 +664,62 @@ opaque struct UIContext {
         }
 
         return element;
+    }
+
+    // A standalone element with an auto-managed offscreen GPU canvas.
+    // `drawFn`, if given, is invoked once per frame -- not here during the
+    // build phase, but later from main.hz's renderCanvas callback, which
+    // runs right after layout when this frame's size is already known (so
+    // there's no one-frame lag, even on the very first frame). It's cleared
+    // before each such automatic redraw.
+    //
+    // For content that should persist across frames instead of being fully
+    // redrawn every frame, draw imperatively whenever via drawToCanvas()
+    // (e.g. from an event handler) instead of passing drawFn here.
+    fn canvas(props: CanvasProps, drawFn?: CanvasDrawFn) {
+        let element = this.getCurrentComponent().getOrCreateCanvas(props.id);
+
+        if props.style is not none {
+            element.style := props.style;
+        }
+        element.presets = props.presets;
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
+
+        if drawFn is not none {
+            if !element._drawFn {
+                element._drawFn = TypeErasedBox<CanvasDrawFn>(drawFn);
+            } else {
+                element._drawFn.set<CanvasDrawFn>(drawFn);
+            }
+        } else {
+            element._drawFn = none;
+        }
+
+        if props.ref is not none {
+            if props.ref is null || props.ref.id != element.id {
+                props.ref := element;
+            }
+        }
+
+        return element;
+    }
+
+    // Imperative drawing entry point: draws into the canvas element's
+    // already-existing GPU canvas right now, independent of the normal
+    // frame flow (e.g. usable from an event handler). No-ops if this
+    // element hasn't been laid out yet (i.e. never rendered a frame), since
+    // there's no canvas to draw into yet. `clear` defaults to false so
+    // repeated calls accumulate instead of erasing prior content.
+    fn drawToCanvas(element: mut hzui.CanvasElement, drawFn: CanvasDrawFn, clear: bool = false) {
+        if !element._handle {
+            return;
+        }
+        let handle = element._handle.get<CanvasHandle>();
+        let r = gfx.Renderer(handle.canvas);
+        drawFn(r);
+        r.commit(clear);
     }
 
     fn ref<T>(): ElementRef<T> {
@@ -746,6 +868,14 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 ui.text({ id: 300, text: "This is rendered via the component system." });
                 ui.text({ id: 400, text: "Flexbox layout powered by Clay." });
                 ui.text({ id: 500, text: instance.props().text });
+
+                ui.canvas({
+                    id: 600,
+                    style: { width: 200.0, height: 150.0 },
+                }, (r: mut gfx.Renderer): void => {
+                    r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
+                    r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
+                });
             });
         };
     });
@@ -758,25 +888,171 @@ struct InfoBoxArgs {
         return this.id != other.id;
     }
 }
+namespace tsk {
+
+struct Point {
+    x: real;
+    y: real;
+    pressure: real;
+}
+
+struct Shape {
+    variant: str;
+    points: []Point;
+    penThickness: real;
+    penColor: str;
+}
+
+struct Page {
+    shapes: []Shape;
+}
+
+struct FileData {
+    pageColor: str;
+    gridColor: str;
+    gridType: str;
+    pages: []Page;
+}
+
+struct File {
+    filetype: str;
+    fileVersion: int;
+    data: FileData;
+}
+
+}
 
 fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<InfoBoxArgs>) => {
-        return (): void => {
-            ui.div({
-                id: 1000,
-                style: {
-                    backgroundColor: Color(0.9, 0.8, 0.2, 1),
-                    padding: hzui.StylePaddingSimple { value: 20.0 },
-                    direction: hzui.Direction.Column,
-                    justify: hzui.Justify.Center,
-                    align: hzui.Align.Center,
-                    width: 160.0,
-                    gap: 8.0,
+
+        let tesselatedShapes: []tesselate.TesselationResult = [];
+
+        // Load TSK Shapes
+        let testTsk = fs.readText("Test.tsk");
+        if !testTsk {
+            fmt.println("File loading failed");
+        }
+        else {
+            let s2 = time.now();
+            let result = json.structuredParse<tsk.File>(testTsk);
+            fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
+
+            // Tessellate outlines once before the loop
+            let start = time.now();
+            let count = 0;
+
+            if result {
+                let data: tsk.File = result;
+                let page = data.data.pages[0];
+                fmt.println("Parsed successfully");
+
+                let accuracyScaling = 10.0;
+                let tess = tesselate.Tesselator();
+                count = page.shapes.length;
+                for (let s = 0; s < page.shapes.length; s++) {
+                    let shape = page.shapes[s];
+
+                    // Perfect Freehand
+                    let pf = perfect_freehand.PerfectFreehand({
+                        size: shape.penThickness * accuracyScaling,
+                        thinning: 0.1,
+                        smoothing: 0.0,
+                        streamline: 0.6,
+                        simulatePressure: false,
+                        last: true,
+                    });
+
+                    for point in shape.points {
+                        pf.addPoint({
+                            x: point.x * accuracyScaling,
+                            y: point.y * accuracyScaling,
+                        });
+                    }
+
+                    let points: []Vec2 = [];
+                    let outline = pf.compute();
+                    if outline {
+                        fmt.println(f"  Outline has {outline.length} points");
+                        points = outline;
+                    }
+                    else {
+                        fmt.println("  PerfectFreehand compute failed");
+                    }
+
+                    pf.destroy();
+                    fmt.println("----------------------------");
+
+                    // Now tesselate
+                    if points.length > 0 {
+                        tess.beginPath();
+                        tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
+                        for (let p = 1; p < points.length; p++) {
+                            tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
+                        }
+                        tess.closePath();
+                        let result = tess.tessellate(0.25);
+                        if result { tesselatedShapes.push(result); }
+                    }
                 }
-            }, (): void => {
-                ui.text({ id: 2000, text: "Info Box" });
-                ui.text({ id: 3000, text: "Aligned center" });
+                tess.destroy();
+                fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+            }
+            else {
+                fmt.println("Failed parsing: ", result);
+            }
+
+            for (let s = 0; s < tesselatedShapes.length; s++) {
+                let shape = tesselatedShapes[s];
+
+                for (let i = 0; i < shape.vertices.length; i++) {
+                    shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
+                    shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
+                }
+            }
+
+            let end = time.now();
+            fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
+        }
+
+        return (): void => {
+            ui.canvas({
+                id: 1000,
+                style: { width: 500.0 },
+            }, (r: mut gfx.Renderer): void => {
+                // r.drawRect({ pos: Vec2(0, 0), size: Vec2(1000, 1000), fillColor: Color(1, 0, 0, 1) });
+                // r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
+                // r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
+
+                // Render tessellated shapes
+                for (let s = 0; s < tesselatedShapes.length; s++) {
+                    let shape = tesselatedShapes[s];
+
+                    for (let i = 0; i < shape.vertices.length; i++) {
+                        if (true) {
+                            shape.vertices[i].x = shape.vertices[i].x + ui.dmousePos.x;
+                            shape.vertices[i].y = shape.vertices[i].y + ui.dmousePos.y;
+                        }
+                    }
+
+                    r.addTriangles(shape.vertices, shape.indices, "#000");
+                }
             });
+
+            // ui.div({
+            //     id: 1000,
+            //     style: {
+            //         backgroundColor: Color(0.9, 0.8, 0.2, 1),
+            //         padding: hzui.StylePaddingSimple { value: 20.0 },
+            //         direction: hzui.Direction.Column,
+            //         justify: hzui.Justify.Center,
+            //         align: hzui.Align.Center,
+            //         width: 160.0,
+            //         gap: 8.0,
+            //     }
+            // }, (): void => {
+            //     ui.text({ id: 2000, text: "Info Box" });
+            //     ui.text({ id: 3000, text: "Aligned center" });
+            // });
         };
     });
 }
