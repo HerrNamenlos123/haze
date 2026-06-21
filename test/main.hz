@@ -189,50 +189,7 @@ fn testPerfectFreehand() {
     fmt.println("----------------------------");
 }
 
-fn heavierWork(v: Box<int>) {
-    v.value++;
-}
-
-fn heavyWork() {
-    let v = Box<int>(0); 
-    for (let i = 0; i < 1000000; i++) {
-        heavierWork(v);
-    }
-}
-
-fn recurse(n_max: int, cb: () => none, n: int = 0) :: final {
-    if (n >= n_max) {
-        cb();
-        return;
-    }
-    recurse(n_max, cb, n + 1);
-}
-
 fn main(): int {
-
-    let profiler = Profiler({ samplingRateHz: 100 });
-
-    let start = time.now();
-    fmt.println(f"Running");
-    for (let i = 0; i < 100; i++) {
-        fmt.println(f"Iteration {i}");
-        recurse(100, () => {
-            heavyWork();
-        });
-    }
-    fmt.println(f"Done, ran for {time.now() - start} seconds");
-
-    let result = profiler.end();
-    fmt.println(f"Profiling done: {result.samples.length} samples, {result.frames.length} unique frames, {result.sampling_rate_hz} Hz");
-    let cpuprofilePath = "profile.cpuprofile";
-    if !profiling.writeCpuProfile(result, cpuprofilePath) {
-        fmt.println(f"Wrote flamegraph data to {cpuprofilePath}");
-    }
-    else {
-        fmt.println(f"Failed to write {cpuprofilePath}");
-    }
-
-    return 0;
 
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
@@ -355,10 +312,6 @@ fn main(): int {
             fmt.println("File loading failed");
             return 0;
         }
-
-        let s1 = time.now();
-        json.parse(testTsk);
-        fmt.println(f"Parsed raw json in {time.now() - s1} seconds");
 
         let s2 = time.now();
         let result = json.structuredParse<File>(testTsk);
