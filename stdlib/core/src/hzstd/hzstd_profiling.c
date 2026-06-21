@@ -52,7 +52,6 @@ static hzstd_process_id_t hzstd_profiling_get_current_process_id(void)
   return (hzstd_process_id_t)pid;
 }
 
-static volatile int g_hits = 0;
 void* hzstd_profiling_stackwalker_thread(void* _context)
 {
   hzstd_profiling_context_t* context = _context;
@@ -65,7 +64,18 @@ void* hzstd_profiling_stackwalker_thread(void* _context)
       break;
     }
 
-    g_hits++;
+    unw_cursor_t cursor;
+    unw_init_local2(&cursor, &context->unwind_context, UNW_INIT_SIGNAL_FRAME);
+    hzstd_profiling_sample_t sample = { 0 };
+    do {
+      unw_word_t pc;
+      unw_get_reg(&cursor, UNW_REG_IP, &pc);
+
+      if (sample.depth < HZSTD_MAX_FRAMES) {
+        sample.pcs[sample.depth++] = (void*)pc;
+      }
+    } while (unw_step(&cursor) > 0);
+
     hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
   }
 
@@ -145,7 +155,7 @@ hzstd_profiling_result_t* hzstd_profiling_end(hzstd_profiling_context_t* context
 
   hzstd_profiling_result_t* result
       = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_profiling_result_t, (hzstd_profiling_result_t) {});
-  result->hits = g_hits;
+  result->samples = hzstd_dynamic_array_size(context->samples);
   return result;
 }
 
