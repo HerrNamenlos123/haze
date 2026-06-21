@@ -200,6 +200,14 @@ fn heavyWork() {
     }
 }
 
+fn recurse(n_max: int, cb: () => none, n: int = 0) :: final {
+    if (n >= n_max) {
+        cb();
+        return;
+    }
+    recurse(n_max, cb, n + 1);
+}
+
 fn main(): int {
 
     let profiler = Profiler({ samplingRateHz: 100 });
@@ -208,31 +216,16 @@ fn main(): int {
     fmt.println(f"Running");
     for (let i = 0; i < 100; i++) {
         fmt.println(f"Iteration {i}");
-        heavyWork();
+        recurse(100, () => {
+            heavyWork();
+        });
     }
     fmt.println(f"Done, ran for {time.now() - start} seconds");
 
     let result = profiler.end();
-
     fmt.println(f"Profiling done: {result.samples.length} samples, {result.frames.length} unique frames, {result.sampling_rate_hz} Hz");
-    for (let i = 0; i < result.frames.length && i < 5; i++) {
-        let frame = result.frames[i];
-        let address = 0;
-        do unsafe {
-            __c__("address = (hzstd_int_t)frame.address;");
-        };
-        let filename = frame.sourceloc.filename();
-        let loc = filename ? f"{filename}:{frame.sourceloc.line()}" : "<no source info>";
-        fmt.println(f"  frame[{i}] {frame.name} @ {address} ({loc})");
-    }
-    if result.samples.length > 0 {
-        let sample = result.samples[0];
-        fmt.println(f"  sample[0] t={sample.timestamp}s overhead={sample.sampling_duration}s depth={sample.frames.length}");
-    }
-
     let cpuprofilePath = "profile.cpuprofile";
-    let writeResult = profiling.writeCpuProfile(result, cpuprofilePath);
-    if writeResult is none {
+    if !profiling.writeCpuProfile(result, cpuprofilePath) {
         fmt.println(f"Wrote flamegraph data to {cpuprofilePath}");
     }
     else {
