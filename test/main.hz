@@ -216,6 +216,10 @@ fn main(): int {
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
+        let profiler = Profiler({
+            samplingRateHz: 1000,
+        });
+
         const window = sdl.createWindow({ 
             title: "WebGPU Example",
             noApi: true,
@@ -329,80 +333,80 @@ fn main(): int {
         });
 
         // Load TSK Shapes
-        let testTsk = fs.readText("Test.tsk");
-        if !testTsk {
-            fmt.println("File loading failed");
-            return 0;
-        }
+        // let testTsk = fs.readText("Test.tsk");
+        // if !testTsk {
+        //     fmt.println("File loading failed");
+        //     return 0;
+        // }
 
-        let s2 = time.now();
-        let result = json.structuredParse<File>(testTsk);
-        fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
+        // let s2 = time.now();
+        // let result = json.structuredParse<File>(testTsk);
+        // fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
 
         // Tessellate outlines once before the loop
         let start = time.now();
         let tesselatedShapes: []tesselate.TesselationResult = [];
         let count = 0;
 
-        if result {
-            let data: File = result;
-            let page = data.data.pages[0];
-            fmt.println("Parsed successfully");
+        // if result {
+        //     let data: File = result;
+        //     let page = data.data.pages[0];
+        //     fmt.println("Parsed successfully");
 
-            let accuracyScaling = 10.0;
-            let tess = tesselate.Tesselator();
-            count = page.shapes.length;
-            for (let s = 0; s < page.shapes.length; s++) {
-                let shape = page.shapes[s];
+        //     let accuracyScaling = 10.0;
+        //     let tess = tesselate.Tesselator();
+        //     count = page.shapes.length;
+        //     for (let s = 0; s < page.shapes.length; s++) {
+        //         let shape = page.shapes[s];
 
-                // Perfect Freehand
-                let pf = perfect_freehand.PerfectFreehand({
-                    size: shape.penThickness * accuracyScaling,
-                    thinning: 0.1,
-                    smoothing: 0.0,
-                    streamline: 0.6,
-                    simulatePressure: false,
-                    last: true,
-                });
+        //         // Perfect Freehand
+        //         let pf = perfect_freehand.PerfectFreehand({
+        //             size: shape.penThickness * accuracyScaling,
+        //             thinning: 0.1,
+        //             smoothing: 0.0,
+        //             streamline: 0.6,
+        //             simulatePressure: false,
+        //             last: true,
+        //         });
 
-                for point in shape.points {
-                    pf.addPoint({
-                        x: point.x * accuracyScaling,
-                        y: point.y * accuracyScaling,
-                    });
-                }
+        //         for point in shape.points {
+        //             pf.addPoint({
+        //                 x: point.x * accuracyScaling,
+        //                 y: point.y * accuracyScaling,
+        //             });
+        //         }
 
-                let points: []Vec2 = [];
-                let outline = pf.compute();
-                if outline {
-                    fmt.println(f"  Outline has {outline.length} points");
-                    points = outline;
-                }
-                else {
-                    fmt.println("  PerfectFreehand compute failed");
-                }
+        //         let points: []Vec2 = [];
+        //         let outline = pf.compute();
+        //         if outline {
+        //             fmt.println(f"  Outline has {outline.length} points");
+        //             points = outline;
+        //         }
+        //         else {
+        //             fmt.println("  PerfectFreehand compute failed");
+        //         }
 
-                pf.destroy();
-                fmt.println("----------------------------");
+        //         pf.destroy();
+        //         fmt.println("----------------------------");
 
-                // Now tesselate
-                if points.length > 0 {
-                    tess.beginPath();
-                    tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
-                    for (let p = 1; p < points.length; p++) {
-                        tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
-                    }
-                    tess.closePath();
-                    let result = tess.tessellate(0.25);
-                    if result { tesselatedShapes.push(result); }
-                }
-            }
-            tess.destroy();
-            fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
-        }
-        else {
-            fmt.println("Failed parsing: ", result);
-        }
+        //         // Now tesselate
+        //         if points.length > 0 {
+        //             tess.beginPath();
+        //             tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
+        //             for (let p = 1; p < points.length; p++) {
+        //                 tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
+        //             }
+        //             tess.closePath();
+        //             let result = tess.tessellate(0.25);
+        //             if result { tesselatedShapes.push(result); }
+        //         }
+        //     }
+        //     tess.destroy();
+        //     fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+        // }
+        // else {
+        //     fmt.println("Failed parsing: ", result);
+        // }
 
         for (let s = 0; s < tesselatedShapes.length; s++) {
             let shape = tesselatedShapes[s];
@@ -415,6 +419,9 @@ fn main(): int {
 
         let end = time.now();
         fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
+
+        profiler.endAndWrite("out.cpuprofile");
+        fmt.println("Done profiling");
 
         let down = false;
         let mousePosition = Vec2(0, 0);

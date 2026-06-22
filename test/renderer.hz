@@ -117,7 +117,7 @@ export inline struct RenderTexture {
     view: mut wgpu.TextureView;
 }
 
-const msaaSampleCount = 4;
+const comptime msaaSampleCount = 4;
 
 fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.TextureFormat, usage: wgpu.TextureUsage, sampleCount: int = 1): RenderTexture {
     let texture = device.createTexture({

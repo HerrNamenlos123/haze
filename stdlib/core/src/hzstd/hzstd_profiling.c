@@ -3,13 +3,16 @@
 #include "hzstd/hzstd_array.h"
 #include "hzstd/hzstd_demangle.h"
 #include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_platform_linux.h"
 #include "hzstd/hzstd_runtime.h"
 #include "hzstd_platform.h"
 #include <assert.h>
+#include <signal.h>
+
+#include "hzstd/hzstd_platform.h"
+
+#ifdef HAZE_PLATFORM_LINUX
 #include <link.h>
 #include <pthread.h>
-#include <signal.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -19,64 +22,95 @@
 #define UNW_LOCAL_ONLY
 #include "haze-libunwind/include/libunwind.h"
 
-// Source-location (file/line) resolution for arbitrary instruction pointers. libunwind only
-// knows unwind/CFI tables, not DWARF line tables, so this reads .debug_line directly. The Haze
-// codegen emits #line directives pointing back at the original .hz files, and the build always
-// passes -g, so this resolves all the way back to original Haze source locations, not just the
-// generated C.
+// Source-location (file/line) resolution for arbitrary instruction pointers.
+// libunwind only knows unwind/CFI tables, not DWARF line tables, so this reads
+// .debug_line directly. The Haze codegen emits #line directives pointing back
+// at the original .hz files, and the build always passes -g, so this resolves
+// all the way back to original Haze source locations, not just the generated C.
 #include "libdwarf.h"
+#elif defined(HAZE_PLATFORM_WIN32)
+// WARNING: windows.h MUST ALWAYS BE THE FIRST IMPORT!
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
-// Raw, per-sample data captured by the signal handler + stackwalker thread while profiling is
-// in progress. This is intentionally minimal (just addresses + timings) since it is captured
-// from a signal handler context: no symbol resolution or allocation happens here. The dirty
-// array of these is turned into the high-level, resolved hzstd_profiling_result_t by
+#include <dbghelp.h>
+// On Windows there is no signal-based suspension equivalent to Linux's
+// SIGUSR1+tgkill, so sampling is done by the scheduler thread directly
+// suspending the profiled thread (SuspendThread/GetThreadContext/ResumeThread),
+// the same primitive the panic handler's StackWalk64 path in
+// hzstd_platform_win32.c uses for crash unwinding. Source-location and symbol
+// resolution likewise reuse dbghelp (SymFromAddr / SymGetLineFromAddr64)
+// instead of the custom libunwind+libdwarf path used on Linux.
+#endif
+
+// Raw, per-sample data captured by the signal handler + stackwalker thread
+// while profiling is in progress. This is intentionally minimal (just addresses
+// + timings) since it is captured from a signal handler context: no symbol
+// resolution or allocation happens here. The dirty array of these is turned
+// into the high-level, resolved hzstd_profiling_result_t by
 // hzstd_profiling_end().
 typedef struct {
   uint16_t depth;
-  void* pcs[HZSTD_MAX_FRAMES];
-  double timestamp; // hzstd_time_now(), taken at the very start of the signal handler
-  double sampling_duration; // wall time spent capturing this sample (handler + stackwalker)
+  void *pcs[HZSTD_MAX_FRAMES];
+  double timestamp; // hzstd_time_now(), taken at the very start of the signal
+                    // handler
+  double sampling_duration; // wall time spent capturing this sample (handler +
+                            // stackwalker)
 } hzstd_profiling_raw_sample_t;
 
 struct hzstd_profiling_context_t {
+#ifdef HAZE_PLATFORM_LINUX
   hzstd_process_id_t pid;
   hzstd_thread_id_t tid;
   pthread_t stackwalker_thread;
   pthread_t scheduler_thread;
+  unw_context_t unwind_context;
+#elif defined(HAZE_PLATFORM_WIN32)
+  // Real (non-pseudo) handle to the thread being profiled, so the scheduler
+  // thread can SuspendThread/ResumeThread it from the outside.
+  HANDLE profiled_thread_handle;
+  HANDLE stackwalker_thread;
+  HANDLE scheduler_thread;
+  CONTEXT unwind_context;
+#endif
   atomic_bool stop_stackwalker;
   atomic_bool stop_scheduler;
   int sampling_rate_hz;
   atomic_int sample_in_progress;
-  unw_context_t unwind_context;
-  double sample_started_at; // hzstd_time_now() snapshot taken by the signal handler
-  // Whenever this semaphore is triggered, the stackwalker wakes up. If stop_profiling=false,
-  // it adds a new sample. If stop_profiling=true, it exits.
+  double sample_started_at; // hzstd_time_now() snapshot taken when the sample
+                            // was captured
+  // Whenever this semaphore is triggered, the stackwalker wakes up. If
+  // stop_profiling=false, it adds a new sample. If stop_profiling=true, it
+  // exits.
   hzstd_semaphore_t stackwalker_trigger_semaphore;
   hzstd_semaphore_t stackwalker_done_semaphore;
-  hzstd_dynamic_array_t* samples; // []hzstd_profiling_raw_sample_t
+  hzstd_dynamic_array_t *samples; // []hzstd_profiling_raw_sample_t
 };
 
-// TODO: In the future we should have proper thread management in haze, and this should be
-// queried once in the runtime and later only accessed in the thread local datastructure.
-static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void)
-{
+#ifdef HAZE_PLATFORM_LINUX
+// TODO: In the future we should have proper thread management in haze, and this
+// should be queried once in the runtime and later only accessed in the thread
+// local datastructure.
+static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void) {
   pid_t tid = gettid();
   assert(sizeof(hzstd_thread_id_t) >= sizeof(tid));
   return (hzstd_thread_id_t)tid;
 }
 
-// TODO: In the future we should have proper process management in haze, and this should be
-// queried once in the runtime and later only accessed in a global datastructure
-static hzstd_process_id_t hzstd_profiling_get_current_process_id(void)
-{
+// TODO: In the future we should have proper process management in haze, and
+// this should be queried once in the runtime and later only accessed in a
+// global datastructure
+static hzstd_process_id_t hzstd_profiling_get_current_process_id(void) {
   pid_t pid = getpid();
   assert(sizeof(hzstd_process_id_t) >= sizeof(pid));
   return (hzstd_process_id_t)pid;
 }
+#endif
 
-void* hzstd_profiling_stackwalker_thread(void* _context)
-{
-  hzstd_profiling_context_t* context = _context;
+#ifdef HAZE_PLATFORM_LINUX
+
+void *hzstd_profiling_stackwalker_thread(void *_context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
 
   while (!atomic_load(&context->stop_stackwalker)) {
@@ -88,20 +122,21 @@ void* hzstd_profiling_stackwalker_thread(void* _context)
 
     unw_cursor_t cursor;
     unw_init_local2(&cursor, &context->unwind_context, UNW_INIT_SIGNAL_FRAME);
-    hzstd_profiling_raw_sample_t sample = { 0 };
+    hzstd_profiling_raw_sample_t sample = {0};
     sample.timestamp = context->sample_started_at;
     do {
       unw_word_t pc;
       unw_get_reg(&cursor, UNW_REG_IP, &pc);
 
       if (sample.depth < HZSTD_MAX_FRAMES) {
-        sample.pcs[sample.depth++] = (void*)pc;
+        sample.pcs[sample.depth++] = (void *)pc;
       }
     } while (unw_step(&cursor) > 0);
 
-    // Push the finished sample before signaling done, so by the time the signal handler wakes
-    // up from the done semaphore it can reach into context->samples and patch the sampling
-    // duration onto the very sample we just added.
+    // Push the finished sample before signaling done, so by the time the signal
+    // handler wakes up from the done semaphore it can reach into
+    // context->samples and patch the sampling duration onto the very sample we
+    // just added.
     HZSTD_DYNAMIC_ARRAY_PUSH(context->samples, sample);
 
     hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
@@ -110,14 +145,13 @@ void* hzstd_profiling_stackwalker_thread(void* _context)
   return NULL;
 }
 
-static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t* context)
-{
+static void
+hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   tgkill(context->pid, context->tid, SIGUSR1);
 }
 
-void* hzstd_profiling_scheduler_thread(void* _context)
-{
-  hzstd_profiling_context_t* context = _context;
+void *hzstd_profiling_scheduler_thread(void *_context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
@@ -127,82 +161,251 @@ void* hzstd_profiling_scheduler_thread(void* _context)
   return NULL;
 }
 
-static hzstd_profiling_context_t* g_profiling_context = NULL;
+#elif defined(HAZE_PLATFORM_WIN32)
 
+// On Windows there is no per-thread signal to hijack like SIGUSR1, so the
+// stackwalker thread does not get its own context: the scheduler thread
+// captures it directly (see hzstd_profiling_invoke_sampling below) and the
+// stackwalker just walks whatever CONTEXT is currently sitting in
+// context->unwind_context once woken up.
+static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
+  hzstd_profiling_context_t *context = _context;
+  hzstd_setup_panic_handler();
+
+  HANDLE hProcess = GetCurrentProcess();
+
+  while (!atomic_load(&context->stop_stackwalker)) {
+    hzstd_wait_for_semaphore(&context->stackwalker_trigger_semaphore);
+    if (atomic_load(&context->stop_stackwalker)) {
+      hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
+      break;
+    }
+
+    CONTEXT ctx;
+    memcpy(&ctx, &context->unwind_context, sizeof(CONTEXT));
+
+    STACKFRAME64 sf;
+    memset(&sf, 0, sizeof(sf));
+#ifdef _M_X64
+    sf.AddrPC.Offset = ctx.Rip;
+    sf.AddrPC.Mode = AddrModeFlat;
+    sf.AddrFrame.Offset = ctx.Rbp;
+    sf.AddrFrame.Mode = AddrModeFlat;
+    sf.AddrStack.Offset = ctx.Rsp;
+    sf.AddrStack.Mode = AddrModeFlat;
+    DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_IX86)
+#error Only 64-bit is supported
+#endif
+
+    hzstd_profiling_raw_sample_t sample = {0};
+    sample.timestamp = context->sample_started_at;
+
+    while (StackWalk64(machineType, hProcess, context->profiled_thread_handle,
+                       &sf, &ctx, NULL, SymFunctionTableAccess64,
+                       SymGetModuleBase64, NULL)) {
+      if (sf.AddrPC.Offset == 0) {
+        break;
+      }
+      if (sample.depth < HZSTD_MAX_FRAMES) {
+        sample.pcs[sample.depth++] = (void *)sf.AddrPC.Offset;
+      } else {
+        break;
+      }
+    }
+
+    // Push the finished sample before signaling done, so by the time the
+    // scheduler thread wakes up from the done semaphore it can reach into
+    // context->samples and patch the sampling duration onto the very sample we
+    // just added.
+    HZSTD_DYNAMIC_ARRAY_PUSH(context->samples, sample);
+
+    hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
+  }
+
+  return 0;
+}
+
+// Suspends the profiled thread, captures its CONTEXT, hands it off to the
+// stackwalker thread, then resumes once the stackwalker is done. This is the
+// direct Windows analogue of the Linux SIGUSR1 signal handler: there, the
+// signal forcibly interrupts the profiled thread and runs profiling_handler
+// on top of its own stack; here, the scheduler thread does the equivalent by
+// suspending it from the outside, since Windows threads cannot be interrupted
+// with arbitrary user signals.
+static void
+hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
+  int expected = 0;
+  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
+                                      1)) {
+    // A sample is already ongoing. Just ignore this one.
+    return;
+  }
+
+  if (SuspendThread(context->profiled_thread_handle) == (DWORD)-1) {
+    atomic_store(&context->sample_in_progress, 0);
+    return;
+  }
+
+  // Taken as close to the suspension point as possible.
+  double startedAt = hzstd_time_now();
+  context->sample_started_at = startedAt;
+
+  context->unwind_context.ContextFlags = CONTEXT_FULL;
+  if (!GetThreadContext(context->profiled_thread_handle,
+                        &context->unwind_context)) {
+    ResumeThread(context->profiled_thread_handle);
+    atomic_store(&context->sample_in_progress, 0);
+    return;
+  }
+
+  // Hand off to stackwalker.
+  hzstd_trigger_semaphore(&context->stackwalker_trigger_semaphore);
+
+  // Wait for worker to finish building the stacktrace.
+  hzstd_wait_for_semaphore(&context->stackwalker_done_semaphore);
+
+  ResumeThread(context->profiled_thread_handle);
+
+  double samplingDuration = hzstd_time_now() - startedAt;
+  size_t lastIndex = hzstd_dynamic_array_size(context->samples) - 1;
+  hzstd_profiling_raw_sample_t *lastSample =
+      hzstd_dynamic_array_at(context->samples, lastIndex);
+  if (lastSample) {
+    lastSample->sampling_duration = samplingDuration;
+  }
+
+  atomic_store(&context->sample_in_progress, 0);
+}
+
+static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
+  hzstd_profiling_context_t *context = _context;
+  hzstd_setup_panic_handler();
+  while (!atomic_load(&context->stop_scheduler)) {
+    uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
+    os_sleep_ns(interval_ns);
+    hzstd_profiling_invoke_sampling(context);
+  }
+  return 0;
+}
+
+#endif
+
+static hzstd_profiling_context_t *g_profiling_context = NULL;
+
+#ifdef HAZE_PLATFORM_LINUX
 static void install_profiler_handler(void);
+#endif
 
-hzstd_profiling_context_t* hzstd_profiling_start(int samplingRateHz)
-{
+hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
   int initialSamplingCapacityPeriodSeconds = 30;
   int initialSamples = samplingRateHz * initialSamplingCapacityPeriodSeconds;
-  hzstd_thread_id_t tid = hzstd_profiling_get_current_thread_id();
-  hzstd_process_id_t pid = hzstd_profiling_get_current_process_id();
 
-  hzstd_dynamic_array_t* samples
-      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_profiling_raw_sample_t, initialSamples);
+  hzstd_dynamic_array_t *samples =
+      HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(),
+                                 hzstd_profiling_raw_sample_t, initialSamples);
 
-  hzstd_profiling_context_t newContext = { .tid = tid, .pid = pid, .samples = samples };
-  hzstd_profiling_context_t* context
-      = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
+  hzstd_profiling_context_t newContext = {.samples = samples};
+#ifdef HAZE_PLATFORM_LINUX
+  newContext.tid = hzstd_profiling_get_current_thread_id();
+  newContext.pid = hzstd_profiling_get_current_process_id();
+#endif
+
+  hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
+      hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
   hzstd_create_semaphore(&context->stackwalker_trigger_semaphore);
   hzstd_create_semaphore(&context->stackwalker_done_semaphore);
   context->sampling_rate_hz = samplingRateHz;
 
-  int result = pthread_create(&context->stackwalker_thread, NULL, hzstd_profiling_stackwalker_thread, context);
+#ifdef HAZE_PLATFORM_LINUX
+  int result = pthread_create(&context->stackwalker_thread, NULL,
+                              hzstd_profiling_stackwalker_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling stackwalker thread");
   }
 
-  result = pthread_create(&context->scheduler_thread, NULL, hzstd_profiling_scheduler_thread, context);
+  result = pthread_create(&context->scheduler_thread, NULL,
+                          hzstd_profiling_scheduler_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling scheduler thread");
   }
 
   g_profiling_context = context;
   install_profiler_handler();
+#elif defined(HAZE_PLATFORM_WIN32)
+  // GetCurrentThread() only returns a pseudo-handle valid within the calling
+  // thread; duplicate it into a real handle so the scheduler thread can
+  // SuspendThread/GetThreadContext/ResumeThread it from the outside.
+  if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                       GetCurrentProcess(), &context->profiled_thread_handle,
+                       0, FALSE, DUPLICATE_SAME_ACCESS)) {
+    hzstd_panic("Failed to duplicate the profiled thread handle");
+  }
+
+  context->stackwalker_thread = CreateThread(
+      NULL, 0, hzstd_profiling_stackwalker_thread, context, 0, NULL);
+  if (context->stackwalker_thread == NULL) {
+    hzstd_panic("Failed to create profiling stackwalker thread");
+  }
+
+  context->scheduler_thread = CreateThread(
+      NULL, 0, hzstd_profiling_scheduler_thread, context, 0, NULL);
+  if (context->scheduler_thread == NULL) {
+    hzstd_panic("Failed to create profiling scheduler thread");
+  }
+
+  g_profiling_context = context;
+#endif
 
   return context;
 }
 
+#ifdef HAZE_PLATFORM_LINUX
 // ── DWARF source-location resolution ─────────────────────────────────────────
 //
-// Built once (lazily) by reading our own executable's .debug_line section: a single flat,
-// address-sorted table covering every CU. Resolving an address is then a binary search for the
-// nearest line at or below it, which is the standard "addr2line" algorithm. Since the Haze
-// codegen emits "#line" directives back to the original .hz files and the build always passes
-// -g, this resolves all the way back to original Haze source locations.
+// Built once (lazily) by reading our own executable's .debug_line section: a
+// single flat, address-sorted table covering every CU. Resolving an address is
+// then a binary search for the nearest line at or below it, which is the
+// standard "addr2line" algorithm. Since the Haze codegen emits "#line"
+// directives back to the original .hz files and the build always passes -g,
+// this resolves all the way back to original Haze source locations.
 
 typedef struct {
-  Dwarf_Addr address; // link-time address (i.e. relative to this module's load bias)
-  Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs to (exclusive)
+  Dwarf_Addr
+      address; // link-time address (i.e. relative to this module's load bias)
+  Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs
+                           // to (exclusive)
   hzstd_str_t filename;
   hzstd_int_t line;
 } hzstd_profiling_dwarf_line_t;
 
 static bool g_dwarf_init_done = false;
 static uintptr_t g_dwarf_module_base = 0;
-static uintptr_t g_dwarf_module_extent = 0; // size of the main module's mapped image
-static hzstd_profiling_dwarf_line_t* g_dwarf_lines = NULL;
+static uintptr_t g_dwarf_module_extent =
+    0; // size of the main module's mapped image
+static hzstd_profiling_dwarf_line_t *g_dwarf_lines = NULL;
 static size_t g_dwarf_line_count = 0;
 
-// Addresses in shared libraries (libc, SDL, ...) are not covered by our own executable's
-// .debug_line, so a naive "nearest address below" search would otherwise silently produce a
-// bogus match for them. Restricting lookups to [base, base + extent) of the main executable's
-// mapped image avoids that.
-static int hzstd_profiling_find_main_module(struct dl_phdr_info* info, size_t size, void* data)
-{
+// Addresses in shared libraries (libc, SDL, ...) are not covered by our own
+// executable's .debug_line, so a naive "nearest address below" search would
+// otherwise silently produce a bogus match for them. Restricting lookups to
+// [base, base + extent) of the main executable's mapped image avoids that.
+static int hzstd_profiling_find_main_module(struct dl_phdr_info *info,
+                                            size_t size, void *data) {
   (void)size;
   (void)data;
-  // dl_iterate_phdr reports the main executable with an empty name; everything else (shared
-  // libraries) has a real path. We only resolve against our own executable for now.
+  // dl_iterate_phdr reports the main executable with an empty name; everything
+  // else (shared libraries) has a real path. We only resolve against our own
+  // executable for now.
   if (info->dlpi_name == NULL || info->dlpi_name[0] == '\0') {
     g_dwarf_module_base = (uintptr_t)info->dlpi_addr;
     for (int i = 0; i < info->dlpi_phnum; i++) {
       if (info->dlpi_phdr[i].p_type != PT_LOAD) {
         continue;
       }
-      uintptr_t segmentEnd = (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
+      uintptr_t segmentEnd =
+          (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
       if (segmentEnd > g_dwarf_module_extent) {
         g_dwarf_module_extent = segmentEnd;
       }
@@ -212,10 +415,9 @@ static int hzstd_profiling_find_main_module(struct dl_phdr_info* info, size_t si
   return 0;
 }
 
-static int hzstd_profiling_dwarf_line_compare(const void* a, const void* b)
-{
-  const hzstd_profiling_dwarf_line_t* la = a;
-  const hzstd_profiling_dwarf_line_t* lb = b;
+static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b) {
+  const hzstd_profiling_dwarf_line_t *la = a;
+  const hzstd_profiling_dwarf_line_t *lb = b;
   if (la->address < lb->address) {
     return -1;
   }
@@ -225,8 +427,7 @@ static int hzstd_profiling_dwarf_line_compare(const void* a, const void* b)
   return 0;
 }
 
-static void hzstd_profiling_dwarf_build_line_table(void)
-{
+static void hzstd_profiling_dwarf_build_line_table(void) {
   g_dwarf_init_done = true; // only ever try once, even if this fails
 
   dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
@@ -240,24 +441,26 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
   Dwarf_Debug dbg = NULL;
   Dwarf_Error error = NULL;
-  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg, &error) != DW_DLV_OK) {
+  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg,
+                      &error) != DW_DLV_OK) {
     return;
   }
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   size_t capacity = 1024;
   size_t count = 0;
-  hzstd_profiling_dwarf_line_t* lines
-      = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+  hzstd_profiling_dwarf_line_t *lines = hzstd_allocate(
+      allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
 
   Dwarf_Unsigned cuHeaderLength, abbrevOffset, typeOffset, nextCuHeaderOffset;
   Dwarf_Half versionStamp, addressSize, lengthSize, extensionSize, headerCuType;
   Dwarf_Sig8 typeSignature;
 
-  while (dwarf_next_cu_header_d(dbg, true, &cuHeaderLength, &versionStamp, &abbrevOffset, &addressSize,
-             &lengthSize, &extensionSize, &typeSignature, &typeOffset, &nextCuHeaderOffset, &headerCuType,
-             &error)
-      == DW_DLV_OK) {
+  while (dwarf_next_cu_header_d(dbg, true, &cuHeaderLength, &versionStamp,
+                                &abbrevOffset, &addressSize, &lengthSize,
+                                &extensionSize, &typeSignature, &typeOffset,
+                                &nextCuHeaderOffset, &headerCuType,
+                                &error) == DW_DLV_OK) {
     Dwarf_Die cuDie = NULL;
     if (dwarf_siblingof_b(dbg, NULL, true, &cuDie, &error) != DW_DLV_OK) {
       continue;
@@ -266,18 +469,22 @@ static void hzstd_profiling_dwarf_build_line_table(void)
     Dwarf_Unsigned lineVersion;
     Dwarf_Small lineTableCount;
     Dwarf_Line_Context lineContext = NULL;
-    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext, &error) == DW_DLV_OK) {
-      Dwarf_Line* lineBuf = NULL;
+    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext,
+                         &error) == DW_DLV_OK) {
+      Dwarf_Line *lineBuf = NULL;
       Dwarf_Signed lineCount = 0;
-      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount, &error) == DW_DLV_OK) {
-        // DWARF line tables are a series of contiguous code ranges ("sequences"), each
-        // terminated by a synthetic end_sequence row. Addresses are only meaningfully
-        // comparable within the same sequence — a function with no debug info at all (crt
-        // startup code, a vendored dependency without -g, ...) leaves a gap that a naive
-        // "nearest address below" search would otherwise bridge, attributing it to whatever
-        // unrelated function happens to sort right before it. `sequenceStart` tracks where the
-        // current sequence's entries begin in `lines`, backfilled with the real end address
-        // once the end_sequence row for that range is seen.
+      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount,
+                                          &error) == DW_DLV_OK) {
+        // DWARF line tables are a series of contiguous code ranges
+        // ("sequences"), each terminated by a synthetic end_sequence row.
+        // Addresses are only meaningfully comparable within the same sequence —
+        // a function with no debug info at all (crt startup code, a vendored
+        // dependency without -g, ...) leaves a gap that a naive "nearest
+        // address below" search would otherwise bridge, attributing it to
+        // whatever unrelated function happens to sort right before it.
+        // `sequenceStart` tracks where the current sequence's entries begin in
+        // `lines`, backfilled with the real end address once the end_sequence
+        // row for that range is seen.
         size_t sequenceStart = count;
         for (Dwarf_Signed i = 0; i < lineCount; i++) {
           Dwarf_Addr addr = 0;
@@ -286,7 +493,8 @@ static void hzstd_profiling_dwarf_build_line_table(void)
           }
 
           Dwarf_Bool isEndSequence = false;
-          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) != DW_DLV_OK) {
+          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) !=
+              DW_DLV_OK) {
             isEndSequence = false;
           }
           if (isEndSequence) {
@@ -298,7 +506,7 @@ static void hzstd_profiling_dwarf_build_line_table(void)
           }
 
           Dwarf_Unsigned lineno = 0;
-          char* filename = NULL;
+          char *filename = NULL;
           if (dwarf_lineno(lineBuf[i], &lineno, &error) != DW_DLV_OK) {
             continue;
           }
@@ -308,14 +516,15 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
           if (count >= capacity) {
             capacity *= 2;
-            hzstd_profiling_dwarf_line_t* grown
-                = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+            hzstd_profiling_dwarf_line_t *grown = hzstd_allocate(
+                allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
             memcpy(grown, lines, count * sizeof(hzstd_profiling_dwarf_line_t));
             lines = grown;
           }
 
           lines[count].address = addr;
-          lines[count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
+          lines[count].sequence_end =
+              0; // backfilled once this sequence's end_sequence row is seen
           lines[count].filename = hzstd_str_from_cstr_dup(allocator, filename);
           lines[count].line = (hzstd_int_t)lineno;
           count++;
@@ -329,16 +538,19 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
   dwarf_finish(dbg);
 
-  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t), hzstd_profiling_dwarf_line_compare);
+  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t),
+        hzstd_profiling_dwarf_line_compare);
 
   g_dwarf_lines = lines;
   g_dwarf_line_count = count;
 }
 
-// Binary search for the nearest line at or below `address` (the standard addr2line algorithm).
-static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
-{
-  hzstd_source_location_t absent = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
+// Binary search for the nearest line at or below `address` (the standard
+// addr2line algorithm).
+static hzstd_source_location_t
+hzstd_profiling_resolve_sourceloc(void *address) {
+  hzstd_source_location_t absent = {
+      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
 
   if (!g_dwarf_init_done) {
     hzstd_profiling_dwarf_build_line_table();
@@ -347,11 +559,12 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     return absent;
   }
 
-  // Reject addresses outside our own module entirely (shared libraries, JIT code, ...): they are
-  // not covered by this DWARF table at all, and a nearest-below search would otherwise pick a
-  // bogus match from a completely unrelated function.
-  if ((uintptr_t)address < g_dwarf_module_base
-      || (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
+  // Reject addresses outside our own module entirely (shared libraries, JIT
+  // code, ...): they are not covered by this DWARF table at all, and a
+  // nearest-below search would otherwise pick a bogus match from a completely
+  // unrelated function.
+  if ((uintptr_t)address < g_dwarf_module_base ||
+      (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
     return absent;
   }
 
@@ -362,8 +575,7 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     size_t mid = lo + (hi - lo) / 2;
     if (g_dwarf_lines[mid].address <= target) {
       lo = mid + 1;
-    }
-    else {
+    } else {
       hi = mid;
     }
   }
@@ -372,144 +584,235 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     return absent;
   }
 
-  hzstd_profiling_dwarf_line_t* match = &g_dwarf_lines[lo - 1];
+  hzstd_profiling_dwarf_line_t *match = &g_dwarf_lines[lo - 1];
 
-  // The match is only valid if `target` actually falls within the same contiguous code range
-  // (sequence) that line belongs to. Otherwise it's a gap (e.g. code with no debug info at all)
-  // and a match here would just be the nearest unrelated function that happened to sort before it.
+  // The match is only valid if `target` actually falls within the same
+  // contiguous code range (sequence) that line belongs to. Otherwise it's a gap
+  // (e.g. code with no debug info at all) and a match here would just be the
+  // nearest unrelated function that happened to sort before it.
   if (target >= match->sequence_end) {
     return absent;
   }
 
-  return (hzstd_source_location_t) {
-    ._filename = match->filename,
-    ._line = match->line,
-    ._column = 0,
+  return (hzstd_source_location_t){
+      ._filename = match->filename,
+      ._line = match->line,
+      ._column = 0,
   };
 }
 
-// Resolve the function name belonging to `address` via libunwind's address-space API (works on a
-// raw saved PC, no live unwind cursor needed) and demangle it into a clean display name.
+// Resolve the function name belonging to `address` via libunwind's
+// address-space API (works on a raw saved PC, no live unwind cursor needed) and
+// demangle it into a clean display name.
 //
-// `isLeaf` distinguishes the innermost frame (whose pc is the actual suspended instruction) from
-// every caller frame above it (whose pc is a *return address* — the instruction right after the
-// `call`, which may belong to the next line/sequence entirely, or even sit exactly on a sequence
-// boundary). The standard fix every unwinder/symbolizer applies is to look up `pc - 1` for those,
-// so the lookup lands on the call instruction itself rather than whatever follows it.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool isLeaf)
-{
-  void* lookupAddress = isLeaf ? address : (void*)((uintptr_t)address - 1);
+// `isLeaf` distinguishes the innermost frame (whose pc is the actual suspended
+// instruction) from every caller frame above it (whose pc is a *return address*
+// — the instruction right after the `call`, which may belong to the next
+// line/sequence entirely, or even sit exactly on a sequence boundary). The
+// standard fix every unwinder/symbolizer applies is to look up `pc - 1` for
+// those, so the lookup lands on the call instruction itself rather than
+// whatever follows it.
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
+                                                             bool isLeaf) {
+  void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
 
   char rawName[4096];
   unw_word_t offset;
-  if (unw_get_proc_name_by_ip(
-          unw_local_addr_space, (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset, NULL)
-      == 0) {
+  if (unw_get_proc_name_by_ip(unw_local_addr_space, (unw_word_t)lookupAddress,
+                              rawName, sizeof(rawName), &offset, NULL) == 0) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
     name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
-                              : hzstd_str_from_cstr_dup(allocator, rawName);
+                             : hzstd_str_from_cstr_dup(allocator, rawName);
   }
 
-  return (hzstd_profiling_frame_t) {
-    .address = address,
-    .name = name,
-    .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
+  return (hzstd_profiling_frame_t){
+      .address = address,
+      .name = name,
+      .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
   };
 }
 
-// Intern `address` into `frames`, deduplicating by instruction pointer (the same function hit by
-// many samples must only be resolved/stored once), and return its index. See
-// hzstd_profiling_resolve_frame for what `isLeaf` is for.
-static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* address, bool isLeaf)
-{
+#elif defined(HAZE_PLATFORM_WIN32)
+
+// ── dbghelp source-location + symbol resolution ─────────────────────────────
+//
+// Unlike Linux, Windows debug info (PDB) is already indexed by dbghelp, so
+// there is no need for a hand-rolled .debug_line reader here: SymFromAddr and
+// SymGetLineFromAddr64 do the equivalent of the libunwind+libdwarf path above.
+// This mirrors what the panic handler in hzstd_platform_win32.c already does
+// for crash stacktraces.
+
+#define HZSTD_PROFILING_SYM_BUF_SIZE \
+  (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+
+static bool g_profiling_sym_initialized = false;
+
+// See hzstd_profiling_resolve_frame's Linux counterpart above for why `isLeaf`
+// matters: caller frames hold a return address, so the lookup is offset by one
+// byte to land back on the call instruction itself.
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
+                                                             bool isLeaf) {
+  void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
+
+  if (!g_profiling_sym_initialized) {
+    if (!SymInitialize(GetCurrentProcess(), NULL, TRUE)) {
+      fprintf(stderr, "Warning: SymInitialize failed — profiling symbol "
+                      "names/source locations will be unavailable.\n");
+    }
+    g_profiling_sym_initialized = true;
+  }
+
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  hzstd_str_t name = HZSTD_STRING(NULL, 0);
+  HANDLE hProcess = GetCurrentProcess();
+
+  char symbolBuffer[HZSTD_PROFILING_SYM_BUF_SIZE];
+  PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
+  pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  pSym->MaxNameLen = MAX_SYM_NAME;
+  DWORD64 displacement = 0;
+  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement,
+                  pSym)) {
+    hzstd_demangle_result_t demangled = hzstd_demangle(allocator, pSym->Name);
+    name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
+                             : hzstd_str_from_cstr_dup(allocator, pSym->Name);
+  }
+
+  hzstd_source_location_t sourceloc = {
+      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
+  IMAGEHLP_LINE64 lineInfo;
+  lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+  DWORD lineDisp = 0;
+  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress,
+                           &lineDisp, &lineInfo)) {
+    sourceloc._filename =
+        hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
+    sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
+  }
+
+  return (hzstd_profiling_frame_t){
+      .address = address,
+      .name = name,
+      .sourceloc = sourceloc,
+  };
+}
+
+#endif
+
+// Intern `address` into `frames`, deduplicating by instruction pointer (the
+// same function hit by many samples must only be resolved/stored once), and
+// return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
+static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t *frames,
+                                           void *address, bool isLeaf) {
   for (size_t i = 0; i < hzstd_dynamic_array_size(frames); i++) {
-    hzstd_profiling_frame_t existing = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
+    hzstd_profiling_frame_t existing =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
     if (existing.address == address) {
       return i;
     }
   }
 
-  hzstd_profiling_frame_t frame = hzstd_profiling_resolve_frame(address, isLeaf);
+  hzstd_profiling_frame_t frame =
+      hzstd_profiling_resolve_frame(address, isLeaf);
   HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
   return hzstd_dynamic_array_size(frames) - 1;
 }
 
-// Turn one raw sample (bare addresses) into a postprocessed sample (interned frame indices into
-// `resultFrames`, innermost first, same order libunwind walked them in).
-static hzstd_profiling_sample_t hzstd_profiling_build_sample(
-    hzstd_dynamic_array_t* resultFrames, hzstd_profiling_raw_sample_t raw)
-{
-  hzstd_dynamic_array_t* frameIndices
-      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
+// Turn one raw sample (bare addresses) into a postprocessed sample (interned
+// frame indices into `resultFrames`, innermost first, same order libunwind
+// walked them in).
+static hzstd_profiling_sample_t
+hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
+                             hzstd_profiling_raw_sample_t raw) {
+  hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(
+      hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
-    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, raw.pcs[i], i == 0);
+    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(
+        resultFrames, raw.pcs[i], i == 0);
     HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, index);
   }
 
-  return (hzstd_profiling_sample_t) {
-    .timestamp = raw.timestamp,
-    .sampling_duration = raw.sampling_duration,
-    .frames = frameIndices,
+  return (hzstd_profiling_sample_t){
+      .timestamp = raw.timestamp,
+      .sampling_duration = raw.sampling_duration,
+      .frames = frameIndices,
   };
 }
 
-hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context)
-{
-  if (atomic_load(&context->stop_scheduler) || atomic_load(&context->stop_stackwalker)) {
+hzstd_profiling_result_t
+hzstd_profiling_end(hzstd_profiling_context_t *context) {
+  if (atomic_load(&context->stop_scheduler) ||
+      atomic_load(&context->stop_stackwalker)) {
     HZSTD_PANIC_FMT("Profiling was already stopped");
   }
 
   // First stop the scheduler and wait for it.
   atomic_store(&context->stop_scheduler, true);
+#ifdef HAZE_PLATFORM_LINUX
   pthread_join(context->scheduler_thread, NULL);
+#elif defined(HAZE_PLATFORM_WIN32)
+  WaitForSingleObject(context->scheduler_thread, INFINITE);
+  CloseHandle(context->scheduler_thread);
+#endif
 
   // Now that no more samples are scheduled, stop and join the stackwalker
   atomic_store(&context->stop_stackwalker, true);
   hzstd_trigger_semaphore(&context->stackwalker_trigger_semaphore);
+#ifdef HAZE_PLATFORM_LINUX
   pthread_join(context->stackwalker_thread, NULL);
+#elif defined(HAZE_PLATFORM_WIN32)
+  WaitForSingleObject(context->stackwalker_thread, INFINITE);
+  CloseHandle(context->stackwalker_thread);
+  CloseHandle(context->profiled_thread_handle);
+#endif
 
-  // Heavy lifting happens here, now that sampling is fully stopped: intern every unique
-  // instruction pointer into a resolved frame table, and turn each raw sample into a list of
-  // indices into that table.
+  // Heavy lifting happens here, now that sampling is fully stopped: intern
+  // every unique instruction pointer into a resolved frame table, and turn each
+  // raw sample into a list of indices into that table.
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   size_t rawSampleCount = hzstd_dynamic_array_size(context->samples);
 
-  hzstd_dynamic_array_t* frames = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, 64);
-  hzstd_dynamic_array_t* samples
-      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_sample_t, rawSampleCount);
+  hzstd_dynamic_array_t *frames =
+      HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, 64);
+  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_profiling_sample_t, rawSampleCount);
 
   for (size_t i = 0; i < rawSampleCount; i++) {
-    hzstd_profiling_raw_sample_t raw = HZSTD_DYNAMIC_ARRAY_GET(context->samples, hzstd_profiling_raw_sample_t, i);
+    hzstd_profiling_raw_sample_t raw = HZSTD_DYNAMIC_ARRAY_GET(
+        context->samples, hzstd_profiling_raw_sample_t, i);
     hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(frames, raw);
     HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
   }
 
-  return (hzstd_profiling_result_t) {
-    .frames = frames,
-    .samples = samples,
-    .sampling_rate_hz = context->sampling_rate_hz,
+  return (hzstd_profiling_result_t){
+      .frames = frames,
+      .samples = samples,
+      .sampling_rate_hz = context->sampling_rate_hz,
   };
 }
 
-static void profiling_handler(int sig, siginfo_t* info, void* ucontext)
-{
+#ifdef HAZE_PLATFORM_LINUX
+
+static void profiling_handler(int sig, siginfo_t *info, void *ucontext) {
   (void)sig;
   (void)info;
 
-  hzstd_profiling_context_t* context = g_profiling_context;
+  hzstd_profiling_context_t *context = g_profiling_context;
 
   int expected = 0;
-  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected, 1)) {
+  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
+                                      1)) {
     // A sample is already ongoing. Just ignore this one.
     // But this should actually never be possible to happen. To be investigated.
     return;
   }
 
-  // Taken as close to the suspension point as possible, before anything else in the handler runs.
+  // Taken as close to the suspension point as possible, before anything else in
+  // the handler runs.
   double startedAt = hzstd_time_now();
   context->sample_started_at = startedAt;
 
@@ -521,23 +824,25 @@ static void profiling_handler(int sig, siginfo_t* info, void* ucontext)
   // Wait for worker to finish building the stacktrace.
   hzstd_wait_for_semaphore(&context->stackwalker_done_semaphore);
 
-  // The stackwalker has just pushed the new sample (synchronised by the done semaphore above, and
-  // this thread is the only one that can ever have a sample in flight, see tgkill in
-  // hzstd_profiling_invoke_sampling), so it is safe to reach in and patch the total time this
-  // sample cost the profiled thread, measured as close to resuming it as possible.
+  // The stackwalker has just pushed the new sample (synchronised by the done
+  // semaphore above, and this thread is the only one that can ever have a
+  // sample in flight, see tgkill in hzstd_profiling_invoke_sampling), so it is
+  // safe to reach in and patch the total time this sample cost the profiled
+  // thread, measured as close to resuming it as possible.
   double samplingDuration = hzstd_time_now() - startedAt;
   size_t lastIndex = hzstd_dynamic_array_size(context->samples) - 1;
-  hzstd_profiling_raw_sample_t* lastSample = hzstd_dynamic_array_at(context->samples, lastIndex);
+  hzstd_profiling_raw_sample_t *lastSample =
+      hzstd_dynamic_array_at(context->samples, lastIndex);
   if (lastSample) {
     lastSample->sampling_duration = samplingDuration;
   }
 
-  // Now that the walker is done and the stack has been snapshotted, we can finally continue with this thread
+  // Now that the walker is done and the stack has been snapshotted, we can
+  // finally continue with this thread
   atomic_store(&context->sample_in_progress, 0);
 }
 
-static void install_profiler_handler(void)
-{
+static void install_profiler_handler(void) {
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
 
@@ -548,3 +853,5 @@ static void install_profiler_handler(void)
 
   sigaction(SIGUSR1, &sa, NULL);
 }
+
+#endif
