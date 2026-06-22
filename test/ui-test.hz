@@ -1067,16 +1067,22 @@ struct FooterArgs {
 
 fn Footer(ui: UIContext, args: FooterArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<FooterArgs>) => {
+
+        let text = rx.reactive<str>("This is some actual text to read");
+
         return (): void => {
             ui.div({
                 id: 10000,
                 style: {
-                    backgroundColor: Color(0.4, 0.4, 0.9, 1),
+                    textColor: "#FFF" as Color,
                     padding: hzui.StylePaddingSimple { value: 15.0 },
                     align: hzui.Align.Center,
-                }
+                },
+                presets: [
+                    presets.bg("#181818"),
+                ],
             }, (): void => {
-                ui.text({ id: 20000, text: "Footer — Haze UI Component System", style: { fontSize: 20.0 } });
+                ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
             });
         };
     });

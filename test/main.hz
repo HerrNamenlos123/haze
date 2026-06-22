@@ -13,6 +13,19 @@ export extern C noemit fn wgpu_init(window: cptr) :: final;
 export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
 export extern C fn wgpu_end(window: cptr) :: final;
 
+// Prefer a non-sRGB surface format so that authored colors (e.g. Color hex
+// literals) map byte-for-byte to what's displayed, like CSS/HTML does. If the
+// driver only reports sRGB variants, fall back to its first reported format
+// rather than fail.
+fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
+    for format in caps.formats {
+        if format != wgpu.TextureFormat.BGRA8UnormSrgb && format != wgpu.TextureFormat.RGBA8UnormSrgb {
+            return format;
+        }
+    }
+    return caps.formats[0];
+}
+
 fn getWindowState(window: sdl.Window): gfx.CanvasSize {
     let logicalSize = window.getLogicalSize();
     let framebufferSize = window.getFramebufferSize();
@@ -280,10 +293,12 @@ fn main(): int {
         let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }
 
+        let surfaceFormat = pickSurfaceFormat(caps);
+
         let windowState = getWindowState(window);
         surface.configure({
             device: device,
-            format: caps.formats[0],
+            format: surfaceFormat,
             usage: wgpu.TextureUsage.RenderAttachment,
             width: windowState.framebufferSize.x,
             height: windowState.framebufferSize.y,
@@ -296,7 +311,7 @@ fn main(): int {
         const comptime enableShaderHotreload = true;
         let gfxCtx = gfx.Context({
             device: device,
-            targetFormat: caps.formats[0],
+            targetFormat: surfaceFormat,
             shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
         });
 
@@ -460,7 +475,7 @@ fn main(): int {
                 if nextWindowState.framebufferSize.x > 0 && nextWindowState.framebufferSize.y > 0 {
                     surface.configure({
                         device: device,
-                        format: caps.formats[0],
+                        format: surfaceFormat,
                         usage: wgpu.TextureUsage.RenderAttachment,
                         width: nextWindowState.framebufferSize.x,
                         height: nextWindowState.framebufferSize.y,
