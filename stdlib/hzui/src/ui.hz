@@ -117,7 +117,7 @@ export inline struct DivStyle {
     // flexGrow: real;
     direction: Direction = Direction.Column;
     justify: Justify = Justify.Start;
-    align: Align = Align.Start;
+    align?: Align = none;
     cornerRadius: StyleCornerRadius = none;
     gap?: real;
     backgroundColor?: Color;
@@ -138,6 +138,16 @@ export inline struct DivStyle {
             if preset is presets.PaddingPreset {
                 if !style.padding {
                     style.padding = preset.padding;
+                }
+            }
+            if preset is presets.TextColorPreset {
+                if !style.textColor {
+                    style.textColor = preset.color;
+                }
+            }
+            if preset is presets.AlignPreset {
+                if !style.align {
+                    style.align = preset.value;
                 }
             }
             if preset is presets.BackgroundColorPreset {

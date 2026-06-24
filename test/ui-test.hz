@@ -939,16 +939,12 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
 
             // Tessellate outlines once before the loop
             let start = time.now();
-            let count = 0;
 
             if result {
-                let data: tsk.File = result;
-                let page = data.data.pages[0];
-                fmt.println("Parsed successfully");
+                let page = result.data.pages[0];
 
                 let accuracyScaling = 10.0;
                 let tess = tesselate.Tesselator();
-                count = page.shapes.length;
                 for (let s = 0; s < page.shapes.length; s++) {
                     let shape = page.shapes[s];
 
@@ -970,17 +966,11 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
                     }
 
                     let points: []Vec2 = [];
-                    let outline = pf.compute();
-                    if outline {
-                        fmt.println(f"  Outline has {outline.length} points");
+                    if let outline = pf.compute() {
                         points = outline;
-                    }
-                    else {
-                        fmt.println("  PerfectFreehand compute failed");
                     }
 
                     pf.destroy();
-                    fmt.println("----------------------------");
 
                     // Now tesselate
                     if points.length > 0 {
@@ -990,8 +980,7 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
                             tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
                         }
                         tess.closePath();
-                        let result = tess.tessellate(0.25);
-                        if result { tesselatedShapes.push(result); }
+                        if let result = tess.tessellate(0.25) { tesselatedShapes.push(result); }
                     }
                 }
                 tess.destroy();
@@ -1011,7 +1000,7 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
             }
 
             let end = time.now();
-            fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
+            fmt.println(f"Tesselated shapes in {(end - start) * 1000.0} ms");
         }
 
         return (): void => {
@@ -1037,22 +1026,6 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
                     r.addTriangles(shape.vertices, shape.indices, "#000");
                 }
             });
-
-            // ui.div({
-            //     id: 1000,
-            //     style: {
-            //         backgroundColor: Color(0.9, 0.8, 0.2, 1),
-            //         padding: hzui.StylePaddingSimple { value: 20.0 },
-            //         direction: hzui.Direction.Column,
-            //         justify: hzui.Justify.Center,
-            //         align: hzui.Align.Center,
-            //         width: 160.0,
-            //         gap: 8.0,
-            //     }
-            // }, (): void => {
-            //     ui.text({ id: 2000, text: "Info Box" });
-            //     ui.text({ id: 3000, text: "Aligned center" });
-            // });
         };
     });
 }
@@ -1073,13 +1046,11 @@ fn Footer(ui: UIContext, args: FooterArgs) {
         return (): void => {
             ui.div({
                 id: 10000,
-                style: {
-                    textColor: "#FFF" as Color,
-                    padding: hzui.StylePaddingSimple { value: 15.0 },
-                    align: hzui.Align.Center,
-                },
                 presets: [
                     presets.bg("#181818"),
+                    presets.textColor("#F00"),
+                    presets.p(15),
+                    presets.align(hzui.Align.Center),
                 ],
             }, (): void => {
                 ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });

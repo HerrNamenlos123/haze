@@ -31,7 +31,23 @@ namespace presets {
         };
     }
 
+    export fn textColor(color: Color) {
+        return TextColorPreset {
+            color: color,
+        };
+    }
+
+    export fn align(value: Align) {
+        return AlignPreset {
+            value: value,
+        };
+    }
+
     export struct BackgroundColorPreset {
+        color: Color;
+    }
+
+    export struct TextColorPreset {
         color: Color;
     }
 
@@ -43,5 +59,9 @@ namespace presets {
         value: real;
     }
 
-    export type Preset = PaddingPreset | BackgroundColorPreset | GapPreset;
+    export struct AlignPreset {
+        value: Align;
+    }
+
+    export type Preset = PaddingPreset | BackgroundColorPreset | TextColorPreset | GapPreset | AlignPreset;
 }

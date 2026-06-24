@@ -229,10 +229,6 @@ fn main(): int {
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
-        let profiler = Profiler({
-            samplingRateHz: 1000,
-        });
-
         const window = sdl.createWindow({ 
             title: "WebGPU Example",
             noApi: true,
@@ -347,97 +343,6 @@ fn main(): int {
             },
         });
 
-        // Load TSK Shapes
-        // let testTsk = fs.readText("Test.tsk");
-        // if !testTsk {
-        //     fmt.println("File loading failed");
-        //     return 0;
-        // }
-
-        // let s2 = time.now();
-        // let result = json.structuredParse<File>(testTsk);
-        // fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
-
-        // Tessellate outlines once before the loop
-        let start = time.now();
-        let tesselatedShapes: []tesselate.TesselationResult = [];
-        let count = 0;
-
-        // if result {
-        //     let data: File = result;
-        //     let page = data.data.pages[0];
-        //     fmt.println("Parsed successfully");
-
-        //     let accuracyScaling = 10.0;
-        //     let tess = tesselate.Tesselator();
-        //     count = page.shapes.length;
-        //     for (let s = 0; s < page.shapes.length; s++) {
-        //         let shape = page.shapes[s];
-
-        //         // Perfect Freehand
-        //         let pf = perfect_freehand.PerfectFreehand({
-        //             size: shape.penThickness * accuracyScaling,
-        //             thinning: 0.1,
-        //             smoothing: 0.0,
-        //             streamline: 0.6,
-        //             simulatePressure: false,
-        //             last: true,
-        //         });
-
-        //         for point in shape.points {
-        //             pf.addPoint({
-        //                 x: point.x * accuracyScaling,
-        //                 y: point.y * accuracyScaling,
-        //             });
-        //         }
-
-        //         let points: []Vec2 = [];
-        //         let outline = pf.compute();
-        //         if outline {
-        //             fmt.println(f"  Outline has {outline.length} points");
-        //             points = outline;
-        //         }
-        //         else {
-        //             fmt.println("  PerfectFreehand compute failed");
-        //         }
-
-        //         pf.destroy();
-        //         fmt.println("----------------------------");
-
-        //         // Now tesselate
-        //         if points.length > 0 {
-        //             tess.beginPath();
-        //             tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
-        //             for (let p = 1; p < points.length; p++) {
-        //                 tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
-        //             }
-        //             tess.closePath();
-        //             let result = tess.tessellate(0.25);
-        //             if result { tesselatedShapes.push(result); }
-        //         }
-        //     }
-        //     tess.destroy();
-        //     fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
-        // }
-        // else {
-        //     fmt.println("Failed parsing: ", result);
-        // }
-
-        for (let s = 0; s < tesselatedShapes.length; s++) {
-            let shape = tesselatedShapes[s];
-
-            for (let i = 0; i < shape.vertices.length; i++) {
-                shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
-                shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
-            }
-        }
-
-        let end = time.now();
-        fmt.println(f"Tesselated {count} shapes in {(end - start) * 1000.0} ms");
-
-        profiler.endAndWrite("out.cpuprofile");
-        fmt.println("Done profiling");
-
         let down = false;
         let mousePosition = Vec2(0, 0);
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
@@ -459,6 +364,10 @@ fn main(): int {
         let ui = UIContext({
             ui: (ui: UIContext) => UI(ui),
             mousePos: () => mousePosition as Vec2,
+        });
+
+        let profiler = Profiler({
+            samplingRateHz: 100,
         });
 
         let pMousePosition = Vec2(0, 0);
@@ -558,23 +467,27 @@ fn main(): int {
                 }
             });
 
-            // Render tessellated shapes
-            for (let s = 0; s < tesselatedShapes.length; s++) {
-                let shape = tesselatedShapes[s];
+            // // Render tessellated shapes
+            // for (let s = 0; s < tesselatedShapes.length; s++) {
+            //     let shape = tesselatedShapes[s];
 
-                for (let i = 0; i < shape.vertices.length; i++) {
-                    if (down) {
-                        shape.vertices[i].x = shape.vertices[i].x + dMousePosition.x;
-                        shape.vertices[i].y = shape.vertices[i].y + dMousePosition.y;
-                    }
-                }
+            //     for (let i = 0; i < shape.vertices.length; i++) {
+            //         if (down) {
+            //             shape.vertices[i].x = shape.vertices[i].x + dMousePosition.x;
+            //             shape.vertices[i].y = shape.vertices[i].y + dMousePosition.y;
+            //         }
+            //     }
 
-                // renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
-                renderer.addTriangles(shape.vertices, shape.indices, "#000");
-            }
+            //     // renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
+            //     renderer.addTriangles(shape.vertices, shape.indices, "#000");
+            // }
 
             renderer.commit();
         }
+
+        fmt.println("Stopping profiling");
+        profiler.endAndWrite("out.cpuprofile");
+        fmt.println("Done profiling");
 
         window.destroy();
         sdl.terminate();
