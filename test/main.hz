@@ -226,6 +226,8 @@ fn testPerfectFreehand() {
 
 fn main(): int {
 
+    fmt.println("TODO: Read R&D/Profiling Backend - perf_event_open Migration.md. ");
+
     attempt {
         if !sdl.init() { raise "SDL init failed"; }
 
