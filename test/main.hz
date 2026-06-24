@@ -367,7 +367,7 @@ fn main(): int {
         });
 
         let profiler = Profiler({
-            samplingRateHz: 1000,
+            samplingRateHz: 10000,
         });
 
         let pMousePosition = Vec2(0, 0);

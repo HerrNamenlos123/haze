@@ -12,7 +12,15 @@
       "program": "${workspaceFolder}/__haze__/test/bin/test",
       "args": [],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "Build test program"
+      "preLaunchTask": "Build test program",
+      // SIGPWR/SIGXCPU are Boehm GC's internal stop-the-world signals (fire on every GC cycle);
+      // SIGUSR1 is the profiler's own sampling signal. All three are expected/handled internally
+      // and would otherwise stop the debugger on every single occurrence.
+      "preRunCommands": [
+        "process handle SIGPWR --stop false --notify false --pass true",
+        "process handle SIGXCPU --stop false --notify false --pass true",
+        "process handle SIGUSR1 --stop false --notify false --pass true"
+      ]
     },
     {
       "type": "lldb",
