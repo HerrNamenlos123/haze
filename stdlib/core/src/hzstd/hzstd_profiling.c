@@ -1109,7 +1109,18 @@ static void install_profiler_handler(void)
   memset(&sa, 0, sizeof(sa));
 
   sa.sa_sigaction = profiling_handler;
-  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  // Deliberately *not* SA_ONSTACK, unlike the panic handler: this handler has no risk of running
+  // out of stack (a handful of locals, no recursion), so it has no need for the small thread_local
+  // sigaltstack hzstd_setup_panic_handler sets up for crash recovery. Running there anyway was
+  // actively harmful: while this handler (or anything it calls, e.g. the bounded wait below) is
+  // on that altstack, its stack pointer sits inside an 8 KiB buffer with no relation to the
+  // thread's real stack. Boehm GC's stop-the-world signal doesn't use SA_ONSTACK, so if it lands
+  // on this thread during that window, it captures that altstack-resident pointer as the thread's
+  // "current" one -- and a later mark phase combining that with the thread's registered (real)
+  // stack bounds computes a scan range that belongs to neither, walking off into unmapped memory.
+  // Staying on the normal stack, which is what's actually registered with the GC for this thread,
+  // avoids the mismatch entirely.
+  sa.sa_flags = SA_SIGINFO;
 
   sigemptyset(&sa.sa_mask);
 
