@@ -80,13 +80,14 @@ typedef struct {
 // to, then walked once in order in hzstd_profiling_end), a singly-linked list of fixed-size,
 // append-only chunks fits much better: each chunk is allocated exactly once and never touched
 // again once full, so old samples are never recopied no matter how long the session runs.
-// Deliberately sized small enough to stay well clear of that GC warning threshold.
 #define HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY 128
 
 typedef struct hzstd_profiling_sample_chunk_t {
-  struct hzstd_profiling_sample_chunk_t* next;
+  struct hzstd_profiling_sample_chunk_t* next; // the only field the GC needs to scan in this header
   size_t count; // number of valid entries in this chunk (== capacity for every chunk but the tail)
-  hzstd_profiling_raw_sample_t entries[HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY];
+  // `entries` is its own separate, atomic (unscanned) allocation -- see hzstd_profiling_samples_append
+  // for why this can't just be an inline array in this same, GC-scanned struct.
+  hzstd_profiling_raw_sample_t* entries;
 } hzstd_profiling_sample_chunk_t;
 
 struct hzstd_profiling_context_t {
@@ -169,12 +170,25 @@ static void hzstd_profiling_ring_push(hzstd_profiling_context_t* context, hzstd_
 static void hzstd_profiling_samples_append(hzstd_profiling_context_t* context, hzstd_profiling_raw_sample_t sample)
 {
   if (!context->samples_tail || context->samples_tail->count == HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY) {
-    // Allocated directly via hzstd_heap_allocate (not HZSTD_ALLOC_STRUCT) so that initializing a
-    // fresh chunk never needs a ~128-entry compound literal of the whole struct sitting on the
-    // stack first -- only the small header fields below are actually written.
+    // Each entry carries a `pcs[HZSTD_MAX_FRAMES]` array of raw instruction-pointer values --
+    // real addresses inside the program's own mapped code, but not pointers we ever want the GC
+    // to follow (they're just opaque historical data, read back later in hzstd_profiling_end for
+    // symbol resolution). A conservative collector can't tell the difference: if this whole chunk
+    // were one ordinary GC_malloc'd block, every one of those ~128 values per entry would be
+    // scanned as a *candidate* pointer, and since they really do point into mapped memory, the GC
+    // would black-list whatever they "point to" -- here, scattered spots across the program's own
+    // code segment, over and over, once per sample. That black-listing pressure is what was
+    // actually tripping the "Repeated allocation of very large block" warning at high sampling
+    // rates (more samples per second = more chunks = more self-inflicted black-listing), not the
+    // chunk's size by itself. Splitting the bulk entries off into their own GC_malloc_atomic
+    // allocation (never scanned at all) avoids this entirely; only this small header -- which has
+    // exactly one real pointer, `next` -- needs to stay scanned, so the chain itself remains
+    // reachable from context->samples_head.
     hzstd_profiling_sample_chunk_t* chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t));
     chunk->next = NULL;
     chunk->count = 0;
+    chunk->entries =
+        hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t));
     if (context->samples_tail) {
       context->samples_tail->next = chunk;
     }
@@ -1120,7 +1134,18 @@ static void install_profiler_handler(void)
   // stack bounds computes a scan range that belongs to neither, walking off into unmapped memory.
   // Staying on the normal stack, which is what's actually registered with the GC for this thread,
   // avoids the mismatch entirely.
-  sa.sa_flags = SA_SIGINFO;
+  //
+  // SA_RESTART matters a lot here too: without it, every SIGUSR1 tick can interrupt *any* blocking
+  // syscall anywhere in the process -- not just our own waits (which already retry on EINTR
+  // manually, since sem_wait/sem_timedwait are specifically documented to never auto-restart
+  // regardless of this flag, so this changes nothing for them) -- including code in other
+  // libraries that was never written to expect a "foreign" signal and never retries itself. At
+  // high sampling rates that's frequent enough to truncate things like a read() of a Wayland
+  // keymap string mid-transfer, which is exactly what a "malformed number literal" parse error
+  // immediately afterwards looks like. SA_RESTART asks the kernel to transparently resume most
+  // interrupted blocking syscalls instead of returning EINTR, so code with no SIGUSR1-awareness
+  // of its own never notices it was interrupted at all.
+  sa.sa_flags = SA_SIGINFO | SA_RESTART;
 
   sigemptyset(&sa.sa_mask);
 
