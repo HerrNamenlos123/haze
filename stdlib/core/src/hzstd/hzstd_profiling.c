@@ -63,6 +63,12 @@ typedef struct {
 // a time (see sample_in_progress), this only ever needs to hold a small handful of entries.
 #define HZSTD_PROFILING_RING_CAPACITY 1024
 
+// Upper bound on how long the profiled thread will ever wait for one sample to be captured (see
+// the big comment on profiling_handler / hzstd_profiling_invoke_sampling for why this exists).
+// Generous relative to a normal capture (which takes microseconds), but small enough that even
+// hitting it repeatedly is just a minor, bounded hitch instead of a frozen process.
+#define HZSTD_PROFILING_SAMPLE_TIMEOUT_NS (50ull * 1000 * 1000)
+
 struct hzstd_profiling_context_t {
 #ifdef HAZE_PLATFORM_LINUX
   hzstd_process_id_t pid;
@@ -199,6 +205,14 @@ void *hzstd_profiling_stackwalker_thread(void *_context) {
       if (sample.depth < HZSTD_MAX_FRAMES) {
         sample.pcs[sample.depth++] = (void *)pc;
       }
+      // unw_step resolves which loaded module `pc` belongs to via dl_iterate_phdr whenever it
+      // hasn't seen that code range before, which briefly takes glibc's process-wide loader lock.
+      // If the profiled thread itself happens to be parked here holding that very lock (e.g. it
+      // was interrupted mid-dlopen/dlsym -- routine for GPU drivers lazily loading shader-cache
+      // or driver modules), this call blocks until it's released. profiling_handler's bounded
+      // wait (see HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the process:
+      // it gives up and lets the profiled thread resume (and thus release the lock) instead of
+      // waiting on this thread forever.
     } while (unw_step(&cursor) > 0);
 
     // Hand the finished sample to the ring buffer (no allocation) before signaling done, so by
@@ -207,6 +221,13 @@ void *hzstd_profiling_stackwalker_thread(void *_context) {
     hzstd_profiling_ring_push(context, sample);
 
     hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
+    // This thread is the only one that ever knows for certain a round is truly finished -- the
+    // waiter in profiling_handler may have already given up on it via the timeout above. Clearing
+    // this here (and only here, always *after* the done-trigger above so a new round's CAS below
+    // can never succeed before this round's trigger is visible to it) is what lets profiling
+    // self-recover once whatever this round was stuck on resolves, instead of permanently
+    // wedging after the first slow sample.
+    atomic_store(&context->sample_in_progress, 0);
   }
 
   return NULL;
@@ -284,6 +305,11 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
       } else {
         break;
       }
+      // StackWalk64/dbghelp can lazily load module symbol info on a not-yet-seen module, which
+      // takes process-wide locks of its own. If the profiled thread happens to be suspended while
+      // holding one of those, this call blocks until it's released. invoke_sampling's bounded
+      // wait (HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the process: it
+      // resumes the profiled thread instead of waiting here forever.
     }
 
     // Hand the finished sample to the ring buffer (no allocation) before signaling done, so by
@@ -292,6 +318,12 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
     hzstd_profiling_ring_push(context, sample);
 
     hzstd_trigger_semaphore(&context->stackwalker_done_semaphore);
+    // This thread is the only one that ever knows for certain a round is truly finished -- the
+    // waiter in invoke_sampling may have already given up on it via the timeout there. Clearing
+    // this here (and only here, always *after* the done-trigger above) is what lets profiling
+    // self-recover once whatever this round was stuck on resolves, instead of permanently
+    // wedging after the first slow sample. See invoke_sampling for the matching half of this.
+    atomic_store(&context->sample_in_progress, 0);
   }
 
   return 0;
@@ -309,11 +341,21 @@ hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   int expected = 0;
   if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
                                       1)) {
-    // A sample is already ongoing. Just ignore this one.
+    // A sample is already ongoing -- either a normal overlap, or the previous round's wait below
+    // timed out and the stackwalker is still working through it. Either way, ignore this tick;
+    // the stackwalker thread clears sample_in_progress once the in-flight round actually finishes.
     return;
   }
 
+  // Discard any leftover "done" signal from a previous round whose wait below timed out, before
+  // arming this round's wait. Without this, a stale signal from that abandoned round could be
+  // mistaken for this round's completion the moment we trigger the stackwalker below.
+  while (hzstd_wait_for_semaphore_timed(&context->stackwalker_done_semaphore, 0)) {
+  }
+
   if (SuspendThread(context->profiled_thread_handle) == (DWORD)-1) {
+    // No round actually started (the stackwalker was never triggered), so it's safe -- and
+    // necessary -- to release the gate ourselves here, unlike the timeout path below.
     atomic_store(&context->sample_in_progress, 0);
     return;
   }
@@ -333,17 +375,26 @@ hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   // Hand off to stackwalker.
   hzstd_trigger_semaphore(&context->stackwalker_trigger_semaphore);
 
-  // Wait for worker to finish building the stacktrace.
-  hzstd_wait_for_semaphore(&context->stackwalker_done_semaphore);
+  // Wait for the worker to finish building the stacktrace -- but only up to a bound. The
+  // stackwalker can rarely block for a while on a process-wide lock it doesn't control (see the
+  // comment in hzstd_profiling_stackwalker_thread). Since the profiled thread is fully suspended
+  // (not just running a signal handler, as on Linux) until we call ResumeThread below, waiting
+  // unboundedly here would deadlock the whole process if it's the one holding that lock. Bounding
+  // the wait breaks that cycle: on timeout we resume it anyway, which lets it release whatever
+  // lock it might be holding and in turn unblocks the stackwalker. sample_in_progress is
+  // deliberately left set in that case; see hzstd_profiling_stackwalker_thread for why it alone
+  // clears it.
+  bool finished = hzstd_wait_for_semaphore_timed(&context->stackwalker_done_semaphore,
+                                                 HZSTD_PROFILING_SAMPLE_TIMEOUT_NS);
 
   ResumeThread(context->profiled_thread_handle);
 
-  double samplingDuration = hzstd_time_now() - startedAt;
-  if (context->last_ring_slot != SIZE_MAX) {
-    context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+  if (finished) {
+    double samplingDuration = hzstd_time_now() - startedAt;
+    if (context->last_ring_slot != SIZE_MAX) {
+      context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+    }
   }
-
-  atomic_store(&context->sample_in_progress, 0);
 }
 
 static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
@@ -910,9 +961,17 @@ static void profiling_handler(int sig, siginfo_t *info, void *ucontext) {
   int expected = 0;
   if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
                                       1)) {
-    // A sample is already ongoing. Just ignore this one.
-    // But this should actually never be possible to happen. To be investigated.
+    // A sample is already ongoing -- either a normal overlap (shouldn't really happen given the
+    // scheduler's cadence), or the previous round's wait below timed out and the stackwalker is
+    // still working through it. Either way, ignore this tick; the stackwalker thread clears
+    // sample_in_progress once the in-flight round actually finishes.
     return;
+  }
+
+  // Discard any leftover "done" signal from a previous round whose wait below timed out, before
+  // arming this round's wait. Without this, a stale signal from that abandoned round could be
+  // mistaken for this round's completion the moment we trigger the stackwalker below.
+  while (hzstd_wait_for_semaphore_timed(&context->stackwalker_done_semaphore, 0)) {
   }
 
   // Taken as close to the suspension point as possible, before anything else in
@@ -925,22 +984,27 @@ static void profiling_handler(int sig, siginfo_t *info, void *ucontext) {
   // Hand off to stackwalker.
   hzstd_trigger_semaphore(&context->stackwalker_trigger_semaphore);
 
-  // Wait for worker to finish building the stacktrace.
-  hzstd_wait_for_semaphore(&context->stackwalker_done_semaphore);
-
-  // The stackwalker has just pushed the new sample into the ring buffer (synchronised by the done
-  // semaphore above, and this thread is the only one that can ever have a sample in flight, see
-  // tgkill in hzstd_profiling_invoke_sampling), so it is safe to reach into the slot it recorded
-  // and patch in the total time this sample cost the profiled thread, measured as close to
-  // resuming it as possible.
-  double samplingDuration = hzstd_time_now() - startedAt;
-  if (context->last_ring_slot != SIZE_MAX) {
-    context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+  // Wait for the worker to finish building the stacktrace -- but only up to a bound. The
+  // stackwalker can rarely block for a while on a process-wide lock it doesn't control (see the
+  // comment in hzstd_profiling_stackwalker_thread, e.g. glibc's loader lock via dl_iterate_phdr).
+  // If this thread is the one holding that lock when it got signaled, waiting unboundedly would
+  // deadlock the whole process: this thread can't proceed until the stackwalker finishes, and the
+  // stackwalker can't finish until this thread (the lock holder) proceeds. Bounding the wait
+  // breaks that cycle -- on timeout we just give up on this one sample and let this thread carry
+  // on, which lets it release whatever lock it might be holding and in turn unblocks the
+  // stackwalker. sample_in_progress is deliberately left set in that case; see
+  // hzstd_profiling_stackwalker_thread for why it alone clears it.
+  if (hzstd_wait_for_semaphore_timed(&context->stackwalker_done_semaphore,
+                                     HZSTD_PROFILING_SAMPLE_TIMEOUT_NS)) {
+    // The stackwalker has just pushed the new sample into the ring buffer (synchronised by the
+    // done semaphore above), so it is safe to reach into the slot it recorded and patch in the
+    // total time this sample cost the profiled thread, measured as close to resuming it as
+    // possible.
+    double samplingDuration = hzstd_time_now() - startedAt;
+    if (context->last_ring_slot != SIZE_MAX) {
+      context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+    }
   }
-
-  // Now that the walker is done and the stack has been snapshotted, we can
-  // finally continue with this thread
-  atomic_store(&context->sample_in_progress, 0);
 }
 
 // Walking the current thread's own stack once, synchronously, before the signal handler is ever

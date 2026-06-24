@@ -737,18 +737,19 @@ struct HeaderArgs {
         return this.id != other.id || this.title != other.title;
     }
 }
-
 fn Header(ui: UIContext, args: HeaderArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<HeaderArgs>) => {
         return (): void => {
             ui.div({
                 id: 1,
                 style: {
-                    backgroundColor: Color(0.9, 0.2, 0.2, 1),
-                    padding: hzui.StylePaddingSimple { value: 20.0 },
-                    align: hzui.Align.Center,
                     cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
-                }
+                },
+                presets: [
+                    presets.bg(Color(0.9, 0.2, 0.2, 1)),
+                    presets.p(4),
+                    presets.align(hzui.Align.Center),
+                ]
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
             });

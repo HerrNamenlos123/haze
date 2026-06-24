@@ -367,7 +367,7 @@ fn main(): int {
         });
 
         let profiler = Profiler({
-            samplingRateHz: 100,
+            samplingRateHz: 1000,
         });
 
         let pMousePosition = Vec2(0, 0);
@@ -466,21 +466,6 @@ fn main(): int {
                     }
                 }
             });
-
-            // // Render tessellated shapes
-            // for (let s = 0; s < tesselatedShapes.length; s++) {
-            //     let shape = tesselatedShapes[s];
-
-            //     for (let i = 0; i < shape.vertices.length; i++) {
-            //         if (down) {
-            //             shape.vertices[i].x = shape.vertices[i].x + dMousePosition.x;
-            //             shape.vertices[i].y = shape.vertices[i].y + dMousePosition.y;
-            //         }
-            //     }
-
-            //     // renderer.addTriangles(shape.vertices, shape.indices, Color { r: 0.2, g: 0.5, b: 0.9, a: 1.0 });
-            //     renderer.addTriangles(shape.vertices, shape.indices, "#000");
-            // }
 
             renderer.commit();
         }

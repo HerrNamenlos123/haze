@@ -72,6 +72,29 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore)
   }
 }
 
+bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeout_ns)
+{
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += (time_t)(timeout_ns / 1000000000ull);
+  deadline.tv_nsec += (long)(timeout_ns % 1000000000ull);
+  if (deadline.tv_nsec >= 1000000000) {
+    deadline.tv_nsec -= 1000000000;
+    deadline.tv_sec += 1;
+  }
+
+  while (sem_timedwait(&semaphore->handle, &deadline) != 0) {
+    if (errno == EINTR) {
+      continue; // see hzstd_wait_for_semaphore: sem_timedwait has the same non-restart behavior
+    }
+    if (errno == ETIMEDOUT) {
+      return false;
+    }
+    hzstd_panic("sem_timedwait failed unexpectedly");
+  }
+  return true;
+}
+
 // ── Panic global state ────────────────────────────────────────────────────────
 //
 // DESIGN: hzstd_panic_with_stacktrace and the signal handler do as little as

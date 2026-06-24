@@ -52,6 +52,9 @@ bool hzstd_get_cwd(char* buf, size_t buf_size);
 bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
 void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
+// Returns true if signaled before the timeout, false if it timed out. A `timeout_ns` of 0 is a
+// non-blocking poll, useful for draining an already-signaled semaphore.
+bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeout_ns);
 
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);

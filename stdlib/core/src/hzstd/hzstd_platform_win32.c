@@ -59,6 +59,11 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore) {
   WaitForSingleObject(semaphore->handle, INFINITE);
 }
 
+bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeout_ns) {
+  DWORD timeout_ms = (DWORD)(timeout_ns / 1000000ull);
+  return WaitForSingleObject(semaphore->handle, timeout_ms) == WAIT_OBJECT_0;
+}
+
 // ── Panic global state ────────────────────────────────────────────────────────
 //
 // DESIGN: VectoredHandler and hzstd_panic_with_stacktrace do as little as
