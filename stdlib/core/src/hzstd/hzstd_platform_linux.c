@@ -56,7 +56,21 @@ bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
 
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&semaphore->handle) == 0; }
 
-void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore) { sem_wait(&semaphore->handle); }
+// sem_wait is explicitly documented (see signal(7), "Interruption of system calls") to never be
+// auto-restarted after a signal, regardless of SA_RESTART: it always returns EINTR if *any*
+// signal with a handler is delivered while blocked here -- not just whatever this particular wait
+// is for. Without retrying, a caller would treat that EINTR as a real wakeup, which is exactly
+// the kind of spurious-wakeup bug that turns into hard-to-reproduce races (e.g. the profiler's
+// trigger/done handshake desyncing whenever a GC collection's stop-the-world signal lands on a
+// thread parked in one of these waits).
+void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore)
+{
+  while (sem_wait(&semaphore->handle) != 0) {
+    if (errno != EINTR) {
+      hzstd_panic("sem_wait failed unexpectedly");
+    }
+  }
+}
 
 // ── Panic global state ────────────────────────────────────────────────────────
 //

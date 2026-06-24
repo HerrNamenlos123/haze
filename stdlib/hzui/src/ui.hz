@@ -111,23 +111,23 @@ export inline struct StyleCornerRadiusFull {
 export type StyleCornerRadius = StyleCornerRadiusSimple | StyleCornerRadiusFull | none;
 
 export inline struct DivStyle {
-    width?: real = none;
-    height?: real = none;
+    width?: real;
+    height?: real;
     padding: StylePadding = none; 
     // flexGrow: real;
     direction: Direction = Direction.Column;
     justify: Justify = Justify.Start;
-    align?: Align = none;
+    align?: Align;
     cornerRadius: StyleCornerRadius = none;
     gap?: real;
     backgroundColor?: Color;
 
-    fontFamily?: str = none;
-    fontSize?: real = none;
-    fontWeight?: real = none;
-    lineHeight?: LineHeight = none;
-    letterSpacing?: real = none;
-    textColor?: Color = none;
+    fontFamily?: str;
+    fontSize?: real;
+    fontWeight?: real;
+    lineHeight?: LineHeight;
+    letterSpacing?: real;
+    textColor?: Color;
     // textAlign?: Color = none;
 
     fn combineWithPresets(_presets: []presets.Preset) {

@@ -1059,6 +1059,23 @@ fn Footer(ui: UIContext, args: FooterArgs) {
     });
 }
 
+// Ideal Syntax for the Footer Component: (just an idea)
+// Footer.ui
+// @setup
+//     let text = reactive("This is some actual text to read");
+// @end
+
+// @template
+//     @div
+//         bg: "#181818",
+//         textColor: "#F00",
+//         padding: 15,
+//         align: Center,
+//     {
+//         text({ text: text, style: { fontSize: 12.0 } });
+//     }
+// @end
+
 struct RootArgs {
     fn operator!=(other: RootArgs) {
         return false;
