@@ -1,0 +1,58 @@
+import ui_styling;
+
+// Tailwind-style preset shorthands. Depends on ui_styling for exactly one
+// thing -- the `*Op` data vocabulary -- and nothing else: no behavior is
+// shared, ui_styling never has to change for a preset added here, and
+// ui_styling never names a single one of these functions or knows the
+// "tailwind class" concept exists at all. Each preset is a plain factory
+// that returns a plain ui_styling.*Op value directly: no closures, no
+// generics, no indirection -- the array of presets a component writes is
+// just data ui_styling.computeDivStyle()/computeTextStyle() loops over.
+namespace presets {
+    // Tailwind number-to-px scale: w-<number> -> width: calc(var(--spacing) * <number>);
+    export const baseSpacing = 4.0;
+
+    export fn computeSize(number: real): real {
+        return number * baseSpacing;
+    }
+
+    export fn bg(color: Color): ui_styling.BackgroundColorOp {
+        return ui_styling.BackgroundColorOp { color: color };
+    }
+
+    export fn textColor(color: Color): ui_styling.TextColorOp {
+        return ui_styling.TextColorOp { color: color };
+    }
+
+    export fn p(value: real): ui_styling.PaddingOp {
+        return ui_styling.PaddingOp {
+            padding: ui_styling.StylePaddingSimple { value: computeSize(value) },
+        };
+    }
+
+    export fn gap(value: real): ui_styling.GapOp {
+        return ui_styling.GapOp { value: computeSize(value) };
+    }
+
+    export fn align(value: ui_styling.Align): ui_styling.AlignOp {
+        return ui_styling.AlignOp { value: value };
+    }
+
+    export fn justify(value: ui_styling.Justify): ui_styling.JustifyOp {
+        return ui_styling.JustifyOp { value: value };
+    }
+
+    export fn direction(value: ui_styling.Direction): ui_styling.DirectionOp {
+        return ui_styling.DirectionOp { value: value };
+    }
+
+    export fn rounded(value: real): ui_styling.CornerRadiusOp {
+        return ui_styling.CornerRadiusOp {
+            cornerRadius: ui_styling.StyleCornerRadiusSimple { value: value },
+        };
+    }
+
+    export fn fontSize(value: real): ui_styling.FontSizeOp {
+        return ui_styling.FontSizeOp { value: value };
+    }
+}

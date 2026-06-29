@@ -1,0 +1,75 @@
+import ui_styling;
+
+// Pure element tree data. Knows nothing about presets, Clay, FFI, render
+// feedback, or hit-testing -- those all belong to other modules (ui_styling,
+// ui_layout, and the component system respectively). The only thing each
+// element carries besides its already-resolved style is an opaque
+// `_runtimeData` slot: whoever creates the element (today, that's always the
+// component system) stashes whatever per-element bookkeeping it needs in
+// there, typed however it likes. This module never reads it.
+
+export struct DivElementArgs {
+    id: int;
+    children: []Element = [];
+    style: ui_styling.ComputedDivStyle = {};
+}
+
+export struct DivElement {
+    id: int;
+    children: []Element = [];
+    style: ui_styling.ComputedDivStyle = {};
+    _runtimeData?: TypeErasedBox;
+
+    fn constructor(args: DivElementArgs) {
+        return DivElement {
+            id: args.id,
+            children: args.children,
+            style: args.style,
+        };
+    }
+}
+
+export struct TextElementArgs {
+    id: int;
+    text: str;
+    style: ui_styling.ComputedTextStyle = {};
+}
+
+export struct TextElement {
+    id: int;
+    text: str;
+    style: ui_styling.ComputedTextStyle = {};
+    _runtimeData?: TypeErasedBox;
+
+    fn constructor(args: TextElementArgs) {
+        return TextElement {
+            id: args.id,
+            text: args.text,
+            style: args.style,
+        };
+    }
+}
+
+export struct CanvasElementArgs {
+    id: int;
+    style: ui_styling.ComputedDivStyle = {};
+}
+
+// A standalone leaf element with no Clay-managed visual content of its own.
+// Like Div/Text, anything it needs beyond id/style (a GPU canvas handle, a
+// per-frame draw closure, render feedback, ...) lives in `_runtimeData`,
+// owned by whoever created it -- this module doesn't know any of that exists.
+export struct CanvasElement {
+    id: int;
+    style: ui_styling.ComputedDivStyle = {};
+    _runtimeData?: TypeErasedBox;
+
+    fn constructor(args: CanvasElementArgs) {
+        return CanvasElement {
+            id: args.id,
+            style: args.style,
+        };
+    }
+}
+
+export type Element = DivElement | TextElement | CanvasElement;

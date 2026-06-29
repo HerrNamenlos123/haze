@@ -1,0 +1,6 @@
+name = "filedialog"
+version = "1.0.0"
+description = ""
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

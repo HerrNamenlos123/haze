@@ -1,0 +1,474 @@
+
+import ui_elements;
+// Used only for the concrete value types (Direction/Justify/Align/
+// LineHeightMode/LineHeight) this module needs to interpret to drive Clay
+// and the font/text-color cascade -- not for DivStyle, presets, or any
+// defaulting/computation logic, which this module never touches.
+import ui_styling;
+
+__c__("#include \"ffi/ui.c\"");
+export __c__("#include \"ffi/hzui_public.h\"");
+
+namespace ffi {
+    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: str, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+    extern C noemit fn hzui_clay_define_canvas_element(id: str, backgroundColor: Color, cornerRadius: CornerRadiusValues, width: real, hasWidth: bool, height: real, hasHeight: bool, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
+
+    extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
+    extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
+    extern C noemit fn Clay_BeginLayout(): void :: final;
+    extern C noemit fn Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
+    extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
+
+    extern C noemit struct Clay_RenderCommandArray {};
+    extern C noemit inline struct ClayCallbacks {
+        renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
+        renderFilledRectUserdata: cptr;
+        renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
+        renderTextUserdata: cptr;
+        renderCustom: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        renderCustomUserdata: cptr;
+        applyBoundingBox: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        applyBoundingBoxUserdata: cptr;
+    };
+
+    extern C noemit inline struct hzui_optional_bounding_box_t {
+        bounding_box: hzui_bounding_box_t;
+        found: bool;
+    };
+
+    extern C noemit inline struct hzui_bounding_box_t {
+        position: Vec2;
+        size: Vec2;
+    };
+
+    extern C noemit inline struct PaddingValues {
+        left: real;
+        right: real;
+        top: real;
+        bottom: real;
+    }
+
+    export extern C noemit inline struct hzui_define_text_element_t {
+        text: str;
+        fontId: int;
+        fontSize: real;
+        lineHeight: real;
+        color: Color;
+        wrapMode: hzui_text_wrap_mode_t;
+        alignment: hzui_text_alignment_t;
+        elementPtr: cptr;
+    }
+
+    export extern C noemit inline struct hzui_draw_text_element_t {
+        position: Vec2;
+        size: Vec2;
+        text: str;
+        fontId: int;
+        fontSize: real;
+        color: Color;
+    }
+
+    export extern C noemit inline struct hzui_corner_radius_values_t {
+        topLeft: real;
+        topRight: real;
+        bottomLeft: real;
+        bottomRight: real;
+    }
+
+    export extern C noemit enum hzui_text_wrap_mode_t {
+        hzui_text_wrap_mode_wrap_words,
+        hzui_text_wrap_mode_wrap_newlines,
+        hzui_text_wrap_mode_wrap_none,
+    }
+
+    export extern C noemit enum hzui_text_alignment_t {
+        hzui_text_alignment_left,
+        hzui_text_alignment_center,
+        hzui_text_alignment_right,
+    }
+}
+
+export type CornerRadiusValues = ffi.hzui_corner_radius_values_t;
+
+export inline struct FontEntry {
+    name: str;
+    id: int;
+}
+
+export inline struct ContextOpts {
+    width: int;
+    height: int;
+    fonts: []FontEntry;
+    getFontLineHeight: (fontId: int, fontSize: real) => real;
+}
+
+// Pure layout engine: takes an element tree (ui_elements.Element), runs Clay
+// flexbox over it, and emits draw commands purely through callbacks. Reads
+// already-resolved style values straight off each element -- it has no idea
+// what a "preset" or a raw, optional-field style is; that's all resolved
+// before an element ever reaches here. The one piece of genuinely
+// layout-shaped styling concern it does own is font/text-color cascading
+// (inheriting from ancestors down the tree), since that can only be resolved
+// while walking the tree, not by looking at one element in isolation.
+export opaque struct Context {
+    fonts: []FontEntry;
+    getFontLineHeight: (fontId: int, fontSize: real) => real;
+
+    fn constructor(opts: ContextOpts) {
+        ffi.hzui_clay_init(opts.width, opts.height);
+        return Context {
+            fonts: opts.fonts,
+            getFontLineHeight: opts.getFontLineHeight,
+        };
+    }
+
+    struct TreeTraverseContext {
+        fontFamilyStack: []str = [];
+        fontSizeStack: []real = [];
+        fontWeightStack: []real = [];
+        lineHeightStack: []ui_styling.LineHeight = [];
+        textColorStack: []Color = [];
+        elementBoxes: []Box<ui_elements.Element> = [];
+        idPath: str;
+
+        fn validateEmpty() {
+            assert(this.fontFamilyStack.length == 0);
+            assert(this.fontSizeStack.length == 0);
+            assert(this.fontWeightStack.length == 0);
+            assert(this.lineHeightStack.length == 0);
+            assert(this.textColorStack.length == 0);
+        }
+    }
+
+    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: ui_elements.DivElement | ui_elements.TextElement, func: () => none) {
+        let fontFamily = element is ui_elements.DivElement ? element.style.fontFamily : element.style.fontFamily;
+        let fontSize = element is ui_elements.DivElement ? element.style.fontSize : element.style.fontSize;
+        let fontWeight = element is ui_elements.DivElement ? element.style.fontWeight : element.style.fontWeight;
+        let lineHeight = element is ui_elements.DivElement ? element.style.lineHeight : element.style.lineHeight;
+        let textColor = element is ui_elements.DivElement ? element.style.textColor : element.style.textColor;
+
+        if fontFamily {
+            ctx.fontFamilyStack.push(fontFamily);
+        }
+        if fontSize {
+            ctx.fontSizeStack.push(fontSize);
+        }
+        if fontWeight {
+            ctx.fontWeightStack.push(fontWeight);
+        }
+        if lineHeight {
+            ctx.lineHeightStack.push(lineHeight);
+        }
+        if textColor {
+            ctx.textColorStack.push(textColor);
+        }
+
+        func();
+
+        if fontFamily {
+            ctx.fontFamilyStack.pop();
+        }
+        if fontSize {
+            ctx.fontSizeStack.pop();
+        }
+        if fontWeight {
+            ctx.fontWeightStack.pop();
+        }
+        if lineHeight {
+            ctx.lineHeightStack.pop();
+        }
+        if textColor {
+            ctx.textColorStack.pop();
+        }
+    }
+
+    fn getFont(name: str) {
+        for entry in this.fonts {
+            if entry.name == name {
+                return entry.id;
+            }
+        }
+    }
+
+    fn getCurrentFont(ctx: TreeTraverseContext) {
+        assert(ctx.fontFamilyStack.length > 0);
+
+        // Find the font
+        let font = this.getFont(ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1]);
+        if font {
+            return font;
+        }
+
+        font = this.getFont("default");
+        if font {
+            return font;
+        }
+
+        sys.panic("Font could not be found and default font is not available. Default font must always exist.");
+    }
+
+    fn getCurrentFontSize(ctx: TreeTraverseContext) {
+        assert(ctx.fontSizeStack.length > 0);
+        return ctx.fontSizeStack[ctx.fontSizeStack.length - 1];
+    }
+
+    fn getCurrentFontWeight(ctx: TreeTraverseContext) {
+        assert(ctx.fontWeightStack.length > 0);
+        return ctx.fontWeightStack[ctx.fontWeightStack.length - 1];
+    }
+
+    fn getCurrentLineHeight(ctx: TreeTraverseContext) {
+        assert(ctx.lineHeightStack.length > 0);
+        return ctx.lineHeightStack[ctx.lineHeightStack.length - 1];
+    }
+
+    fn getCurrentTextColor(ctx: TreeTraverseContext) {
+        assert(ctx.textColorStack.length > 0);
+        return ctx.textColorStack[ctx.textColorStack.length - 1];
+    }
+
+    fn processTreeElement(ctx: TreeTraverseContext, element: rx.Reactive<ui_elements.Element>): void :: final {
+        this.processTreeElement(ctx, rx.get(element));
+    }
+
+    fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element): void :: final {
+        if element is ui_elements.DivElement {
+            this.withCascadingStackApplied(ctx, element, () => {
+                let renderChildren = () => {
+                    for child in element.children {
+                        this.processTreeElement(ctx, child);
+                    }
+                };
+                let func = none as cptr;
+                let env = none as cptr;
+                __c__("func = (void*)renderChildren.fn;");
+                __c__("env = (void*)renderChildren.env;");
+
+                let elementBox = Box<ui_elements.Element>(element);
+                let elementPtr = none as cptr;
+                __c__("elementPtr = elementBox;");
+                ctx.elementBoxes.push(elementBox);
+
+                let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
+                let savedIdPath = ctx.idPath;
+                ctx.idPath = elementId;
+
+                let style = element.style;
+
+                ffi.hzui_clay_define_div_element(
+                    func, env,
+                    elementId,
+                    style.backgroundColor,
+                    ffi.PaddingValues { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
+                    CornerRadiusValues { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
+                    style.direction == ui_styling.Direction.Column,
+                    style.gap,
+                    elementPtr,
+                );
+
+                ctx.idPath = savedIdPath;
+            });
+        }
+        else if element is ui_elements.TextElement {
+            this.withCascadingStackApplied(ctx, element, () => {
+                let elementBox = Box<ui_elements.Element>(element);
+                let elementPtr = none as cptr;
+                __c__("elementPtr = elementBox;");
+                ctx.elementBoxes.push(elementBox);
+
+                let fontSize = this.getCurrentFontSize(ctx);
+
+                let fontId = this.getCurrentFont(ctx);
+                let lineHeightPx = this.getFontLineHeight(fontId, fontSize);
+                let lineHeightMode = this.getCurrentLineHeight(ctx);
+                if lineHeightMode.mode == ui_styling.LineHeightMode.Relative {
+                    lineHeightPx *= lineHeightMode.value;
+                }
+                else if lineHeightMode.mode == ui_styling.LineHeightMode.Pixels {
+                    lineHeightPx = lineHeightMode.value;
+                }
+
+                ffi.hzui_clay_define_text_element(
+                    {
+                        text: element.text,
+                        color: this.getCurrentTextColor(ctx),
+                        fontId: fontId,
+                        fontSize: fontSize,
+                        lineHeight: lineHeightPx,
+                        wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words,
+                        alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
+                        elementPtr: elementPtr,
+                    }
+                );
+            });
+        }
+        else if element is ui_elements.CanvasElement {
+            // No cascading font/text-color stack: a canvas has no children
+            // and renders no Clay-managed text, so none of that state is
+            // relevant to it. No idPath descent either, for the same reason.
+            let elementBox = Box<ui_elements.Element>(element);
+            let elementPtr = none as cptr;
+            __c__("elementPtr = elementBox;");
+            ctx.elementBoxes.push(elementBox);
+
+            let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
+
+            let style = element.style;
+
+            ffi.hzui_clay_define_canvas_element(
+                elementId,
+                style.backgroundColor,
+                CornerRadiusValues { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
+                style.width ? style.width : 0.0,
+                style.width is not none,
+                style.height ? style.height : 0.0,
+                style.height is not none,
+                elementPtr,
+            );
+        }
+    }
+
+    fn render(element: rx.Computed<ui_elements.Element>, callbacks: RenderCallbacks) {
+        this.render(rx.get(element), callbacks);
+    }
+
+    fn render(element: rx.Reactive<ui_elements.Element>, callbacks: RenderCallbacks) {
+        this.render(rx.get(element), callbacks);
+    }
+
+    fn render(element: ui_elements.Element, callbacks: RenderCallbacks) {
+        ffi.Clay_BeginLayout();
+
+        let ctx = TreeTraverseContext { idPath: "" };
+
+        const DEFAULT_FONT_SIZE = 16.0;
+        const DEFAULT_FONT_WEIGHT = 400.0;
+        let DEFAULT_TEXT_COLOR = Color(0.0, 0.0, 0.0, 1.0);
+
+        ctx.fontFamilyStack.push("default");
+        ctx.fontSizeStack.push(DEFAULT_FONT_SIZE);
+        ctx.lineHeightStack.push({
+            mode: ui_styling.LineHeightMode.Auto,
+            value: 0.0,
+        });
+        ctx.fontWeightStack.push(DEFAULT_FONT_WEIGHT);
+        ctx.textColorStack.push(DEFAULT_TEXT_COLOR);
+
+        this.processTreeElement(ctx, element);
+
+        ctx.textColorStack.pop();
+        ctx.fontWeightStack.pop();
+        ctx.lineHeightStack.pop();
+        ctx.fontSizeStack.pop();
+        ctx.fontFamilyStack.pop();
+
+        ctx.validateEmpty();
+
+        let clayRenderCommands = ffi.Clay_EndLayout();
+
+        let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
+        __c__("clayRenderCommandsPtr = &clayRenderCommands;");
+        assert(clayRenderCommandsPtr);
+
+        do unsafe {
+            let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
+            let renderFilledRectUserdata = none as cptr;
+            __c__("renderFilledRectUserdata = renderFilledRect;");
+            let renderText = Box<RenderTextCB>(callbacks.renderText);
+            let renderTextUserdata = none as cptr;
+            __c__("renderTextUserdata = renderText;");
+            let renderCanvas = Box<RenderCanvasCB>(callbacks.renderCanvas);
+            let renderCustomUserdata = none as cptr;
+            __c__("renderCustomUserdata = renderCanvas;");
+            let onBoundingBox = Box<BoundingBoxCB>(callbacks.onBoundingBox);
+            let applyBoundingBoxUserdata = none as cptr;
+            __c__("applyBoundingBoxUserdata = onBoundingBox;");
+
+            ffi.Clay_RenderClayCommands({
+                renderFilledRect: renderFilledRectTrampoline,
+                renderFilledRectUserdata: renderFilledRectUserdata,
+                renderText: renderTextTrampoline,
+                renderTextUserdata: renderTextUserdata,
+                renderCustom: renderCustomTrampoline,
+                renderCustomUserdata: renderCustomUserdata,
+                applyBoundingBox: applyBoundingBoxTrampoline,
+                applyBoundingBoxUserdata: applyBoundingBoxUserdata,
+            }, clayRenderCommandsPtr);
+        };
+    }
+}
+
+export fn setLayoutSize(width: int, height: int) {
+    ffi.hzui_clay_set_layout_dimensions(width, height);
+}
+
+export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;
+export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
+// Not exported: these two reference a cross-module qualified type
+// (ui_elements.X) in their body. The compiler's cross-module shim generator
+// mangles qualified types correctly for struct fields, but has a codegen bug
+// for top-level exported `type X = (...) => Y;` aliases that reference a
+// qualified cross-module type -- it leaves the module prefix unmangled,
+// which then fails to resolve when a consumer project imports this module.
+// Keeping these as plain (unexported) aliases for internal Box<T> use, and
+// inlining the equivalent function type directly on the RenderCallbacks
+// fields below (which export fine, since struct field types go through the
+// correctly-mangling code path), avoids the bug entirely.
+type RenderCanvasCB = (element: ui_elements.CanvasElement) => void;
+type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
+
+export struct RenderCallbacks {
+    renderFilledRectangle: RenderFilledRectCB;
+    renderText: RenderTextCB;
+    renderCanvas: (element: ui_elements.CanvasElement) => void;
+    onBoundingBox: (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
+}
+
+fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
+    do unsafe {
+        let callable: Box<RenderFilledRectCB> = uninitialized;
+        __c__("callable = userdata;");
+        callable.value(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+    };
+}
+
+fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
+    do unsafe {
+        let callable: Box<RenderTextCB> = uninitialized;
+        __c__("callable = userdata;");
+        callable.value(element);
+    };
+}
+
+fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+    do unsafe {
+        let callable: Box<RenderCanvasCB> = uninitialized;
+        __c__("callable = userdata;");
+
+        let box: Box<ui_elements.Element> = uninitialized;
+        __c__("box = elementPtr;");
+        let element = box.value;
+        if element is ui_elements.CanvasElement {
+            callable.value(element);
+        }
+    };
+}
+
+// Invoked once per Div/Text/Canvas render command with its resolved bounding
+// box -- uniformly, regardless of element kind, since the callback takes the
+// `Element` union directly. What happens with the position/size (storing it
+// as reactive render feedback, etc.) is entirely up to whoever supplied
+// `onBoundingBox`; this module has no opinion and keeps no state about it.
+fn applyBoundingBoxTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+    do unsafe {
+        let callable: Box<BoundingBoxCB> = uninitialized;
+        __c__("callable = userdata;");
+
+        let box: Box<ui_elements.Element> = uninitialized;
+        __c__("box = elementPtr;");
+
+        callable.value(box.value, Vec2(x, y), Vec2(w, h));
+    };
+}

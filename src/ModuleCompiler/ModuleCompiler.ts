@@ -203,8 +203,12 @@ export async function getFileWithProgress(url: string, outfile: string) {
   stdout.write("\n"); // move to next line after progress bar
 }
 
-export async function parseConfig(startDir?: string, sourceloc?: boolean) {
-  const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir);
+export async function parseConfig(
+  startDir?: string,
+  explicitDir?: string,
+  sourceloc?: boolean
+) {
+  const parser = new ConfigParser(HAZE_CONFIG_FILE, startDir, explicitDir);
   return await parser.parseConfig(sourceloc);
 }
 
@@ -660,7 +664,11 @@ export class ImportASTCache {
     return `${depName}:${libMtimeMs}:${relPath}`;
   }
 
-  get(depName: string, libMtimeMs: number, relPath: string): ASTRoot | undefined {
+  get(
+    depName: string,
+    libMtimeMs: number,
+    relPath: string
+  ): ASTRoot | undefined {
     const key = this.memKey(depName, libMtimeMs, relPath);
     if (this.memory.has(key)) {
       return this.memory.get(key);
@@ -687,7 +695,12 @@ export class ImportASTCache {
     }
   }
 
-  set(depName: string, libMtimeMs: number, relPath: string, ast: ASTRoot): void {
+  set(
+    depName: string,
+    libMtimeMs: number,
+    relPath: string,
+    ast: ASTRoot
+  ): void {
     const key = this.memKey(depName, libMtimeMs, relPath);
     this.memory.set(key, ast);
 
@@ -696,7 +709,9 @@ export class ImportASTCache {
     let entry: ASTCacheEntry = { libMtimeMs: libMtimeMs, files: {} };
     if (fs.existsSync(diskPath)) {
       try {
-        const prev = JSON.parse(fs.readFileSync(diskPath, "utf8")) as ASTCacheEntry;
+        const prev = JSON.parse(
+          fs.readFileSync(diskPath, "utf8")
+        ) as ASTCacheEntry;
         if (prev.libMtimeMs === libMtimeMs) {
           entry = prev;
         }
@@ -753,13 +768,19 @@ export function execAsync(str: string): Promise<void> {
     });
 
     proc.on("close", (code: number | null) => {
-      if (code !== 0) {
-        if (stdout.trim()) printLine(stdout.trimEnd());
-        if (stderr.trim()) printLine(stderr.trimEnd());
-        reject(new CmdFailed());
-      } else {
-        if (stderr.trim()) printLineWarning(stderr.trimEnd());
+      if (code === 0) {
+        if (stderr.trim()) {
+          printLineWarning(stderr.trimEnd());
+        }
         resolve();
+      } else {
+        if (stdout.trim()) {
+          printLine(stdout.trimEnd());
+        }
+        if (stderr.trim()) {
+          printLine(stderr.trimEnd());
+        }
+        reject(new CmdFailed());
       }
     });
 
@@ -866,8 +887,14 @@ export class ModuleCompiler {
     const stamps = this.loadExtractionStamps();
     stamps[depName] = libMtimeMs;
     try {
-      fs.mkdirSync(path.dirname(this.extractionStampsPath), { recursive: true });
-      fs.writeFileSync(this.extractionStampsPath, JSON.stringify(stamps), "utf8");
+      fs.mkdirSync(path.dirname(this.extractionStampsPath), {
+        recursive: true,
+      });
+      fs.writeFileSync(
+        this.extractionStampsPath,
+        JSON.stringify(stamps),
+        "utf8"
+      );
     } catch {
       // Non-fatal.
     }
@@ -1533,6 +1560,7 @@ export class ModuleCompiler {
     try {
       buildOk = await project.build(
         this.resolveExec(gen.exec),
+        undefined,
         sourceloc,
         false
       );
@@ -1549,7 +1577,13 @@ export class ModuleCompiler {
             HAZE_C_COMPILER: HAZE_C_COMPILER,
             HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
           },
-          () => project.runCaptured(this.resolveExec(gen.exec), sourceloc, [])
+          () =>
+            project.runCaptured(
+              this.resolveExec(gen.exec),
+              undefined,
+              sourceloc,
+              []
+            )
         );
         logChunks.push(runResult.output);
       }

@@ -1,0 +1,9 @@
+name = "ui_elements"
+version = "0.0.1"
+description = ""
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+ui_styling = { path = "./ui_styling" }

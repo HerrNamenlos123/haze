@@ -29,9 +29,12 @@ gl = { path = "./gl" }
 wgpu = { path = "./wgpu" }
 sdl_wgpu = { path = "./sdl_wgpu" }
 
-# UI framework module (fontstash must come before ui since ui depends on it)
+# UI framework modules (fontstash must come before these since they depend on it)
 fontstash = { path = "./fontstash" }
-hzui = { path = "./hzui" }
+ui_styling = { path = "./ui_styling" }
+ui_elements = { path = "./ui_elements" }
+headwind = { path = "./headwind" }
+ui_layout = { path = "./ui_layout" }
 
 tesselate = { path = "./tesselate" }
 perfect_freehand = { path = "./perfect_freehand" }

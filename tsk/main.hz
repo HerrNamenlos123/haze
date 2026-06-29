@@ -1,4 +1,5 @@
 
+
 import tesselate
 import perfect_freehand
 import sdl
@@ -6,11 +7,8 @@ import gl
 import wgpu
 import sdl_wgpu
 
-// ui framework modules (includes flexbox layout)
-import ui_elements
-import ui_styling
-import ui_layout
-import headwind
+// ui framework module (includes flexbox layout)
+import hzui
 
 export extern C noemit fn wgpu_init(window: cptr) :: final;
 export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
@@ -51,14 +49,14 @@ fn getWindowState(window: sdl.Window): gfx.CanvasSize {
 // main screen renderer at the element's current bounding box. Shared by
 // both the "just created" and "already exists" paths in the renderCanvas
 // callback below.
-fn drawCanvasElementAndComposite(drawFnBox: TypeErasedBox | none, handle: CanvasHandle, feedback: RenderFeedback, size: Vec2, frame: mut gfx.Frame, renderer: mut gfx.Renderer) {
+fn drawCanvasElementAndComposite(element: hzui.CanvasElement, handle: CanvasHandle, feedback: hzui.RenderFeedback, size: Vec2, renderer: mut gfx.Renderer) {
     // Declarative per-frame redraw: clears first, since a drawFn is
     // expected to paint the whole canvas itself. Imperative drawing
     // (ui.drawToCanvas) is the path for content that should persist
     // instead.
-    if drawFnBox {
-        let drawFn = drawFnBox.get<CanvasDrawFn>();
-        let r = gfx.Renderer(frame, handle.canvas);
+    if element._drawFn {
+        let drawFn = element._drawFn.get<CanvasDrawFn>();
+        let r = gfx.Renderer(handle.canvas);
         drawFn(r);
         r.commit(true);
     }
@@ -327,7 +325,7 @@ fn main(): int {
             "test/Roboto-Regular.ttf"
         );
 
-        let fonts: []ui_layout.FontEntry = [
+        let fonts: []hzui.FontEntry = [
             {
                 name: "default",
                 id: gfxCtx.fontRenderer.defaultFont,
@@ -338,7 +336,7 @@ fn main(): int {
             }
         ];
 
-        let uiCtx = ui_layout.Context({
+        let uiCtx = hzui.Context({
             width: windowState.logicalSize.x,
             height: windowState.logicalSize.y,
             fonts: fonts,
@@ -397,20 +395,19 @@ fn main(): int {
                         alphaMode: caps.alphaModes[0],
                     });
                     canvas.resize(nextWindowState);
-                    ui_layout.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
+                    hzui.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
                 }
             }
 
             fs.pollEvents();
-            let frame = gfx.Frame(gfxCtx);
-            let renderer = gfx.Renderer(frame, canvas);
+            let renderer = gfx.Renderer(canvas);
 
             let tree = ui.process();
 
             uiCtx.render(tree, {
-                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: hzui.CornerRadiusValues): void => {
                     renderer.drawRect({
-                        pos: position,
+                        pos: position, 
                         size: size,
                         fillColor: backgroundColor,
                         cornerRadius: {
@@ -421,7 +418,7 @@ fn main(): int {
                         },
                     });
                 },
-                renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
+                renderText: (element: hzui.ffi.hzui_draw_text_element_t): void => {
                     renderer.drawText({
                         font: element.fontId,
                         size: element.fontSize,
@@ -430,12 +427,8 @@ fn main(): int {
                         color: element.color,
                     });
                 },
-                onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
-                    applyRenderFeedback(element, pos, size);
-                },
-                renderCanvas: (element: ui_elements.CanvasElement): void => {
-                    let data = runtimeDataOf(element);
-                    let feedback = data.renderFeedback;
+                renderCanvas: (element: hzui.CanvasElement): void => {
+                    let feedback = element._renderFeedback;
                     assert(feedback);
                     let size = feedback.size;
                     let dpiScale = windowState.dpiScale as real;
@@ -453,32 +446,31 @@ fn main(): int {
                         dpiScale: windowState.dpiScale,
                     };
 
-                    if !data.handle {
+                    if !element._handle {
                         let offscreen = gfx.Canvas({ gfx: gfxCtx, size: canvasSize });
                         let handle = CanvasHandle { canvas: offscreen };
-                        data.handle = TypeErasedBox<CanvasHandle>(handle);
+                        element._handle = TypeErasedBox<CanvasHandle>(handle);
 
                         // A brand new offscreen texture has undefined
                         // contents -- always start it from transparent
                         // before anything else touches it this frame.
-                        gfx.Renderer(frame, handle.canvas).commit(true);
+                        gfx.Renderer(handle.canvas).commit(true);
 
-                        drawCanvasElementAndComposite(data.drawFn, handle, feedback, size, frame, renderer);
+                        drawCanvasElementAndComposite(element, handle, feedback, size, renderer);
                     } else {
-                        let handle = data.handle.get<CanvasHandle>();
+                        let handle = element._handle.get<CanvasHandle>();
                         if handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y {
                             handle.canvas.resize(canvasSize);
                             // A freshly resized texture has undefined contents too.
-                            gfx.Renderer(frame, handle.canvas).commit(true);
+                            gfx.Renderer(handle.canvas).commit(true);
                         }
 
-                        drawCanvasElementAndComposite(data.drawFn, handle, feedback, size, frame, renderer);
+                        drawCanvasElementAndComposite(element, handle, feedback, size, renderer);
                     }
                 }
             });
 
             renderer.commit();
-            frame.present();
         }
 
         // fmt.println("Stopping profiling");

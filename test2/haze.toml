@@ -1,0 +1,16 @@
+
+name = "test2"
+version = "0.1.0"
+description = "A sample Haze project"
+license = "MIT"
+authors = []
+type = "exe"
+src = "."
+
+[scripts]
+build = "haze build"
+run = "haze run"
+test = "haze test"
+
+[dependencies]
+filedialog = { path = "./filedialog" }

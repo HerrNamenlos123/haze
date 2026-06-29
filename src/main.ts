@@ -32,6 +32,10 @@ async function main(): Promise<number> {
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
   });
+  build_parser.add_argument("--dir", {
+    dest: "explicitDir",
+    help: "Set a specific project directory",
+  });
   build_parser.add_argument("--verbose", {
     action: "store_true",
     dest: "verbose",
@@ -74,6 +78,10 @@ async function main(): Promise<number> {
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
   });
+  run_parser.add_argument("--dir", {
+    dest: "explicitDir",
+    help: "Set a specific project directory",
+  });
   run_parser.add_argument("--verbose", {
     action: "store_true",
     dest: "verbose",
@@ -107,6 +115,10 @@ async function main(): Promise<number> {
     action: "store_true",
     dest: "fullRebuild",
     help: "Force a full rebuild of all modules",
+  });
+  exec_parser.add_argument("--dir", {
+    dest: "explicitDir",
+    help: "Set a specific project directory",
   });
   exec_parser.add_argument("--verbose", {
     action: "store_true",
@@ -166,7 +178,12 @@ async function main(): Promise<number> {
       );
 
       if (
-        !(await project.build(args.filename, args.sourceloc, args.fullRebuild))
+        !(await project.build(
+          args.filename,
+          args.explicitDir,
+          args.sourceloc,
+          args.fullRebuild
+        ))
       ) {
         return 1;
       }

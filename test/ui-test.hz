@@ -1,31 +1,35 @@
 
-import hzui
-type presets = hzui.presets;
+import ui_elements
+import ui_styling
+import ui_layout
+import headwind
+type presets = headwind.presets;
 
 inline struct DivProps {
     id: int;
-    style?: hzui.DivStyle;
-    presets?: []presets.Preset;
-    ref?: ElementRef<hzui.DivElement>;
+    style?: ui_styling.DivStyle;
+    presets?: []ui_styling.DivStyleOp;
+    ref?: ElementRef<ui_elements.DivElement>;
 }
 
 inline struct TextProps {
     id: int;
-    style?: hzui.TextStyle;
+    style?: ui_styling.TextStyle;
     text: str;
-    presets?: []presets.Preset;
-    ref?: ElementRef<hzui.TextElement>;
+    presets?: []ui_styling.TextStyleOp;
+    ref?: ElementRef<ui_elements.TextElement>;
 }
 
 inline struct CanvasProps {
     id: int;
-    style?: hzui.DivStyle;
-    presets?: []presets.Preset;
-    ref?: ElementRef<hzui.CanvasElement>;
+    style?: ui_styling.DivStyle;
+    presets?: []ui_styling.DivStyleOp;
+    ref?: ElementRef<ui_elements.CanvasElement>;
 }
 
-// The concrete renderer handle stored, type-erased, inside
-// hzui.CanvasElement._handle. hzui never reads this -- only this app layer
+// The concrete renderer handle stored, type-erased, inside this app layer's
+// own per-element runtime data (see ComponentElementRuntimeData below).
+// Neither ui_elements nor ui_layout ever read this -- only this app layer
 // (here and in main.hz's renderCanvas callback) does, via
 // TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
 // agree on this exact type: TypeErasedBox has no runtime type tag.
@@ -33,10 +37,112 @@ struct CanvasHandle {
     canvas: mut gfx.Canvas;
 }
 
-// The concrete type stored, type-erased, inside hzui.CanvasElement._drawFn.
-// Named so it can be used as a generic argument to TypeErasedBox<T> (a bare
-// function-type literal there doesn't parse).
+// The concrete type stored, type-erased, inside a canvas element's runtime
+// data drawFn slot. Named so it can be used as a generic argument to
+// TypeErasedBox<T> (a bare function-type literal there doesn't parse).
 type CanvasDrawFn = (r: mut gfx.Renderer) => void;
+
+// Render/input feedback and an element's GPU canvas handle/drawFn used to
+// live as dedicated fields on the element itself (ui_elements.*Element).
+// They don't anymore -- ui_elements only knows about an opaque
+// `_runtimeData` slot, and this struct is what *this* layer (the only thing
+// that creates elements) stores there. position()/size()/hover() below read
+// it back out; ui_elements and ui_layout never see this type.
+struct RenderFeedback {
+    position: Vec2;
+    size: Vec2;
+}
+
+struct InputFeedback {
+    hover: bool;
+}
+
+struct ComponentElementRuntimeData {
+    renderFeedback?: RenderFeedback;
+    renderFeedbackVersion: rx.Reactive<bool>;
+    inputFeedback?: InputFeedback;
+    inputFeedbackVersion: rx.Reactive<bool>;
+    handle?: TypeErasedBox;
+    drawFn?: TypeErasedBox;
+}
+
+fn newRuntimeData(): ComponentElementRuntimeData {
+    return ComponentElementRuntimeData {
+        renderFeedbackVersion: rx.reactive<bool>(false),
+        inputFeedbackVersion: rx.reactive<bool>(false),
+    };
+}
+
+// Lazily attaches a ComponentElementRuntimeData to `element` if it doesn't
+// have one yet, and returns it. The one and only place that knows
+// `_runtimeData`'s concrete type.
+fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeData {
+    if element is ui_elements.DivElement {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+    else if element is ui_elements.TextElement {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+    else {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+}
+
+// Reactive accessors over an element's layout/input feedback. These used to
+// be methods on the element structs themselves; now they're free functions
+// over the runtime data this layer owns, since ui_elements holds neither
+// the data nor the concept.
+fn position(element: ui_elements.Element): Vec2 | none {
+    let data = runtimeDataOf(element);
+    rx.get(data.renderFeedbackVersion);
+    return data.renderFeedback ? data.renderFeedback.position : none;
+}
+
+fn size(element: ui_elements.Element): Vec2 | none {
+    let data = runtimeDataOf(element);
+    rx.get(data.renderFeedbackVersion);
+    return data.renderFeedback ? data.renderFeedback.size : none;
+}
+
+fn hover(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.inputFeedbackVersion);
+    return data.inputFeedback ? data.inputFeedback.hover : false;
+}
+
+// The ui_layout.BoundingBoxCB passed to uiCtx.render() from main.hz. Bumps
+// the reactive render-feedback version only when the box actually changed,
+// same as the old per-field dirty-checking that used to live in hzui's
+// applyBoundingBoxTrampoline.
+fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec2): void {
+    let data = runtimeDataOf(element);
+    if !data.renderFeedback {
+        data.renderFeedback = { position: pos, size: size };
+        data.renderFeedbackVersion := !data.renderFeedbackVersion;
+        return;
+    }
+    if data.renderFeedback.position.x != pos.x || data.renderFeedback.position.y != pos.y ||
+       data.renderFeedback.size.x != size.x || data.renderFeedback.size.y != size.y {
+        data.renderFeedback.position = pos;
+        data.renderFeedback.size = size;
+        data.renderFeedbackVersion := !data.renderFeedbackVersion;
+    }
+}
 
 struct ComponentInstance {
     id: int;
@@ -55,14 +161,14 @@ struct ComponentInstance {
 
     struct ElementCache {
         id: int;
-        element: mut hzui.Element;
+        element: mut ui_elements.Element;
     }
 
     elementsById: []inline ElementCache = [];
     childComponents: []inline ComponentCache = [];
     newChildComponents: []inline ComponentCache = [];
 
-    rootElement: hzui.DivElement;
+    rootElement: ui_elements.DivElement;
 
     onMounted?: () => none;
     onUnmount?: () => none;
@@ -71,38 +177,38 @@ struct ComponentInstance {
     crashed: bool = false;
     crashInfo: sys.PanicInfo | none = none;
 
-    fn getOrCreateDiv(id: int): mut hzui.DivElement {
+    fn getOrCreateDiv(id: int): mut ui_elements.DivElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is mut hzui.DivElement, "Div expected but other node type encountered");
+                assert(n.element is mut ui_elements.DivElement, "Div expected but other node type encountered");
                 return n.element;
             }
         }
-        let newElement = hzui.DivElement({ id: id, style: {} });
+        let newElement = ui_elements.DivElement({ id: id, style: {} });
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
 
-    fn getOrCreateText(id: int): mut hzui.TextElement {
+    fn getOrCreateText(id: int): mut ui_elements.TextElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is mut hzui.TextElement, "Text element expected but other node type encountered");
+                assert(n.element is mut ui_elements.TextElement, "Text element expected but other node type encountered");
                 return n.element;
             }
         }
-        let newElement = hzui.TextElement({ id: id, text: "", style: {} });
+        let newElement = ui_elements.TextElement({ id: id, text: "", style: {} });
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
 
-    fn getOrCreateCanvas(id: int): mut hzui.CanvasElement {
+    fn getOrCreateCanvas(id: int): mut ui_elements.CanvasElement {
         for n in this.elementsById {
             if n.id == id {
-                assert(n.element is mut hzui.CanvasElement, "Canvas element expected but other node type encountered");
+                assert(n.element is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
                 return n.element;
             }
         }
-        let newElement = hzui.CanvasElement({ id: id, style: {} });
+        let newElement = ui_elements.CanvasElement({ id: id, style: {} });
         this.elementsById.push({ id: id, element: newElement });
         return newElement;
     }
@@ -119,7 +225,7 @@ struct ComponentInstance {
     fn createChild(id: int): ComponentInstance {
         return ComponentInstance {
             id: id,
-            rootElement: hzui.DivElement({
+            rootElement: ui_elements.DivElement({
                 id: id,
                 style: {},
             }),
@@ -130,7 +236,7 @@ struct ComponentInstance {
 
 struct RenderContext {
     currentComponent: ComponentInstance;
-    currentParent: hzui.DivElement;
+    currentParent: ui_elements.DivElement;
 }
 
 struct InstanceData<TProps> {
@@ -193,83 +299,34 @@ opaque struct UIContext {
         return this._timeNow;
     }
 
-    fn applyHitTestAndScheduleEvents(element: hzui.Element, mousePos: Vec2): [](() => none) :: final {
+    fn applyHitTestAndScheduleEvents(element: ui_elements.Element, mousePos: Vec2): [](() => none) :: final {
         let events: [](() => none) = [];
 
-        if element is hzui.DivElement {
-            let pos = element.position();
-            let size = element.size();
+        let elementPos = position(element);
+        let elementSize = size(element);
 
-            let hovered = false;
-            if pos && size {
-                hovered = 
-                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
-                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
-            }
+        let hovered = false;
+        if elementPos && elementSize {
+            hovered =
+                (mousePos.x > elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
+                (mousePos.y > elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
+        }
 
-            if !element._inputFeedback {
-                element._inputFeedback = { 
-                    hover: false
-                };
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
-            }
-            assert(element._inputFeedback);
+        let data = runtimeDataOf(element);
+        if !data.inputFeedback {
+            data.inputFeedback = { hover: false };
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+        }
+        assert(data.inputFeedback);
 
-            if element._inputFeedback.hover != hovered {
-                element._inputFeedback.hover = hovered;
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
-            }
+        if data.inputFeedback.hover != hovered {
+            data.inputFeedback.hover = hovered;
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+        }
 
+        if element is ui_elements.DivElement {
             for child in element.children {
                 let childEvents = this.applyHitTestAndScheduleEvents(child, mousePos);
-            }
-        }
-        else if element is hzui.TextElement {
-            let pos = element.position();
-            let size = element.size();
-
-            let hovered = false;
-            if pos && size {
-                hovered =
-                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
-                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
-            }
-
-            if !element._inputFeedback {
-                element._inputFeedback = {
-                    hover: false
-                };
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
-            }
-            assert(element._inputFeedback);
-
-            if element._inputFeedback.hover != hovered {
-                element._inputFeedback.hover = hovered;
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
-            }
-        }
-        else if element is hzui.CanvasElement {
-            let pos = element.position();
-            let size = element.size();
-
-            let hovered = false;
-            if pos && size {
-                hovered =
-                    (mousePos.x > pos.x) && (mousePos.x < (pos.x + size.x)) &&
-                    (mousePos.y > pos.y) && (mousePos.y < (pos.y + size.y));
-            }
-
-            if !element._inputFeedback {
-                element._inputFeedback = {
-                    hover: false
-                };
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
-            }
-            assert(element._inputFeedback);
-
-            if element._inputFeedback.hover != hovered {
-                element._inputFeedback.hover = hovered;
-                element._inputFeedbackVersion := !element._inputFeedbackVersion;
             }
         }
 
@@ -360,7 +417,7 @@ opaque struct UIContext {
             if !this.rootComponent {
                 this.rootComponent = ComponentInstance {
                     id: id,
-                    rootElement: hzui.DivElement({
+                    rootElement: ui_elements.DivElement({
                         id: id,
                         style: {},
                     }),
@@ -436,7 +493,7 @@ opaque struct UIContext {
                 if instance.crashed && instance.crashInfo {
                     let errEl = instance.getOrCreateText(-1);
                     errEl.text := f"Component error: {instance.crashInfo.message}";
-                    errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
                     instance.rootElement.children.push(errEl);
                     return none;
                 }
@@ -461,7 +518,7 @@ opaque struct UIContext {
                     }
                     let errEl = instance.getOrCreateText(-1);
                     errEl.text := f"Component error: {e.message}";
-                    errEl.style := { textColor: Color(1, 0.2, 0.2, 1) };
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
                     instance.rootElement.children.push(errEl);
                     return none;
                 };
@@ -605,10 +662,11 @@ opaque struct UIContext {
     fn div(props: DivProps, childrenFn: () => void) {
         let element = this.getCurrentComponent().getOrCreateDiv(props.id);
 
-        if props.style is not none {
-            element.style := props.style;
-        }
-        element.presets = props.presets;
+        let rawStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawStyle := props.style; }
+        let opsList: []ui_styling.DivStyleOp = [];
+        if props.presets is not none { opsList = props.presets; }
+        element.style := ui_styling.computeDivStyle(rawStyle, opsList);
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -644,10 +702,11 @@ opaque struct UIContext {
         let element = this.getCurrentComponent().getOrCreateText(props.id);
 
         element.text := props.text;
-        if props.style is not none {
-            element.style := props.style;
-        }
-        element.presets = props.presets;
+        let rawTextStyle: ui_styling.TextStyle = {};
+        if props.style is not none { rawTextStyle := props.style; }
+        let textOpsList: []ui_styling.TextStyleOp = [];
+        if props.presets is not none { textOpsList = props.presets; }
+        element.style := ui_styling.computeTextStyle(rawTextStyle, textOpsList);
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -679,22 +738,24 @@ opaque struct UIContext {
     fn canvas(props: CanvasProps, drawFn?: CanvasDrawFn) {
         let element = this.getCurrentComponent().getOrCreateCanvas(props.id);
 
-        if props.style is not none {
-            element.style := props.style;
-        }
-        element.presets = props.presets;
+        let rawCanvasStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawCanvasStyle := props.style; }
+        let canvasOpsList: []ui_styling.DivStyleOp = [];
+        if props.presets is not none { canvasOpsList = props.presets; }
+        element.style := ui_styling.computeDivStyle(rawCanvasStyle, canvasOpsList);
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
 
+        let data = runtimeDataOf(element);
         if drawFn is not none {
-            if !element._drawFn {
-                element._drawFn = TypeErasedBox<CanvasDrawFn>(drawFn);
+            if !data.drawFn {
+                data.drawFn = TypeErasedBox<CanvasDrawFn>(drawFn);
             } else {
-                element._drawFn.set<CanvasDrawFn>(drawFn);
+                data.drawFn.set<CanvasDrawFn>(drawFn);
             }
         } else {
-            element._drawFn = none;
+            data.drawFn = none;
         }
 
         if props.ref is not none {
@@ -712,11 +773,12 @@ opaque struct UIContext {
     // element hasn't been laid out yet (i.e. never rendered a frame), since
     // there's no canvas to draw into yet. `clear` defaults to false so
     // repeated calls accumulate instead of erasing prior content.
-    fn drawToCanvas(element: mut hzui.CanvasElement, drawFn: CanvasDrawFn, clear: bool = false) {
-        if !element._handle {
+    fn drawToCanvas(element: mut ui_elements.CanvasElement, drawFn: CanvasDrawFn, clear: bool = false) {
+        let data = runtimeDataOf(element);
+        if !data.handle {
             return;
         }
-        let handle = element._handle.get<CanvasHandle>();
+        let handle = data.handle.get<CanvasHandle>();
         // Outside the main render loop there's no frame already in
         // progress to join, so this is its own one-Canvas Frame -- still
         // exactly one queue.submit(), just scoped to this single call
@@ -749,12 +811,12 @@ fn Header(ui: UIContext, args: HeaderArgs) {
             ui.div({
                 id: 1,
                 style: {
-                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 10.0 },
+                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 10.0 },
                 },
                 presets: [
                     presets.bg(Color(0.9, 0.2, 0.2, 1)),
                     presets.p(4),
-                    presets.align(hzui.Align.Center),
+                    presets.align(ui_styling.Align.Center),
                 ]
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
@@ -775,18 +837,18 @@ struct NavItemArgs {
 fn NavItem(ui: UIContext, args: NavItemArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<NavItemArgs>) => {
 
-        let divRef = ui.ref<hzui.DivElement>();
+        let divRef = ui.ref<ui_elements.DivElement>();
 
-        let hover = rx.computed(() => {
+        let isHovered = rx.computed(() => {
             let element = rx.get(divRef);
             if !element {
                 return false;
             }
-            if (element.hover()) {
+            if (hover(element)) {
                 let a: []str = [];
                 a.pop();
             }
-            return element.hover();
+            return hover(element);
         });
 
         return (): void => {
@@ -794,9 +856,9 @@ fn NavItem(ui: UIContext, args: NavItemArgs) {
                 id: 1,
                 ref: divRef,
                 style: {
-                    backgroundColor: hover ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
-                    padding: hzui.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
-                    cornerRadius: hzui.StyleCornerRadiusSimple { value: 6.0 },
+                    backgroundColor: isHovered ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
+                    padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
+                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 6.0 },
                 }
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().label });
@@ -821,8 +883,8 @@ fn Sidebar(ui: UIContext, args: SidebarArgs) {
                 id: 1,
                 style: {
                     backgroundColor: Color(0.2, 0.6, 0.9, 1),
-                    padding: hzui.StylePaddingSimple { value: 20.0 },
-                    direction: hzui.Direction.Column,
+                    padding: ui_styling.StylePaddingSimple { value: 20.0 },
+                    direction: ui_styling.Direction.Column,
                     gap: 8.0,
                     width: 180.0,
                 }
@@ -848,10 +910,10 @@ struct ContentAreaArgs {
 fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
     ui.defineComponent(args.id, args, (instance: InstanceData<ContentAreaArgs>) => {
 
-        let divRef = ui.ref<hzui.DivElement>();
+        let divRef = ui.ref<ui_elements.DivElement>();
         let h = rx.computed(() => {
             if let ref = rx.get(divRef) {
-                return ref.hover();
+                return hover(ref);
             }
             return false;
         })
@@ -861,8 +923,8 @@ fn ContentArea(ui: UIContext, args: ContentAreaArgs) {
                 id: 100,
                 ref: divRef,
                 style: {
-                    direction: hzui.Direction.Column,
-                    align: hzui.Align.Center,
+                    direction: ui_styling.Direction.Column,
+                    align: ui_styling.Align.Center,
                 },
                 presets: [
                     presets.p(2),
@@ -1066,7 +1128,7 @@ fn Footer(ui: UIContext, args: FooterArgs) {
                     presets.bg("#181818"),
                     presets.textColor("#F00"),
                     presets.p(15),
-                    presets.align(hzui.Align.Center),
+                    presets.align(ui_styling.Align.Center),
                 ],
             }, (): void => {
                 ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
@@ -1111,8 +1173,8 @@ fn UI(ui: UIContext) {
                 id: 100000,
                 style: {
                     backgroundColor: Color(0.15, 0.15, 0.15, 1),
-                    padding: hzui.StylePaddingSimple { value: 30.0 },
-                    direction: hzui.Direction.Column,
+                    padding: ui_styling.StylePaddingSimple { value: 30.0 },
+                    direction: ui_styling.Direction.Column,
                     fontFamily: "roboto",
                     fontSize: 16.0,
                     textColor: Color(1, 1, 1, 1),
@@ -1124,11 +1186,11 @@ fn UI(ui: UIContext) {
                 ui.div({
                     id: 22000,
                     style: {
-                        direction: hzui.Direction.Row,
-                        padding: hzui.StylePaddingSimple { value: 20.0 },
+                        direction: ui_styling.Direction.Row,
+                        padding: ui_styling.StylePaddingSimple { value: 20.0 },
                         backgroundColor: Color(0.25, 0.25, 0.25, 1),
-                        justify: hzui.Justify.SpaceBetween,
-                        cornerRadius: hzui.StyleCornerRadiusSimple { value: 20.0 },
+                        justify: ui_styling.Justify.SpaceBetween,
+                        cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 20.0 },
                         gap: 30.0,
                     }
                 }, (): void => {

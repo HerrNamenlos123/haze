@@ -30,7 +30,8 @@ typedef struct {
   void* renderTextUserdata;
   void (*renderCustom)(void* userdata, void* elementPtr, double x, double y, double w, double h);
   void* renderCustomUserdata;
-  void (*applyBoundingBox)(void* elementPtr, double x, double y, double w, double h);
+  void (*applyBoundingBox)(void* userdata, void* elementPtr, double x, double y, double w, double h);
+  void* applyBoundingBoxUserdata;
 } ClayCallbacks;
 
 void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
@@ -48,7 +49,7 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
 
     case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, rcmd->userData, x, y, w, h);
       }
       Clay_RectangleRenderData* config = &rcmd->renderData.rectangle;
       Clay_Color col = rcmd->renderData.rectangle.backgroundColor;
@@ -68,7 +69,7 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
 
     case CLAY_RENDER_COMMAND_TYPE_TEXT: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, rcmd->userData, x, y, w, h);
       }
       callbacks.renderText(
         callbacks.renderTextUserdata,
@@ -238,7 +239,7 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     } break;
     case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, rcmd->userData, x, y, w, h);
       }
       callbacks.renderCustom(callbacks.renderCustomUserdata, rcmd->userData, x, y, w, h);
     } break;

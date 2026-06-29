@@ -392,8 +392,16 @@ export function getModuleNamespaceMangledSegment(
 export class ConfigParser {
   configPath: string;
 
-  constructor(hazeConfigFile: string, startDir?: string) {
-    const configPath = this.findUpwards(hazeConfigFile, startDir);
+  constructor(hazeConfigFile: string, startDir?: string, explicitDir?: string) {
+    let configPath = undefined as string | undefined;
+    if (explicitDir) {
+      configPath = join(explicitDir, hazeConfigFile);
+      if (!existsSync(configPath)) {
+        throw new GeneralError(`'${hazeConfigFile}' does not exist.`);
+      }
+    } else {
+      configPath = this.findUpwards(hazeConfigFile, startDir);
+    }
     if (!configPath) {
       throw new GeneralError(
         `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`
@@ -788,7 +796,10 @@ export class ConfigParser {
             }
             let filePlatform: GeneratorFilePlatform | undefined;
             if (file["platform"] !== undefined) {
-              if (file["platform"] !== "linux" && file["platform"] !== "win32") {
+              if (
+                file["platform"] !== "linux" &&
+                file["platform"] !== "win32"
+              ) {
                 throw new GeneralError(
                   `Generator '${key}' defines an invalid ${type}: 'platform' must be "linux" or "win32", got "${file["platform"]}"`
                 );

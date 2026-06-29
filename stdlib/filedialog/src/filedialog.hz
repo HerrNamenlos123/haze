@@ -1,0 +1,6 @@
+
+__c__("#include \"ffi/main.c\"");
+
+namespace ffi {
+    export extern C fn hz_filedialog_open_dialog(): void :: final;
+}

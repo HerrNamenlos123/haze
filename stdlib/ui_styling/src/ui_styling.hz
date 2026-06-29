@@ -1,0 +1,347 @@
+
+// Concrete, fully-resolved value types (no "unset" representation -- these
+// are what a resolved style actually holds, not what a user wrote).
+
+export inline struct Padding {
+    left: real = 0.0;
+    right: real = 0.0;
+    top: real = 0.0;
+    bottom: real = 0.0;
+}
+
+export inline struct CornerRadius {
+    topLeft: real = 0.0;
+    topRight: real = 0.0;
+    bottomLeft: real = 0.0;
+    bottomRight: real = 0.0;
+}
+
+export enum Direction { Row, Column }
+export enum Justify { Start, Center, End, SpaceBetween }
+export enum Align { Start, Center, End, Stretch }
+
+export enum LineHeightMode { Auto, Relative, Pixels }
+export struct LineHeight {
+    mode: LineHeightMode;
+    value: real;
+};
+
+// User-facing, all-optional shorthand inputs -- "value" sets all four
+// sides/corners at once, "Full" sets them independently. `none` on any
+// field of either means "not set".
+
+export inline struct StylePaddingSimple {
+    value?: real;
+}
+
+export inline struct StylePaddingFull {
+    left?: real;
+    right?: real;
+    top?: real;
+    bottom?: real;
+}
+
+export type StylePadding = StylePaddingSimple | StylePaddingFull | none;
+
+export inline struct StyleCornerRadiusSimple {
+    value?: real;
+}
+
+export inline struct StyleCornerRadiusFull {
+    topLeft?: real;
+    topRight?: real;
+    bottomLeft?: real;
+    bottomRight?: real;
+}
+
+export type StyleCornerRadius = StyleCornerRadiusSimple | StyleCornerRadiusFull | none;
+
+fn resolvePadding(padding: StylePadding): Padding {
+    if padding is StylePaddingSimple {
+        let v = padding.value ? padding.value : 0.0;
+        return Padding { left: v, right: v, top: v, bottom: v };
+    }
+    else if padding is StylePaddingFull {
+        return Padding {
+            left: padding.left ? padding.left : 0.0,
+            right: padding.right ? padding.right : 0.0,
+            top: padding.top ? padding.top : 0.0,
+            bottom: padding.bottom ? padding.bottom : 0.0,
+        };
+    }
+    return Padding {};
+}
+
+fn resolveCornerRadius(cornerRadius: StyleCornerRadius): CornerRadius {
+    if cornerRadius is StyleCornerRadiusSimple {
+        let v = cornerRadius.value ? cornerRadius.value : 0.0;
+        return CornerRadius { topLeft: v, topRight: v, bottomLeft: v, bottomRight: v };
+    }
+    else if cornerRadius is StyleCornerRadiusFull {
+        return CornerRadius {
+            topLeft: cornerRadius.topLeft ? cornerRadius.topLeft : 0.0,
+            topRight: cornerRadius.topRight ? cornerRadius.topRight : 0.0,
+            bottomLeft: cornerRadius.bottomLeft ? cornerRadius.bottomLeft : 0.0,
+            bottomRight: cornerRadius.bottomRight ? cornerRadius.bottomRight : 0.0,
+        };
+    }
+    return CornerRadius {};
+}
+
+// User-facing raw styles: everything optional, meaning "not set by this
+// component" -- computeDivStyle()/computeTextStyle() below are the only
+// place that turns "not set" into an actual value.
+
+export inline struct DivStyle {
+    width?: real;
+    height?: real;
+    padding: StylePadding = none;
+    direction?: Direction;
+    justify?: Justify;
+    align?: Align;
+    cornerRadius: StyleCornerRadius = none;
+    gap?: real;
+    backgroundColor?: Color;
+
+    fontFamily?: str;
+    fontSize?: real;
+    fontWeight?: real;
+    lineHeight?: LineHeight;
+    letterSpacing?: real;
+    textColor?: Color;
+
+    fn operator:=(other: DivStyle) {
+        this.width = other.width;
+        this.height = other.height;
+        this.padding = other.padding;
+        this.direction = other.direction;
+        this.justify = other.justify;
+        this.align = other.align;
+        this.cornerRadius = other.cornerRadius;
+        this.gap = other.gap;
+        this.backgroundColor = other.backgroundColor;
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+    }
+
+    fn operator==(other: DivStyle) {
+        return
+            this.width == other.width &&
+            this.height == other.height &&
+            this.direction == other.direction &&
+            this.justify == other.justify &&
+            this.align == other.align &&
+            this.gap == other.gap &&
+            this.fontFamily == other.fontFamily &&
+            this.fontSize == other.fontSize &&
+            this.fontWeight == other.fontWeight &&
+            this.letterSpacing == other.letterSpacing
+        ;
+    }
+
+    fn operator!=(other: DivStyle) {
+        return !(this == other);
+    }
+}
+
+export inline struct TextStyle {
+    fontFamily?: str;
+    fontSize?: real;
+    fontWeight?: real;
+    lineHeight?: LineHeight;
+    letterSpacing?: real;
+    textColor?: Color;
+
+    fn operator:=(other: TextStyle) {
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+    }
+
+    fn operator==(other: TextStyle) {
+        return
+            this.fontFamily == other.fontFamily &&
+            this.fontSize == other.fontSize &&
+            this.fontWeight == other.fontWeight &&
+            this.letterSpacing == other.letterSpacing
+        ;
+    }
+
+    fn operator!=(other: TextStyle) {
+        return !(this == other);
+    }
+}
+
+// The fully-resolved style ui_elements actually stores. Concrete everywhere
+// except where "unset" is a real, meaningful layout state rather than a
+// missing default:
+//   - width/height: none means auto-size.
+//   - fontFamily/fontSize/fontWeight/lineHeight/textColor: none means
+//     "inherit from ancestor". Resolving inheritance needs the tree (an
+//     ancestor's resolved value), which a single element's props can't see
+//     in isolation -- that's the layout engine's job, same as today.
+
+export struct ComputedDivStyle {
+    width?: real;
+    height?: real;
+    padding: Padding = {};
+    direction: Direction = Direction.Column;
+    justify: Justify = Justify.Start;
+    align: Align = Align.Start;
+    cornerRadius: CornerRadius = {};
+    gap: real = 0.0;
+    backgroundColor: Color = {};
+
+    fontFamily?: str;
+    fontSize?: real;
+    fontWeight?: real;
+    lineHeight?: LineHeight;
+    letterSpacing?: real;
+    textColor?: Color;
+
+    fn operator:=(other: ComputedDivStyle) {
+        this.width = other.width;
+        this.height = other.height;
+        this.padding = other.padding;
+        this.direction = other.direction;
+        this.justify = other.justify;
+        this.align = other.align;
+        this.cornerRadius = other.cornerRadius;
+        this.gap = other.gap;
+        this.backgroundColor = other.backgroundColor;
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+    }
+}
+
+export struct ComputedTextStyle {
+    fontFamily?: str;
+    fontSize?: real;
+    fontWeight?: real;
+    lineHeight?: LineHeight;
+    letterSpacing?: real;
+    textColor?: Color;
+
+    fn operator:=(other: ComputedTextStyle) {
+        this.fontFamily = other.fontFamily;
+        this.fontSize = other.fontSize;
+        this.fontWeight = other.fontWeight;
+        this.lineHeight = other.lineHeight;
+        this.letterSpacing = other.letterSpacing;
+        this.textColor = other.textColor;
+    }
+}
+
+// The preset vocabulary: one op per overridable field, not per preset name.
+// ui_styling owns this because it's just ui_styling's own field set restated
+// as data -- it never needs to know what produces these or what they're
+// called as "presets" (bg/p/gap/...).
+
+export struct BackgroundColorOp { color: Color; }
+export struct TextColorOp { color: Color; }
+export struct PaddingOp { padding: StylePadding; }
+export struct GapOp { value: real; }
+export struct AlignOp { value: Align; }
+export struct JustifyOp { value: Justify; }
+export struct DirectionOp { value: Direction; }
+export struct CornerRadiusOp { cornerRadius: StyleCornerRadius; }
+export struct WidthOp { value: real; }
+export struct HeightOp { value: real; }
+export struct FontFamilyOp { value: str; }
+export struct FontSizeOp { value: real; }
+export struct FontWeightOp { value: real; }
+export struct LineHeightOp { value: LineHeight; }
+export struct LetterSpacingOp { value: real; }
+
+// Text-only ops are a sub-union of the div ops, so a single op value (e.g.
+// from presets.textColor(...)) satisfies both `[]TextStyleOp` and
+// `[]DivStyleOp` structurally -- no separate vocabularies needed.
+export type TextStyleOp =
+    TextColorOp | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
+
+// Flat (not nested) so a TextStyleOp member's value -- e.g. from
+// presets.textColor(...) -- is directly usable wherever DivStyleOp is
+// expected too: union membership doesn't see through a nested union, so
+// `TextStyleOp | ...` here wouldn't actually include its variants.
+export type DivStyleOp =
+    BackgroundColorOp | TextColorOp | PaddingOp | GapOp | AlignOp | JustifyOp
+    | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
+    | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
+
+// Applies `ops` onto `raw`, with explicitly-set fields on `raw` always
+// winning over a preset op for the same field (presets only fill gaps),
+// then resolves the result into a ComputedDivStyle. One flat exhaustive
+// match, plain data in and out -- no function pointers, fully inlinable.
+export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
+    let working: inline DivStyle = raw;
+
+    for op in ops {
+        if op is BackgroundColorOp { if !working.backgroundColor { working.backgroundColor = op.color; } }
+        else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+        else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
+        else if op is GapOp { if !working.gap { working.gap = op.value; } }
+        else if op is AlignOp { if !working.align { working.align = op.value; } }
+        else if op is JustifyOp { if !working.justify { working.justify = op.value; } }
+        else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
+        else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
+        else if op is WidthOp { if !working.width { working.width = op.value; } }
+        else if op is HeightOp { if !working.height { working.height = op.value; } }
+        else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+        else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+        else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+        else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+        else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+    }
+
+    let result = ComputedDivStyle {
+        width: working.width,
+        height: working.height,
+        padding: resolvePadding(working.padding),
+        cornerRadius: resolveCornerRadius(working.cornerRadius),
+        fontFamily: working.fontFamily,
+        fontSize: working.fontSize,
+        fontWeight: working.fontWeight,
+        lineHeight: working.lineHeight,
+        letterSpacing: working.letterSpacing,
+        textColor: working.textColor,
+    };
+    if working.direction { result.direction = working.direction; }
+    if working.justify { result.justify = working.justify; }
+    if working.align { result.align = working.align; }
+    if working.gap { result.gap = working.gap; }
+    if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
+    return result;
+}
+
+export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp): ComputedTextStyle {
+    let working: inline TextStyle = raw;
+
+    for op in ops {
+        if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+        else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+        else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+        else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+        else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+        else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+    }
+
+    return ComputedTextStyle {
+        fontFamily: working.fontFamily,
+        fontSize: working.fontSize,
+        fontWeight: working.fontWeight,
+        lineHeight: working.lineHeight,
+        letterSpacing: working.letterSpacing,
+        textColor: working.textColor,
+    };
+}

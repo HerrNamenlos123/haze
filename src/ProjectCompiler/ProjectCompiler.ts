@@ -10,6 +10,7 @@ import {
   Platform,
 } from "../shared/Config";
 import {
+  assert,
   CompilerError,
   GeneralError,
   InternalError,
@@ -92,7 +93,13 @@ export class ProjectCompiler {
   showTiming: boolean;
   silent: boolean;
 
-  constructor(verbose = false, ignoreLock = false, strip = false, showTiming = false, silent = false) {
+  constructor(
+    verbose = false,
+    ignoreLock = false,
+    strip = false,
+    showTiming = false,
+    silent = false
+  ) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
     this.strip = strip;
@@ -100,7 +107,11 @@ export class ProjectCompiler {
     this.silent = silent;
   }
 
-  async getConfig(singleFilename?: string, sourceloc?: boolean) {
+  async getConfig(
+    singleFilename?: string,
+    explicitDir?: string,
+    sourceloc?: boolean
+  ) {
     let config: ModuleConfig | undefined;
     if (singleFilename) {
       config = {
@@ -134,7 +145,7 @@ export class ProjectCompiler {
         generators: [],
       };
     } else {
-      config = await parseConfig(undefined, sourceloc);
+      config = await parseConfig(undefined, explicitDir, sourceloc);
     }
     return config;
   }
@@ -150,6 +161,7 @@ export class ProjectCompiler {
 
   async build(
     singleFilename?: string,
+    explicitDir?: string,
     sourceloc?: boolean,
     fullRebuild?: boolean
   ) {
@@ -157,7 +169,7 @@ export class ProjectCompiler {
       return false;
     }
 
-    const config = await this.getConfig(singleFilename, sourceloc);
+    const config = await this.getConfig(singleFilename, explicitDir, sourceloc);
     if (!config) {
       return false;
     }
@@ -224,6 +236,7 @@ export class ProjectCompiler {
         ) {
           const stdlibConfig = await parseConfig(
             join(stdlibDir, "core"),
+            undefined,
             sourceloc
           );
           if (!stdlibConfig) {
@@ -238,6 +251,7 @@ export class ProjectCompiler {
             if (!modules.has(dep.name)) {
               const depConfig = await parseConfig(
                 join(stdlibDir, dep.path),
+                undefined,
                 sourceloc
               );
               if (!depConfig) {
@@ -259,6 +273,7 @@ export class ProjectCompiler {
       // -----------------------------------------------------------------------
       if (printer) {
         for (const name of this.topoSortModules(modules)) {
+          assert(modules.has(name));
           const { compiler } = modules.get(name)!;
           compiler.setPrinter(printer, printer.addModule(compiler.config.name));
         }
@@ -324,7 +339,11 @@ export class ProjectCompiler {
   private async buildInParallel(
     modules: Map<
       string,
-      { config: ModuleConfig; compiler: ModuleCompiler; effectiveDeps: string[] }
+      {
+        config: ModuleConfig;
+        compiler: ModuleCompiler;
+        effectiveDeps: string[];
+      }
     >,
     mainModuleName: string,
     fullRebuild: boolean | undefined
@@ -395,10 +414,11 @@ export class ProjectCompiler {
    */
   async runCaptured(
     singleFilename?: string,
+    explicitDir?: string,
     sourceloc?: boolean,
     args?: string[]
   ): Promise<{ exitCode: number; output: string }> {
-    const config = await this.getConfig(singleFilename, sourceloc);
+    const config = await this.getConfig(singleFilename, explicitDir, sourceloc);
     if (!config) {
       return { exitCode: -1, output: "Failed to load configuration\n" };
     }
@@ -425,11 +445,16 @@ export class ProjectCompiler {
 
   async run(
     singleFilename?: string,
+    explicitDir?: string,
     sourceloc?: boolean,
     args?: string[]
   ): Promise<number> {
     try {
-      const config = await this.getConfig(singleFilename, sourceloc);
+      const config = await this.getConfig(
+        singleFilename,
+        explicitDir,
+        sourceloc
+      );
       if (!config) {
         return -1;
       }
@@ -595,13 +620,17 @@ export class ProjectCompiler {
         console.info("Installing Ninja Build System...");
         switch (await detectPackageManager()) {
           case "debian":
-            execInherit("sudo apt-get update && sudo apt-get install ninja-build");
+            execInherit(
+              "sudo apt-get update && sudo apt-get install ninja-build"
+            );
             break;
           case "fedora":
             execInherit("sudo dnf install ninja-build");
             break;
           default:
-            throw new GeneralError("Unsupported package manager for Ninja installation");
+            throw new GeneralError(
+              "Unsupported package manager for Ninja installation"
+            );
         }
         this.markStepDone(MARKERS.linuxNinja);
         console.info("Installing Ninja Build System... Done");
