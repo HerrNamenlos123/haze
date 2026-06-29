@@ -622,6 +622,47 @@ export opaque struct Canvas {
     }
 }
 
+// One application frame's worth of GPU work. Owns the single CommandEncoder
+// that every Canvas drawn this frame records its render pass into, and the
+// list of surface-backed Canvases to present afterward. This is what makes
+// "render to an offscreen Canvas, then sample it from another Canvas" cost
+// exactly one queue.submit() no matter how many Canvases are involved: each
+// Renderer.commit() below just adds another render pass to this encoder
+// instead of submitting on its own.
+//
+// Usage is always: create one Frame per application frame, create/commit as
+// many Renderer(frame, canvas) as needed against any Canvas (offscreen or
+// surface-backed, in any order, sampling each other's output freely), then
+// call frame.present() exactly once at the end.
+export opaque struct Frame {
+    gfx: mut Context;
+    encoder: wgpu.CommandEncoder;
+    pendingPresents: []mut Canvas = [];
+
+    fn constructor(gfx: mut Context) {
+        let encoder = gfx.device.createCommandEncoder();
+        assert(encoder, "gfx: failed to create command encoder");
+        return Frame { gfx: gfx, encoder: encoder };
+    }
+
+    // Submits every render pass recorded this frame (across however many
+    // Canvases were drawn) as a single command buffer, then presents every
+    // surface-backed Canvas that was drawn. Call exactly once, after all of
+    // this frame's Renderer.commit() calls.
+    fn present() {
+        let commandBuffer = this.encoder.finish();
+        if !commandBuffer {
+            fmt.println("gfx: failed to finish command buffer");
+            return;
+        }
+        this.gfx.queue.submit({ commandBuffer });
+
+        for canvas in this.pendingPresents {
+            canvas.present();
+        }
+    }
+}
+
 // A run of `count` consecutive PrimitiveInstance entries (starting at
 // `start`) that all need `texture` bound at group 1 (glyphs -> font atlas,
 // textured quads -> their own texture). Plain rects need no run at all: they
@@ -667,20 +708,23 @@ struct TextureOpts {
     zIndex: real = 0;
 }
 
-// The cheap, frame-scoped value: `let renderer = Renderer(canvas)` every
-// frame. It owns no GPU resources of its own, only the command lists
-// accumulated this frame; commit() flushes them into the canvas it was given.
-// Draw order between primitives and triangles, and between different
-// zIndex values, is resolved entirely by the GPU depth test -- there is no
-// CPU-side sorting of draw calls.
+// The cheap, frame-scoped value: `let r = Renderer(frame, canvas)`, draw
+// into it, then `r.commit()`. It owns no GPU resources of its own, only the
+// command lists accumulated this frame; commit() flushes them into the
+// canvas it was given, as one more render pass recorded into the parent
+// Frame's shared encoder (see Frame above for why). Draw order between
+// primitives and triangles, and between different zIndex values, is
+// resolved entirely by the GPU depth test -- there is no CPU-side sorting of
+// draw calls.
 export opaque struct Renderer {
     canvas: mut Canvas;
+    frame: mut Frame;
     primitives: []PrimitiveInstance = [];
     meshVertices: []MeshVertex = [];
     textureRuns: []TextureRun = [];
 
-    fn constructor(canvas: mut Canvas) {
-        return Renderer { canvas: canvas };
+    fn constructor(frame: mut Frame, canvas: mut Canvas) {
+        return Renderer { canvas: canvas, frame: frame };
     }
 
     // Records that primitives[start..start+count) need `texture` bound at
@@ -914,11 +958,12 @@ export opaque struct Renderer {
             return;
         }
 
-        let encoder = gfx.device.createCommandEncoder();
-        if !encoder {
-            fmt.println("gfx: failed to create command encoder");
-            return;
-        }
+        // Recorded into the parent Frame's shared encoder, not a
+        // CommandEncoder of our own -- this is what lets any number of
+        // Canvases (offscreen or surface-backed) be drawn in one frame for
+        // the cost of a single queue.submit(), regardless of how many of
+        // them there are or how they sample each other.
+        let encoder = this.frame.encoder;
 
         let colorAttachment = wgpu.RenderPassColorAttachment {
             view: canvas.msaaColorView,
@@ -1000,14 +1045,12 @@ export opaque struct Renderer {
 
         pass.end();
 
-        let commandBuffer = encoder.finish();
-        if !commandBuffer {
-            fmt.println("gfx: failed to finish command buffer");
-            return;
+        // Submission and presentation happen once for the whole Frame, in
+        // frame.present() -- not here. Just register that this canvas needs
+        // presenting once that happens.
+        if canvas.surface {
+            this.frame.pendingPresents.push(canvas);
         }
-
-        gfx.queue.submit({ commandBuffer });
-        canvas.present();
     }
 }
 

@@ -717,9 +717,15 @@ opaque struct UIContext {
             return;
         }
         let handle = element._handle.get<CanvasHandle>();
-        let r = gfx.Renderer(handle.canvas);
+        // Outside the main render loop there's no frame already in
+        // progress to join, so this is its own one-Canvas Frame -- still
+        // exactly one queue.submit(), just scoped to this single call
+        // instead of to a whole application frame.
+        let frame = gfx.Frame(handle.canvas.gfx);
+        let r = gfx.Renderer(frame, handle.canvas);
         drawFn(r);
         r.commit(clear);
+        frame.present();
     }
 
     fn ref<T>(): ElementRef<T> {

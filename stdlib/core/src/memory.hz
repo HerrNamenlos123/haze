@@ -339,6 +339,8 @@ export opaque inline struct Bytes {
 
 export opaque inline struct TypeErasedBox {
     _handle: cptr;
+    _prettyTypeName: str;
+    _mangledTypeName: str;
 
     fn constructor<T>(value: T) {
         do unsafe {
@@ -347,6 +349,8 @@ export opaque inline struct TypeErasedBox {
             __c__("handle = box;");
             return TypeErasedBox {
                 _handle: handle,
+                _prettyTypeName: T.prettyName,
+                _mangledTypeName: T.mangledName,
             };
         };
     }
@@ -358,9 +362,17 @@ export opaque inline struct TypeErasedBox {
             __c__("typedBox = handle;");
             typedBox.value = value;
         };
+        this._prettyTypeName = T.prettyName;
+        this._mangledTypeName = T.mangledName;
     }
 
     fn get<T>() {
+        // TODO: This is not actually a true, exhaustive safety check and it is still possible to gamble the system
+        // by using different modules. This will only be truly safe once we implement actual module identity,
+        // where the compiler makes sure each module has a unique id, and the id is part of every mangled type's name.
+        if (this._mangledTypeName != T.mangledName) {
+            sys.panic(f"Invalid Type Erased Box access. Value was stored as \"{this._prettyTypeName}\", but it is tried to be accessed as \"{T.prettyName}\"");
+        }
         do unsafe {
             let handle = this._handle;
             let typedBox: Box<T> = uninitialized;
