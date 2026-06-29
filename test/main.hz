@@ -368,9 +368,9 @@ fn main(): int {
             mousePos: () => mousePosition as Vec2,
         });
 
-        let profiler = Profiler({
-            samplingRateHz: 5000,
-        });
+        // let profiler = Profiler({
+        //     samplingRateHz: 5000,
+        // });
 
         let pMousePosition = Vec2(0, 0);
         let dMousePosition = Vec2(0, 0);
@@ -472,9 +472,9 @@ fn main(): int {
             renderer.commit();
         }
 
-        fmt.println("Stopping profiling");
-        profiler.endAndWrite("out.cpuprofile");
-        fmt.println("Done profiling");
+        // fmt.println("Stopping profiling");
+        // profiler.endAndWrite("out.cpuprofile");
+        // fmt.println("Done profiling");
 
         window.destroy();
         sdl.terminate();

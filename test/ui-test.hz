@@ -1026,6 +1026,15 @@ fn InfoBox(ui: UIContext, args: InfoBoxArgs) {
 
                     r.addTriangles(shape.vertices, shape.indices, "#000");
                 }
+
+                let center = Vec2(200, 200);
+                let alpha = ui.now() * 20.0;
+                let radius = 40.0;
+                r.drawRect({
+                    pos: Vec2(center.x + math.cos(alpha) * radius, center.y + math.sin(alpha) * radius), 
+                    size: Vec2(50, 50),
+                    fillColor: "#F00",
+                });
             });
         };
     });
