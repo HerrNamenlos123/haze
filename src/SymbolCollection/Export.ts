@@ -89,12 +89,30 @@ export function ExportCollectedTypeDefAlias(
       .pushIndent();
   }
 
+  // printCollectedDatatype produces raw source names (e.g. "renderer.gfx.Renderer").
+  // In a consumer module, the import symbol is the versioned name (e.g.
+  // "renderer_v0_0_1"), so we replace every "moduleName." prefix that came
+  // from an imported module with its versioned equivalent.
+  let aliasBody = printCollectedDatatype(sr.cc, typedef.target);
+  for (const typeDef of sr.typeDefNodes.getAll()) {
+    if (
+      typeDef &&
+      typeDef.variant === Semantic.ENode.NamespaceDatatype &&
+      typeDef.isModuleNamespace &&
+      typeDef.moduleName !== sr.cc.config.name
+    ) {
+      const shortName = typeDef.moduleName;
+      const versionedName = getModuleGlobalNamespaceName(typeDef.moduleName, typeDef.moduleVersion);
+      aliasBody = aliasBody.replaceAll(shortName + ".", versionedName + ".");
+    }
+  }
+
   alias.writeLine(
     "type " +
       typedef.name +
       genericsString +
       " = " +
-      printCollectedDatatype(sr.cc, typedef.target) +
+      aliasBody +
       ";"
   );
 

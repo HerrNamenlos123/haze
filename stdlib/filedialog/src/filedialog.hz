@@ -1,6 +1,49 @@
 
 __c__("#include \"ffi/main.c\"");
 
-namespace ffi {
-    export extern C fn hz_filedialog_open_dialog(): void :: final;
+namespace filedialog_ffi {
+    export extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
+
+    export extern C noemit enum unscoped hz_filedialog_result_t {
+        hz_filedialog_result_ok = 1,
+        hz_filedialog_result_cancel = 2,
+        hz_filedialog_result_error = 3,
+    }
+}
+
+export inline struct DialogOpenArgs {
+    // Filters = String with filters for file extensions
+    // Example: "jpg,png;txt;exe"
+    // , -> Delimiter for extensions within a single filter
+    // ; -> Delimiter between filters
+    filters: str = "";
+    defaultPath: str = "";
+}
+
+export struct DialogSuccess {
+    path: str;
+}
+
+export struct DialogCancel {}
+
+export struct DialogError {
+    error: str;
+}
+
+export type DialogResult = DialogSuccess | DialogCancel | DialogError;
+
+export fn open(args: DialogOpenArgs = {}): DialogResult {
+    let outPath = ffi.hzstd_str_ref_t {};
+    let errorMessage = ffi.hzstd_str_ref_t {};
+
+    let result = filedialog_ffi.hz_filedialog_open_dialog(args.filters, args.defaultPath, outPath, errorMessage);
+    if result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: outPath.data };
+    }
+    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+        return DialogCancel {};
+    }
+    else {
+        return DialogError { error: errorMessage.data };
+    }
 }

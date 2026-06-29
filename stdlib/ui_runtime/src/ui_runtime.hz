@@ -1,0 +1,158 @@
+import ui_elements;
+import ui_styling;
+import ui_layout;
+import ui_components;
+import renderer;
+
+export inline struct RuntimeArgs {
+    gfx: mut renderer.gfx.Context;
+    width: int;
+    height: int;
+    dpiScale: real = 1.0;
+    fonts: []ui_layout.FontEntry;
+    getFontLineHeight: (fontId: int, fontSize: real) => real;
+    mousePos: () => Vec2;
+    ui: (ui: ui_components.UIContext) => none;
+}
+
+// The single module that names ui_layout, ui_components and renderer all at
+// once -- everything else stays loosely coupled (ui_components never heard
+// of Clay/flexbox, ui_layout never heard of the component system or WGPU,
+// renderer never heard of either). Swap this module out for a different
+// Runtime to retarget the same ui_components-authored UI onto a different
+// layout engine or renderer without touching application code or any of
+// the other modules.
+export opaque struct Runtime {
+    gfx: mut renderer.gfx.Context;
+    layout: mut ui_layout.Context;
+    ui: mut ui_components.UIContext;
+    dpiScale: real;
+
+    fn constructor(args: RuntimeArgs) {
+        let layout = ui_layout.Context({
+            width: args.width,
+            height: args.height,
+            fonts: args.fonts,
+            getFontLineHeight: args.getFontLineHeight,
+        });
+        let ui = ui_components.UIContext({
+            ui: args.ui,
+            mousePos: args.mousePos,
+        });
+        return Runtime {
+            gfx: args.gfx,
+            layout: layout,
+            ui: ui,
+            dpiScale: args.dpiScale,
+        };
+    }
+
+    // Call whenever the render target's logical size or DPI scale changes.
+    fn resize(width: int, height: int, dpiScale: real) {
+        this.dpiScale = dpiScale;
+        ui_layout.setLayoutSize(width, height);
+    }
+
+    // Runs this frame's component tree + flexbox layout, drawing the result
+    // into `canvas` through a fresh Renderer recorded into `frame`'s shared
+    // encoder. Caller owns `frame`/`canvas` (and presents the frame exactly
+    // once, after however many Canvases -- screen or offscreen -- it draws
+    // this way), since those are renderer-module concerns this runtime has
+    // no opinion about.
+    fn render(frame: mut renderer.gfx.Frame, canvas: mut renderer.gfx.Canvas) {
+        let r = renderer.gfx.Renderer(frame, canvas);
+        let tree = this.ui.process();
+
+        this.layout.render(tree, {
+            renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+                r.drawRect({
+                    pos: position,
+                    size: size,
+                    fillColor: backgroundColor,
+                    cornerRadius: {
+                        topLeft: cornerRadius.topLeft,
+                        topRight: cornerRadius.topRight,
+                        bottomLeft: cornerRadius.bottomLeft,
+                        bottomRight: cornerRadius.bottomRight,
+                    },
+                });
+            },
+            renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
+                r.drawText({
+                    font: element.fontId,
+                    size: element.fontSize,
+                    position: element.position,
+                    text: element.text,
+                    color: element.color,
+                });
+            },
+            onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
+                ui_components.applyRenderFeedback(element, pos, size);
+            },
+            renderCanvas: (element: ui_elements.CanvasElement): void => {
+                this.renderCanvasElement(element, frame, r);
+            },
+        });
+
+        r.commit();
+    }
+
+    fn renderCanvasElement(element: ui_elements.CanvasElement, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
+        let data = ui_components.runtimeDataOf(element);
+        let feedback = data.renderFeedback;
+        assert(feedback);
+        let size = feedback.size;
+
+        let fbSize = Vec2i(
+            (size.x * this.dpiScale) as i32,
+            (size.y * this.dpiScale) as i32
+        );
+        if fbSize.x <= 0 || fbSize.y <= 0 {
+            return;
+        }
+
+        let canvasSize = renderer.gfx.CanvasSize {
+            logicalSize: Vec2i(size.x as i32, size.y as i32),
+            framebufferSize: fbSize,
+            dpiScale: this.dpiScale as f32,
+        };
+
+        if !data.handle {
+            let offscreen = renderer.gfx.Canvas({ gfx: this.gfx, size: canvasSize });
+            let handle = ui_components.CanvasHandle { canvas: offscreen };
+            data.handle = TypeErasedBox<ui_components.CanvasHandle>(handle);
+
+            // A brand new offscreen texture has undefined contents --
+            // always start it from transparent before anything else
+            // touches it this frame.
+            renderer.gfx.Renderer(frame, handle.canvas).commit(true);
+
+            this.drawCanvasAndComposite(data.drawFn, handle, feedback, size, frame, screenRenderer);
+        } else {
+            let handle = data.handle.get<ui_components.CanvasHandle>();
+            if handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y {
+                handle.canvas.resize(canvasSize);
+                // A freshly resized texture has undefined contents too.
+                renderer.gfx.Renderer(frame, handle.canvas).commit(true);
+            }
+            this.drawCanvasAndComposite(data.drawFn, handle, feedback, size, frame, screenRenderer);
+        }
+    }
+
+    // Runs this frame's declarative drawFn (if any) into the canvas
+    // element's offscreen canvas, then composites its current content onto
+    // `screenRenderer` at the element's current bounding box.
+    fn drawCanvasAndComposite(drawFnBox: TypeErasedBox | none, handle: ui_components.CanvasHandle, feedback: ui_components.RenderFeedback, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
+        if drawFnBox {
+            let r = renderer.gfx.Renderer(frame, handle.canvas);
+            ui_components.runCanvasDrawFn(drawFnBox, r);
+            r.commit(true);
+        }
+
+        screenRenderer.drawTexture({
+            texture: handle.canvas.asTexture(),
+            pos: feedback.position,
+            size: size,
+        });
+    }
+}

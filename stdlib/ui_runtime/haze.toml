@@ -1,0 +1,22 @@
+name = "ui_runtime"
+version = "0.0.1"
+description = "Composition root: links ui_layout + ui_components + renderer into a single Runtime"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+ui_elements = { path = "./ui_elements" }
+# Not used directly (no import/qualified reference to ui_styling anywhere in
+# this module's source) -- only needed because ui_elements' and ui_layout's
+# public APIs expose ui_styling types, and build resolution needs them
+# available transitively.
+ui_styling = { path = "./ui_styling" }
+ui_layout = { path = "./ui_layout" }
+ui_components = { path = "./ui_components" }
+renderer = { path = "./renderer" }
+# Not used directly -- only needed because renderer's public API
+# (gfx.Context/Canvas/Renderer) exposes wgpu and fontstash types, and build
+# resolution needs them available transitively.
+wgpu = { path = "./wgpu" }
+fontstash = { path = "./fontstash" }

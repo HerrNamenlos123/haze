@@ -6,11 +6,10 @@ import gl
 import wgpu
 import sdl_wgpu
 
-// ui framework modules (includes flexbox layout)
-import ui_elements
-import ui_styling
+// ui framework modules
 import ui_layout
-import headwind
+import ui_runtime
+import renderer
 
 export extern C noemit fn wgpu_init(window: cptr) :: final;
 export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
@@ -29,7 +28,7 @@ fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
     return caps.formats[0];
 }
 
-fn getWindowState(window: sdl.Window): gfx.CanvasSize {
+fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
     let logicalSize = window.getLogicalSize();
     let framebufferSize = window.getFramebufferSize();
 
@@ -39,35 +38,11 @@ fn getWindowState(window: sdl.Window): gfx.CanvasSize {
     // SDL typically reports uniform scale factors on desktop systems.
     let dpiScale = (dpiScaleX + dpiScaleY) / 2.0;
 
-    return gfx.CanvasSize {
+    return renderer.gfx.CanvasSize {
         logicalSize: logicalSize,
         framebufferSize: framebufferSize,
         dpiScale: dpiScale as f32,
     };
-}
-
-// Runs this frame's declarative drawFn (if any) into the canvas element's
-// offscreen canvas, then composites the canvas's current content onto the
-// main screen renderer at the element's current bounding box. Shared by
-// both the "just created" and "already exists" paths in the renderCanvas
-// callback below.
-fn drawCanvasElementAndComposite(drawFnBox: TypeErasedBox | none, handle: CanvasHandle, feedback: RenderFeedback, size: Vec2, frame: mut gfx.Frame, renderer: mut gfx.Renderer) {
-    // Declarative per-frame redraw: clears first, since a drawFn is
-    // expected to paint the whole canvas itself. Imperative drawing
-    // (ui.drawToCanvas) is the path for content that should persist
-    // instead.
-    if drawFnBox {
-        let drawFn = drawFnBox.get<CanvasDrawFn>();
-        let r = gfx.Renderer(frame, handle.canvas);
-        drawFn(r);
-        r.commit(true);
-    }
-
-    renderer.drawTexture({
-        texture: handle.canvas.asTexture(),
-        pos: feedback.position,
-        size: size,
-    });
 }
 
 fn print<T>(value: T) {
@@ -310,13 +285,13 @@ fn main(): int {
         });
 
         const comptime enableShaderHotreload = true;
-        let gfxCtx = gfx.Context({
+        let gfxCtx = renderer.gfx.Context({
             device: device,
             targetFormat: surfaceFormat,
             shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
         });
 
-        let canvas = gfx.Canvas({
+        let canvas = renderer.gfx.Canvas({
             gfx: gfxCtx,
             size: windowState,
             surface: surface,
@@ -338,16 +313,6 @@ fn main(): int {
             }
         ];
 
-        let uiCtx = ui_layout.Context({
-            width: windowState.logicalSize.x,
-            height: windowState.logicalSize.y,
-            fonts: fonts,
-            getFontLineHeight: (fontId: int, fontSize: real): real => {
-                let metrics = gfxCtx.fontRenderer.fs.getMetrics(fontId, fontSize);
-                return metrics.lineh;
-            },
-        });
-
         let down = false;
         let mousePosition = Vec2(0, 0);
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
@@ -366,9 +331,18 @@ fn main(): int {
             return false;
         });
 
-        let ui = UIContext({
-            ui: (ui: UIContext) => UI(ui),
+        let runtime = ui_runtime.Runtime({
+            gfx: gfxCtx,
+            width: windowState.logicalSize.x,
+            height: windowState.logicalSize.y,
+            dpiScale: windowState.dpiScale as real,
+            fonts: fonts,
+            getFontLineHeight: (fontId: int, fontSize: real): real => {
+                let metrics = gfxCtx.fontRenderer.fs.getMetrics(fontId, fontSize);
+                return metrics.lineh;
+            },
             mousePos: () => mousePosition as Vec2,
+            ui: (ui: ui_components.UIContext) => { UI(ui); },
         });
 
         // let profiler = Profiler({
@@ -397,87 +371,13 @@ fn main(): int {
                         alphaMode: caps.alphaModes[0],
                     });
                     canvas.resize(nextWindowState);
-                    ui_layout.setLayoutSize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y);
+                    runtime.resize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y, nextWindowState.dpiScale as real);
                 }
             }
 
             fs.pollEvents();
-            let frame = gfx.Frame(gfxCtx);
-            let renderer = gfx.Renderer(frame, canvas);
-
-            let tree = ui.process();
-
-            uiCtx.render(tree, {
-                renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
-                    renderer.drawRect({
-                        pos: position,
-                        size: size,
-                        fillColor: backgroundColor,
-                        cornerRadius: {
-                            topLeft: cornerRadius.topLeft,
-                            topRight: cornerRadius.topRight,
-                            bottomLeft: cornerRadius.bottomLeft,
-                            bottomRight: cornerRadius.bottomRight,
-                        },
-                    });
-                },
-                renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
-                    renderer.drawText({
-                        font: element.fontId,
-                        size: element.fontSize,
-                        position: element.position,
-                        text: element.text,
-                        color: element.color,
-                    });
-                },
-                onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
-                    applyRenderFeedback(element, pos, size);
-                },
-                renderCanvas: (element: ui_elements.CanvasElement): void => {
-                    let data = runtimeDataOf(element);
-                    let feedback = data.renderFeedback;
-                    assert(feedback);
-                    let size = feedback.size;
-                    let dpiScale = windowState.dpiScale as real;
-                    let fbSize = Vec2i(
-                        (size.x * dpiScale) as i32,
-                        (size.y * dpiScale) as i32
-                    );
-                    if fbSize.x <= 0 || fbSize.y <= 0 {
-                        return;
-                    }
-
-                    let canvasSize = gfx.CanvasSize {
-                        logicalSize: Vec2i(size.x as i32, size.y as i32),
-                        framebufferSize: fbSize,
-                        dpiScale: windowState.dpiScale,
-                    };
-
-                    if !data.handle {
-                        let offscreen = gfx.Canvas({ gfx: gfxCtx, size: canvasSize });
-                        let handle = CanvasHandle { canvas: offscreen };
-                        data.handle = TypeErasedBox<CanvasHandle>(handle);
-
-                        // A brand new offscreen texture has undefined
-                        // contents -- always start it from transparent
-                        // before anything else touches it this frame.
-                        gfx.Renderer(frame, handle.canvas).commit(true);
-
-                        drawCanvasElementAndComposite(data.drawFn, handle, feedback, size, frame, renderer);
-                    } else {
-                        let handle = data.handle.get<CanvasHandle>();
-                        if handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y {
-                            handle.canvas.resize(canvasSize);
-                            // A freshly resized texture has undefined contents too.
-                            gfx.Renderer(frame, handle.canvas).commit(true);
-                        }
-
-                        drawCanvasElementAndComposite(data.drawFn, handle, feedback, size, frame, renderer);
-                    }
-                }
-            });
-
-            renderer.commit();
+            let frame = renderer.gfx.Frame(gfxCtx);
+            runtime.render(frame, canvas);
             frame.present();
         }
 
@@ -512,253 +412,3 @@ fn main(): int {
 //     fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
 //     fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
 //     fmt.println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")
-
-// ============================================================================
-// === Unified Compile-Time Model: Types, Expressions, and Comptime Functions ===
-// ============================================================================
-//
-// Core Idea:
-// The language has ONE semantic model: expressions that can evaluate at compile time.
-// Types are not a separate system — they are compile-time values (TypeInfo).
-//
-// However, syntax remains structured to keep parsing, tooling, and readability sane.
-//
-// ----------------------------------------------------------------------------
-// 1. Types as Expressions (Semantic Rule)
-// ----------------------------------------------------------------------------
-//
-// Any expression can conceptually be used in a type position.
-// BUT:
-//
-//   - It must be fully comptime evaluable
-//   - It must evaluate to CTValue(kind = "type")
-//
-// Otherwise → compiler error.
-//
-// Example:
-//
-//   const T = underlyingType(typeof(value));
-//   const x: Foo<T>;                            // OK
-//   const y: Foo<typeof(value)>;               // OK
-//   const z: Foo<underlyingType(typeof(value))>; // OK
-//
-// Implementation:
-//
-//   const ct = evalCT(expr);
-//   if (!ct || ct.kind !== "type") {
-//       error("type expression must evaluate to a type");
-//   }
-//
-// ----------------------------------------------------------------------------
-// 2. Syntax vs Semantics
-// ----------------------------------------------------------------------------
-//
-// Semantics:
-//   - Any expression can produce a type
-//
-// Syntax:
-//   - Parser restricts allowed syntax in type positions to "sane" constructs
-//   - Avoid full arbitrary expressions to prevent:
-//       - parsing ambiguity
-//       - poor diagnostics
-//       - dependent type complexity
-//
-// Allowed (initially):
-//   - Type identifiers: int, Foo
-//   - Generic instantiation: Foo<T>
-//   - typeof(expr)
-//   - Comptime functions: underlyingType(...)
-//   - Identifiers bound to comptime type values
-//
-// Not allowed (for now):
-//   - Arbitrary runtime expressions
-//   - Non-comptime values
-//   - Expressions that do not evaluate to a type
-//
-// ----------------------------------------------------------------------------
-// 3. CTValue System (Single Evaluation Model)
-// ----------------------------------------------------------------------------
-//
-// Compile-time evaluation produces CTValue:
-//
-//   - primitives (int, string, etc.)
-//   - struct values
-//   - lists
-//   - types (TypeInfo)
-//
-// Types are simply:
-//
-//   CTValue { kind: "type", value: TypeInfo }
-//
-// There is no separate "meta.Type" system conceptually.
-//
-// ----------------------------------------------------------------------------
-// 4. Comptime Evaluation
-// ----------------------------------------------------------------------------
-//
-// evalCT(expr):
-//   - Attempts to evaluate expression at compile time
-//   - Returns CTValue or null
-//
-// Used for:
-//   - const initialization
-//   - if comptime
-//   - static_print / static_assert
-//   - type expressions
-//
-// ----------------------------------------------------------------------------
-// 5. Comptime Functions
-// ----------------------------------------------------------------------------
-//
-// Syntax:
-//
-//   comptime fn foo(...) -> ... { ... }
-//
-// Semantics:
-//
-//   - MUST be evaluated at compile time
-//   - Cannot fall back to runtime
-//   - If evaluation fails → compiler error
-//   - Not emitted as runtime code
-//
-// Used for:
-//   - type transformations
-//   - reflection helpers
-//   - compile-time logic
-//
-// Example:
-//
-//   comptime fn baseType(T: Type) -> Type {
-//       return T.baseType;
-//   }
-//
-//   const x: baseType(typeof(value));
-//
-// ----------------------------------------------------------------------------
-// 6. Normal Functions
-// ----------------------------------------------------------------------------
-//
-//   fn foo(...) { ... }
-//
-// Semantics:
-//
-//   - Runtime by default
-//   - (Future): may be evaluated at compile time if:
-//       - all arguments are CTValues
-//       - function is pure
-//
-// This enables "constant folding on steroids" later,
-// but is NOT required for initial implementation.
-//
-// ----------------------------------------------------------------------------
-// 7. Function Calls and CT Evaluation
-// ----------------------------------------------------------------------------
-//
-// When resolving a call:
-//
-//   if (fn is comptime fn):
-//       evaluate via evalCT
-//       if fails → error
-//
-//   else:
-//       (future) try CT evaluation if possible
-//       otherwise → runtime call
-//
-// ----------------------------------------------------------------------------
-// 8. Types vs Values (Important Constraint)
-// ----------------------------------------------------------------------------
-//
-// Types are NOT runtime values.
-//
-// Therefore:
-//   - Types must never be passed as runtime arguments
-//   - Types only exist in CTValue form
-//
-// Currently:
-//   baseType(int) works because evaluation happens at compile time
-//
-// Future:
-//   May restrict to:
-//       baseType<int>()
-//
-// But for now:
-//   - type-as-expression is allowed
-//   - must resolve via evalCT
-//
-// ----------------------------------------------------------------------------
-// 9. Type Transformations
-// ----------------------------------------------------------------------------
-//
-// Type transformations are just comptime functions:
-//
-//   comptime fn unwrapReactive(T: Type) -> Type
-//   comptime fn returnType(T: Type) -> Type
-//   comptime fn baseType(T: Type) -> Type
-//
-// No special type-level syntax (no TS-style ReturnType<T>, no keyof).
-//
-// ----------------------------------------------------------------------------
-// 10. Generics + Expressions
-// ----------------------------------------------------------------------------
-//
-// Generics accept expressions that evaluate to types:
-//
-//   Foo<int>
-//   Foo<typeof(x)>
-//   Foo<underlyingType(typeof(x))>
-//
-// Internally:
-//   - generic arguments are evaluated via evalCT
-//   - must produce TypeInfo
-//
-// ----------------------------------------------------------------------------
-// 11. Reflection
-// ----------------------------------------------------------------------------
-//
-// Types expose metadata:
-//
-//   typeof(value).fields
-//   typeof(value).category
-//
-// These return CTValues and can be used in comptime logic:
-//
-//   for comptime field in typeof(value).fields { ... }
-//
-// ----------------------------------------------------------------------------
-// 12. Design Philosophy
-// ----------------------------------------------------------------------------
-//
-// - One evaluation model: CTValue
-// - No separate "type language"
-// - No template metaprogramming system
-// - No runtime reflection
-//
-// Instead:
-//
-//   Types are values at compile time
-//   Expressions can produce types
-//   Comptime functions transform types
-//
-// ----------------------------------------------------------------------------
-// 13. Future Extensions (Planned, Not Required Now)
-// ----------------------------------------------------------------------------
-//
-// - Optional compile-time execution of normal functions (purity-based)
-// - Better purity analysis
-// - More expressive type expressions (carefully expanded)
-// - Possible syntactic sugar for type arguments
-//
-// ----------------------------------------------------------------------------
-// Summary:
-//
-//   Types = CTValues
-//   Expressions → CTValues
-//   Comptime functions operate on CTValues
-//   Type positions require CTValue(type)
-//
-// This keeps the system:
-//   - extremely powerful
-//   - simple to reason about
-//   - free of C++/TypeScript complexity
-//
-// ============================================================================

@@ -35,6 +35,9 @@ ui_styling = { path = "./ui_styling" }
 ui_elements = { path = "./ui_elements" }
 headwind = { path = "./headwind" }
 ui_layout = { path = "./ui_layout" }
+renderer = { path = "./renderer" }
+ui_components = { path = "./ui_components" }
+ui_runtime = { path = "./ui_runtime" }
 
 tesselate = { path = "./tesselate" }
 perfect_freehand = { path = "./perfect_freehand" }

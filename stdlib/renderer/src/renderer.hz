@@ -1,4 +1,5 @@
 import fontstash;
+import wgpu;
 
 export namespace gfx {
 
@@ -13,7 +14,7 @@ inline struct Globals {
     screenSize: inline Vec2f;
 }
 
-inline struct PrimitiveInstance {
+export inline struct PrimitiveInstance {
     pos: Vec2f;            // center position in pixels
     size: Vec2f;           // width/height
     radiusTopLeft: f32;           // corner radius for rounded rect
@@ -36,7 +37,7 @@ inline struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
-inline struct MeshVertex {
+export inline struct MeshVertex {
     pos: Vec2f;
     color: Colorf;
     depth: f32;
@@ -84,7 +85,7 @@ export opaque struct Texture {
     }
 }
 
-struct TextRenderer {
+export struct TextRenderer {
     fs: fontstash.FontStash;
     glyphBuffer: []fontstash.Glyph;
     defaultFont: int;
@@ -668,20 +669,20 @@ export opaque struct Frame {
 // textured quads -> their own texture). Plain rects need no run at all: they
 // don't sample group 1, so they're free to sit in the gaps between runs and
 // draw with whatever happens to be bound.
-inline struct TextureRun {
+export inline struct TextureRun {
     start: int;
     count: int;
     texture: Texture;
 }
 
-struct CornerRadius {
+export struct CornerRadius {
     topLeft: real = 0;
     topRight: real = 0;
     bottomLeft: real = 0;
     bottomRight: real = 0;
 };
 
-struct RectOpts {
+export struct RectOpts {
     pos: Vec2;
     size: Vec2;
     fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
@@ -691,7 +692,7 @@ struct RectOpts {
     zIndex: real = 0;
 };
 
-struct TextOpts {
+export struct TextOpts {
     font: int;
     position: Vec2;
     size: real;
@@ -700,7 +701,7 @@ struct TextOpts {
     zIndex: real = 0;
 }
 
-struct TextureOpts {
+export struct TextureOpts {
     texture: Texture;
     pos: Vec2;
     size: Vec2;

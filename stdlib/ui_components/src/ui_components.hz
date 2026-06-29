@@ -1,0 +1,818 @@
+import ui_elements;
+import ui_styling;
+import renderer;
+
+export inline struct DivProps {
+    id: int;
+    style?: ui_styling.DivStyle;
+    presets?: []ui_styling.DivStyleOp;
+    ref?: ElementRef<ui_elements.DivElement>;
+}
+
+export inline struct TextProps {
+    id: int;
+    style?: ui_styling.TextStyle;
+    text: str;
+    presets?: []ui_styling.TextStyleOp;
+    ref?: ElementRef<ui_elements.TextElement>;
+}
+
+export inline struct CanvasProps {
+    id: int;
+    style?: ui_styling.DivStyle;
+    presets?: []ui_styling.DivStyleOp;
+    ref?: ElementRef<ui_elements.CanvasElement>;
+}
+
+// The concrete renderer handle stored, type-erased, inside this layer's own
+// per-element runtime data (see ComponentElementRuntimeData below). Neither
+// ui_elements nor ui_layout ever read this -- only this module (here and in
+// ui_runtime's renderCanvas glue) does, via
+// TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
+// agree on this exact type: TypeErasedBox has no runtime type tag.
+export struct CanvasHandle {
+    canvas: mut renderer.gfx.Canvas;
+}
+
+// The concrete type stored, type-erased, inside a canvas element's runtime
+// data drawFn slot. Named so it can be used as a generic argument to
+// TypeErasedBox<T> (a bare function-type literal there doesn't parse).
+//
+// Not exported: this alias's body references a cross-module qualified type
+// (renderer.gfx.Renderer), and the compiler's cross-module shim generator
+// mangles qualified types correctly for struct fields and function/method
+// parameters, but has a codegen bug specifically for top-level exported
+// `type X = (...) => Y;` aliases that reference a qualified cross-module
+// type -- it leaves the module prefix unmangled, which then fails to
+// resolve in a consumer project. runCanvasDrawFn() below is the safe
+// boundary other modules use instead of naming this type directly.
+export type CanvasDrawFn = (r: mut renderer.gfx.Renderer) => void;
+
+// Invokes the draw closure boxed by canvas()'s `drawFn` parameter against
+// `r`, if one was provided. Lets other modules (e.g. ui_runtime) trigger a
+// canvas element's per-frame redraw without ever naming CanvasDrawFn
+// themselves -- exported plain functions, unlike exported type aliases,
+// don't hit the bug described above, so this is the boundary that's safe
+// to cross.
+export fn runCanvasDrawFn(drawFnBox: TypeErasedBox | none, r: mut renderer.gfx.Renderer): void {
+    if drawFnBox {
+        let drawFn = drawFnBox.get<CanvasDrawFn>();
+        drawFn(r);
+    }
+}
+
+// Render/input feedback and an element's GPU canvas handle/drawFn used to
+// live as dedicated fields on the element itself (ui_elements.*Element).
+// They don't anymore -- ui_elements only knows about an opaque
+// `_runtimeData` slot, and this struct is what *this* module (the only
+// thing that creates elements) stores there. position()/size()/hover()
+// below read it back out; ui_elements and ui_layout never see this type.
+export struct RenderFeedback {
+    position: Vec2;
+    size: Vec2;
+}
+
+export struct InputFeedback {
+    hover: bool;
+}
+
+export struct ComponentElementRuntimeData {
+    renderFeedback?: RenderFeedback;
+    renderFeedbackVersion: rx.Reactive<bool>;
+    inputFeedback?: InputFeedback;
+    inputFeedbackVersion: rx.Reactive<bool>;
+    handle?: TypeErasedBox;
+    drawFn?: TypeErasedBox;
+}
+
+fn newRuntimeData(): ComponentElementRuntimeData {
+    return ComponentElementRuntimeData {
+        renderFeedbackVersion: rx.reactive<bool>(false),
+        inputFeedbackVersion: rx.reactive<bool>(false),
+    };
+}
+
+// Lazily attaches a ComponentElementRuntimeData to `element` if it doesn't
+// have one yet, and returns it. The one and only place that knows
+// `_runtimeData`'s concrete type.
+export fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeData {
+    if element is ui_elements.DivElement {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+    else if element is ui_elements.TextElement {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+    else {
+        if element._runtimeData {
+            return element._runtimeData.get<ComponentElementRuntimeData>();
+        }
+        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
+        element._runtimeData = data;
+        return data.get<ComponentElementRuntimeData>();
+    }
+}
+
+// Reactive accessors over an element's layout/input feedback. These used to
+// be methods on the element structs themselves; now they're free functions
+// over the runtime data this module owns, since ui_elements holds neither
+// the data nor the concept.
+export fn position(element: ui_elements.Element): Vec2 | none {
+    let data = runtimeDataOf(element);
+    rx.get(data.renderFeedbackVersion);
+    return data.renderFeedback ? data.renderFeedback.position : none;
+}
+
+export fn size(element: ui_elements.Element): Vec2 | none {
+    let data = runtimeDataOf(element);
+    rx.get(data.renderFeedbackVersion);
+    return data.renderFeedback ? data.renderFeedback.size : none;
+}
+
+export fn hover(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.inputFeedbackVersion);
+    return data.inputFeedback ? data.inputFeedback.hover : false;
+}
+
+// Meant to be plugged in as a layout engine's "bounding box" callback (e.g.
+// ui_layout.RenderCallbacks.onBoundingBox, wired up by ui_runtime). Bumps
+// the reactive render-feedback version only when the box actually changed,
+// same as the old per-field dirty-checking that used to live in hzui's
+// applyBoundingBoxTrampoline.
+export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec2): void {
+    let data = runtimeDataOf(element);
+    if !data.renderFeedback {
+        data.renderFeedback = { position: pos, size: size };
+        data.renderFeedbackVersion := !data.renderFeedbackVersion;
+        return;
+    }
+    if data.renderFeedback.position.x != pos.x || data.renderFeedback.position.y != pos.y ||
+       data.renderFeedback.size.x != size.x || data.renderFeedback.size.y != size.y {
+        data.renderFeedback.position = pos;
+        data.renderFeedback.size = size;
+        data.renderFeedbackVersion := !data.renderFeedbackVersion;
+    }
+}
+
+export struct ComponentInstance {
+    id: int;
+
+    templateComputed?: rx.Computed<none>;
+    setupDone: bool = false;
+    currentTemplate: (() => void) | null = null;
+    propsVersion: rx.Reactive<int>;
+    prevProps?: TypeErasedBox;
+    instanceDataForCapturing?: TypeErasedBox;
+
+    struct ComponentCache {
+        id: int;
+        component: ComponentInstance;
+    }
+
+    struct ElementCache {
+        id: int;
+        element: mut ui_elements.Element;
+    }
+
+    elementsById: []inline ElementCache = [];
+    childComponents: []inline ComponentCache = [];
+    newChildComponents: []inline ComponentCache = [];
+
+    rootElement: ui_elements.DivElement;
+
+    onMounted?: () => none;
+    onUnmount?: () => none;
+
+    mounted: bool = false;
+    crashed: bool = false;
+    crashInfo: sys.PanicInfo | none = none;
+
+    fn getOrCreateDiv(id: int): mut ui_elements.DivElement {
+        for n in this.elementsById {
+            if n.id == id {
+                assert(n.element is mut ui_elements.DivElement, "Div expected but other node type encountered");
+                return n.element;
+            }
+        }
+        let newElement = ui_elements.DivElement({ id: id, style: {} });
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+
+    fn getOrCreateText(id: int): mut ui_elements.TextElement {
+        for n in this.elementsById {
+            if n.id == id {
+                assert(n.element is mut ui_elements.TextElement, "Text element expected but other node type encountered");
+                return n.element;
+            }
+        }
+        let newElement = ui_elements.TextElement({ id: id, text: "", style: {} });
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+
+    fn getOrCreateCanvas(id: int): mut ui_elements.CanvasElement {
+        for n in this.elementsById {
+            if n.id == id {
+                assert(n.element is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
+                return n.element;
+            }
+        }
+        let newElement = ui_elements.CanvasElement({ id: id, style: {} });
+        this.elementsById.push({ id: id, element: newElement });
+        return newElement;
+    }
+
+    fn findChild(id: int): ComponentInstance | null {
+        for n in this.childComponents {
+            if n.id == id {
+                return n.component;
+            }
+        }
+        return null;
+    }
+
+    fn createChild(id: int): ComponentInstance {
+        return ComponentInstance {
+            id: id,
+            rootElement: ui_elements.DivElement({
+                id: id,
+                style: {},
+            }),
+            propsVersion: rx.reactive<int>(0),
+        };
+    }
+}
+
+export struct RenderContext {
+    currentComponent: ComponentInstance;
+    currentParent: ui_elements.DivElement;
+}
+
+export struct InstanceData<TProps> {
+    _props: TProps;
+    _propsVersion: rx.Reactive<int>;
+
+    fn props() {
+        rx.get(this._propsVersion);
+        return this._props;
+    }
+}
+
+export opaque struct UIContext {
+    _mousePosCb: (() => Vec2);
+    renderStack: []RenderContext = [];
+    effectQueue: [](() => void) = [];
+    rootComponent: ComponentInstance | null = null;
+    rootTemplate: rx.Computed<none>;
+    _framecount: rx.Reactive<int>;
+    _deltaTime: rx.Reactive<real>;
+    _timeNow: rx.Reactive<real>;
+    _prevTime: real;
+
+    mousePos: Vec2 = {};
+    pmousePos: Vec2 = {};
+    dmousePos: Vec2 = {};
+
+    inline struct UIContextArgs {
+        ui: ((ui: UIContext) => none);
+        mousePos: () => Vec2;
+    }
+
+    fn constructor(args: UIContextArgs) {
+        let ctx = UIContext {
+            rootTemplate: rx.computed<none>(() => {}),
+            _framecount: rx.reactive<int>(0),
+            _deltaTime: rx.reactive<real>(0),
+            _timeNow: rx.reactive<real>(0),
+            _prevTime: time.now(),
+            _mousePosCb: args.mousePos,
+        };
+
+        // UI Context depends on itself
+        ctx.rootTemplate = rx.computed<none>(() => {
+            args.ui(ctx);
+        });
+
+        return ctx;
+    }
+
+    fn framecount(): int {
+        return this._framecount;
+    }
+
+    fn deltaTime(): real {
+        return this._deltaTime;
+    }
+
+    fn now(): real {
+        return this._timeNow;
+    }
+
+    fn applyHitTestAndScheduleEvents(element: ui_elements.Element, mousePos: Vec2): [](() => none) :: final {
+        let events: [](() => none) = [];
+
+        let elementPos = position(element);
+        let elementSize = size(element);
+
+        let hovered = false;
+        if elementPos && elementSize {
+            hovered =
+                (mousePos.x > elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
+                (mousePos.y > elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
+        }
+
+        let data = runtimeDataOf(element);
+        if !data.inputFeedback {
+            data.inputFeedback = { hover: false };
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+        }
+        assert(data.inputFeedback);
+
+        if data.inputFeedback.hover != hovered {
+            data.inputFeedback.hover = hovered;
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+        }
+
+        if element is ui_elements.DivElement {
+            for child in element.children {
+                let childEvents = this.applyHitTestAndScheduleEvents(child, mousePos);
+            }
+        }
+
+        return events;
+    }
+
+    fn process() {
+        let now = time.now();
+        let elapsed = now - this._prevTime;
+        this._prevTime = now;
+
+        this._framecount++;
+        this._deltaTime := elapsed;
+        this._timeNow := now;
+
+        this.pmousePos = this.mousePos;
+        this.mousePos = this._mousePosCb();
+        this.dmousePos = {
+            x: this.mousePos.x - this.pmousePos.x,
+            y: this.mousePos.y - this.pmousePos.y,
+        };
+
+        // HIT TESTING PHASE
+        if (this.rootComponent) {
+            let prevTree = this.rootComponent.rootElement;
+            let events = this.applyHitTestAndScheduleEvents(prevTree, this.mousePos);
+        }
+
+        // EVENT PHASE
+
+        // FLUSH PHASE
+
+        this.flushEffects();
+
+        rx.get(this.rootTemplate);
+
+        assert(this.rootComponent);
+        return this.rootComponent.rootElement;
+    }
+
+    fn scheduleEffect(effect: () => void) {
+        this.effectQueue.push(effect);
+    }
+
+    fn pushRenderContext(ctx: RenderContext) {
+        this.renderStack.push(ctx);
+    }
+
+    fn popRenderContext() {
+        this.renderStack.pop();
+    }
+
+    fn makeCurrentComponentAvailable(id: int) {
+        let instance = null as ComponentInstance | null;
+
+        if this.renderStack.length > 0 {
+            let parent = this.renderStack[this.renderStack.length - 1].currentComponent;
+
+            // First check if already registered in this render cycle (avoids double-creation
+            // when called from both defineComponent and defineComponentImpl for the same id).
+            let child = null as ComponentInstance | null;
+            let alreadyRegistered = false;
+            for n in parent.newChildComponents {
+                if n.id == id {
+                    child = n.component;
+                    alreadyRegistered = true;
+                }
+            }
+
+            if child is null {
+                child = parent.findChild(id);
+            }
+
+            if child is null {
+                child = parent.createChild(id);
+            }
+            assert(child);
+
+            if !alreadyRegistered {
+                parent.newChildComponents.push({
+                    id: id,
+                    component: child,
+                });
+            }
+
+            instance = child;
+        } else {
+            if !this.rootComponent {
+                this.rootComponent = ComponentInstance {
+                    id: id,
+                    rootElement: ui_elements.DivElement({
+                        id: id,
+                        style: {},
+                    }),
+                    propsVersion: rx.reactive<int>(0),
+                };
+            }
+            assert(this.rootComponent);
+            instance = this.rootComponent;
+        }
+        assert(instance);
+
+        return instance;
+    }
+
+    fn getCurrentComponent() {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].currentComponent;
+    }
+
+    fn getCurrentParent() {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].currentParent;
+    }
+
+    fn destroyComponent(
+        component: ComponentInstance
+    ) :: final {
+
+        for child in component.childComponents {
+            this.destroyComponent(
+                child.component
+            );
+        }
+
+        if component.onUnmount {
+            component.onUnmount();
+        }
+
+        component.elementsById = [];
+        component.childComponents = [];
+        component.newChildComponents = [];
+    }
+
+    fn defineComponentImpl(
+        id: int,
+        propsChanged: bool,
+        setupFn: () => (() => void)
+    ) {
+        let instance = this.makeCurrentComponentAvailable(id);
+
+        if !instance.setupDone {
+            attempt {
+                instance.currentTemplate = setupFn();
+                instance.setupDone = true;
+            } recover e {
+                instance.crashed = true;
+                instance.crashInfo = e;
+                instance.setupDone = true;
+            };
+        }
+
+        if (propsChanged) {
+            instance.propsVersion++;
+        }
+
+        if instance.templateComputed is none {
+            instance.templateComputed = rx.computed(() => {
+                rx.get(instance.propsVersion);
+
+                instance.newChildComponents = [];
+                instance.rootElement.children = [];
+
+                if instance.crashed && instance.crashInfo {
+                    let errEl = instance.getOrCreateText(-1);
+                    errEl.text := f"Component error: {instance.crashInfo.message}";
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
+                    instance.rootElement.children.push(errEl);
+                    return none;
+                }
+
+                let stackDepthBefore = this.renderStack.length;
+
+                this.pushRenderContext({
+                    currentComponent: instance,
+                    currentParent: instance.rootElement,
+                });
+
+                assert(instance.currentTemplate);
+                attempt {
+                    instance.currentTemplate();
+                } recover e {
+                    instance.crashed = true;
+                    instance.crashInfo = e;
+                    fmt.println(f"[crash] component {instance.id}:");
+                    e.print();
+                    while this.renderStack.length > stackDepthBefore {
+                        this.popRenderContext();
+                    }
+                    let errEl = instance.getOrCreateText(-1);
+                    errEl.text := f"Component error: {e.message}";
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
+                    instance.rootElement.children.push(errEl);
+                    return none;
+                };
+
+                let oldChildren =
+                    instance.childComponents;
+
+                instance.childComponents =
+                    instance.newChildComponents;
+
+                for old in oldChildren {
+
+                    let stillExists = false;
+
+                    for new in instance.childComponents {
+                        if new.id == old.id {
+                            stillExists = true;
+                            // TODO: Support "break" and use it here to optimize performance
+                            // break;
+                        }
+                    }
+
+                    if !stillExists {
+                        this.destroyComponent(
+                            old.component
+                        );
+                    }
+                }
+
+                this.popRenderContext();
+
+                return none;
+            });
+        }
+
+        rx.get(instance.templateComputed);
+
+        if !instance.mounted {
+            instance.mounted = true;
+            if instance.onMounted {
+                instance.onMounted();
+            }
+        }
+
+        // attach root element into current parent if there is one
+        if this.renderStack.length > 0 {
+            this.renderStack[this.renderStack.length - 1].currentParent.children.push(instance.rootElement);
+        }
+    }
+
+    fn defineComponent<TProps>(
+        id: int,
+        props: TProps,
+        setupFn: (instance: InstanceData<TProps>) => (() => void)
+    ) {
+        let instance = this.makeCurrentComponentAvailable(id);
+
+        // This is an object which is created once and then never created again, because component code such as
+        // setup and template must capture it. Then we can continuously update the content of the object
+        // such as the props with their latest state. After capturing it, component code always gets the latest
+        // state of the props as long as it only captures the container and not the props themselves.
+        if !instance.instanceDataForCapturing {
+            instance.instanceDataForCapturing = TypeErasedBox<InstanceData<TProps>>(InstanceData<TProps> {
+                _props: props,
+                _propsVersion: instance.propsVersion,
+            });
+        }
+        assert(instance.instanceDataForCapturing);
+        let instanceData = instance.instanceDataForCapturing.get<InstanceData<TProps>>();
+        instanceData._props = props;
+
+        do unsafe {
+            let propsChanged = true;
+
+            if instance.prevProps {
+                let prevProps = instance.prevProps.get<TProps>();
+                propsChanged = props != prevProps;
+            }
+
+            if !instance.prevProps {
+                instance.prevProps = TypeErasedBox<TProps>(props);
+            }
+            assert(instance.prevProps);
+            instance.prevProps.set<TProps>(props);
+
+            return this.defineComponentImpl(id, propsChanged, () => {
+                return setupFn(instanceData);
+            });
+        };
+    }
+
+    fn onMounted(callback: () => none) {
+        let component = this.getCurrentComponent();
+        component.onMounted = callback;
+    }
+
+    fn onUnmount(callback: () => none) {
+        let component = this.getCurrentComponent();
+        component.onUnmount = callback;
+    }
+
+    struct WatchOptions {
+        immediate?: bool;
+        deep?: bool;
+    }
+
+    fn watch<T>(
+        getter: () => T,
+        callback: () => none,
+        options: WatchOptions = {}
+    ) {
+        const react = rx.computed(() => {
+            getter();
+            callback();
+            return none;
+        });
+        this.scheduleEffect(() => rx.get(react));
+
+        if options.immediate {
+            callback();
+        }
+    }
+
+    fn queuePopFront() {
+        let front = this.effectQueue[0];
+        let newQueue: [](() => void) = [];
+        for (let i = 1; i < this.effectQueue.length; i++) {
+            newQueue.push(this.effectQueue[i]);
+        }
+        this.effectQueue = newQueue;
+        return front;
+    }
+
+    fn flushEffects() {
+        while this.effectQueue.length > 0 {
+            let effect = queuePopFront();
+            effect();
+        }
+    }
+
+    fn div(props: DivProps, childrenFn: () => void) {
+        let element = this.getCurrentComponent().getOrCreateDiv(props.id);
+
+        let rawStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawStyle := props.style; }
+        let opsList: []ui_styling.DivStyleOp = [];
+        if props.presets is not none { opsList = props.presets; }
+        element.style := ui_styling.computeDivStyle(rawStyle, opsList);
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
+
+        // clear children for reconciliation
+        element.children = [];
+
+        // descend into element
+        this.pushRenderContext({
+            currentComponent: this.getCurrentComponent(),
+            currentParent: element,
+        });
+
+        childrenFn();
+
+        this.popRenderContext();
+
+        if props.ref is not none {
+            // TODO: This should be an identity comparison in the future.
+            // Ids are not globally unique and this is not guaranteed to always work.
+            // In the ideal case, we should support TypeScript-like identity comparison
+            // between objects, to compare that it is actually the same object.
+            // The ID comparison is a best guess.
+            if props.ref is null || props.ref.id != element.id {
+                props.ref := element;
+            }
+        }
+
+        return element;
+    }
+
+    fn text(props: TextProps) {
+        let element = this.getCurrentComponent().getOrCreateText(props.id);
+
+        element.text := props.text;
+        let rawTextStyle: ui_styling.TextStyle = {};
+        if props.style is not none { rawTextStyle := props.style; }
+        let textOpsList: []ui_styling.TextStyleOp = [];
+        if props.presets is not none { textOpsList = props.presets; }
+        element.style := ui_styling.computeTextStyle(rawTextStyle, textOpsList);
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
+
+        if props.ref is not none {
+            // TODO: This should be an identity comparison in the future.
+            // Ids are not globally unique and this is not guaranteed to always work.
+            // In the ideal case, we should support TypeScript-like identity comparison
+            // between objects, to compare that it is actually the same object.
+            // The ID comparison is a best guess.
+            if props.ref is null || props.ref.id != element.id {
+                props.ref := element;
+            }
+        }
+
+        return element;
+    }
+
+    // A standalone element with an auto-managed offscreen GPU canvas.
+    // `drawFn`, if given, is invoked once per frame -- not here during the
+    // build phase, but later from ui_runtime's renderCanvas callback, which
+    // runs right after layout when this frame's size is already known (so
+    // there's no one-frame lag, even on the very first frame). It's cleared
+    // before each such automatic redraw.
+    //
+    // For content that should persist across frames instead of being fully
+    // redrawn every frame, draw imperatively whenever via drawToCanvas()
+    // (e.g. from an event handler) instead of passing drawFn here.
+    fn canvas(props: CanvasProps, drawFn?: CanvasDrawFn) {
+        let element = this.getCurrentComponent().getOrCreateCanvas(props.id);
+
+        let rawCanvasStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawCanvasStyle := props.style; }
+        let canvasOpsList: []ui_styling.DivStyleOp = [];
+        if props.presets is not none { canvasOpsList = props.presets; }
+        element.style := ui_styling.computeDivStyle(rawCanvasStyle, canvasOpsList);
+
+        // attach into current parent
+        this.getCurrentParent().children.push(element);
+
+        let data = runtimeDataOf(element);
+        if drawFn is not none {
+            if !data.drawFn {
+                data.drawFn = TypeErasedBox<CanvasDrawFn>(drawFn);
+            } else {
+                data.drawFn.set<CanvasDrawFn>(drawFn);
+            }
+        } else {
+            data.drawFn = none;
+        }
+
+        if props.ref is not none {
+            if props.ref is null || props.ref.id != element.id {
+                props.ref := element;
+            }
+        }
+
+        return element;
+    }
+
+    // Imperative drawing entry point: draws into the canvas element's
+    // already-existing GPU canvas right now, independent of the normal
+    // frame flow (e.g. usable from an event handler). No-ops if this
+    // element hasn't been laid out yet (i.e. never rendered a frame), since
+    // there's no canvas to draw into yet. `clear` defaults to false so
+    // repeated calls accumulate instead of erasing prior content.
+    fn drawToCanvas(element: mut ui_elements.CanvasElement, drawFn: CanvasDrawFn, clear: bool = false) {
+        let data = runtimeDataOf(element);
+        if !data.handle {
+            return;
+        }
+        let handle = data.handle.get<CanvasHandle>();
+        // Outside the main render loop there's no frame already in
+        // progress to join, so this is its own one-Canvas Frame -- still
+        // exactly one queue.submit(), just scoped to this single call
+        // instead of to a whole application frame.
+        let frame = renderer.gfx.Frame(handle.canvas.gfx);
+        let r = renderer.gfx.Renderer(frame, handle.canvas);
+        drawFn(r);
+        r.commit(clear);
+        frame.present();
+    }
+
+    fn ref<T>(): ElementRef<T> {
+        return rx.shallowReactive<T | null>(null);
+    }
+}
+
+export type ElementRef<T> = rx.ShallowReactive<T | null>;

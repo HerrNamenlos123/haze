@@ -190,6 +190,7 @@ async function main(): Promise<number> {
       if (args.command === "run" || args.command === "exec") {
         const exitCode = await project.run(
           args.filename,
+          args.explicitDir,
           args.sourceloc,
           args.args
         );
