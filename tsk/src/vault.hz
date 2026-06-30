@@ -17,6 +17,50 @@ fn chooseFile(): str | none {
     return none;
 }
 
-fn indexVault(vault: str) {
+struct FSFileEntry {
+  type: "file";
+  filename: string;
+  fullPath: string;
+}
 
+struct FSDirEntry {
+  type: "directory";
+  dirname: string;
+  fullPath: string;
+  children: [](FSFileEntry | FSDirEntry);
+}
+
+struct VaultFS {
+  entries: [](FSFileEntry | FSDirEntry) = [];
+}
+
+fn indexVault(vault: str) {
+    let vault = VaultFS {};
+
+    let index = (path: str): (FSFileEntry | FSDirEntry) :: final => {};
+    index = (path: str): (FSFileEntry | FSDirEntry) :: final => {
+        if let dirs = fs.listDir(path) {
+            for dir in dirs {
+                if dir.isFile {
+                    fmt.println(f"Found File {dir.path}");
+                    return FSFileEntry {
+                        type: "file",
+                        filename: dir.path,
+                        fullPath: dir.path,
+                    };
+                }
+                if dir.isDirectory {
+                    let children: [](FSFileEntry | FSDirEntry) = [];
+                    index(dir.path);
+                    return FSDirEntry {
+                        type: "directory",
+                        dirname: dir.path,
+                        fullPath: dir.path,
+                        children: 
+                    };
+                }
+            }
+        }
+    };
+    index(vault);
 }

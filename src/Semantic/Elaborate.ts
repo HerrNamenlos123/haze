@@ -10653,6 +10653,7 @@ export class SemanticElaborator {
         }
 
         // Before applying constraints
+        resultingConditionId = this.unwrapReactiveOrComputedIfPossible(resultingConditionId);
         const boolCondition = Conversion.MakeConversionOrThrow(
           this.sr,
           resultingConditionId,
@@ -10706,9 +10707,10 @@ export class SemanticElaborator {
           resultFlow.addExitFlows(conditionExprData.flow);
           resultWrites.addAll(conditionExprData.writes);
 
+          const unwrappedConditionExpr = this.unwrapReactiveOrComputedIfPossible(conditionExpr);
           const boolCondition = Conversion.MakeConversionOrThrow(
             this.sr,
-            conditionExpr,
+            unwrappedConditionExpr,
             this.sr.b.boolType(),
             thisBranchPrevConstraints,
             s.sourceloc,

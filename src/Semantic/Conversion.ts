@@ -2545,6 +2545,42 @@ export namespace Conversion {
     );
 
     if (conversionPlan.kind === "error") {
+      // If the source is reactive/computed, try a two-step conversion:
+      // unwrap to the inner type first, then convert inner → target.
+      // This handles e.g. Reactive<str | null> → str when inside a narrowing context.
+      const resolvedSourceTypeDef = sr.typeDefNodes.get(
+        sr.typeUseNodes.get(sr.e.resolveAlias(sourceExpr.type)).type
+      );
+      if (
+        resolvedSourceTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+        resolvedSourceTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
+        resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype
+      ) {
+        const wrappedTypeUseId = resolvedSourceTypeDef.wrappedType;
+        const unwrapResult = MakeConversion(
+          sr,
+          sourceExprId,
+          wrappedTypeUseId,
+          constraints,
+          sourceloc,
+          mode,
+          unsafe
+        );
+        if (unwrapResult.ok) {
+          const finalResult = MakeConversion(
+            sr,
+            unwrapResult.expr,
+            targetTypeUseId,
+            constraints,
+            sourceloc,
+            mode,
+            unsafe
+          );
+          if (finalResult.ok) {
+            return finalResult;
+          }
+        }
+      }
       return { ok: false, error: conversionPlan.message };
     }
 

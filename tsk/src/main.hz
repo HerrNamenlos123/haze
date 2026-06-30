@@ -45,7 +45,9 @@ fn main(): int {
             }
         }
 
-        indexVault(cache.data.vaultDir);
+        if (cache.data.vaultDir) {
+            indexVault(cache.data.vaultDir);
+        }
 
         while let frame = a.nextFrame() {
             if a.resized {
