@@ -11,22 +11,15 @@ struct TskPoint {
     pressure: real;
 }
 
-struct TskShape {
-    variant: str;
-    points: []Point;
-    penThickness: real;
-    penColor: str;
-}
-
 struct TskLineShape {
   variant: "Line";
-  points: TskPoint[];
+  points: []TskPoint;
   penColor: str;
   penThickness: real;
   // Cached outline + bbox for this stroke, so reopening the file doesn't have to redo the
   // perfect-freehand computation. Optional for backward compatibility with older files.
   bbox?: BBox;
-  cachedOutline?: real[][];
+  cachedOutline?: [][]real;
   
   fn getBBox(): BBox {
     // ...

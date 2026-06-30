@@ -274,24 +274,6 @@ namespace json {
         };
     }
 
-    struct A {
-        type: "VariantA";
-    }
-
-    struct B {
-        type: "VariantB";
-    }
-
-    [[json.discriminator="type"]]
-    type C = A | B;
-
-    fn foo() {
-        // json.parse<A>("{ type: \"VariantA\" }");
-        // json.stringify(A { type: "VariantA" });
-        json.parse<C>("{ type: \"VariantA\" }");
-        json.stringify(A { type: "VariantA" } as C);
-    }
-
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
         if comptime T.category == meta.TypeCategory.Literal {
             if comptime T.baseType is str {
