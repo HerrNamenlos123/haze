@@ -7,6 +7,8 @@ export inline struct DivProps {
     style?: ui_styling.DivStyle;
     presets?: []ui_styling.DivStyleOp;
     ref?: ElementRef<ui_elements.DivElement>;
+
+    onClick?: () => none;
 }
 
 export inline struct TextProps {
@@ -126,19 +128,19 @@ export fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeDa
 // be methods on the element structs themselves; now they're free functions
 // over the runtime data this module owns, since ui_elements holds neither
 // the data nor the concept.
-export fn position(element: ui_elements.Element): Vec2 | none {
+export fn ui_position(element: ui_elements.Element): Vec2 | none {
     let data = runtimeDataOf(element);
     rx.get(data.renderFeedbackVersion);
     return data.renderFeedback ? data.renderFeedback.position : none;
 }
 
-export fn size(element: ui_elements.Element): Vec2 | none {
+export fn ui_size(element: ui_elements.Element): Vec2 | none {
     let data = runtimeDataOf(element);
     rx.get(data.renderFeedbackVersion);
     return data.renderFeedback ? data.renderFeedback.size : none;
 }
 
-export fn hover(element: ui_elements.Element): bool {
+export fn ui_hover(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.inputFeedbackVersion);
     return data.inputFeedback ? data.inputFeedback.hover : false;
@@ -322,8 +324,8 @@ export opaque struct UIContext {
     fn applyHitTestAndScheduleEvents(element: ui_elements.Element, mousePos: Vec2): [](() => none) :: final {
         let events: [](() => none) = [];
 
-        let elementPos = position(element);
-        let elementSize = size(element);
+        let elementPos = ui_position(element);
+        let elementSize = ui_size(element);
 
         let hovered = false;
         if elementPos && elementSize {
@@ -707,13 +709,8 @@ export opaque struct UIContext {
         this.popRenderContext();
 
         if props.ref is not none {
-            // TODO: This should be an identity comparison in the future.
-            // Ids are not globally unique and this is not guaranteed to always work.
-            // In the ideal case, we should support TypeScript-like identity comparison
-            // between objects, to compare that it is actually the same object.
-            // The ID comparison is a best guess.
-            if props.ref is null || props.ref.id != element.id {
-                props.ref := element;
+            if props.ref is null || props.ref.raw.id != element.id {
+                props.ref := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
             }
         }
 
@@ -734,13 +731,8 @@ export opaque struct UIContext {
         this.getCurrentParent().children.push(element);
 
         if props.ref is not none {
-            // TODO: This should be an identity comparison in the future.
-            // Ids are not globally unique and this is not guaranteed to always work.
-            // In the ideal case, we should support TypeScript-like identity comparison
-            // between objects, to compare that it is actually the same object.
-            // The ID comparison is a best guess.
-            if props.ref is null || props.ref.id != element.id {
-                props.ref := element;
+            if props.ref is null || props.ref.raw.id != element.id {
+                props.ref := ElementWrapper<ui_elements.TextElement> { raw: element, _element: element };
             }
         }
 
@@ -781,8 +773,8 @@ export opaque struct UIContext {
         }
 
         if props.ref is not none {
-            if props.ref is null || props.ref.id != element.id {
-                props.ref := element;
+            if props.ref is null || props.ref.raw.id != element.id {
+                props.ref := ElementWrapper<ui_elements.CanvasElement> { raw: element, _element: element };
             }
         }
 
@@ -813,8 +805,32 @@ export opaque struct UIContext {
     }
 
     fn ref<T>(): ElementRef<T> {
-        return rx.shallowReactive<T | null>(null);
+        return rx.shallowReactive<ElementWrapper<T> | null>(null);
     }
 }
 
-export type ElementRef<T> = rx.ShallowReactive<T | null>;
+// Wrapper around a UI element exposed through an ElementRef. Holds the typed
+// raw element for rare direct access and provides reactive methods for the
+// common read-only queries so callers don't need the free-function form.
+// This is a workaround because ElementWrapper is generic, which means it is copy-pasted, which means
+// ui_elements.Element cannot resolve anymore because it's not namespaced. Should be fixed properly
+// by implementing preelaboration of generic structs that links types directly to nodes. 
+export type ui_Element = ui_elements.Element;
+export struct ElementWrapper<T> {
+    raw: T;
+    _element: ui_Element;
+
+    fn hover(): bool {
+        return ui_hover(this._element);
+    }
+
+    fn position(): Vec2 | none {
+        return ui_position(this._element);
+    }
+
+    fn size(): Vec2 | none {
+        return ui_size(this._element);
+    }
+}
+
+export type ElementRef<T> = rx.ShallowReactive<ElementWrapper<T> | null>;

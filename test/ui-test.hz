@@ -53,7 +53,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
             if !element {
                 return false;
             }
-            return ui_components.hover(element);
+            return element.hover();
         });
 
         return (): void => {
@@ -118,7 +118,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
         let divRef = ui.ref<ui_elements.DivElement>();
         let h = rx.computed(() => {
             if let ref = rx.get(divRef) {
-                return ui_components.hover(ref);
+                return ref.hover();
             }
             return false;
         })

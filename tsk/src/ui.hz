@@ -6,34 +6,6 @@ import headwind
 import renderer
 type presets = headwind.presets;
 
-struct HeaderArgs {
-    id: int;
-    title: str;
-
-    fn operator!=(other: HeaderArgs) {
-        return this.id != other.id || this.title != other.title;
-    }
-}
-fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<HeaderArgs>) => {
-        return (): void => {
-            ui.div({
-                id: 1,
-                style: {
-                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 10.0 },
-                },
-                presets: [
-                    presets.bg(Color(0.9, 0.2, 0.2, 1)),
-                    presets.p(4),
-                    presets.align(ui_styling.Align.Center),
-                ]
-            }, (): void => {
-                ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
-            });
-        };
-    });
-}
-
 struct NavItemArgs {
     id: int;
     label: str;
@@ -53,7 +25,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
             if !element {
                 return false;
             }
-            return ui_components.hover(element);
+            return element.hover();
         });
 
         return (): void => {
@@ -64,40 +36,12 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
                     backgroundColor: isHovered ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
                     padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
                     cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 6.0 },
+                },
+                onClick: () => {
+                    fmt.println("Button clicked");
                 }
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().label });
-            });
-        };
-    });
-}
-
-struct SidebarArgs {
-    id: int;
-
-    fn operator!=(other: SidebarArgs) {
-        return this.id != other.id;
-    }
-}
-
-fn Sidebar(ui: ui_components.UIContext, args: SidebarArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<SidebarArgs>) => {
-
-        return (): void => {
-            ui.div({
-                id: 1,
-                style: {
-                    backgroundColor: Color(0.2, 0.6, 0.9, 1),
-                    padding: ui_styling.StylePaddingSimple { value: 20.0 },
-                    direction: ui_styling.Direction.Column,
-                    gap: 8.0,
-                    width: 180.0,
-                }
-            }, (): void => {
-                ui.text({ id: 2, text: "Menu" });
-                NavItem(ui, { id: 10, label: "Dashboard" });
-                NavItem(ui, { id: 20, label: "Settings" });
-                NavItem(ui, { id: 30, label: "About" });
             });
         };
     });
@@ -118,7 +62,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
         let divRef = ui.ref<ui_elements.DivElement>();
         let h = rx.computed(() => {
             if let ref = rx.get(divRef) {
-                return ui_components.hover(ref);
+                return ref.hover();
             }
             return false;
         })
@@ -309,35 +253,6 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
     });
 }
 
-struct FooterArgs {
-    id: int;
-
-    fn operator!=(other: FooterArgs) {
-        return this.id != other.id;
-    }
-}
-
-fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<FooterArgs>) => {
-
-        let text = rx.reactive<str>("This is some actual text to read");
-
-        return (): void => {
-            ui.div({
-                id: 10000,
-                presets: [
-                    presets.bg("#181818"),
-                    presets.textColor("#F00"),
-                    presets.p(15),
-                    presets.align(ui_styling.Align.Center),
-                ],
-            }, (): void => {
-                ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
-            });
-        };
-    });
-}
-
 struct RootArgs {
     fn operator!=(other: RootArgs) {
         return false;
@@ -364,8 +279,6 @@ export fn UI(ui: ui_components.UIContext) {
                     gap: 10.0,
                 }
             }, (): void => {
-                Header(ui, { id: 15000, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
-
                 ui.div({
                     id: 22000,
                     style: {
@@ -377,12 +290,9 @@ export fn UI(ui: ui_components.UIContext) {
                         gap: 30.0,
                     }
                 }, (): void => {
-                    Sidebar(ui, { id: 2300 });
                     ContentArea(ui, { id: 3300, text: text });
                     InfoBox(ui, { id: 4400 });
                 });
-
-                Footer(ui, { id: 5500 });
             });
         };
     });
