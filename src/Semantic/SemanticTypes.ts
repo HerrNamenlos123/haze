@@ -2889,7 +2889,12 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.UnionTagCheckExpr: {
-        return `(${serializeExpr(sr, expr.expr)} tag check TBD...)`;
+        const operator = expr.invertCheck ? "is not" : "is";
+        return `(${serializeExpr(sr, expr.expr)} ${operator} [${expr.comparisonTypesAnd
+          .map((t) => {
+            return Semantic.serializeTypeUse(sr, t);
+          })
+          .join(", ")}])`;
       }
 
       case Semantic.ENode.UnionToUnionCastExpr: {

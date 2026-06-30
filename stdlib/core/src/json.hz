@@ -258,20 +258,22 @@ namespace json {
                 if !child { 
                     return Error { error: f"JSON missing field: {fieldName}" };
                 }
-                static_print(f"E {typeof(result.[fieldName]).baseType.prettyName}");
-                type R = typeof(result.[fieldName]);
-                static_print(f"A {R.baseType.prettyName}");
-                let r = parseJsonNodeFromFfi<R>(allocator, child);
-                static_print(f"B {typeof(r).baseType.prettyName}");
+                let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
                 if !r {
                     return r;
                 }
-                static_print(f"C {typeof(r).baseType.prettyName}");
-                static_print(f"D {typeof(result.[fieldName]).baseType.prettyName}");
                 result.[fieldName] = r;
             }
             return result;
         };
+    }
+
+    struct A {
+        value: str | null;
+    }
+
+    fn foo() {
+        json.parse<A>("{ value: null }");
     }
 
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {

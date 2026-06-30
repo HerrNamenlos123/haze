@@ -12732,8 +12732,9 @@ export class SemanticElaborator {
     );
 
     if (
-      sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
-      sourceExprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype
+      sourceExpr.variant !== Semantic.ENode.DatatypeAsValueExpr &&
+      (sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+        sourceExprTypeDef.variant === Semantic.ENode.TaggedUnionDatatype)
     ) {
       const memberTypes =
         sourceExprTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
