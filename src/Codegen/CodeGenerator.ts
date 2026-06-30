@@ -1643,9 +1643,8 @@ class CodeGenerator {
           // Casting nullable pointer union to a target type.
           // If target is none/null, emit a none struct literal — the value itself is a pointer.
           const targetTypeDef = this.lr.typeDefNodes.get(
-            this.lr.typeUseNodes.get(
-              Lowered.resolveAlias(this.lr, expr.type)
-            ).type
+            this.lr.typeUseNodes.get(Lowered.resolveAlias(this.lr, expr.type))
+              .type
           );
           if (
             targetTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
@@ -1658,10 +1657,13 @@ class CodeGenerator {
           }
         } else if (expr.needsRefinementAssertion) {
           const inner = this.emitExpr(expr.expr).out.get();
+          const type = this.lr.typeUseNodes.get(
+            this.lr.exprNodes.get(expr.expr).type
+          );
           const tagNameFn = this.ensureUnionTagNameFunction(typeUse.type);
           const expectedName = this.unionVariantPrettyName(union, expr.index);
           outWriter.write(
-            `HZ_GET_UNION_TAG(${inner}, ${expr.index}, "${escapeStringForC(expectedName)[0]}", ${tagNameFn})`
+            `*({ ${this.mangleName(type.name)} __v = ${inner}; &HZ_GET_UNION_TAG(__v, ${expr.index}, "${escapeStringForC(expectedName)[0]}", ${tagNameFn}); })`
           );
         } else {
           outWriter.write(

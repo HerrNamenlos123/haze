@@ -39,6 +39,14 @@ struct VaultFS {
 fn indexVault(vaultPath: str) {
     let vault = VaultFS {};
 
+    let a = fs.listDir(vaultPath);
+    if a {
+        fmt.println(1, a.length, vaultPath);
+    }
+    else {
+        fmt.println(2);
+    }
+
     // TODO: Allow a variable to capture itself if the declaration is a pure closure that cannot be called
     // before the variable is defined. But this is surprisingly difficult, first to prove it's safe in
     // all edge cases, and secondly, to actually do it in C. This requires special C support for capturing.
@@ -67,4 +75,27 @@ fn indexVault(vaultPath: str) {
         return entries;
     };
     vault.entries = index(vaultPath);
+
+    let process = (entry: FSEntry): none :: final => none;
+    process = (entry: FSEntry): none :: final => {
+        if entry is FSDirEntry {
+            for child in entry.children {
+                process(child);
+            }
+        }
+        else {
+            fmt.println(f"Got File: {entry.fullPath}");
+            processFile(entry.fullPath);
+        }
+        return none;
+    };
+    for entry in vault.entries {
+        process(entry);
+    }
+}
+
+fn processFile(path: str) {
+    fmt.println(path.substr(path.length - 4, 4));
+    // if path[j != "k"
+    // let document
 }
