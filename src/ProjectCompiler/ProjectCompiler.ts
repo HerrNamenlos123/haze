@@ -263,9 +263,9 @@ export class ProjectCompiler {
               } catch {
                 throw new GeneralError(
                   `Failed to load dependency '${dep.name}' of module '${cfg.name}':\n` +
-                  `  Declared path: ${dep.path}\n` +
-                  `  Resolved path: ${resolvedDepPath}\n` +
-                  `  No 'haze.toml' found at that location.`
+                    `  Declared path: ${dep.path}\n` +
+                    `  Resolved path: ${resolvedDepPath}\n` +
+                    `  No 'haze.toml' found at that location.`
                 );
               }
               if (!depConfig) {
@@ -389,7 +389,9 @@ export class ProjectCompiler {
             .build(isTopLevel, forceRebuild)
             .then((success) => ({ name: name, success: !!success }))
             .catch((err: unknown) => {
-              process.stderr.write(`[${name}] Unhandled build error: ${String(err)}\n`);
+              process.stderr.write(
+                `[${name}] Unhandled build error: ${String(err)}\n`
+              );
               return { name: name, success: false };
             })
         );

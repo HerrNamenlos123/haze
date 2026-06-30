@@ -241,7 +241,10 @@ export class CLIPrinter {
   /** Insert a status line above the live bars without stopping them. */
   logInfo(message: string) {
     const terminal = (this.multibar as any).terminal;
-    const origWrite = terminal.write.bind(terminal) as (s: string, raw?: boolean) => void;
+    const origWrite = terminal.write.bind(terminal) as (
+      s: string,
+      raw?: boolean
+    ) => void;
     // cli-progress sends \x1B[?7l on start (linewrap:false default), which makes
     // the terminal emulator itself clip long lines regardless of what we write.
     // Temporarily re-enable it so the message wraps instead of being cut.
@@ -275,13 +278,16 @@ export class CLIPrinter {
     // Patching write() to always use rawWrite=true skips the truncation so the
     // full bar content is displayed, then we restore immediately after.
     const terminal = (this.multibar as any).terminal;
-    const origWrite = terminal.write.bind(terminal) as (s: string, raw?: boolean) => void;
+    const origWrite = terminal.write.bind(terminal) as (
+      s: string,
+      raw?: boolean
+    ) => void;
     terminal.write = (s: string, _raw?: boolean) => origWrite(s, true);
     this.multibar.stop();
     terminal.write = origWrite;
 
     for (const w of this.warningBuffer) {
-      process.stdout.write(w + "\n");
+      console.log(w);
     }
     this.warningBuffer = [];
   }
@@ -321,7 +327,7 @@ export class CLIPrinter {
         )
       ) + 5; // "Xms total"
 
-    process.stdout.write("\n");
+    console.log();
     for (const m of done) {
       const name = chalk.white(m.name.padEnd(nameColWidth));
       const cols = phases.map((phase, i) => {
@@ -339,9 +345,9 @@ export class CLIPrinter {
       const totalCell = chalk.gray(
         `${totalMs}ms total`.padStart(totalColWidth)
       );
-      process.stdout.write(`  ${name}  ${cols.join("")}${totalCell}\n`);
+      console.log(`  ${name}  ${cols.join("")}${totalCell}`);
     }
-    process.stdout.write("\n");
+    console.log();
   }
 
   private createBar(state: ModuleState) {
@@ -377,7 +383,9 @@ export class CLIPrinter {
   endGenerator(handle: GeneratorHandle) {
     const state = handle as GeneratorState;
     const idx = this.generators.indexOf(state);
-    if (idx >= 0) { this.generators.splice(idx, 1); }
+    if (idx >= 0) {
+      this.generators.splice(idx, 1);
+    }
     if (state.bar) {
       this.multibar.remove(state.bar);
       state.bar = undefined;
@@ -398,11 +406,17 @@ export class CLIPrinter {
     }
   }
 
-  private renderGeneratorRow(state: GeneratorState, spinnerIndex: number): string {
+  private renderGeneratorRow(
+    state: GeneratorState,
+    spinnerIndex: number
+  ): string {
     // Aligns with module bars: 5-char tag + 1 space + 32-char name field + 1 space = 39 before phase block
     const tag = chalk.blue("[gen]");
     const rawCombined = `${state.moduleName} › ${state.genName}`;
-    const visName = chalk.blue(state.moduleName) + chalk.dim(" › ") + chalk.blueBright(state.genName) +
+    const visName =
+      chalk.blue(state.moduleName) +
+      chalk.dim(" › ") +
+      chalk.blueBright(state.genName) +
       " ".repeat(Math.max(0, 32 - rawCombined.length));
     const phaseBlock = `[${chalk.blue("Running      ")}${chalk.blue(SPINNER[spinnerIndex])}]`;
     const elapsedMs = Date.now() - state.startTime.getTime();
