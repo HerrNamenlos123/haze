@@ -179,6 +179,9 @@ fn main(): int {
                 { name: "roboto", id: font },
             ],
             mousePos: () => a.mousePos(),
+            pointerLeftHeld: () => a.pointerLeftHeld(),
+            pointerMiddleHeld: () => a.pointerMiddleHeld(),
+            pointerRightHeld: () => a.pointerRightHeld(),
             ui: (ui: ui_components.UIContext) => { UI(ui); },
         });
 

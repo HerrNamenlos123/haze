@@ -34,6 +34,12 @@ fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
 // into one struct. Exposes every piece (gfx, canvas, window, device, surface,
 // surfaceFormat) so nothing is hidden — use individual modules directly when
 // you need to deviate from the defaults.
+export struct AppPointerButtons {
+    leftHeld: bool = false;
+    middleHeld: bool = false;
+    rightHeld: bool = false;
+}
+
 export opaque struct App {
     window: mut sdl.Window;
     device: mut wgpu.Device;
@@ -46,6 +52,7 @@ export opaque struct App {
     windowState: renderer.gfx.CanvasSize;
     mousePosition: Vec2 = {};
     resized: bool = false;
+    _pointerButtons: AppPointerButtons = {};
 
     fn constructor(options: AppOptions): Result<App, str> {
         if !sdl.init() { return "SDL init failed"; }
@@ -93,9 +100,23 @@ export opaque struct App {
         });
 
         let mousePosition = Vec2(0, 0);
+        let pointerButtons = AppPointerButtons {};
+
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
             mousePosition.x = e.pos.x;
             mousePosition.y = e.pos.y;
+            return false;
+        });
+        window.onMouseDown((e: sdl.MouseButtonEvent) => {
+            if e.button == 0 { pointerButtons.leftHeld = true; }
+            if e.button == 1 { pointerButtons.middleHeld = true; }
+            if e.button == 2 { pointerButtons.rightHeld = true; }
+            return false;
+        });
+        window.onMouseUp((e: sdl.MouseButtonEvent) => {
+            if e.button == 0 { pointerButtons.leftHeld = false; }
+            if e.button == 1 { pointerButtons.middleHeld = false; }
+            if e.button == 2 { pointerButtons.rightHeld = false; }
             return false;
         });
 
@@ -110,11 +131,24 @@ export opaque struct App {
             canvas: canvas,
             windowState: windowState,
             mousePosition: mousePosition,
+            _pointerButtons: pointerButtons,
         };
     }
 
     fn mousePos(): Vec2 {
         return this.mousePosition;
+    }
+
+    fn pointerLeftHeld(): bool {
+        return this._pointerButtons.leftHeld;
+    }
+
+    fn pointerMiddleHeld(): bool {
+        return this._pointerButtons.middleHeld;
+    }
+
+    fn pointerRightHeld(): bool {
+        return this._pointerButtons.rightHeld;
     }
 
     // Polls events, handles resize, and returns a fresh Frame for this tick.

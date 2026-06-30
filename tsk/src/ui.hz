@@ -37,7 +37,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
                     padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
                     cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 6.0 },
                 },
-                onClick: () => {
+                onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("Button clicked");
                 }
             }, (): void => {
@@ -49,10 +49,9 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
 
 struct ContentAreaArgs {
     id: int;
-    text: str;
 
     fn operator!=(other: ContentAreaArgs) {
-        return this.id != other.id || this.text != other.text;
+        return this.id != other.id;
     }
 }
 
@@ -81,11 +80,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     presets.gap(4),
                 ],
             }, (): void => {
-                fmt.println("Rerender content area");
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
-                ui.text({ id: 300, text: "This is rendered via the component system." });
-                ui.text({ id: 400, text: "Flexbox layout powered by Clay." });
-                ui.text({ id: 500, text: instance.props().text });
 
                 ui.canvas({
                     id: 600,
@@ -261,16 +256,11 @@ struct RootArgs {
 
 export fn UI(ui: ui_components.UIContext) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
-
-        let text = rx.computed(() => {
-            return f"This text is running since {ui.now() as int} seconds.";
-        });
-
         return (): void => {
             ui.div({
                 id: 100000,
                 style: {
-                    backgroundColor: Color(0.15, 0.15, 0.15, 1),
+                    backgroundColor: Color(0.0, 0.15, 0.15, 1),
                     padding: ui_styling.StylePaddingSimple { value: 30.0 },
                     direction: ui_styling.Direction.Column,
                     fontFamily: "roboto",
@@ -290,7 +280,7 @@ export fn UI(ui: ui_components.UIContext) {
                         gap: 30.0,
                     }
                 }, (): void => {
-                    ContentArea(ui, { id: 3300, text: text });
+                    ContentArea(ui, { id: 3300 });
                     InfoBox(ui, { id: 4400 });
                 });
             });

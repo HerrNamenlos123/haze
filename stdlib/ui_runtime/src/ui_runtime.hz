@@ -9,6 +9,9 @@ export inline struct RuntimeArgs {
     windowState: renderer.gfx.CanvasSize;
     fonts: []ui_layout.FontEntry;
     mousePos: () => Vec2;
+    pointerLeftHeld?: () => bool;
+    pointerMiddleHeld?: () => bool;
+    pointerRightHeld?: () => bool;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -38,6 +41,9 @@ export opaque struct Runtime {
         let ui = ui_components.UIContext({
             ui: args.ui,
             mousePos: args.mousePos,
+            pointerLeftHeld: args.pointerLeftHeld,
+            pointerMiddleHeld: args.pointerMiddleHeld,
+            pointerRightHeld: args.pointerRightHeld,
         });
         return Runtime {
             gfx: args.gfx,
