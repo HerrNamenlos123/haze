@@ -526,7 +526,7 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {
-                if comptime value is Variant {
+                if value is Variant {
                     return dumpJsonNode<Variant>(allocator, value);
                 }
             }

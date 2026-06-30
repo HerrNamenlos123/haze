@@ -37,10 +37,17 @@ fn main(): int {
         });
 
         let cache = json.CacheFile<Cache>("tsk.cache.json");
-        cache.data.vaultDir:="Hello world";
+
+        if !cache.data.vaultDir {
+            let vault = chooseVault();
+            if vault {
+                cache.data.vaultDir := vault;
+            }
+        }
+
+        indexVault(cache.data.vaultDir);
 
         while let frame = a.nextFrame() {
-            fmt.println(f"Last vault: {cache.data.vaultDir}");
             if a.resized {
                 runtime.resize(a.windowState);
             }

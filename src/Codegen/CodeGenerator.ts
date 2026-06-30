@@ -1640,7 +1640,22 @@ class CodeGenerator {
         );
 
         if (union.optimizeAsRawPointer) {
-          outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+          // Casting nullable pointer union to a target type.
+          // If target is none/null, emit a none struct literal — the value itself is a pointer.
+          const targetTypeDef = this.lr.typeDefNodes.get(
+            this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, expr.type)
+            ).type
+          );
+          if (
+            targetTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
+            (targetTypeDef.primitive === EPrimitive.none ||
+              targetTypeDef.primitive === EPrimitive.null)
+          ) {
+            outWriter.write(`(${this.mangleTypeUse(expr.type)}){}`);
+          } else {
+            outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
+          }
         } else if (expr.needsRefinementAssertion) {
           const inner = this.emitExpr(expr.expr).out.get();
           const tagNameFn = this.ensureUnionTagNameFunction(typeUse.type);

@@ -78,4 +78,19 @@ typedef struct {
 
 hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path);
 
+typedef struct {
+  void* handle; // malloc'd internal struct; freed by hzstd_close_dir
+  hzstd_fs_error_code_t error;
+} hzstd_open_dir_result_t;
+
+typedef struct {
+  bool valid;
+  bool is_dir;
+  hzstd_str_t name; // GC-owned via hzstd_cstr_dup
+} hzstd_dir_entry_t;
+
+hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path);
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle);
+void hzstd_close_dir(void* handle);
+
 #endif // HZSTD_FILESYSTEM_H

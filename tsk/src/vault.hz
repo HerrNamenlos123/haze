@@ -16,3 +16,7 @@ fn chooseFile(): str | none {
     }
     return none;
 }
+
+fn indexVault(vault: str) {
+
+}

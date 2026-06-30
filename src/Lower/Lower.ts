@@ -2294,26 +2294,23 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
         const compTypeUse = lr.typeUseNodes.get(comparisonTypes[0]);
         const compType = lr.typeDefNodes.get(compTypeUse.type);
-        if (
+        const isNullLike =
           compType.variant === Lowered.ENode.PrimitiveDatatype &&
           (compType.primitive === EPrimitive.null ||
-            compType.primitive === EPrimitive.none)
-        ) {
-          // But -> If the user wrote: Foo | none -> NOT none we must rewrite it into IS Foo
-          // So:
-          // If Foo is referenced (as in IS Foo or IS NOT Foo), then its ok
-          // But if none is referenced (as in IS none or IS NOT none) then we must invert it
-          // Since the code generation is simple and always refers to Foo, the actual value
+            compType.primitive === EPrimitive.none);
+        // The codegen base is a NULL check (== NULL).
+        // `is Foo` (non-null type) needs != NULL → invert.
+        // `is none` (null-like type) needs == NULL → no invert.
+        // Combine with the user's own invertCheck flag.
+        if (!isNullLike) {
           invertCheck = !invertCheck;
         }
 
-        // An optimized pointer check is always truish (NOT null)
-        // Therefore -> the condition may need to be inverted twice
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.UnionTagCheckExpr,
           expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
           optimizeExprToNullptr: !!loweredUnion.optimizeAsRawPointer,
-          invertCheck: expr.invertCheck,
+          invertCheck: invertCheck,
           tags: [],
           type: loweredUnionId,
         });
