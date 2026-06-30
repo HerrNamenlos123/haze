@@ -8,6 +8,7 @@ import {
   type ASTExpr,
   type ASTFunctionDefinition,
   type ASTGlobalVariableDefinition,
+  type ASTMetaAnnotationItem,
   type ASTModuleImport,
   type ASTRoot,
   type ASTScope,
@@ -396,6 +397,7 @@ export namespace Collect {
     generics: Collect.SymbolId[];
     genericScope: Collect.ScopeId;
     target: Collect.ExprId;
+    annotations: ASTMetaAnnotationItem[];
     sourceloc: SourceLoc;
   };
 
@@ -444,6 +446,7 @@ export namespace Collect {
     fieldScope: Collect.ScopeId; // The field scope contains only member variables and is NOT part of normal hierarchy
     originalSourcecode: string;
     collectedTypeDefSymbol: Collect.SymbolId;
+    annotations: ASTMetaAnnotationItem[];
   };
 
   export type NamespaceTypeDef = {
@@ -1347,6 +1350,7 @@ function collectTypeDef(
           sourceloc: item.sourceloc,
           originalSourcecode: item.originalSourcecode,
           collectedTypeDefSymbol: -1 as Collect.SymbolId,
+          annotations: item.annotations,
         }
       );
       const structSymbolId = Collect.makeSymbol<Collect.TypeDefSymbol>(cc, {
@@ -1991,6 +1995,7 @@ function collectGlobalDirective(
         target: collectExpr(cc, item.datatype, {
           currentParentScope: genericsScopeId,
         }),
+        annotations: item.annotations,
         sourceloc: item.sourceloc,
       });
       const symbolId = Collect.makeSymbol(cc, {
@@ -2071,6 +2076,7 @@ function collectGlobalDirective(
         generics: [],
         genericScope: -1 as Collect.ScopeId,
         name: item.name,
+        annotations: [],
         sourceloc: item.sourceloc,
       });
       const symbolId = Collect.makeSymbol(cc, {
@@ -2327,6 +2333,7 @@ function collectScope(
           target: collectExpr(cc, astStatement.datatype, {
             currentParentScope: blockScopeId,
           }),
+          annotations: astStatement.annotations,
           sourceloc: astStatement.sourceloc,
         });
         const symbolId = Collect.makeSymbol(cc, {

@@ -8,6 +8,7 @@ import {
   printCollectedExpr,
 } from "../SymbolCollection/SymbolCollection";
 import {
+  type ASTMetaAnnotationItem,
   BinaryOperationToString,
   type EAssignmentOperation,
   type EBinaryOperation,
@@ -340,6 +341,7 @@ export namespace Semantic {
     concrete: boolean;
     originalCollectedDefinition: Collect.TypeDefId;
     originalCollectedSymbol: Collect.SymbolId;
+    annotations: ASTMetaAnnotationItem[];
   };
 
   export type ParameterPackDatatypeDef = {
@@ -454,6 +456,7 @@ export namespace Semantic {
     parentSymbolId: SymbolId | null;
     targetType: Semantic.TypeUseId;
     concrete: boolean; // For consistency, always true
+    annotations: ASTMetaAnnotationItem[];
   };
 
   export type TypeDef =

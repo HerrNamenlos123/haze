@@ -1,39 +1,98 @@
+struct BBox {
+  left: real;
+  right: real;
+  top: real;
+  bottom: real;
+}
 
-struct Point {
+struct TskPoint {
     x: real;
     y: real;
     pressure: real;
 }
 
-struct Shape {
+struct TskShape {
     variant: str;
     points: []Point;
     penThickness: real;
     penColor: str;
 }
 
-struct Page {
-    shapes: []Shape;
+struct TskLineShape {
+  variant: "Line";
+  points: TskPoint[];
+  penColor: str;
+  penThickness: real;
+  // Cached outline + bbox for this stroke, so reopening the file doesn't have to redo the
+  // perfect-freehand computation. Optional for backward compatibility with older files.
+  bbox?: BBox;
+  cachedOutline?: real[][];
+  
+  fn getBBox(): BBox {
+    // ...
+  }
+};
+
+struct TskImageShape {
+  variant: "Image";
+  position: Vec2;
+  size: Vec2;
+  base64ImageData: str;
+  bbox?: BBox;
+  // Image/Canvas/Texture element reference
+  
+  fn getBBox(): BBox {
+    // ...
+  }
+};
+
+struct TskTextblockShape {
+  variant: "Textblock";
+  position: Vec2;
+  size: Vec2;
+  rawText: str;
+  bbox?: BBox;
+  // Image/Canvas/Texture element reference
+  
+  fn getBBox(): BBox {
+    // ...
+  }
+};
+
+type TskShape = TskLineShape | TskImageShape | TskTextblockShape;
+
+struct TskPage {
+    shapes: []TskShape;
 }
 
-struct DocumentData {
+struct TskViewport {
+    offsetX: real;
+    offsetY: real;
+    zoomPxPerMm: real;
+}
+
+struct TskDocumentBody {
     pageColor: str;
     gridColor: str;
-    gridType: str;
-    pages: []Page;
+    gridType: "lines" | "dots";
+    pages: []TskPage;
+    pageWidthMm: real;
+    pageHeightMm: real;
+    currentPageIndex: int;
+    viewport?: TskViewport;
 }
 
-struct Document {
+struct TskDocument {
     filetype: str;
-    fileVersion: int;
-    data: DocumentData;
+    fileversion: int;
+    data: TskDocumentBody;
 }
 
-fn loadTskDocument(path: str): Result<Document, none> {
+fn loadTskDocument(path: str): Result<TskDocument, none> {
     let file = fs.readText(path);
     if !file { return none; }
 
-    if let result = json.parse<Document>(file) {
+    if let result = json.parse<TskDocument>(file) {
         return result;
     }
     return none;

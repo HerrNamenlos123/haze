@@ -372,8 +372,22 @@ namespace json {
                     do unsafe {
                         let variant: Variant = uninitialized;
                         const comptime discriminatorTypeMatches = typeof(variant.[discriminatorField]) is str;
-                        static_assert(discriminatorTypeMatches, f"json.parse(): Discriminator field '{discriminatorField}' in variant {Variant.prettyName} of discriminated union {T.prettyName} is not of expected type 'str'");
+                        static_assert(discriminatorTypeMatches, f"json.parse(): Discriminator field '{discriminatorField}' in variant {Variant.prettyName} of union {T.prettyName} is not of expected type 'str'");
                     };
+                }
+
+                // Check if all discriminators are unique
+                for comptime VariantA, i in T.variants {
+                    for comptime VariantB, j in T.variants {
+                        if comptime i != j {
+                            do unsafe {
+                                let variantA: VariantA = uninitialized;
+                                let variantB: VariantB = uninitialized;
+                                static_assert(typeof(variantA.[discriminatorField]) != typeof(variantA.[discriminatorField]), 
+                                              f"json.parse(): Discriminator fields '{discriminatorField}' of union {T.prettyName} are not unique for all variants");
+                            };
+                        }
+                    }
                 }
 
                 // Now parse it

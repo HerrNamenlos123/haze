@@ -6,6 +6,7 @@ import {
   printCollectedSymbol,
 } from "../SymbolCollection/SymbolCollection";
 import {
+  type ASTMetaAnnotationItem,
   EAssignmentOperation,
   EBinaryOperation,
   EDatatypeMutability,
@@ -1053,6 +1054,15 @@ export class SemanticElaborator {
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
+    if (collectedExpr.variant === Collect.ENode.MemberAccessExpr) {
+      const reflectionResult = this.tryResolveTypeReflectionCall(
+        collectedExpr,
+        callExpr
+      );
+      if (reflectionResult) {
+        return reflectionResult;
+      }
+    }
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
       if (collectedExpr.name === "static_assert") {
         this.assertNoGenericArgs(collectedExpr, "static_assert");
@@ -3931,6 +3941,7 @@ export class SemanticElaborator {
         concrete: genericArgs.every((g) => isTypeExprConcrete(this.sr, g)),
         originalCollectedDefinition: definedStructTypeId,
         originalCollectedSymbol: definedStructType.collectedTypeDefSymbol,
+        annotations: definedStructType.annotations,
       }
     );
 
@@ -5882,6 +5893,7 @@ export class SemanticElaborator {
             name: typedef.name,
             parentSymbolId: parent,
             concrete: true,
+            annotations: typedef.annotations,
           }
         );
         insertIntoTypeAliasDefCache(this.sr, typedefId, {
@@ -8063,18 +8075,14 @@ export class SemanticElaborator {
     );
   }
 
-  resolveMemberAccess(
+  // A struct/type name used directly as a value (e.g. A.prettyName) produces a
+  // SymbolValueExpr(TypeDefSymbol). Normalize it to DatatypeAsValueExpr so that
+  // type-meta properties work identically to typeof(A).prettyName.
+  normalizeTypeDefValueExpr(
     exprId: Semantic.ExprId,
-    name: string,
-    generics: Collect.ExprId[],
-    inference: Semantic.Inference,
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     let expr = this.sr.exprNodes.get(exprId);
-
-    // A struct/type name used directly as a value (e.g. A.prettyName) produces a
-    // SymbolValueExpr(TypeDefSymbol). Normalize it to DatatypeAsValueExpr so that
-    // type-meta properties work identically to typeof(A).prettyName.
     if (expr.variant === Semantic.ENode.SymbolValueExpr) {
       const symbol = this.sr.symbolNodes.get(expr.symbol);
       if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
@@ -8094,6 +8102,18 @@ export class SemanticElaborator {
         }
       }
     }
+    return [expr, exprId];
+  }
+
+  resolveMemberAccess(
+    exprId: Semantic.ExprId,
+    name: string,
+    generics: Collect.ExprId[],
+    inference: Semantic.Inference,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    let expr: Semantic.Expression;
+    [expr, exprId] = this.normalizeTypeDefValueExpr(exprId, sourceloc);
 
     // If the expression is a runtime value whose declared type is our comptime-only
     // hzstd_meta_type_t placeholder, attempt compile-time evaluation. This handles
@@ -9414,6 +9434,182 @@ export class SemanticElaborator {
     );
   }
 
+  evalCTFEStringArgument(
+    argExprId: Collect.ExprId,
+    functionName: string,
+    sourceloc: SourceLoc
+  ): string {
+    const [valueResult] = EvalCTFEOrFail(
+      this.sr,
+      this.expr(argExprId, undefined)[1],
+      sourceloc
+    );
+    if (
+      valueResult.variant !== Semantic.ENode.LiteralExpr ||
+      (valueResult.literal.type !== EPrimitive.str &&
+        valueResult.literal.type !== EPrimitive.cstr &&
+        valueResult.literal.type !== EPrimitive.ccstr)
+    ) {
+      throw new CompilerError(
+        `The ${functionName} function requires a compile-time-evaluable string argument`,
+        sourceloc
+      );
+    }
+    return valueResult.literal.value;
+  }
+
+  literalValueMatchesTypeDef(
+    literalValue: LiteralValue,
+    typeDefId: Semantic.TypeDefId
+  ): boolean {
+    switch (literalValue.type) {
+      case EPrimitive.str:
+      case EPrimitive.cstr:
+      case EPrimitive.ccstr:
+        return Conversion.isStr(this.sr, typeDefId);
+      case EPrimitive.bool:
+        return Conversion.isBoolean(this.sr, typeDefId);
+      case EPrimitive.f32:
+      case EPrimitive.f64:
+      case EPrimitive.real:
+        return Conversion.isFloat(this.sr, typeDefId);
+      case EPrimitive.i8:
+      case EPrimitive.i16:
+      case EPrimitive.i32:
+      case EPrimitive.i64:
+      case EPrimitive.u8:
+      case EPrimitive.u16:
+      case EPrimitive.u32:
+      case EPrimitive.u64:
+      case EPrimitive.usize:
+      case EPrimitive.int:
+        return Conversion.isIntegerById(this.sr, typeDefId);
+      default: {
+        const typeDef = this.sr.typeDefNodes.get(typeDefId);
+        return (
+          typeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          typeDef.primitive === literalValue.type
+        );
+      }
+    }
+  }
+
+  // Intercepts call-syntax type reflection functions (T.hasAttribute("k"), T.isAttributeOfType<U>("k"),
+  // T.getAttribute<U>("k"), T.hasField("name")) before generic call resolution runs, since these operate
+  // on the type itself (its struct/alias definition) rather than on a callable member.
+  // Returns null when the base expression is not a type value, so normal call resolution can proceed
+  // (e.g. if a real struct happens to define an instance method with one of these names).
+  tryResolveTypeReflectionCall(
+    collectedExpr: Collect.MemberAccessExpr,
+    callExpr: Collect.ExprCallExpr
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const memberName = collectedExpr.memberName;
+    if (
+      memberName !== "hasAttribute" &&
+      memberName !== "isAttributeOfType" &&
+      memberName !== "getAttribute" &&
+      memberName !== "hasField"
+    ) {
+      return null;
+    }
+
+    const [, baseExprId] = this.expr(collectedExpr.expr, undefined);
+    const [expr] = this.normalizeTypeDefValueExpr(
+      baseExprId,
+      callExpr.sourceloc
+    );
+    if (expr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+      return null;
+    }
+
+    // For field lookup, resolve through aliases to get the actual struct members.
+    // For annotation lookup, check the immediate type def (before alias resolution)
+    // so that annotations on a type alias (e.g. [[json.discriminator="kind"]] type C = A|B)
+    // are found on C itself, not on the resolved union type which has no annotations.
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(expr.type)
+    );
+    const resolvedTypeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
+
+    const unresolvedTypeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(expr.type).type
+    );
+
+    if (memberName === "hasField") {
+      this.assertParameterN(callExpr, 1, "hasField");
+      const fieldName = this.evalCTFEStringArgument(
+        callExpr.arguments[0],
+        "hasField",
+        callExpr.sourceloc
+      );
+      const hasField =
+        resolvedTypeDef.variant === Semantic.ENode.StructDatatype &&
+        resolvedTypeDef.members.some((memberId) => {
+          const member = this.sr.symbolNodes.get(memberId);
+          return (
+            member.variant === Semantic.ENode.VariableSymbol &&
+            member.name === fieldName
+          );
+        });
+      return this.sr.b.literal(hasField, callExpr.sourceloc);
+    }
+
+    const annotations: ASTMetaAnnotationItem[] =
+      unresolvedTypeDef.variant === Semantic.ENode.StructDatatype ||
+      unresolvedTypeDef.variant === Semantic.ENode.TypeAliasDatatype
+        ? unresolvedTypeDef.annotations
+        : [];
+
+    this.assertParameterN(callExpr, 1, memberName);
+    const key = this.evalCTFEStringArgument(
+      callExpr.arguments[0],
+      memberName,
+      callExpr.sourceloc
+    );
+    const found = annotations.find((a) => a.key === key);
+
+    if (memberName === "hasAttribute") {
+      return this.sr.b.literal(found !== undefined, callExpr.sourceloc);
+    }
+
+    if (collectedExpr.genericArgs.length !== 1) {
+      throw new CompilerError(
+        `The ${memberName} function requires exactly one type parameter`,
+        callExpr.sourceloc
+      );
+    }
+    const genericSemanticExprId = this.expressionAsGenericArg(
+      collectedExpr.genericArgs[0]
+    );
+    const genericExpr = this.sr.exprNodes.get(genericSemanticExprId);
+    const genericTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(genericExpr.type)
+    );
+
+    if (memberName === "isAttributeOfType") {
+      const matches =
+        found !== undefined &&
+        found.value !== null &&
+        this.literalValueMatchesTypeDef(found.value, genericTypeUse.type);
+      return this.sr.b.literal(matches, callExpr.sourceloc);
+    }
+
+    // getAttribute
+    if (found === undefined || found.value === null) {
+      throw new CompilerError(
+        `Type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
+        callExpr.sourceloc
+      );
+    }
+    if (!this.literalValueMatchesTypeDef(found.value, genericTypeUse.type)) {
+      throw new CompilerError(
+        `Attribute '${key}' on type ${Semantic.serializeTypeUse(this.sr, expr.type)} is not of the requested type`,
+        callExpr.sourceloc
+      );
+    }
+    return this.sr.b.literalValue(found.value, callExpr.sourceloc);
+  }
+
   makeArrayLiteral(
     arrayTypeUseId: Semantic.TypeUseId,
     elements: Collect.AggregateLiteralElement[],
@@ -9744,6 +9940,7 @@ export class SemanticElaborator {
         concrete: true,
         originalCollectedDefinition: -1 as Collect.TypeDefId,
         originalCollectedSymbol: -1 as Collect.SymbolId,
+        annotations: [],
       });
 
     const [_, nameMemberId] = this.sr.b.addSymbol(this.sr, {
@@ -9810,6 +10007,7 @@ export class SemanticElaborator {
         concrete: true,
         originalCollectedDefinition: -1 as Collect.TypeDefId,
         originalCollectedSymbol: -1 as Collect.SymbolId,
+        annotations: [],
       }
     );
     this.metaTypeValueStructTypeId = structId;
@@ -9857,6 +10055,7 @@ export class SemanticElaborator {
         concrete: true,
         originalCollectedDefinition: -1 as Collect.TypeDefId,
         originalCollectedSymbol: -1 as Collect.SymbolId,
+        annotations: [],
       });
 
     const [_tag, tagMemberId] = this.sr.b.addSymbol(this.sr, {
@@ -14516,6 +14715,7 @@ export function makeDeepDatatypeAvailable(
       plain: wrappedTypeDef.plain,
       sourceloc: wrappedTypeDef.sourceloc,
       concrete: wrappedTypeDef.concrete,
+      annotations: wrappedTypeDef.annotations,
     }
   );
   const structSymbol = sr.b.typeDefSymbol(newStructId)[1];
