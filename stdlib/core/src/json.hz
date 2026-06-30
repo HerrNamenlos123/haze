@@ -282,6 +282,7 @@ namespace json {
         type: "VariantB";
     }
 
+    [[json.discriminator="type"]]
     type C = A | B;
 
     fn foo() {
@@ -355,6 +356,46 @@ namespace json {
             return parseJsonStruct<T>(allocator, node);
         }
         else if comptime T.category == meta.TypeCategory.Union {
+
+            if comptime T.hasAttribute("json.discriminator") && T.isAttributeOfType<str>("json.discriminator") {
+                const comptime discriminatorField = T.getAttribute<str>("json.discriminator");
+
+                // Check if every union member is a struct
+                for comptime Variant in T.variants {
+                    static_assert(Variant.category == meta.TypeCategory.Struct, f"json.parse(): Variant {Variant.prettyName} of discriminated union {T.prettyName} is not a struct");
+                }
+
+                // Check if every union member has the discriminator and the type matches
+                for comptime Variant in T.variants {
+                    const comptime hasDiscriminator = Variant.hasField(discriminatorField);
+                    static_assert(hasDiscriminator, f"json.parse(): Variant {Variant.prettyName} of discriminated union {T.prettyName} does not have the discriminator field '{discriminatorField}'");
+                    do unsafe {
+                        let variant: Variant = uninitialized;
+                        const comptime discriminatorTypeMatches = typeof(variant.[discriminatorField]) is str;
+                        static_assert(discriminatorTypeMatches, f"json.parse(): Discriminator field '{discriminatorField}' in variant {Variant.prettyName} of discriminated union {T.prettyName} is not of expected type 'str'");
+                    };
+                }
+
+                // Now parse it
+                assert(ffi.hzstd_json_is_object(node));
+                let discriminatorValue = (Node { allocator: allocator, data: node })[discriminatorField].to<str>();
+                if !discriminatorValue {
+                    return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is missing" };
+                }
+                for comptime Variant in T.variants {
+                    do unsafe {
+                        let variant: Variant = uninitialized;
+                        assert(typeof(variant.[discriminatorField]).category == meta.TypeCategory.Literal);
+                        if discriminatorValue == typeof(variant.[discriminatorField]).value {
+                            // It matches, parse it as this variant
+                            return parseJsonStruct<T>(allocator, node);
+                        }
+                    };
+                }
+
+                return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator matched none of the values" };
+            }
+
             // Comptime ambiguity check: int and real both map to JSON number
             for comptime VariantA, i in T.variants {
                 for comptime VariantB, j in T.variants {
