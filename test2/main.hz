@@ -1,10 +1,40 @@
 
 import filedialog
 
-fn main(): int {
-    let result = filedialog.open();
+fn a() {
+    let result = filedialog.pickFile({ filters: "png,jpg;exe" });
     if result is filedialog.DialogSuccess {
         fmt.println("Path: ", result.path);
     }
+}
+
+fn b() {
+    let result = filedialog.pickFilesMultiple({ defaultPath: "/usr" });
+    if result is filedialog.DialogMultipleSuccess {
+        for path in result.paths {
+            fmt.println("Path: ", path);
+        }
+    }
+}
+
+fn c() {
+    let result = filedialog.saveFile({ filters: "png" });
+    if result is filedialog.DialogSuccess {
+        fmt.println("Path: ", result.path);
+    }
+}
+
+fn d() {
+    let result = filedialog.pickFolder();
+    if result is filedialog.DialogSuccess {
+        fmt.println("Path: ", result.path);
+    }
+}
+
+fn main(): int {
+    a();
+    b();
+    c();
+    d();
     return 0;
 }

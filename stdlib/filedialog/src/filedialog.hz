@@ -1,8 +1,11 @@
 
-__c__("#include \"ffi/main.c\"");
+__c__("#include \"ffi/filedialog.c\"");
 
 namespace filedialog_ffi {
     extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
+    extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
+    extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
+    extern C fn hz_filedialog_open_folder_dialog(defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
 
     extern C noemit enum unscoped hz_filedialog_result_t {
         hz_filedialog_result_ok = 1,
@@ -16,12 +19,21 @@ export inline struct DialogOpenArgs {
     // Example: "jpg,png;txt;exe"
     // , -> Delimiter for extensions within a single filter
     // ; -> Delimiter between filters
+    // TODO: Make the filters structural so it is easier to understand and hide this internal format
     filters: str = "";
+    defaultPath: str = "";
+}
+
+export inline struct DialogOpenFolderArgs {
     defaultPath: str = "";
 }
 
 export struct DialogSuccess {
     path: str;
+}
+
+export struct DialogMultipleSuccess {
+    paths: []str;
 }
 
 export struct DialogCancel {}
@@ -31,12 +43,61 @@ export struct DialogError {
 }
 
 export type DialogResult = DialogSuccess | DialogCancel | DialogError;
+export type DialogMultipleResult = DialogMultipleSuccess | DialogCancel | DialogError;
 
-export fn open(args: DialogOpenArgs = {}): DialogResult {
+export fn pickFile(args: DialogOpenArgs = {}): DialogResult {
     let outPath = ffi.hzstd_str_ref_t {};
     let errorMessage = ffi.hzstd_str_ref_t {};
 
     let result = filedialog_ffi.hz_filedialog_open_dialog(args.filters, args.defaultPath, outPath, errorMessage);
+    if result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: outPath.data };
+    }
+    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+        return DialogCancel {};
+    }
+    else {
+        return DialogError { error: errorMessage.data };
+    }
+}
+
+export fn saveFile(args: DialogOpenArgs = {}): DialogResult {
+    let outPath = ffi.hzstd_str_ref_t {};
+    let errorMessage = ffi.hzstd_str_ref_t {};
+
+    let result = filedialog_ffi.hz_filedialog_save_dialog(args.filters, args.defaultPath, outPath, errorMessage);
+    if result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: outPath.data };
+    }
+    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+        return DialogCancel {};
+    }
+    else {
+        return DialogError { error: errorMessage.data };
+    }
+}
+
+export fn pickFilesMultiple(args: DialogOpenArgs = {}): DialogMultipleResult {
+    let outPaths: []str = [];
+    let errorMessage = ffi.hzstd_str_ref_t {};
+
+    let result = filedialog_ffi.hz_filedialog_open_dialog_multiple(args.filters, args.defaultPath, outPaths, errorMessage);
+    if result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogMultipleSuccess { paths: outPaths };
+    }
+    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+        return DialogCancel {};
+    }
+    else {
+        return DialogError { error: errorMessage.data };
+    }
+}
+
+export fn pickFolder(args: DialogOpenFolderArgs = {}): DialogResult {
+    let outPath = ffi.hzstd_str_ref_t {};
+    let errorMessage = ffi.hzstd_str_ref_t {};
+
+    let result = filedialog_ffi.hz_filedialog_open_folder_dialog(args.defaultPath, outPath, errorMessage);
     if result == filedialog_ffi.hz_filedialog_result_ok {
         return DialogSuccess { path: outPath.data };
     }
