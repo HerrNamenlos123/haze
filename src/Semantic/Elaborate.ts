@@ -10646,14 +10646,13 @@ export class SemanticElaborator {
         } else {
           assert(s.condition);
           const [e, eId] = this.expr(s.condition, undefined);
-          resultingConditionId = eId;
+          resultingConditionId = this.unwrapReactiveOrComputedIfPossible(eId);
           resultFlow.addExitFlows(e.flow);
           resultWrites.addAll(e.writes);
           this.buildLogicalConstraintSet(thenConstraints, resultingConditionId);
         }
 
         // Before applying constraints
-        resultingConditionId = this.unwrapReactiveOrComputedIfPossible(resultingConditionId);
         const boolCondition = Conversion.MakeConversionOrThrow(
           this.sr,
           resultingConditionId,
@@ -10720,7 +10719,7 @@ export class SemanticElaborator {
 
           // This contains ONLY this elseIf's condition, so it can be inverted cleanly later
           const thisBranchConstraints = ConstraintSet.empty();
-          this.buildLogicalConstraintSet(thisBranchConstraints, conditionExpr);
+          this.buildLogicalConstraintSet(thisBranchConstraints, unwrappedConditionExpr);
           elseIfConstraints.add(thisBranchConstraints);
 
           // This now contains ALL the conditions that actually apply to the scope

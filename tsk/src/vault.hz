@@ -19,48 +19,52 @@ fn chooseFile(): str | none {
 
 struct FSFileEntry {
   type: "file";
-  filename: string;
-  fullPath: string;
+  filename: str;
+  fullPath: str;
 }
 
 struct FSDirEntry {
   type: "directory";
-  dirname: string;
-  fullPath: string;
-  children: [](FSFileEntry | FSDirEntry);
+  dirname: str;
+  fullPath: str;
+  children: []FSEntry;
 }
+
+type FSEntry = FSFileEntry | FSDirEntry;
 
 struct VaultFS {
-  entries: [](FSFileEntry | FSDirEntry) = [];
+  entries: []FSEntry = [];
 }
 
-fn indexVault(vault: str) {
+fn indexVault(vaultPath: str) {
     let vault = VaultFS {};
 
-    let index = (path: str): (FSFileEntry | FSDirEntry) :: final => {};
-    index = (path: str): (FSFileEntry | FSDirEntry) :: final => {
+    // TODO: Allow a variable to capture itself if the declaration is a pure closure that cannot be called
+    // before the variable is defined. But this is surprisingly difficult, first to prove it's safe in
+    // all edge cases, and secondly, to actually do it in C. This requires special C support for capturing.
+    let index = (path: str): []FSEntry :: final => { return []; };
+    index = (path: str): []FSEntry :: final => {
+        let entries: []FSEntry = [];
         if let dirs = fs.listDir(path) {
             for dir in dirs {
                 if dir.isFile {
-                    fmt.println(f"Found File {dir.path}");
-                    return FSFileEntry {
+                    entries.push(FSFileEntry {
                         type: "file",
-                        filename: dir.path,
+                        filename: dir.name,
                         fullPath: dir.path,
-                    };
+                    });
                 }
                 if dir.isDirectory {
-                    let children: [](FSFileEntry | FSDirEntry) = [];
-                    index(dir.path);
-                    return FSDirEntry {
+                    entries.push(FSDirEntry {
                         type: "directory",
-                        dirname: dir.path,
+                        dirname: dir.name,
                         fullPath: dir.path,
-                        children: 
-                    };
+                        children: index(dir.path),
+                    });
                 }
             }
         }
+        return entries;
     };
-    index(vault);
+    vault.entries = index(vaultPath);
 }
