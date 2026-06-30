@@ -300,6 +300,14 @@ export struct InstanceData<TProps> {
     }
 }
 
+// Optional pointer-button callbacks bundled as a struct. Using a struct avoids
+// the (() => bool) | none union that Haze cannot implicitly coerce a lambda into.
+export struct PointerHeldCallbacks {
+    leftHeld: () => bool;
+    middleHeld: () => bool;
+    rightHeld: () => bool;
+}
+
 // Internal pending pointer event before it is dispatched to elements.
 struct PendingPointerEvent {
     kind: str;    // "down", "up", "move"
@@ -310,9 +318,7 @@ struct PendingPointerEvent {
 
 export opaque struct UIContext {
     _mousePosCb: (() => Vec2);
-    _pointerLeftHeldCb?: () => bool;
-    _pointerMiddleHeldCb?: () => bool;
-    _pointerRightHeldCb?: () => bool;
+    _pointerButtons?: PointerHeldCallbacks;
 
     _prevLeftHeld: bool = false;
     _prevMiddleHeld: bool = false;
@@ -337,9 +343,7 @@ export opaque struct UIContext {
     inline struct UIContextArgs {
         ui: ((ui: UIContext) => none);
         mousePos: () => Vec2;
-        pointerLeftHeld?: () => bool;
-        pointerMiddleHeld?: () => bool;
-        pointerRightHeld?: () => bool;
+        pointerButtons?: PointerHeldCallbacks;
     }
 
     fn constructor(args: UIContextArgs) {
@@ -350,9 +354,7 @@ export opaque struct UIContext {
             _timeNow: rx.reactive<real>(0),
             _prevTime: time.now(),
             _mousePosCb: args.mousePos,
-            _pointerLeftHeldCb: args.pointerLeftHeld,
-            _pointerMiddleHeldCb: args.pointerMiddleHeld,
-            _pointerRightHeldCb: args.pointerRightHeld,
+            _pointerButtons: args.pointerButtons,
         };
 
         // UI Context depends on itself
@@ -519,9 +521,9 @@ export opaque struct UIContext {
         this._prevLeftHeld = this._leftHeld;
         this._prevMiddleHeld = this._middleHeld;
         this._prevRightHeld = this._rightHeld;
-        this._leftHeld = this._pointerLeftHeldCb ? this._pointerLeftHeldCb() : false;
-        this._middleHeld = this._pointerMiddleHeldCb ? this._pointerMiddleHeldCb() : false;
-        this._rightHeld = this._pointerRightHeldCb ? this._pointerRightHeldCb() : false;
+        this._leftHeld = this._pointerButtons ? this._pointerButtons.leftHeld() : false;
+        this._middleHeld = this._pointerButtons ? this._pointerButtons.middleHeld() : false;
+        this._rightHeld = this._pointerButtons ? this._pointerButtons.rightHeld() : false;
 
         let buttons = 0;
         if this._leftHeld { buttons = buttons + 1; }
@@ -564,7 +566,8 @@ export opaque struct UIContext {
             // Bubbling pointer events
             for pe in pendingEvents {
                 let pressure = 0.0;
-                if pe.kind == "down" || (pe.kind == "move" && pe.button >= 0) { pressure = 0.5; }
+                if pe.kind == "down" { pressure = 0.5; }
+                else if pe.kind == "move" && pe.buttons > 0 { pressure = 0.5; }
                 let event = PointerEvent {
                     pointerId: 1,
                     pointerType: "mouse",
