@@ -257,7 +257,12 @@ namespace json {
         }
         do unsafe {
             let result: T = uninitialized;
-            __c__("result = hzstd_allocate(allocator, sizeof(*result)); memset(result, 0, sizeof(*result));");
+            if comptime T.isInline {
+                // If T is an inline struct, just leave it uninitialized, the loop will later assign each field
+            }
+            else {
+                __c__("result = hzstd_allocate(allocator, sizeof(*result)); memset(result, 0, sizeof(*result));");
+            }
             for comptime field in T.fields {
                 const comptime fieldName = field.name;
                 let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
@@ -521,7 +526,7 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {
-                if value is Variant {
+                if comptime value is Variant {
                     return dumpJsonNode<Variant>(allocator, value);
                 }
             }

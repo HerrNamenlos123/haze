@@ -9635,15 +9635,18 @@ export class SemanticElaborator {
     }
 
     // getAttribute
-    if (found === undefined || found.value === null) {
+    if (found === undefined) {
       throw new CompilerError(
         `Type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
         callExpr.sourceloc
       );
     }
+    if (found.value === null) {
+      return this.sr.b.literalValue({ type: EPrimitive.none }, callExpr.sourceloc);
+    }
     if (!this.literalValueMatchesTypeDef(found.value, genericTypeUse.type)) {
       throw new CompilerError(
-        `Attribute '${key}' on type ${Semantic.serializeTypeUse(this.sr, expr.type)} is not of the requested type`,
+        `Attribute '${key}' on type ${Semantic.serializeTypeUse(this.sr, expr.type)} has a value that is not of type '${Semantic.serializeTypeUse(this.sr, genericExpr.type)}'`,
         callExpr.sourceloc
       );
     }

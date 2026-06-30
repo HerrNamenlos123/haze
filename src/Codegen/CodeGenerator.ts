@@ -942,7 +942,7 @@ class CodeGenerator {
     for (let i = 0; i < union.members.length; i++) {
       const name = this.unionVariantPrettyName(union, i);
       this.out.refinement_helpers.writeLine(
-        `case ${i}: return "${escapeStringForC(name)}";`
+        `case ${i}: return "${escapeStringForC(name)[0]}";`
       );
     }
     this.out.refinement_helpers
@@ -1646,7 +1646,7 @@ class CodeGenerator {
           const tagNameFn = this.ensureUnionTagNameFunction(typeUse.type);
           const expectedName = this.unionVariantPrettyName(union, expr.index);
           outWriter.write(
-            `HZ_GET_UNION_TAG(${inner}, ${expr.index}, "${expectedName}", ${tagNameFn})`
+            `HZ_GET_UNION_TAG(${inner}, ${expr.index}, "${escapeStringForC(expectedName)[0]}", ${tagNameFn})`
           );
         } else {
           outWriter.write(
