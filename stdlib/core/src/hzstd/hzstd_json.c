@@ -63,6 +63,11 @@ cJSON *hzstd_json_create_array(hzstd_allocator_t allocator) {
   return cJSON_CreateArray();
 }
 
+cJSON *hzstd_json_create_null(hzstd_allocator_t allocator) {
+  hzstd_json_use_arena(allocator);
+  return cJSON_CreateNull();
+}
+
 hzstd_bool_t hzstd_json_object_has_attribute(cJSON *json, hzstd_str_t name) {
   hzstd_arena_t *arena = hzstd_arena_create();
   int r = cJSON_HasObjectItemLen(json, name.data, name.length);

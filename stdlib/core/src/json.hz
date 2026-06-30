@@ -8,6 +8,7 @@ namespace ffi {
     export extern C fn hzstd_json_create_bool(allocator: Allocator, data: bool): cJSON :: final;
     export extern C fn hzstd_json_create_object(allocator: Allocator): cJSON :: final;
     export extern C fn hzstd_json_create_array(allocator: Allocator): cJSON :: final;
+    export extern C fn hzstd_json_create_null(allocator: Allocator): cJSON :: final;
 
     export extern C fn hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
     export extern C fn hzstd_json_is_string(json: cJSON): bool :: final;
@@ -271,6 +272,10 @@ namespace json {
             if !ffi.hzstd_json_is_bool(node) { sys.panic("JSON type mismatch: expected bool"); }
             return ffi.hzstd_json_is_true(node);
         }
+        // else if comptime T is null {
+        //     if !ffi.hzstd_json_is_null(node) { sys.panic("JSON type mismatch: expected null"); }
+        //     return null;
+        // }
         else if comptime T.category == meta.TypeCategory.DynamicArray {
             return parseJsonArray<T>(allocator, node);
         }
@@ -280,6 +285,82 @@ namespace json {
         else if comptime T.category == meta.TypeCategory.Struct {
             return parseJsonStruct<T>(allocator, node);
         }
+        // else if comptime T.category == meta.TypeCategory.Union {
+        //     // Comptime ambiguity check: int and real both map to JSON number
+        //     for comptime VariantA in T.variants {
+        //         if comptime VariantA is int {
+        //             for comptime VariantB in T.variants {
+        //                 if comptime VariantB is real {
+        //                     static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
+        //                 }
+        //             }
+        //         }
+        //     }
+
+        //     if ffi.hzstd_json_is_null(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant is null {
+        //                 return null as T;
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected null in union '{T.prettyName}'");
+        //     }
+        //     else if ffi.hzstd_json_is_bool(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant is bool {
+        //                 return ffi.hzstd_json_is_true(node) as T;
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected bool in union '{T.prettyName}'");
+        //     }
+        //     else if ffi.hzstd_json_is_string(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant is str {
+        //                 let value = ffi.hzstd_json_get_string_value(allocator, node);
+        //                 if value { return value.data as T; }
+        //                 sys.panic("JSON: failed to read string value");
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected string in union '{T.prettyName}'");
+        //     }
+        //     else if ffi.hzstd_json_is_number(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant is int {
+        //                 return ffi.hzstd_json_get_number_value(allocator, node) as int as T;
+        //             }
+        //         }
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant is real {
+        //                 return ffi.hzstd_json_get_number_value(allocator, node) as T;
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected number in union '{T.prettyName}'");
+        //     }
+        //     else if ffi.hzstd_json_is_object(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant.category == meta.TypeCategory.Struct {
+        //                 return parseJsonStruct<Variant>(allocator, node) as T;
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected object in union '{T.prettyName}'");
+        //     }
+        //     else if ffi.hzstd_json_is_array(node) {
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant.category == meta.TypeCategory.DynamicArray {
+        //                 return parseJsonArray<Variant>(allocator, node) as T;
+        //             }
+        //         }
+        //         for comptime Variant in T.variants {
+        //             if comptime Variant.category == meta.TypeCategory.Array {
+        //                 return parseJsonFixedArray<Variant>(allocator, node) as T;
+        //             }
+        //         }
+        //         sys.panic(f"JSON type mismatch: unexpected array in union '{T.prettyName}'");
+        //     }
+        //     else {
+        //         sys.panic(f"JSON: unknown node type when parsing union '{T.prettyName}'");
+        //     }
+        // }
         else {
             static_assert(false, f"json.parse(): type {T.prettyName} is not supported");
         }
@@ -320,12 +401,15 @@ namespace json {
         let obj = ffi.hzstd_json_create_object(allocator);
         for comptime field in T.fields {
             let fieldValue = value.[field.name];
-            ffi.hzstd_json_add_item_to_object(allocator, obj, field.name, dumpJsonNode<typeof(fieldValue)>(allocator, fieldValue));
+            let node = dumpJsonNode<typeof(fieldValue)>(allocator, fieldValue);
+            if node {
+                ffi.hzstd_json_add_item_to_object(allocator, obj, field.name, node);
+            }
         }
         return obj;
     }
 
-    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON {
+    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON | none {
 
         if comptime T.category == meta.TypeCategory.Deep {
             return dumpJsonStruct<T.baseType>(allocator, value);
@@ -345,6 +429,12 @@ namespace json {
         else if comptime T is bool {
             return ffi.hzstd_json_create_bool(allocator, value);
         }
+        else if comptime T is null {
+            return ffi.hzstd_json_create_null(allocator);
+        }
+        else if comptime T is none {
+            return none;
+        }
         else if comptime T.category == meta.TypeCategory.DynamicArray {
             return dumpJsonArray<T>(allocator, value);
         }
@@ -353,6 +443,14 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Struct {
             return dumpJsonStruct<T>(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.Union {
+            for comptime Variant in T.variants {
+                if value is Variant {
+                    return dumpJsonNode<Variant>(allocator, value);
+                }
+            }
+            sys.unreachable();
         }
         else {
             static_assert(false, f"json.stringify(): type {T.prettyName} is not supported");

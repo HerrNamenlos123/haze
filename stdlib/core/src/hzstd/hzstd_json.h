@@ -13,6 +13,7 @@ cJSON* hzstd_json_create_number(hzstd_allocator_t allocator, hzstd_real_t data);
 cJSON* hzstd_json_create_bool(hzstd_allocator_t allocator, hzstd_bool_t data);
 cJSON* hzstd_json_create_object(hzstd_allocator_t allocator);
 cJSON* hzstd_json_create_array(hzstd_allocator_t allocator);
+cJSON* hzstd_json_create_null(hzstd_allocator_t allocator);
 
 hzstd_bool_t hzstd_json_object_has_attribute(cJSON* json, hzstd_str_t name);
 hzstd_bool_t hzstd_json_is_string(cJSON* json);
