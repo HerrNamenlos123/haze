@@ -74,7 +74,7 @@ export function printLine(message: string) {
   if (_activePrinter) {
     _activePrinter.log(message);
   } else {
-    process.stdout.write(message + "\n");
+    process.stderr.write(message + "\n");
   }
 }
 
@@ -228,7 +228,9 @@ export class CLIPrinter {
       }
     }
     this.stopBars();
-    process.stdout.write(message + "\n");
+    // Write to stderr: stdout cursor state after multibar.stop() is unreliable,
+    // but stderr shares the same terminal fd and is unaffected by cli-progress.
+    process.stderr.write(message + "\n");
   }
 
   /** Buffer a warning to be printed after bars stop, so it appears below them. */

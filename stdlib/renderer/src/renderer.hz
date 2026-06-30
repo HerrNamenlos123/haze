@@ -110,7 +110,6 @@ export struct TextRenderer {
 export struct ContextOptions {
     device: mut wgpu.Device;
     targetFormat: wgpu.TextureFormat;
-    shadercode: rx.Reactive<str>;
 }
 
 export inline struct RenderTexture {
@@ -259,9 +258,10 @@ export opaque struct Context {
             bindGroupLayouts: { globalsLayout, textureLayout },
         });
 
+        let shadercode = embed.watchText("resources/shaders.wgsl");
         let shader = rx.computed(() => {
             return options.device.createShaderModule({
-                code: options.shadercode,
+                code: shadercode,
             });
         });
 

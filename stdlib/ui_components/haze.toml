@@ -6,11 +6,11 @@ authors = []
 type = "lib"
 
 [dependencies]
-ui_elements = { path = "./ui_elements" }
-ui_styling = { path = "./ui_styling" }
-renderer = { path = "./renderer" }
+ui_elements = { path = "../ui_elements" }
+ui_styling = { path = "../ui_styling" }
+renderer = { path = "../renderer" }
 # Not used directly -- only needed because renderer's public API
 # (gfx.Context/Canvas/Renderer) exposes wgpu and fontstash types, and build
 # resolution needs them available transitively.
-wgpu = { path = "./wgpu" }
-fontstash = { path = "./fontstash" }
+wgpu = { path = "../wgpu" }
+fontstash = { path = "../fontstash" }

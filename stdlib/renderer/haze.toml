@@ -6,5 +6,5 @@ authors = []
 type = "lib"
 
 [dependencies]
-fontstash = { path = "./fontstash" }
-wgpu = { path = "./wgpu" }
+fontstash = { path = "../fontstash" }
+wgpu = { path = "../wgpu" }

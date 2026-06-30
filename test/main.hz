@@ -1,49 +1,8 @@
 
 import tesselate
 import perfect_freehand
-import sdl
-import gl
-import wgpu
-import sdl_wgpu
-
-// ui framework modules
-import ui_layout
+import app
 import ui_runtime
-import renderer
-
-export extern C noemit fn wgpu_init(window: cptr) :: final;
-export extern C fn wgpu_start(window: cptr, device: wgpu.ffi.WGPUDeviceImpl, surface: wgpu.ffi.WGPUSurfaceImpl, queue: wgpu.ffi.WGPUQueueImpl, texture: wgpu.ffi.WGPUTextureViewImpl) :: final;
-export extern C fn wgpu_end(window: cptr) :: final;
-
-// Prefer a non-sRGB surface format so that authored colors (e.g. Color hex
-// literals) map byte-for-byte to what's displayed, like CSS/HTML does. If the
-// driver only reports sRGB variants, fall back to its first reported format
-// rather than fail.
-fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
-    for format in caps.formats {
-        if format != wgpu.TextureFormat.BGRA8UnormSrgb && format != wgpu.TextureFormat.RGBA8UnormSrgb {
-            return format;
-        }
-    }
-    return caps.formats[0];
-}
-
-fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
-    let logicalSize = window.getLogicalSize();
-    let framebufferSize = window.getFramebufferSize();
-
-    let dpiScaleX = logicalSize.x > 0 ? framebufferSize.x as real / logicalSize.x as real : 1.0;
-    let dpiScaleY = logicalSize.y > 0 ? framebufferSize.y as real / logicalSize.y as real : 1.0;
-
-    // SDL typically reports uniform scale factors on desktop systems.
-    let dpiScale = (dpiScaleX + dpiScaleY) / 2.0;
-
-    return renderer.gfx.CanvasSize {
-        logicalSize: logicalSize,
-        framebufferSize: framebufferSize,
-        dpiScale: dpiScale as f32,
-    };
-}
 
 fn print<T>(value: T) {
     if comptime typeof(value).category == meta.TypeCategory.Struct {
@@ -105,7 +64,6 @@ fn loadTskTest() {
     }
 
     let j = json.parse(file);
-    // fmt.println(j);
 
     let result = json.structuredParse<File>(file);
     if result {
@@ -202,150 +160,40 @@ fn testPerfectFreehand() {
     fmt.println("----------------------------");
 }
 
+fn UI(ui: ui_components.UIContext) {
+}
+
 fn main(): int {
-
-    fmt.println("TODO: Read R&D/Profiling Backend - perf_event_open Migration.md. ");
-
     attempt {
-        if !sdl.init() { raise "SDL init failed"; }
-
-        const window = sdl.createWindow({ 
+        let a = app.App({
             title: "WebGPU Example",
-            noApi: true,
-        });
-        if !window { raise "Window creation failed"; }
+        })?!;
 
-        let instance = wgpu.createInstance();
-        if !instance { raise "WGPU Instance creation failed"; }
-
-        let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
-        if !surface { raise "WGPU Surface creation failed"; }
-
-        let adapter = instance.requestAdapterSync({})?!;
-        let device = adapter.requestDeviceSync({})?!;
-
-        let caps = surface.getCapabilities(adapter);
-        if (!caps) { raise "Failed to get surface capabilities"; }
-
-        let surfaceFormat = pickSurfaceFormat(caps);
-
-        let windowState = getWindowState(window);
-        surface.configure({
-            device: device,
-            format: surfaceFormat,
-            usage: wgpu.TextureUsage.RenderAttachment,
-            width: windowState.framebufferSize.x,
-            height: windowState.framebufferSize.y,
-            presentMode: wgpu.PresentMode.Fifo, // VSYNC=ON
-            // presentMode: wgpu.PresentMode.Mailbox, // VSYNC=OFF
-            // presentMode: wgpu.PresentMode.Immediate, // VSYNC=OFF
-            alphaMode: caps.alphaModes[0],
-        });
-
-        const comptime enableShaderHotreload = true;
-        let gfxCtx = renderer.gfx.Context({
-            device: device,
-            targetFormat: surfaceFormat,
-            shadercode: embed.watchTextIf(enableShaderHotreload, "test/shaders.wgsl"),
-        });
-
-        let canvas = renderer.gfx.Canvas({
-            gfx: gfxCtx,
-            size: windowState,
-            surface: surface,
-        });
-
-        let font = gfxCtx.fontRenderer.fs.addFont(
+        let font = a.gfx.fontRenderer.fs.addFont(
             "roboto-regular",
             "test/Roboto-Regular.ttf"
         );
 
-        let fonts: []ui_layout.FontEntry = [
-            {
-                name: "default",
-                id: gfxCtx.fontRenderer.defaultFont,
-            },
-            {
-                name: "roboto",
-                id: font,
-            }
-        ];
-
-        let down = false;
-        let mousePosition = Vec2(0, 0);
-        window.onMouseMove((e: sdl.MouseMoveEvent) => {
-            mousePosition.x = e.pos.x;
-            mousePosition.y = e.pos.y;
-            return false;
-        });
-
-        window.onKeyDown((e: sdl.KeyEvent) => {
-            down = true;
-            return false;
-        });
-
-        window.onKeyUp((e: sdl.KeyEvent) => {
-            down = false;
-            return false;
-        });
-
         let runtime = ui_runtime.Runtime({
-            gfx: gfxCtx,
-            width: windowState.logicalSize.x,
-            height: windowState.logicalSize.y,
-            dpiScale: windowState.dpiScale as real,
-            fonts: fonts,
-            getFontLineHeight: (fontId: int, fontSize: real): real => {
-                let metrics = gfxCtx.fontRenderer.fs.getMetrics(fontId, fontSize);
-                return metrics.lineh;
-            },
-            mousePos: () => mousePosition as Vec2,
+            gfx: a.gfx,
+            windowState: a.windowState,
+            fonts: [
+                { name: "default", id: a.gfx.fontRenderer.defaultFont },
+                { name: "roboto", id: font },
+            ],
+            mousePos: () => a.mousePos(),
             ui: (ui: ui_components.UIContext) => { UI(ui); },
         });
 
-        // let profiler = Profiler({
-        //     samplingRateHz: 5000,
-        // });
-
-        let pMousePosition = Vec2(0, 0);
-        let dMousePosition = Vec2(0, 0);
-        while !window.shouldClose() {
-            sdl.pollEvents();
-            dMousePosition.x = mousePosition.x - pMousePosition.x;
-            dMousePosition.y = mousePosition.y - pMousePosition.y;
-            pMousePosition = mousePosition;
-
-            if window.consumeSizeChanged() {
-                let now = time.now();
-                let nextWindowState = getWindowState(window);
-                if nextWindowState.framebufferSize.x > 0 && nextWindowState.framebufferSize.y > 0 {
-                    surface.configure({
-                        device: device,
-                        format: surfaceFormat,
-                        usage: wgpu.TextureUsage.RenderAttachment,
-                        width: nextWindowState.framebufferSize.x,
-                        height: nextWindowState.framebufferSize.y,
-                        presentMode: wgpu.PresentMode.Fifo,
-                        alphaMode: caps.alphaModes[0],
-                    });
-                    canvas.resize(nextWindowState);
-                    runtime.resize(nextWindowState.logicalSize.x, nextWindowState.logicalSize.y, nextWindowState.dpiScale as real);
-                }
+        while let frame = a.nextFrame() {
+            if a.resized {
+                runtime.resize(a.windowState);
             }
-
-            fs.pollEvents();
-            let frame = renderer.gfx.Frame(gfxCtx);
-            runtime.render(frame, canvas);
+            runtime.render(frame, a.canvas);
             frame.present();
         }
 
-        // fmt.println("Stopping profiling");
-        // profiler.endAndWrite("out.cpuprofile");
-        // fmt.println("Done profiling");
-
-        window.destroy();
-        sdl.terminate();
-        
+        a.destroy();
         return 0;
     }
     else e {
@@ -364,9 +212,3 @@ fn main(): int {
         return 1;
     };
 }
-
-    // fmt.println("TODO: Implement a proper platform configuration system. Currently there is an interface.compiler.defines feature to define transitive macros, but this is not the solution, it is only a workaround. We rather want a real, proper configuration system where we can e.g. differentiate between x11 and wayland platform configurations and compile for one of them.");
-
-//     fmt.println("TODO: Fix returns, if function returns in one path but not all, it must either create an error or automatically return none");
-//     fmt.println("Idea for later: (from Prime Reacts: The Flaws of Inheritance): I should implement interfaces as a way to make a contract about generic types, and to make the interfaces very powerful, interfaces should be able to define members and methods, as well as default implementations of methods that is used if the struct does not provide that function, and it is allowed as long as the default implementation of the interface method only uses other methods of the interface. This makes it very powerful and a complete replacement for polymorphism.");
-//     fmt.println("Idea: Implement scopes/do blocks/whatever, and like in Swift make the ability to label them, and then 'break foo' can be used to break out of that scope, which is awesome because it greatly simplifies the common issue of having 2 nested loops and wanting to break out of the outer one.")

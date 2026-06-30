@@ -6,4 +6,4 @@ authors = []
 type = "lib"
 
 [dependencies]
-ui_styling = { path = "./ui_styling" }
+ui_styling = { path = "../ui_styling" }

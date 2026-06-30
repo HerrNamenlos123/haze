@@ -383,7 +383,9 @@ export opaque struct UIContext {
 
         rx.get(this.rootTemplate);
 
-        assert(this.rootComponent);
+        if !this.rootComponent {
+            return none;
+        }
         return this.rootComponent.rootElement;
     }
 

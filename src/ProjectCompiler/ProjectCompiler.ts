@@ -388,7 +388,10 @@ export class ProjectCompiler {
           compiler
             .build(isTopLevel, forceRebuild)
             .then((success) => ({ name: name, success: !!success }))
-            .catch(() => ({ name: name, success: false }))
+            .catch((err: unknown) => {
+              process.stderr.write(`[${name}] Unhandled build error: ${String(err)}\n`);
+              return { name: name, success: false };
+            })
         );
       }
     };

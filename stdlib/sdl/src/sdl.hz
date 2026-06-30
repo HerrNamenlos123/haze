@@ -458,12 +458,12 @@ export fn terminate() {
 	ffi.terminate();
 }
 
-export fn createWindow(config: WindowConfig): Result<Window, none> {
+export fn createWindow(config: WindowConfig): Result<mut Window, none> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
 	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi);
 	if !handle {
-		return Result<Window, none>.Err(none);
+		return Result<mut Window, none>.Err(none);
 	}
 
 	let window = Window { handle: handle };
@@ -471,7 +471,7 @@ export fn createWindow(config: WindowConfig): Result<Window, none> {
 	__c__("windowPtr = window;");
 	ffi.haze_sdl_set_window_event_userdata(handle, windowPtr);
 
-	return Result<Window, none>.Ok(window);
+	return Result<mut Window, none>.Ok(window);
 }
 
 export fn pollEvents() {

@@ -6,11 +6,8 @@ import renderer;
 
 export inline struct RuntimeArgs {
     gfx: mut renderer.gfx.Context;
-    width: int;
-    height: int;
-    dpiScale: real = 1.0;
+    windowState: renderer.gfx.CanvasSize;
     fonts: []ui_layout.FontEntry;
-    getFontLineHeight: (fontId: int, fontSize: real) => real;
     mousePos: () => Vec2;
     ui: (ui: ui_components.UIContext) => none;
 }
@@ -30,10 +27,13 @@ export opaque struct Runtime {
 
     fn constructor(args: RuntimeArgs) {
         let layout = ui_layout.Context({
-            width: args.width,
-            height: args.height,
+            width: args.windowState.logicalSize.x,
+            height: args.windowState.logicalSize.y,
             fonts: args.fonts,
-            getFontLineHeight: args.getFontLineHeight,
+            getFontLineHeight: (fontId: int, fontSize: real): real => {
+                let metrics = args.gfx.fontRenderer.fs.getMetrics(fontId, fontSize as f32);
+                return metrics.lineh;
+            },
         });
         let ui = ui_components.UIContext({
             ui: args.ui,
@@ -43,14 +43,14 @@ export opaque struct Runtime {
             gfx: args.gfx,
             layout: layout,
             ui: ui,
-            dpiScale: args.dpiScale,
+            dpiScale: args.windowState.dpiScale as real,
         };
     }
 
     // Call whenever the render target's logical size or DPI scale changes.
-    fn resize(width: int, height: int, dpiScale: real) {
-        this.dpiScale = dpiScale;
-        ui_layout.setLayoutSize(width, height);
+    fn resize(windowState: renderer.gfx.CanvasSize) {
+        this.dpiScale = windowState.dpiScale as real;
+        ui_layout.setLayoutSize(windowState.logicalSize.x, windowState.logicalSize.y);
     }
 
     // Runs this frame's component tree + flexbox layout, drawing the result
@@ -62,6 +62,10 @@ export opaque struct Runtime {
     fn render(frame: mut renderer.gfx.Frame, canvas: mut renderer.gfx.Canvas) {
         let r = renderer.gfx.Renderer(frame, canvas);
         let tree = this.ui.process();
+        if !tree {
+            r.commit();
+            return;
+        }
 
         this.layout.render(tree, {
             renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {

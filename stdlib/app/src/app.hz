@@ -1,0 +1,156 @@
+import sdl
+import sdl_wgpu
+import wgpu
+import renderer
+
+export inline struct AppOptions {
+    title: ccstr = "Haze App";
+    presentMode: wgpu.PresentMode = wgpu.PresentMode.Fifo;
+}
+
+fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
+    for format in caps.formats {
+        if format != wgpu.TextureFormat.BGRA8UnormSrgb && format != wgpu.TextureFormat.RGBA8UnormSrgb {
+            return format;
+        }
+    }
+    return caps.formats[0];
+}
+
+fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
+    let logicalSize = window.getLogicalSize();
+    let framebufferSize = window.getFramebufferSize();
+    let dpiScaleX = logicalSize.x > 0 ? framebufferSize.x as real / logicalSize.x as real : 1.0;
+    let dpiScaleY = logicalSize.y > 0 ? framebufferSize.y as real / logicalSize.y as real : 1.0;
+    let dpiScale = (dpiScaleX + dpiScaleY) / 2.0;
+    return renderer.gfx.CanvasSize {
+        logicalSize: logicalSize,
+        framebufferSize: framebufferSize,
+        dpiScale: dpiScale as f32,
+    };
+}
+
+// Bundles SDL + WGPU init, surface configuration, and the renderer context/canvas
+// into one struct. Exposes every piece (gfx, canvas, window, device, surface,
+// surfaceFormat) so nothing is hidden — use individual modules directly when
+// you need to deviate from the defaults.
+export opaque struct App {
+    window: mut sdl.Window;
+    device: mut wgpu.Device;
+    surface: mut wgpu.Surface;
+    surfaceFormat: wgpu.TextureFormat;
+    caps: wgpu.SurfaceCapabilities;
+    presentMode: wgpu.PresentMode;
+    gfx: mut renderer.gfx.Context;
+    canvas: mut renderer.gfx.Canvas;
+    windowState: renderer.gfx.CanvasSize;
+    mousePosition: Vec2 = {};
+    resized: bool = false;
+
+    fn constructor(options: AppOptions): Result<App, str> {
+        if !sdl.init() { return "SDL init failed"; }
+
+        let window = sdl.createWindow({
+            title: options.title,
+            noApi: true,
+        });
+        if !window { return "Window creation failed"; }
+
+        let instance = wgpu.createInstance();
+        if !instance { return "WGPU instance creation failed"; }
+
+        let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
+        if !surface { return "WGPU surface creation failed"; }
+
+        let adapter = instance.requestAdapterSync({})?!;
+        let device = adapter.requestDeviceSync({})?!;
+
+        let caps = surface.getCapabilities(adapter);
+        if !caps { return "Failed to get surface capabilities"; }
+
+        let surfaceFormat = pickSurfaceFormat(caps);
+        let windowState = getWindowState(window);
+
+        surface.configure({
+            device: device,
+            format: surfaceFormat,
+            usage: wgpu.TextureUsage.RenderAttachment,
+            width: windowState.framebufferSize.x,
+            height: windowState.framebufferSize.y,
+            presentMode: options.presentMode,
+            alphaMode: caps.alphaModes[0],
+        });
+
+        let gfx = renderer.gfx.Context({
+            device: device,
+            targetFormat: surfaceFormat,
+        });
+
+        let canvas = renderer.gfx.Canvas({
+            gfx: gfx,
+            size: windowState,
+            surface: surface,
+        });
+
+        let mousePosition = Vec2(0, 0);
+        window.onMouseMove((e: sdl.MouseMoveEvent) => {
+            mousePosition.x = e.pos.x;
+            mousePosition.y = e.pos.y;
+            return false;
+        });
+
+        return App {
+            window: window,
+            device: device,
+            surface: surface,
+            surfaceFormat: surfaceFormat,
+            caps: caps,
+            presentMode: options.presentMode,
+            gfx: gfx,
+            canvas: canvas,
+            windowState: windowState,
+            mousePosition: mousePosition,
+        };
+    }
+
+    fn mousePos(): Vec2 {
+        return this.mousePosition;
+    }
+
+    // Polls events, handles resize, and returns a fresh Frame for this tick.
+    // Returns none when the window has been closed — use as a while condition.
+    fn nextFrame(): mut renderer.gfx.Frame | none {
+        if this.window.shouldClose() {
+            return none;
+        }
+
+        sdl.pollEvents();
+        fs.pollEvents();
+
+        this.resized = false;
+        if this.window.consumeSizeChanged() {
+            let next = getWindowState(this.window);
+            if next.framebufferSize.x > 0 && next.framebufferSize.y > 0 {
+                this.surface.configure({
+                    device: this.device,
+                    format: this.surfaceFormat,
+                    usage: wgpu.TextureUsage.RenderAttachment,
+                    width: next.framebufferSize.x,
+                    height: next.framebufferSize.y,
+                    presentMode: this.presentMode,
+                    alphaMode: this.caps.alphaModes[0],
+                });
+                this.canvas.resize(next);
+                this.windowState = next;
+                this.resized = true;
+            }
+        }
+
+        return renderer.gfx.Frame(this.gfx);
+    }
+
+    fn destroy() {
+        this.window.destroy();
+        sdl.terminate();
+    }
+}

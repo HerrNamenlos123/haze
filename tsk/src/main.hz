@@ -1,0 +1,56 @@
+
+import tesselate
+import perfect_freehand
+import app
+import ui_runtime
+import ui_components
+
+fn main(): int {
+    attempt {
+        let a = app.App({
+            title: "WebGPU Example",
+        })?!;
+
+        let font = a.gfx.fontRenderer.fs.addFont(
+            "roboto-regular",
+            "test/Roboto-Regular.ttf"
+        );
+
+        let runtime = ui_runtime.Runtime({
+            gfx: a.gfx,
+            windowState: a.windowState,
+            fonts: [
+                { name: "default", id: a.gfx.fontRenderer.defaultFont },
+                { name: "roboto", id: font },
+            ],
+            mousePos: () => a.mousePos(),
+            ui: (ui: ui_components.UIContext) => { UI(ui); },
+        });
+
+        while let frame = a.nextFrame() {
+            if a.resized {
+                runtime.resize(a.windowState);
+            }
+            runtime.render(frame, a.canvas);
+            frame.present();
+        }
+
+        a.destroy();
+        return 0;
+    }
+    else e {
+        if e is str {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is fs.Error {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is none {
+            fmt.println("Application failed: ", e);
+        }
+        else {
+            fmt.println("Application failed: ", e);
+        }
+        return 1;
+    };
+}

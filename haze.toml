@@ -38,6 +38,7 @@ ui_layout = { path = "stdlib/ui_layout" }
 renderer = { path = "stdlib/renderer" }
 ui_components = { path = "stdlib/ui_components" }
 ui_runtime = { path = "stdlib/ui_runtime" }
+app = { path = "stdlib/app" }
 
 tesselate = { path = "stdlib/tesselate" }
 perfect_freehand = { path = "stdlib/perfect_freehand" }

@@ -6,13 +6,13 @@ authors = []
 type = "lib"
 
 [dependencies]
-fontstash = { path = "./fontstash" }
-ui_elements = { path = "./ui_elements" }
+fontstash = { path = "../fontstash" }
+ui_elements = { path = "../ui_elements" }
 # Not used directly (no import/qualified reference to ui_styling anywhere in
 # this module's source) -- only needed because ui_elements' public API
 # exposes ui_styling types (ComputedDivStyle/ComputedTextStyle), and build
 # resolution needs them available transitively.
-ui_styling = { path = "./ui_styling" }
+ui_styling = { path = "../ui_styling" }
 
 [compiler]
 # no special flags

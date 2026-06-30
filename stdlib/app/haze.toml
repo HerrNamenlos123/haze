@@ -1,0 +1,13 @@
+name = "app"
+version = "0.0.1"
+description = "High-level application bootstrap: SDL window + WGPU device + renderer canvas in one struct"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+sdl = { path = "../sdl" }
+sdl_wgpu = { path = "../sdl_wgpu" }
+wgpu = { path = "../wgpu" }
+renderer = { path = "../renderer" }
+fontstash = { path = "../fontstash" }

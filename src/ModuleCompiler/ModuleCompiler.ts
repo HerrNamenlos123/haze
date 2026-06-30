@@ -248,25 +248,30 @@ export async function catchErrors(fn: () => Promise<void>) {
     await fn();
     return true;
   } catch (e) {
+    let msg: string;
     if (e instanceof GeneralError) {
-      printLine(e.message);
+      msg = e.message;
     } else if (e instanceof InternalError) {
-      printLine(e.message);
+      msg = e.message;
       const stack = e.stack?.split("\n").slice(1).join("\n");
       if (stack) {
-        printLine(stack);
+        msg += "\n" + stack;
       }
     } else if (e instanceof CompilerError) {
-      printLine(e.message);
+      msg = e.message;
     } else if (e instanceof UnreachableCode) {
-      printLine(e.message);
+      msg = e.message;
     } else if (e instanceof SyntaxError) {
-      return false;
+      msg = e.message;
     } else if (e instanceof CmdFailed) {
-      printLine("Build failed");
       return false;
     } else {
-      printLine(String(e));
+      msg = String(e);
+    }
+    try {
+      printLine(msg);
+    } catch {
+      process.stderr.write(msg + "\n");
     }
     return false;
   }
@@ -2188,16 +2193,28 @@ export class ModuleCompiler {
     if (this.cachedDependencyMetadata) {
       return this.cachedDependencyMetadata;
     }
-    this.cachedDependencyMetadata = await Promise.all(
-      this.effectiveDependencies.map((dep) => {
-        const libpath = join(
-          join(this.hazeWorkspaceDirectory, dep.name),
-          "bin",
-          dep.name + ".hzlib"
-        );
-        return this.loadSingleDependencyMetadata(libpath, dep.name);
-      })
-    );
+
+    const collected = new Map<string, Awaited<ReturnType<ModuleCompiler["loadSingleDependencyMetadata"]>>>();
+
+    const collectOne = async (name: string) => {
+      if (collected.has(name)) { return; }
+
+      const libpath = join(join(this.hazeWorkspaceDirectory, name), "bin", name + ".hzlib");
+      if (!fs.existsSync(libpath)) { return; }
+
+      const meta = await this.loadSingleDependencyMetadata(libpath, name);
+      collected.set(name, meta);
+
+      for (const [transName] of meta.fullModuleGraph) {
+        await collectOne(transName);
+      }
+    };
+
+    for (const dep of this.effectiveDependencies) {
+      await collectOne(dep.name);
+    }
+
+    this.cachedDependencyMetadata = [...collected.values()];
     return this.cachedDependencyMetadata;
   }
 
@@ -2217,21 +2234,34 @@ export class ModuleCompiler {
   }
 
   async collectImports() {
-    for (const dep of this.effectiveDependencies) {
+    const collected = new Set<string>();
+
+    const collectOne = async (name: string) => {
+      if (collected.has(name)) { return; }
+      collected.add(name);
+
       const libpath = join(
-        join(this.hazeWorkspaceDirectory, dep.name),
+        join(this.hazeWorkspaceDirectory, name),
         "bin",
-        dep.name + ".hzlib"
+        name + ".hzlib"
       );
+      if (!fs.existsSync(libpath)) { return; }
+
       const libMtimeMs = fs.statSync(libpath).mtimeMs;
+      const meta = await this.loadSingleDependencyMetadata(libpath, name);
+      const depDir = join(this.moduleDir, "__deps", name);
+      await this.collectDepDirectory(depDir, name, libMtimeMs);
 
-      // Ensure the dep is extracted (skipped when stamp is current).
-      await this.loadSingleDependencyMetadata(libpath, dep.name);
+      // Transitively collect imports for every module whose types may appear
+      // in this dep's public interface — consumers shouldn't need to list
+      // transitive deps explicitly just because they show up in an import.hz.
+      for (const [transName] of meta.fullModuleGraph) {
+        await collectOne(transName);
+      }
+    };
 
-      // Collect .hz import files, using the AST cache to skip re-parsing
-      // files that have not changed since the last build.
-      const depDir = join(this.moduleDir, "__deps", dep.name);
-      await this.collectDepDirectory(depDir, dep.name, libMtimeMs);
+    for (const dep of this.effectiveDependencies) {
+      await collectOne(dep.name);
     }
   }
 

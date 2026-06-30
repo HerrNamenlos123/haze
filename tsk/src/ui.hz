@@ -1,0 +1,389 @@
+
+import ui_elements
+import ui_styling
+import ui_components
+import headwind
+import renderer
+type presets = headwind.presets;
+
+struct HeaderArgs {
+    id: int;
+    title: str;
+
+    fn operator!=(other: HeaderArgs) {
+        return this.id != other.id || this.title != other.title;
+    }
+}
+fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<HeaderArgs>) => {
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 10.0 },
+                },
+                presets: [
+                    presets.bg(Color(0.9, 0.2, 0.2, 1)),
+                    presets.p(4),
+                    presets.align(ui_styling.Align.Center),
+                ]
+            }, (): void => {
+                ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
+            });
+        };
+    });
+}
+
+struct NavItemArgs {
+    id: int;
+    label: str;
+
+    fn operator!=(other: NavItemArgs) {
+        return this.id != other.id || this.label != other.label;
+    }
+}
+
+fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<NavItemArgs>) => {
+
+        let divRef = ui.ref<ui_elements.DivElement>();
+
+        let isHovered = rx.computed(() => {
+            let element = rx.get(divRef);
+            if !element {
+                return false;
+            }
+            return ui_components.hover(element);
+        });
+
+        return (): void => {
+            ui.div({
+                id: 1,
+                ref: divRef,
+                style: {
+                    backgroundColor: isHovered ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
+                    padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
+                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 6.0 },
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: instance.props().label });
+            });
+        };
+    });
+}
+
+struct SidebarArgs {
+    id: int;
+
+    fn operator!=(other: SidebarArgs) {
+        return this.id != other.id;
+    }
+}
+
+fn Sidebar(ui: ui_components.UIContext, args: SidebarArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<SidebarArgs>) => {
+
+        return (): void => {
+            ui.div({
+                id: 1,
+                style: {
+                    backgroundColor: Color(0.2, 0.6, 0.9, 1),
+                    padding: ui_styling.StylePaddingSimple { value: 20.0 },
+                    direction: ui_styling.Direction.Column,
+                    gap: 8.0,
+                    width: 180.0,
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: "Menu" });
+                NavItem(ui, { id: 10, label: "Dashboard" });
+                NavItem(ui, { id: 20, label: "Settings" });
+                NavItem(ui, { id: 30, label: "About" });
+            });
+        };
+    });
+}
+
+struct ContentAreaArgs {
+    id: int;
+    text: str;
+
+    fn operator!=(other: ContentAreaArgs) {
+        return this.id != other.id || this.text != other.text;
+    }
+}
+
+fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ContentAreaArgs>) => {
+
+        let divRef = ui.ref<ui_elements.DivElement>();
+        let h = rx.computed(() => {
+            if let ref = rx.get(divRef) {
+                return ui_components.hover(ref);
+            }
+            return false;
+        })
+
+        return (): void => {
+            ui.div({
+                id: 100,
+                ref: divRef,
+                style: {
+                    direction: ui_styling.Direction.Column,
+                    align: ui_styling.Align.Center,
+                },
+                presets: [
+                    presets.p(2),
+                    presets.bg("#33CC66FF"),
+                    presets.gap(4),
+                ],
+            }, (): void => {
+                fmt.println("Rerender content area");
+                ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
+                ui.text({ id: 300, text: "This is rendered via the component system." });
+                ui.text({ id: 400, text: "Flexbox layout powered by Clay." });
+                ui.text({ id: 500, text: instance.props().text });
+
+                ui.canvas({
+                    id: 600,
+                    style: { width: 200.0, height: 150.0 },
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
+                    r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
+                });
+            });
+        };
+    });
+}
+
+struct InfoBoxArgs {
+    id: int;
+
+    fn operator!=(other: InfoBoxArgs) {
+        return this.id != other.id;
+    }
+}
+namespace tsk {
+
+struct Point {
+    x: real;
+    y: real;
+    pressure: real;
+}
+
+struct Shape {
+    variant: str;
+    points: []Point;
+    penThickness: real;
+    penColor: str;
+}
+
+struct Page {
+    shapes: []Shape;
+}
+
+struct FileData {
+    pageColor: str;
+    gridColor: str;
+    gridType: str;
+    pages: []Page;
+}
+
+struct File {
+    filetype: str;
+    fileVersion: int;
+    data: FileData;
+}
+
+}
+
+fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<InfoBoxArgs>) => {
+
+        let tesselatedShapes: []tesselate.TesselationResult = [];
+
+        // Load TSK Shapes
+        let testTsk = fs.readText("Test.tsk");
+        if !testTsk {
+            fmt.println("File loading failed");
+        }
+        else {
+            let s2 = time.now();
+            let result = json.structuredParse<tsk.File>(testTsk);
+            fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
+
+            // Tessellate outlines once before the loop
+            let start = time.now();
+
+            if result {
+                let page = result.data.pages[0];
+
+                let accuracyScaling = 10.0;
+                let tess = tesselate.Tesselator();
+                for (let s = 0; s < page.shapes.length; s++) {
+                    let shape = page.shapes[s];
+
+                    // Perfect Freehand
+                    let pf = perfect_freehand.PerfectFreehand({
+                        size: shape.penThickness * accuracyScaling,
+                        thinning: 0.1,
+                        smoothing: 0.0,
+                        streamline: 0.6,
+                        simulatePressure: false,
+                        last: true,
+                    });
+
+                    for point in shape.points {
+                        pf.addPoint({
+                            x: point.x * accuracyScaling,
+                            y: point.y * accuracyScaling,
+                        });
+                    }
+
+                    let points: []Vec2 = [];
+                    if let outline = pf.compute() {
+                        points = outline;
+                    }
+
+                    pf.destroy();
+
+                    // Now tesselate
+                    if points.length > 0 {
+                        tess.beginPath();
+                        tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
+                        for (let p = 1; p < points.length; p++) {
+                            tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
+                        }
+                        tess.closePath();
+                        if let result = tess.tessellate(0.25) { tesselatedShapes.push(result); }
+                    }
+                }
+                tess.destroy();
+                fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
+            }
+            else {
+                fmt.println("Failed parsing: ", result);
+            }
+
+            for (let s = 0; s < tesselatedShapes.length; s++) {
+                let shape = tesselatedShapes[s];
+
+                for (let i = 0; i < shape.vertices.length; i++) {
+                    shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
+                    shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
+                }
+            }
+
+            let end = time.now();
+            fmt.println(f"Tesselated shapes in {(end - start) * 1000.0} ms");
+        }
+
+        return (): void => {
+            ui.canvas({
+                id: 1000,
+                style: { width: 500.0 },
+            }, (r: mut renderer.gfx.Renderer): void => {
+                // Render tessellated shapes
+                for (let s = 0; s < tesselatedShapes.length; s++) {
+                    let shape = tesselatedShapes[s];
+
+                    for (let i = 0; i < shape.vertices.length; i++) {
+                        if (true) {
+                            shape.vertices[i].x = shape.vertices[i].x + ui.dmousePos.x;
+                            shape.vertices[i].y = shape.vertices[i].y + ui.dmousePos.y;
+                        }
+                    }
+
+                    r.addTriangles(shape.vertices, shape.indices, "#000");
+                }
+
+                let center = Vec2(200, 200);
+                let alpha = ui.now() * 20.0;
+                let radius = 40.0;
+                r.drawRect({
+                    pos: Vec2(center.x + math.cos(alpha) * radius, center.y + math.sin(alpha) * radius),
+                    size: Vec2(50, 50),
+                    fillColor: "#F00",
+                });
+            });
+        };
+    });
+}
+
+struct FooterArgs {
+    id: int;
+
+    fn operator!=(other: FooterArgs) {
+        return this.id != other.id;
+    }
+}
+
+fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<FooterArgs>) => {
+
+        let text = rx.reactive<str>("This is some actual text to read");
+
+        return (): void => {
+            ui.div({
+                id: 10000,
+                presets: [
+                    presets.bg("#181818"),
+                    presets.textColor("#F00"),
+                    presets.p(15),
+                    presets.align(ui_styling.Align.Center),
+                ],
+            }, (): void => {
+                ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
+            });
+        };
+    });
+}
+
+struct RootArgs {
+    fn operator!=(other: RootArgs) {
+        return false;
+    }
+}
+
+export fn UI(ui: ui_components.UIContext) {
+    ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+
+        let text = rx.computed(() => {
+            return f"This text is running since {ui.now() as int} seconds.";
+        });
+
+        return (): void => {
+            ui.div({
+                id: 100000,
+                style: {
+                    backgroundColor: Color(0.15, 0.15, 0.15, 1),
+                    padding: ui_styling.StylePaddingSimple { value: 30.0 },
+                    direction: ui_styling.Direction.Column,
+                    fontFamily: "roboto",
+                    fontSize: 16.0,
+                    textColor: Color(1, 1, 1, 1),
+                    gap: 10.0,
+                }
+            }, (): void => {
+                Header(ui, { id: 15000, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
+
+                ui.div({
+                    id: 22000,
+                    style: {
+                        direction: ui_styling.Direction.Row,
+                        padding: ui_styling.StylePaddingSimple { value: 20.0 },
+                        backgroundColor: Color(0.25, 0.25, 0.25, 1),
+                        justify: ui_styling.Justify.SpaceBetween,
+                        cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 20.0 },
+                        gap: 30.0,
+                    }
+                }, (): void => {
+                    Sidebar(ui, { id: 2300 });
+                    ContentArea(ui, { id: 3300, text: text });
+                    InfoBox(ui, { id: 4400 });
+                });
+
+                Footer(ui, { id: 5500 });
+            });
+        };
+    });
+}
