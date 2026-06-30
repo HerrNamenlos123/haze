@@ -940,8 +940,9 @@ class CodeGenerator {
       .writeLine("switch (tag) {")
       .pushIndent();
     for (let i = 0; i < union.members.length; i++) {
+      const name = this.unionVariantPrettyName(union, i);
       this.out.refinement_helpers.writeLine(
-        `case ${i}: return "${this.unionVariantPrettyName(union, i)}";`
+        `case ${i}: return "${escapeStringForC(name)}";`
       );
     }
     this.out.refinement_helpers

@@ -296,6 +296,9 @@ namespace json {
                 static_assert(false, f"json.parse() only supports comptime literals that are str or int");
             }
         }
+        else if comptime T is none {
+            return none;
+        }
         else if comptime T is str {
             if !ffi.hzstd_json_is_string(node) { 
                 return Error { error: "JSON type mismatch: expected string" };
@@ -409,7 +412,7 @@ namespace json {
                 for comptime Variant in T.variants {
                     if comptime Variant is none {
                         if let result = parseJsonNodeFromFfi<none>(allocator, node) {
-                            return result;
+                            return Result<T, Error>.Ok(result);
                         }
                     }
                 }

@@ -385,6 +385,25 @@ export class SemanticElaborator {
         );
       }
 
+      // Fold binary operations on compile-time literal operands (enum==enum, bool&&bool, etc.)
+      // Build the BinaryExpr node first so EvalCTFE can operate on it.
+      if (
+        left.variant === Semantic.ENode.LiteralExpr &&
+        _right2.variant === Semantic.ENode.LiteralExpr
+      ) {
+        const built = this.sr.b.binaryExpr(
+          leftId,
+          binaryExpr.operation,
+          rightId,
+          binaryExpr.sourceloc
+        ) as [Semantic.Expression, Semantic.ExprId];
+        const ctResult = EvalCTFE(this.sr, built[1]);
+        if (ctResult.ok) {
+          return ctResult.value;
+        }
+        return built;
+      }
+
       // Try to find an overloaded operator on the left operand's type
       const leftTypeUse = this.sr.typeUseNodes.get(
         this.resolveAlias(left.type)

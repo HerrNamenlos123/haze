@@ -23,6 +23,7 @@ struct TskLineShape {
   
   fn getBBox(): BBox {
     // ...
+    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
   }
 };
 
@@ -36,6 +37,7 @@ struct TskImageShape {
   
   fn getBBox(): BBox {
     // ...
+    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
   }
 };
 
@@ -49,9 +51,11 @@ struct TskTextblockShape {
   
   fn getBBox(): BBox {
     // ...
+    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
   }
 };
 
+[[json.discriminator="variant"]]
 type TskShape = TskLineShape | TskImageShape | TskTextblockShape;
 
 struct TskPage {
@@ -91,7 +95,7 @@ fn loadTskDocument(path: str): Result<TskDocument, none> {
     return none;
 }
 
-fn saveTskDocument(path: str, document: Document): Result<none, none> {
+fn saveTskDocument(path: str, document: TskDocument): Result<none, none> {
     if !fs.writeText(path, json.stringify(document)) {
         return Result<none, none>.Err(none);
     }
