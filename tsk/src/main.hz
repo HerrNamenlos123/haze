@@ -6,7 +6,7 @@ import ui_runtime
 import ui_components
 
 struct Cache {
-    vaultDir: str = "";
+    vaultDir: str | null = null;
 }
 
 fn main(): int {
@@ -37,14 +37,17 @@ fn main(): int {
         });
 
         let cache = json.CacheFile<Cache>("tsk.cache.json");
+        cache.data.vaultDir:="Hello world";
 
         while let frame = a.nextFrame() {
-            fmt.println(f"Last vault: {cache.vaultDir}");
+            fmt.println(f"Last vault: {cache.data.vaultDir}");
             if a.resized {
                 runtime.resize(a.windowState);
             }
             runtime.render(frame, a.canvas);
             frame.present();
+
+            cache.flush();
         }
 
         a.destroy();

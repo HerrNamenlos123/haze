@@ -398,6 +398,8 @@ namespace json {
         data: rx.Reactive<T>;
         _args: CacheFileArgs;
         _path: str;
+        _flushComputed: rx.Computed<none>;
+        _disableDiskWriteTemporarily: bool = false;
 
         fn constructor(path: str, args: CacheFileArgs = {}) {
             let rawData = CacheFile<T>._read(path);
@@ -409,31 +411,45 @@ namespace json {
             }
             assert(rawData, f"Cache file at '{path}' could not be created");
 
-            let reactiveData = rx.reactive<T>(rawData);
+            let cache = CacheFile<T> {
+                data: rx.reactive<T>(rawData),
+                _args: args,
+                _path: path,
+                _flushComputed: rx.computed(() => {}),
+            };
+
+            cache._flushComputed = rx.computed(() => {
+                rx.get(cache.data); // Read to trigger dependency
+                cache._writeToDisk();
+            });
 
             fs.watch(path, (event: fs.FileChangeEvent): void => {
                 let rawData = CacheFile<T>._read(path);
 
                 if rawData {
-                    reactiveData := rx.reactive<T>(rawData);
+                    // Set this to avoid infinite recursion between loading and saving the file and trigger itself
+                    cache._disableDiskWriteTemporarily = true;
+                    cache.data := rx.reactive<T>(rawData);
+                    cache.flush();
+                    cache._disableDiskWriteTemporarily = false;
                 }
                 else if args.panicOnFailure {
                     sys.panic(f"Cache file at '{path}' could not be read from after a detected change");
                 }
             }, { 
-                immediate: true, 
-                interval: 1,
-                strategy: fs.WatchStrategy.ModificationDate 
+                immediate: false, 
             });
 
-            return CacheFile<T> {
-                data: reactiveData,
-                _args: args,
-                _path: path,
-            };
+            return cache;
         }
 
         fn flush() {
+            // Trigger reactive computation and disk writing if required.
+            rx.get(this._flushComputed);
+        }
+
+        fn _writeToDisk() {
+            if (this._disableDiskWriteTemporarily) { return; }
             let jsonData = json.stringify(this.data);
             if !fs.writeText(this._path, jsonData) {
                 if this._args.panicOnFailure {

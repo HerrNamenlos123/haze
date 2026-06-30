@@ -1052,6 +1052,9 @@ export opaque struct Renderer {
         if canvas.surface {
             this.frame.pendingPresents.push(canvas);
         }
+
+        // TODO: This is supposed to move into an async event queue at some point once we have task switching
+        fs.pollEvents();
     }
 }
 

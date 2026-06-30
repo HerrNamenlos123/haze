@@ -307,7 +307,7 @@ export namespace fs {
 
     export struct WatchConfig {
         interval: real = 0.1;
-        immediate: bool = true;
+        immediate: bool = false;
         strategy: WatchStrategy = WatchStrategy.ModificationDate;
     }
 
