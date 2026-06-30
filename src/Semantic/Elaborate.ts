@@ -13087,10 +13087,32 @@ export class SemanticElaborator {
     }
     // Compile-time struct field type lookup: MyStruct["fieldName"] → DatatypeAsValueExpr for field type
     {
-      const [normalizedValue] = this.normalizeTypeDefValueExpr(
+      let [normalizedValue, normalizedValueId] = this.normalizeTypeDefValueExpr(
         valueId,
         arraySubscript.sourceloc
       );
+      // If still not a DatatypeAsValueExpr, try to resolve hzstd_meta_type_t via CTFE
+      // (e.g. T.variants[0]["field"] where variants[0] has type hzstd_meta_type_t)
+      if (normalizedValue.variant !== Semantic.ENode.DatatypeAsValueExpr) {
+        const typeUseForCheck = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(normalizedValue.type)
+        );
+        const typeDefForCheck = this.sr.typeDefNodes.get(typeUseForCheck.type);
+        if (
+          typeDefForCheck.variant === Semantic.ENode.StructDatatype &&
+          typeDefForCheck.originalCollectedDefinition ===
+            (-1 as Collect.TypeDefId) &&
+          typeDefForCheck.name === "hzstd_meta_type_t"
+        ) {
+          const ctResult = evalCT(this.sr, normalizedValueId);
+          if (ctResult !== null && ctResult.kind === "type") {
+            [normalizedValue, normalizedValueId] = this.sr.b.datatypeUseAsValue(
+              ctResult.typeUseId,
+              arraySubscript.sourceloc
+            );
+          }
+        }
+      }
       if (normalizedValue.variant === Semantic.ENode.DatatypeAsValueExpr) {
         const resolvedTypeUse = this.sr.typeUseNodes.get(
           this.sr.e.resolveAlias(normalizedValue.type)

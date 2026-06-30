@@ -67,7 +67,7 @@ namespace json {
                         return ffi.hzstd_json_is_true(obj);
                     }
                     else {
-                        static_assert(false, "to<T>: unsupported type — use chained [] for objects/arrays");
+                        static_assert(false, f"to<T>: unsupported type '{T.prettyName}' — use chained [] for objects/arrays");
                     }
                 }
                 else {
@@ -369,80 +369,79 @@ namespace json {
                 for comptime Variant in T.variants {
                     const comptime hasDiscriminator = Variant.hasField(discriminatorField);
                     static_assert(hasDiscriminator, f"json.parse(): Variant {Variant.prettyName} of discriminated union {T.prettyName} does not have the discriminator field '{discriminatorField}'");
-                    do unsafe {
-                        let variant: Variant = uninitialized;
-                        const comptime discriminatorTypeMatches = typeof(variant.[discriminatorField]) is str;
-                        static_assert(discriminatorTypeMatches, f"json.parse(): Discriminator field '{discriminatorField}' in variant {Variant.prettyName} of union {T.prettyName} is not of expected type 'str'");
-                    };
+                    const comptime discriminatorTypeMatches = Variant[discriminatorField].category == meta.TypeCategory.Literal && Variant[discriminatorField].baseType is str;
+                    static_assert(discriminatorTypeMatches, f"json.parse(): Discriminator field '{discriminatorField}' in variant {Variant.prettyName} of union {T.prettyName} is not a compile-time string literal");
                 }
 
                 // Check if all discriminators are unique
                 for comptime VariantA, i in T.variants {
                     for comptime VariantB, j in T.variants {
                         if comptime i != j {
-                            do unsafe {
-                                let variantA: VariantA = uninitialized;
-                                let variantB: VariantB = uninitialized;
-                                static_assert(typeof(variantA.[discriminatorField]) != typeof(variantA.[discriminatorField]), 
-                                              f"json.parse(): Discriminator fields '{discriminatorField}' of union {T.prettyName} are not unique for all variants");
-                            };
+                            static_assert(VariantA[discriminatorField] != VariantB[discriminatorField], 
+                                            f"json.parse(): Discriminator fields '{discriminatorField}' of union {T.prettyName} are not unique for all variants");
                         }
                     }
                 }
 
                 // Now parse it
                 assert(ffi.hzstd_json_is_object(node));
-                let discriminatorValue = (Node { allocator: allocator, data: node })[discriminatorField].to<str>();
-                if !discriminatorValue {
+                let proxy = (Node { allocator: allocator, data: node })[discriminatorField];
+                if !proxy {
                     return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is missing" };
                 }
+                let discriminatorValue = proxy.to<typeof(T.variants[0][discriminatorField]).baseType>();
+                if !discriminatorValue {
+                    return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is not a string" };
+                }
                 for comptime Variant in T.variants {
-                    do unsafe {
-                        let variant: Variant = uninitialized;
-                        assert(typeof(variant.[discriminatorField]).category == meta.TypeCategory.Literal);
-                        if discriminatorValue == typeof(variant.[discriminatorField]).value {
-                            // It matches, parse it as this variant
-                            return parseJsonStruct<T>(allocator, node);
+                    assert(Variant[discriminatorField].category == meta.TypeCategory.Literal);
+                    if discriminatorValue == Variant[discriminatorField].literalValue {
+                        // It matches, parse it as this variant
+                        let result = parseJsonStruct<Variant>(allocator, node);
+                        if !result {
+                            return result;
                         }
-                    };
+                        return result as T;
+                    }
                 }
 
                 return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator matched none of the values" };
             }
-
-            // Comptime ambiguity check: int and real both map to JSON number
-            for comptime VariantA, i in T.variants {
-                for comptime VariantB, j in T.variants {
-                    if comptime VariantA is int && VariantB is real {
-                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
-                    }
-                    if comptime VariantA.category == meta.TypeCategory.Array && VariantB.category == meta.TypeCategory.DynamicArray {
-                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': fixed and dynamic arrays cannot be distinguished");
-                    }
-                    if comptime i != j && VariantA.category == meta.TypeCategory.Struct&& VariantB.category == meta.TypeCategory.Struct {
-                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': multiple structs in union with no discriminator field annotation");
-                    }
-                }
-            }
-
-            // If the value does not exist and none is expected, return prematurely
-            for comptime Variant in T.variants {
-                if comptime Variant is none {
-                    if let result = parseJsonNodeFromFfi<none>(allocator, node) {
-                        return result;
+            else {
+                // Comptime ambiguity check: int and real both map to JSON number
+                for comptime VariantA, i in T.variants {
+                    for comptime VariantB, j in T.variants {
+                        if comptime VariantA is int && VariantB is real {
+                            static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
+                        }
+                        if comptime VariantA.category == meta.TypeCategory.Array && VariantB.category == meta.TypeCategory.DynamicArray {
+                            static_assert(false, f"Ambiguous JSON union '{T.prettyName}': fixed and dynamic arrays cannot be distinguished");
+                        }
+                        if comptime i != j && VariantA.category == meta.TypeCategory.Struct && VariantB.category == meta.TypeCategory.Struct {
+                            static_assert(false, f"Ambiguous JSON union '{T.prettyName}': multiple structs in union with no discriminator field annotation");
+                        }
                     }
                 }
-            }
 
-            // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
-            for comptime Variant in T.variants {
-                // Node is this type, return it
-                if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
-                    return Result<T, Error>.Ok(result);
+                // If the value does not exist and none is expected, return prematurely
+                for comptime Variant in T.variants {
+                    if comptime Variant is none {
+                        if let result = parseJsonNodeFromFfi<none>(allocator, node) {
+                            return result;
+                        }
+                    }
                 }
-            }
 
-            return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value" };
+                // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
+                for comptime Variant in T.variants {
+                    // Node is this type, return it
+                    if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
+                        return Result<T, Error>.Ok(result);
+                    }
+                }
+
+                return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value" };
+            }
         }
         else {
             static_assert(false, f"json.parse(): type {T.prettyName} is not supported");

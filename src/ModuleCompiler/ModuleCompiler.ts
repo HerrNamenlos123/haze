@@ -2194,13 +2194,24 @@ export class ModuleCompiler {
       return this.cachedDependencyMetadata;
     }
 
-    const collected = new Map<string, Awaited<ReturnType<ModuleCompiler["loadSingleDependencyMetadata"]>>>();
+    const collected = new Map<
+      string,
+      Awaited<ReturnType<ModuleCompiler["loadSingleDependencyMetadata"]>>
+    >();
 
     const collectOne = async (name: string) => {
-      if (collected.has(name)) { return; }
+      if (collected.has(name)) {
+        return;
+      }
 
-      const libpath = join(join(this.hazeWorkspaceDirectory, name), "bin", name + ".hzlib");
-      if (!fs.existsSync(libpath)) { return; }
+      const libpath = join(
+        join(this.hazeWorkspaceDirectory, name),
+        "bin",
+        name + ".hzlib"
+      );
+      if (!fs.existsSync(libpath)) {
+        return;
+      }
 
       const meta = await this.loadSingleDependencyMetadata(libpath, name);
       collected.set(name, meta);
@@ -2237,7 +2248,9 @@ export class ModuleCompiler {
     const collected = new Set<string>();
 
     const collectOne = async (name: string) => {
-      if (collected.has(name)) { return; }
+      if (collected.has(name)) {
+        return;
+      }
       collected.add(name);
 
       const libpath = join(
@@ -2245,7 +2258,9 @@ export class ModuleCompiler {
         "bin",
         name + ".hzlib"
       );
-      if (!fs.existsSync(libpath)) { return; }
+      if (!fs.existsSync(libpath)) {
+        return;
+      }
 
       const libMtimeMs = fs.statSync(libpath).mtimeMs;
       const meta = await this.loadSingleDependencyMetadata(libpath, name);

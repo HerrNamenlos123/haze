@@ -25,7 +25,7 @@ namespace sys {
     }
 }
 
-export fn assert(condition: bool, msg?: str, location: SourceLocation = SourceLocation()) :: noreturn_if(!condition) {
+export fn assert(condition: bool, msg?: str, location: SourceLocation = SourceLocation()) :: noreturn_if(!condition), final {
     if condition { return; }
 
     if location.filename() {
