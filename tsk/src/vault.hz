@@ -1,0 +1,18 @@
+
+import filedialog
+
+fn chooseVault(): str | none {
+    let result = filedialog.pickFolder();
+    if result is filedialog.DialogSuccess {
+        return result.path;
+    }
+    return none;
+}
+
+fn chooseFile(): str | none {
+    let result = filedialog.pickFile({ filters: "tsk" });
+    if result is filedialog.DialogSuccess {
+        return result.path;
+    }
+    return none;
+}

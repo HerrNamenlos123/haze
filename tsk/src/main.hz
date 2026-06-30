@@ -5,6 +5,10 @@ import app
 import ui_runtime
 import ui_components
 
+struct Cache {
+    vaultDir: str | null = null;
+}
+
 fn main(): int {
     attempt {
         let a = app.App({
@@ -32,7 +36,10 @@ fn main(): int {
             ui: (ui: ui_components.UIContext) => { UI(ui); },
         });
 
+        let cache = json.CacheFile<Cache>("tsk.cache.json");
+
         while let frame = a.nextFrame() {
+            fmt.println(f"Last vault: {cache.vaultDir}");
             if a.resized {
                 runtime.resize(a.windowState);
             }

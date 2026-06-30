@@ -12,6 +12,7 @@ run = "haze run"
 test = "haze test"
 
 [dependencies]
+# Core runtime and UI framework stuff
 ui_components = { path = "../stdlib/ui_components" }
 ui_elements = { path = "../stdlib/ui_elements" }
 ui_styling = { path = "../stdlib/ui_styling" }
@@ -20,5 +21,7 @@ headwind = { path = "../stdlib/headwind" }
 renderer = { path = "../stdlib/renderer" }
 app = { path = "../stdlib/app" }
 
+# Actual application and business logic
 tesselate = { path = "../stdlib/tesselate" }
 perfect_freehand = { path = "../stdlib/perfect_freehand" }
+filedialog = { path = "../stdlib/filedialog" }

@@ -38,12 +38,12 @@ namespace json {
         error: str;
     };
 
-    export struct Value {
+    export struct Node {
         allocator: Allocator;
         data: ffi.cJSON;
 
         struct Proxy {
-            json: Value;
+            json: Node;
             attribute: str | int;
 
             fn to<T>() {
@@ -124,7 +124,7 @@ namespace json {
                 }
             }
 
-            fn operator:=(value: Value): void {
+            fn operator:=(value: Node): void {
                 let attr = this.attribute;
                 if attr is str {
                     let success = ffi.hzstd_json_add_item_to_object(this.json.allocator, this.json.data, attr, value.data);
@@ -135,7 +135,7 @@ namespace json {
                 }
             }
 
-            fn push(value: Value): void {
+            fn push(value: Node): void {
                 let attr = this.attribute;
                 if attr is str {
                     if ffi.hzstd_json_object_has_attribute(this.json.data, attr) {
@@ -186,29 +186,29 @@ namespace json {
 
     }
 
-    export fn parse(data: str): Result<Value, Error> {
-        return parse(Alloc.arena(), data);
+    export fn parseToJsonNode(data: str): Result<Node, Error> {
+        return parseToJsonNode(Alloc.arena(), data);
     }
 
-    export fn parse(allocator: Allocator, data: str): Result<Value, Error> {
+    export fn parseToJsonNode(allocator: Allocator, data: str): Result<Node, Error> {
         let error = ffi.hzstd_str_ref_t { data: "" };
         const cjson = ffi.hzstd_json_parse(allocator, data, error);
         if cjson {
-            return Result<Value, Error>.Ok({
+            return Result<Node, Error>.Ok({
                 allocator: allocator,
                 data: cjson,
             } with allocator);
         }
-        return Result<Value, Error>.Err({ error: error.data });
+        return Result<Node, Error>.Err({ error: error.data });
     }
 
-    export fn object(): Value {
+    export fn object(): Node {
         let allocator = Alloc.arena();
         let obj = ffi.hzstd_json_create_object(allocator);
         return { allocator: allocator, data: obj };
     }
 
-    export fn array(): Value {
+    export fn array(): Node {
         let allocator = Alloc.arena();
         let obj = ffi.hzstd_json_create_array(allocator);
         return { allocator: allocator, data: obj };
@@ -219,7 +219,7 @@ namespace json {
         let arr: T = [];
         let count = ffi.hzstd_json_get_array_size(allocator, node);
         for (let i: usize = 0; i < count; i++) {
-            arr.push(parseJsonNode<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i)));
+            arr.push(parseJsonNodeFromFfi<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i)));
         }
         return arr;
     }
@@ -232,7 +232,7 @@ namespace json {
             let arr: T = uninitialized;
             __c__("memset(&arr, 0, sizeof(arr));");
             for (let i: usize = 0; i < T.length as usize; i++) {
-                arr[i] = parseJsonNode<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i));
+                arr[i] = parseJsonNodeFromFfi<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i));
             }
             return arr;
         };
@@ -246,13 +246,13 @@ namespace json {
             for comptime field in T.fields {
                 let child = ffi.hzstd_json_get_object_item(allocator, node, field.name);
                 if !child { sys.panic(f"JSON missing field: {field.name}"); }
-                result.[field.name] = parseJsonNode<typeof(result.[field.name])>(allocator, child);
+                result.[field.name] = parseJsonNodeFromFfi<typeof(result.[field.name])>(allocator, child);
             }
             return result;
         };
     }
 
-    export fn parseJsonNode<T>(allocator: Allocator, node: ffi.cJSON): T {
+    export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): T {
         if comptime T is str {
             if !ffi.hzstd_json_is_string(node) { sys.panic("JSON type mismatch: expected string"); }
             let value = ffi.hzstd_json_get_string_value(allocator, node);
@@ -286,12 +286,16 @@ namespace json {
         sys.unreachable();
     }
 
-    export fn structuredParse<T>(value: json.Value): Result<T, Error> {
-        return Result<T, Error>.Ok(parseJsonNode<T>(value.allocator, value.data));
+    export fn parse<T>(value: json.Node): Result<T, Error> {
+        return Result<T, Error>.Ok(parseJsonNodeFromFfi<T>(value.allocator, value.data));
     }
 
-    export fn structuredParse<T>(data: str): Result<T, Error> {
-        return structuredParse<T>(parse(data)?!);
+    export fn parse<T>(allocator: Allocator, data: str): Result<T, Error> {
+        return parse<T>(parseToJsonNode(allocator, data)?!);
+    }
+
+    export fn parse<T>(data: str): Result<T, Error> {
+        return parse<T>(Alloc.arena(), data);
     }
 
     export fn dumpJsonArray<T>(allocator: Allocator, value: T): ffi.cJSON {
@@ -322,7 +326,10 @@ namespace json {
     }
 
     export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON {
-        if comptime T is str {
+        if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
+            return dumpJsonNode<rx.UnwrapReactive<T>>(allocator, rx.get(value));
+        }
+        else if comptime T is str {
             return ffi.hzstd_json_create_string(allocator, value);
         }
         else if comptime T is int {
@@ -349,22 +356,101 @@ namespace json {
         sys.unreachable();
     }
 
-    export fn structuredDump<T>(allocator: Allocator, value: T): json.Value {
+    export fn encodeToJsonNode<T>(allocator: Allocator, value: T): json.Node {
         return { allocator: allocator, data: dumpJsonNode<T>(allocator, value) };
     }
 
-    export fn structuredDump<T>(value: T): str {
-        let dumped = structuredDump<T>(Alloc.arena(), value);
-        return dumped.print({ pretty: false });
+    export fn encodeToJsonNode<T>(value: T): json.Node {
+        return encodeToJsonNode<T>(Alloc.arena(), value);
+    }
+
+    export inline struct EncodeArgs {
+        pretty: bool = false;
+    }
+
+    export fn stringify<T>(value: T, args: EncodeArgs = {}): str {
+        let dumped = encodeToJsonNode<T>(Alloc.arena(), value);
+        return dumped.print({ pretty: args.pretty });
     }
 }
 
 namespace fmt {
-    export fn format_to(writer: mut StringWriter, value: json.Value, args: FormatArgs) {
+    export fn format_to(writer: mut StringWriter, value: json.Node, args: FormatArgs) {
         format_to(writer, value.print({ pretty: true }), args);
     }
 
     export fn format_to(writer: mut StringWriter, value: json.Error, args: FormatArgs) {
         format_to(writer, f"json error: {value.error}", args);
+    }
+}
+
+namespace json {
+
+    export inline struct CacheFileArgs {
+        panicOnFailure: bool = true;
+    }
+
+    export struct CacheFile<T> {
+        data: rx.Reactive<T>;
+        _args: CacheFileArgs;
+        _path: str;
+
+        fn constructor(path: str, args: CacheFileArgs = {}) {
+            let rawData = CacheFile<T>._read(path);
+            if !rawData {
+                if !this._initial_save(path, T {}) {
+                    sys.panic(f"Cache file at '{path}' could not be written to");
+                }
+                rawData = this._read(path);
+                assert(rawData, f"Cache file at '{path}' could not be created");
+            }
+
+            let reactiveData = rx.reactive<T>(rawData);
+
+            fs.watch(path, (event: fs.FileChangeEvent): void => {
+                let rawData = this._read(path);
+
+                if rawData {
+                    reactiveData := rx.reactive<T>(rawData);
+                }
+                else if args.panicOnFailure {
+                    sys.panic(f"Cache file at '{this._path}' could not be read from after a detected change");
+                }
+            }, { 
+                immediate: true, 
+                interval: 1,
+                strategy: fs.WatchStrategy.ModificationDate 
+            });
+
+            return CacheFile {
+                data: reactiveData,
+                _args: args,
+                _path: path,
+            };
+        }
+
+        fn flush() {
+            let jsonData = json.stringify(this.data);
+            if !fs.writeText(this._path, jsonData) {
+                if this._args.panicOnFailure {
+                    sys.panic(f"Cache file at '{this._path}' could not be written to");
+                }
+            }
+        }
+
+        static fn _read(path: str): T | none {
+            let file = fs.readText(path);
+            if !file { return none; }
+            let result = parse<T>(file);
+            if !result { return none; }
+            return result;
+        }
+
+        fn _initial_save(path: str, data: T): Result<none, none> {
+            if fs.writeText(path, json.stringify(data)) {
+                return Result<none, none>.Ok(none);
+            }
+            return Result<none, none>.Err(none);
+        }
     }
 }

@@ -33,14 +33,14 @@ fn loadTskDocument(path: str): Result<Document, none> {
     let file = fs.readText(path);
     if !file { return none; }
 
-    if let result = json.structuredParse<Document>(file) {
+    if let result = json.parse<Document>(file) {
         return result;
     }
     return none;
 }
 
 fn saveTskDocument(path: str, document: Document): Result<none, none> {
-    if !fs.writeText(path, json.structuredDump(document)) {
+    if !fs.writeText(path, json.stringify(document)) {
         return Result<none, none>.Err(none);
     }
     return Result<none, none>.Ok(none);

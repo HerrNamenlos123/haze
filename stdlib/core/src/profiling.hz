@@ -150,7 +150,7 @@ namespace profiling {
     }
 
     export fn toCpuProfileJson(result: profiling.ProfilingResult): str {
-        return json.structuredDump<CpuProfile>(buildCpuProfile(result));
+        return json.stringify<CpuProfile>(buildCpuProfile(result));
     }
 
     export fn writeCpuProfile(result: profiling.ProfilingResult, path: str) {
