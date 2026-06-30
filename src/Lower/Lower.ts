@@ -1241,6 +1241,7 @@ export function lowerExpr(
 
       let structTypeDef = accessedExprTypeDef;
       let isInline = accessedExprTypeUse.inline;
+      let isDeepAccess = false;
       if (accessedExprTypeDef.variant === Semantic.ENode.DeepDatatype) {
         const clonedTypeUse = lr.sr.typeUseNodes.get(
           lr.sr.e.resolveAlias(accessedExprTypeDef.clonedType)
@@ -1248,14 +1249,16 @@ export function lowerExpr(
         const clonedTypeDef = lr.sr.typeDefNodes.get(clonedTypeUse.type);
         if (clonedTypeDef.variant === Semantic.ENode.StructDatatype) {
           structTypeDef = clonedTypeDef;
-          isInline = isInline || clonedTypeUse.inline;
+          // lowerTypeUse never adds C pointer indirection for DeepDatatype (only for
+          // StructDatatype/DynamicArrayDatatype), so member access never uses '->'.
+          isDeepAccess = true;
         }
       }
 
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        requiresDeref: !(
+        requiresDeref: isDeepAccess ? false : !(
           structTypeDef.variant === Semantic.ENode.StructDatatype && isInline
         ),
         memberName: expr.memberName,

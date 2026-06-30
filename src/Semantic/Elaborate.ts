@@ -7874,6 +7874,16 @@ export class SemanticElaborator {
         return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
       }
 
+      if (isTypeAccess) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(
+            this.sr,
+            elaboratedMethodId
+          )}() is not static but is called through the type — did you mean to add 'static'?`,
+          sourceloc
+        );
+      }
+
       if (
         resolvedExprTypeUse.mutability !== EDatatypeMutability.Mut &&
         elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Mut
@@ -8312,14 +8322,28 @@ export class SemanticElaborator {
         );
       }
 
+      if (resolvedTypeDef.variant === Semantic.ENode.DeepDatatype) {
+        return this.resolveMemberAccess(
+          this.sr.b.datatypeUseAsValue(
+            resolvedTypeDef.clonedType,
+            sourceloc
+          )[1],
+          name,
+          generics,
+          inference,
+          sourceloc
+        );
+      }
+
       if (resolvedTypeDef.variant === Semantic.ENode.StructDatatype) {
         if (name === "fields") {
-          if (resolvedTypeDef.reactiveClone) {
-            throw new CompilerError(
-              `Datatype ${Semantic.serializeTypeUse(this.sr, expr.type)} does not support '.fields' reflection`,
-              sourceloc
-            );
-          }
+          // We need this to be able to iterate over rx.Deep<> values at compile time
+          // if (resolvedTypeDef.reactiveClone) {
+          //   throw new CompilerError(
+          //     `Datatype ${Semantic.serializeTypeUse(this.sr, expr.type)} does not support '.fields' reflection`,
+          //     sourceloc
+          //   );
+          // }
 
           const metaFieldType = this.ensureMetaFieldStructType(sourceloc);
           const reflectedFields: Semantic.ExprId[] = [];

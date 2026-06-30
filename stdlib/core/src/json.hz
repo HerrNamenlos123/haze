@@ -281,7 +281,7 @@ namespace json {
             return parseJsonStruct<T>(allocator, node);
         }
         else {
-            static_assert(false, f"json.structuredParse(): type {T.prettyName} is not supported");
+            static_assert(false, f"json.parse(): type {T.prettyName} is not supported");
         }
         sys.unreachable();
     }
@@ -326,7 +326,11 @@ namespace json {
     }
 
     export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON {
-        if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
+
+        if comptime T.category == meta.TypeCategory.Deep {
+            return dumpJsonStruct<T.baseType>(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
             return dumpJsonNode<rx.UnwrapReactive<T>>(allocator, rx.get(value));
         }
         else if comptime T is str {
@@ -351,7 +355,7 @@ namespace json {
             return dumpJsonStruct<T>(allocator, value);
         }
         else {
-            static_assert(false, f"json.structuredDump(): type {T.prettyName} is not supported");
+            static_assert(false, f"json.stringify(): type {T.prettyName} is not supported");
         }
         sys.unreachable();
     }
@@ -398,23 +402,23 @@ namespace json {
         fn constructor(path: str, args: CacheFileArgs = {}) {
             let rawData = CacheFile<T>._read(path);
             if !rawData {
-                if !this._initial_save(path, T {}) {
+                if !CacheFile<T>._initial_save(path, T {}) {
                     sys.panic(f"Cache file at '{path}' could not be written to");
                 }
-                rawData = this._read(path);
-                assert(rawData, f"Cache file at '{path}' could not be created");
+                rawData = CacheFile<T>._read(path);
             }
+            assert(rawData, f"Cache file at '{path}' could not be created");
 
             let reactiveData = rx.reactive<T>(rawData);
 
             fs.watch(path, (event: fs.FileChangeEvent): void => {
-                let rawData = this._read(path);
+                let rawData = CacheFile<T>._read(path);
 
                 if rawData {
                     reactiveData := rx.reactive<T>(rawData);
                 }
                 else if args.panicOnFailure {
-                    sys.panic(f"Cache file at '{this._path}' could not be read from after a detected change");
+                    sys.panic(f"Cache file at '{path}' could not be read from after a detected change");
                 }
             }, { 
                 immediate: true, 
@@ -422,7 +426,7 @@ namespace json {
                 strategy: fs.WatchStrategy.ModificationDate 
             });
 
-            return CacheFile {
+            return CacheFile<T> {
                 data: reactiveData,
                 _args: args,
                 _path: path,
@@ -446,7 +450,7 @@ namespace json {
             return result;
         }
 
-        fn _initial_save(path: str, data: T): Result<none, none> {
+        static fn _initial_save(path: str, data: T): Result<none, none> {
             if fs.writeText(path, json.stringify(data)) {
                 return Result<none, none>.Ok(none);
             }

@@ -44,11 +44,15 @@ namespace rx {
         else if comptime T.baseType.category == meta.TypeCategory.Struct {
             do unsafe {
                 let result: Reactive<T> = uninitialized;
-                let __inline_struct: inline T = uninitialized; // TODO: This is a compiler bug: This line is required to let the C typedef be generated
-                __c__(f"result = HZSTD_REACTIVE_CREATE(__typeof__(result), {T.baseType.mangledName}, HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), {(type inline T).baseType.mangledName}, ({(type inline T).baseType.mangledName}){{0}}));");
+                // Build the Deep<T> struct on the stack with each field initialized as a reactive,
+                // then create the reactive cell from that complete struct. This avoids the double
+                // problem of using the wrong value_T (Cache* instead of Deep<T>) and trying to
+                // write fields through a HZSTD_REACTIVE_READ copy (which is not an lvalue).
+                let deep: inline Deep<T> = uninitialized;
                 for comptime field in T.fields {
-                    result.[field.name] = reactive<typeof(value.[field.name])>(value.[field.name]);
+                    deep.[field.name] = reactive<typeof(value.[field.name])>(value.[field.name]);
                 }
+                __c__("result = HZSTD_REACTIVE_CREATE(__typeof__(result), __typeof__(deep), deep);");
                 return result;
             };
         }

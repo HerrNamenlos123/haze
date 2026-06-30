@@ -6,7 +6,7 @@ import ui_runtime
 import ui_components
 
 struct Cache {
-    vaultDir: str | null = null;
+    vaultDir: str = "";
 }
 
 fn main(): int {
