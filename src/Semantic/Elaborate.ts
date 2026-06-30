@@ -2176,9 +2176,12 @@ export class SemanticElaborator {
     unaryExpr: Collect.UnaryExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
-    const [e, eId] = this.sr.e.expr(unaryExpr.expr, undefined);
+    let [e, eId] = this.sr.e.expr(unaryExpr.expr, undefined);
 
     if (unaryExpr.operation === EUnaryOperation.Negate) {
+      eId = this.unwrapReactiveOrComputedIfPossible(eId);
+      e = this.sr.exprNodes.get(eId);
+
       const boolResult = Conversion.MakeConversion(
         this.sr,
         eId,

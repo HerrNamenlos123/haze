@@ -813,3 +813,169 @@ hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path)
 
   return result;
 }
+
+// --- Directory iteration ---
+
+#if defined(HAZE_PLATFORM_LINUX)
+typedef struct {
+  DIR* dir;
+  char base_path[HAZE_MAX_PATH_LENGTH];
+  size_t base_path_len;
+} hzstd_dir_handle_linux_t;
+
+hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path)
+{
+  if (path.data == NULL || path.length == 0) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_invalid_path };
+  }
+  if (path.length >= HAZE_MAX_PATH_LENGTH) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_name_too_long };
+  }
+
+  char tmp[HAZE_MAX_PATH_LENGTH];
+  memcpy(tmp, path.data, path.length);
+  tmp[path.length] = '\0';
+
+  DIR* dir = opendir(tmp);
+  if (!dir) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_from_errno(errno) };
+  }
+
+  hzstd_dir_handle_linux_t* h = malloc(sizeof(hzstd_dir_handle_linux_t));
+  if (!h) {
+    closedir(dir);
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_out_of_memory };
+  }
+
+  h->dir = dir;
+  memcpy(h->base_path, path.data, path.length);
+  h->base_path[path.length] = '\0';
+  h->base_path_len = path.length;
+
+  return (hzstd_open_dir_result_t) { .handle = h, .error = hzstd_fs_error_code_none };
+}
+
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
+{
+  hzstd_dir_handle_linux_t* h = (hzstd_dir_handle_linux_t*)handle;
+  struct dirent* entry;
+
+  while ((entry = readdir(h->dir)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+
+    bool is_dir;
+    if (entry->d_type == DT_DIR) {
+      is_dir = true;
+    } else if (entry->d_type == DT_UNKNOWN || entry->d_type == DT_LNK) {
+      // stat fallback for filesystems that don't populate d_type
+      char full[HAZE_MAX_PATH_LENGTH];
+      snprintf(full, sizeof(full), "%s/%s", h->base_path, entry->d_name);
+      struct stat st;
+      is_dir = (stat(full, &st) == 0) && S_ISDIR(st.st_mode);
+    } else {
+      is_dir = false;
+    }
+
+    return (hzstd_dir_entry_t) {
+      .valid = true,
+      .is_dir = is_dir,
+      .name = hzstd_cstr_dup(entry->d_name),
+    };
+  }
+
+  return (hzstd_dir_entry_t) { .valid = false };
+}
+
+void hzstd_close_dir(void* handle)
+{
+  if (!handle) return;
+  hzstd_dir_handle_linux_t* h = (hzstd_dir_handle_linux_t*)handle;
+  closedir(h->dir);
+  free(h);
+}
+
+#elif defined(HAZE_PLATFORM_WIN32)
+
+typedef struct {
+  HANDLE hFind;
+  WIN32_FIND_DATAA ffd;
+  bool exhausted;
+  bool has_pending; // ffd holds the next unconsumed entry
+} hzstd_dir_handle_win32_t;
+
+hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path)
+{
+  if (path.data == NULL || path.length == 0) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_invalid_path };
+  }
+  if (path.length + 2 >= HAZE_MAX_PATH_LENGTH) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_name_too_long };
+  }
+
+  char pattern[HAZE_MAX_PATH_LENGTH];
+  memcpy(pattern, path.data, path.length);
+  pattern[path.length] = '\0';
+  strcat(pattern, "\\*");
+
+  hzstd_dir_handle_win32_t* h = malloc(sizeof(hzstd_dir_handle_win32_t));
+  if (!h) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_out_of_memory };
+  }
+
+  h->hFind = FindFirstFileA(pattern, &h->ffd);
+  if (h->hFind == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    free(h);
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_from_windows_error(err) };
+  }
+
+  h->exhausted = false;
+  h->has_pending = true;
+
+  return (hzstd_open_dir_result_t) { .handle = h, .error = hzstd_fs_error_code_none };
+}
+
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
+{
+  hzstd_dir_handle_win32_t* h = (hzstd_dir_handle_win32_t*)handle;
+
+  while (!h->exhausted) {
+    WIN32_FIND_DATAA ffd;
+    if (h->has_pending) {
+      ffd = h->ffd;
+      h->has_pending = false;
+    } else {
+      if (!FindNextFileA(h->hFind, &ffd)) {
+        h->exhausted = true;
+        break;
+      }
+    }
+
+    if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0) {
+      continue;
+    }
+
+    bool is_dir = (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return (hzstd_dir_entry_t) {
+      .valid = true,
+      .is_dir = is_dir,
+      .name = hzstd_cstr_dup(ffd.cFileName),
+    };
+  }
+
+  return (hzstd_dir_entry_t) { .valid = false };
+}
+
+void hzstd_close_dir(void* handle)
+{
+  if (!handle) return;
+  hzstd_dir_handle_win32_t* h = (hzstd_dir_handle_win32_t*)handle;
+  if (h->hFind != INVALID_HANDLE_VALUE) {
+    FindClose(h->hFind);
+  }
+  free(h);
+}
+
+#endif

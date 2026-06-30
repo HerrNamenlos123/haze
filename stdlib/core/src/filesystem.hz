@@ -66,6 +66,21 @@ namespace ffi {
     }
 
     extern C fn hzstd_file_stat(path: str): hzstd_file_stat_t :: final;
+
+    extern C noemit struct hzstd_open_dir_result_t {
+        handle: cptr;
+        error: hzstd_fs_error_code_t;
+    };
+
+    extern C noemit struct hzstd_dir_entry_t {
+        valid: bool;
+        is_dir: bool;
+        name: str;
+    };
+
+    extern C fn hzstd_open_dir(path: str): inline hzstd_open_dir_result_t :: final;
+    extern C fn hzstd_read_next_dir_entry(handle: cptr): inline hzstd_dir_entry_t :: final;
+    extern C fn hzstd_close_dir(handle: cptr): void :: final;
 }
 
 export namespace fs {
@@ -298,6 +313,31 @@ export namespace fs {
             mtime: result.mtime_ns,
             size: result.size,
         };
+    }
+
+    export struct DirEntry {
+        path: str;
+        name: str;
+        isFile: bool;
+        isDirectory: bool;
+    }
+
+    export fn listDir(path: str): Result<[]DirEntry, Error> {
+        let r = ffi.hzstd_open_dir(path);
+        if r.error != ffi.hzstd_fs_error_code_none {
+            return Result<[]DirEntry, Error>.Err(mapErrorEnum(r.error));
+        }
+        let entries: []DirEntry = [];
+        while let e = ffi.hzstd_read_next_dir_entry(r.handle); e.valid {
+            entries.push(DirEntry {
+                path: path + "/" + e.name,
+                name: e.name,
+                isFile: !e.is_dir,
+                isDirectory: e.is_dir,
+            });
+        }
+        ffi.hzstd_close_dir(r.handle);
+        return Result<[]DirEntry, Error>.Ok(entries);
     }
 
     export enum WatchStrategy {
