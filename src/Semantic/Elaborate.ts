@@ -364,6 +364,27 @@ export class SemanticElaborator {
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
       const _right2 = this.sr.exprNodes.get(rightId);
 
+      // Compile-time type equality: typeof(x) == typeof(y) where both are type-as-values.
+      // Resolves to a bool literal by comparing canonical TypeDefIds.
+      if (
+        (binaryExpr.operation === EBinaryOperation.Equal ||
+          binaryExpr.operation === EBinaryOperation.NotEqual) &&
+        left.variant === Semantic.ENode.DatatypeAsValueExpr &&
+        _right2.variant === Semantic.ENode.DatatypeAsValueExpr
+      ) {
+        const leftTypeDefId = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(left.type)
+        ).type;
+        const rightTypeDefId = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(_right2.type)
+        ).type;
+        const equal = leftTypeDefId === rightTypeDefId;
+        return this.sr.b.literal(
+          binaryExpr.operation === EBinaryOperation.Equal ? equal : !equal,
+          binaryExpr.sourceloc
+        );
+      }
+
       // Try to find an overloaded operator on the left operand's type
       const leftTypeUse = this.sr.typeUseNodes.get(
         this.resolveAlias(left.type)
@@ -1454,7 +1475,7 @@ export class SemanticElaborator {
 
     if (calledExprType.variant === Semantic.ENode.DeferredFunctionDatatype) {
       throw new CompilerError(
-        `This function is not fully elaborated yet. If it is part of a recursive call chain, it requires an explicit return type and a " :: final" annotation.`,
+        `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
         callExpr.sourceloc
       );
     }
@@ -7635,7 +7656,7 @@ export class SemanticElaborator {
       elaboratedFunctionType.variant === Semantic.ENode.DeferredFunctionDatatype
     ) {
       throw new CompilerError(
-        `This function is not fully elaborated yet. If it is part of a recursive call chain, it requires an explicit return type and a " :: final" annotation.`,
+        `Function ${functionSymbol.name}() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
         sourceloc
       );
     }
@@ -13064,6 +13085,44 @@ export class SemanticElaborator {
         writes: value.writes,
       });
     }
+    // Compile-time struct field type lookup: MyStruct["fieldName"] → DatatypeAsValueExpr for field type
+    {
+      const [normalizedValue] = this.normalizeTypeDefValueExpr(
+        valueId,
+        arraySubscript.sourceloc
+      );
+      if (normalizedValue.variant === Semantic.ENode.DatatypeAsValueExpr) {
+        const resolvedTypeUse = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(normalizedValue.type)
+        );
+        const resolvedTypeDef = this.sr.typeDefNodes.get(resolvedTypeUse.type);
+        if (resolvedTypeDef.variant === Semantic.ENode.StructDatatype) {
+          const fieldName = this.evalCTFEStringArgument(
+            rawIndex.value,
+            "datatype field access",
+            arraySubscript.sourceloc
+          );
+          for (const memberId of resolvedTypeDef.members) {
+            const member = this.sr.symbolNodes.get(memberId);
+            if (
+              member.variant === Semantic.ENode.VariableSymbol &&
+              member.name === fieldName
+            ) {
+              assert(member.type !== null);
+              return this.sr.b.datatypeUseAsValue(
+                member.type,
+                arraySubscript.sourceloc
+              );
+            }
+          }
+          throw new CompilerError(
+            `Struct '${Semantic.serializeTypeUse(this.sr, normalizedValue.type)}' does not have a field named '${fieldName}'`,
+            arraySubscript.sourceloc
+          );
+        }
+      }
+    }
+
     const [index, indexId] = this.expr(rawIndex.value, undefined);
     const indexType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(index.type).type
