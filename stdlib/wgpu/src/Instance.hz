@@ -1,7 +1,7 @@
 export struct Instance {
     handle: mut ffi.WGPUInstanceImpl;
 
-    fn requestAdapter(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
+    fn requestAdapterAsync(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
 
         let callback = Box<RequestAdapterCallback>(callbackInfo.callback);
         let userdata1: cptr = none;
@@ -36,6 +36,33 @@ export struct Instance {
         else {
             return fromFFI(ffi.wgpuInstanceRequestAdapter(this.handle, none, ffiCallbackInfo));
         }
+    }
+
+    fn requestAdapterSync(adapterOpts: RequestAdapterOptions | none): Result<mut Adapter, str> {
+        let adapter = none as mut Adapter | none;
+        let adapterReady = false;
+        let message = "";
+        this.requestAdapterAsync(adapterOpts, { 
+            callback: (status: RequestAdapterStatus, _adapter: mut Adapter, _message: str): void => {
+                if (status == RequestAdapterStatus.Success) {
+                    adapter = _adapter;
+                    adapterReady = true;
+                }
+                else {
+                    adapterReady = true;
+                }
+                message = _message;
+            }
+        });
+        let timeout = 100;
+        while !adapterReady && timeout > 0 {
+            time.sleep(0.1);
+            timeout--;
+        }
+        if adapter {
+            return adapter;
+        }
+        return message;
     }
 }
 

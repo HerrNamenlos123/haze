@@ -2,9 +2,9 @@
 __c__("#include \"ffi/main.c\"");
 
 namespace filedialog_ffi {
-    export extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
+    extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
 
-    export extern C noemit enum unscoped hz_filedialog_result_t {
+    extern C noemit enum unscoped hz_filedialog_result_t {
         hz_filedialog_result_ok = 1,
         hz_filedialog_result_cancel = 2,
         hz_filedialog_result_error = 3,

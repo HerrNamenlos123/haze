@@ -2,10 +2,9 @@
 import filedialog
 
 fn main(): int {
-    filedialog.open({
-        filters: "jpg,png;txt;exe;pdf",
-        defaultPath: "/home/fzachs"
-    });
-    fmt.println("Done");
+    let result = filedialog.open();
+    if result is filedialog.DialogSuccess {
+        fmt.println("Path: ", result.path);
+    }
     return 0;
 }

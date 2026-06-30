@@ -221,50 +221,8 @@ fn main(): int {
         let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
         if !surface { raise "WGPU Surface creation failed"; }
 
-        let adapter = none as mut wgpu.Adapter | none;
-        let adapterReady = false;
-        instance.requestAdapter({}, { 
-            callback: (status: wgpu.RequestAdapterStatus, _adapter: mut wgpu.Adapter, message: str): void => {
-                if (status == wgpu.RequestAdapterStatus.Success) {
-                    adapter = _adapter;
-                    adapterReady = true;
-                    fmt.println("Adapter request successful");
-                }
-                else {
-                    adapterReady = true;
-                    fmt.println("Adapter request failed");
-                }
-            }
-        });
-        let timeout = 100;
-        while !adapterReady && timeout > 0 {
-            time.sleep(0.1);
-            timeout--;
-        }
-        if (!adapter) { raise "Failed to get adapter after timeout"; }
-
-        let device = none as mut wgpu.Device | none;
-        let deviceReady = false;
-        adapter.requestDevice({}, { 
-            callback: (status: wgpu.RequestDeviceStatus, _device: mut wgpu.Device, message: str): void => {
-                if (status == wgpu.RequestDeviceStatus.Success) {
-                    device = _device;
-                    deviceReady = true;
-                    fmt.println("Device request successful");
-                }
-                else {
-                    deviceReady = true;
-                    fmt.println("Device request failed");
-                }
-            }
-        });
-
-        timeout = 100;
-        while !deviceReady && timeout > 0 {
-            time.sleep(0.1);
-            timeout--;
-        }
-        if (!device) { raise "Failed to get device after timeout"; }
+        let adapter = instance.requestAdapterSync({})?!;
+        let device = adapter.requestDeviceSync({})?!;
 
         let caps = surface.getCapabilities(adapter);
         if (!caps) { raise "Failed to get surface capabilities"; }

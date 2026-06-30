@@ -2,7 +2,7 @@
 export struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
-    fn requestDevice(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
+    fn requestDeviceAsync(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
         let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
         if descriptor {
             let requiredFeatureCount = 0 as usize;
@@ -67,6 +67,34 @@ export struct Adapter {
         return fromFFI(
             ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
         );
+    }
+
+    fn requestDeviceSync(descriptor: DeviceDescriptor | none): Result<mut Device, str> {
+        let device = none as mut Device | none;
+        let deviceReady = false;
+        let message = "";
+        this.requestDeviceAsync(descriptor, { 
+            callback: (status: RequestDeviceStatus, _device: mut Device, _message: str): void => {
+                if (status == RequestDeviceStatus.Success) {
+                    device = _device;
+                    deviceReady = true;
+                }
+                else {
+                    deviceReady = true;
+                }
+                message = _message;
+            }
+        });
+
+        let timeout = 100;
+        while !deviceReady && timeout > 0 {
+            time.sleep(0.1);
+            timeout--;
+        }
+        if device {
+            return device;
+        }
+        return message;
     }
 }
 
