@@ -11,15 +11,18 @@
 typedef void (*HazeSdlKeyFn)(void* userdata, int scancode, bool repeat);
 typedef void (*HazeSdlResizeFn)(void* userdata, int width, int height);
 typedef void (*HazeSdlMouseMoveFn)(void* userdata, float x, float y);
+typedef void (*HazeSdlMouseButtonFn)(void* userdata, int button, float x, float y);
 
 typedef struct {
   HazeSdlKeyFn keyDown;
   HazeSdlKeyFn keyUp;
   HazeSdlResizeFn resize;
   HazeSdlMouseMoveFn mouseMove;
+  HazeSdlMouseButtonFn mouseDown;
+  HazeSdlMouseButtonFn mouseUp;
 } haze_sdl_trampolines_t;
 
-static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL };
+static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL, NULL, NULL };
 
 void haze_sdl_register_trampolines(haze_sdl_trampolines_t t) { g_haze_trampolines = t; }
 
@@ -237,6 +240,31 @@ void haze_sdl_pollEvents(void)
         void* userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
           g_haze_trampolines.mouseMove(userdata, event.motion.x, event.motion.y);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+      SDL_Window* window = SDL_GetWindowFromID(event.button.windowID);
+      if (window && g_haze_trampolines.mouseDown) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          /* SDL buttons: 1=left, 2=middle, 3=right → map to 0/1/2 */
+          int btn = (int)event.button.button - 1;
+          g_haze_trampolines.mouseDown(userdata, btn, event.button.x, event.button.y);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+      SDL_Window* window = SDL_GetWindowFromID(event.button.windowID);
+      if (window && g_haze_trampolines.mouseUp) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          int btn = (int)event.button.button - 1;
+          g_haze_trampolines.mouseUp(userdata, btn, event.button.x, event.button.y);
         }
       }
       continue;

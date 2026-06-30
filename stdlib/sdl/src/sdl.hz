@@ -25,12 +25,15 @@ namespace ffi {
 	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
 	extern C type HazeSdlResizeFn = (userdata: cptr, width: i32, height: i32) -> void :: final;
 	extern C type HazeSdlMouseMoveFn = (userdata: cptr, x: f32, y: f32) -> void :: final;
+	extern C type HazeSdlMouseButtonFn = (userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
 
 	extern C noemit struct haze_sdl_trampolines_t {
 		keyDown: HazeSdlKeyFn;
 		keyUp: HazeSdlKeyFn;
 		resize: HazeSdlResizeFn;
 		mouseMove: HazeSdlMouseMoveFn;
+		mouseDown: HazeSdlMouseButtonFn;
+		mouseUp: HazeSdlMouseButtonFn;
 	}
 
 	extern C fn haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
@@ -44,6 +47,8 @@ namespace ffi {
 				keyUp: hazeKeyUpDispatch,
 				resize: hazeResizeDispatch,
 				mouseMove: hazeMouseMoveDispatch,
+				mouseDown: hazeMouseDownDispatch,
+				mouseUp: hazeMouseUpDispatch,
 			} as inline haze_sdl_trampolines_t);
 		}
 		return result;
@@ -164,6 +169,12 @@ export struct MouseMoveEvent {
 	pos: Vec2;
 }
 
+// button: 0=left, 1=middle, 2=right
+export struct MouseButtonEvent {
+	button: int;
+	pos: Vec2;
+}
+
 // ---------------------------------------------------------------------------
 // Callback type aliases
 // ---------------------------------------------------------------------------
@@ -171,6 +182,7 @@ export struct MouseMoveEvent {
 export type KeyEventCallback = (e: KeyEvent) => bool :: final;
 export type ResizeEventCallback = (e: ResizeEvent) => bool :: final;
 export type MouseMoveEventCallback = (e: MouseMoveEvent) => bool :: final;
+export type MouseButtonEventCallback = (e: MouseButtonEvent) => bool :: final;
 
 // ---------------------------------------------------------------------------
 // Internal handler structs (one per event category)
@@ -189,6 +201,11 @@ export struct ResizeHandler {
 export struct MouseMoveHandler {
 	id: int;
 	callback: MouseMoveEventCallback;
+}
+
+export struct MouseButtonHandler {
+	id: int;
+	callback: MouseButtonEventCallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +260,24 @@ fn hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
 	};
 }
 
+fn hazeMouseDownDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real) };
+		window.dispatchMouseDown(e);
+	};
+}
+
+fn hazeMouseUpDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real) };
+		window.dispatchMouseUp(e);
+	};
+}
+
 export struct Window {
 	handle: ffi.SDL_Window;
 
@@ -252,6 +287,8 @@ export struct Window {
 	keyUpHandlers: []KeyHandler = [];
 	resizeHandlers: []ResizeHandler = [];
 	mouseMoveHandlers: []MouseMoveHandler = [];
+	mouseDownHandlers: []MouseButtonHandler = [];
+	mouseUpHandlers: []MouseButtonHandler = [];
 
 	fn makeContextCurrent() {
 		ffi.makeContextCurrent(this.handle);
@@ -348,6 +385,20 @@ export struct Window {
 		return id;
 	}
 
+	fn onMouseDown(cb: MouseButtonEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.mouseDownHandlers.push(MouseButtonHandler { id: id, callback: cb });
+		return id;
+	}
+
+	fn onMouseUp(cb: MouseButtonEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.mouseUpHandlers.push(MouseButtonHandler { id: id, callback: cb });
+		return id;
+	}
+
 	// --- Deregistration ---
 
 	fn removeHandler(id: int) {
@@ -394,6 +445,28 @@ export struct Window {
 			}
 			i = i + 1;
 		}
+
+		i = 0;
+		while i < this.mouseDownHandlers.length {
+			if this.mouseDownHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->mouseDownHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
+
+		i = 0;
+		while i < this.mouseUpHandlers.length {
+			if this.mouseUpHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->mouseUpHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
 	}
 
 	// --- Internal dispatch (called by trampolines) ---
@@ -432,6 +505,26 @@ export struct Window {
 		let i = 0;
 		while i < this.mouseMoveHandlers.length {
 			if this.mouseMoveHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	fn dispatchMouseDown(e: MouseButtonEvent) {
+		let i = 0;
+		while i < this.mouseDownHandlers.length {
+			if this.mouseDownHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	fn dispatchMouseUp(e: MouseButtonEvent) {
+		let i = 0;
+		while i < this.mouseUpHandlers.length {
+			if this.mouseUpHandlers[i].callback(e) {
 				return;
 			}
 			i = i + 1;
