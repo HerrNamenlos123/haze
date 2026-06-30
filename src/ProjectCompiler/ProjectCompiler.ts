@@ -249,14 +249,28 @@ export class ProjectCompiler {
         if (!singleFilename) {
           for (const dep of cfg.dependencies) {
             if (!modules.has(dep.name)) {
-              const depConfig = await parseConfig(
-                join(stdlibDir, dep.path),
-                undefined,
-                sourceloc
-              );
+              const depBaseDir = cfg.configFilePath
+                ? dirname(cfg.configFilePath)
+                : stdlibDir;
+              const resolvedDepPath = join(depBaseDir, dep.path);
+              let depConfig: Awaited<ReturnType<typeof parseConfig>>;
+              try {
+                depConfig = await parseConfig(
+                  undefined,
+                  resolvedDepPath,
+                  sourceloc
+                );
+              } catch {
+                throw new GeneralError(
+                  `Failed to load dependency '${dep.name}' of module '${cfg.name}':\n` +
+                  `  Declared path: ${dep.path}\n` +
+                  `  Resolved path: ${resolvedDepPath}\n` +
+                  `  No 'haze.toml' found at that location.`
+                );
+              }
               if (!depConfig) {
                 throw new GeneralError(
-                  `Failed to load dependency '${dep.name}'`
+                  `Failed to load dependency '${dep.name}' of module '${cfg.name}'`
                 );
               }
               await loadModule(depConfig);

@@ -13,4 +13,4 @@ run = "haze run"
 test = "haze test"
 
 [dependencies]
-filedialog = { path = "./filedialog" }
+filedialog = { path = "../stdlib/filedialog" }

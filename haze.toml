@@ -24,23 +24,23 @@ test = "haze test"
 # warnings_as_errors = false
 
 [dependencies]
-sdl = { path = "./sdl" }
-gl = { path = "./gl" }
-wgpu = { path = "./wgpu" }
-sdl_wgpu = { path = "./sdl_wgpu" }
+sdl = { path = "stdlib/sdl" }
+gl = { path = "stdlib/gl" }
+wgpu = { path = "stdlib/wgpu" }
+sdl_wgpu = { path = "stdlib/sdl_wgpu" }
 
 # UI framework modules (fontstash must come before these since they depend on it)
-fontstash = { path = "./fontstash" }
-ui_styling = { path = "./ui_styling" }
-ui_elements = { path = "./ui_elements" }
-headwind = { path = "./headwind" }
-ui_layout = { path = "./ui_layout" }
-renderer = { path = "./renderer" }
-ui_components = { path = "./ui_components" }
-ui_runtime = { path = "./ui_runtime" }
+fontstash = { path = "stdlib/fontstash" }
+ui_styling = { path = "stdlib/ui_styling" }
+ui_elements = { path = "stdlib/ui_elements" }
+headwind = { path = "stdlib/headwind" }
+ui_layout = { path = "stdlib/ui_layout" }
+renderer = { path = "stdlib/renderer" }
+ui_components = { path = "stdlib/ui_components" }
+ui_runtime = { path = "stdlib/ui_runtime" }
 
-tesselate = { path = "./tesselate" }
-perfect_freehand = { path = "./perfect_freehand" }
+tesselate = { path = "stdlib/tesselate" }
+perfect_freehand = { path = "stdlib/perfect_freehand" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }

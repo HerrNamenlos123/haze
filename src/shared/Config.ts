@@ -397,7 +397,7 @@ export class ConfigParser {
     if (explicitDir) {
       configPath = join(explicitDir, hazeConfigFile);
       if (!existsSync(configPath)) {
-        throw new GeneralError(`'${hazeConfigFile}' does not exist.`);
+        throw new GeneralError(`'${configPath}' does not exist.`);
       }
     } else {
       configPath = this.findUpwards(hazeConfigFile, startDir);
