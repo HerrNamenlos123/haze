@@ -285,12 +285,35 @@ namespace json {
     type C = A | B;
 
     fn foo() {
+        // json.parse<A>("{ type: \"VariantA\" }");
+        // json.stringify(A { type: "VariantA" });
         json.parse<C>("{ type: \"VariantA\" }");
         json.stringify(A { type: "VariantA" } as C);
     }
 
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
-        if comptime T is str {
+        if comptime T.category == meta.TypeCategory.Literal {
+            if comptime T.baseType is str {
+                let resultValue = parseJsonNodeFromFfi<str>(allocator, node);
+                if !resultValue { return resultValue; }
+                if resultValue == T.literalValue {
+                    return Result<T, Error>.Ok(T.literalValue);
+                }
+                return Error { error: f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
+            }
+            else if comptime T.baseType is int {
+                let resultValue = parseJsonNodeFromFfi<int>(allocator, node);
+                if !resultValue { return resultValue; }
+                if resultValue == T.literalValue {
+                    return Result<T, Error>.Ok(T.literalValue);
+                }
+                return Error { error: f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
+            }
+            else {
+                static_assert(false, f"json.parse() only supports comptime literals that are str or int");
+            }
+        }
+        else if comptime T is str {
             if !ffi.hzstd_json_is_string(node) { 
                 return Error { error: "JSON type mismatch: expected string" };
             }
@@ -333,13 +356,16 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Union {
             // Comptime ambiguity check: int and real both map to JSON number
-            for comptime VariantA in T.variants {
-                for comptime VariantB in T.variants {
+            for comptime VariantA, i in T.variants {
+                for comptime VariantB, j in T.variants {
                     if comptime VariantA is int && VariantB is real {
                         static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
                     }
                     if comptime VariantA.category == meta.TypeCategory.Array && VariantB.category == meta.TypeCategory.DynamicArray {
                         static_assert(false, f"Ambiguous JSON union '{T.prettyName}': fixed and dynamic arrays cannot be distinguished");
+                    }
+                    if comptime i != j && VariantA.category == meta.TypeCategory.Struct&& VariantB.category == meta.TypeCategory.Struct {
+                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': multiple structs in union with no discriminator field annotation");
                     }
                 }
             }
@@ -417,9 +443,11 @@ namespace json {
         return obj;
     }
 
-    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON | none {
-
-        if comptime T.category == meta.TypeCategory.Deep {
+    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON | none :: final {
+        if comptime T.category == meta.TypeCategory.Literal {
+            return dumpJsonNode(allocator, value as T.baseType);
+        }
+        else if comptime T.category == meta.TypeCategory.Deep {
             return dumpJsonStruct<T.baseType>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {

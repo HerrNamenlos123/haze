@@ -8322,6 +8322,15 @@ export class SemanticElaborator {
         );
       }
 
+      if (resolvedTypeDef.variant === Semantic.ENode.LiteralDatatype) {
+        if (name === "literalValue") {
+          return this.sr.b.literalValue(
+            resolvedTypeDef.literalValue,
+            sourceloc
+          );
+        }
+      }
+
       if (resolvedTypeDef.variant === Semantic.ENode.DeepDatatype) {
         return this.resolveMemberAccess(
           this.sr.b.datatypeUseAsValue(
