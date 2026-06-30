@@ -230,9 +230,13 @@ namespace json {
     }
 
     export fn parseJsonFixedArray<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
-        if !ffi.hzstd_json_is_array(node) { sys.panic("JSON type mismatch: expected array"); }
+        if !ffi.hzstd_json_is_array(node) { 
+            return Error { error: "JSON type mismatch: expected array" };
+        }
         let actual = ffi.hzstd_json_get_array_size(allocator, node) as usize;
-        if actual != T.length as usize { sys.panic(f"JSON fixed array length mismatch: expected {T.length}, got {actual}"); }
+        if actual != T.length as usize { 
+            return Error { error: f"JSON fixed array length mismatch: expected {T.length}, got {actual}" };
+        }
         do unsafe {
             let arr: T = uninitialized;
             __c__("memset(&arr, 0, sizeof(arr));");
@@ -248,7 +252,9 @@ namespace json {
     }
 
     export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
-        if !ffi.hzstd_json_is_object(node) { sys.panic("JSON type mismatch: expected object"); }
+        if !ffi.hzstd_json_is_object(node) { 
+            return Error { error: "JSON type mismatch: expected object" };
+        }
         do unsafe {
             let result: T = uninitialized;
             __c__("result = hzstd_allocate(allocator, sizeof(*result)); memset(result, 0, sizeof(*result));");
@@ -269,16 +275,25 @@ namespace json {
     }
 
     struct A {
-        value: str | null;
+        type: "VariantA";
     }
 
+    struct B {
+        type: "VariantB";
+    }
+
+    type C = A | B;
+
     fn foo() {
-        json.parse<A>("{ value: null }");
+        json.parse<C>("{ type: \"VariantA\" }");
+        json.stringify(A { type: "VariantA" } as C);
     }
 
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
         if comptime T is str {
-            if !ffi.hzstd_json_is_string(node) { sys.panic("JSON type mismatch: expected string"); }
+            if !ffi.hzstd_json_is_string(node) { 
+                return Error { error: "JSON type mismatch: expected string" };
+            }
             let value = ffi.hzstd_json_get_string_value(allocator, node);
             if value { return value.data; }
             return Error { error: "JSON: failed to read string value" };
@@ -301,10 +316,12 @@ namespace json {
             }
             return ffi.hzstd_json_is_true(node);
         }
-        // else if comptime T is null {
-        //     if !ffi.hzstd_json_is_null(node) { sys.panic("JSON type mismatch: expected null"); }
-        //     return null;
-        // }
+        else if comptime T is null {
+            if !ffi.hzstd_json_is_null(node) { 
+                return Error { error: "JSON type mismatch: expected null" };
+            }
+            return null;
+        }
         else if comptime T.category == meta.TypeCategory.DynamicArray {
             return parseJsonArray<T>(allocator, node);
         }
@@ -314,82 +331,38 @@ namespace json {
         else if comptime T.category == meta.TypeCategory.Struct {
             return parseJsonStruct<T>(allocator, node);
         }
-        // else if comptime T.category == meta.TypeCategory.Union {
-        //     // Comptime ambiguity check: int and real both map to JSON number
-        //     for comptime VariantA in T.variants {
-        //         if comptime VariantA is int {
-        //             for comptime VariantB in T.variants {
-        //                 if comptime VariantB is real {
-        //                     static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
-        //                 }
-        //             }
-        //         }
-        //     }
+        else if comptime T.category == meta.TypeCategory.Union {
+            // Comptime ambiguity check: int and real both map to JSON number
+            for comptime VariantA in T.variants {
+                for comptime VariantB in T.variants {
+                    if comptime VariantA is int && VariantB is real {
+                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': int and real both serialize as JSON numbers");
+                    }
+                    if comptime VariantA.category == meta.TypeCategory.Array && VariantB.category == meta.TypeCategory.DynamicArray {
+                        static_assert(false, f"Ambiguous JSON union '{T.prettyName}': fixed and dynamic arrays cannot be distinguished");
+                    }
+                }
+            }
 
-        //     if ffi.hzstd_json_is_null(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant is null {
-        //                 return null as T;
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected null in union '{T.prettyName}'");
-        //     }
-        //     else if ffi.hzstd_json_is_bool(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant is bool {
-        //                 return ffi.hzstd_json_is_true(node) as T;
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected bool in union '{T.prettyName}'");
-        //     }
-        //     else if ffi.hzstd_json_is_string(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant is str {
-        //                 let value = ffi.hzstd_json_get_string_value(allocator, node);
-        //                 if value { return value.data as T; }
-        //                 sys.panic("JSON: failed to read string value");
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected string in union '{T.prettyName}'");
-        //     }
-        //     else if ffi.hzstd_json_is_number(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant is int {
-        //                 return ffi.hzstd_json_get_number_value(allocator, node) as int as T;
-        //             }
-        //         }
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant is real {
-        //                 return ffi.hzstd_json_get_number_value(allocator, node) as T;
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected number in union '{T.prettyName}'");
-        //     }
-        //     else if ffi.hzstd_json_is_object(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant.category == meta.TypeCategory.Struct {
-        //                 return parseJsonStruct<Variant>(allocator, node) as T;
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected object in union '{T.prettyName}'");
-        //     }
-        //     else if ffi.hzstd_json_is_array(node) {
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant.category == meta.TypeCategory.DynamicArray {
-        //                 return parseJsonArray<Variant>(allocator, node) as T;
-        //             }
-        //         }
-        //         for comptime Variant in T.variants {
-        //             if comptime Variant.category == meta.TypeCategory.Array {
-        //                 return parseJsonFixedArray<Variant>(allocator, node) as T;
-        //             }
-        //         }
-        //         sys.panic(f"JSON type mismatch: unexpected array in union '{T.prettyName}'");
-        //     }
-        //     else {
-        //         sys.panic(f"JSON: unknown node type when parsing union '{T.prettyName}'");
-        //     }
-        // }
+            // If the value does not exist and none is expected, return prematurely
+            for comptime Variant in T.variants {
+                if comptime Variant is none {
+                    if let result = parseJsonNodeFromFfi<none>(allocator, node) {
+                        return result;
+                    }
+                }
+            }
+
+            // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
+            for comptime Variant in T.variants {
+                // Node is this type, return it
+                if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
+                    return Result<T, Error>.Ok(result);
+                }
+            }
+
+            return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value" };
+        }
         else {
             static_assert(false, f"json.parse(): type {T.prettyName} is not supported");
         }

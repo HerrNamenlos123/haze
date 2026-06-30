@@ -181,3 +181,5 @@ __haze__
 *.tsk
 
 *.cpuprofile
+
+*.cache.*
