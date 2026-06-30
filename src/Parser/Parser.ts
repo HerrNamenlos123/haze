@@ -44,6 +44,7 @@ import {
   type ASTLambda,
   type ASTLambdaExpr,
   type ASTLiteralExpr,
+  type ASTMetaAnnotationItem,
   type ASTModuleImport,
   type ASTModuleNamespaceDefinition,
   type ASTMutTypeExpr,
@@ -134,6 +135,8 @@ import {
   type IntegerUnitLiteralContext,
   type LambdaContext,
   type LogicalContext,
+  type MetaAnnotationContext,
+  type MetaAnnotationItemContext,
   type ModuleNamespaceDefinitionContext,
   type MultiplicativeContext,
   type NameExprContext,
@@ -656,6 +659,36 @@ class ASTBuilder extends HazeParserListener {
       type: EPrimitive.bool,
       value: ctx.getText() === "true",
     } satisfies LiteralValue);
+  };
+
+  exitMetaAnnotationItem = (ctx: MetaAnnotationItemContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    let value: LiteralValue | null = null;
+    if (ctx.literal()) {
+      if (produced.length !== 1) {
+        throw new InternalError("MetaAnnotationItem stack mismatch");
+      }
+      value = produced[0] as LiteralValue;
+    } else if (produced.length !== 0) {
+      throw new InternalError("MetaAnnotationItem stack mismatch");
+    }
+
+    this.stack.push({
+      key: ctx
+        .RAW_ID()
+        .map((t) => t.getText())
+        .join("."),
+      value: value,
+    } satisfies ASTMetaAnnotationItem);
+  };
+
+  exitMetaAnnotation = (ctx: MetaAnnotationContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    this.stack.push(produced as ASTMetaAnnotationItem[]);
   };
 
   makeIntegerUnitLiteral(ctx: IntegerUnitLiteralContext): LiteralValue {
@@ -1311,7 +1344,10 @@ class ASTBuilder extends HazeParserListener {
   };
 
   exitStructMember = (ctx: StructMemberContext) => {
-    const expectedChildren = (ctx.typeExpr() ? 1 : 0) + (ctx.expr() ? 1 : 0);
+    const expectedChildren =
+      (ctx.metaAnnotation() ? 1 : 0) +
+      (ctx.typeExpr() ? 1 : 0) +
+      (ctx.expr() ? 1 : 0);
     const start = this.stack.length - expectedChildren;
 
     if (start < 0) {
@@ -1323,6 +1359,11 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     let i = 0;
+
+    let annotations: ASTMetaAnnotationItem[] = [];
+    if (ctx.metaAnnotation()) {
+      annotations = produced[i++] as ASTMetaAnnotationItem[];
+    }
 
     const type = produced[i++] as ASTExpr;
 
@@ -1341,6 +1382,7 @@ class ASTBuilder extends HazeParserListener {
       variant: "StructMember",
       name: ctx.TYPE()?.getText() ?? ctx.id()!.getText(),
       type: type,
+      annotations: annotations,
       mutability: ctx.variableMutabilitySpecifier()
         ? this.mutability(ctx)
         : EVariableMutability.Default,
@@ -1553,6 +1595,12 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
+    let i = 0;
+    let annotations: ASTMetaAnnotationItem[] = [];
+    if (ctx.metaAnnotation()) {
+      annotations = produced[i++] as ASTMetaAnnotationItem[];
+    }
+
     const members: ASTStructMemberDefinition[] = [];
     const methods: ASTFunctionDefinition[] = [];
     const declarations: ASTStructDefinition[] = [];
@@ -1589,7 +1637,7 @@ class ASTBuilder extends HazeParserListener {
       }
     };
 
-    for (const c of produced) {
+    for (const c of produced.slice(i)) {
       processContent(c);
     }
 
@@ -1604,6 +1652,7 @@ class ASTBuilder extends HazeParserListener {
       export: Boolean(ctx._export_),
       pub: Boolean(ctx._pub),
       extern: this.exlang(ctx),
+      annotations: annotations,
       opaque: Boolean(ctx.OPAQUE()),
       plain: Boolean(ctx.PLAIN()),
       inlineByDefault: Boolean(ctx.INLINE()),
@@ -2730,11 +2779,17 @@ class ASTBuilder extends HazeParserListener {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
-    if (produced.length !== 1) {
-      throw new InternalError("TypeAliasDirective stack mismatch");
+    let i = 0;
+    let annotations: ASTMetaAnnotationItem[] = [];
+    if (ctx.metaAnnotation()) {
+      annotations = produced[i++] as ASTMetaAnnotationItem[];
     }
 
-    const datatype = produced[0];
+    const datatype = produced[i++];
+
+    if (i !== produced.length) {
+      throw new InternalError("TypeAliasDirective stack mismatch");
+    }
 
     assert(ctx._name !== null && ctx._name !== undefined);
     assert(ctx._name.getText());
@@ -2755,6 +2810,7 @@ class ASTBuilder extends HazeParserListener {
       })),
       pub: Boolean(ctx._pub),
       name: ctx._name.getText(),
+      annotations: annotations,
       sourceloc: this.loc(ctx),
     } satisfies ASTTypeAlias);
   };

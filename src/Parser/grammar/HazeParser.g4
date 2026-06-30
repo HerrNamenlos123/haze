@@ -89,7 +89,7 @@ globalVariableDef
     ;
 
 typeDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS typeExpr        #TypeAliasDirective
+    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS typeExpr        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier
@@ -118,6 +118,14 @@ interpolatedString
 
 interpolatedStringFragment: FSTRING_GRAPHEME | interpolatedStringExpression;
 interpolatedStringExpression: LCURLY expr RCURLY;
+
+metaAnnotationItem
+    : RAW_ID (DOT RAW_ID)* (EQUALS literal)?
+    ;
+
+metaAnnotation
+    : LBRACKET LBRACKET metaAnnotationItem (COMMA metaAnnotationItem)* COMMA? RBRACKET RBRACKET
+    ;
 
 typeExprPrimary
     : nameExpr
@@ -165,7 +173,7 @@ genericLiteral
 
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
-    | variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
+    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
     | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition
@@ -180,7 +188,7 @@ enumDefinition
     ;
 
 structDefinition
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? INLINE? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? INLINE? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition

@@ -382,6 +382,7 @@ export type ASTTypeAlias = {
   export: boolean;
   pub: boolean;
   extern: EExternLanguage;
+  annotations: ASTMetaAnnotationItem[];
   sourceloc: SourceLoc;
 };
 
@@ -730,6 +731,11 @@ export type ASTCInjectDirective = {
   sourceloc: SourceLoc;
 };
 
+export type ASTMetaAnnotationItem = {
+  key: string;
+  value: LiteralValue | null;
+};
+
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
@@ -737,6 +743,7 @@ export type ASTStructMemberDefinition = {
   defaultValue: ASTExpr | null;
   optional: boolean;
   mutability: EVariableMutability;
+  annotations: ASTMetaAnnotationItem[];
   sourceloc: SourceLoc;
 };
 
@@ -778,6 +785,7 @@ export type ASTStructDefinition = {
   members: ASTStructMemberDefinition[];
   methods: ASTFunctionDefinition[];
   nestedStructs: ASTStructDefinition[];
+  annotations: ASTMetaAnnotationItem[];
   sourceloc: SourceLoc;
   originalSourcecode: string;
 };
