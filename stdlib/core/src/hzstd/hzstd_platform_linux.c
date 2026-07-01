@@ -154,93 +154,112 @@ static void store_panic_reason(hzstd_str_t msg)
   panic_reason = (hzstd_str_t) { .data = panic_reason_buf, .length = len };
 }
 
-// ── Watchdog fallback ─────────────────────────────────────────────────────────
+// ── Crash-safe unwinding ──────────────────────────────────────────────────────
 //
-// Normally the worker thread builds the report and calls _exit() itself,
-// which ends the whole process. If it never gets there -- e.g. it deadlocked
-// acquiring the GC allocator lock some other (now permanently parked) thread
-// was holding at the moment it crashed, or it crashed itself partway through
-// unwinding/symbolizing a corrupted stack -- the panicking thread must not
-// just wait forever with zero output. See hzstd_panic_handler /
-// hzstd_panic_with_stacktrace below for where this is used: they sleep for
-// this long and, if the process is somehow still alive afterwards (proof the
-// worker never called _exit()), fall back to a minimal report printed
-// directly here instead.
-#define HZSTD_PANIC_WATCHDOG_TIMEOUT_NS (5ull * 1000 * 1000 * 1000)
-
-// Deliberately allocation-free and built only from data already sitting in
-// static storage (panic_reason_buf), so it can't hit the exact same hazard
-// (a stuck GC lock) that got us here in the first place. No symbol names or
-// source locations -- that's exactly the work that didn't finish -- this
-// exists purely so a stuck worker still produces *some* visible output
-// instead of the process hanging forever in silence.
-static void hzstd_panic_watchdog_fallback_report(void)
-{
-  static const char preamble[] = "\n[hzstd] PANIC (the stacktrace builder did not respond in time -- "
-                                 "printing a minimal report instead):\n";
-  ssize_t ignored;
-  ignored = write(STDERR_FILENO, preamble, sizeof(preamble) - 1);
-  ignored = write(STDERR_FILENO, panic_reason_buf, strlen(panic_reason_buf));
-  ignored = write(STDERR_FILENO, "\n", 1);
-  (void)ignored;
-}
-
-// ── Crash-safe symbol resolution ──────────────────────────────────────────────
-//
-// Resolving a frame's symbol name can itself crash -- e.g. the pc lands in
-// anonymously-mapped, non-ELF-backed JIT code (a GPU driver's runtime shader
-// compiler is a common source of this), which is exactly the kind of address
-// a real crash's stack can contain. A single bad frame must not be allowed to
-// take down the entire worker thread: unlike an ordinary thread, it has
-// nowhere to recover to -- its own signal handler would see panic_in_progress
+// The whole point of this worker is to unwind and symbolize the stack a real
+// crash left behind -- but unw_get_reg/unw_step/unw_get_proc_name all walk
+// data belonging to that very stack (and its unwind/CFI info), and if the
+// original crash corrupted either one, this walk can itself land on bad
+// memory. Two distinct failure modes follow from that, and both must be
+// handled here, not left to take the whole worker thread down:
+//   - a segfault partway through (e.g. unw_get_proc_name resolving a pc that
+//     lands in anonymously-mapped, non-ELF-backed JIT code -- a GPU driver's
+//     runtime shader compiler is a common source of this) -- recovered via
+//     sigsetjmp/siglongjmp below;
+//   - corrupted/cyclic unwind info that never reaches a real end, causing
+//     unw_step to keep returning >0 forever -- bounded by capping the loop
+//     at HZSTD_PANIC_MAX_FRAMES.
+// Either failure mode, left unhandled, means this worker thread never
+// finishes: unlike an ordinary thread, it has nowhere to recover to if it
+// crashes outright -- its own signal handler would see panic_in_progress
 // already claimed (by the very panic it's supposed to be reporting) and just
-// park it forever, silently, exactly like hzstd_panic_handler below does for
-// any second thread that faults while a panic is already in flight. Mirrors
-// hzstd_profiling_safe_get_proc_name_by_ip in hzstd_profiling.c.
-static sigjmp_buf g_panic_resolve_recovery;
+// park it forever, silently, exactly like hzstd_panic_handler does for any
+// second thread that faults while a panic is already in flight. The
+// crash-recovery half mirrors hzstd_profiling_safe_get_proc_name_by_ip in
+// hzstd_profiling.c, just widened to cover the whole unwind loop instead of
+// only the symbol-name lookup.
+#define HZSTD_PANIC_MAX_FRAMES 128
 
-static void hzstd_panic_resolve_crash_handler(int sig)
+static sigjmp_buf g_panic_unwind_recovery;
+
+static void hzstd_panic_unwind_crash_handler(int sig)
 {
   (void)sig;
-  siglongjmp(g_panic_resolve_recovery, 1);
+  siglongjmp(g_panic_unwind_recovery, 1);
 }
 
-static int hzstd_panic_safe_get_proc_name(unw_cursor_t* cursor, char* buf, size_t buf_len, unw_word_t* offp)
-{
-  struct sigaction newAction, oldSegvAction, oldBusAction;
-  memset(&newAction, 0, sizeof(newAction));
-  newAction.sa_handler = hzstd_panic_resolve_crash_handler;
-  sigemptyset(&newAction.sa_mask);
-
-  sigaction(SIGSEGV, &newAction, &oldSegvAction);
-  sigaction(SIGBUS, &newAction, &oldBusAction);
-
-  int result;
-  if (sigsetjmp(g_panic_resolve_recovery, 1) == 0) {
-    result = unw_get_proc_name(cursor, buf, buf_len, offp);
-  }
-  else {
-    result = -1; // crashed partway through -- treat like "not found"
-  }
-
-  sigaction(SIGSEGV, &oldSegvAction, NULL);
-  sigaction(SIGBUS, &oldBusAction, NULL);
-  return result;
-}
-
-// Pushes one already-sized-for-exactly-this-many-frames entry, bypassing
-// hzstd_dynamic_array_push entirely: per hzstd_array.h, a dynamic array's
-// backing buffer is *always* GC-heap allocated/reallocated no matter which
-// allocator its control struct was created with, which is precisely the
-// hazard this whole worker thread must avoid (see hzstd_panic_handler_thread
-// below). `arr`'s buffer must already have capacity >= arr->size + 1 -- true
-// here because the caller does an initial dry-run pass to count frames
-// first, then allocates the buffer to that exact size before this is ever
-// called.
+// Pushes one entry into an array whose capacity is always HZSTD_PANIC_MAX_FRAMES
+// (see hzstd_panic_build_frames), bypassing hzstd_dynamic_array_push entirely:
+// per hzstd_array.h, a dynamic array's backing buffer is *always* GC-heap
+// allocated/reallocated no matter which allocator its control struct was
+// created with, which is precisely the hazard this whole worker thread must
+// avoid (see hzstd_panic_handler_thread below).
 static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t* arr, hzstd_stackframe_t frame)
 {
   assert(arr->size < arr->capacity);
   ((hzstd_stackframe_t*)arr->buffer)[arr->size++] = frame;
+}
+
+// Fills in an already-allocated, HZSTD_PANIC_MAX_FRAMES-capacity frameArray
+// by unwinding panic_context, stopping at whichever comes first: a real end
+// of stack, HZSTD_PANIC_MAX_FRAMES entries, or a crash/recovery partway
+// through -- in which case frameArray already holds every frame captured
+// before that happened, which is exactly what's reported (a truncated real
+// trace beats no trace at all).
+static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_array_t* frameArray)
+{
+  struct sigaction newAction, oldSegvAction, oldBusAction;
+  memset(&newAction, 0, sizeof(newAction));
+  newAction.sa_handler = hzstd_panic_unwind_crash_handler;
+  sigemptyset(&newAction.sa_mask);
+  sigaction(SIGSEGV, &newAction, &oldSegvAction);
+  sigaction(SIGBUS, &newAction, &oldBusAction);
+
+  if (sigsetjmp(g_panic_unwind_recovery, 1) == 0) {
+    size_t nextId = 1;
+    unw_cursor_t cursor;
+    unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
+    do {
+      if (frameArray->size >= frameArray->capacity) {
+        break;
+      }
+
+      unw_word_t pc;
+      unw_get_reg(&cursor, UNW_REG_IP, &pc);
+
+      bool pushed = false;
+      for (size_t i = 0; i < frameArray->size; i++) {
+        hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
+        if (frame.instructionPointer == (hzstd_cptr_t)pc) {
+          hzstd_panic_frame_array_push(frameArray, frame);
+          pushed = true;
+          break;
+        }
+      }
+
+      if (!pushed) {
+        int maxNameLen = 4096;
+        hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen), 0);
+        unw_word_t offset;
+        if (unw_get_proc_name(&cursor, (char*)name.data, maxNameLen, &offset) == 0) {
+          name.length = strlen(name.data);
+        }
+
+        hzstd_stackframe_t fr = {
+          .id = nextId++,
+          .instructionPointer = (void*)pc,
+          .name = name,
+          .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
+        };
+        hzstd_panic_frame_array_push(frameArray, fr);
+      }
+    } while (unw_step(&cursor) > 0);
+  }
+  // else: recovered from a crash partway through -- frameArray already holds
+  // whatever was captured before that, which is all that's needed here.
+
+  sigaction(SIGSEGV, &oldSegvAction, NULL);
+  sigaction(SIGBUS, &oldBusAction, NULL);
 }
 
 // ── Worker thread ─────────────────────────────────────────────────────────────
@@ -249,7 +268,7 @@ static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t* arr, hzstd_stack
 // captured unw_context_t, then either longjmps (via panic_response) or
 // prints and exits.
 //
-// Deliberately uses a plain malloc-backed allocator (hzstd_make_malloc_allocator,
+// Deliberately uses a plain malloc-backed allocator (hzstd_make_non_gc_raw_malloc_allocator,
 // plus the manual buffer construction below for the frame array specifically)
 // rather than the GC heap for everything it allocates here: the panicking
 // thread may have crashed while it was itself mid GC_malloc/GC_realloc,
@@ -270,61 +289,22 @@ static void* hzstd_panic_handler_thread(void* _)
     // Never GC-backed -- see the big comment above this function.
     hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
 
-    // Dry-run: count frames.
-    size_t numberOfFrames = 0;
-    unw_cursor_t cursor;
-    unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
-    do {
-      numberOfFrames++;
-    } while (unw_step(&cursor) > 0);
-
     // Build the frame array's control struct *and* its backing buffer by
     // hand instead of via hzstd_dynamic_array_create/HZSTD_DYNAMIC_ARRAY_PUSH:
     // per hzstd_array.h, a dynamic array's buffer is always GC-heap allocated
     // regardless of which allocator its control struct was created with, so
     // going through the normal API here would silently reintroduce the exact
-    // GC_malloc hazard this whole function exists to avoid. Sized to exactly
-    // numberOfFrames up front (one push per unw_step iteration below, no
-    // more), so this buffer is allocated exactly once and never needs to grow.
+    // GC_malloc hazard this whole function exists to avoid. Fixed capacity
+    // (HZSTD_PANIC_MAX_FRAMES) allocated once, up front -- see
+    // hzstd_panic_build_frames for why this no longer needs an initial
+    // dry-run pass to size it exactly.
     hzstd_dynamic_array_t* frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t));
-    frameArray->buffer = hzstd_allocate(allocator, numberOfFrames * sizeof(hzstd_stackframe_t));
+    frameArray->buffer = hzstd_allocate(allocator, HZSTD_PANIC_MAX_FRAMES * sizeof(hzstd_stackframe_t));
     frameArray->elem_size = sizeof(hzstd_stackframe_t);
     frameArray->size = 0;
-    frameArray->capacity = numberOfFrames;
+    frameArray->capacity = HZSTD_PANIC_MAX_FRAMES;
 
-    size_t nextId = 1;
-    unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
-    do {
-      unw_word_t pc;
-      unw_get_reg(&cursor, UNW_REG_IP, &pc);
-
-      bool pushed = false;
-      for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-        hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
-        if (frame.instructionPointer == (hzstd_cptr_t)pc) {
-          hzstd_panic_frame_array_push(frameArray, frame);
-          pushed = true;
-          break;
-        }
-      }
-
-      if (!pushed) {
-        int maxNameLen = 4096;
-        hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen), 0);
-        unw_word_t offset;
-        if (hzstd_panic_safe_get_proc_name(&cursor, (char*)name.data, maxNameLen, &offset) == 0) {
-          name.length = strlen(name.data);
-        }
-
-        hzstd_stackframe_t fr = {
-          .id = nextId++,
-          .instructionPointer = (void*)pc,
-          .name = name,
-          .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
-        };
-        hzstd_panic_frame_array_push(frameArray, fr);
-      }
-    } while (unw_step(&cursor) > 0);
+    hzstd_panic_build_frames(allocator, frameArray);
 
     bool has_recovery = (panic_recovery_target != NULL);
     bool build_only = (panic_mode == PANIC_MODE_BUILD_ONLY);
@@ -454,14 +434,8 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   hzstd_trigger_semaphore(&panic_trigger);
 
   if (panic_recovery_target == NULL) {
-    // Worker will print & _exit(), which ends the whole process -- so this
-    // sleep normally never actually finishes. If it does, that's proof the
-    // worker never got there (see hzstd_panic_watchdog_fallback_report), so
-    // fall back to a minimal report and exit here instead of blocking
-    // forever with zero output.
-    os_sleep_ns(HZSTD_PANIC_WATCHDOG_TIMEOUT_NS);
-    hzstd_panic_watchdog_fallback_report();
-    _exit(-1);
+    // Worker will print & _exit; park this thread.
+    hzstd_block_thread_forever();
   }
 
   // Wait for worker to finish building the stacktrace.
@@ -508,10 +482,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   hzstd_trigger_semaphore(&panic_trigger);
 
   if (panic_recovery_target == NULL) {
-    // See the matching comment in hzstd_panic_handler above.
-    os_sleep_ns(HZSTD_PANIC_WATCHDOG_TIMEOUT_NS);
-    hzstd_panic_watchdog_fallback_report();
-    _exit(-1);
+    hzstd_block_thread_forever();
   }
 
   hzstd_wait_for_semaphore(&panic_response);
