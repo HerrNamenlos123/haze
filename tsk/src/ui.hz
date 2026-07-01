@@ -90,10 +90,15 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
 
                 // TEMPORARY transform test bed -- remove once confirmed working.
-                ui.text({ id: 201, text: "2D: rotate / shear / rigid rotated text / transformed mesh" });
+                // postEffect applies the screen-space water-refraction shader
+                // (see resources/postfx_water.wgsl) to everything drawn into
+                // this canvas -- including the already-rotated/sheared
+                // content below -- as a pure UV distortion, no color change.
+                ui.text({ id: 201, text: "2D: rotate / shear / rigid rotated text / transformed mesh (underwater)" });
                 ui.canvas({
                     id: 600,
                     style: { width: 260.0, height: 220.0 },
+                    postEffect: waterEffectSource,
                 }, (r: mut renderer.gfx.Renderer): void => {
                     r.drawRect({
                         pos: Vec2(10, 10),
@@ -135,7 +140,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                         size: 16,
                         text: "spinning line!",
                         color: Color(1, 1, 1, 1),
-                        transform: mat4.rotationZ(math.degToRad(-18)),
+                        transform: mat4.rotationZ(math.degToRad(ui.now() * 90.0)),
                     });
 
                     // Mesh triangle with its own scale+rotate transform,
@@ -230,65 +235,38 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                 // a real extension point, not a special case. Passing the
                 // shader source directly as a canvas prop is the entire API:
                 // no manual compile step, no per-frame "apply this effect"
-                // call.
-                ui.text({ id: 203, text: "Post effects: water refraction (left) / mouse-reactive glitch (right)" });
-                ui.div({
-                    id: 204,
-                    style: { direction: ui_styling.Direction.Row, gap: 12.0 },
-                }, (): void => {
-                    ui.canvas({
-                        id: 602,
-                        style: { width: 240.0, height: 150.0 },
-                        postEffect: waterEffectSource,
-                    }, (r: mut renderer.gfx.Renderer): void => {
-                        // A grid reads the water displacement far more
-                        // clearly than a solid fill would.
-                        r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.05, 0.2, 0.35, 1) });
-                        for (let x = 0; x < 7; x++) {
-                            r.drawRect({ pos: Vec2((x as real) * 36.0, 0), size: Vec2(2, 150), fillColor: Color(0.6, 0.85, 1.0, 1) });
-                        }
-                        for (let y = 0; y < 5; y++) {
-                            r.drawRect({ pos: Vec2(0, (y as real) * 36.0), size: Vec2(240, 2), fillColor: Color(0.6, 0.85, 1.0, 1) });
-                        }
-                        r.drawText({
-                            font: r.canvas.gfx.fontRenderer.defaultFont,
-                            position: Vec2(20, 20),
-                            size: 20,
-                            text: "WATER",
-                            color: Color(1, 1, 1, 1),
-                        });
+                // call. (The water effect is applied directly to the 2D
+                // transform canvas above instead of a dedicated demo canvas.)
+                ui.text({ id: 203, text: "Post effect: mouse-reactive glitch" });
+                ui.canvas({
+                    id: 603,
+                    style: { width: 240.0, height: 150.0 },
+                    postEffect: coolEffectSource,
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    // extraX/Y feed the mouse position straight to the
+                    // shader (see postfx_cool.wgsl) -- move the mouse over
+                    // this canvas to see the aberration/vignette react to
+                    // it. This part stays a per-frame call since it's
+                    // genuinely per-frame data, not shader source.
+                    r.canvas.setPostEffectExtra(ui.mousePos.x, ui.mousePos.y);
+
+                    r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.1, 0.1, 0.15, 1) });
+                    r.drawRect({
+                        pos: Vec2(25, 25), size: Vec2(80, 60),
+                        fillColor: Color(1, 0.3, 0.3, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
                     });
-
-                    ui.canvas({
-                        id: 603,
-                        style: { width: 240.0, height: 150.0 },
-                        postEffect: coolEffectSource,
-                    }, (r: mut renderer.gfx.Renderer): void => {
-                        // extraX/Y feed the mouse position straight to the
-                        // shader (see postfx_cool.wgsl) -- move the mouse
-                        // over this canvas to see the aberration/vignette
-                        // react to it. This part stays a per-frame call since
-                        // it's genuinely per-frame data, not shader source.
-                        r.canvas.setPostEffectExtra(ui.mousePos.x, ui.mousePos.y);
-
-                        r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.1, 0.1, 0.15, 1) });
-                        r.drawRect({
-                            pos: Vec2(25, 25), size: Vec2(80, 60),
-                            fillColor: Color(1, 0.3, 0.3, 1),
-                            cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
-                        });
-                        r.drawRect({
-                            pos: Vec2(130, 65), size: Vec2(85, 60),
-                            fillColor: Color(0.3, 1, 0.4, 1),
-                            cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
-                        });
-                        r.drawText({
-                            font: r.canvas.gfx.fontRenderer.defaultFont,
-                            position: Vec2(20, 20),
-                            size: 20,
-                            text: "GLITCH",
-                            color: Color(1, 1, 1, 1),
-                        });
+                    r.drawRect({
+                        pos: Vec2(130, 65), size: Vec2(85, 60),
+                        fillColor: Color(0.3, 1, 0.4, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                    });
+                    r.drawText({
+                        font: r.canvas.gfx.fontRenderer.defaultFont,
+                        position: Vec2(20, 20),
+                        size: 20,
+                        text: "GLITCH",
+                        color: Color(1, 1, 1, 1),
                     });
                 });
             });
