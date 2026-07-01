@@ -82,12 +82,130 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
             }, (): void => {
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
 
+                // TEMPORARY transform test bed -- remove once confirmed working.
+                ui.text({ id: 201, text: "2D: rotate / shear / rigid rotated text / transformed mesh" });
                 ui.canvas({
                     id: 600,
-                    style: { width: 200.0, height: 150.0 },
+                    style: { width: 260.0, height: 220.0 },
                 }, (r: mut renderer.gfx.Renderer): void => {
+                    // Original two plain rects -- unchanged, identity transform.
                     r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
                     r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
+
+                    // Rotated rounded rect: corners must stay perfectly round
+                    // despite the 25 degree rotation (the SDF is evaluated in
+                    // local space, so rotation never touches it).
+                    let angle = ui.now() * 10.0;
+                    r.drawRect({
+                        pos: Vec2(-25, -20),
+                        size: Vec2(50, 40),
+                        fillColor: Color(0, 1, 0, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                        // transform: mat4.translation(Vec3(190, 40, 0)).mul(mat4.rotationZ(math.degToRad(25))),
+                        transform: mat4.translation(Vec3(190, 40, 0)).mul(mat4.rotationZ(math.degToRad(angle))),
+                    });
+
+                    // Sheared rounded rect: corners should become elliptical
+                    // (the geometrically correct result of shearing a rounded
+                    // rect), not squished/broken.
+                    r.drawRect({
+                        pos: Vec2(-20, -15),
+                        size: Vec2(40, 30),
+                        fillColor: Color(1, 1, 0, 1),
+                        cornerRadius: { topLeft: 8, topRight: 8, bottomLeft: 8, bottomRight: 8 },
+                        transform: mat4.translation(Vec3(50, 150, 0)).mul(mat4.shear2D(0.6, 0.0)),
+                    });
+
+                    // Whole line of text rotated as one rigid block, pivoting
+                    // around its own start point -- not each glyph spinning in
+                    // place around its own center.
+                    r.drawText({
+                        font: r.canvas.gfx.fontRenderer.defaultFont,
+                        position: Vec2(140, 150),
+                        size: 16,
+                        text: "spinning line!",
+                        color: Color(1, 1, 1, 1),
+                        transform: mat4.rotationZ(math.degToRad(-18)),
+                    });
+
+                    // Mesh triangle with its own scale+rotate transform,
+                    // proving the tesselated/mesh path uses transformIndex too.
+                    r.addTriangle(
+                        Vec2(-20, -20), Vec2(20, -20), Vec2(0, 20),
+                        Color(1, 0, 1, 1), Color(0, 1, 1, 1), Color(1, 1, 0, 1),
+                        0,
+                        mat4.translation(Vec3(210, 160, 0)).mul(mat4.rotationZ(math.degToRad(45)))
+                    );
+                });
+
+                ui.text({ id: 202, text: "3D: move the mouse to orbit the scene" });
+                ui.canvas({
+                    id: 601,
+                    style: { width: 320.0, height: 240.0 },
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    let w = r.canvas.size.logicalSize.x as real;
+                    let h = r.canvas.size.logicalSize.y as real;
+                    r.canvas.setViewProj(mat4.perspective(math.degToRad(60), w / h, 10.0, 3000.0));
+
+                    // Whole scene orbits/tilts as one rigid group, driven by
+                    // the mouse -- this is what actually reads as "3D" (a
+                    // static screenshot of tilted rects is ambiguous, but
+                    // watching them orbit around a shared center isn't).
+                    let orbitY = ui.mousePos.x * 0.006;
+                    let orbitX = ui.mousePos.y * 0.003;
+                    let worldRotation = mat4.rotationX(orbitX).mul(mat4.rotationY(orbitY));
+
+                    // Ground grid: rungs lying flat, receding into the
+                    // distance. Perspective alone makes them shrink and
+                    // converge toward a vanishing point -- the single
+                    // strongest "this is 3D, not just skewed" cue -- and a
+                    // depth-darkening tint (cheap fake fog) reinforces it.
+                    for (let i = 0; i < 9; i++) {
+                        let z = -250.0 - (i as real) * 180.0;
+                        let depthFactor = 1.0 - (i as real) / 9.0 * 0.7;
+                        let rung = worldRotation.mul(
+                            mat4.translation(Vec3(0, 90, z)).mul(mat4.rotationX(math.degToRad(90)))
+                        );
+                        r.drawRect({
+                            pos: Vec2(-160, -4),
+                            size: Vec2(320, 8),
+                            fillColor: Color(0.55 * depthFactor, 0.55 * depthFactor, 0.6 * depthFactor, 1),
+                            transform: rung,
+                        });
+                    }
+
+                    // Two converging rails running along the same ground
+                    // plane, one down each side.
+                    for (let side = 0; side < 2; side++) {
+                        let x = side == 0 ? -160.0 : 160.0;
+                        let rail = worldRotation.mul(
+                            mat4.translation(Vec3(x, 90, -1600)).mul(mat4.rotationX(math.degToRad(90)))
+                        );
+                        r.drawRect({
+                            pos: Vec2(-6, -800),
+                            size: Vec2(12, 1600),
+                            fillColor: Color(0.35, 0.35, 0.4, 1),
+                            transform: rail,
+                        });
+                    }
+
+                    // Three standing panels at increasing depth: perspective
+                    // scale-with-distance and real GPU depth-test occlusion
+                    // both need to be obvious here.
+                    for (let i = 0; i < 3; i++) {
+                        let fi = i as real;
+                        let z = -300.0 - fi * 260.0;
+                        let panel = worldRotation.mul(
+                            mat4.translation(Vec3((fi - 1.0) * 70.0, -20, z)).mul(mat4.rotationY(math.degToRad(25.0 * (fi - 1.0))))
+                        );
+                        r.drawRect({
+                            pos: Vec2(-50, -70),
+                            size: Vec2(100, 140),
+                            fillColor: Color(1.0 - fi * 0.3, 0.3 + fi * 0.3, 0.3 + fi * 0.35, 1),
+                            cornerRadius: { topLeft: 14, topRight: 14, bottomLeft: 14, bottomRight: 14 },
+                            transform: panel,
+                        });
+                    }
                 });
             });
         };

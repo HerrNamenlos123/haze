@@ -328,9 +328,17 @@ export opaque struct Context {
                     targets: {
                         {
                             format: options.targetFormat,
+                            // Premultiplied alpha: every fragment shader in
+                            // shaders.wgsl outputs rgb already scaled by alpha,
+                            // so color uses srcFactor=One here (not SrcAlpha).
+                            // This is what makes the MSAA resolve's linear
+                            // sample averaging mathematically correct against
+                            // the transparent (0,0,0,0) clear color -- with
+                            // straight alpha the same averaging darkens
+                            // antialiased edges (most visible on curves).
                             blend: {
                                 color: {
-                                    srcFactor: wgpu.BlendFactor.SrcAlpha,
+                                    srcFactor: wgpu.BlendFactor.One,
                                     dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
                                     operation: wgpu.BlendOperation.Add,
                                 },
@@ -435,9 +443,17 @@ export opaque struct Context {
                     targets: {
                         {
                             format: options.targetFormat,
+                            // Premultiplied alpha: every fragment shader in
+                            // shaders.wgsl outputs rgb already scaled by alpha,
+                            // so color uses srcFactor=One here (not SrcAlpha).
+                            // This is what makes the MSAA resolve's linear
+                            // sample averaging mathematically correct against
+                            // the transparent (0,0,0,0) clear color -- with
+                            // straight alpha the same averaging darkens
+                            // antialiased edges (most visible on curves).
                             blend: {
                                 color: {
-                                    srcFactor: wgpu.BlendFactor.SrcAlpha,
+                                    srcFactor: wgpu.BlendFactor.One,
                                     dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
                                     operation: wgpu.BlendOperation.Add,
                                 },
@@ -1077,7 +1093,15 @@ export opaque struct Renderer {
         let cf = Colorf { r: color.r as f32, g: color.g as f32, b: color.b as f32, a: color.a as f32 };
         for (let i = 0; i < indices.length; i++) {
             let v = vertices[indices[i] as int];
-            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf, z: z, transformIndex: transformIndex });
+            // TODO: Here we are manually inlining the Vec2f constructor as a {x, y} literal, because for some reason,
+            // the function call for the Vec2f constructor is actually a real performance hotspot.
+            // We gain a lot of performance by doing that.
+            // But in the future, there is supposed to be compiler optimization in Haze that inlines trivial functions
+            // like simple constructors by default, which should make this irrelevant and we can go back to Vec2f().
+            this.meshVertices.push(MeshVertex { pos: {
+                x: v.x as f32, 
+                y: v.y as f32
+            }, color: cf, z: z, transformIndex: transformIndex });
         }
     }
 

@@ -161,6 +161,16 @@ fn rounded_rectangle_sdf(in: VSOut) -> f32 {
     return sdf;
 }
 
+// Every fragment function in this file returns premultiplied-alpha color
+// (rgb already scaled by alpha), and the pipelines blend with
+// srcFactor=One/dstFactor=OneMinusSrcAlpha to match. This isn't optional
+// styling: with straight (non-premultiplied) alpha, the MSAA resolve step
+// linearly averages samples that are fully covered (real color, alpha=1)
+// against samples outside the primitive (the transparent clear color,
+// (0,0,0,0)) -- which darkens antialiased edges, most visibly on curves,
+// because averaging straight-alpha color is not the same as averaging the
+// premultiplied quantity it's supposed to represent. Premultiplying makes
+// that same linear averaging exactly correct.
 fn process_rounded_rect_fill(in: VSOut) -> vec4<f32> {
     let sdf = rounded_rectangle_sdf(in);
 
@@ -171,7 +181,8 @@ fn process_rounded_rect_fill(in: VSOut) -> vec4<f32> {
         discard;
     }
 
-    return vec4(in.fillColor.rgb, in.fillColor.a * fraction);
+    let a = in.fillColor.a * fraction;
+    return vec4(in.fillColor.rgb * a, a);
 }
 
 fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
@@ -183,26 +194,33 @@ fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
     let fw = fwidth(lineSDF);
     let fraction = clamp(0.5 - lineSDF / fw, 0.0, 1.0);
 
-    // return vec4(1, 0, 0, 1);
-
     if (fraction == 0.0) {
         discard;
     }
 
-    return vec4(in.borderColor.rgb, in.borderColor.a * fraction);
+    let a = in.borderColor.a * fraction;
+    return vec4(in.borderColor.rgb * a, a);
 }
 
 fn process_glyph(in: VSOut) -> vec4<f32> {
-    let alpha = textureSample(colorTexture,colorSampler,in.uv).r;
-    if(alpha <= 0.0){
+    let coverage = textureSample(colorTexture,colorSampler,in.uv).r;
+    if(coverage <= 0.0){
         discard;
     }
 
-    return vec4(in.fillColor.rgb, in.fillColor.a * alpha);
+    let a = in.fillColor.a * coverage;
+    return vec4(in.fillColor.rgb * a, a);
 }
 
 fn process_textured_quad(in: VSOut) -> vec4<f32> {
-    return textureSample(colorTexture,colorSampler,in.uv) * in.fillColor;
+    // colorTexture is itself premultiplied (it's always either our own
+    // rendered-canvas output or the glyph atlas), so its .rgb already carries
+    // its own alpha -- tint.rgb and tint.a both still need to be folded in for
+    // the result to stay correctly premultiplied when tint.a < 1 (e.g. fading
+    // a whole composited canvas in/out).
+    let sampled = textureSample(colorTexture,colorSampler,in.uv);
+    let a = sampled.a * in.fillColor.a;
+    return vec4(sampled.rgb * in.fillColor.rgb * in.fillColor.a, a);
 }
 
 @fragment
@@ -249,5 +267,5 @@ fn tri_vs(
 
 @fragment
 fn tri_fs(in: TriVSOut) -> @location(0) vec4<f32> {
-    return in.color;
+    return vec4(in.color.rgb * in.color.a, in.color.a);
 }

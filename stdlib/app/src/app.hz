@@ -99,12 +99,24 @@ export opaque struct App {
             surface: surface,
         });
 
-        let mousePosition = Vec2(0, 0);
         let pointerButtons = AppPointerButtons {};
+        let app = App {
+            window: window,
+            device: device,
+            surface: surface,
+            surfaceFormat: surfaceFormat,
+            caps: caps,
+            presentMode: options.presentMode,
+            gfx: gfx,
+            canvas: canvas,
+            windowState: windowState,
+            mousePosition: {},
+            _pointerButtons: pointerButtons,
+        };
 
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
-            mousePosition.x = e.pos.x;
-            mousePosition.y = e.pos.y;
+            app.mousePosition.x = e.pos.x;
+            app.mousePosition.y = e.pos.y;
             return false;
         });
         window.onMouseDown((e: sdl.MouseButtonEvent) => {
@@ -120,19 +132,7 @@ export opaque struct App {
             return false;
         });
 
-        return App {
-            window: window,
-            device: device,
-            surface: surface,
-            surfaceFormat: surfaceFormat,
-            caps: caps,
-            presentMode: options.presentMode,
-            gfx: gfx,
-            canvas: canvas,
-            windowState: windowState,
-            mousePosition: mousePosition,
-            _pointerButtons: pointerButtons,
-        };
+        return app;
     }
 
     fn mousePos(): Vec2 {
