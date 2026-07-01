@@ -123,6 +123,13 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
             return false;
         })
 
+        // Hot-reloadable shader sources for the two post-effect canvases
+        // below -- created once here (not freshly every frame) so editing
+        // either .wgsl file recompiles just that effect, live, with no other
+        // code involved (see renderer.gfx.CanvasOptions.postEffect).
+        let waterEffectSource = embed.watchText("test/resources/postfx_water.wgsl");
+        let coolEffectSource = embed.watchText("test/resources/postfx_cool.wgsl");
+
         return (): void => {
             ui.div({
                 id: 100,
@@ -137,172 +144,187 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     presets.gap(4),
                 ],
             }, (): void => {
-                fmt.println("Rerender content area");
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
-                ui.text({ id: 300, text: "This is rendered via the component system." });
-                ui.text({ id: 400, text: "Flexbox layout powered by Clay." });
-                ui.text({ id: 500, text: instance.props().text });
 
+                // TEMPORARY transform test bed -- remove once confirmed working.
+                // postEffect applies the screen-space water-refraction shader
+                // (see resources/postfx_water.wgsl) to everything drawn into
+                // this canvas -- including the already-rotated/sheared
+                // content below -- as a pure UV distortion, no color change.
+                ui.text({ id: 201, text: "2D: rotate / shear / rigid rotated text / transformed mesh (underwater)" });
                 ui.canvas({
                     id: 600,
-                    style: { width: 200.0, height: 150.0 },
+                    style: { width: 260.0, height: 220.0 },
+                    postEffect: waterEffectSource,
                 }, (r: mut renderer.gfx.Renderer): void => {
-                    r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
+                    r.drawRect({
+                        pos: Vec2(10, 10),
+                        size: Vec2(80, 60),
+                        fillColor: Color(1, 0, 0, 1),
+                    });
                     r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
-                });
-            });
-        };
-    });
-}
 
-struct InfoBoxArgs {
-    id: int;
-
-    fn operator!=(other: InfoBoxArgs) {
-        return this.id != other.id;
-    }
-}
-namespace tsk {
-
-struct Point {
-    x: real;
-    y: real;
-    pressure: real;
-}
-
-struct Shape {
-    variant: str;
-    points: []Point;
-    penThickness: real;
-    penColor: str;
-}
-
-struct Page {
-    shapes: []Shape;
-}
-
-struct FileData {
-    pageColor: str;
-    gridColor: str;
-    gridType: str;
-    pages: []Page;
-}
-
-struct File {
-    filetype: str;
-    fileVersion: int;
-    data: FileData;
-}
-
-}
-
-fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<InfoBoxArgs>) => {
-
-        let tesselatedShapes: []tesselate.TesselationResult = [];
-
-        // Load TSK Shapes
-        let testTsk = fs.readText("Test.tsk");
-        if !testTsk {
-            fmt.println("File loading failed");
-        }
-        else {
-            let s2 = time.now();
-            let result = json.structuredParse<tsk.File>(testTsk);
-            fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
-
-            // Tessellate outlines once before the loop
-            let start = time.now();
-
-            if result {
-                let page = result.data.pages[0];
-
-                let accuracyScaling = 10.0;
-                let tess = tesselate.Tesselator();
-                for (let s = 0; s < page.shapes.length; s++) {
-                    let shape = page.shapes[s];
-
-                    // Perfect Freehand
-                    let pf = perfect_freehand.PerfectFreehand({
-                        size: shape.penThickness * accuracyScaling,
-                        thinning: 0.1,
-                        smoothing: 0.0,
-                        streamline: 0.6,
-                        simulatePressure: false,
-                        last: true,
+                    // Rotated rounded rect: corners must stay perfectly round
+                    // despite the 25 degree rotation (the SDF is evaluated in
+                    // local space, so rotation never touches it).
+                    let angle = ui.now() * 10.0;
+                    r.drawRect({
+                        pos: Vec2(-25, -20),
+                        size: Vec2(50, 40),
+                        fillColor: Color(0, 1, 0, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                        // transform: mat4.translation(Vec3(190, 40, 0)).mul(mat4.rotationZ(math.degToRad(25))),
+                        transform: mat4.translation(Vec3(190, 40, 0)).mul(mat4.rotationZ(math.degToRad(angle))),
                     });
 
-                    for point in shape.points {
-                        pf.addPoint({
-                            x: point.x * accuracyScaling,
-                            y: point.y * accuracyScaling,
+                    // Sheared rounded rect: corners should become elliptical
+                    // (the geometrically correct result of shearing a rounded
+                    // rect), not squished/broken.
+                    r.drawRect({
+                        pos: Vec2(-20, -15),
+                        size: Vec2(40, 30),
+                        fillColor: Color(1, 1, 0, 1),
+                        cornerRadius: { topLeft: 8, topRight: 8, bottomLeft: 8, bottomRight: 8 },
+                        transform: mat4.translation(Vec3(50, 150, 0)).mul(mat4.shear2D(0.6, 0.0)),
+                    });
+
+                    // Whole line of text rotated as one rigid block, pivoting
+                    // around its own start point -- not each glyph spinning in
+                    // place around its own center.
+                    r.drawText({
+                        font: r.canvas.gfx.fontRenderer.defaultFont,
+                        position: Vec2(140, 150),
+                        size: 16,
+                        text: "spinning line!",
+                        color: Color(1, 1, 1, 1),
+                        transform: mat4.rotationZ(math.degToRad(ui.now() * 90.0)),
+                    });
+
+                    // Mesh triangle with its own scale+rotate transform,
+                    // proving the tesselated/mesh path uses transformIndex too.
+                    r.addTriangle(
+                        Vec2(-20, -20), Vec2(20, -20), Vec2(0, 20),
+                        Color(1, 0, 1, 1), Color(0, 1, 1, 1), Color(1, 1, 0, 1),
+                        0,
+                        mat4.translation(Vec3(210, 160, 0)).mul(mat4.rotationZ(math.degToRad(45)))
+                    );
+                });
+
+                ui.text({ id: 202, text: "3D: move the mouse to orbit the scene" });
+                ui.canvas({
+                    id: 601,
+                    style: { width: 320.0, height: 140.0 },
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    let w = r.canvas.size.logicalSize.x as real;
+                    let h = r.canvas.size.logicalSize.y as real;
+                    r.canvas.setViewProj(mat4.perspective(math.degToRad(60), w / h, 10.0, 3000.0));
+
+                    // Whole scene orbits/tilts as one rigid group, driven by
+                    // the mouse -- this is what actually reads as "3D" (a
+                    // static screenshot of tilted rects is ambiguous, but
+                    // watching them orbit around a shared center isn't).
+                    let orbitY = ui.mousePos.x * 0.006;
+                    let orbitX = (ui.mousePos.y - 300.0) * 0.003;
+                    let worldRotation = mat4.rotationX(orbitX).mul(mat4.rotationY(orbitY));
+
+                    // Ground grid: rungs lying flat, receding into the
+                    // distance. Perspective alone makes them shrink and
+                    // converge toward a vanishing point -- the single
+                    // strongest "this is 3D, not just skewed" cue -- and a
+                    // depth-darkening tint (cheap fake fog) reinforces it.
+                    for (let i = 0; i < 9; i++) {
+                        let z = -250.0 - (i as real) * 180.0;
+                        let depthFactor = 1.0 - (i as real) / 9.0 * 0.7;
+                        let rung = worldRotation.mul(
+                            mat4.translation(Vec3(0, 90, z)).mul(mat4.rotationX(math.degToRad(90)))
+                        );
+                        r.drawRect({
+                            pos: Vec2(-160, -4),
+                            size: Vec2(320, 8),
+                            fillColor: Color(0.55 * depthFactor, 0.55 * depthFactor, 0.6 * depthFactor, 1),
+                            transform: rung,
                         });
                     }
 
-                    let points: []Vec2 = [];
-                    if let outline = pf.compute() {
-                        points = outline;
+                    // Two converging rails running along the same ground
+                    // plane, one down each side.
+                    for (let side = 0; side < 2; side++) {
+                        let x = side == 0 ? -160.0 : 160.0;
+                        let rail = worldRotation.mul(
+                            mat4.translation(Vec3(x, 90, -1600)).mul(mat4.rotationX(math.degToRad(90)))
+                        );
+                        r.drawRect({
+                            pos: Vec2(-6, -800),
+                            size: Vec2(12, 1600),
+                            fillColor: Color(0.35, 0.35, 0.4, 1),
+                            transform: rail,
+                        });
                     }
 
-                    pf.destroy();
-
-                    // Now tesselate
-                    if points.length > 0 {
-                        tess.beginPath();
-                        tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
-                        for (let p = 1; p < points.length; p++) {
-                            tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
-                        }
-                        tess.closePath();
-                        if let result = tess.tessellate(0.25) { tesselatedShapes.push(result); }
-                    }
-                }
-                tess.destroy();
-                fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
-            }
-            else {
-                fmt.println("Failed parsing: ", result);
-            }
-
-            for (let s = 0; s < tesselatedShapes.length; s++) {
-                let shape = tesselatedShapes[s];
-
-                for (let i = 0; i < shape.vertices.length; i++) {
-                    shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
-                    shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
-                }
-            }
-
-            let end = time.now();
-            fmt.println(f"Tesselated shapes in {(end - start) * 1000.0} ms");
-        }
-
-        return (): void => {
-            ui.canvas({
-                id: 1000,
-                style: { width: 500.0 },
-            }, (r: mut renderer.gfx.Renderer): void => {
-                // Render tessellated shapes
-                for (let s = 0; s < tesselatedShapes.length; s++) {
-                    let shape = tesselatedShapes[s];
-
-                    for (let i = 0; i < shape.vertices.length; i++) {
-                        if (true) {
-                            shape.vertices[i].x = shape.vertices[i].x + ui.dmousePos.x;
-                            shape.vertices[i].y = shape.vertices[i].y + ui.dmousePos.y;
+                    // Three standing panels at increasing depth: perspective
+                    // scale-with-distance and real GPU depth-test occlusion
+                    // both need to be obvious here.
+                    // Repeat 8 times
+                    for (let j = 0; j < 8; j++) {
+                        for (let i = 0; i < 3; i++) {
+                            let fi = i as real;
+                            let z = -300.0 - fi * 260.0;
+                            let panel = worldRotation.mul(
+                                mat4.rotationY(math.degToRad(360.0 * (j as real) / 8.0)).mul(
+                                    mat4.translation(Vec3((fi - 1.0) * 70.0, -20, z)).mul(mat4.rotationY(math.degToRad(25.0 * (fi - 1.0))))
+                                )
+                            );
+                            r.drawRect({
+                                pos: Vec2(-50, -70),
+                                size: Vec2(100, 140),
+                                fillColor: Color(1.0 - fi * 0.3, 0.3 + fi * 0.3, 0.3 + fi * 0.35, 1),
+                                cornerRadius: { topLeft: 14, topRight: 14, bottomLeft: 14, bottomRight: 14 },
+                                transform: panel,
+                            });
                         }
                     }
+                });
 
-                    r.addTriangles(shape.vertices, shape.indices, "#000");
-                }
+                // Custom shader extension point: a canvas's post effect is
+                // just a plain WGSL fragment shader (see
+                // renderer.gfx.CanvasOptions.postEffect) that samples this
+                // canvas's own rendered content and produces a new image --
+                // a real extension point, not a special case. Passing the
+                // shader source directly as a canvas prop is the entire API:
+                // no manual compile step, no per-frame "apply this effect"
+                // call. (The water effect is applied directly to the 2D
+                // transform canvas above instead of a dedicated demo canvas.)
+                ui.text({ id: 203, text: "Post effect: mouse-reactive glitch" });
+                ui.canvas({
+                    id: 603,
+                    style: { width: 240.0, height: 150.0 },
+                    postEffect: coolEffectSource,
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    // extraX/Y feed the mouse position straight to the
+                    // shader (see postfx_cool.wgsl) -- move the mouse over
+                    // this canvas to see the aberration/vignette react to
+                    // it. This part stays a per-frame call since it's
+                    // genuinely per-frame data, not shader source.
+                    r.canvas.setPostEffectExtra(ui.mousePos.x, ui.mousePos.y);
 
-                let center = Vec2(200, 200);
-                let alpha = ui.now() * 20.0;
-                let radius = 40.0;
-                r.drawRect({
-                    pos: Vec2(center.x + math.cos(alpha) * radius, center.y + math.sin(alpha) * radius),
-                    size: Vec2(50, 50),
-                    fillColor: "#F00",
+                    r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.1, 0.1, 0.15, 1) });
+                    r.drawRect({
+                        pos: Vec2(25, 25), size: Vec2(80, 60),
+                        fillColor: Color(1, 0.3, 0.3, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                    });
+                    r.drawRect({
+                        pos: Vec2(130, 65), size: Vec2(85, 60),
+                        fillColor: Color(0.3, 1, 0.4, 1),
+                        cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                    });
+                    r.drawText({
+                        font: r.canvas.gfx.fontRenderer.defaultFont,
+                        position: Vec2(20, 20),
+                        size: 20,
+                        text: "GLITCH",
+                        color: Color(1, 1, 1, 1),
+                    });
                 });
             });
         };
@@ -379,7 +401,6 @@ export fn UI(ui: ui_components.UIContext) {
                 }, (): void => {
                     Sidebar(ui, { id: 2300 });
                     ContentArea(ui, { id: 3300, text: text });
-                    InfoBox(ui, { id: 4400 });
                 });
 
                 Footer(ui, { id: 5500 });
