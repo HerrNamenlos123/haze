@@ -173,12 +173,12 @@ export struct Profiler {
     }
 
     // TODO: This profiler must turn into a resource so it's panic recovery safe
-    fn end(): profiling.ProfilingResult {
+    fn stop(): profiling.ProfilingResult {
         return ffi.hzstd_profiling_end(this.context);
     }
 
-    fn endAndWrite(path: str) {
-        const result = this.end();
+    fn stopAndSave(path: str = "out.cpuprofile") {
+        const result = this.stop();
         return profiling.writeCpuProfile(result, path);
     }
 }

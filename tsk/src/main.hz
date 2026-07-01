@@ -9,6 +9,8 @@ struct Cache {
     vaultDir: str | null = null;
 }
 
+const comptime profile = true;
+
 fn main(): int {
     attempt {
         let a = app.App({
@@ -49,6 +51,10 @@ fn main(): int {
             indexVault(cache.data.vaultDir);
         }
 
+        let profiler = profile ? Profiler({
+            samplingRateHz: 1000,
+        }) : null;
+
         while let frame = a.nextFrame() {
             if a.resized {
                 runtime.resize(a.windowState);
@@ -57,6 +63,10 @@ fn main(): int {
             frame.present();
 
             cache.flush();
+        }
+        
+        if profiler {
+            profiler.stopAndSave();
         }
 
         a.destroy();
