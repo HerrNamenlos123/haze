@@ -36,7 +36,7 @@ fn fs_main(in: PostVSOut) -> @location(0) vec4<f32> {
     // Square up the noise cells regardless of this canvas's aspect ratio.
     let p = vec2<f32>(uv.x * aspect, uv.y);
 
-    let d = t * 1.0;
+    let d = t * 15.0;
 
     // Three independently scrolling noise maps -- different scale, speed and
     // direction each -- summed into one displacement field.
@@ -51,7 +51,7 @@ fn fs_main(in: PostVSOut) -> @location(0) vec4<f32> {
 
     // Displacement magnitude is defined in pixels (not raw UV units) so it
     // reads the same regardless of this canvas's size.
-    let maxPixelShift = 6.0;
+    let maxPixelShift = 10.0;
     let uvShift = displacement * maxPixelShift / vec2<f32>(max(params.resolutionX, 1.0), max(params.resolutionY, 1.0));
 
     let distortedUv = clamp(uv + uvShift, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
