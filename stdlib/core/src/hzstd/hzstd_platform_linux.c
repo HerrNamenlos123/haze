@@ -554,7 +554,21 @@ void hzstd_setup_panic_handler(void)
 {
   // Alt-stack: required so the SIGSEGV handler can run even after a stack
   // overflow (the normal stack pointer is in an invalid guard page then).
-  static thread_local char altstack_buf[8192];
+  //
+  // Sized well above the traditional 8 KiB SIGSTKSZ: a crashed thread doesn't
+  // return from this signal frame -- it parks forever inside it (see
+  // hzstd_block_thread_forever below), potentially for the rest of the
+  // process's life. BDWGC's stop-the-world suspend signal is *not*
+  // SA_ONSTACK (see the identical hazard documented in
+  // hzstd_profiling.c/install_profiler_handler), so if it lands on this
+  // thread while parked, it doesn't get its own stack -- it pushes its own
+  // signal frame and call chain (GC_suspend_sigaction, sigsuspend, ...) right
+  // on top of whatever this altstack already has in use. An 8 KiB buffer
+  // leaves too little headroom for that nested, foreign frame on top of our
+  // own handler -> block_thread_forever -> wait_for_semaphore -> sem_wait
+  // chain, and overflowing it is a real, kernel-raised SIGSEGV on top of the
+  // one already being handled.
+  static thread_local char altstack_buf[65536];
 
   assert(hzstd_create_semaphore(&panic_trigger));
   assert(hzstd_create_semaphore(&panic_response));
