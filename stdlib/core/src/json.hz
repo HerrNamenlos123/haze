@@ -265,6 +265,8 @@ namespace json {
             }
             for comptime field in T.fields {
                 const comptime fieldName = field.name;
+
+
                 let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
                 if !child { 
                     return Error { error: f"JSON missing field: {fieldName}" };
@@ -489,12 +491,14 @@ namespace json {
 
     export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON | none :: final {
         if comptime T.category == meta.TypeCategory.Literal {
+            fmt.println(1);
             return dumpJsonNode(allocator, value as T.baseType);
         }
         else if comptime T.category == meta.TypeCategory.Deep {
             return dumpJsonStruct<T.baseType>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
+            fmt.println(2);
             return dumpJsonNode<rx.UnwrapReactive<T>>(allocator, rx.get(value));
         }
         else if comptime T is str {
@@ -516,17 +520,21 @@ namespace json {
             return none;
         }
         else if comptime T.category == meta.TypeCategory.DynamicArray {
+            fmt.println(3);
             return dumpJsonArray<T>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Array {
+            fmt.println(4);
             return dumpJsonFixedArray<T>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Struct {
+            fmt.println(5);
             return dumpJsonStruct<T>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {
                 if value is Variant {
+            fmt.println(6);
                     return dumpJsonNode<Variant>(allocator, value);
                 }
             }

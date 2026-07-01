@@ -34,6 +34,13 @@ void hzstd_init_gc();
     (void *)env;                                                               \
   })
 
+// Reads back a 'this' value stored by-address in an env block (see
+// HZSTD_ENV_BLOCK_FOR_THIS_PTR), for 'this' types that are not already
+// pointer-sized in C (e.g. inline structs and struct-backed primitives like
+// hzstd_str_t).
+#define HZSTD_ENV_BLOCK_GET_THIS(struct_t, env)                               \
+  (*(struct_t *)(((void **)(env))[0]))
+
 #define HZSTD_HOIST(struct_t, value)                                           \
   ({                                                                           \
     struct_t *ptr = hzstd_heap_allocate(sizeof(struct_t));                     \

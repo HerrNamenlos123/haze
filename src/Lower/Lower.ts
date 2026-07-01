@@ -939,6 +939,28 @@ export function lowerExpr(
             trampolineFunction.isClosureTrampolineFor
           );
 
+          // calledExpr.envValue.thisExpr may have been wrapped in an
+          // AddressOfExpr so it fits into a single env-block pointer slot
+          // (see the "method" envValue construction below). The native
+          // function's own 'this' parameter is forced non-inline, which only
+          // actually yields a pointer in C for struct/array receivers; for
+          // struct-backed primitive receivers (e.g. 'str') it stays by-value,
+          // so unwrap back to the original by-value expression in that case.
+          let nativeThisExpr = calledExpr.envValue.thisExpr;
+          if (nativeFunction.envType?.type === "method") {
+            const nativeThisParamIsPointer = lr.typeUseNodes.get(
+              Lowered.resolveAlias(lr, nativeFunction.envType.thisExprType)
+            ).pointer;
+            if (!nativeThisParamIsPointer) {
+              const envThisExpr = lr.exprNodes.get(
+                calledExpr.envValue.thisExpr
+              );
+              if (envThisExpr.variant === Lowered.ENode.AddressOfExpr) {
+                nativeThisExpr = envThisExpr.expr;
+              }
+            }
+          }
+
           const type = lowerTypeUse(lr, expr.type);
           const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
             lr,
@@ -950,7 +972,7 @@ export function lowerExpr(
                 type: calledExpr.type,
               })[1],
               arguments: [
-                calledExpr.envValue.thisExpr,
+                nativeThisExpr,
                 ...expr.arguments.map(
                   (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
                 ),
@@ -1618,9 +1640,6 @@ export function lowerExpr(
 
       if (expr.envValue?.type === "method") {
         const thisExpr = lr.sr.exprNodes.get(expr.envValue.thisExpr);
-        const resolvedThisExprTypeUse = lr.sr.typeUseNodes.get(
-          lr.sr.e.resolveAlias(thisExpr.type)
-        );
 
         let loweredThisExpression = lowerExpr(
           lr,
@@ -1640,14 +1659,17 @@ export function lowerExpr(
           )[1];
         }
 
-        if (resolvedThisExprTypeUse.inline) {
+        if (
+          lr.typeUseNodes.get(Lowered.resolveAlias(lr, structPointerType))
+            .pointer
+        ) {
+          loweredThisExpression = tempId;
+        } else {
           loweredThisExpression = Lowered.addExpr(lr, {
             variant: Lowered.ENode.AddressOfExpr,
             expr: tempId,
             type: structPointerType,
           })[1];
-        } else {
-          loweredThisExpression = tempId;
         }
         envType = {
           type: "method",
@@ -4021,10 +4043,22 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       let envType: Lowered.EnvBlockType = null;
       let makeTrampoline = false;
+      let methodThisIsAlreadyPointer = false;
       if (symbol.envType?.type === "method") {
+        const loweredThisExprType = lowerTypeUse(
+          lr,
+          symbol.envType.thisExprType
+        );
+        // The function's own 'this' parameter is forced non-inline. For
+        // struct/array receivers that actually yields a pointer in C; for
+        // struct-backed primitive receivers (e.g. 'str') it stays by-value,
+        // since primitives are never pointer-wrapped (see lowerTypeUse).
+        methodThisIsAlreadyPointer = lr.typeUseNodes.get(
+          Lowered.resolveAlias(lr, loweredThisExprType)
+        ).pointer;
         envType = {
           type: "method",
-          thisExprType: lowerTypeUse(lr, symbol.envType.thisExprType),
+          thisExprType: loweredThisExprType,
         };
         mainFuncParameterNames.unshift("this");
         mainFuncParameters.unshift({
@@ -4162,13 +4196,50 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         if (symbol.scope) {
           const statements: Lowered.StatementId[] = [];
           if (envType?.type === "method") {
-            statements.push(
-              Lowered.addStatement(lr, {
-                variant: Lowered.ENode.InlineCStatement,
-                sourceloc: f.sourceloc,
-                value: "void* this = ((void**)__hz_env)[0];",
-              })[1]
-            );
+            if (methodThisIsAlreadyPointer) {
+              statements.push(
+                Lowered.addStatement(lr, {
+                  variant: Lowered.ENode.InlineCStatement,
+                  sourceloc: f.sourceloc,
+                  value: "void* this = ((void**)__hz_env)[0];",
+                })[1]
+              );
+            } else {
+              statements.push(
+                Lowered.addStatement(lr, {
+                  variant: Lowered.ENode.VariableStatement,
+                  sourceloc: f.sourceloc,
+                  name: {
+                    mangledName: "this",
+                    prettyName: "this",
+                    wasMangled: false,
+                  },
+                  type: envType.thisExprType,
+                  variableContext: EVariableContext.FunctionLocal,
+                  intrinsicTakeAddrOfValue: false,
+                  value: makeIntrinsicCall(
+                    lr,
+                    "HZSTD_ENV_BLOCK_GET_THIS",
+                    [
+                      Lowered.addExpr(lr, {
+                        variant: Lowered.ENode.DatatypeAsValueExpr,
+                        type: envType.thisExprType,
+                      })[1],
+                      Lowered.addExpr(lr, {
+                        variant: Lowered.ENode.SymbolValueExpr,
+                        type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                        name: {
+                          mangledName: "__hz_env",
+                          prettyName: "__hz_env",
+                          wasMangled: false,
+                        },
+                      })[1],
+                    ],
+                    envType.thisExprType
+                  )[1],
+                })[1]
+              );
+            }
             const args: Lowered.ExprId[] = [];
             for (let i = 0; i < parameterNames.length; i++) {
               args.push(
