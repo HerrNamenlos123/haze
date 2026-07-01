@@ -12,14 +12,23 @@ namespace embed {
         // DataSource embedding
     }
 
-    export fn watchText<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+    export fn watchText<TPath>(_path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<str> {
+        // builtin.embed_file_path(TPath) is the exact same absolute path
+        // embed_file_text(TPath) already resolved (relative to the module
+        // root) to embed this file in the first place -- using it here
+        // (instead of the raw _path literal, which fs.watch/fs.readText
+        // would otherwise resolve relative to the running process's cwd,
+        // not this module's source tree) is what makes hot-reload actually
+        // find the file regardless of where the compiled program is run
+        // from.
+        let absolutePath = builtin.embed_file_path(TPath);
         let data = rx.shallowReactive(builtin.embed_file_text(TPath));
-        fs.watch(TPath, (event: fs.FileChangeEvent): void => {
-            if let d = fs.readText(path as str) {
+        fs.watch(absolutePath, (event: fs.FileChangeEvent): void => {
+            if let d = fs.readText(absolutePath) {
                 data := d;
             }
         }, {
-            immediate: true, 
+            immediate: true,
             interval: options.interval,
             strategy: fs.WatchStrategy.ModificationDate,
         });
@@ -39,14 +48,16 @@ namespace embed {
         assert(false);
     }
 
-    export fn watchBinary<TPath>(path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
+    export fn watchBinary<TPath>(_path: TPath, options: fs.FileWatchOptions = {}): rx.Reactive<Bytes> {
+        // See watchText's absolutePath comment -- same reasoning.
+        let absolutePath = builtin.embed_file_path(TPath);
         let data = rx.shallowReactive(builtin.embed_file_binary(TPath));
-        fs.watch(TPath, (event: fs.FileChangeEvent): void => {
-            if let d = fs.readBinary(path as str) {
+        fs.watch(absolutePath, (event: fs.FileChangeEvent): void => {
+            if let d = fs.readBinary(absolutePath) {
                 data := d;
             }
         }, {
-            immediate: true, 
+            immediate: true,
             interval: options.interval,
             strategy: fs.WatchStrategy.ModificationDate,
         });

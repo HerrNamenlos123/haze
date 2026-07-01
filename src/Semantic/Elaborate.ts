@@ -889,12 +889,88 @@ export class SemanticElaborator {
     );
   }
 
+  // Shared by every builtin.embed_file_*(TPath) intrinsic: validates the
+  // single argument is a string literal (or a literal-string type) and
+  // resolves it against the module root. EmbedFileText/EmbedFileBinary need
+  // this to embed the file's actual bytes; EmbedFilePath needs nothing more
+  // than this -- it hands back the exact same absolute path as a plain
+  // string, with no file reading/embedding involved, which is what lets
+  // embed.watchText/watchBinary re-read the right file at runtime regardless
+  // of the running process's cwd (see embed.hz).
+  private resolveEmbedArgumentPath(
+    callExpr: Collect.ExprCallExpr,
+    intrinsicName: string
+  ): { filePath: string; absolutePath: string } {
+    if (callExpr.arguments.length !== 1) {
+      throw new CompilerError(
+        `${intrinsicName}() takes exactly 1 argument, got ${callExpr.arguments.length}`,
+        callExpr.sourceloc
+      );
+    }
+
+    // Get and elaborate the argument
+    const [argExpr] = this.expr(callExpr.arguments[0], undefined);
+
+    // Check if the argument is a string literal or a literal datatype that resolves to a string
+    let filePath: string | null = null;
+
+    if (argExpr.variant === Semantic.ENode.LiteralExpr) {
+      // Direct string literal
+      if (
+        argExpr.literal.type === EPrimitive.str ||
+        argExpr.literal.type === EPrimitive.cstr ||
+        argExpr.literal.type === EPrimitive.ccstr
+      ) {
+        filePath = argExpr.literal.value;
+      }
+    } else if (argExpr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      // It's a type being used as a value - check if it's a literal datatype
+      const typeUse = this.sr.typeUseNodes.get(argExpr.type);
+      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+      if (
+        typeDef.variant === Semantic.ENode.LiteralDatatype &&
+        (typeDef.literalValue.type === EPrimitive.str ||
+          typeDef.literalValue.type === EPrimitive.cstr ||
+          typeDef.literalValue.type === EPrimitive.ccstr)
+      ) {
+        filePath = typeDef.literalValue.value;
+      }
+    }
+
+    if (filePath === null) {
+      throw new CompilerError(
+        `${intrinsicName}() argument must be a string literal or a string literal type (LiteralDatatype)`,
+        callExpr.sourceloc
+      );
+    }
+
+    // Resolve the file path relative to the module root
+    assert(this.sr.cc.moduleCompiler?.currentModuleRootDir);
+    const absolutePath = path.resolve(
+      this.sr.cc.moduleCompiler.currentModuleRootDir,
+      filePath
+    );
+
+    return { filePath: filePath, absolutePath: absolutePath };
+  }
+
   handleIntrinsicCall(
     intrinsicExpr: Semantic.IntrinsicValueExpr,
     callExpr: Collect.ExprCallExpr,
     _inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     switch (intrinsicExpr.intrinsicType) {
+      case Semantic.EIntrinsicType.EmbedFilePath: {
+        const { absolutePath } = this.resolveEmbedArgumentPath(
+          callExpr,
+          "builtin.embed_file_path"
+        );
+        return this.sr.b.literalValue(
+          { type: EPrimitive.str, prefix: null, value: absolutePath },
+          callExpr.sourceloc
+        );
+      }
+
       case Semantic.EIntrinsicType.EmbedFileText:
       case Semantic.EIntrinsicType.EmbedFileBinary: {
         const isBinary =
@@ -907,55 +983,9 @@ export class SemanticElaborator {
           ? "builtin.embed_file_binary"
           : "builtin.embed_file_text";
 
-        // Check argument count
-        if (callExpr.arguments.length !== 1) {
-          throw new CompilerError(
-            `${intrinsicName}() takes exactly 1 argument, got ${callExpr.arguments.length}`,
-            callExpr.sourceloc
-          );
-        }
-
-        // Get and elaborate the argument
-        const [argExpr] = this.expr(callExpr.arguments[0], undefined);
-
-        // Check if the argument is a string literal or a literal datatype that resolves to a string
-        let filePath: string | null = null;
-
-        if (argExpr.variant === Semantic.ENode.LiteralExpr) {
-          // Direct string literal
-          if (
-            argExpr.literal.type === EPrimitive.str ||
-            argExpr.literal.type === EPrimitive.cstr ||
-            argExpr.literal.type === EPrimitive.ccstr
-          ) {
-            filePath = argExpr.literal.value;
-          }
-        } else if (argExpr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-          // It's a type being used as a value - check if it's a literal datatype
-          const typeUse = this.sr.typeUseNodes.get(argExpr.type);
-          const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-          if (
-            typeDef.variant === Semantic.ENode.LiteralDatatype &&
-            (typeDef.literalValue.type === EPrimitive.str ||
-              typeDef.literalValue.type === EPrimitive.cstr ||
-              typeDef.literalValue.type === EPrimitive.ccstr)
-          ) {
-            filePath = typeDef.literalValue.value;
-          }
-        }
-
-        if (filePath === null) {
-          throw new CompilerError(
-            `${intrinsicName}() argument must be a string literal or a string literal type (LiteralDatatype)`,
-            callExpr.sourceloc
-          );
-        }
-
-        // Resolve the file path relative to the module root
-        assert(this.sr.cc.moduleCompiler?.currentModuleRootDir);
-        const absolutePath = path.resolve(
-          this.sr.cc.moduleCompiler.currentModuleRootDir,
-          filePath
+        const { filePath, absolutePath } = this.resolveEmbedArgumentPath(
+          callExpr,
+          intrinsicName
         );
 
         // Load and validate the file
@@ -3325,6 +3355,12 @@ export class SemanticElaborator {
       if (memberAccess.memberName === "embed_file_binary") {
         return this.sr.b.intrinsicValue(
           Semantic.EIntrinsicType.EmbedFileBinary,
+          memberAccess.sourceloc
+        );
+      }
+      if (memberAccess.memberName === "embed_file_path") {
+        return this.sr.b.intrinsicValue(
+          Semantic.EIntrinsicType.EmbedFilePath,
           memberAccess.sourceloc
         );
       }

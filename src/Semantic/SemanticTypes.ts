@@ -52,6 +52,14 @@ export namespace Semantic {
   export enum EIntrinsicType {
     EmbedFileText,
     EmbedFileBinary,
+    // Returns the same absolute path EmbedFileText/EmbedFileBinary already
+    // resolve (relative to the module root) as a plain compile-time string,
+    // with no embedding of file content at all -- see
+    // Elaborate.ts's resolveEmbedArgumentPath, which both this and the two
+    // above share so that resolution only happens in one place. Used by
+    // embed.watchText/watchBinary to know what absolute file to re-read at
+    // runtime, independent of the running process's cwd.
+    EmbedFilePath,
     Unreachable,
   }
 
@@ -3060,6 +3068,8 @@ export namespace Semantic {
             return "builtin.embed_file_text";
           case Semantic.EIntrinsicType.EmbedFileBinary:
             return "builtin.embed_file_binary";
+          case Semantic.EIntrinsicType.EmbedFilePath:
+            return "builtin.embed_file_path";
           default:
             break;
         }
