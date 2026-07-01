@@ -9,7 +9,7 @@ struct Cache {
     vaultDir: str | null = null;
 }
 
-const comptime profile = true;
+const comptime profile = false;
 
 fn main(): int {
     attempt {
