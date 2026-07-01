@@ -1280,9 +1280,12 @@ export function lowerExpr(
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        requiresDeref: isDeepAccess ? false : !(
-          structTypeDef.variant === Semantic.ENode.StructDatatype && isInline
-        ),
+        requiresDeref: isDeepAccess
+          ? false
+          : !(
+              structTypeDef.variant === Semantic.ENode.StructDatatype &&
+              isInline
+            ),
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -2753,17 +2756,23 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     case Semantic.ENode.TernaryExpr: {
       const variableType = lowerTypeUse(lr, expr.type);
 
-      const statements = [] as Lowered.StatementId[];
+      const outStatements = [] as Lowered.StatementId[];
 
       const resultVariableId = storeInTempVarAndGet(
         lr,
         variableType,
         null,
         expr.sourceloc,
-        statements
+        outStatements
       )[1];
 
-      let thenExpr = lowerExpr(lr, expr.thenExpr, statements, instanceInfo)[1];
+      const thenStatements = [] as Lowered.StatementId[];
+      let thenExpr = lowerExpr(
+        lr,
+        expr.thenExpr,
+        thenStatements,
+        instanceInfo
+      )[1];
       if (expr.thenProducesValue) {
         thenExpr = Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
@@ -2774,7 +2783,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         })[1];
       }
 
-      let elseExpr = lowerExpr(lr, expr.else, statements, instanceInfo)[1];
+      const elseStatements = [] as Lowered.StatementId[];
+      let elseExpr = lowerExpr(lr, expr.else, elseStatements, instanceInfo)[1];
       if (expr.elseProducesValue) {
         elseExpr = Lowered.addExpr(lr, {
           variant: Lowered.ENode.ExprAssignmentExpr,
@@ -2785,15 +2795,21 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         })[1];
       }
 
-      statements.push(
+      outStatements.push(
         Lowered.addStatement(lr, {
           variant: Lowered.ENode.IfStatement,
-          condition: lowerExpr(lr, expr.condition, statements, instanceInfo)[1],
+          condition: lowerExpr(
+            lr,
+            expr.condition,
+            outStatements,
+            instanceInfo
+          )[1],
           elseIfs: [],
           sourceloc: expr.sourceloc,
           thenBlock: Lowered.addBlockScope(lr, {
             definesVariables: false,
             statements: [
+              ...thenStatements,
               Lowered.addStatement(lr, {
                 variant: Lowered.ENode.ExprStatement,
                 expr: thenExpr,
@@ -2803,13 +2819,14 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             emittedExpr: lowerExpr(
               lr,
               lr.sr.b.noneExpr()[1],
-              statements,
+              [],
               instanceInfo
             )[1],
           })[1],
           else: Lowered.addBlockScope(lr, {
             definesVariables: false,
             statements: [
+              ...elseStatements,
               Lowered.addStatement(lr, {
                 variant: Lowered.ENode.ExprStatement,
                 expr: elseExpr,
@@ -2819,7 +2836,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             emittedExpr: lowerExpr(
               lr,
               lr.sr.b.noneExpr()[1],
-              statements,
+              [],
               instanceInfo
             )[1],
           })[1],
@@ -2830,7 +2847,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         variant: Lowered.ENode.BlockScopeExpr,
         block: Lowered.addBlockScope(lr, {
           definesVariables: false,
-          statements: statements,
+          statements: outStatements,
           emittedExpr: resultVariableId,
         })[1],
         sourceloc: expr.sourceloc,
