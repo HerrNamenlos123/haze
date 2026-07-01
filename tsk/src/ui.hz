@@ -155,7 +155,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     // static screenshot of tilted rects is ambiguous, but
                     // watching them orbit around a shared center isn't).
                     let orbitY = ui.mousePos.x * 0.006;
-                    let orbitX = ui.mousePos.y * 0.003;
+                    let orbitX = (ui.mousePos.y - 300.0) * 0.003;
                     let worldRotation = mat4.rotationX(orbitX).mul(mat4.rotationY(orbitY));
 
                     // Ground grid: rungs lying flat, receding into the
@@ -195,19 +195,24 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     // Three standing panels at increasing depth: perspective
                     // scale-with-distance and real GPU depth-test occlusion
                     // both need to be obvious here.
-                    for (let i = 0; i < 3; i++) {
-                        let fi = i as real;
-                        let z = -300.0 - fi * 260.0;
-                        let panel = worldRotation.mul(
-                            mat4.translation(Vec3((fi - 1.0) * 70.0, -20, z)).mul(mat4.rotationY(math.degToRad(25.0 * (fi - 1.0))))
-                        );
-                        r.drawRect({
-                            pos: Vec2(-50, -70),
-                            size: Vec2(100, 140),
-                            fillColor: Color(1.0 - fi * 0.3, 0.3 + fi * 0.3, 0.3 + fi * 0.35, 1),
-                            cornerRadius: { topLeft: 14, topRight: 14, bottomLeft: 14, bottomRight: 14 },
-                            transform: panel,
-                        });
+                    // Repeat 8 times
+                    for (let j = 0; j < 8; j++) {
+                        for (let i = 0; i < 3; i++) {
+                            let fi = i as real;
+                            let z = -300.0 - fi * 260.0;
+                            let panel = worldRotation.mul(
+                                mat4.rotationY(math.degToRad(360.0 * (j as real) / 8.0)).mul(
+                                    mat4.translation(Vec3((fi - 1.0) * 70.0, -20, z)).mul(mat4.rotationY(math.degToRad(25.0 * (fi - 1.0))))
+                                )
+                            );
+                            r.drawRect({
+                                pos: Vec2(-50, -70),
+                                size: Vec2(100, 140),
+                                fillColor: Color(1.0 - fi * 0.3, 0.3 + fi * 0.3, 0.3 + fi * 0.35, 1),
+                                cornerRadius: { topLeft: 14, topRight: 14, bottomLeft: 14, bottomRight: 14 },
+                                transform: panel,
+                            });
+                        }
                     }
                 });
             });
