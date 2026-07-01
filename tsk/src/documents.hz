@@ -153,14 +153,21 @@ inline struct StrokeTesselateArgs {
 
 fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
     let result = TesselationResult {};
-    if args.shape.points.length == 0 {
+
+    let outline = constructStrokeOutline({
+        shape: args.shape,
+        accuracyScaling: args.accuracyScaling,
+    });
+
+    if outline.length == 0 {
         return result;
     }
+
     let tess = tesselate.Tesselator();
     tess.beginPath();
-    tess.moveTo(Vec2(args.shape.points[0].x / args.accuracyScaling, args.shape.points[0].y / args.accuracyScaling));
-    for (let p = 1; p < args.shape.points.length; p++) {
-        tess.lineTo(Vec2(args.shape.points[p].x / args.accuracyScaling, args.shape.points[p].y / args.accuracyScaling));
+    tess.moveTo(Vec2(outline[0].x / args.accuracyScaling, outline[0].y / args.accuracyScaling));
+    for (let p = 1; p < outline.length; p++) {
+        tess.lineTo(Vec2(outline[p].x / args.accuracyScaling, outline[p].y / args.accuracyScaling));
     }
     tess.closePath();
     if let t = tess.tessellate(args.tolerance) { 
