@@ -1215,6 +1215,14 @@ export opaque struct Renderer {
         assert(transformBindGroup);
         pass.setBindGroup(2, transformBindGroup);
 
+        // Neither plain rects nor the triangle-mesh pipeline sample group 1,
+        // but both pipeline layouts still declare it (see triPipelineLayout
+        // above), so WebGPU requires *something* valid bound there before any
+        // draw call from either pipeline -- bind the font atlas up front,
+        // unconditionally, and only switch when a texture run actually needs
+        // a different one.
+        pass.setBindGroup(1, gfx.fontAtlas.bindGroup);
+
         if this.primitives.length > 0 {
             let instanceBuffer = canvas.instanceBuffer;
             assert(instanceBuffer);
@@ -1223,10 +1231,6 @@ export opaque struct Renderer {
             pass.setVertexBuffer(0, gfx.quadVertexBuffer);
             pass.setIndexBuffer(gfx.quadIndexBuffer, wgpu.IndexFormat.Uint32);
             pass.setVertexBuffer(1, instanceBuffer);
-            // Plain rects don't sample group 1 at all, so bind something valid
-            // up front (the font atlas, always available) and only switch when
-            // a run actually needs a different texture.
-            pass.setBindGroup(1, gfx.fontAtlas.bindGroup);
             let boundTextureId = gfx.fontAtlas.id;
 
             let cursor = 0;
