@@ -56,6 +56,21 @@ inline struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
+// Per-frame, per-canvas uniform for a custom post effect (see
+// Context.createPostEffect / Canvas.setPostEffect below). Field order/size
+// must match the WGSL `PostEffectParams` struct in resources/posteffect.wgsl
+// exactly.
+export inline struct PostEffectParams {
+    time: f32 = 0.0;
+    resolutionX: f32 = 0.0;
+    resolutionY: f32 = 0.0;
+    extraX: f32 = 0.0;
+    extraY: f32 = 0.0;
+    extraZ: f32 = 0.0;
+    extraW: f32 = 0.0;
+    _pad0: f32 = 0.0;
+}
+
 export inline struct MeshVertex {
     pos: Vec2f;             // local (pre-transform) vertex position, shape-space units
     color: Colorf;
@@ -162,6 +177,21 @@ fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.Textur
     return RenderTexture { texture: texture, view: view };
 }
 
+// A user-authored full-canvas fragment effect (water refraction, color
+// grading, glitch/CRT looks, ...), compiled once via Context.createPostEffect
+// and reusable across any number of canvases. Runs as an extra fullscreen
+// pass after a canvas's normal primitives/mesh are drawn, sampling that
+// content and producing a new image -- entirely separate from (and requiring
+// no changes to) the SDF/mesh pipelines above, so this is a real extension
+// point rather than a special case wired into the core renderer.
+export opaque struct PostEffect {
+    pipeline: mut wgpu.RenderPipeline;
+
+    fn constructor(pipeline: mut wgpu.RenderPipeline) {
+        return PostEffect { pipeline: pipeline };
+    }
+}
+
 const depthFormat = wgpu.TextureFormat.Depth32Float;
 
 fn depthStencilState(): wgpu.DepthStencilState {
@@ -201,6 +231,16 @@ export opaque struct Context {
     globalsLayout: mut wgpu.BindGroupLayout;
     textureLayout: mut wgpu.BindGroupLayout;
     transformsLayout: mut wgpu.BindGroupLayout;
+
+    // Shared by every PostEffect: source texture + sampler + PostEffectParams
+    // uniform, all at group 0 (a post effect pass never touches groups 1/2 --
+    // it isn't part of the primitive/mesh pipelines at all). One pipeline
+    // layout is reused by every compiled effect since this binding layout
+    // never varies; only the fragment shader body does. See
+    // Context.createPostEffect / Canvas.setPostEffect.
+    postEffectLayout: mut wgpu.BindGroupLayout;
+    postEffectPipelineLayout: mut wgpu.PipelineLayout;
+    postEffectPreamble: str;
 
     // Primitive (rect/glyph/textured-quad) pipeline, and mesh (triangle)
     // pipeline, each in a single-sampled variant (the default -- appropriate
@@ -317,6 +357,37 @@ export opaque struct Context {
         let pipelineLayout = options.device.createPipelineLayout({
             bindGroupLayouts: { globalsLayout, textureLayout, transformsLayout },
         });
+
+        // Bind group layout + pipeline layout shared by every custom post
+        // effect (see Context.createPostEffect): source texture + sampler +
+        // a small per-frame params uniform, all at group 0.
+        let postEffectLayout = options.device.createBindGroupLayout({
+            entries: {
+                {
+                    binding: 0,
+                    visibility: wgpu.ShaderStage.Fragment,
+                    texture: {
+                        sampleType: wgpu.TextureSampleType.Float,
+                        viewDimension: wgpu.TextureViewDimension._2D,
+                        multisampled: false,
+                    },
+                },
+                {
+                    binding: 1,
+                    visibility: wgpu.ShaderStage.Fragment,
+                    sampler: { type: wgpu.SamplerBindingType.Filtering },
+                },
+                {
+                    binding: 2,
+                    visibility: wgpu.ShaderStage.Fragment,
+                    buffer: { type: wgpu.BufferBindingType.Uniform },
+                },
+            },
+        });
+        let postEffectPipelineLayout = options.device.createPipelineLayout({
+            bindGroupLayouts: { postEffectLayout },
+        });
+        let postEffectPreamble = embed.text("resources/posteffect.wgsl");
 
         let shadercode = embed.watchText("resources/shaders.wgsl");
         let shader = rx.computed(() => {
@@ -579,6 +650,9 @@ export opaque struct Context {
             globalsLayout: globalsLayout,
             textureLayout: textureLayout,
             transformsLayout: transformsLayout,
+            postEffectLayout: postEffectLayout,
+            postEffectPipelineLayout: postEffectPipelineLayout,
+            postEffectPreamble: postEffectPreamble,
             pipeline: pipeline,
             pipelineMsaa: pipelineMsaa,
             triPipeline: triPipeline,
@@ -613,6 +687,40 @@ export opaque struct Context {
             { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 }
         );
         this.fontAtlasDirty = false;
+    }
+
+    // Compiles a custom full-canvas fragment effect from `fragmentSource`
+    // (plain WGSL defining `@fragment fn fs_main(in: PostVSOut) ->
+    // @location(0) vec4<f32>`, sampling the canvas's own rendered content via
+    // sampleSource(uv) and reading params -- see
+    // resources/posteffect.wgsl for exactly what's provided). This is the
+    // extension point for arbitrary shader effects (water refraction, color
+    // grading, glitch looks, ...): apply the result to any canvas with
+    // Canvas.setPostEffect(); the same compiled PostEffect can be reused
+    // across as many canvases as want it.
+    fn createPostEffect(fragmentSource: str): PostEffect {
+        let combinedSource = fmt.format(this.postEffectPreamble, fragmentSource);
+        let shader = this.device.createShaderModule({ code: combinedSource });
+
+        let pipeline = this.device.createRenderPipeline({
+            layout: this.postEffectPipelineLayout,
+            vertex: {
+                module: shader,
+                entryPoint: "post_vs",
+            },
+            fragment: {
+                module: shader,
+                entryPoint: "fs_main",
+                targets: {
+                    { format: this.targetFormat },
+                },
+            },
+            primitive: {
+                topology: wgpu.PrimitiveTopology.TriangleList,
+            },
+        });
+
+        return PostEffect(pipeline);
     }
 }
 
@@ -681,6 +789,22 @@ export opaque struct Canvas {
     transformBuffer?: mut wgpu.Buffer = none;
     transformBufferSize: int = 0;
     transformBindGroup?: mut wgpu.BindGroup = none;
+
+    // Optional full-canvas fragment effect applied after this canvas's
+    // normal primitives/mesh are drawn (see Context.createPostEffect /
+    // setPostEffect). postProcessTexture/View is the effect's own output
+    // target -- only created lazily, once a postEffect is actually set --
+    // and postProcessCachedTexture wraps it for asTexture() the same way
+    // cachedTexture does for the plain (no-effect) path.
+    postEffect?: PostEffect = none;
+    postEffectExtraX: real = 0;
+    postEffectExtraY: real = 0;
+    postEffectExtraZ: real = 0;
+    postEffectExtraW: real = 0;
+    postEffectParamsBuffer?: mut wgpu.Buffer = none;
+    postProcessTexture?: mut wgpu.Texture = none;
+    postProcessView?: mut wgpu.TextureView = none;
+    postProcessCachedTexture?: Texture = none;
 
     fn constructor(options: CanvasOptions) {
         let globalsBuffer = options.gfx.device.createBuffer({
@@ -768,6 +892,25 @@ export opaque struct Canvas {
         this.viewProj = none;
     }
 
+    // Applies a full-canvas fragment effect (see Context.createPostEffect) to
+    // everything this canvas draws from now on, e.g. a water-refraction
+    // distortion or a stylized color grade -- pass none to go back to
+    // drawing this canvas's content with no post-processing. Only supported
+    // on offscreen canvases (see Renderer.commit()).
+    fn setPostEffect(effect: PostEffect | none) {
+        this.postEffect = effect;
+    }
+
+    // Four free floats handed to the active post effect's PostEffectParams
+    // (extraX/Y/Z/W) every commit -- e.g. mouse position for an interactive
+    // distortion. Meaningless without a postEffect set.
+    fn setPostEffectExtra(x: real, y: real, z: real = 0.0, w: real = 0.0) {
+        this.postEffectExtraX = x;
+        this.postEffectExtraY = y;
+        this.postEffectExtraZ = z;
+        this.postEffectExtraW = w;
+    }
+
     // The projection used when nobody has called setViewProj(): a plain
     // orthographic view matching this canvas's logical pixel size 1:1, origin
     // at the top-left, y increasing downward -- bit-for-bit what the old
@@ -805,6 +948,12 @@ export opaque struct Canvas {
             this.offscreenView = target.view;
             this.cachedTexture = none;
         }
+
+        // Force the post effect's output target (if any) to be recreated at
+        // the new size on the next commit().
+        this.postProcessTexture = none;
+        this.postProcessView = none;
+        this.postProcessCachedTexture = none;
 
         let depthTarget = createRenderTexture(this.gfx.device, size.framebufferSize, depthFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
         this.depthTexture = depthTarget.texture;
@@ -844,6 +993,15 @@ export opaque struct Canvas {
     // composited into the main window). Only valid for offscreen canvases.
     fn asTexture(): Texture {
         assert(!this.surface, "Canvas.asTexture() is only valid for offscreen canvases");
+
+        // With a post effect active, the composited output is the effect's
+        // own render target (built in Renderer.commit()), not this canvas's
+        // raw primitives/mesh content.
+        if this.postEffect {
+            let texture = this.postProcessCachedTexture;
+            assert(texture, "asTexture() called before the post effect's output was rendered (commit() at least once first)");
+            return texture;
+        }
 
         if !this.cachedTexture {
             let texture = this.offscreenTexture;
@@ -1433,6 +1591,100 @@ export opaque struct Renderer {
         }
 
         pass.end();
+
+        // Custom post effect (see Context.createPostEffect /
+        // Canvas.setPostEffect): a second, independent fullscreen pass that
+        // samples this canvas's just-rendered, already-resolved content
+        // (targetView -- real for a msaaSamples==1 canvas, the MSAA-resolved
+        // result otherwise, either way sampleable since offscreenTexture
+        // always carries TextureBinding usage) and writes a new image. Kept
+        // entirely separate from the primitive/mesh pass above: no changes
+        // to those pipelines were needed to add this.
+        if let effect = canvas.postEffect {
+            assert(!canvas.surface, "Canvas.setPostEffect() is only supported on offscreen canvases");
+
+            if !canvas.postProcessTexture {
+                let target = createRenderTexture(
+                    gfx.device,
+                    canvas.size.framebufferSize,
+                    gfx.targetFormat,
+                    wgpu.TextureUsage.RenderAttachment | wgpu.TextureUsage.TextureBinding
+                );
+                canvas.postProcessTexture = target.texture;
+                canvas.postProcessView = target.view;
+
+                let outputBindGroup = gfx.device.createBindGroup({
+                    layout: gfx.textureLayout,
+                    entries: {
+                        { binding: 0, textureView: target.view },
+                        { binding: 1, sampler: gfx.defaultSampler },
+                    },
+                });
+                canvas.postProcessCachedTexture = Texture(
+                    gfx.allocTextureId(),
+                    target.texture,
+                    target.view,
+                    outputBindGroup,
+                    canvas.size.framebufferSize.x,
+                    canvas.size.framebufferSize.y
+                );
+            }
+            if !canvas.postEffectParamsBuffer {
+                canvas.postEffectParamsBuffer = gfx.device.createBuffer({
+                    usage: wgpu.BufferUsage.Uniform | wgpu.BufferUsage.CopyDst,
+                    size: sizeofTypeInBytes<PostEffectParams>(),
+                });
+            }
+            let paramsBuffer = canvas.postEffectParamsBuffer;
+            assert(paramsBuffer);
+            gfx.queue.writeBuffer<PostEffectParams>(paramsBuffer, [{
+                time: time.now() as f32,
+                resolutionX: canvas.size.logicalSize.x as f32,
+                resolutionY: canvas.size.logicalSize.y as f32,
+                extraX: canvas.postEffectExtraX as f32,
+                extraY: canvas.postEffectExtraY as f32,
+                extraZ: canvas.postEffectExtraZ as f32,
+                extraW: canvas.postEffectExtraW as f32,
+            }]);
+
+            let inputBindGroup = gfx.device.createBindGroup({
+                layout: gfx.postEffectLayout,
+                entries: {
+                    { binding: 0, textureView: targetView },
+                    { binding: 1, sampler: gfx.defaultSampler },
+                    { binding: 2, buffer: paramsBuffer, offset: 0, size: sizeofTypeInBytes<PostEffectParams>() },
+                },
+            });
+
+            let postView = canvas.postProcessView;
+            assert(postView);
+            let postPass = encoder.beginRenderPass({
+                colorAttachments: {
+                    {
+                        view: postView,
+                        resolveTarget: none,
+                        clearValue: Color(0.0, 0.0, 0.0, 0.0),
+                        loadOp: wgpu.LoadOp.Clear,
+                        storeOp: wgpu.StoreOp.Store,
+                    },
+                },
+            });
+            if !postPass {
+                fmt.println("gfx: failed to create post-effect render pass");
+            } else {
+                postPass.setViewport(
+                    0, 0,
+                    canvas.size.framebufferSize.x as real,
+                    canvas.size.framebufferSize.y as real,
+                    0.0, 1.0
+                );
+                postPass.setScissorRect(0, 0, canvas.size.framebufferSize.x, canvas.size.framebufferSize.y);
+                postPass.setPipeline(effect.pipeline);
+                postPass.setBindGroup(0, inputBindGroup);
+                postPass.draw(3, 1, 0, 0);
+                postPass.end();
+            }
+        }
 
         // Submission and presentation happen once for the whole Frame, in
         // frame.present() -- not here. Just register that this canvas needs

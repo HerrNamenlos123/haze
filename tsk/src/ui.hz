@@ -55,6 +55,19 @@ struct ContentAreaArgs {
     }
 }
 
+// Holds the two demo PostEffects (see renderer.hz's Context.createPostEffect
+// / Canvas.setPostEffect) so each is compiled exactly once and reused every
+// frame, instead of recompiling a shader module on every single draw call.
+// Created once in a component's setup closure (see ContentArea below) and
+// mutated from inside the per-frame render closure -- the same captured
+// variable is reused across every frame's invocation of that closure, so
+// this doesn't need reference/handle semantics of its own the way a value
+// stored in an array or passed by value elsewhere would.
+struct PostEffectDemoState {
+    water?: renderer.gfx.PostEffect = none;
+    cool?: renderer.gfx.PostEffect = none;
+}
+
 fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ContentAreaArgs>) => {
 
@@ -65,6 +78,8 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
             }
             return false;
         })
+
+        let postEffects = PostEffectDemoState {};
 
         return (): void => {
             ui.div({
@@ -214,6 +229,79 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                             });
                         }
                     }
+                });
+
+                // Custom shader extension point: a canvas's post effect is
+                // just a plain WGSL fragment shader (see
+                // Context.createPostEffect / Canvas.setPostEffect) that
+                // samples this canvas's own rendered content and produces a
+                // new image -- a real extension point, not a special case.
+                // Compiled once (see postEffects above), reused every frame.
+                ui.text({ id: 203, text: "Post effects: water refraction (left) / mouse-reactive glitch (right)" });
+                ui.div({
+                    id: 204,
+                    style: { direction: ui_styling.Direction.Row, gap: 12.0 },
+                }, (): void => {
+                    ui.canvas({
+                        id: 602,
+                        style: { width: 240.0, height: 150.0 },
+                    }, (r: mut renderer.gfx.Renderer): void => {
+                        if !postEffects.water {
+                            postEffects.water = r.canvas.gfx.createPostEffect(embed.text("resources/postfx_water.wgsl"));
+                        }
+                        r.canvas.setPostEffect(postEffects.water);
+
+                        // A grid reads the water displacement far more
+                        // clearly than a solid fill would.
+                        r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.05, 0.2, 0.35, 1) });
+                        for (let x = 0; x < 7; x++) {
+                            r.drawRect({ pos: Vec2((x as real) * 36.0, 0), size: Vec2(2, 150), fillColor: Color(0.6, 0.85, 1.0, 1) });
+                        }
+                        for (let y = 0; y < 5; y++) {
+                            r.drawRect({ pos: Vec2(0, (y as real) * 36.0), size: Vec2(240, 2), fillColor: Color(0.6, 0.85, 1.0, 1) });
+                        }
+                        r.drawText({
+                            font: r.canvas.gfx.fontRenderer.defaultFont,
+                            position: Vec2(20, 20),
+                            size: 20,
+                            text: "WATER",
+                            color: Color(1, 1, 1, 1),
+                        });
+                    });
+
+                    ui.canvas({
+                        id: 603,
+                        style: { width: 240.0, height: 150.0 },
+                    }, (r: mut renderer.gfx.Renderer): void => {
+                        if !postEffects.cool {
+                            postEffects.cool = r.canvas.gfx.createPostEffect(embed.text("resources/postfx_cool.wgsl"));
+                        }
+                        r.canvas.setPostEffect(postEffects.cool);
+                        // extraX/Y feed the mouse position straight to the
+                        // shader (see postfx_cool.wgsl) -- move the mouse
+                        // over this canvas to see the aberration/vignette
+                        // react to it.
+                        r.canvas.setPostEffectExtra(ui.mousePos.x, ui.mousePos.y);
+
+                        r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.1, 0.1, 0.15, 1) });
+                        r.drawRect({
+                            pos: Vec2(25, 25), size: Vec2(80, 60),
+                            fillColor: Color(1, 0.3, 0.3, 1),
+                            cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                        });
+                        r.drawRect({
+                            pos: Vec2(130, 65), size: Vec2(85, 60),
+                            fillColor: Color(0.3, 1, 0.4, 1),
+                            cornerRadius: { topLeft: 10, topRight: 10, bottomLeft: 10, bottomRight: 10 },
+                        });
+                        r.drawText({
+                            font: r.canvas.gfx.fontRenderer.defaultFont,
+                            position: Vec2(20, 20),
+                            size: 20,
+                            text: "GLITCH",
+                            color: Color(1, 1, 1, 1),
+                        });
+                    });
                 });
             });
         };
