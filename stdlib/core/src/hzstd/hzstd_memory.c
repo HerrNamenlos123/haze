@@ -109,6 +109,26 @@ hzstd_allocator_t hzstd_make_heap_allocator()
   };
 }
 
+static void* malloc_allocator_impl(void* ctx, size_t size)
+{
+  void* ptr = malloc(size);
+  if (!ptr) {
+    HZSTD_PANIC_FMT("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
+hzstd_allocator_t hzstd_make_non_gc_raw_malloc_allocator()
+{
+  // Plain malloc has no GC "atomic" (unscanned) distinction to make -- there
+  // is nothing here for the collector to scan in the first place.
+  return (hzstd_allocator_t) {
+    .allocate = malloc_allocator_impl,
+    .allocateAtomic = malloc_allocator_impl,
+    .ctx = NULL,
+  };
+}
+
 static void* arena_allocator_impl(void* ctx, size_t size) { return hzstd_arena_allocate((hzstd_arena_t*)ctx, size); }
 
 hzstd_allocator_t hzstd_make_arena_allocator()
