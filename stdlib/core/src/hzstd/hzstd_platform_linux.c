@@ -568,6 +568,10 @@ void hzstd_setup_panic_handler(void)
   // own handler -> block_thread_forever -> wait_for_semaphore -> sem_wait
   // chain, and overflowing it is a real, kernel-raised SIGSEGV on top of the
   // one already being handled.
+  // TODO: This is a really bad solution and an ugly workaround.
+  // We should  do something like before suspending the dead thread,
+  // reset the thread to its own stack, potentially even at the beginning,
+  // it is dead anyways, so that when the GC hits it, it has enough stack space.
   static thread_local char altstack_buf[65536];
 
   assert(hzstd_create_semaphore(&panic_trigger));
