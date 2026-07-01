@@ -459,7 +459,7 @@ void hzstd_setup_panic_handler(void)
     hzstd_panic("Failed to register the panic handler (SIGSEGV)");
   }
   if (sigaction(SIGFPE, &sa, NULL) != 0) {
-    hzstd_panic("Failed to register the panic handler (SIGSEGV)");
+    hzstd_panic("Failed to register the panic handler (SIGFPE)");
   }
 }
 
