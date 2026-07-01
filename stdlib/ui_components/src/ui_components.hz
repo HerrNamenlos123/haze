@@ -50,6 +50,15 @@ export inline struct CanvasProps {
     // draws. Set to 1 to skip it (e.g. many small canvases where the extra
     // memory/bandwidth isn't worth it); see renderer.gfx.CanvasOptions.msaaSamples.
     msaaSamples?: int;
+    // Optional custom full-canvas fragment shader effect (water refraction,
+    // color grading, glitch looks, ...) -- see
+    // renderer.gfx.CanvasOptions.postEffect for what it can do and exactly
+    // what WGSL it needs to define. Pass something like
+    // embed.watchText("resources/my_effect.wgsl") created once (e.g. in your
+    // component's setup closure, not freshly every frame) so hot-reloading
+    // the file recompiles the effect automatically. Only read once, when
+    // this canvas element's underlying GPU canvas is first created.
+    postEffect?: rx.Reactive<str>;
 }
 
 // The concrete renderer handle stored, type-erased, inside this layer's own
@@ -113,6 +122,7 @@ export struct ComponentElementRuntimeData {
     handle?: TypeErasedBox;
     drawFn?: TypeErasedBox;
     msaaSamples: int = 4;
+    postEffect?: rx.Reactive<str>;
     onPointerDown?: (e: PointerEvent) => none;
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
@@ -1013,6 +1023,10 @@ export opaque struct UIContext {
         let msaaSamples: int = 4;
         if props.msaaSamples is not none { msaaSamples := props.msaaSamples; }
         data.msaaSamples = msaaSamples;
+
+        if props.postEffect is not none {
+            data.postEffect = props.postEffect;
+        }
 
         if props.ref is not none {
             if props.ref is null || props.ref.raw.id != element.id {

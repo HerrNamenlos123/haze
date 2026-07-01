@@ -177,21 +177,6 @@ fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.Textur
     return RenderTexture { texture: texture, view: view };
 }
 
-// A user-authored full-canvas fragment effect (water refraction, color
-// grading, glitch/CRT looks, ...), compiled once via Context.createPostEffect
-// and reusable across any number of canvases. Runs as an extra fullscreen
-// pass after a canvas's normal primitives/mesh are drawn, sampling that
-// content and producing a new image -- entirely separate from (and requiring
-// no changes to) the SDF/mesh pipelines above, so this is a real extension
-// point rather than a special case wired into the core renderer.
-export opaque struct PostEffect {
-    pipeline: mut wgpu.RenderPipeline;
-
-    fn constructor(pipeline: mut wgpu.RenderPipeline) {
-        return PostEffect { pipeline: pipeline };
-    }
-}
-
 const depthFormat = wgpu.TextureFormat.Depth32Float;
 
 fn depthStencilState(): wgpu.DepthStencilState {
@@ -232,12 +217,12 @@ export opaque struct Context {
     textureLayout: mut wgpu.BindGroupLayout;
     transformsLayout: mut wgpu.BindGroupLayout;
 
-    // Shared by every PostEffect: source texture + sampler + PostEffectParams
+    // Shared by every canvas's custom post effect (CanvasOptions.postEffect,
+    // see Canvas below): source texture + sampler + PostEffectParams
     // uniform, all at group 0 (a post effect pass never touches groups 1/2 --
     // it isn't part of the primitive/mesh pipelines at all). One pipeline
-    // layout is reused by every compiled effect since this binding layout
-    // never varies; only the fragment shader body does. See
-    // Context.createPostEffect / Canvas.setPostEffect.
+    // layout is reused by every canvas's compiled effect pipeline since this
+    // binding layout never varies; only the fragment shader body does.
     postEffectLayout: mut wgpu.BindGroupLayout;
     postEffectPipelineLayout: mut wgpu.PipelineLayout;
     postEffectPreamble: str;
@@ -689,39 +674,47 @@ export opaque struct Context {
         this.fontAtlasDirty = false;
     }
 
-    // Compiles a custom full-canvas fragment effect from `fragmentSource`
-    // (plain WGSL defining `@fragment fn fs_main(in: PostVSOut) ->
-    // @location(0) vec4<f32>`, sampling the canvas's own rendered content via
-    // sampleSource(uv) and reading params -- see
-    // resources/posteffect.wgsl for exactly what's provided). This is the
-    // extension point for arbitrary shader effects (water refraction, color
-    // grading, glitch looks, ...): apply the result to any canvas with
-    // Canvas.setPostEffect(); the same compiled PostEffect can be reused
-    // across as many canvases as want it.
-    fn createPostEffect(fragmentSource: str): PostEffect {
-        let combinedSource = fmt.format(this.postEffectPreamble, fragmentSource);
-        let shader = this.device.createShaderModule({ code: combinedSource });
+}
 
-        let pipeline = this.device.createRenderPipeline({
-            layout: this.postEffectPipelineLayout,
-            vertex: {
-                module: shader,
-                entryPoint: "post_vs",
-            },
-            fragment: {
-                module: shader,
-                entryPoint: "fs_main",
-                targets: {
-                    { format: this.targetFormat },
-                },
-            },
-            primitive: {
-                topology: wgpu.PrimitiveTopology.TriangleList,
-            },
-        });
+// Compiles `fragmentSource` (plain WGSL defining `@fragment fn
+// fs_main(in: PostVSOut) -> @location(0) vec4<f32>`, sampling the canvas's
+// own rendered content via sampleSource(uv) and reading params -- see
+// resources/posteffect.wgsl for exactly what's provided) into a render
+// pipeline for a canvas's custom full-canvas post effect. Not exported:
+// callers just pass a shader source string to CanvasOptions.postEffect (see
+// Canvas below), which builds and reactively recompiles this internally.
+fn buildPostEffectPipeline(gfx: mut Context, fragmentSource: str): mut wgpu.RenderPipeline {
+    let combinedSource = fmt.format(gfx.postEffectPreamble, fragmentSource);
+    let shader = gfx.device.createShaderModule({ code: combinedSource });
 
-        return PostEffect(pipeline);
-    }
+    return gfx.device.createRenderPipeline({
+        layout: gfx.postEffectPipelineLayout,
+        vertex: {
+            module: shader,
+            entryPoint: "post_vs",
+        },
+        fragment: {
+            module: shader,
+            entryPoint: "fs_main",
+            targets: {
+                { format: gfx.targetFormat },
+            },
+        },
+        primitive: {
+            topology: wgpu.PrimitiveTopology.TriangleList,
+        },
+    });
+}
+
+// Takes `source` as a concretely-typed (non-optional) parameter specifically
+// so the rx.computed closure below captures a definitely-`rx.Reactive<str>`
+// value -- capturing straight out of an `if let source = options.postEffect`
+// binding does not carry the narrowed type across the closure boundary in
+// this compiler, so this indirection is required, not just tidiness.
+fn watchPostEffectPipeline(gfx: mut Context, source: rx.Reactive<str>): rx.Computed<mut wgpu.RenderPipeline> {
+    return rx.computed(() => {
+        return buildPostEffectPipeline(gfx, rx.get(source));
+    });
 }
 
 export struct CanvasOptions {
@@ -740,6 +733,19 @@ export struct CanvasOptions {
     // canvases where the extra memory/bandwidth isn't worth it, or a canvas
     // used for non-visual pixel-exact output.
     msaaSamples: int = 4;
+
+    // Optional custom full-canvas fragment effect (water refraction, color
+    // grading, glitch/CRT looks, ...) applied after everything this canvas
+    // draws each frame -- just a WGSL fragment shader body (see
+    // resources/posteffect.wgsl for the fixed preamble/bindings it builds
+    // on: sampleSource(uv) and a `params` uniform with time/resolution/4
+    // free "extra" floats, see Canvas.setPostEffectExtra). Pass
+    // embed.watchText(...) for a hot-reloadable file-backed shader, or
+    // rx.reactive("...") for a static inline one -- either way this is read
+    // reactively, so editing the source (if watched) recompiles the effect
+    // automatically with no other code involved. None means "draw this
+    // canvas's content directly, no post-processing" (the default).
+    postEffect?: rx.Reactive<str>;
 }
 
 // A persistent render target: either a window surface or an offscreen
@@ -791,12 +797,16 @@ export opaque struct Canvas {
     transformBindGroup?: mut wgpu.BindGroup = none;
 
     // Optional full-canvas fragment effect applied after this canvas's
-    // normal primitives/mesh are drawn (see Context.createPostEffect /
-    // setPostEffect). postProcessTexture/View is the effect's own output
-    // target -- only created lazily, once a postEffect is actually set --
-    // and postProcessCachedTexture wraps it for asTexture() the same way
+    // normal primitives/mesh are drawn (see CanvasOptions.postEffect above).
+    // postEffectPipeline is built once in the constructor (none if this
+    // canvas has no postEffect) as an rx.Computed, so if the underlying
+    // shader source is reactive (e.g. embed.watchText) editing it recompiles
+    // this automatically -- Renderer.commit() just does rx.get(...) on it
+    // like every other pipeline. postProcessTexture/View is the effect's own
+    // output target -- only created lazily, on first commit() -- and
+    // postProcessCachedTexture wraps it for asTexture() the same way
     // cachedTexture does for the plain (no-effect) path.
-    postEffect?: PostEffect = none;
+    postEffectPipeline?: rx.Computed<mut wgpu.RenderPipeline> = none;
     postEffectExtraX: real = 0;
     postEffectExtraY: real = 0;
     postEffectExtraZ: real = 0;
@@ -859,6 +869,18 @@ export opaque struct Canvas {
             msaaColorView = msaaTarget.view;
         }
 
+        // Built once, here, from whatever shader source CanvasOptions.postEffect
+        // was given -- none if this canvas has no post effect at all. Reading
+        // the source via rx.get() inside the computed (rather than the plain
+        // rx.Computed<T>-from-struct-field trick used for the main shader
+        // module) makes the tracked dependency explicit: if `source` is
+        // backed by a watched file, editing it invalidates this computed and
+        // the next commit() recompiles automatically.
+        let postEffectPipeline = none as rx.Computed<mut wgpu.RenderPipeline> | none;
+        if let source = options.postEffect {
+            postEffectPipeline = watchPostEffectPipeline(options.gfx, source);
+        }
+
         return Canvas {
             gfx: options.gfx,
             size: options.size,
@@ -873,6 +895,7 @@ export opaque struct Canvas {
             depthView: depthTarget.view,
             globalsBuffer: globalsBuffer,
             globalsBindGroup: globalsBindGroup,
+            postEffectPipeline: postEffectPipeline,
         };
     }
 
@@ -892,18 +915,9 @@ export opaque struct Canvas {
         this.viewProj = none;
     }
 
-    // Applies a full-canvas fragment effect (see Context.createPostEffect) to
-    // everything this canvas draws from now on, e.g. a water-refraction
-    // distortion or a stylized color grade -- pass none to go back to
-    // drawing this canvas's content with no post-processing. Only supported
-    // on offscreen canvases (see Renderer.commit()).
-    fn setPostEffect(effect: PostEffect | none) {
-        this.postEffect = effect;
-    }
-
     // Four free floats handed to the active post effect's PostEffectParams
     // (extraX/Y/Z/W) every commit -- e.g. mouse position for an interactive
-    // distortion. Meaningless without a postEffect set.
+    // distortion. Meaningless without CanvasOptions.postEffect set.
     fn setPostEffectExtra(x: real, y: real, z: real = 0.0, w: real = 0.0) {
         this.postEffectExtraX = x;
         this.postEffectExtraY = y;
@@ -997,7 +1011,7 @@ export opaque struct Canvas {
         // With a post effect active, the composited output is the effect's
         // own render target (built in Renderer.commit()), not this canvas's
         // raw primitives/mesh content.
-        if this.postEffect {
+        if this.postEffectPipeline {
             let texture = this.postProcessCachedTexture;
             assert(texture, "asTexture() called before the post effect's output was rendered (commit() at least once first)");
             return texture;
@@ -1592,16 +1606,16 @@ export opaque struct Renderer {
 
         pass.end();
 
-        // Custom post effect (see Context.createPostEffect /
-        // Canvas.setPostEffect): a second, independent fullscreen pass that
-        // samples this canvas's just-rendered, already-resolved content
-        // (targetView -- real for a msaaSamples==1 canvas, the MSAA-resolved
-        // result otherwise, either way sampleable since offscreenTexture
-        // always carries TextureBinding usage) and writes a new image. Kept
-        // entirely separate from the primitive/mesh pass above: no changes
-        // to those pipelines were needed to add this.
-        if let effect = canvas.postEffect {
-            assert(!canvas.surface, "Canvas.setPostEffect() is only supported on offscreen canvases");
+        // Custom post effect (see CanvasOptions.postEffect): a second,
+        // independent fullscreen pass that samples this canvas's
+        // just-rendered, already-resolved content (targetView -- real for a
+        // msaaSamples==1 canvas, the MSAA-resolved result otherwise, either
+        // way sampleable since offscreenTexture always carries
+        // TextureBinding usage) and writes a new image. Kept entirely
+        // separate from the primitive/mesh pass above: no changes to those
+        // pipelines were needed to add this.
+        if let pipelineComputed = canvas.postEffectPipeline {
+            assert(!canvas.surface, "CanvasOptions.postEffect is only supported on offscreen canvases");
 
             if !canvas.postProcessTexture {
                 let target = createRenderTexture(
@@ -1679,7 +1693,7 @@ export opaque struct Renderer {
                     0.0, 1.0
                 );
                 postPass.setScissorRect(0, 0, canvas.size.framebufferSize.x, canvas.size.framebufferSize.y);
-                postPass.setPipeline(effect.pipeline);
+                postPass.setPipeline(rx.get(pipelineComputed));
                 postPass.setBindGroup(0, inputBindGroup);
                 postPass.draw(3, 1, 0, 0);
                 postPass.end();

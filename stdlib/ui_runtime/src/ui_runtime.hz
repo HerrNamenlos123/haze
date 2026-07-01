@@ -124,7 +124,7 @@ export opaque struct Runtime {
         };
 
         if !data.handle {
-            let offscreen = renderer.gfx.Canvas({ gfx: this.gfx, size: canvasSize, msaaSamples: data.msaaSamples });
+            let offscreen = renderer.gfx.Canvas({ gfx: this.gfx, size: canvasSize, msaaSamples: data.msaaSamples, postEffect: data.postEffect });
             let handle = ui_components.CanvasHandle { canvas: offscreen };
             data.handle = TypeErasedBox<ui_components.CanvasHandle>(handle);
 
