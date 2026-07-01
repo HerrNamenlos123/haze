@@ -202,8 +202,19 @@ export opaque struct Context {
     textureLayout: mut wgpu.BindGroupLayout;
     transformsLayout: mut wgpu.BindGroupLayout;
 
+    // Primitive (rect/glyph/textured-quad) pipeline, and mesh (triangle)
+    // pipeline, each in a single-sampled variant (the default -- appropriate
+    // for rounded-rect/glyph SDF fills, which provide their own analytic
+    // antialiasing) and a 4x-multisampled variant. Which variant runs is
+    // purely a function of the destination canvas's own msaaSamples setting
+    // (CanvasOptions.msaaSamples): turning MSAA on for a canvas applies it to
+    // everything drawn into that canvas, primitives and mesh alike, since a
+    // render pass's attachments and every pipeline drawing into it must all
+    // share one sample count.
     pipeline: rx.Computed<mut wgpu.RenderPipeline>;
+    pipelineMsaa: rx.Computed<mut wgpu.RenderPipeline>;
     triPipeline: rx.Computed<mut wgpu.RenderPipeline>;
+    triPipelineMsaa: rx.Computed<mut wgpu.RenderPipeline>;
 
     quadVertexBuffer: mut wgpu.Buffer;
     quadIndexBuffer: mut wgpu.Buffer;
@@ -355,6 +366,49 @@ export opaque struct Context {
                     topology: wgpu.PrimitiveTopology.TriangleList,
                 },
                 depthStencil: depthStencilState(),
+                multisample: { count: 1 },
+            });
+        });
+
+        let pipelineMsaa = rx.computed(() => {
+            return options.device.createRenderPipeline({
+                layout: pipelineLayout,
+                vertex: {
+                    module: shader,
+                    entryPoint: "vs_main",
+                    buffers: { vertexLayout, instanceLayout },
+                },
+                fragment: {
+                    module: shader,
+                    entryPoint: "fs_main",
+                    targets: {
+                        {
+                            format: options.targetFormat,
+                            blend: {
+                                color: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                                alpha: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                            },
+                        },
+                    },
+                },
+                primitive: {
+                    topology: wgpu.PrimitiveTopology.TriangleList,
+                },
+                depthStencil: depthStencilState(),
+                // Used only when the destination canvas itself was created
+                // with msaaSamples > 1 -- rects/glyphs/textured quads drawn
+                // there get real hardware MSAA on top of (for rounded rects)
+                // their own analytic SDF antialiasing, and for plain textured
+                // quads (e.g. compositing another canvas in, possibly
+                // rotated) it's the only antialiasing they have.
                 multisample: { count: msaaSampleCount },
             });
         });
@@ -470,6 +524,50 @@ export opaque struct Context {
                     topology: wgpu.PrimitiveTopology.TriangleList,
                 },
                 depthStencil: depthStencilState(),
+                // 1: the default mesh pipeline, used by ordinary (msaaSamples
+                // == 1) canvases. See triPipelineMsaa for the multisampled
+                // variant used by a canvas dedicated to mesh content.
+                multisample: { count: 1 },
+            });
+        });
+
+        let triPipelineMsaa = rx.computed(() => {
+            return options.device.createRenderPipeline({
+                layout: triPipelineLayout,
+                vertex: {
+                    module: shader,
+                    entryPoint: "tri_vs",
+                    buffers: { meshVertexLayout },
+                },
+                fragment: {
+                    module: shader,
+                    entryPoint: "tri_fs",
+                    targets: {
+                        {
+                            format: options.targetFormat,
+                            blend: {
+                                color: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                                alpha: {
+                                    srcFactor: wgpu.BlendFactor.One,
+                                    dstFactor: wgpu.BlendFactor.OneMinusSrcAlpha,
+                                    operation: wgpu.BlendOperation.Add,
+                                },
+                            },
+                        },
+                    },
+                },
+                primitive: {
+                    topology: wgpu.PrimitiveTopology.TriangleList,
+                },
+                depthStencil: depthStencilState(),
+                // Real hardware MSAA for raw triangle-mesh geometry, which has
+                // no analytic antialiasing of its own (unlike the SDF-based
+                // primitive pipeline, which must stay single-sampled). Only
+                // used by a canvas explicitly created with msaaSamples > 1.
                 multisample: { count: msaaSampleCount },
             });
         });
@@ -482,7 +580,9 @@ export opaque struct Context {
             textureLayout: textureLayout,
             transformsLayout: transformsLayout,
             pipeline: pipeline,
+            pipelineMsaa: pipelineMsaa,
             triPipeline: triPipeline,
+            triPipelineMsaa: triPipelineMsaa,
             quadVertexBuffer: quadVertexBuffer,
             quadIndexBuffer: quadIndexBuffer,
             defaultSampler: defaultSampler,
@@ -520,6 +620,18 @@ export struct CanvasOptions {
     gfx: mut Context;
     size: CanvasSize;
     surface?: mut wgpu.Surface; // omit for an offscreen (render-to-texture) canvas
+
+    // 4 (the default; WebGPU only guarantees 1 or 4) applies real hardware
+    // MSAA to everything drawn into this canvas -- mesh triangles and
+    // textured quads/composited canvases have no antialiasing of their own
+    // and need it, and rounded-rect/glyph SDF fills are unaffected by it
+    // (their antialiasing is analytic, computed from distance in the
+    // fragment shader, not from sample coverage) now that fragment output is
+    // correctly premultiplied. Set to 1 to skip the separate multisample
+    // texture and resolve step entirely -- e.g. for many small/offscreen
+    // canvases where the extra memory/bandwidth isn't worth it, or a canvas
+    // used for non-visual pixel-exact output.
+    msaaSamples: int = 4;
 }
 
 // A persistent render target: either a window surface or an offscreen
@@ -536,8 +648,12 @@ export opaque struct Canvas {
     offscreenView: mut wgpu.TextureView | none;
     cachedTexture: Texture | none;
 
-    msaaColorTexture: mut wgpu.Texture;
-    msaaColorView: mut wgpu.TextureView;
+    // Only populated when msaaSamples > 1; a msaaSamples == 1 canvas renders
+    // directly into its target with no separate multisample texture or
+    // resolve step at all.
+    msaaSamples: int = 4;
+    msaaColorTexture?: mut wgpu.Texture = none;
+    msaaColorView?: mut wgpu.TextureView = none;
 
     depthTexture: mut wgpu.Texture;
     depthView: mut wgpu.TextureView;
@@ -602,16 +718,22 @@ export opaque struct Canvas {
             options.size.framebufferSize,
             depthFormat,
             wgpu.TextureUsage.RenderAttachment,
-            msaaSampleCount
+            options.msaaSamples
         );
 
-        let msaaTarget = createRenderTexture(
-            options.gfx.device,
-            options.size.framebufferSize,
-            options.gfx.targetFormat,
-            wgpu.TextureUsage.RenderAttachment,
-            msaaSampleCount
-        );
+        let msaaColorTexture = none as mut wgpu.Texture | none;
+        let msaaColorView = none as mut wgpu.TextureView | none;
+        if options.msaaSamples > 1 {
+            let msaaTarget = createRenderTexture(
+                options.gfx.device,
+                options.size.framebufferSize,
+                options.gfx.targetFormat,
+                wgpu.TextureUsage.RenderAttachment,
+                options.msaaSamples
+            );
+            msaaColorTexture = msaaTarget.texture;
+            msaaColorView = msaaTarget.view;
+        }
 
         return Canvas {
             gfx: options.gfx,
@@ -620,8 +742,9 @@ export opaque struct Canvas {
             offscreenTexture: offscreenTexture,
             offscreenView: offscreenView,
             cachedTexture: none,
-            msaaColorTexture: msaaTarget.texture,
-            msaaColorView: msaaTarget.view,
+            msaaSamples: options.msaaSamples,
+            msaaColorTexture: msaaColorTexture,
+            msaaColorView: msaaColorView,
             depthTexture: depthTarget.texture,
             depthView: depthTarget.view,
             globalsBuffer: globalsBuffer,
@@ -683,13 +806,15 @@ export opaque struct Canvas {
             this.cachedTexture = none;
         }
 
-        let depthTarget = createRenderTexture(this.gfx.device, size.framebufferSize, depthFormat, wgpu.TextureUsage.RenderAttachment, msaaSampleCount);
+        let depthTarget = createRenderTexture(this.gfx.device, size.framebufferSize, depthFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
         this.depthTexture = depthTarget.texture;
         this.depthView = depthTarget.view;
 
-        let msaaTarget = createRenderTexture(this.gfx.device, size.framebufferSize, this.gfx.targetFormat, wgpu.TextureUsage.RenderAttachment, msaaSampleCount);
-        this.msaaColorTexture = msaaTarget.texture;
-        this.msaaColorView = msaaTarget.view;
+        if this.msaaSamples > 1 {
+            let msaaTarget = createRenderTexture(this.gfx.device, size.framebufferSize, this.gfx.targetFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
+            this.msaaColorTexture = msaaTarget.texture;
+            this.msaaColorView = msaaTarget.view;
+        }
     }
 
     fn currentView(): mut wgpu.TextureView | none {
@@ -1198,13 +1323,29 @@ export opaque struct Renderer {
         // them there are or how they sample each other.
         let encoder = this.frame.encoder;
 
+        // msaaSamples == 1 (the default): render straight into the
+        // destination, no separate multisample texture or resolve at all.
+        // msaaSamples > 1: render into the multisampled texture and let the
+        // render pass resolve it into the destination -- applies uniformly to
+        // everything drawn into this canvas (see pipeline selection below).
         let colorAttachment = wgpu.RenderPassColorAttachment {
-            view: canvas.msaaColorView,
-            resolveTarget: targetView,
+            view: targetView,
+            resolveTarget: none,
             clearValue: Color(0.0, 0.0, 0.0, 0.0),
             loadOp: clear ? wgpu.LoadOp.Clear : wgpu.LoadOp.Load,
-            storeOp: wgpu.StoreOp.Discard,
+            storeOp: wgpu.StoreOp.Store,
         };
+        if canvas.msaaSamples > 1 {
+            let msaaView = canvas.msaaColorView;
+            assert(msaaView);
+            colorAttachment = wgpu.RenderPassColorAttachment {
+                view: msaaView,
+                resolveTarget: targetView,
+                clearValue: Color(0.0, 0.0, 0.0, 0.0),
+                loadOp: clear ? wgpu.LoadOp.Clear : wgpu.LoadOp.Load,
+                storeOp: wgpu.StoreOp.Discard,
+            };
+        }
 
         let depthAttachment = wgpu.RenderPassDepthStencilAttachment {
             view: canvas.depthView,
@@ -1251,7 +1392,11 @@ export opaque struct Renderer {
             let instanceBuffer = canvas.instanceBuffer;
             assert(instanceBuffer);
 
-            pass.setPipeline(rx.get(gfx.pipeline));
+            if canvas.msaaSamples > 1 {
+                pass.setPipeline(rx.get(gfx.pipelineMsaa));
+            } else {
+                pass.setPipeline(rx.get(gfx.pipeline));
+            }
             pass.setVertexBuffer(0, gfx.quadVertexBuffer);
             pass.setIndexBuffer(gfx.quadIndexBuffer, wgpu.IndexFormat.Uint32);
             pass.setVertexBuffer(1, instanceBuffer);
@@ -1278,7 +1423,11 @@ export opaque struct Renderer {
             let meshVertexBuffer = canvas.meshVertexBuffer;
             assert(meshVertexBuffer);
 
-            pass.setPipeline(rx.get(gfx.triPipeline));
+            if canvas.msaaSamples > 1 {
+                pass.setPipeline(rx.get(gfx.triPipelineMsaa));
+            } else {
+                pass.setPipeline(rx.get(gfx.triPipeline));
+            }
             pass.setVertexBuffer(0, meshVertexBuffer);
             pass.draw(this.meshVertices.length, 1, 0, 0);
         }

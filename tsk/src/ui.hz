@@ -88,8 +88,11 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     id: 600,
                     style: { width: 260.0, height: 220.0 },
                 }, (r: mut renderer.gfx.Renderer): void => {
-                    // Original two plain rects -- unchanged, identity transform.
-                    r.drawRect({ pos: Vec2(10, 10), size: Vec2(80, 60), fillColor: Color(1, 0, 0, 1) });
+                    r.drawRect({
+                        pos: Vec2(10, 10),
+                        size: Vec2(80, 60),
+                        fillColor: Color(1, 0, 0, 1),
+                    });
                     r.drawRect({ pos: Vec2(100, 70), size: Vec2(60, 50), fillColor: Color(0, 0, 1, 1) });
 
                     // Rotated rounded rect: corners must stay perfectly round
@@ -250,6 +253,8 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             ui.canvas({
                 id: 1000,
                 style: { width: 500.0 },
+                // MSAA defaults to on (4x) for every canvas now, so nothing
+                // to set here -- pass msaaSamples: 1 to opt out if needed.
             }, (r: mut renderer.gfx.Renderer): void => {
                 cache.flush();
                 let d = rx.get(doc); // Manually unwrap because of a compiler bug

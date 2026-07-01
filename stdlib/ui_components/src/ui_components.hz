@@ -46,6 +46,10 @@ export inline struct CanvasProps {
     style?: ui_styling.DivStyle;
     presets?: []ui_styling.DivStyleOp;
     ref?: ElementRef<ui_elements.CanvasElement>;
+    // Defaults to 4 (real hardware MSAA), applied to everything this canvas
+    // draws. Set to 1 to skip it (e.g. many small canvases where the extra
+    // memory/bandwidth isn't worth it); see renderer.gfx.CanvasOptions.msaaSamples.
+    msaaSamples?: int;
 }
 
 // The concrete renderer handle stored, type-erased, inside this layer's own
@@ -108,6 +112,7 @@ export struct ComponentElementRuntimeData {
     inputFeedbackVersion: rx.Reactive<bool>;
     handle?: TypeErasedBox;
     drawFn?: TypeErasedBox;
+    msaaSamples: int = 4;
     onPointerDown?: (e: PointerEvent) => none;
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
@@ -1004,6 +1009,10 @@ export opaque struct UIContext {
         } else {
             data.drawFn = none;
         }
+
+        let msaaSamples: int = 4;
+        if props.msaaSamples is not none { msaaSamples := props.msaaSamples; }
+        data.msaaSamples = msaaSamples;
 
         if props.ref is not none {
             if props.ref is null || props.ref.raw.id != element.id {
