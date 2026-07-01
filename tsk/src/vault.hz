@@ -115,7 +115,7 @@ fn processFile(path: str) {
             shapes = shapes + page.shapes.length;
         }
         fmt.println(f"{document.data.pages.length} pages, {shapes} shapes");
-        let a = json.stringify(document);
+        let a = json.stringify(document, { pretty: true });
         if (a != file) {
             fmt.println(path);
             fmt.println(f"AAAAAAAA FILE CONTENT IS NOT IDENTICAL!!!!");
