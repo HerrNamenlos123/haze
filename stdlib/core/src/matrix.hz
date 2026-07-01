@@ -1,0 +1,199 @@
+
+// 4x4 matrix, column-major, laid out to match WGSL's mat4x4<f32> uniform/storage
+// layout exactly (16 consecutive f32, column by column). This is the single
+// transform primitive used everywhere: model placement of a shape, camera
+// view/projection, or anything composed from the two. Every helper below
+// composes via operator* (matrix*matrix, matrix*vector), so arbitrary
+// translate/scale/rotate/shear combinations, in 2D or full 3D, are just
+// products of these primitives -- there is no separate 2D-only code path.
+export namespace mat4 {
+
+export inline struct Mat4f {
+    data: [16]f32;
+
+    fn constructor(data: [16]f32) {
+        return Mat4f { data: data };
+    }
+
+    // Column-major element access: col/row in [0, 3].
+    fn get(col: int, row: int): f32 {
+        return this.data[col * 4 + row];
+    }
+
+    // Exact element-wise equality. Used only to avoid redundantly growing a
+    // transform pool with back-to-back identical matrices -- a false negative
+    // from float precision just misses that micro-optimization, it's never a
+    // correctness issue.
+    fn equals(other: Mat4f): bool {
+        for (let i = 0; i < 16; i++) {
+            if this.data[i] != other.data[i] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn mul(other: Mat4f): Mat4f {
+        return Mat4f {
+            data: [
+                this.data[0] * other.data[0]  + this.data[4] * other.data[1]  + this.data[8]  * other.data[2]  + this.data[12] * other.data[3],
+                this.data[1] * other.data[0]  + this.data[5] * other.data[1]  + this.data[9]  * other.data[2]  + this.data[13] * other.data[3],
+                this.data[2] * other.data[0]  + this.data[6] * other.data[1]  + this.data[10] * other.data[2]  + this.data[14] * other.data[3],
+                this.data[3] * other.data[0]  + this.data[7] * other.data[1]  + this.data[11] * other.data[2]  + this.data[15] * other.data[3],
+
+                this.data[0] * other.data[4]  + this.data[4] * other.data[5]  + this.data[8]  * other.data[6]  + this.data[12] * other.data[7],
+                this.data[1] * other.data[4]  + this.data[5] * other.data[5]  + this.data[9]  * other.data[6]  + this.data[13] * other.data[7],
+                this.data[2] * other.data[4]  + this.data[6] * other.data[5]  + this.data[10] * other.data[6]  + this.data[14] * other.data[7],
+                this.data[3] * other.data[4]  + this.data[7] * other.data[5]  + this.data[11] * other.data[6]  + this.data[15] * other.data[7],
+
+                this.data[0] * other.data[8]  + this.data[4] * other.data[9]  + this.data[8]  * other.data[10] + this.data[12] * other.data[11],
+                this.data[1] * other.data[8]  + this.data[5] * other.data[9]  + this.data[9]  * other.data[10] + this.data[13] * other.data[11],
+                this.data[2] * other.data[8]  + this.data[6] * other.data[9]  + this.data[10] * other.data[10] + this.data[14] * other.data[11],
+                this.data[3] * other.data[8]  + this.data[7] * other.data[9]  + this.data[11] * other.data[10] + this.data[15] * other.data[11],
+
+                this.data[0] * other.data[12] + this.data[4] * other.data[13] + this.data[8]  * other.data[14] + this.data[12] * other.data[15],
+                this.data[1] * other.data[12] + this.data[5] * other.data[13] + this.data[9]  * other.data[14] + this.data[13] * other.data[15],
+                this.data[2] * other.data[12] + this.data[6] * other.data[13] + this.data[10] * other.data[14] + this.data[14] * other.data[15],
+                this.data[3] * other.data[12] + this.data[7] * other.data[13] + this.data[11] * other.data[14] + this.data[15] * other.data[15],
+            ]
+        };
+    }
+
+    fn mulVec4(v: Vec4f): Vec4f {
+        return Vec4f(
+            this.data[0] * v.x + this.data[4] * v.y + this.data[8]  * v.z + this.data[12] * v.w,
+            this.data[1] * v.x + this.data[5] * v.y + this.data[9]  * v.z + this.data[13] * v.w,
+            this.data[2] * v.x + this.data[6] * v.y + this.data[10] * v.z + this.data[14] * v.w,
+            this.data[3] * v.x + this.data[7] * v.y + this.data[11] * v.z + this.data[15] * v.w,
+        );
+    }
+}
+
+export fn identity(): Mat4f {
+    return Mat4f {
+        data: [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+}
+
+export fn translation(t: Vec3): Mat4f {
+    return Mat4f {
+        data: [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            t.x as f32, t.y as f32, t.z as f32, 1.0,
+        ]
+    };
+}
+
+export fn scaling(s: Vec3): Mat4f {
+    return Mat4f {
+        data: [
+            s.x as f32, 0.0, 0.0, 0.0,
+            0.0, s.y as f32, 0.0, 0.0,
+            0.0, 0.0, s.z as f32, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+}
+
+export fn rotationX(radians: real): Mat4f {
+    let c = math.cos(radians) as f32;
+    let s = math.sin(radians) as f32;
+    return Mat4f {
+        data: [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, c,   s,   0.0,
+            0.0, -s,  c,   0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+}
+
+export fn rotationY(radians: real): Mat4f {
+    let c = math.cos(radians) as f32;
+    let s = math.sin(radians) as f32;
+    return Mat4f {
+        data: [
+            c,   0.0, -s,  0.0,
+            0.0, 1.0, 0.0, 0.0,
+            s,   0.0, c,   0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+}
+
+// The common case for 2D content: rotation around the local Z axis (the
+// screen-facing plane).
+export fn rotationZ(radians: real): Mat4f {
+    let c = math.cos(radians) as f32;
+    let s = math.sin(radians) as f32;
+    return Mat4f {
+        data: [
+            c,   s,   0.0, 0.0,
+            -s,  c,   0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+}
+
+// 2D shear: shearX tilts along X as a function of Y, shearY tilts along Y as
+// a function of X. Combine with rotationZ/scaling/translation via operator*
+// to build any 2D affine placement.
+export fn shear2D(shearX: real, shearY: real): Mat4f {
+    return Mat4f {
+        data: [
+            1.0,            shearY as f32, 0.0, 0.0,
+            shearX as f32,  1.0,           0.0, 0.0,
+            0.0,            0.0,           1.0, 0.0,
+            0.0,            0.0,           0.0, 1.0,
+        ]
+    };
+}
+
+// Orthographic projection. This is what a flat 2D canvas uses as its
+// viewProj: it maps a page-space rectangle straight to clip space with no
+// perspective divide, i.e. exactly what the old hand-rolled
+// "pixel / screenSize * 2 - 1" formula did, just expressed as a matrix so it
+// composes with everything else and can later be swapped for perspective().
+// Depth is emitted in WebGPU's [0, 1] clip-space convention (not OpenGL's
+// [-1, 1]): near maps to 0, far maps to 1.
+export fn ortho(left: real, right: real, bottom: real, top: real, near: real, far: real): Mat4f {
+    let rl = right - left;
+    let tb = top - bottom;
+    let depthRange = far - near;
+    return Mat4f {
+        data: [
+            (2.0 / rl) as f32, 0.0, 0.0, 0.0,
+            0.0, (2.0 / tb) as f32, 0.0, 0.0,
+            0.0, 0.0, (1.0 / depthRange) as f32, 0.0,
+            (-(right + left) / rl) as f32, (-(top + bottom) / tb) as f32, (-near / depthRange) as f32, 1.0,
+        ]
+    };
+}
+
+// Perspective projection for genuine 3D scenes (e.g. a UI canvas rendered as
+// a texture on a wall in a 3D world). Swapping a canvas's viewProj from
+// ortho() to perspective() is the entire "switch to 3D" step; nothing else
+// in the render pipeline changes. Depth is emitted in WebGPU's [0, 1]
+// clip-space convention (not OpenGL's [-1, 1]).
+export fn perspective(fovYRadians: real, aspect: real, near: real, far: real): Mat4f {
+    let f = 1.0 / math.tan(fovYRadians / 2.0);
+    let depthRange = near - far;
+    return Mat4f {
+        data: [
+            (f / aspect) as f32, 0.0, 0.0, 0.0,
+            0.0, f as f32, 0.0, 0.0,
+            0.0, 0.0, (far / depthRange) as f32, -1.0,
+            0.0, 0.0, ((near * far) / depthRange) as f32, 0.0,
+        ]
+    };
+}
+
+}

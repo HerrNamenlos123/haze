@@ -14,7 +14,21 @@ struct VSOut {
 };
 
 struct Globals {
-    screenSize: vec2<f32>,
+    viewProj: mat4x4<f32>,
+    time: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+// One entry per shape/shape-group this frame (index 0 is always identity).
+// Every instance/vertex looks its own placement up here by transformIndex
+// instead of carrying a whole matrix itself, so an arbitrary
+// translate/scale/rotate/shear (2D or full 3D) can be given to every
+// individual shape -- or every individual character of a text run -- without
+// bloating per-vertex data or splitting the draw call.
+struct Transform {
+    m: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
@@ -25,6 +39,23 @@ var colorTexture: texture_2d<f32>;
 
 @group(1) @binding(1)
 var colorSampler: sampler;
+
+@group(2) @binding(0)
+var<storage, read> transforms: array<Transform>;
+
+// Places a local (pre-transform, shape-space) position into clip space:
+// model transform (this shape's own translate/scale/rotate/shear) first,
+// then the canvas's shared camera (pan/zoom in 2D, or a real projection in
+// 3D). Shape-intrinsic parameters like instSize/radius/borderThickness are
+// deliberately *not* passed through here -- they stay in local units and are
+// only ever read by the fragment shader's SDF math, which is exactly what
+// keeps rounded corners round (or correctly elliptical under a shear/rotate)
+// instead of being squished by the placement transform.
+fn toClipSpace(localPos: vec2<f32>, z: f32, transformIndex: u32) -> vec4<f32> {
+    let model = transforms[transformIndex].m;
+    let worldPos = model * vec4<f32>(localPos, z, 1.0);
+    return globals.viewProj * worldPos;
+}
 
 @vertex
 fn vs_main(
@@ -41,21 +72,18 @@ fn vs_main(
     @location(10) _type: u32,
     @location(11) uvMin: vec2<f32>,
     @location(12) uvMax: vec2<f32>,
-    @location(13) depth: f32,
+    @location(13) z: f32,
+    @location(14) transformIndex: u32,
 ) -> VSOut {
     var o: VSOut;
 
     if (_type == 0u) { // Filled Rounded Rectangle
-        let scaledPos = quadPos * instSize + instPos;
-        o.pos = vec4(
-            (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
-            1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            depth, 1.0
-        );
+        let localPos = quadPos * instSize + instPos;
+        o.pos = toClipSpace(localPos, z, transformIndex);
         o.localPos = quadPos;
         o.fillColor = fillColor;
         o.borderColor = borderColor;
-        
+
         o.radiusTopLeft = min(min(radiusTopLeft, instSize.x / 2.0), instSize.y / 2.0);
         o.radiusTopRight = min(min(radiusTopRight, instSize.x / 2.0), instSize.y / 2.0);
         o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
@@ -69,12 +97,8 @@ fn vs_main(
     else if (_type == 1u) { // Outlined Rounded Rectangle
         let paddingFraction = vec2(borderThickness * 2.0 / instSize.x, borderThickness * 2.0 / instSize.y);
         let paddedSize = vec2(instSize.x + borderThickness * 2.0, instSize.y + borderThickness * 2.0);
-        let scaledPos = quadPos * paddedSize + instPos;
-        o.pos = vec4(
-            (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
-            1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            depth, 1.0
-        );
+        let localPos = quadPos * paddedSize + instPos;
+        o.pos = toClipSpace(localPos, z, transformIndex);
         o.localPos = quadPos * (vec2(1, 1) + paddingFraction);
         o.fillColor = fillColor;
         o.borderColor = borderColor;
@@ -90,12 +114,8 @@ fn vs_main(
         o.uv = vec2(0, 0);
     }
     else if (_type == 2u || _type == 3u) { // Glyph or Textured Quad
-        let scaledPos = quadPos * instSize + instPos;
-        o.pos = vec4(
-            (scaledPos.x / globals.screenSize.x) * 2.0 - 1.0,
-            1.0 - (scaledPos.y / globals.screenSize.y) * 2.0,
-            depth, 1.0
-        );
+        let localPos = quadPos * instSize + instPos;
+        o.pos = toClipSpace(localPos, z, transformIndex);
         o.localPos = quadPos;
         o.fillColor = fillColor;
         o.borderColor = vec4(0, 0, 0, 0);
@@ -218,14 +238,11 @@ struct TriVSOut {
 fn tri_vs(
     @location(0) pos: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) depth: f32,
+    @location(2) z: f32,
+    @location(3) transformIndex: u32,
 ) -> TriVSOut {
     var o: TriVSOut;
-    o.pos = vec4<f32>(
-        pos.x / globals.screenSize.x * 2.0 - 1.0,
-        1.0 - pos.y / globals.screenSize.y * 2.0,
-        depth, 1.0,
-    );
+    o.pos = toClipSpace(pos, z, transformIndex);
     o.color = color;
     return o;
 }

@@ -10,13 +10,29 @@ fn max<T>(a: T, b: T): T => {
     return b;
 }
 
+// Everything a canvas needs to place vertices in clip space: viewProj is the
+// camera (pan/zoom/perspective/whatever) shared by every shape drawn to that
+// canvas this frame; per-shape placement (translate/scale/rotate/shear, in 2D
+// or full 3D) lives in the `transforms` storage buffer below and is selected
+// per-instance/per-vertex via `transformIndex`, so an arbitrary transform can
+// be given to every individual shape without bloating per-vertex data with a
+// whole matrix. `time` is provided for custom vertex/fragment shaders (e.g. a
+// wavy-text effect) that want to animate independently of CPU-side state.
 inline struct Globals {
-    screenSize: inline Vec2f;
+    viewProj: inline mat4.Mat4f;
+    time: f32 = 0.0;
+    _pad0: f32 = 0.0;
+    _pad1: f32 = 0.0;
+    _pad2: f32 = 0.0;
 }
 
 export inline struct PrimitiveInstance {
-    pos: Vec2f;            // center position in pixels
-    size: Vec2f;           // width/height
+    pos: Vec2f;            // local (pre-transform) center position, shape-space units
+    size: Vec2f;           // width/height, shape-space units -- always local; the SDF math in
+                            // the fragment shader needs the real, untransformed width/height/
+                            // radius regardless of how `transformIndex` places the shape, which
+                            // is exactly what keeps rounded corners correct under rotation/shear:
+                            // the corner-rounding math never sees the transform at all.
     radiusTopLeft: f32;           // corner radius for rounded rect
     radiusTopRight: f32;           // corner radius for rounded rect
     radiusBottomLeft: f32;           // corner radius for rounded rect
@@ -30,7 +46,10 @@ export inline struct PrimitiveInstance {
     uvMin: Vec2f;
     uvMax: Vec2f;
 
-    depth: f32;             // NDC depth derived from zIndex; GPU depth test resolves draw order
+    z: f32;                 // local z-coordinate (world/page depth), fed through the real
+                             // transform + viewProj + GPU depth test -- no manual depth curve
+    transformIndex: u32;    // index into the canvas's transform pool (see `transforms` storage
+                             // buffer); selects this instance's own translate/scale/rotate/shear
 };
 
 inline struct QuadVertex {
@@ -38,20 +57,31 @@ inline struct QuadVertex {
 };
 
 export inline struct MeshVertex {
-    pos: Vec2f;
+    pos: Vec2f;             // local (pre-transform) vertex position, shape-space units
     color: Colorf;
-    depth: f32;
+    z: f32;                 // local z-coordinate; see PrimitiveInstance.z
+    transformIndex: u32;    // index into the canvas's transform pool; see PrimitiveInstance
 };
 
-// Maps an arbitrary zIndex to an NDC depth in the open interval (0, 1), where
-// higher zIndex -> smaller depth -> wins the GPU depth test (drawn on top).
-// Uses a bounded "softsign" curve so it never saturates to exactly 0 or 1
-// regardless of how large |zIndex| gets, which would otherwise risk z-fighting
-// or clipping at the extremes.
-fn zIndexToDepth(zIndex: real): f32 {
-    let absZ = zIndex < 0.0 ? -zIndex : zIndex;
-    let softsign = zIndex / (1.0 + absZ);
-    return (0.5 - 0.5 * softsign) as f32;
+// zIndex is just a literal local z-coordinate now (real depth, real GPU depth
+// test -- no painter's algorithm). Higher zIndex is defined as "closer to the
+// viewer" for callers, i.e. drawn on top of lower zIndex content; since the
+// default 2D camera (see Canvas.defaultViewProj) maps *smaller* z to *smaller*
+// depth (wins LessEqual), zIndex is negated here so the caller-facing
+// convention doesn't change even though the field underneath now means
+// something different.
+fn zIndexToLocalZ(zIndex: real): f32 {
+    return -zIndex as f32;
+}
+
+// mat4.identity() can't be a struct-member/parameter default (defaults must
+// be compile-time constants), so every optional `transform` field goes
+// through this instead of a literal default value.
+fn resolveTransform(transform: mat4.Mat4f | none): mat4.Mat4f {
+    if let t = transform {
+        return t;
+    }
+    return mat4.identity();
 }
 
 // Logical/pixel sizing for a render target. logicalSize is the coordinate
@@ -170,6 +200,7 @@ export opaque struct Context {
 
     globalsLayout: mut wgpu.BindGroupLayout;
     textureLayout: mut wgpu.BindGroupLayout;
+    transformsLayout: mut wgpu.BindGroupLayout;
 
     pipeline: rx.Computed<mut wgpu.RenderPipeline>;
     triPipeline: rx.Computed<mut wgpu.RenderPipeline>;
@@ -221,7 +252,8 @@ export opaque struct Context {
                 { shaderLocation: 10, offset: 68, format: wgpu.VertexFormat.Uint32 },   // type
                 { shaderLocation: 11, offset: 72, format: wgpu.VertexFormat.Float32x2 }, // uvMin
                 { shaderLocation: 12, offset: 80, format: wgpu.VertexFormat.Float32x2 }, // uvMax
-                { shaderLocation: 13, offset: 88, format: wgpu.VertexFormat.Float32 },   // depth
+                { shaderLocation: 13, offset: 88, format: wgpu.VertexFormat.Float32 },   // z
+                { shaderLocation: 14, offset: 92, format: wgpu.VertexFormat.Uint32 },    // transformIndex
             },
         };
 
@@ -254,8 +286,25 @@ export opaque struct Context {
             },
         });
 
+        // Read-only pool of per-shape transforms (translate/scale/rotate/shear,
+        // 2D or full 3D), indexed per-instance/per-vertex via transformIndex.
+        // Storing an index instead of embedding a whole matrix in every
+        // instance/vertex is what lets each shape -- or even each character of
+        // a text run -- carry its own arbitrary transform without bloating the
+        // per-vertex data, and without splitting the draw call the way binding
+        // a different texture does.
+        let transformsLayout = options.device.createBindGroupLayout({
+            entries: {
+                {
+                    binding: 0,
+                    visibility: wgpu.ShaderStage.Vertex,
+                    buffer: { type: wgpu.BufferBindingType.ReadOnlyStorage },
+                },
+            },
+        });
+
         let pipelineLayout = options.device.createPipelineLayout({
-            bindGroupLayouts: { globalsLayout, textureLayout },
+            bindGroupLayouts: { globalsLayout, textureLayout, transformsLayout },
         });
 
         let shadercode = embed.watchText("resources/shaders.wgsl");
@@ -356,12 +405,20 @@ export opaque struct Context {
             attributes: {
                 { shaderLocation: 0, offset: 0, format: wgpu.VertexFormat.Float32x2 }, // pos
                 { shaderLocation: 1, offset: 8, format: wgpu.VertexFormat.Float32x4 }, // color
-                { shaderLocation: 2, offset: 24, format: wgpu.VertexFormat.Float32 },  // depth
+                { shaderLocation: 2, offset: 24, format: wgpu.VertexFormat.Float32 },  // z
+                { shaderLocation: 3, offset: 28, format: wgpu.VertexFormat.Uint32 },   // transformIndex
             },
         };
 
+        // Same group numbering as the primitive pipeline (0 = globals, 1 =
+        // texture, 2 = transforms) even though tri_vs/tri_fs never reference
+        // group 1 -- WebGPU pipeline layouts are validated as a whole, so the
+        // render pass still has to have *something* bound at every declared
+        // slot before a draw call. Keeping the numbering identical means the
+        // render pass can bind all three groups once and use either pipeline
+        // without rebinding.
         let triPipelineLayout = options.device.createPipelineLayout({
-            bindGroupLayouts: { globalsLayout },
+            bindGroupLayouts: { globalsLayout, textureLayout, transformsLayout },
         });
 
         let triPipeline = rx.computed(() => {
@@ -407,6 +464,7 @@ export opaque struct Context {
             targetFormat: options.targetFormat,
             globalsLayout: globalsLayout,
             textureLayout: textureLayout,
+            transformsLayout: transformsLayout,
             pipeline: pipeline,
             triPipeline: triPipeline,
             quadVertexBuffer: quadVertexBuffer,
@@ -471,10 +529,26 @@ export opaque struct Canvas {
     globalsBuffer: mut wgpu.Buffer;
     globalsBindGroup: mut wgpu.BindGroup;
 
+    // The camera for this canvas: none means "use the default 2D orthographic
+    // projection matching this canvas's pixel size" (see defaultViewProj),
+    // which is what makes every existing pixel-space draw call keep working
+    // unchanged. Call setViewProj() to pan/zoom/rotate the whole canvas, or
+    // switch to a perspective projection to render this canvas as part of a
+    // 3D scene (e.g. composited onto a wall via drawTexture elsewhere).
+    viewProj?: mat4.Mat4f = none;
+
     instanceBuffer?: mut wgpu.Buffer = none;
     instanceBufferSize: int = 0;
     meshVertexBuffer?: mut wgpu.Buffer = none;
     meshVertexBufferSize: int = 0;
+
+    // Per-shape transform pool for this canvas: grown/rewritten each commit()
+    // from whatever transforms this frame's Renderer collected, then bound at
+    // group 2 so every PrimitiveInstance/MeshVertex can look its own model
+    // matrix up by transformIndex.
+    transformBuffer?: mut wgpu.Buffer = none;
+    transformBufferSize: int = 0;
+    transformBindGroup?: mut wgpu.BindGroup = none;
 
     fn constructor(options: CanvasOptions) {
         let globalsBuffer = options.gfx.device.createBuffer({
@@ -537,6 +611,41 @@ export opaque struct Canvas {
             globalsBuffer: globalsBuffer,
             globalsBindGroup: globalsBindGroup,
         };
+    }
+
+    // Sets this canvas's camera. Pass an orthographic matrix (via mat4.ortho)
+    // to pan/zoom/rotate a flat 2D view, or a perspective matrix (via
+    // mat4.perspective) combined with a view matrix to render this canvas as
+    // part of a real 3D scene -- switching between the two is the entire
+    // "switch to 3D" step, nothing else about how shapes are drawn changes.
+    fn setViewProj(viewProj: mat4.Mat4f) {
+        this.viewProj = viewProj;
+    }
+
+    // Resets this canvas to the default 2D pixel-space projection (top-left
+    // origin, y-down, one unit per logical pixel) that every draw call used
+    // before any camera was set.
+    fn clearViewProj() {
+        this.viewProj = none;
+    }
+
+    // The projection used when nobody has called setViewProj(): a plain
+    // orthographic view matching this canvas's logical pixel size 1:1, origin
+    // at the top-left, y increasing downward -- bit-for-bit what the old
+    // hand-rolled "pixel / screenSize * 2 - 1" vertex math produced.
+    fn defaultViewProj(): mat4.Mat4f {
+        let w = this.size.logicalSize.x as real;
+        let h = this.size.logicalSize.y as real;
+        return mat4.ortho(0.0, w, h, 0.0, -100000.0, 100000.0);
+    }
+
+    // The projection actually used this frame: whatever setViewProj() set, or
+    // defaultViewProj() otherwise.
+    fn resolvedViewProj(): mat4.Mat4f {
+        if let vp = this.viewProj {
+            return vp;
+        }
+        return this.defaultViewProj();
     }
 
     // Updates the logical/pixel size of this canvas, recreating the depth
@@ -690,6 +799,15 @@ export struct RectOpts {
     borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
     borderThickness: real = 0;
     zIndex: real = 0;
+    // Arbitrary placement for this one shape: translate/scale/rotate/shear,
+    // in 2D or full 3D (build with mat4.translation/scaling/rotationZ/shear2D
+    // etc. and compose with .mul()). `pos`/`size` stay in local shape-space --
+    // rounded corners are computed from those untouched values, so shearing
+    // or rotating a rect via `transform` never squishes its corners.
+    // Optional: mat4.identity() can't be used as a struct-member default
+    // (defaults must be compile-time constants, not function calls), so this
+    // is none until the caller sets it and resolved to identity where used.
+    transform?: mat4.Mat4f = none;
 };
 
 export struct TextOpts {
@@ -699,6 +817,15 @@ export struct TextOpts {
     text: str;
     color: Color;
     zIndex: real = 0;
+    // Applies rigidly to the whole line as one block, pivoting around
+    // `position` (e.g. mat4.rotationZ(angle) sweeps the entire line around its
+    // own start point, rather than spinning each glyph in place). Per-glyph
+    // effects (wavy text and the like) belong in a custom vertex shader
+    // instead -- see Context.registerPipeline.
+    // Optional: mat4.identity() can't be used as a struct-member default
+    // (defaults must be compile-time constants, not function calls), so this
+    // is none until the caller sets it and resolved to identity where used.
+    transform?: mat4.Mat4f = none;
 }
 
 export struct TextureOpts {
@@ -707,6 +834,14 @@ export struct TextureOpts {
     size: Vec2;
     tint: Color = { r: 1, g: 1, b: 1, a: 1 };
     zIndex: real = 0;
+    // Places this textured quad anywhere -- including as a flat panel
+    // somewhere in a 3D scene when the canvas's own viewProj is a perspective
+    // projection. This is how an entire other Canvas (e.g. a whole rendered
+    // UI, via Canvas.asTexture()) gets composited "onto a wall".
+    // Optional: mat4.identity() can't be used as a struct-member default
+    // (defaults must be compile-time constants, not function calls), so this
+    // is none until the caller sets it and resolved to identity where used.
+    transform?: mat4.Mat4f = none;
 }
 
 // The cheap, frame-scoped value: `let r = Renderer(frame, canvas)`, draw
@@ -723,9 +858,15 @@ export opaque struct Renderer {
     primitives: []PrimitiveInstance = [];
     meshVertices: []MeshVertex = [];
     textureRuns: []TextureRun = [];
+    // This frame's transform pool, shared by every draw call this Renderer
+    // makes. Index 0 is always the identity transform, so the overwhelmingly
+    // common "no transform" case never has to grow this array.
+    transforms: []mat4.Mat4f = [];
 
     fn constructor(frame: mut Frame, canvas: mut Canvas) {
-        return Renderer { canvas: canvas, frame: frame };
+        let r = Renderer { canvas: canvas, frame: frame };
+        r.transforms.push(mat4.identity());
+        return r;
     }
 
     // Records that primitives[start..start+count) need `texture` bound at
@@ -744,8 +885,28 @@ export opaque struct Renderer {
         this.textureRuns.push({ start: start, count: count, texture: texture });
     }
 
+    // Returns this transform's index into the pool, appending it if it isn't
+    // already the most recently recorded one. Unlike texture runs, transforms
+    // never force a draw-call split -- every instance/vertex just looks its
+    // own model matrix up by index in the shader -- so this is purely about
+    // not re-uploading a redundant copy of the same matrix per shape.
+    fn recordTransform(transform: mat4.Mat4f): u32 {
+        if this.transforms.length > 0 {
+            let lastIndex = this.transforms.length - 1;
+            if this.transforms[lastIndex].equals(transform) {
+                assert(lastIndex >= u32.min && lastIndex <= u32.max);
+                return lastIndex as u32;
+            }
+        }
+        this.transforms.push(transform);
+        let newIndex = this.transforms.length - 1;
+        assert(newIndex >= u32.min && newIndex <= u32.max);
+        return newIndex as u32;
+    }
+
     fn drawRect(opts: RectOpts) {
-        let depth = zIndexToDepth(opts.zIndex);
+        let z = zIndexToLocalZ(opts.zIndex);
+        let transformIndex = this.recordTransform(resolveTransform(opts.transform));
 
         if opts.fillColor.a != 0.0 {
             this.primitives.push({
@@ -766,7 +927,8 @@ export opaque struct Renderer {
                 borderColor: { r: 0, g: 0, b: 0, a: 0 },
                 uvMin: { x: 0, y: 0 },
                 uvMax: { x: 0, y: 0 },
-                depth: depth,
+                z: z,
+                transformIndex: transformIndex,
             });
         }
         if opts.borderColor.a != 0.0 && opts.borderThickness > 0.0 {
@@ -788,7 +950,8 @@ export opaque struct Renderer {
                 },
                 uvMin: { x: 0, y: 0 },
                 uvMax: { x: 0, y: 0 },
-                depth: depth,
+                z: z,
+                transformIndex: transformIndex,
             });
         }
     }
@@ -811,8 +974,18 @@ export opaque struct Renderer {
             tr.glyphBuffer
         );
 
-        let depth = zIndexToDepth(opts.zIndex);
+        let z = zIndexToLocalZ(opts.zIndex);
         let start = this.primitives.length;
+
+        // Glyphs come back from fontstash in absolute canvas-pixel space, but
+        // a shared transform needs to rotate/scale the whole line as one
+        // rigid block around its own start point -- not spin each glyph in
+        // place around its individual center. So each glyph's pos is stored
+        // relative to opts.position (making it local shape-space, like every
+        // other PrimitiveInstance), and that pivot is folded into the
+        // transform itself.
+        let pivotTransform = mat4.translation(Vec3(opts.position.x, opts.position.y, 0.0)).mul(resolveTransform(opts.transform));
+        let transformIndex = this.recordTransform(pivotTransform);
 
         for glyph in tr.glyphBuffer {
             let w: real = glyph.x1 - glyph.x0;
@@ -822,8 +995,8 @@ export opaque struct Renderer {
                 type: 2,
 
                 pos: {
-                    x: (glyph.x0 as real + w / 2.0) as f32,
-                    y: (glyph.y0 as real + h / 2.0) as f32
+                    x: (glyph.x0 as real + w / 2.0 - opts.position.x) as f32,
+                    y: (glyph.y0 as real + h / 2.0 - opts.position.y) as f32
                 },
 
                 size: { x: w as f32, y: h as f32 },
@@ -846,7 +1019,8 @@ export opaque struct Renderer {
 
                 uvMin: { x: glyph.s0, y: glyph.t0 },
                 uvMax: { x: glyph.s1, y: glyph.t1 },
-                depth: depth,
+                z: z,
+                transformIndex: transformIndex,
             });
         }
 
@@ -862,6 +1036,7 @@ export opaque struct Renderer {
     // then composite it into the main canvas" possible.
     fn drawTexture(opts: TextureOpts) {
         let start = this.primitives.length;
+        let transformIndex = this.recordTransform(resolveTransform(opts.transform));
 
         this.primitives.push({
             type: 3, // Textured Quad
@@ -881,25 +1056,28 @@ export opaque struct Renderer {
             borderColor: { r: 0, g: 0, b: 0, a: 0 },
             uvMin: { x: 0, y: 0 },
             uvMax: { x: 1, y: 1 },
-            depth: zIndexToDepth(opts.zIndex),
+            z: zIndexToLocalZ(opts.zIndex),
+            transformIndex: transformIndex,
         });
 
         this.recordTextureRun(start, 1, opts.texture);
     }
 
-    fn addTriangle(v0: Vec2, v1: Vec2, v2: Vec2, c0: Color, c1: Color, c2: Color, zIndex: real = 0) {
-        let depth = zIndexToDepth(zIndex);
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v0.x as f32, v0.y as f32), color: Colorf { r: c0.r as f32, g: c0.g as f32, b: c0.b as f32, a: c0.a as f32 }, depth: depth });
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v1.x as f32, v1.y as f32), color: Colorf { r: c1.r as f32, g: c1.g as f32, b: c1.b as f32, a: c1.a as f32 }, depth: depth });
-        this.meshVertices.push(MeshVertex { pos: Vec2f(v2.x as f32, v2.y as f32), color: Colorf { r: c2.r as f32, g: c2.g as f32, b: c2.b as f32, a: c2.a as f32 }, depth: depth });
+    fn addTriangle(v0: Vec2, v1: Vec2, v2: Vec2, c0: Color, c1: Color, c2: Color, zIndex: real = 0, transform?: mat4.Mat4f = none) {
+        let z = zIndexToLocalZ(zIndex);
+        let transformIndex = this.recordTransform(resolveTransform(transform));
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v0.x as f32, v0.y as f32), color: Colorf { r: c0.r as f32, g: c0.g as f32, b: c0.b as f32, a: c0.a as f32 }, z: z, transformIndex: transformIndex });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v1.x as f32, v1.y as f32), color: Colorf { r: c1.r as f32, g: c1.g as f32, b: c1.b as f32, a: c1.a as f32 }, z: z, transformIndex: transformIndex });
+        this.meshVertices.push(MeshVertex { pos: Vec2f(v2.x as f32, v2.y as f32), color: Colorf { r: c2.r as f32, g: c2.g as f32, b: c2.b as f32, a: c2.a as f32 }, z: z, transformIndex: transformIndex });
     }
 
-    fn addTriangles(vertices: []Vec2, indices: []i32, color: Color, zIndex: real = 0) {
-        let depth = zIndexToDepth(zIndex);
+    fn addTriangles(vertices: []Vec2, indices: []i32, color: Color, zIndex: real = 0, transform?: mat4.Mat4f = none) {
+        let z = zIndexToLocalZ(zIndex);
+        let transformIndex = this.recordTransform(resolveTransform(transform));
         let cf = Colorf { r: color.r as f32, g: color.g as f32, b: color.b as f32, a: color.a as f32 };
         for (let i = 0; i < indices.length; i++) {
             let v = vertices[indices[i] as int];
-            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf, depth: depth });
+            this.meshVertices.push(MeshVertex { pos: Vec2f(v.x as f32, v.y as f32), color: cf, z: z, transformIndex: transformIndex });
         }
     }
 
@@ -918,12 +1096,42 @@ export opaque struct Renderer {
 
         gfx.queue.writeBuffer<Globals>(canvas.globalsBuffer, [
             {
-                screenSize: Vec2f(
-                    canvas.size.logicalSize.x as f32,
-                    canvas.size.logicalSize.y as f32
-                ),
+                viewProj: canvas.resolvedViewProj(),
+                // Raw seconds-since-epoch cast to f32 loses sub-second
+                // precision after a while (f32 only has ~7 significant
+                // digits) -- fine for now since nothing reads this yet, but a
+                // custom animated shader will want a wrapped/relative clock
+                // instead once one exists.
+                time: time.now() as f32,
             }
         ]);
+
+        // Transform pool: always at least the identity entry from the
+        // Renderer constructor, so this buffer is never empty.
+        let requiredTransforms = sizeofTypeInBytes<mat4.Mat4f>() * this.transforms.length;
+        if !canvas.transformBuffer || requiredTransforms > canvas.transformBufferSize {
+            canvas.transformBufferSize = max(requiredTransforms, canvas.transformBufferSize * 2);
+            canvas.transformBuffer = gfx.device.createBuffer({
+                size: canvas.transformBufferSize,
+                usage: wgpu.BufferUsage.Storage | wgpu.BufferUsage.CopyDst,
+            });
+            let transformBuffer = canvas.transformBuffer;
+            assert(transformBuffer);
+            canvas.transformBindGroup = gfx.device.createBindGroup({
+                layout: gfx.transformsLayout,
+                entries: {
+                    {
+                        binding: 0,
+                        buffer: transformBuffer,
+                        offset: 0,
+                        size: canvas.transformBufferSize,
+                    },
+                },
+            });
+        }
+        let transformBuffer = canvas.transformBuffer;
+        assert(transformBuffer);
+        gfx.queue.writeBuffer<mat4.Mat4f>(transformBuffer, this.transforms);
 
         if this.primitives.length > 0 {
             let required = sizeofTypeInBytes<PrimitiveInstance>() * this.primitives.length;
@@ -1003,6 +1211,9 @@ export opaque struct Renderer {
         );
         pass.setScissorRect(0, 0, canvas.size.framebufferSize.x, canvas.size.framebufferSize.y);
         pass.setBindGroup(0, canvas.globalsBindGroup);
+        let transformBindGroup = canvas.transformBindGroup;
+        assert(transformBindGroup);
+        pass.setBindGroup(2, transformBindGroup);
 
         if this.primitives.length > 0 {
             let instanceBuffer = canvas.instanceBuffer;
