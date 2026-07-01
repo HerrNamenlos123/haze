@@ -573,6 +573,16 @@ export class ModuleBuildCache {
     return this.data[moduleName]?.compilerKey;
   }
 
+  // Every absolute path tracked for this module as of the last successful
+  // build, including any embed_file_text/embed_file_binary'd resource files
+  // discovered during that build's analysis phase (see ModuleCompiler.build:
+  // those aren't known until analysis runs, so this is how a later build's
+  // pre-analysis "did anything change" check can still notice one of them
+  // was touched, without having to re-analyze just to find out).
+  getModuleTrackedFiles(moduleName: string): string[] {
+    return Object.keys(this.data[moduleName]?.files ?? {});
+  }
+
   hasModuleChanged(
     moduleName: string,
     files: string[],
@@ -2018,7 +2028,16 @@ export class ModuleCompiler {
             buildCache.getModuleCompilerKey(this.config.name) !== compilerKey;
           const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
 
-          const initialRelevantFiles = await this.gatherModuleRelevantFiles();
+          // Embedded resource files (embed_file_text/embed_file_binary,
+          // e.g. a .wgsl shader loaded via embed.watchText) are only
+          // discovered by name during analysis below, which is exactly the
+          // phase this check exists to decide whether to skip -- so this
+          // has to reuse what the *previous* successful build already found
+          // and recorded, rather than rediscovering them here.
+          const initialRelevantFiles = [
+            ...(await this.gatherModuleRelevantFiles()),
+            ...buildCache.getModuleTrackedFiles(this.config.name),
+          ];
           const generatorsNeedRun = forceFullRebuild
             ? true
             : this.generatorsNeedRun();
@@ -2070,7 +2089,18 @@ export class ModuleCompiler {
 
           this.advancePhase(EModulePrintCompilerPhase.Done);
 
-          const finalRelevantFiles = await this.gatherModuleRelevantFiles();
+          // Now that analysis has actually run, sr.elaboratedEmbeddedFileTable
+          // holds every embed_file_text/embed_file_binary'd resource file
+          // this module referenced this build, with the exact absolute path
+          // already resolved for embedding -- record those too, so a later
+          // build's pre-analysis check (above) can tell one of them changed.
+          const embeddedFiles = [...sr.elaboratedEmbeddedFileTable.values()].map(
+            (data) => data.absolutePath
+          );
+          const finalRelevantFiles = [
+            ...(await this.gatherModuleRelevantFiles()),
+            ...embeddedFiles,
+          ];
           buildCache.updateModule(
             this.config.name,
             finalRelevantFiles,
