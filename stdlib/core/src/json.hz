@@ -269,19 +269,20 @@ namespace json {
                 let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
 
                 // If the field allows none, and the item it missing, skip it
-                let skip = false;
+                let skipWithNone = false;
                 if !child {
-                    if comptime T.category == meta.TypeCategory.Union {
-                        for comptime Variant in T.variants {
-                            if comptime Variant == none {
-                                skip = true;
+                    if comptime T[fieldName].category == meta.TypeCategory.Union {
+                        for comptime Variant in T[fieldName].variants {
+                            if comptime Variant is none {
+                                skipWithNone = true;
+                                result.[fieldName] = none;
                             }
                         }
                     }
                 }
 
-                if !skip {
-                    if !child { 
+                if !skipWithNone {
+                    if !child {
                         return Error { error: f"JSON missing field: {fieldName}" };
                     }
                     let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
@@ -333,6 +334,16 @@ namespace json {
                 return Error { error: "JSON type mismatch: expected number (int)" };
             }
             return ffi.hzstd_json_get_number_value(allocator, node) as int;
+        }
+        else if comptime T is i32 {
+            if !ffi.hzstd_json_is_number(node) { 
+                return Error { error: "JSON type mismatch: expected number (i32)" };
+            }
+            let v = ffi.hzstd_json_get_number_value(allocator, node) as int;
+            if v >= i32.min && v <= i32.max {
+                return v as i32;
+            }
+            return Error { error: "JSON range error: Expected number of type i32, but received value is out of range" };
         }
         else if comptime T is real {
             if !ffi.hzstd_json_is_number(node) { 
@@ -429,20 +440,15 @@ namespace json {
                     }
                 }
 
-                // If the value does not exist and none is expected, return prematurely
+                // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
+                // `none` is excluded here: by the time we have a real node, the value is present, and `none`
+                // (undefined/absent) can only ever come from a missing key, which is handled upstream.
                 for comptime Variant in T.variants {
-                    if comptime Variant is none {
-                        if let result = parseJsonNodeFromFfi<none>(allocator, node) {
+                    if comptime Variant is not none {
+                        // Node is this type, return it
+                        if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
                             return Result<T, Error>.Ok(result);
                         }
-                    }
-                }
-
-                // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
-                for comptime Variant in T.variants {
-                    // Node is this type, return it
-                    if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
-                        return Result<T, Error>.Ok(result);
                     }
                 }
 
@@ -519,6 +525,9 @@ namespace json {
         }
         else if comptime T is int {
             return ffi.hzstd_json_create_number(allocator, value as real);
+        }
+        else if comptime T is i32 {
+            return ffi.hzstd_json_create_number(allocator, value as int as real);
         }
         else if comptime T is real {
             return ffi.hzstd_json_create_number(allocator, value);

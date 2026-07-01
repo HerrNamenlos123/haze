@@ -105,111 +105,42 @@ struct InfoBoxArgs {
 fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<InfoBoxArgs>) => {
 
-        let tesselatedShapes: []tesselate.TesselationResult = [];
-
-        // // Load TSK Shapes
-        // let testTsk = fs.readText("Test.tsk");
-        // if !testTsk {
-        //     fmt.println("File loading failed");
-        // }
-        // else {
-        //     let s2 = time.now();
-        //     let result = json.structuredParse<tsk.File>(testTsk);
-        //     fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
-
-        //     // Tessellate outlines once before the loop
-        //     let start = time.now();
-
-        //     if result {
-        //         let page = result.data.pages[0];
-
-        //         let accuracyScaling = 10.0;
-        //         let tess = tesselate.Tesselator();
-        //         for (let s = 0; s < page.shapes.length; s++) {
-        //             let shape = page.shapes[s];
-
-        //             // Perfect Freehand
-        //             let pf = perfect_freehand.PerfectFreehand({
-        //                 size: shape.penThickness * accuracyScaling,
-        //                 thinning: 0.1,
-        //                 smoothing: 0.0,
-        //                 streamline: 0.6,
-        //                 simulatePressure: false,
-        //                 last: true,
-        //             });
-
-        //             for point in shape.points {
-        //                 pf.addPoint({
-        //                     x: point.x * accuracyScaling,
-        //                     y: point.y * accuracyScaling,
-        //                 });
-        //             }
-
-        //             let points: []Vec2 = [];
-        //             if let outline = pf.compute() {
-        //                 points = outline;
-        //             }
-
-        //             pf.destroy();
-
-        //             // Now tesselate
-        //             if points.length > 0 {
-        //                 tess.beginPath();
-        //                 tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
-        //                 for (let p = 1; p < points.length; p++) {
-        //                     tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
-        //                 }
-        //                 tess.closePath();
-        //                 if let result = tess.tessellate(0.25) { tesselatedShapes.push(result); }
-        //             }
-        //         }
-        //         tess.destroy();
-        //         fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
-        //     }
-        //     else {
-        //         fmt.println("Failed parsing: ", result);
-        //     }
-
-        //     for (let s = 0; s < tesselatedShapes.length; s++) {
-        //         let shape = tesselatedShapes[s];
-
-        //         for (let i = 0; i < shape.vertices.length; i++) {
-        //             shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
-        //             shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
-        //         }
-        //     }
-
-        //     let end = time.now();
-        //     fmt.println(f"Tesselated shapes in {(end - start) * 1000.0} ms");
-        // }
+        let doc: TskDocumentFile | null = null;
+        let r = chooseFile();
+        if r {
+            if let d = loadTskDocument(r) {
+                doc = d;
+            }
+        }        
 
         return (): void => {
             ui.canvas({
                 id: 1000,
                 style: { width: 500.0 },
             }, (r: mut renderer.gfx.Renderer): void => {
-                // // Render tessellated shapes
-                // for (let s = 0; s < tesselatedShapes.length; s++) {
-                //     let shape = tesselatedShapes[s];
-
-                //     for (let i = 0; i < shape.vertices.length; i++) {
-                //         if (true) {
-                //             shape.vertices[i].x = shape.vertices[i].x + ui.dmousePos.x;
-                //             shape.vertices[i].y = shape.vertices[i].y + ui.dmousePos.y;
-                //         }
-                //     }
-
-                //     r.addTriangles(shape.vertices, shape.indices, "#000");
-                // }
-
-                let center = Vec2(200, 200);
-                let alpha = ui.now() * 20.0;
-                let radius = 40.0;
-                r.drawRect({
-                    pos: Vec2(center.x + math.cos(alpha) * radius, center.y + math.sin(alpha) * radius),
-                    size: Vec2(50, 50),
-                    fillColor: "#F00",
-                });
+                if doc {
+                    for shape in doc.data.pages[0].shapes {
+                        if shape is TskLineShape {
+                            if shape.tesselationResult {
+                                if shape.tesselationResult.vertices.length > 0 && shape.tesselationResult.indices.length > 0 {
+                                    let v: []Vec2 = [];
+                                    for vertex in shape.tesselationResult.vertices {
+                                        v.push({
+                                            x: vertex.x * 1.0,
+                                            y: vertex.y * 1.0,
+                                        });
+                                    }
+                                    r.addTriangles(v, shape.tesselationResult.indices, shape.penColor);
+                                }
+                            }
+                            else {
+                                shape.tesselationResult = tesselateStroke({
+                                    shape: shape,
+                                });
+                            }
+                        }
+                    }
+                }
             });
         };
     });

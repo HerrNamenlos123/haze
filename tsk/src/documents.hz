@@ -1,3 +1,6 @@
+import perfect_freehand
+import tesselate
+
 struct BBox {
   left: real;
   right: real;
@@ -20,6 +23,10 @@ struct TskLineShape {
   // perfect-freehand computation. Optional for backward compatibility with older files.
   bbox?: BBox;
   cachedOutline?: [][]real;
+
+  // Internal, non-serialized data
+  [[json.ignore]]
+  tesselationResult?: TesselationResult;
   
   fn getBBox(): BBox {
     // ...
@@ -79,108 +86,87 @@ struct TskDocumentBody {
     viewport?: TskViewport;
 }
 
-struct TskDocument {
+struct TskDocumentFile {
     filetype: str;
     fileversion: int;
     data: TskDocumentBody;
 }
 
-fn loadTskDocument(path: str): Result<TskDocument, none> {
+fn loadTskDocument(path: str): Result<TskDocumentFile, none> {
     let file = fs.readText(path);
     if !file { return none; }
 
-    if let result = json.parse<TskDocument>(file) {
+    if let result = json.parse<TskDocumentFile>(file) {
         return result;
     }
     return none;
 }
 
-fn saveTskDocument(path: str, document: TskDocument): Result<none, none> {
+fn saveTskDocument(path: str, document: TskDocumentFile): Result<none, none> {
     if !fs.writeText(path, json.stringify(document)) {
         return Result<none, none>.Err(none);
     }
     return Result<none, none>.Ok(none);
 }
 
-// inline struct StrokeConstructArgs {
-//     accuracyScaling: real = 10.0;
-//     shape: Shape;
-// }
+inline struct StrokeConstructArgs {
+  accuracyScaling: real = 10.0;
+  shape: TskLineShape;
+}
 
-// fn constructStrokeOutline(args: StrokeConstructArgs) {
-//     let pf = perfect_freehand.PerfectFreehand({
-//         size: shape.penThickness * args.accuracyScaling,
-//         thinning: 0.1,
-//         smoothing: 0.0,
-//         streamline: 0.6,
-//         simulatePressure: false,
-//         last: true,
-//     });
+fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
+    let pf = perfect_freehand.PerfectFreehand({
+        size: args.shape.penThickness * args.accuracyScaling,
+        thinning: 0.1,
+        smoothing: 0.0,
+        streamline: 0.6,
+        simulatePressure: false,
+        last: true,
+    });
 
-//     for point in shape.points {
-//         pf.addPoint({
-//             x: point.x * accuracyScaling,
-//             y: point.y * accuracyScaling,
-//         });
-//     }
+    for point in args.shape.points {
+        pf.addPoint({
+            x: point.x * args.accuracyScaling,
+            y: point.y * args.accuracyScaling,
+        });
+    }
 
-//     let points: []Vec2 = [];
-//     if let outline = pf.compute() {
-//         points = outline;
-//     }
+    let outline = pf.compute();
+    pf.destroy();
 
-//     pf.destroy();
-// }
+    if outline {
+      return outline;
+    }
+    return [];
+}
 
-        // // Load TSK Shapes
-        // let testTsk = fs.readText("Test.tsk");
-        // if !testTsk {
-        //     fmt.println("File loading failed");
-        // }
-        // else {
-        //     let s2 = time.now();
-        //     let result = json.structuredParse<tsk.File>(testTsk);
-        //     fmt.println(f"Parsed structured json in {time.now() - s2} seconds");
+inline struct TesselationResult {
+	vertices: []Vec2 = [];
+	indices: []i32 = [];
+}
 
-        //     // Tessellate outlines once before the loop
-        //     let start = time.now();
+inline struct StrokeTesselateArgs {
+  accuracyScaling: real = 10.0;
+  shape: TskLineShape;
+  tolerance: real = 0.25;
+}
 
-        //     if result {
-        //         let page = result.data.pages[0];
-
-        //         let accuracyScaling = 10.0;
-        //         let tess = tesselate.Tesselator();
-        //         for (let s = 0; s < page.shapes.length; s++) {
-        //             let shape = page.shapes[s];
-
-
-        //             // Now tesselate
-        //             if points.length > 0 {
-        //                 tess.beginPath();
-        //                 tess.moveTo(Vec2(points[0].x / accuracyScaling, points[0].y / accuracyScaling));
-        //                 for (let p = 1; p < points.length; p++) {
-        //                     tess.lineTo(Vec2(points[p].x / accuracyScaling, points[p].y / accuracyScaling));
-        //                 }
-        //                 tess.closePath();
-        //                 if let result = tess.tessellate(0.25) { tesselatedShapes.push(result); }
-        //             }
-        //         }
-        //         tess.destroy();
-        //         fmt.println(f"Tessellated {tesselatedShapes.length} shapes");
-        //     }
-        //     else {
-        //         fmt.println("Failed parsing: ", result);
-        //     }
-
-        //     for (let s = 0; s < tesselatedShapes.length; s++) {
-        //         let shape = tesselatedShapes[s];
-
-        //         for (let i = 0; i < shape.vertices.length; i++) {
-        //             shape.vertices[i].x = (shape.vertices[i].x - 100.0) * 20.0;
-        //             shape.vertices[i].y = (shape.vertices[i].y - 200.0) * 20.0;
-        //         }
-        //     }
-
-        //     let end = time.now();
-        //     fmt.println(f"Tesselated shapes in {(end - start) * 1000.0} ms");
-        // }
+fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
+    let result = TesselationResult {};
+    if args.shape.points.length == 0 {
+        return result;
+    }
+    let tess = tesselate.Tesselator();
+    tess.beginPath();
+    tess.moveTo(Vec2(args.shape.points[0].x / args.accuracyScaling, args.shape.points[0].y / args.accuracyScaling));
+    for (let p = 1; p < args.shape.points.length; p++) {
+        tess.lineTo(Vec2(args.shape.points[p].x / args.accuracyScaling, args.shape.points[p].y / args.accuracyScaling));
+    }
+    tess.closePath();
+    if let t = tess.tessellate(args.tolerance) { 
+        result.vertices = t.vertices;
+        result.indices = t.indices;
+    }
+    tess.destroy();
+    return result;
+}

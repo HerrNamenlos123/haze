@@ -89,13 +89,19 @@ fn indexVault(vaultPath: str) {
         return none;
     };
     for entry in vault.entries {
-        process(entry);
+        // process(entry);
     }
+
+    // if let f = chooseFile() {
+    //     processFile(f);
+    // }
 }
 
+
 fn processFile(path: str) {
-    // fmt.println(path.substr(path.length - 4, 4));
-    if (!(path[path.length - 4] == b"." && path[path.length - 3] == b"t" && path[path.length - 2] == b"s" && path[path.length - 1] == b"k")) {
+    let extension = path.substr(path.length - 4, path.length);
+    // if (!(path[path.length - 4] == b"." && path[path.length - 3] == b"t" && path[path.length - 2] == b"s" && path[path.length - 1] == b"k")) {
+    if (extension != ".tsk") {
         return;
     }
     fmt.println(f"Got File: {path}");
@@ -108,18 +114,24 @@ fn processFile(path: str) {
         return;
     }
 
-    let document = json.parse<TskDocument>(file);
+    let document = json.parse<TskDocumentFile>(file);
     if document {
         let shapes = 0;
         for page in document.data.pages {
             shapes = shapes + page.shapes.length;
         }
         fmt.println(f"{document.data.pages.length} pages, {shapes} shapes");
-        let a = json.stringify(document, { pretty: true });
-        if (a != file) {
-            fmt.println(path);
-            fmt.println(f"AAAAAAAA FILE CONTENT IS NOT IDENTICAL!!!!");
-        }
+        // let a = json.stringify(document, { pretty: true });
+        // if (a != file) {
+            // fmt.println(path);
+            // fmt.println(f"AAAAAAAA FILE CONTENT IS NOT IDENTICAL!!!!");
+            // fmt.println(a);
+            // // fmt.println(a);
+            // // fmt.println("\n");
+            // // fmt.println(file);
+            // fs.writeText("out.a", a);
+            // fs.writeText("out.b", file);
+        // }
     }
     else {
         fmt.println(f"File {path} failed to parse!", document);
