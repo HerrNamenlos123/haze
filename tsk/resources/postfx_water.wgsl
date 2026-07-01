@@ -55,5 +55,26 @@ fn fs_main(in: PostVSOut) -> @location(0) vec4<f32> {
     let uvShift = displacement * maxPixelShift / vec2<f32>(max(params.resolutionX, 1.0), max(params.resolutionY, 1.0));
 
     let distortedUv = clamp(uv + uvShift, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    return sampleSource(distortedUv);
+    var color = sampleSource(distortedUv);
+
+    // General wave shading: darken proportionally to how much this pixel is
+    // currently being displaced, so the "trough" areas between bright
+    // caustic lines read as dim underwater shadow rather than staying at
+    // full brightness -- this contrast is what actually sells "waves" at a
+    // glance, more than the caustic lines alone.
+    let waveShade = clamp(length(displacement) * 1.4, 0.0, 1.0);
+    color = vec4<f32>(color.rgb * (1.0 - waveShade * 0.35), color.a);
+
+    // Caustics: two crossing, moving sine-wave line fields -- where they
+    // both peak at once forms narrow bright streaks, which is what real
+    // underwater caustic lines look like at a glance. Scaled by this
+    // pixel's own alpha so it can't brighten anything that isn't actually
+    // covered by content (this canvas's output must stay premultiplied).
+    let cp = p * 10.0;
+    let c1 = sin(cp.x + cp.y * 0.6 + d * 0.35);
+    let c2 = sin(cp.x * 0.5 - cp.y + d * 0.5);
+    let caustic = pow(max(c1 * c2, 0.0), 3.0);
+    color = vec4<f32>(color.rgb + vec3<f32>(caustic * 0.15) * color.a, color.a);
+
+    return color;
 }
