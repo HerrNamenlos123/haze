@@ -397,18 +397,17 @@ export opaque struct UIContext {
     fn buildHitPath(element: ui_elements.Element, mousePos: Vec2): []ui_elements.Element :: final {
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
-        if !elementPos {
-            return [];
+        let hit = false;
+        if elementPos && elementSize {
+            hit =
+                (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
+                (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
         }
-        if !elementSize {
-            return [];
-        }
-        let hit =
-            (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
-            (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
-        if !hit {
-            return [];
-        }
+        // Note: a missing bounding box (elementPos/elementSize is none) does NOT
+        // stop the walk here -- content-less structural wrappers (e.g. a
+        // component's auto-generated root div with no background/border) never
+        // get a Clay render command and so never receive position feedback, but
+        // their children still can and must be reachable for hit-testing.
         // Check children in reverse so the last (topmost) child wins.
         if element is ui_elements.DivElement {
             let i = element.children.length - 1;
@@ -416,21 +415,26 @@ export opaque struct UIContext {
                 let childPath = this.buildHitPath(element.children[i], mousePos);
                 if childPath.length > 0 {
                     let path: []ui_elements.Element = [];
-                    path.push(element);
+                    if hit { path.push(element); }
                     for c in childPath { path.push(c); }
                     return path;
                 }
                 i = i - 1;
             }
         }
+        if !hit {
+            return [];
+        }
         let path: []ui_elements.Element = [];
         path.push(element);
         return path;
     }
 
-    // Traverses the full tree, updates hover reactive state, and queues
-    // pointerenter/pointerleave callbacks (no bubbling — fired directly).
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: int, enterLeaveQueue: [](() => void)): void :: final {
+    // Traverses the full tree, updates hover reactive state, and schedules
+    // pointerenter/pointerleave callbacks onto `eventQueue` (no bubbling).
+    // Callbacks are only scheduled here, not invoked -- see process()'s FIRE
+    // PHASE, which runs them all once the whole tree has been walked.
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: int, eventQueue: [](() => void)): void :: final {
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
         let hovered = false;
@@ -456,7 +460,7 @@ export opaque struct UIContext {
                 let cb = data.onPointerEnter;
                 let pos = mousePos;
                 let b = buttons;
-                enterLeaveQueue.push((): void => {
+                eventQueue.push((): void => {
                     let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: -1, buttons: b, pressure: 0.0, isPrimary: true };
                     cb(e);
                 });
@@ -466,7 +470,7 @@ export opaque struct UIContext {
                     let cb = data.onPointerLeave;
                     let pos = mousePos;
                     let b = buttons;
-                    enterLeaveQueue.push((): void => {
+                    eventQueue.push((): void => {
                         let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: -1, buttons: b, pressure: 0.0, isPrimary: true };
                         cb(e);
                     });
@@ -477,14 +481,17 @@ export opaque struct UIContext {
 
         if element is ui_elements.DivElement {
             for child in element.children {
-                this.updateHoverState(child, mousePos, buttons, enterLeaveQueue);
+                this.updateHoverState(child, mousePos, buttons, eventQueue);
             }
         }
     }
 
-    // Dispatches a pointer event along hitPath from target (deepest) up to root.
-    // Stops when stopPropagation() is called.
-    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: str): void :: final {
+    // Schedules a pointer event along hitPath from target (deepest) up to
+    // root onto `eventQueue`. Not invoked here -- see process()'s FIRE PHASE.
+    // stopPropagation(), called from a handler during that later fire phase,
+    // still stops the rest of this same chain: every scheduled closure below
+    // re-checks event._stopped right before running, and skips if it's set.
+    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: str, eventQueue: [](() => void)): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
@@ -493,23 +500,31 @@ export opaque struct UIContext {
             else if kind == "up" { cb = data.onPointerUp; }
             else if kind == "move" { cb = data.onPointerMove; }
             if cb {
-                cb(event);
-                if event._stopped { return; }
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
             }
             i = i - 1;
         }
     }
 
-    // Bubbles a click event along hitPath for elements that also received pointerdown.
-    fn dispatchClickBubbling(hitPath: []ui_elements.Element, event: PointerEvent): void :: final {
+    // Schedules a click event along hitPath for elements that also received
+    // pointerdown, onto `eventQueue`. The pointerDownHere consume/reset is
+    // plain bookkeeping (not user code), so it still happens immediately
+    // during the walk; only the actual onClick call is deferred.
+    fn dispatchClickBubbling(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
             if data.inputFeedback && data.inputFeedback.pointerDownHere {
                 data.inputFeedback.pointerDownHere = false;
                 if data.onClick {
-                    data.onClick(event);
-                    if event._stopped { return; }
+                    let cb = data.onClick;
+                    eventQueue.push((): void => {
+                        if event._stopped { return; }
+                        cb(event);
+                    });
                 }
             }
             i = i - 1;
@@ -568,15 +583,22 @@ export opaque struct UIContext {
             pendingEvents.push({ kind: "move", button: -1, buttons: buttons, pos: this.mousePos });
         }
 
-        // HIT TESTING & EVENT DISPATCH
+        // HIT TESTING & EVENT SCHEDULING
+        //
+        // Every callback below is *scheduled* onto eventQueue instead of being
+        // invoked right away. Handlers can mutate elements (reactive state,
+        // refs, ...), and mutating mid-walk would let a handler observe or
+        // corrupt a tree that's still being traversed for this very frame's
+        // hit-testing/hover pass. So: finish walking and decide everything
+        // first, then fire it all only once the walk is fully done.
+        let eventQueue: [](() => void) = [];
+
         if this.rootComponent {
             let tree = this.rootComponent.rootElement;
             let hitPath = this.buildHitPath(tree, this.mousePos);
 
             // Hover state + enter/leave events (no bubbling)
-            let enterLeaveQueue: [](() => void) = [];
-            this.updateHoverState(tree, this.mousePos, buttons, enterLeaveQueue);
-            for elCb in enterLeaveQueue { elCb(); }
+            this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
 
             // Bubbling pointer events
             for pe in pendingEvents {
@@ -602,22 +624,27 @@ export opaque struct UIContext {
                         assert(d.inputFeedback);
                         d.inputFeedback.pointerDownHere = true;
                     }
-                    this.dispatchBubbling(hitPath, event, "down");
+                    this.dispatchBubbling(hitPath, event, "down", eventQueue);
                 }
                 else if pe.kind == "up" {
-                    this.dispatchBubbling(hitPath, event, "up");
+                    this.dispatchBubbling(hitPath, event, "up", eventQueue);
                     let clickEvent = PointerEvent {
                         pointerId: 1, pointerType: "mouse", pos: pe.pos,
                         button: pe.button, buttons: pe.buttons,
                         pressure: 0.0, isPrimary: true,
                     };
-                    this.dispatchClickBubbling(hitPath, clickEvent);
+                    this.dispatchClickBubbling(hitPath, clickEvent, eventQueue);
                 }
                 else if pe.kind == "move" {
-                    this.dispatchBubbling(hitPath, event, "move");
+                    this.dispatchBubbling(hitPath, event, "move", eventQueue);
                 }
             }
         }
+
+        // FIRE PHASE -- the tree has been fully walked and every applicable
+        // handler for this frame is now scheduled; only now do any of them
+        // actually run.
+        for fire in eventQueue { fire(); }
 
         // FLUSH PHASE
         this.flushEffects();

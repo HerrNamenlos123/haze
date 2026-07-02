@@ -81,14 +81,23 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             return null;
         });
 
+        let divRef = ui.ref<ui_elements.DivElement>();
+        let hover = rx.computed(() => {
+            if divRef {
+                return divRef.hover();
+            }
+            return false;
+        })
+
         return (): void => {
             ui.div({ 
                 id: 50,
                 style: {
                     width: 100.0,
                     height: 100.0,
-                    backgroundColor: Color("#AD0"),
+                    backgroundColor: hover ? Color("#AD0") : Color("#8C0"),
                 },
+                ref: divRef,
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("DIV CLICKED");
                 }
@@ -97,7 +106,6 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             });
             ui.canvas({
                 id: 1000,
-                style: { width: 500.0 },
                 // MSAA defaults to on (4x) for every canvas now, so nothing
                 // to set here -- pass msaaSamples: 1 to opt out if needed.
             }, (r: mut renderer.gfx.Renderer): void => {
@@ -107,22 +115,15 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
                     for shape in d.data.pages[0].shapes {
                         if shape is TskLineShape {
                             if shape.tesselationResult {
-                                if shape.tesselationResult.vertices.length > 0 && shape.tesselationResult.indices.length > 0 {
-                                    let v: []Vec2 = [];
-                                    for vertex in shape.tesselationResult.vertices {
-                                        v.push({
-                                            x: vertex.x * 3.0,
-                                            y: vertex.y * 3.0,
-                                        });
-                                    }
-                                    r.addTriangles(
-                                        v, 
-                                        shape.tesselationResult.indices, 
-                                        shape.penColor, 
-                                        0,
-                                        mat4.translation(Vec3(ui.mousePos.x, -ui.mousePos.y, 0)),
-                                    );
-                                }
+                                r.addTriangles(
+                                    shape.tesselationResult.vertices,
+                                    shape.tesselationResult.indices,
+                                    shape.penColor, 
+                                    0,
+                                    mat4.translation(Vec3(ui.mousePos.x, -ui.mousePos.y, 0)).mul(
+                                        mat4.scaling(Vec3(3, 3, 3))
+                                    ),
+                                );
                             }
                             else {
                                 shape.tesselationResult = tesselateStroke({
