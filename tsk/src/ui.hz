@@ -7,9 +7,9 @@ import renderer
 type presets = headwind.presets;
 
 type SizeMode = ui_components.SizeMode;
-type DivElement = ui_components.DivElement;
-type TextElement = ui_components.TextElement;
-type CanvasElement = ui_components.CanvasElement;
+type DivElement = ui_elements.DivElement;
+type TextElement = ui_elements.TextElement;
+type CanvasElement = ui_elements.CanvasElement;
 
 struct ButtonArgs {
     id: int;
@@ -45,6 +45,7 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                     presets.rounded(4),
                 ],
                 onClick: (e: ui_components.PointerEvent) => {
+                    e.stopPropagation();
                     fmt.println("Button clicked");
                     let onClick = instance.props().onClick;
                     if onClick {
@@ -134,57 +135,64 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
         });
 
         return (): void => {
-            ui.div({ 
-                id: 50,
-                style: {
-                    backgroundColor: Color("#253"),
-                },
+            ui.div({
+                id: 1,
                 presets: [
                     presets.wGrow(),
                     presets.hGrow(),
                     presets.col(),
                 ],
-                onClick: (e: ui_components.PointerEvent) => {
-                    fmt.println("DIV CLICKED");
-                }
             }, (): void => {
-                Button(ui, { id: 45, label: "Load file" });
-                Button(ui, { id: 55, label: "Pay respect" });
-                Textbox(ui, { id: 65 });
-            });
-            ui.canvas({
-                id: 1000,
-                // MSAA defaults to on (4x) for every canvas now, so nothing
-                // to set here -- pass msaaSamples: 1 to opt out if needed.
-                presets: [
-                    presets.wGrow(),
-                    presets.hGrow(),
-                ]
-            }, (r: mut renderer.gfx.Renderer): void => {
-                cache.flush();
-                let d = rx.get(doc); // Manually unwrap because of a compiler bug
-                if d {
-                    for shape in d.data.pages[0].shapes {
-                        if shape is TskLineShape {
-                            if shape.tesselationResult {
-                                r.addTriangles(
-                                    shape.tesselationResult.vertices,
-                                    shape.tesselationResult.indices,
-                                    shape.penColor, 
-                                    0,
-                                    mat4.translation(Vec3(ui.mousePos.x, -ui.mousePos.y, 0)).mul(
-                                        mat4.scaling(Vec3(3, 3, 3))
-                                    ),
-                                );
-                            }
-                            else {
-                                shape.tesselationResult = tesselateStroke({
-                                    shape: shape,
-                                });
+                ui.div({ 
+                    id: 50,
+                    style: {
+                        backgroundColor: Color("#253"),
+                    },
+                    presets: [
+                        presets.wGrow(),
+                        presets.hGrow(),
+                        presets.col(),
+                    ],
+                    onClick: (e: ui_components.PointerEvent) => {
+                        fmt.println("DIV CLICKED");
+                    }
+                }, (): void => {
+                    Button(ui, { id: 45, label: "Load file" });
+                    Button(ui, { id: 55, label: "Pay respect" });
+                    Textbox(ui, { id: 65 });
+                });
+                ui.canvas({
+                    id: 1000,
+                    presets: [
+                        presets.wGrow(),
+                        presets.hGrow(),
+                    ]
+                }, (r: mut renderer.gfx.Renderer): void => {
+                    cache.flush();
+                    let d = rx.get(doc); // Manually unwrap because of a compiler bug
+                    if d {
+                        for shape in d.data.pages[0].shapes {
+                            if shape is TskLineShape {
+                                if shape.tesselationResult {
+                                    r.addTriangles(
+                                        shape.tesselationResult.vertices,
+                                        shape.tesselationResult.indices,
+                                        shape.penColor, 
+                                        0,
+                                        mat4.translation(Vec3(ui.mousePos.x, -ui.mousePos.y, 0)).mul(
+                                            mat4.scaling(Vec3(3, 3, 3))
+                                        ),
+                                    );
+                                }
+                                else {
+                                    shape.tesselationResult = tesselateStroke({
+                                        shape: shape,
+                                    });
+                                }
                             }
                         }
                     }
-                }
+                });
             });
         };
     });
