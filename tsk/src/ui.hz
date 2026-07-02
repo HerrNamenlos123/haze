@@ -92,21 +92,12 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             return null;
         });
 
-        let divRef = ui.ref<ui_elements.DivElement>();
-        let hover = rx.computed(() => {
-            if divRef {
-                return divRef.hover();
-            }
-            return false;
-        })
-
         return (): void => {
             ui.div({ 
                 id: 50,
                 style: {
-                    backgroundColor: hover ? Color("#AD0") : Color("#8C0"),
+                    backgroundColor: Color("#253"),
                 },
-                ref: divRef,
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("DIV CLICKED");
                 }

@@ -3,7 +3,7 @@ import ui_styling;
 import renderer;
 
 // Which single button triggered a given event. None for events not tied to
-// one specific button (move, hover/over enter+leave).
+// one specific button (move, hover/hit enter+leave).
 export enum PointerButton {
     None,
     Left,
@@ -84,17 +84,19 @@ export inline struct DivProps {
     onPointerMoveCapture?: (e: PointerEvent) => none;
     onClickCapture?: (e: PointerEvent) => none;
 
-    // "Over": mouse is within this element's own bounds, whether or not a
-    // child also claims that same point. Ancestor-inclusive, like the DOM's
-    // mouseenter/mouseleave for a whole containment chain.
-    onOverEnter?: (e: PointerEvent) => none;
-    onOverLeave?: (e: PointerEvent) => none;
-
-    // "Hover": mouse is within this element's own bounds *and* no child is
-    // also claiming that point -- i.e. this is genuinely the topmost thing
-    // under the cursor. False for an element while a child is hovered/over.
+    // "Hover": mouse is within this element's own bounds, whether or not a
+    // child also claims that same point. Matches the DOM/CSS meaning of
+    // :hover / mouseenter+mouseleave exactly -- ancestor-inclusive, so a
+    // button stays "hovered" while the cursor is over its label text too.
     onHoverEnter?: (e: PointerEvent) => none;
     onHoverLeave?: (e: PointerEvent) => none;
+
+    // "Hit": mouse is within this element's own bounds *and* no child is
+    // also claiming that point -- i.e. this is genuinely the topmost thing
+    // under the cursor. False for an element while a child is hit/hovered.
+    // HTML/CSS has no equivalent to this one; it's stricter than :hover.
+    onHitEnter?: (e: PointerEvent) => none;
+    onHitLeave?: (e: PointerEvent) => none;
 }
 
 export inline struct TextProps {
@@ -174,11 +176,13 @@ export struct RenderFeedback {
 }
 
 export struct InputFeedback {
-    // Bounds-based: mouse is within this element, possibly also within a child.
-    over: bool;
-    // Strict: mouse is within this element and not also within any child --
-    // i.e. this is genuinely the topmost thing under the cursor.
+    // Bounds-based: mouse is within this element, possibly also within a
+    // child. Matches HTML/CSS :hover.
     hover: bool;
+    // Strict: mouse is within this element and not also within any child --
+    // i.e. this is genuinely the topmost thing under the cursor. No HTML/CSS
+    // equivalent.
+    hit: bool;
     pointerDownHere: bool;  // tracks whether a pointerdown landed on this element (for click)
 }
 
@@ -202,10 +206,10 @@ export struct ComponentElementRuntimeData {
     onPointerMoveCapture?: (e: PointerEvent) => none;
     onClickCapture?: (e: PointerEvent) => none;
 
-    onOverEnter?: (e: PointerEvent) => none;
-    onOverLeave?: (e: PointerEvent) => none;
     onHoverEnter?: (e: PointerEvent) => none;
     onHoverLeave?: (e: PointerEvent) => none;
+    onHitEnter?: (e: PointerEvent) => none;
+    onHitLeave?: (e: PointerEvent) => none;
 }
 
 fn newRuntimeData(): ComponentElementRuntimeData {
@@ -267,10 +271,10 @@ export fn ui_hover(element: ui_elements.Element): bool {
     return data.inputFeedback ? data.inputFeedback.hover : false;
 }
 
-export fn ui_over(element: ui_elements.Element): bool {
+export fn ui_hit(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.inputFeedbackVersion);
-    return data.inputFeedback ? data.inputFeedback.over : false;
+    return data.inputFeedback ? data.inputFeedback.hit : false;
 }
 
 // Meant to be plugged in as a layout engine's "bounding box" callback (e.g.
@@ -513,69 +517,52 @@ export opaque struct UIContext {
         return path;
     }
 
-    // Traverses the full tree, updates over/hover reactive state, and
-    // schedules onOverEnter/Leave + onHoverEnter/Leave callbacks onto
+    // Traverses the full tree, updates hover/hit reactive state, and
+    // schedules onHoverEnter/Leave + onHitEnter/Leave callbacks onto
     // `eventQueue`. Neither is bubbling: every element that geometrically
-    // contains mousePos gets its own independent over-transition (ancestors
-    // included), and separately, whichever of those is not itself contained
-    // by a hit child also gets its own hover-transition. Callbacks are only
-    // scheduled here, not invoked -- see process()'s FIRE PHASE.
+    // contains mousePos gets its own independent hover-transition (ancestors
+    // included -- this matches HTML/CSS :hover exactly), and separately,
+    // whichever of those is not itself contained by a hit child also gets
+    // its own hit-transition. Callbacks are only scheduled here, not
+    // invoked -- see process()'s FIRE PHASE.
     //
     // Returns whether mousePos is over this element's own bounds *or* any
     // descendant's (recursively) -- used by the caller (a parent frame of
-    // this same recursion) to know whether it's disqualified from "hover".
+    // this same recursion) to know whether it's disqualified from "hit".
     fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void)): bool :: final {
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
-        let ownHit = false;
+        let selfHit = false;
         if elementPos && elementSize {
-            ownHit =
+            selfHit =
                 (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
                 (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
         }
 
-        // Recurse first: hover for *this* element depends on whether any
+        // Recurse first: hit for *this* element depends on whether any
         // child claims the same point, which we can only know after they've
         // all been visited.
-        let childOver = false;
+        let childHover = false;
         if element is ui_elements.DivElement {
             for child in element.children {
                 if this.updateHoverState(child, mousePos, buttons, eventQueue) {
-                    childOver = true;
+                    childHover = true;
                 }
             }
         }
 
-        let over = ownHit || childOver;
-        let hover = ownHit && !childOver;
+        let hover = selfHit || childHover;
+        let hit = selfHit && !childHover;
 
         let data = runtimeDataOf(element);
         if !data.inputFeedback {
-            data.inputFeedback = { over: false, hover: false, pointerDownHere: false };
+            data.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
             data.inputFeedbackVersion := !data.inputFeedbackVersion;
         }
         assert(data.inputFeedback);
 
-        let prevOver = data.inputFeedback.over;
         let prevHover = data.inputFeedback.hover;
-
-        if prevOver != over {
-            data.inputFeedback.over = over;
-            data.inputFeedbackVersion := !data.inputFeedbackVersion;
-
-            let cb = over ? data.onOverEnter : data.onOverLeave;
-            if cb {
-                let pos = mousePos;
-                let b = buttons;
-                eventQueue.push((): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
-                    cb(e);
-                });
-            }
-            if !over {
-                data.inputFeedback.pointerDownHere = false;
-            }
-        }
+        let prevHit = data.inputFeedback.hit;
 
         if prevHover != hover {
             data.inputFeedback.hover = hover;
@@ -590,9 +577,27 @@ export opaque struct UIContext {
                     cb(e);
                 });
             }
+            if !hover {
+                data.inputFeedback.pointerDownHere = false;
+            }
         }
 
-        return over;
+        if prevHit != hit {
+            data.inputFeedback.hit = hit;
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+
+            let cb = hit ? data.onHitEnter : data.onHitLeave;
+            if cb {
+                let pos = mousePos;
+                let b = buttons;
+                eventQueue.push((): void => {
+                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
+                    cb(e);
+                });
+            }
+        }
+
+        return hover;
     }
 
     // Schedules a pointer event along hitPath from root down to target onto
@@ -773,7 +778,7 @@ export opaque struct UIContext {
                     for el in hitPath {
                         let d = runtimeDataOf(el);
                         if !d.inputFeedback {
-                            d.inputFeedback = { over: false, hover: false, pointerDownHere: false };
+                            d.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
                         }
                         assert(d.inputFeedback);
                         d.inputFeedback.pointerDownHere = true;
@@ -1137,10 +1142,10 @@ export opaque struct UIContext {
         data.onPointerUpCapture = props.onPointerUpCapture;
         data.onPointerMoveCapture = props.onPointerMoveCapture;
         data.onClickCapture = props.onClickCapture;
-        data.onOverEnter = props.onOverEnter;
-        data.onOverLeave = props.onOverLeave;
         data.onHoverEnter = props.onHoverEnter;
         data.onHoverLeave = props.onHoverLeave;
+        data.onHitEnter = props.onHitEnter;
+        data.onHitLeave = props.onHitLeave;
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -1278,14 +1283,16 @@ export struct ElementWrapper<T> {
     raw: T;
     _element: ui_Element;
 
-    // Strict: this element and not any child is genuinely under the cursor.
+    // Bounds-based: cursor is within this element, possibly also within a
+    // child. Matches HTML/CSS :hover exactly.
     fn hover(): bool {
         return ui_hover(this._element);
     }
 
-    // Bounds-based: cursor is within this element, possibly also over a child.
-    fn over(): bool {
-        return ui_over(this._element);
+    // Strict: this element and not any child is genuinely under the cursor.
+    // No HTML/CSS equivalent.
+    fn hit(): bool {
+        return ui_hit(this._element);
     }
 
     fn position(): Vec2 | none {
