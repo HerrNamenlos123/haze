@@ -34,6 +34,42 @@ namespace presets {
         return ui_styling.GapOp { value: computeSize(value) };
     }
 
+    // w-<number>/h-<number>: fixed pixel size on the Tailwind spacing scale
+    // (same scale as p()/gap() above).
+    export fn w(value: real): ui_styling.WidthOp {
+        return ui_styling.WidthOp { value: computeSize(value) };
+    }
+
+    export fn h(value: real): ui_styling.HeightOp {
+        return ui_styling.HeightOp { value: computeSize(value) };
+    }
+
+    // w-fit/h-fit: wrap tightly to content. w-grow/h-grow (Tailwind has no
+    // direct equivalent -- closest is w-full, but that's percent-of-parent,
+    // not "share remaining space with sibling Grow elements"): expand to
+    // fill available space, split with other Grow siblings.
+    //
+    // Functions, not consts: WidthOp/HeightOp aren't `inline struct`s, so
+    // they're heap-allocated -- a top-level `const` of one fails to compile
+    // (the generated C initializer needs a statement-expression, which C
+    // doesn't allow at file scope). A zero-arg function allocates at the
+    // call site instead, which is fine.
+    export fn wFit(): ui_styling.WidthOp {
+        return ui_styling.WidthOp { value: ui_styling.SizeMode.Fit };
+    }
+
+    export fn wGrow(): ui_styling.WidthOp {
+        return ui_styling.WidthOp { value: ui_styling.SizeMode.Grow };
+    }
+
+    export fn hFit(): ui_styling.HeightOp {
+        return ui_styling.HeightOp { value: ui_styling.SizeMode.Fit };
+    }
+
+    export fn hGrow(): ui_styling.HeightOp {
+        return ui_styling.HeightOp { value: ui_styling.SizeMode.Grow };
+    }
+
     export fn align(value: ui_styling.Align): ui_styling.AlignOp {
         return ui_styling.AlignOp { value: value };
     }

@@ -19,12 +19,20 @@
     HZSTD_STRING(string.chars, string.length);                                                                         \
   })
 
-typedef struct {
-  hzstd_real_t left;
-  hzstd_real_t right;
-  hzstd_real_t top;
-  hzstd_real_t bottom;
-} PaddingValues;
+// Converts our sizing config (Fit/Grow/Fixed + value) into Clay's own
+// Clay_SizingAxis. The one place that needs to know both shapes.
+static inline Clay_SizingAxis ToClaySizingAxis(hzui_sizing_axis_t axis)
+{
+  switch (axis.type) {
+  case hzui_sizing_fit:
+    return CLAY_SIZING_FIT(0);
+  case hzui_sizing_fixed:
+    return CLAY_SIZING_FIXED(axis.value);
+  case hzui_sizing_grow:
+  default:
+    return CLAY_SIZING_GROW(0);
+  }
+}
 
 void HandleClayErrors(Clay_ErrorData errorData)
 {
@@ -135,69 +143,54 @@ hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elem
   }
 }
 
-void hzui_clay_define_div_element(void* (*fn)(void*),
-                                  void* env,
-                                  hzstd_str_t id,
-                                  hzstd_color_t backgroundColor,
-                                  PaddingValues padding,
-                                  hzui_corner_radius_values_t cornerRadius,
-                                  bool downInsteadOfRight,
-                                  double gap,
-                                  void* elementPtr)
+void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div_element_t config)
 {
-  CLAY({ .id = make_id(id),
-         .userData = elementPtr,
-         .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                     .layoutDirection = downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
+  CLAY({ .id = make_id(config.id),
+         .userData = config.elementPtr,
+         .layout = { .sizing = { .width = ToClaySizingAxis(config.width), .height = ToClaySizingAxis(config.height) },
+                     .layoutDirection = config.downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
                      .childAlignment = {
                         .x = {},
                         .y = {},
                      },
                      .padding = {
-                        .left = padding.left,
-                        .right = padding.right,
-                        .bottom = padding.bottom,
-                        .top = padding.top,
+                        .left = config.padding.left,
+                        .right = config.padding.right,
+                        .bottom = config.padding.bottom,
+                        .top = config.padding.top,
                      } ,
-                     .childGap = gap,
+                     .childGap = config.gap,
                     },
                     .cornerRadius = {
-                        .topLeft = cornerRadius.topLeft,
-                        .topRight = cornerRadius.topRight,
-                        .bottomLeft = cornerRadius.bottomLeft,
-                        .bottomRight = cornerRadius.bottomRight,
+                        .topLeft = config.cornerRadius.topLeft,
+                        .topRight = config.cornerRadius.topRight,
+                        .bottomLeft = config.cornerRadius.bottomLeft,
+                        .bottomRight = config.cornerRadius.bottomRight,
                     },
          .backgroundColor = (Clay_Color) {
-             .r = backgroundColor.r, .g = backgroundColor.g, .b = backgroundColor.b, .a = backgroundColor.a } })
+             .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a } })
   {
     fn(env);
   }
 }
 
-void hzui_clay_define_canvas_element(hzstd_str_t id,
-                                     hzstd_color_t backgroundColor,
-                                     hzui_corner_radius_values_t cornerRadius,
-                                     hzstd_real_t width,
-                                     bool hasWidth,
-                                     hzstd_real_t height,
-                                     bool hasHeight,
-                                     void* elementPtr)
+void hzui_clay_define_canvas_element(hzui_define_canvas_element_t config)
 {
-  CLAY({ .id = make_id(id),
-         .userData = elementPtr,
+  CLAY({ .id = make_id(config.id),
+         .userData = config.elementPtr,
          .layout = { .sizing = {
-             .width = hasWidth ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_GROW(0),
-             .height = hasHeight ? CLAY_SIZING_FIXED(height) : CLAY_SIZING_GROW(0),
+             .width = ToClaySizingAxis(config.width),
+             .height = ToClaySizingAxis(config.height),
          } },
          .cornerRadius = {
-             .topLeft = cornerRadius.topLeft,
-             .topRight = cornerRadius.topRight,
-             .bottomLeft = cornerRadius.bottomLeft,
-             .bottomRight = cornerRadius.bottomRight,
+             .topLeft = config.cornerRadius.topLeft,
+             .topRight = config.cornerRadius.topRight,
+             .bottomLeft = config.cornerRadius.bottomLeft,
+             .bottomRight = config.cornerRadius.bottomRight,
          },
          .backgroundColor = (Clay_Color) {
-             .r = backgroundColor.r, .g = backgroundColor.g, .b = backgroundColor.b, .a = backgroundColor.a },
-         .custom = { .customData = elementPtr } });
+             .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a },
+         .custom = { .customData = config.elementPtr } });
 }
 
 void hzui_clay_define_text_element(hzui_define_text_element_t element)

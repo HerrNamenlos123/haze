@@ -10,9 +10,13 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, id: str, backgroundColor: Color, padding: PaddingValues, cornerRadius: CornerRadiusValues, downInsteadOfRight: bool, gap: real, elementPtr: cptr): void :: final;
+    // Both of these take a single bundled config struct instead of a long
+    // positional parameter list (hzui_define_div_element_t /
+    // hzui_define_canvas_element_t below) -- named fields at the call site
+    // are self-documenting and can't silently shift out of order.
+    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, config: hzui_define_div_element_t): void :: final;
     extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
-    extern C noemit fn hzui_clay_define_canvas_element(id: str, backgroundColor: Color, cornerRadius: CornerRadiusValues, width: real, hasWidth: bool, height: real, hasHeight: bool, elementPtr: cptr): void :: final;
+    extern C noemit fn hzui_clay_define_canvas_element(config: hzui_define_canvas_element_t): void :: final;
     extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
 
     extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
@@ -43,11 +47,45 @@ namespace ffi {
         size: Vec2;
     };
 
-    extern C noemit inline struct PaddingValues {
+    export extern C noemit inline struct hzui_padding_values_t {
         left: real;
         right: real;
         top: real;
         bottom: real;
+    }
+
+    // Mirrors ui_styling.SizeMode -- Fit/Grow/a fixed value. `value` is only
+    // meaningful when type == hzui_sizing_fixed.
+    export extern C noemit enum hzui_sizing_type_t {
+        hzui_sizing_fit,
+        hzui_sizing_grow,
+        hzui_sizing_fixed,
+    }
+
+    export extern C noemit inline struct hzui_sizing_axis_t {
+        type: hzui_sizing_type_t;
+        value: real;
+    }
+
+    export extern C noemit inline struct hzui_define_div_element_t {
+        id: str;
+        backgroundColor: Color;
+        padding: hzui_padding_values_t;
+        cornerRadius: CornerRadiusValues;
+        downInsteadOfRight: bool;
+        gap: real;
+        width: hzui_sizing_axis_t;
+        height: hzui_sizing_axis_t;
+        elementPtr: cptr;
+    }
+
+    export extern C noemit inline struct hzui_define_canvas_element_t {
+        id: str;
+        backgroundColor: Color;
+        cornerRadius: CornerRadiusValues;
+        width: hzui_sizing_axis_t;
+        height: hzui_sizing_axis_t;
+        elementPtr: cptr;
     }
 
     export extern C noemit inline struct hzui_define_text_element_t {
@@ -91,6 +129,23 @@ namespace ffi {
 }
 
 export type CornerRadiusValues = ffi.hzui_corner_radius_values_t;
+
+// ComputedDivStyle.width/height are always resolved by the time they reach
+// here (computeDivStyle() never leaves them at SizeMode._Unset), so Fit/Grow
+// are the only enum cases that matter; _Unset falls back to Grow as a safe
+// default if it ever did slip through.
+fn toSizingAxis(size: ui_styling.Size): ffi.hzui_sizing_axis_t :: final {
+    if size is real {
+        return { type: ffi.hzui_sizing_type_t.hzui_sizing_fixed, value: size };
+    }
+    if size is ui_styling.SizeMode {
+        if size == ui_styling.SizeMode.Fit {
+            return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
+        }
+        return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+    }
+    return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+}
 
 export inline struct FontEntry {
     name: str;
@@ -259,13 +314,17 @@ export opaque struct Context {
 
                 ffi.hzui_clay_define_div_element(
                     func, env,
-                    elementId,
-                    style.backgroundColor,
-                    ffi.PaddingValues { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
-                    CornerRadiusValues { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
-                    style.direction == ui_styling.Direction.Column,
-                    style.gap,
-                    elementPtr,
+                    {
+                        id: elementId,
+                        backgroundColor: style.backgroundColor,
+                        padding: { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
+                        cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
+                        downInsteadOfRight: style.direction == ui_styling.Direction.Column,
+                        gap: style.gap,
+                        width: toSizingAxis(style.width),
+                        height: toSizingAxis(style.height),
+                        elementPtr: elementPtr,
+                    }
                 );
 
                 ctx.idPath = savedIdPath;
@@ -317,16 +376,14 @@ export opaque struct Context {
 
             let style = element.style;
 
-            ffi.hzui_clay_define_canvas_element(
-                elementId,
-                style.backgroundColor,
-                CornerRadiusValues { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
-                style.width ? style.width : 0.0,
-                style.width is not none,
-                style.height ? style.height : 0.0,
-                style.height is not none,
-                elementPtr,
-            );
+            ffi.hzui_clay_define_canvas_element({
+                id: elementId,
+                backgroundColor: style.backgroundColor,
+                cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
+                width: toSizingAxis(style.width),
+                height: toSizingAxis(style.height),
+                elementPtr: elementPtr,
+            });
         }
     }
 

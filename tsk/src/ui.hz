@@ -6,6 +6,11 @@ import headwind
 import renderer
 type presets = headwind.presets;
 
+type SizeMode = ui_components.SizeMode;
+type DivElement = ui_components.DivElement;
+type TextElement = ui_components.TextElement;
+type CanvasElement = ui_components.CanvasElement;
+
 struct ButtonArgs {
     id: int;
     label: str;
@@ -33,6 +38,8 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 id: 1,
                 ref: divRef,
                 presets: [
+                    presets.wFit(),
+                    presets.hFit(),
                     presets.bg(isHovered ? "#666" : "#555"),
                     presets.p(1),
                     presets.rounded(4),
@@ -97,8 +104,6 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             ui.div({ 
                 id: 50,
                 style: {
-                    width: 100.0,
-                    height: 100.0,
                     backgroundColor: hover ? Color("#AD0") : Color("#8C0"),
                 },
                 ref: divRef,
