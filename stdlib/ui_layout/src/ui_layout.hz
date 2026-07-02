@@ -132,19 +132,20 @@ export type CornerRadiusValues = ffi.hzui_corner_radius_values_t;
 
 // ComputedDivStyle.width/height are always resolved by the time they reach
 // here (computeDivStyle() never leaves them at SizeMode._Unset), so Fit/Grow
-// are the only enum cases that matter; _Unset falls back to Grow as a safe
-// default if it ever did slip through.
+// are the only enum cases that matter; _Unset falls back to Fit -- the same
+// default computeDivStyle() itself uses -- as a safe default if it ever did
+// slip through.
 fn toSizingAxis(size: ui_styling.Size): ffi.hzui_sizing_axis_t :: final {
     if size is real {
         return { type: ffi.hzui_sizing_type_t.hzui_sizing_fixed, value: size };
     }
     if size is ui_styling.SizeMode {
-        if size == ui_styling.SizeMode.Fit {
-            return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
+        if size == ui_styling.SizeMode.Grow {
+            return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
         }
-        return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+        return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
     }
-    return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+    return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
 }
 
 export inline struct FontEntry {
