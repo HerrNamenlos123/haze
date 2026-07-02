@@ -378,9 +378,16 @@ export struct ComponentInstance {
     fn createChild(id: int): ComponentInstance {
         return ComponentInstance {
             id: id,
+            // This wrapper is pure internal plumbing -- never touched by
+            // div()/computeDivStyle(), so it never picks up a user style.
+            // Explicit Grow keeps it a transparent pass-through (fill
+            // whatever space the parent gives) rather than defaulting to
+            // ComputedDivStyle's own default (Fit), which would make every
+            // component boundary silently shrink-wrap and block Grow from
+            // propagating from an ancestor down to a descendant that wants it.
             rootElement: ui_elements.DivElement({
                 id: id,
-                style: {},
+                style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
             }),
             propsVersion: rx.reactive<int>(0),
         };
@@ -879,11 +886,14 @@ export opaque struct UIContext {
             instance = child;
         } else {
             if !this.rootComponent {
+                // Same reasoning as createChild()'s wrapper above: explicit
+                // Grow so the very top of the tree fills the window instead
+                // of shrink-wrapping to ComputedDivStyle's default (Fit).
                 this.rootComponent = ComponentInstance {
                     id: id,
                     rootElement: ui_elements.DivElement({
                         id: id,
-                        style: {},
+                        style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
                     }),
                     propsVersion: rx.reactive<int>(0),
                 };

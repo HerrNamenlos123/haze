@@ -70,12 +70,21 @@ namespace presets {
         return ui_styling.HeightOp { value: ui_styling.SizeMode.Grow };
     }
 
-    export fn align(value: ui_styling.Align): ui_styling.AlignOp {
-        return ui_styling.AlignOp { value: value };
+    // Cross-axis alignment (perpendicular to direction -- see CrossAlign's
+    // own doc comment for exactly which physical axis that is).
+    export fn crossAlign(value: ui_styling.CrossAlign): ui_styling.CrossAlignOp {
+        return ui_styling.CrossAlignOp { value: value };
     }
 
-    export fn justify(value: ui_styling.Justify): ui_styling.JustifyOp {
-        return ui_styling.JustifyOp { value: value };
+    // items-stretch shorthand: opt-in cross-axis fill for children still at
+    // their default size.
+    export fn stretch(): ui_styling.CrossAlignOp {
+        return ui_styling.CrossAlignOp { value: ui_styling.CrossAlign.Stretch };
+    }
+
+    // Main-axis packing (the same axis as direction).
+    export fn packing(value: ui_styling.Packing): ui_styling.PackingOp {
+        return ui_styling.PackingOp { value: value };
     }
 
     export fn direction(value: ui_styling.Direction): ui_styling.DirectionOp {

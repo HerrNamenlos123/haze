@@ -67,6 +67,14 @@ namespace ffi {
         value: real;
     }
 
+    // Axis-agnostic Start/Center/End -- see the comment on the C side
+    // (hzui_public.h) for why this doesn't carry SpaceBetween or Stretch.
+    export extern C noemit enum hzui_align_t {
+        hzui_align_start,
+        hzui_align_center,
+        hzui_align_end,
+    }
+
     export extern C noemit inline struct hzui_define_div_element_t {
         id: str;
         backgroundColor: Color;
@@ -76,6 +84,8 @@ namespace ffi {
         gap: real;
         width: hzui_sizing_axis_t;
         height: hzui_sizing_axis_t;
+        mainAxisAlign: hzui_align_t;
+        crossAxisAlign: hzui_align_t;
         elementPtr: cptr;
     }
 
@@ -146,6 +156,84 @@ fn toSizingAxis(size: ui_styling.Size): ffi.hzui_sizing_axis_t :: final {
         return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
     }
     return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
+}
+
+// Packing.SpaceBetween has no Clay equivalent -- it's emulated by inserting
+// Grow spacer elements between children (see defineSpacer()/renderChildren()
+// below), so by the time a Packing value reaches here it only ever needs to
+// become Start/Center/End; SpaceBetween itself maps to Start since the
+// spacers, not this alignment setting, are what create the spacing.
+fn packingToClayAlign(p: ui_styling.Packing): ffi.hzui_align_t :: final {
+    if p == ui_styling.Packing.Center { return ffi.hzui_align_t.hzui_align_center; }
+    if p == ui_styling.Packing.End { return ffi.hzui_align_t.hzui_align_end; }
+    return ffi.hzui_align_t.hzui_align_start;
+}
+
+// CrossAlign.Stretch has no Clay equivalent either -- it's emulated by
+// forcing eligible children's cross-axis sizing to Grow instead (see
+// crossAxisForcesWidthGrow()/crossAxisForcesHeightGrow()/effectiveSize()
+// below), so Stretch itself maps to Start here: once a child is forced to
+// Grow it fills the whole cross-extent regardless of this alignment value.
+fn crossAlignToClayAlign(c: ui_styling.CrossAlign): ffi.hzui_align_t :: final {
+    if c == ui_styling.CrossAlign.Center { return ffi.hzui_align_t.hzui_align_center; }
+    if c == ui_styling.CrossAlign.End { return ffi.hzui_align_t.hzui_align_end; }
+    return ffi.hzui_align_t.hzui_align_start;
+}
+
+// Whether a *parent* with this direction+crossAlign should force its
+// children's width (returns true here) or height (crossAxisForcesHeightGrow
+// below) to Grow -- i.e. whether width is the cross axis for this parent.
+fn crossAxisForcesWidthGrow(direction: ui_styling.Direction, crossAlign: ui_styling.CrossAlign): bool :: final {
+    return crossAlign == ui_styling.CrossAlign.Stretch && direction == ui_styling.Direction.Column;
+}
+
+fn crossAxisForcesHeightGrow(direction: ui_styling.Direction, crossAlign: ui_styling.CrossAlign): bool :: final {
+    return crossAlign == ui_styling.CrossAlign.Stretch && direction == ui_styling.Direction.Row;
+}
+
+// Applies a parent's forced-Grow override (see above) to one of a child's
+// own size values -- but only if that child is still at the Fit default;
+// an explicit Grow or fixed value from the child always wins, matching how
+// CSS's align-items: stretch never overrides an explicit cross-axis size.
+fn effectiveSize(size: ui_styling.Size, forceGrow: bool): ui_styling.Size :: final {
+    if forceGrow && ui_styling.sizeEquals(size, ui_styling.SizeMode.Fit) {
+        return ui_styling.SizeMode.Grow;
+    }
+    return size;
+}
+
+// Packing.SpaceBetween has no Clay equivalent, so it's emulated the way
+// low-level layout engines without native space-between usually do it:
+// insert an invisible Grow element between each pair of children. Since
+// Grow elements on the same axis share remaining space equally, N-1 of
+// these between N children reproduces "first/last flush against the ends,
+// equal gaps between the rest" exactly. Fully transparent and leaf (no
+// elementPtr) -- it never gets a Clay render command (no background,
+// border, or content), so it never receives bounding-box feedback and
+// never needs hit-testing, same as any other content-less element.
+fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
+    let noop = (): void => {};
+    let func = none as cptr;
+    let env = none as cptr;
+    __c__("func = (void*)noop.fn;");
+    __c__("env = (void*)noop.env;");
+
+    let growAxis: ffi.hzui_sizing_axis_t = { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+    let fitAxis: ffi.hzui_sizing_axis_t = { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
+
+    ffi.hzui_clay_define_div_element(func, env, {
+        id: id,
+        backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
+        padding: { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
+        cornerRadius: { topLeft: 0.0, topRight: 0.0, bottomLeft: 0.0, bottomRight: 0.0 },
+        downInsteadOfRight: false,
+        gap: 0.0,
+        width: mainAxisIsWidth ? growAxis : fitAxis,
+        height: mainAxisIsWidth ? fitAxis : growAxis,
+        mainAxisAlign: ffi.hzui_align_t.hzui_align_start,
+        crossAxisAlign: ffi.hzui_align_t.hzui_align_start,
+        elementPtr: none as cptr,
+    });
 }
 
 export inline struct FontEntry {
@@ -285,23 +373,17 @@ export opaque struct Context {
         return ctx.textColorStack[ctx.textColorStack.length - 1];
     }
 
-    fn processTreeElement(ctx: TreeTraverseContext, element: rx.Reactive<ui_elements.Element>): void :: final {
-        this.processTreeElement(ctx, rx.get(element));
+    fn processTreeElement(ctx: TreeTraverseContext, element: rx.Reactive<ui_elements.Element>, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
+        this.processTreeElement(ctx, rx.get(element), forceGrowWidth, forceGrowHeight);
     }
 
-    fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element): void :: final {
+    // forceGrowWidth/forceGrowHeight: set by the *parent* (see
+    // crossAxisForcesWidthGrow/crossAxisForcesHeightGrow) when its own
+    // crossAlign is Stretch, so this element knows whether *it* should
+    // stretch to fill the parent's cross-extent -- see effectiveSize().
+    fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
         if element is ui_elements.DivElement {
             this.withCascadingStackApplied(ctx, element, () => {
-                let renderChildren = () => {
-                    for child in element.children {
-                        this.processTreeElement(ctx, child);
-                    }
-                };
-                let func = none as cptr;
-                let env = none as cptr;
-                __c__("func = (void*)renderChildren.fn;");
-                __c__("env = (void*)renderChildren.env;");
-
                 let elementBox = Box<ui_elements.Element>(element);
                 let elementPtr = none as cptr;
                 __c__("elementPtr = elementBox;");
@@ -313,6 +395,29 @@ export opaque struct Context {
 
                 let style = element.style;
 
+                // Resolved once here so both the recursive walk (below) and
+                // the FFI call use the exact same values.
+                let childForceGrowWidth = crossAxisForcesWidthGrow(style.direction, style.crossAlign);
+                let childForceGrowHeight = crossAxisForcesHeightGrow(style.direction, style.crossAlign);
+                let spaceBetween = style.packing == ui_styling.Packing.SpaceBetween && element.children.length > 1;
+                let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
+                let lastIndex = element.children.length - 1;
+
+                let renderChildren = () => {
+                    let i = 0;
+                    for child in element.children {
+                        this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
+                        if spaceBetween && i < lastIndex {
+                            defineSpacer(elementId + "/__spacer_" + f"{i}", mainAxisIsWidth);
+                        }
+                        i = i + 1;
+                    }
+                };
+                let func = none as cptr;
+                let env = none as cptr;
+                __c__("func = (void*)renderChildren.fn;");
+                __c__("env = (void*)renderChildren.env;");
+
                 ffi.hzui_clay_define_div_element(
                     func, env,
                     {
@@ -322,8 +427,10 @@ export opaque struct Context {
                         cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
                         downInsteadOfRight: style.direction == ui_styling.Direction.Column,
                         gap: style.gap,
-                        width: toSizingAxis(style.width),
-                        height: toSizingAxis(style.height),
+                        width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
+                        height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
+                        mainAxisAlign: packingToClayAlign(style.packing),
+                        crossAxisAlign: crossAlignToClayAlign(style.crossAlign),
                         elementPtr: elementPtr,
                     }
                 );
@@ -381,8 +488,8 @@ export opaque struct Context {
                 id: elementId,
                 backgroundColor: style.backgroundColor,
                 cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
-                width: toSizingAxis(style.width),
-                height: toSizingAxis(style.height),
+                width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
+                height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
                 elementPtr: elementPtr,
             });
         }

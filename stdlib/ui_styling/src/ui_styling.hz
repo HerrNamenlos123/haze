@@ -17,8 +17,23 @@ export inline struct CornerRadius {
 }
 
 export enum Direction { Row, Column }
-export enum Justify { Start, Center, End, SpaceBetween }
-export enum Align { Start, Center, End, Stretch }
+
+// How children are packed along the *main* axis -- the same axis as
+// `direction` (X when Row, Y when Column). Named to avoid CSS's
+// "justify-content", which says nothing about which axis it means (and
+// people reliably confuse it with `crossAlign` below because of that).
+export enum Packing { Start, Center, End, SpaceBetween }
+
+// How children are positioned/sized along the *cross* axis -- always the
+// axis perpendicular to `direction` (Y when Row, X when Column). Named to
+// avoid CSS's "align-items", for the same reason as Packing above.
+//   - Start/Center/End: each child keeps its own cross-axis size, positioned
+//     within the container's cross-extent.
+//   - Stretch: opt-in only, never the default. Children whose cross-axis
+//     size is still at its default (SizeMode.Fit) are forced to Grow to
+//     fill the container's cross-extent instead; children with an explicit
+//     size (Grow or a fixed value) are left alone.
+export enum CrossAlign { Start, Center, End, Stretch }
 
 // How an element's width/height is determined along one axis.
 //   - Fit: wraps tightly to the size of the element's contents. The default
@@ -141,8 +156,8 @@ export inline struct DivStyle {
     height: Size = SizeMode._Unset;
     padding: StylePadding = none;
     direction?: Direction;
-    justify?: Justify;
-    align?: Align;
+    packing?: Packing;
+    crossAlign?: CrossAlign;
     cornerRadius: StyleCornerRadius = none;
     gap?: real;
     backgroundColor?: Color;
@@ -159,8 +174,8 @@ export inline struct DivStyle {
         this.height = other.height;
         this.padding = other.padding;
         this.direction = other.direction;
-        this.justify = other.justify;
-        this.align = other.align;
+        this.packing = other.packing;
+        this.crossAlign = other.crossAlign;
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
@@ -177,8 +192,8 @@ export inline struct DivStyle {
             sizeEquals(this.width, other.width) &&
             sizeEquals(this.height, other.height) &&
             this.direction == other.direction &&
-            this.justify == other.justify &&
-            this.align == other.align &&
+            this.packing == other.packing &&
+            this.crossAlign == other.crossAlign &&
             this.gap == other.gap &&
             this.fontFamily == other.fontFamily &&
             this.fontSize == other.fontSize &&
@@ -237,8 +252,8 @@ export struct ComputedDivStyle {
     height: Size = SizeMode.Fit;
     padding: Padding = {};
     direction: Direction = Direction.Row;
-    justify: Justify = Justify.Start;
-    align: Align = Align.Start;
+    packing: Packing = Packing.Start;
+    crossAlign: CrossAlign = CrossAlign.Start;
     cornerRadius: CornerRadius = {};
     gap: real = 0.0;
     backgroundColor: Color = {};
@@ -255,8 +270,8 @@ export struct ComputedDivStyle {
         this.height = other.height;
         this.padding = other.padding;
         this.direction = other.direction;
-        this.justify = other.justify;
-        this.align = other.align;
+        this.packing = other.packing;
+        this.crossAlign = other.crossAlign;
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
@@ -296,8 +311,8 @@ export struct BackgroundColorOp { color: Color; }
 export struct TextColorOp { color: Color; }
 export struct PaddingOp { padding: StylePadding; }
 export struct GapOp { value: real; }
-export struct AlignOp { value: Align; }
-export struct JustifyOp { value: Justify; }
+export struct CrossAlignOp { value: CrossAlign; }
+export struct PackingOp { value: Packing; }
 export struct DirectionOp { value: Direction; }
 export struct CornerRadiusOp { cornerRadius: StyleCornerRadius; }
 export struct WidthOp { value: Size; }
@@ -319,7 +334,7 @@ export type TextStyleOp =
 // expected too: union membership doesn't see through a nested union, so
 // `TextStyleOp | ...` here wouldn't actually include its variants.
 export type DivStyleOp =
-    BackgroundColorOp | TextColorOp | PaddingOp | GapOp | AlignOp | JustifyOp
+    BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
 
@@ -335,8 +350,8 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
         else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
         else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
         else if op is GapOp { if !working.gap { working.gap = op.value; } }
-        else if op is AlignOp { if !working.align { working.align = op.value; } }
-        else if op is JustifyOp { if !working.justify { working.justify = op.value; } }
+        else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
+        else if op is PackingOp { if !working.packing { working.packing = op.value; } }
         else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
         else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
         else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
@@ -361,8 +376,8 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
     if !isUnset(working.width) { result.width = working.width; }
     if !isUnset(working.height) { result.height = working.height; }
     if working.direction { result.direction = working.direction; }
-    if working.justify { result.justify = working.justify; }
-    if working.align { result.align = working.align; }
+    if working.packing { result.packing = working.packing; }
+    if working.crossAlign { result.crossAlign = working.crossAlign; }
     if working.gap { result.gap = working.gap; }
     if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
     return result;

@@ -34,6 +34,21 @@ typedef struct {
   hzstd_real_t value;
 } hzui_sizing_axis_t;
 
+// A single-axis alignment value, direction-agnostic (Start/Center/End only
+// -- Clay's own Clay_LayoutAlignmentX/Y use different member names per
+// physical axis, LEFT/RIGHT vs TOP/BOTTOM, so this is the axis-agnostic
+// form the Haze side resolves *down to* before calling C; ToClayChildAlignment
+// in ui.c is the one place that maps this plus a direction onto Clay's
+// actual X/Y pair). SpaceBetween (ui_styling.Packing) and Stretch
+// (ui_styling.CrossAlign) never reach here -- the Haze side resolves those
+// away first (spacer elements and forced child sizing, respectively), since
+// Clay has no native equivalent for either.
+typedef enum {
+  hzui_align_start = 0,
+  hzui_align_center = 1,
+  hzui_align_end = 2,
+} hzui_align_t;
+
 // Bundles every parameter hzui_clay_define_div_element() needs into one
 // struct instead of a long positional parameter list -- named fields at the
 // call site are self-documenting and can't silently shift out of order the
@@ -47,6 +62,9 @@ typedef struct {
   hzstd_real_t gap;
   hzui_sizing_axis_t width;
   hzui_sizing_axis_t height;
+  // Already resolved to axis-agnostic Start/Center/End -- see hzui_align_t.
+  hzui_align_t mainAxisAlign;
+  hzui_align_t crossAxisAlign;
   void* elementPtr;
 } hzui_define_div_element_t;
 

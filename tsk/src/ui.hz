@@ -142,6 +142,7 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
                 presets: [
                     presets.wGrow(),
                     presets.hGrow(),
+                    presets.col(),
                 ],
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("DIV CLICKED");
@@ -201,17 +202,18 @@ export fn UI(ui: ui_components.UIContext) {
             ui.div({
                 id: 100000,
                 style: {
-                    backgroundColor: "#333" as Color,
-                    padding: ui_styling.StylePaddingSimple { value: 30.0 },
                     direction: ui_styling.Direction.Column,
                     fontFamily: "roboto",
                     fontSize: 16.0,
                     textColor: Color(1, 1, 1, 1),
-                    gap: 10.0,
                 },
                 presets: [
                     presets.wGrow(),
                     presets.hGrow(),
+                    presets.col(),
+                    presets.bg("#333"),
+                    presets.p(8),
+                    presets.gap(4),
                 ]
             }, (): void => {
                 InfoBox(ui, { id: 4400 });

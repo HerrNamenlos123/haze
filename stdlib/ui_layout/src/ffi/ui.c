@@ -34,6 +34,47 @@ static inline Clay_SizingAxis ToClaySizingAxis(hzui_sizing_axis_t axis)
   }
 }
 
+static inline Clay_LayoutAlignmentX ToClayAlignX(hzui_align_t a)
+{
+  switch (a) {
+  case hzui_align_center:
+    return CLAY_ALIGN_X_CENTER;
+  case hzui_align_end:
+    return CLAY_ALIGN_X_RIGHT;
+  case hzui_align_start:
+  default:
+    return CLAY_ALIGN_X_LEFT;
+  }
+}
+
+static inline Clay_LayoutAlignmentY ToClayAlignY(hzui_align_t a)
+{
+  switch (a) {
+  case hzui_align_center:
+    return CLAY_ALIGN_Y_CENTER;
+  case hzui_align_end:
+    return CLAY_ALIGN_Y_BOTTOM;
+  case hzui_align_start:
+  default:
+    return CLAY_ALIGN_Y_TOP;
+  }
+}
+
+// Maps our axis-agnostic (mainAxisAlign, crossAxisAlign) pair onto Clay's
+// screen-space (x, y) pair, swapped according to direction -- this is the
+// one place that has to know "main axis = X when Row, Y when Column" (and
+// vice versa for cross), since Clay's own childAlignment is plain X/Y with
+// no concept of flow direction at all.
+static inline Clay_ChildAlignment ToClayChildAlignment(bool downInsteadOfRight, hzui_align_t mainAxisAlign, hzui_align_t crossAxisAlign)
+{
+  if (downInsteadOfRight) {
+    // Column: main axis is Y (top-to-bottom), cross axis is X.
+    return (Clay_ChildAlignment) { .x = ToClayAlignX(crossAxisAlign), .y = ToClayAlignY(mainAxisAlign) };
+  }
+  // Row: main axis is X (left-to-right), cross axis is Y.
+  return (Clay_ChildAlignment) { .x = ToClayAlignX(mainAxisAlign), .y = ToClayAlignY(crossAxisAlign) };
+}
+
 void HandleClayErrors(Clay_ErrorData errorData)
 {
   // See the Clay_ErrorData struct for more information
@@ -149,10 +190,7 @@ void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div
          .userData = config.elementPtr,
          .layout = { .sizing = { .width = ToClaySizingAxis(config.width), .height = ToClaySizingAxis(config.height) },
                      .layoutDirection = config.downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,
-                     .childAlignment = {
-                        .x = {},
-                        .y = {},
-                     },
+                     .childAlignment = ToClayChildAlignment(config.downInsteadOfRight, config.mainAxisAlign, config.crossAxisAlign),
                      .padding = {
                         .left = config.padding.left,
                         .right = config.padding.right,
