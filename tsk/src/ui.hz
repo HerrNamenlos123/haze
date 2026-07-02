@@ -33,6 +33,24 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
             return element.hover();
         });
 
+        let isActive = rx.computed(() => {
+            let element = rx.get(divRef);
+            if !element {
+                return false;
+            }
+            return element.active();
+        });
+
+        let bg = rx.computed(() => {
+            if isActive {
+                return "#777";
+            }
+            else if isHovered {
+                return "#666";
+            }
+            return "#555";
+        });
+
         return (): void => {
             ui.div({
                 id: 1,
@@ -40,7 +58,7 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 presets: [
                     presets.wFit(),
                     presets.hFit(),
-                    presets.bg(isHovered ? "#666" : "#555"),
+                    presets.bg(bg),
                     presets.p(1),
                     presets.rounded(4),
                 ],

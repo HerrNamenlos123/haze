@@ -277,6 +277,35 @@ export fn ui_hit(element: ui_elements.Element): bool {
     return data.inputFeedback ? data.inputFeedback.hit : false;
 }
 
+// Mirrors CSS :active -- true while the pointer is both held down *and*
+// currently over this element (bounds-based, ancestor-inclusive, same as
+// `hover`; not `hit`), given that the press also started on this element (or
+// a descendant) in the first place. Answers your "off, then back on" case
+// directly: while the pointer is off, `hover` is false, so this is false
+// (falls back to the normal color) regardless of the button still being
+// held; drag back on and it's true again (pressed/active color) -- no
+// separate "was this the original press target" bookkeeping needed here,
+// since pointerDownHere (see process()'s Down/Up handling) already only
+// stays true on elements the press actually started on.
+export fn ui_active(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.inputFeedbackVersion);
+    if !data.inputFeedback { return false; }
+    return data.inputFeedback.hover && data.inputFeedback.pointerDownHere;
+}
+
+// Sets pointerDownHere and bumps inputFeedbackVersion, but only when the
+// value actually changes -- pointerDownHere feeds ui_active() above, so a
+// change here must be reactive (unlike before ui_active() existed, when
+// pointerDownHere was write-only state nothing needed to react to).
+fn setPointerDownHere(data: ComponentElementRuntimeData, value: bool): void :: final {
+    if !data.inputFeedback { return; }
+    if data.inputFeedback.pointerDownHere != value {
+        data.inputFeedback.pointerDownHere = value;
+        data.inputFeedbackVersion := !data.inputFeedbackVersion;
+    }
+}
+
 // Meant to be plugged in as a layout engine's "bounding box" callback (e.g.
 // ui_layout.RenderCallbacks.onBoundingBox, wired up by ui_runtime). Bumps
 // the reactive render-feedback version only when the box actually changed,
@@ -436,6 +465,15 @@ export opaque struct UIContext {
     _middleHeld: bool = false;
     _rightHeld: bool = false;
 
+    // Runtime-data of every element marked pointerDownHere=true by the most
+    // recent "down", so "up" can fully consume (reset) that flag even for
+    // elements no longer under the pointer at release time -- without this,
+    // an element the pointer was dragged away from and never returned to
+    // would keep a stale pointerDownHere=true forever, ready to wrongly
+    // participate in click eligibility on some *later*, unrelated up-event
+    // that happens to hit it. See process()'s Down/Up handling.
+    _pointerDownTargets: []ComponentElementRuntimeData = [];
+
     renderStack: []RenderContext = [];
     effectQueue: [](() => void) = [];
     rootComponent: ComponentInstance | null = null;
@@ -584,9 +622,18 @@ export opaque struct UIContext {
                     cb(e);
                 });
             }
-            if !hover {
-                data.inputFeedback.pointerDownHere = false;
-            }
+            // Deliberately NOT resetting pointerDownHere here on hover-loss.
+            // A click's eligibility is decided purely by "was this element in
+            // both the down-hitPath and the up-hitPath" (see process()'s Up
+            // handling) -- matching the DOM rule that click fires on the
+            // nearest common ancestor of the down- and up-targets, regardless
+            // of anything that happened in between. Resetting on every
+            // hover-loss used to break exactly the case where the pointer
+            // drags off an element and back onto the *same* element before
+            // release: hover would flip false then true again, but this flag
+            // never got set back to true (only a fresh "down" does that), so
+            // the click would wrongly fall through to an ancestor instead of
+            // firing on the element the user actually released on.
         }
 
         if prevHit != hit {
@@ -782,13 +829,23 @@ export opaque struct UIContext {
                 };
 
                 if pe.kind == PointerEventKind.Down {
+                    // Defensive cleanup: if a previous Down's targets were
+                    // never fully consumed (e.g. the matching Up never came,
+                    // however that could happen), don't let their
+                    // pointerDownHere leak into this new cycle's eligibility.
+                    for d in this._pointerDownTargets {
+                        setPointerDownHere(d, false);
+                    }
+                    this._pointerDownTargets = [];
+
                     for el in hitPath {
                         let d = runtimeDataOf(el);
                         if !d.inputFeedback {
                             d.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
                         }
                         assert(d.inputFeedback);
-                        d.inputFeedback.pointerDownHere = true;
+                        setPointerDownHere(d, true);
+                        this._pointerDownTargets.push(d);
                     }
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
@@ -797,15 +854,28 @@ export opaque struct UIContext {
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Up, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Up, eventQueue);
 
-                    // Snapshot + consume pointerDownHere once (shared by both
-                    // click phases below) rather than each phase resetting it.
+                    // Eligibility: was this up-hitPath element also part of
+                    // the down-hitPath? pointerDownHere hasn't been touched
+                    // since Down (see updateHoverState -- it deliberately no
+                    // longer resets this on hover-loss), so it still
+                    // correctly answers that regardless of anything the
+                    // pointer did in between, including dragging off this
+                    // exact element and back onto it before release.
                     let clickEligible: []bool = [];
                     for el in hitPath {
                         let d = runtimeDataOf(el);
-                        let eligible = d.inputFeedback ? d.inputFeedback.pointerDownHere : false;
-                        clickEligible.push(eligible);
-                        if d.inputFeedback { d.inputFeedback.pointerDownHere = false; }
+                        clickEligible.push(d.inputFeedback ? d.inputFeedback.pointerDownHere : false);
                     }
+
+                    // Consume pointerDownHere for *every* Down target, not
+                    // just the ones still in this Up's hitPath -- otherwise
+                    // an element the pointer left and never returned to
+                    // would keep a stale true, ready to wrongly fire on some
+                    // later, unrelated click that happens to hit it.
+                    for d in this._pointerDownTargets {
+                        setPointerDownHere(d, false);
+                    }
+                    this._pointerDownTargets = [];
 
                     let clickEvent = PointerEvent {
                         pointerId: 1, pointerType: "mouse", pos: pe.pos,
@@ -1303,6 +1373,12 @@ export struct ElementWrapper<T> {
     // No HTML/CSS equivalent.
     fn hit(): bool {
         return ui_hit(this._element);
+    }
+
+    // Mirrors CSS :active -- true while the pointer is held down and over
+    // this element, given the press also started here (or on a descendant).
+    fn active(): bool {
+        return ui_active(this._element);
     }
 
     fn position(): Vec2 | none {
