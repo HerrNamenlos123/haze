@@ -6,20 +6,20 @@ import headwind
 import renderer
 type presets = headwind.presets;
 
-struct NavItemArgs {
+struct ButtonArgs {
     id: int;
     label: str;
+    onClick?: (event: ui_components.PointerEvent) => none;
 
-    fn operator!=(other: NavItemArgs) {
+    fn operator!=(other: ButtonArgs) {
         return this.id != other.id || this.label != other.label;
     }
 }
 
-fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<NavItemArgs>) => {
+fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
 
         let divRef = ui.ref<ui_elements.DivElement>();
-
         let isHovered = rx.computed(() => {
             let element = rx.get(divRef);
             if !element {
@@ -32,13 +32,17 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
             ui.div({
                 id: 1,
                 ref: divRef,
-                style: {
-                    backgroundColor: isHovered ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
-                    padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
-                    cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 6.0 },
-                },
+                presets: [
+                    presets.bg(isHovered ? "#666" : "#555"),
+                    presets.p(1),
+                    presets.rounded(4),
+                ],
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("Button clicked");
+                    let onClick = instance.props().onClick;
+                    if onClick {
+                        onClick(e);
+                    }
                 }
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().label });
@@ -102,7 +106,8 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
                     fmt.println("DIV CLICKED");
                 }
             }, (): void => {
-
+                Button(ui, { id: 45, label: "Load file" });
+                Button(ui, { id: 55, label: "Pay respect" });
             });
             ui.canvas({
                 id: 1000,
@@ -150,7 +155,7 @@ export fn UI(ui: ui_components.UIContext) {
             ui.div({
                 id: 100000,
                 style: {
-                    backgroundColor: Color(0.0, 0.15, 0.15, 1),
+                    backgroundColor: "#333" as Color,
                     padding: ui_styling.StylePaddingSimple { value: 30.0 },
                     direction: ui_styling.Direction.Column,
                     fontFamily: "roboto",
@@ -159,19 +164,7 @@ export fn UI(ui: ui_components.UIContext) {
                     gap: 10.0,
                 }
             }, (): void => {
-                ui.div({
-                    id: 22000,
-                    style: {
-                        direction: ui_styling.Direction.Row,
-                        padding: ui_styling.StylePaddingSimple { value: 20.0 },
-                        backgroundColor: Color(0.25, 0.25, 0.25, 1),
-                        justify: ui_styling.Justify.SpaceBetween,
-                        cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 20.0 },
-                        gap: 30.0,
-                    }
-                }, (): void => {
-                    InfoBox(ui, { id: 4400 });
-                });
+                InfoBox(ui, { id: 4400 });
             });
         };
     });

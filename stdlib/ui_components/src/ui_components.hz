@@ -2,14 +2,57 @@ import ui_elements;
 import ui_styling;
 import renderer;
 
+// Which single button triggered a given event. None for events not tied to
+// one specific button (move, hover/over enter+leave).
+export enum PointerButton {
+    None,
+    Left,
+    Middle,
+    Right,
+}
+
+// Which buttons are held *during* an event, as a bitmask -- mirrors the
+// DOM's MouseEvent.buttons. Values are auto-assigned (Left=1, Right=2,
+// Middle=4); `None` is pinned to 0 and must stay declared *last* so the
+// auto-assignment for the others still starts from 1 -- an explicit 0
+// member followed by auto-assigned members hangs the compiler (it keeps
+// doubling zero forever looking for an unused value).
+// TODO: Check this, i think this is actually not an issue, IIRC the compiler actually always provides
+// a "None" variant, as well as "All" for convenience, so there should not be any reason to 
+// even specify None in the first place.
+export enum bitflag PointerButtons {
+    Left,
+    Right,
+    Middle,
+    None = 0,
+}
+
+// Bitflag enums only support construction/combination via `|` -- there's no
+// language-level `&` expression operator to test membership (`&` is taken
+// for reference-of), so this drops to raw C to do the AND.
+export fn hasButton(buttons: PointerButtons, button: PointerButtons): bool :: final {
+    do unsafe {
+        let result: bool = uninitialized;
+        __c__("result = (((int)buttons) & ((int)button)) != 0;");
+        return result;
+    };
+}
+
+// Which phase/kind of pointer event this is. Internal bookkeeping only --
+// never exposed on PointerEvent itself. Exported only because it appears in
+// the signatures of UIContext's (exported) dispatch methods.
+export enum PointerEventKind { Down, Up, Move }
+
 // Platform-independent pointer event, modelled after the HTML PointerEvent API.
-// Covers mouse, touch, and stylus in one type. stopPropagation() halts bubbling.
+// Covers mouse, touch, and stylus in one type. stopPropagation() halts both
+// the remaining capture and bubble phases -- see dispatchCapturing()/
+// dispatchBubbling() below for exactly how.
 export struct PointerEvent {
     pointerId: int;
     pointerType: str;
     pos: Vec2;
-    button: int;     // 0=left, 1=middle, 2=right; -1 for move/no-button events
-    buttons: int;    // HTML bitmask: 1=left, 2=right, 4=middle
+    button: PointerButton;
+    buttons: PointerButtons;
     pressure: real;
     isPrimary: bool;
     _stopped: bool = false;
@@ -25,12 +68,33 @@ export inline struct DivProps {
     presets?: []ui_styling.DivStyleOp;
     ref?: ElementRef<ui_elements.DivElement>;
 
+    // Bubble phase (target -> root). Runs after the capture phase below.
     onPointerDown?: (e: PointerEvent) => none;
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
-    onPointerEnter?: (e: PointerEvent) => none;
-    onPointerLeave?: (e: PointerEvent) => none;
     onClick?: (e: PointerEvent) => none;
+
+    // Capture phase (root -> target). Always runs, even if a descendant's
+    // bubble-phase handler calls stopPropagation() -- that call happens
+    // later than every capture handler on this element's ancestors, so it
+    // can't undo them. Calling stopPropagation() from a capture handler
+    // itself does suppress everything queued after it, capture or bubble.
+    onPointerDownCapture?: (e: PointerEvent) => none;
+    onPointerUpCapture?: (e: PointerEvent) => none;
+    onPointerMoveCapture?: (e: PointerEvent) => none;
+    onClickCapture?: (e: PointerEvent) => none;
+
+    // "Over": mouse is within this element's own bounds, whether or not a
+    // child also claims that same point. Ancestor-inclusive, like the DOM's
+    // mouseenter/mouseleave for a whole containment chain.
+    onOverEnter?: (e: PointerEvent) => none;
+    onOverLeave?: (e: PointerEvent) => none;
+
+    // "Hover": mouse is within this element's own bounds *and* no child is
+    // also claiming that point -- i.e. this is genuinely the topmost thing
+    // under the cursor. False for an element while a child is hovered/over.
+    onHoverEnter?: (e: PointerEvent) => none;
+    onHoverLeave?: (e: PointerEvent) => none;
 }
 
 export inline struct TextProps {
@@ -110,6 +174,10 @@ export struct RenderFeedback {
 }
 
 export struct InputFeedback {
+    // Bounds-based: mouse is within this element, possibly also within a child.
+    over: bool;
+    // Strict: mouse is within this element and not also within any child --
+    // i.e. this is genuinely the topmost thing under the cursor.
     hover: bool;
     pointerDownHere: bool;  // tracks whether a pointerdown landed on this element (for click)
 }
@@ -123,12 +191,21 @@ export struct ComponentElementRuntimeData {
     drawFn?: TypeErasedBox;
     msaaSamples: int = 4;
     postEffect?: rx.Reactive<str>;
+
     onPointerDown?: (e: PointerEvent) => none;
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
-    onPointerEnter?: (e: PointerEvent) => none;
-    onPointerLeave?: (e: PointerEvent) => none;
     onClick?: (e: PointerEvent) => none;
+
+    onPointerDownCapture?: (e: PointerEvent) => none;
+    onPointerUpCapture?: (e: PointerEvent) => none;
+    onPointerMoveCapture?: (e: PointerEvent) => none;
+    onClickCapture?: (e: PointerEvent) => none;
+
+    onOverEnter?: (e: PointerEvent) => none;
+    onOverLeave?: (e: PointerEvent) => none;
+    onHoverEnter?: (e: PointerEvent) => none;
+    onHoverLeave?: (e: PointerEvent) => none;
 }
 
 fn newRuntimeData(): ComponentElementRuntimeData {
@@ -188,6 +265,12 @@ export fn ui_hover(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.inputFeedbackVersion);
     return data.inputFeedback ? data.inputFeedback.hover : false;
+}
+
+export fn ui_over(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.inputFeedbackVersion);
+    return data.inputFeedback ? data.inputFeedback.over : false;
 }
 
 // Meant to be plugged in as a layout engine's "bounding box" callback (e.g.
@@ -325,9 +408,9 @@ export struct PointerHeldCallbacks {
 
 // Internal pending pointer event before it is dispatched to elements.
 struct PendingPointerEvent {
-    kind: str;    // "down", "up", "move"
-    button: int;  // 0=left, 1=middle, 2=right; -1 for move
-    buttons: int; // HTML bitmask of currently held buttons
+    kind: PointerEventKind;
+    button: PointerButton;
+    buttons: PointerButtons;
     pos: Vec2;
 }
 
@@ -430,75 +513,124 @@ export opaque struct UIContext {
         return path;
     }
 
-    // Traverses the full tree, updates hover reactive state, and schedules
-    // pointerenter/pointerleave callbacks onto `eventQueue` (no bubbling).
-    // Callbacks are only scheduled here, not invoked -- see process()'s FIRE
-    // PHASE, which runs them all once the whole tree has been walked.
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: int, eventQueue: [](() => void)): void :: final {
+    // Traverses the full tree, updates over/hover reactive state, and
+    // schedules onOverEnter/Leave + onHoverEnter/Leave callbacks onto
+    // `eventQueue`. Neither is bubbling: every element that geometrically
+    // contains mousePos gets its own independent over-transition (ancestors
+    // included), and separately, whichever of those is not itself contained
+    // by a hit child also gets its own hover-transition. Callbacks are only
+    // scheduled here, not invoked -- see process()'s FIRE PHASE.
+    //
+    // Returns whether mousePos is over this element's own bounds *or* any
+    // descendant's (recursively) -- used by the caller (a parent frame of
+    // this same recursion) to know whether it's disqualified from "hover".
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void)): bool :: final {
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
-        let hovered = false;
+        let ownHit = false;
         if elementPos && elementSize {
-            hovered =
+            ownHit =
                 (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
                 (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
         }
 
+        // Recurse first: hover for *this* element depends on whether any
+        // child claims the same point, which we can only know after they've
+        // all been visited.
+        let childOver = false;
+        if element is ui_elements.DivElement {
+            for child in element.children {
+                if this.updateHoverState(child, mousePos, buttons, eventQueue) {
+                    childOver = true;
+                }
+            }
+        }
+
+        let over = ownHit || childOver;
+        let hover = ownHit && !childOver;
+
         let data = runtimeDataOf(element);
         if !data.inputFeedback {
-            data.inputFeedback = { hover: false, pointerDownHere: false };
+            data.inputFeedback = { over: false, hover: false, pointerDownHere: false };
             data.inputFeedbackVersion := !data.inputFeedbackVersion;
         }
         assert(data.inputFeedback);
 
+        let prevOver = data.inputFeedback.over;
         let prevHover = data.inputFeedback.hover;
-        if prevHover != hovered {
-            data.inputFeedback.hover = hovered;
+
+        if prevOver != over {
+            data.inputFeedback.over = over;
             data.inputFeedbackVersion := !data.inputFeedbackVersion;
 
-            if hovered && data.onPointerEnter {
-                let cb = data.onPointerEnter;
+            let cb = over ? data.onOverEnter : data.onOverLeave;
+            if cb {
                 let pos = mousePos;
                 let b = buttons;
                 eventQueue.push((): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: -1, buttons: b, pressure: 0.0, isPrimary: true };
+                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
                     cb(e);
                 });
             }
-            if !hovered {
-                if data.onPointerLeave {
-                    let cb = data.onPointerLeave;
-                    let pos = mousePos;
-                    let b = buttons;
-                    eventQueue.push((): void => {
-                        let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: -1, buttons: b, pressure: 0.0, isPrimary: true };
-                        cb(e);
-                    });
-                }
+            if !over {
                 data.inputFeedback.pointerDownHere = false;
             }
         }
 
-        if element is ui_elements.DivElement {
-            for child in element.children {
-                this.updateHoverState(child, mousePos, buttons, eventQueue);
+        if prevHover != hover {
+            data.inputFeedback.hover = hover;
+            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+
+            let cb = hover ? data.onHoverEnter : data.onHoverLeave;
+            if cb {
+                let pos = mousePos;
+                let b = buttons;
+                eventQueue.push((): void => {
+                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
+                    cb(e);
+                });
             }
+        }
+
+        return over;
+    }
+
+    // Schedules a pointer event along hitPath from root down to target onto
+    // `eventQueue` -- the capture phase. Always scheduled before the
+    // corresponding bubble-phase pass for the same event (see process()), so
+    // it always runs first regardless of what a bubble handler later does.
+    fn dispatchCapturing(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < hitPath.length {
+            let data = runtimeDataOf(hitPath[i]);
+            let cb = none as ((e: PointerEvent) => none) | none;
+            if kind == PointerEventKind.Down { cb = data.onPointerDownCapture; }
+            else if kind == PointerEventKind.Up { cb = data.onPointerUpCapture; }
+            else if kind == PointerEventKind.Move { cb = data.onPointerMoveCapture; }
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i + 1;
         }
     }
 
     // Schedules a pointer event along hitPath from target (deepest) up to
-    // root onto `eventQueue`. Not invoked here -- see process()'s FIRE PHASE.
-    // stopPropagation(), called from a handler during that later fire phase,
-    // still stops the rest of this same chain: every scheduled closure below
-    // re-checks event._stopped right before running, and skips if it's set.
-    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: str, eventQueue: [](() => void)): void :: final {
+    // root onto `eventQueue` -- the bubble phase. Not invoked here -- see
+    // process()'s FIRE PHASE. stopPropagation(), called from a handler
+    // during that later fire phase, still stops the rest of this same
+    // chain: every scheduled closure below re-checks event._stopped right
+    // before running, and skips if it's set.
+    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: [](() => void)): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
             let cb = none as ((e: PointerEvent) => none) | none;
-            if kind == "down" { cb = data.onPointerDown; }
-            else if kind == "up" { cb = data.onPointerUp; }
-            else if kind == "move" { cb = data.onPointerMove; }
+            if kind == PointerEventKind.Down { cb = data.onPointerDown; }
+            else if kind == PointerEventKind.Up { cb = data.onPointerUp; }
+            else if kind == PointerEventKind.Move { cb = data.onPointerMove; }
             if cb {
                 eventQueue.push((): void => {
                     if event._stopped { return; }
@@ -509,16 +641,36 @@ export opaque struct UIContext {
         }
     }
 
-    // Schedules a click event along hitPath for elements that also received
-    // pointerdown, onto `eventQueue`. The pointerDownHere consume/reset is
-    // plain bookkeeping (not user code), so it still happens immediately
-    // during the walk; only the actual onClick call is deferred.
-    fn dispatchClickBubbling(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+    // Schedules onClickCapture along hitPath from root down to target, for
+    // elements whose pointerdown also landed within this same hit path (see
+    // clickEligible, computed once by the caller in process() -- eligibility
+    // is shared between this and dispatchClickBubbling so the underlying
+    // pointerDownHere state only gets consumed once per up-event, not once
+    // per phase).
+    fn dispatchClickCapturing(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < hitPath.length {
+            if clickEligible[i] {
+                let data = runtimeDataOf(hitPath[i]);
+                if data.onClickCapture {
+                    let cb = data.onClickCapture;
+                    eventQueue.push((): void => {
+                        if event._stopped { return; }
+                        cb(event);
+                    });
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Bubbles a click event along hitPath for elements marked eligible in
+    // clickEligible (see dispatchClickCapturing above for where that comes from).
+    fn dispatchClickBubbling(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, eventQueue: [](() => void)): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(hitPath[i]);
-            if data.inputFeedback && data.inputFeedback.pointerDownHere {
-                data.inputFeedback.pointerDownHere = false;
+            if clickEligible[i] {
+                let data = runtimeDataOf(hitPath[i]);
                 if data.onClick {
                     let cb = data.onClick;
                     eventQueue.push((): void => {
@@ -555,32 +707,32 @@ export opaque struct UIContext {
         this._middleHeld = this._pointerButtons ? this._pointerButtons.middleHeld() : false;
         this._rightHeld = this._pointerButtons ? this._pointerButtons.rightHeld() : false;
 
-        let buttons = 0;
-        if this._leftHeld { buttons = buttons + 1; }
-        if this._rightHeld { buttons = buttons + 2; }
-        if this._middleHeld { buttons = buttons + 4; }
+        let buttons: PointerButtons = PointerButtons.None;
+        if this._leftHeld { buttons = buttons | PointerButtons.Left; }
+        if this._rightHeld { buttons = buttons | PointerButtons.Right; }
+        if this._middleHeld { buttons = buttons | PointerButtons.Middle; }
 
         let pendingEvents: []PendingPointerEvent = [];
         if !this._prevLeftHeld && this._leftHeld {
-            pendingEvents.push({ kind: "down", button: 0, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Left, buttons: buttons, pos: this.mousePos });
         }
         if !this._prevMiddleHeld && this._middleHeld {
-            pendingEvents.push({ kind: "down", button: 1, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Middle, buttons: buttons, pos: this.mousePos });
         }
         if !this._prevRightHeld && this._rightHeld {
-            pendingEvents.push({ kind: "down", button: 2, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Right, buttons: buttons, pos: this.mousePos });
         }
         if this._prevLeftHeld && !this._leftHeld {
-            pendingEvents.push({ kind: "up", button: 0, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Left, buttons: buttons, pos: this.mousePos });
         }
         if this._prevMiddleHeld && !this._middleHeld {
-            pendingEvents.push({ kind: "up", button: 1, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Middle, buttons: buttons, pos: this.mousePos });
         }
         if this._prevRightHeld && !this._rightHeld {
-            pendingEvents.push({ kind: "up", button: 2, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Right, buttons: buttons, pos: this.mousePos });
         }
         if this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0 {
-            pendingEvents.push({ kind: "move", button: -1, buttons: buttons, pos: this.mousePos });
+            pendingEvents.push({ kind: PointerEventKind.Move, button: PointerButton.None, buttons: buttons, pos: this.mousePos });
         }
 
         // HIT TESTING & EVENT SCHEDULING
@@ -600,11 +752,13 @@ export opaque struct UIContext {
             // Hover state + enter/leave events (no bubbling)
             this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
 
-            // Bubbling pointer events
+            // Capture phase (root -> target), then bubble phase (target ->
+            // root), for down/up/move; then, on up, the same two phases again
+            // for the synthesized click.
             for pe in pendingEvents {
                 let pressure = 0.0;
-                if pe.kind == "down" { pressure = 0.5; }
-                else if pe.kind == "move" && pe.buttons > 0 { pressure = 0.5; }
+                if pe.kind == PointerEventKind.Down { pressure = 0.5; }
+                else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
                 let event = PointerEvent {
                     pointerId: 1,
                     pointerType: "mouse",
@@ -615,28 +769,43 @@ export opaque struct UIContext {
                     isPrimary: true,
                 };
 
-                if pe.kind == "down" {
+                if pe.kind == PointerEventKind.Down {
                     for el in hitPath {
                         let d = runtimeDataOf(el);
                         if !d.inputFeedback {
-                            d.inputFeedback = { hover: false, pointerDownHere: false };
+                            d.inputFeedback = { over: false, hover: false, pointerDownHere: false };
                         }
                         assert(d.inputFeedback);
                         d.inputFeedback.pointerDownHere = true;
                     }
-                    this.dispatchBubbling(hitPath, event, "down", eventQueue);
+                    this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
+                    this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
                 }
-                else if pe.kind == "up" {
-                    this.dispatchBubbling(hitPath, event, "up", eventQueue);
+                else if pe.kind == PointerEventKind.Up {
+                    this.dispatchCapturing(hitPath, event, PointerEventKind.Up, eventQueue);
+                    this.dispatchBubbling(hitPath, event, PointerEventKind.Up, eventQueue);
+
+                    // Snapshot + consume pointerDownHere once (shared by both
+                    // click phases below) rather than each phase resetting it.
+                    let clickEligible: []bool = [];
+                    for el in hitPath {
+                        let d = runtimeDataOf(el);
+                        let eligible = d.inputFeedback ? d.inputFeedback.pointerDownHere : false;
+                        clickEligible.push(eligible);
+                        if d.inputFeedback { d.inputFeedback.pointerDownHere = false; }
+                    }
+
                     let clickEvent = PointerEvent {
                         pointerId: 1, pointerType: "mouse", pos: pe.pos,
                         button: pe.button, buttons: pe.buttons,
                         pressure: 0.0, isPrimary: true,
                     };
-                    this.dispatchClickBubbling(hitPath, clickEvent, eventQueue);
+                    this.dispatchClickCapturing(hitPath, clickEligible, clickEvent, eventQueue);
+                    this.dispatchClickBubbling(hitPath, clickEligible, clickEvent, eventQueue);
                 }
-                else if pe.kind == "move" {
-                    this.dispatchBubbling(hitPath, event, "move", eventQueue);
+                else if pe.kind == PointerEventKind.Move {
+                    this.dispatchCapturing(hitPath, event, PointerEventKind.Move, eventQueue);
+                    this.dispatchBubbling(hitPath, event, PointerEventKind.Move, eventQueue);
                 }
             }
         }
@@ -963,9 +1132,15 @@ export opaque struct UIContext {
         data.onPointerDown = props.onPointerDown;
         data.onPointerUp = props.onPointerUp;
         data.onPointerMove = props.onPointerMove;
-        data.onPointerEnter = props.onPointerEnter;
-        data.onPointerLeave = props.onPointerLeave;
         data.onClick = props.onClick;
+        data.onPointerDownCapture = props.onPointerDownCapture;
+        data.onPointerUpCapture = props.onPointerUpCapture;
+        data.onPointerMoveCapture = props.onPointerMoveCapture;
+        data.onClickCapture = props.onClickCapture;
+        data.onOverEnter = props.onOverEnter;
+        data.onOverLeave = props.onOverLeave;
+        data.onHoverEnter = props.onHoverEnter;
+        data.onHoverLeave = props.onHoverLeave;
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -1103,8 +1278,14 @@ export struct ElementWrapper<T> {
     raw: T;
     _element: ui_Element;
 
+    // Strict: this element and not any child is genuinely under the cursor.
     fn hover(): bool {
         return ui_hover(this._element);
+    }
+
+    // Bounds-based: cursor is within this element, possibly also over a child.
+    fn over(): bool {
+        return ui_over(this._element);
     }
 
     fn position(): Vec2 | none {
