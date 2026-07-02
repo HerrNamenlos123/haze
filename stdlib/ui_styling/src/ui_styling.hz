@@ -236,7 +236,7 @@ export struct ComputedDivStyle {
     width: Size = SizeMode.Fit;
     height: Size = SizeMode.Fit;
     padding: Padding = {};
-    direction: Direction = Direction.Column;
+    direction: Direction = Direction.Row;
     justify: Justify = Justify.Start;
     align: Align = Align.Start;
     cornerRadius: CornerRadius = {};

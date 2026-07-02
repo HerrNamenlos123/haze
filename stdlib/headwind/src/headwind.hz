@@ -82,6 +82,17 @@ namespace presets {
         return ui_styling.DirectionOp { value: value };
     }
 
+    // flex-row/flex-col shorthands. Row is already the default (unset ==
+    // Row), so row() only matters when overriding a col() from elsewhere
+    // (e.g. a preset list building on another one).
+    export fn row(): ui_styling.DirectionOp {
+        return ui_styling.DirectionOp { value: ui_styling.Direction.Row };
+    }
+
+    export fn col(): ui_styling.DirectionOp {
+        return ui_styling.DirectionOp { value: ui_styling.Direction.Column };
+    }
+
     export fn rounded(value: real): ui_styling.CornerRadiusOp {
         return ui_styling.CornerRadiusOp {
             cornerRadius: ui_styling.StyleCornerRadiusSimple { value: value },
