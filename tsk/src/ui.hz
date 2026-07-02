@@ -58,6 +58,47 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
     });
 }
 
+struct TextboxArgs {
+    id: int;
+
+    fn operator!=(other: TextboxArgs) {
+        return this.id != other.id;
+    }
+}
+
+fn Textbox(ui: ui_components.UIContext, args: TextboxArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TextboxArgs>) => {
+
+        let divRef = ui.ref<ui_elements.DivElement>();
+        let isHovered = rx.computed(() => {
+            let element = rx.get(divRef);
+            if !element {
+                return false;
+            }
+            return element.hover();
+        });
+
+        return (): void => {
+            ui.div({
+                id: 1,
+                ref: divRef,
+                presets: [
+                    presets.wFit(),
+                    presets.hFit(),
+                    presets.bg(isHovered ? "#666" : "#555"),
+                    presets.p(1),
+                    presets.rounded(4),
+                ],
+                onClick: (e: ui_components.PointerEvent) => {
+                    fmt.println("Textbox clicked");
+                }
+            }, (): void => {
+                ui.text({ id: 2, text: "" });
+            });
+        };
+    });
+}
+
 struct InfoBoxArgs {
     id: int;
 
@@ -98,17 +139,26 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
                 style: {
                     backgroundColor: Color("#253"),
                 },
+                presets: [
+                    presets.wGrow(),
+                    presets.hGrow(),
+                ],
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("DIV CLICKED");
                 }
             }, (): void => {
                 Button(ui, { id: 45, label: "Load file" });
                 Button(ui, { id: 55, label: "Pay respect" });
+                Textbox(ui, { id: 65 });
             });
             ui.canvas({
                 id: 1000,
                 // MSAA defaults to on (4x) for every canvas now, so nothing
                 // to set here -- pass msaaSamples: 1 to opt out if needed.
+                presets: [
+                    presets.wGrow(),
+                    presets.hGrow(),
+                ]
             }, (r: mut renderer.gfx.Renderer): void => {
                 cache.flush();
                 let d = rx.get(doc); // Manually unwrap because of a compiler bug
@@ -158,7 +208,11 @@ export fn UI(ui: ui_components.UIContext) {
                     fontSize: 16.0,
                     textColor: Color(1, 1, 1, 1),
                     gap: 10.0,
-                }
+                },
+                presets: [
+                    presets.wGrow(),
+                    presets.hGrow(),
+                ]
             }, (): void => {
                 InfoBox(ui, { id: 4400 });
             });
