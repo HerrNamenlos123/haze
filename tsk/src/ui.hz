@@ -129,7 +129,7 @@ struct InfoBoxArgs {
 fn foo() {
 }
 
-fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
+fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: InfoBoxArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<InfoBoxArgs>) => {
 
         // TODO: For whatever reason, if we switch from Cache to a new RenderCache struct, even if it has the
@@ -151,6 +151,8 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
             }
             return null;
         });
+
+        let renderState = RenderState(gfx);
 
         return (): void => {
             ui.div({
@@ -210,6 +212,8 @@ fn InfoBox(ui: ui_components.UIContext, args: InfoBoxArgs) {
                             }
                         }
                     }
+
+                    renderState.render(r);
                 });
             });
         };
@@ -222,7 +226,7 @@ struct RootArgs {
     }
 }
 
-export fn UI(ui: ui_components.UIContext) {
+export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
         return (): void => {
             ui.div({
@@ -242,7 +246,7 @@ export fn UI(ui: ui_components.UIContext) {
                     presets.gap(4),
                 ]
             }, (): void => {
-                InfoBox(ui, { id: 4400 });
+                InfoBox(ui, gfx, { id: 4400 });
             });
         };
     });

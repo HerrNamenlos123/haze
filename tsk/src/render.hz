@@ -1,5 +1,85 @@
 
+struct Tile {
+    used: bool = false;
+    canvas: mut renderer.gfx.Canvas;
 
-fn renderTile() {
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return Tile {
+            canvas: renderer.gfx.Canvas({
+                gfx: gfx,
+                size: renderer.gfx.CanvasSize {
+                    logicalSize: Vec2i(320, 200),
+                    framebufferSize: Vec2i(320, 200), // scale by dpiScale if you want DPI-correct output
+                },
+            }),
+        };
+    }
 
+    fn render(frame: mut renderer.gfx.Frame) {
+        let r = renderer.gfx.Renderer(frame, this.canvas);
+        r.drawRect({ pos: Vec2(0,0), size: Vec2(320,200), fillColor: Color(1,0,0,1) });
+        r.drawText({ font: 0, position: Vec2(10,10), size: 16, text: "hi", color: Color(1,1,1,1) });
+        r.commit(); // clear=true by default
+    }
+}
+
+struct Page {
+    pageNumber: int;
+    usedTiles: []Tile = [];
+
+    fn releaseAllTiles() {
+        for tile in this.usedTiles {
+            tile.used = false;
+        }
+    }
+}
+
+struct RenderState {
+    gfx: mut renderer.gfx.Context;
+    tilePool: []Tile = [];
+    pages: []Page = [];
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        let state = RenderState {
+            gfx: gfx,
+        };
+        return state;
+    }
+
+    fn makeTileAvailable() {
+        for tile in this.tilePool {
+            if !tile.used {
+                tile.used = true;
+                return tile;
+            }
+        }
+        const newTile = Tile(this.gfx);
+        this.tilePool.push(newTile);
+        return newTile;
+    }
+
+    fn makePageAvailable(pageNumber: int) {
+        for page in this.pages {
+            if page.pageNumber == pageNumber {
+                return page;
+            }
+        }
+        const newPage = Page {
+            pageNumber: pageNumber,
+        };
+        this.pages.push(newPage);
+        return newPage;
+    }
+
+    fn makeDocumentAvailable(doc: TskDocumentFile) {
+    }
+
+    fn render(r: mut renderer.gfx.Renderer) {
+        this.tilePool[0].render(r.frame);
+        r.drawTexture({
+            texture: this.tilePool[0].canvas.asTexture(),
+            pos: Vec2(100, 100),
+            size: Vec2(200, 200),
+        });
+    }
 }

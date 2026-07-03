@@ -35,7 +35,7 @@ fn main(): int {
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
             },
-            ui: (ui: ui_components.UIContext) => { UI(ui); },
+            ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
         });
 
         let cache = json.CacheFile<Cache>("tsk.cache.json");
