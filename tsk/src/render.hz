@@ -47,29 +47,42 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape) {
 }
 
 // (Re)renders one tile's full content at its native resolution: white page
-// background, then every shape on the page whose bbox overlaps the tile's
-// world rect. Always a full redraw of the tile (not incremental per-shape),
-// which is what makes markShapeDirty()'s "just mark it invalid" enough.
-fn renderTileContent(tile: mut Tile, page: TskPage, frame: mut renderer.gfx.Frame) {
+// background (clipped to the actual page rect -- a tile's page-local rect
+// is grid-aligned and routinely extends past the page edge, since pages
+// are rarely exact multiples of the tile size), then every shape on the
+// page whose bbox overlaps the tile's page-local rect. Always a full redraw
+// of the tile (not incremental per-shape), which is what makes
+// markShapeDirty()'s "just mark it invalid" enough.
+fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame) {
     let r = renderer.gfx.Renderer(frame, tile.canvas);
 
     tile.canvas.setViewProj(mat4.ortho(
-        tile.worldMinX, tile.worldMinX + tile.worldSize,
-        tile.worldMinY + tile.worldSize, tile.worldMinY,
+        tile.localMinX, tile.localMinX + tile.localSize,
+        tile.localMinY + tile.localSize, tile.localMinY,
         -100000.0, 100000.0
     ));
 
-    r.drawRect({
-        pos: Vec2(tile.worldMinX, tile.worldMinY),
-        size: Vec2(tile.worldSize, tile.worldSize),
-        fillColor: Color(1, 1, 1, 1),
-    });
+    let clipMinX = tile.localMinX;
+    if clipMinX < 0.0 { clipMinX = 0.0; }
+    let clipMinY = tile.localMinY;
+    if clipMinY < 0.0 { clipMinY = 0.0; }
+    let clipMaxX = tile.localMinX + tile.localSize;
+    if clipMaxX > pageWidthMm { clipMaxX = pageWidthMm; }
+    let clipMaxY = tile.localMinY + tile.localSize;
+    if clipMaxY > pageHeightMm { clipMaxY = pageHeightMm; }
+    if clipMaxX > clipMinX && clipMaxY > clipMinY {
+        r.drawRect({
+            pos: Vec2(clipMinX, clipMinY),
+            size: Vec2(clipMaxX - clipMinX, clipMaxY - clipMinY),
+            fillColor: Color(1, 1, 1, 1),
+        });
+    }
 
     let tileBBox = BBox {
-        left: tile.worldMinX,
-        right: tile.worldMinX + tile.worldSize,
-        top: tile.worldMinY,
-        bottom: tile.worldMinY + tile.worldSize,
+        left: tile.localMinX,
+        right: tile.localMinX + tile.localSize,
+        top: tile.localMinY,
+        bottom: tile.localMinY + tile.localSize,
     };
 
     for shape in page.shapes {
@@ -175,10 +188,10 @@ struct DocumentRenderer {
         let page = this.pages[pageIndex];
         for tile in page.slots.values {
             let tileBBox = BBox {
-                left: tile.worldMinX,
-                right: tile.worldMinX + tile.worldSize,
-                top: tile.worldMinY,
-                bottom: tile.worldMinY + tile.worldSize,
+                left: tile.localMinX,
+                right: tile.localMinX + tile.localSize,
+                top: tile.localMinY,
+                bottom: tile.localMinY + tile.localSize,
             };
             if bbox.overlaps(tileBBox) {
                 tile.valid = false;
@@ -265,10 +278,12 @@ struct DocumentRenderer {
                         if existing {
                             newSlots.set(slotKey, existing);
                         } else {
-                            let worldMinX = originX + tx as real * tileWorldSizeMm;
-                            let worldMinY = originY + ty as real * tileWorldSizeMm;
+                            // Page-local, not world -- never add originX/originY
+                            // here (see Tile's own doc comment in tiles.hz).
+                            let localTileMinX = tx as real * tileWorldSizeMm;
+                            let localTileMinY = ty as real * tileWorldSizeMm;
                             let tileKey = TileKey { pageIndex: i, level: page.committedLevel, tx: tx, ty: ty };
-                            let tile = this.pool.acquire(tileKey, worldMinX, worldMinY, tileWorldSizeMm);
+                            let tile = this.pool.acquire(tileKey, localTileMinX, localTileMinY, tileWorldSizeMm);
                             newSlots.set(slotKey, tile);
                         }
                     }
@@ -283,7 +298,7 @@ struct DocumentRenderer {
 
                 for tile in page.slots.values {
                     if !tile.valid {
-                        renderTileContent(tile, doc.data.pages[i], r.frame);
+                        renderTileContent(tile, doc.data.pages[i], doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame);
                         tile.valid = true;
                     }
                 }
@@ -295,8 +310,11 @@ struct DocumentRenderer {
                 });
 
                 for tile in page.slots.values {
-                    let tileScreenSize = tile.worldSize * zoom;
-                    let tileScreenPos = Vec2(tile.worldMinX * zoom + this.viewport.offsetX, tile.worldMinY * zoom + this.viewport.offsetY);
+                    let tileScreenSize = tile.localSize * zoom;
+                    let tileScreenPos = Vec2(
+                        (originX + tile.localMinX) * zoom + this.viewport.offsetX,
+                        (originY + tile.localMinY) * zoom + this.viewport.offsetY
+                    );
                     r.drawTexture({
                         texture: tile.canvas.asTexture(),
                         pos: tileScreenPos,

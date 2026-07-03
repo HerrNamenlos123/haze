@@ -84,14 +84,22 @@ struct TileKey {
 // One pooled 512x512 hardware tile. Never resized after construction --
 // "moving" a tile to cover a different part of a page/level is purely a
 // bookkeeping change (reset()), the GPU canvas itself is untouched.
+//
+// localMinX/localMinY are always relative to the *page* this tile belongs
+// to (key.pageIndex), never to document/world space -- a tile at page-local
+// (0,0) looks identical whether it's page 0 or page 5. The page's own
+// position in the vertically-stacked document (pageOriginY in render.hz)
+// only ever gets added in at the final composite step (screen position) and
+// nowhere else, so tile content/hit-testing/bbox-matching stays uniform
+// across every page.
 struct Tile {
     canvas: mut renderer.gfx.Canvas;
     inUse: bool = false;
     valid: bool = false;       // false = hardware contents are stale/undefined, needs a render before use
     key: TileKey = {};
-    worldMinX: real = 0.0;
-    worldMinY: real = 0.0;
-    worldSize: real = 0.0;     // mm size of this tile's world rect (square) at its native level
+    localMinX: real = 0.0;
+    localMinY: real = 0.0;
+    localSize: real = 0.0;     // mm size of this tile's page-local rect (square) at its native level
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return Tile {
@@ -105,13 +113,13 @@ struct Tile {
         };
     }
 
-    // Repoints this (possibly recycled) tile at a new key/world rect and
-    // marks it dirty. Never touches the GPU canvas.
-    fn reset(key: TileKey, worldMinX: real, worldMinY: real, worldSize: real) {
+    // Repoints this (possibly recycled) tile at a new key/page-local rect
+    // and marks it dirty. Never touches the GPU canvas.
+    fn reset(key: TileKey, localMinX: real, localMinY: real, localSize: real) {
         this.key = key;
-        this.worldMinX = worldMinX;
-        this.worldMinY = worldMinY;
-        this.worldSize = worldSize;
+        this.localMinX = localMinX;
+        this.localMinY = localMinY;
+        this.localSize = localSize;
         this.valid = false;
         this.inUse = true;
     }
@@ -128,15 +136,15 @@ struct TilePool {
     // Reuses a free tile if one exists, otherwise grows the pool by one.
     // The pool never shrinks -- released tiles just sit there marked
     // !inUse until something else needs a tile.
-    fn acquire(key: TileKey, worldMinX: real, worldMinY: real, worldSize: real) {
+    fn acquire(key: TileKey, localMinX: real, localMinY: real, localSize: real) {
         for tile in this.tiles {
             if !tile.inUse {
-                tile.reset(key, worldMinX, worldMinY, worldSize);
+                tile.reset(key, localMinX, localMinY, localSize);
                 return tile;
             }
         }
         let tile = Tile(this.gfx);
-        tile.reset(key, worldMinX, worldMinY, worldSize);
+        tile.reset(key, localMinX, localMinY, localSize);
         this.tiles.push(tile);
         return tile;
     }
