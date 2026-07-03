@@ -1,0 +1,148 @@
+import renderer
+
+// Every tile is always tileSizePx x tileSizePx in hardware (512x512). Kept
+// as a bare top-level const, not inside the tilemath namespace below --
+// referencing a namespaced `const` as a *value* (as opposed to calling a
+// namespaced function) crashes this compiler with an internal assertion
+// failure in Elaborate.ts's elaborateSymbolInNamespace (its switch only
+// handles function-overload-group and nested-typedef symbols, so a plain
+// const value symbol falls through to `assert(false)`). Namespaced
+// *functions* (tilemath.zoomLevelFor() etc. below) are unaffected.
+const comptime tileSizePx = 512;
+
+// Google-Maps-style tile pyramid math. A "zoom level" is the power-of-two
+// native px/mm resolution chosen so that a tile rendered at that resolution
+// is between tileSizePx/2 and tileSizePx on screen at the *current*
+// viewport zoom. Recomputing the tile grid at a new level (see
+// DocumentRenderer in render.hz) is what makes one tile become the four
+// that cover the same area when zooming in a level, or four become one
+// zooming out -- there is no explicit "split"/"merge" step, it falls out of
+// the grid math.
+namespace tilemath {
+    // Sign-correct floor for reals (real -> int truncates toward zero, which
+    // is wrong for negative values -- page-local coordinates are usually
+    // non-negative, but world/viewport coordinates after panning are not).
+    fn floorToInt(v: real): int {
+        let truncated = v as int;
+        if v < 0.0 && (truncated as real) != v {
+            return truncated - 1;
+        }
+        return truncated;
+    }
+
+    // Largest power-of-two "native" px/mm resolution <= zoomPxPerMm, found
+    // by doubling/halving instead of log2 (not available in math.hz).
+    fn zoomLevelFor(zoomPxPerMm: real): int {
+        if zoomPxPerMm <= 0.0 {
+            return 0;
+        }
+        let level = 0;
+        let native = 1.0;
+        if native <= zoomPxPerMm {
+            while native * 2.0 <= zoomPxPerMm {
+                native *= 2.0;
+                level += 1;
+            }
+        } else {
+            while native > zoomPxPerMm {
+                native /= 2.0;
+                level -= 1;
+            }
+        }
+        return level;
+    }
+
+    // 2^level via an iterative loop (not math.pow) to avoid float rounding
+    // surprises landing exactly on power-of-two tile-grid boundaries.
+    fn nativeZoomForLevel(level: int): real {
+        let v = 1.0;
+        if level >= 0 {
+            for (let i = 0; i < level; i++) {
+                v *= 2.0;
+            }
+        } else {
+            for (let i = 0; i < -level; i++) {
+                v /= 2.0;
+            }
+        }
+        return v;
+    }
+
+    // World-space (mm) size of one tile at a given pyramid level.
+    fn tileWorldSize(level: int): real {
+        return (tileSizePx as real) / nativeZoomForLevel(level);
+    }
+}
+
+struct TileKey {
+    pageIndex: int = 0;
+    level: int = 0;
+    tx: int = 0;
+    ty: int = 0;
+}
+
+// One pooled 512x512 hardware tile. Never resized after construction --
+// "moving" a tile to cover a different part of a page/level is purely a
+// bookkeeping change (reset()), the GPU canvas itself is untouched.
+struct Tile {
+    canvas: mut renderer.gfx.Canvas;
+    inUse: bool = false;
+    valid: bool = false;       // false = hardware contents are stale/undefined, needs a render before use
+    key: TileKey = {};
+    worldMinX: real = 0.0;
+    worldMinY: real = 0.0;
+    worldSize: real = 0.0;     // mm size of this tile's world rect (square) at its native level
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return Tile {
+            canvas: renderer.gfx.Canvas({
+                gfx: gfx,
+                size: renderer.gfx.CanvasSize {
+                    logicalSize: Vec2i(tileSizePx, tileSizePx),
+                    framebufferSize: Vec2i(tileSizePx, tileSizePx),
+                },
+            }),
+        };
+    }
+
+    // Repoints this (possibly recycled) tile at a new key/world rect and
+    // marks it dirty. Never touches the GPU canvas.
+    fn reset(key: TileKey, worldMinX: real, worldMinY: real, worldSize: real) {
+        this.key = key;
+        this.worldMinX = worldMinX;
+        this.worldMinY = worldMinY;
+        this.worldSize = worldSize;
+        this.valid = false;
+        this.inUse = true;
+    }
+}
+
+struct TilePool {
+    gfx: mut renderer.gfx.Context;
+    tiles: []mut Tile = [];
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return TilePool { gfx: gfx };
+    }
+
+    // Reuses a free tile if one exists, otherwise grows the pool by one.
+    // The pool never shrinks -- released tiles just sit there marked
+    // !inUse until something else needs a tile.
+    fn acquire(key: TileKey, worldMinX: real, worldMinY: real, worldSize: real) {
+        for tile in this.tiles {
+            if !tile.inUse {
+                tile.reset(key, worldMinX, worldMinY, worldSize);
+                return tile;
+            }
+        }
+        let tile = Tile(this.gfx);
+        tile.reset(key, worldMinX, worldMinY, worldSize);
+        this.tiles.push(tile);
+        return tile;
+    }
+
+    fn release(tile: mut Tile) {
+        tile.inUse = false;
+        tile.valid = false;
+    }
+}

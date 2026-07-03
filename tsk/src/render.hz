@@ -1,85 +1,350 @@
+import renderer
 
-struct Tile {
-    used: bool = false;
-    canvas: mut renderer.gfx.Canvas;
+// Vertical gap between stacked pages, in mm (PDF-viewer-style layout: pages
+// stack top to bottom at x=0, each pageHeightMm + pageGapMm below the last).
+const comptime pageGapMm = 10.0;
 
-    fn constructor(gfx: mut renderer.gfx.Context) {
-        return Tile {
-            canvas: renderer.gfx.Canvas({
-                gfx: gfx,
-                size: renderer.gfx.CanvasSize {
-                    logicalSize: Vec2i(320, 200),
-                    framebufferSize: Vec2i(320, 200), // scale by dpiScale if you want DPI-correct output
-                },
-            }),
-        };
-    }
+// A zoom gesture is considered "finished" once the live zoom value has held
+// steady (within zoomEpsilon) for this many consecutive render() calls --
+// only then does a page actually retile at the new native resolution.
+const comptime zoomSettleFrames = 8;
+const comptime zoomEpsilon = 0.0001;
 
-    fn render(frame: mut renderer.gfx.Frame) {
-        let r = renderer.gfx.Renderer(frame, this.canvas);
-        r.drawRect({ pos: Vec2(0,0), size: Vec2(320,200), fillColor: Color(1,0,0,1) });
-        r.drawText({ font: 0, position: Vec2(10,10), size: 16, text: "hi", color: Color(1,1,1,1) });
-        r.commit(); // clear=true by default
-    }
+fn pageOriginY(doc: TskDocumentFile, pageIndex: int): real {
+    return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
 }
 
-struct Page {
-    pageNumber: int;
-    usedTiles: []Tile = [];
-
-    fn releaseAllTiles() {
-        for tile in this.usedTiles {
-            tile.used = false;
+// Draws one shape's content into whatever tile canvas `r` is currently
+// bound to (already in tile-local mm-space via Canvas.setViewProj, so no
+// CPU-side transform is needed here -- raw mm vertices go straight in).
+fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape) {
+    if shape is TskLineShape {
+        let tess = shape.ensureTesselated();
+        if tess.indices.length > 0 {
+            r.addTriangles(tess.vertices, tess.indices, shape.penColor, 0);
         }
     }
-}
-
-struct RenderState {
-    gfx: mut renderer.gfx.Context;
-    tilePool: []Tile = [];
-    pages: []Page = [];
-
-    fn constructor(gfx: mut renderer.gfx.Context) {
-        let state = RenderState {
-            gfx: gfx,
-        };
-        return state;
-    }
-
-    fn makeTileAvailable() {
-        for tile in this.tilePool {
-            if !tile.used {
-                tile.used = true;
-                return tile;
-            }
-        }
-        const newTile = Tile(this.gfx);
-        this.tilePool.push(newTile);
-        return newTile;
-    }
-
-    fn makePageAvailable(pageNumber: int) {
-        for page in this.pages {
-            if page.pageNumber == pageNumber {
-                return page;
-            }
-        }
-        const newPage = Page {
-            pageNumber: pageNumber,
-        };
-        this.pages.push(newPage);
-        return newPage;
-    }
-
-    fn makeDocumentAvailable(doc: TskDocumentFile) {
-    }
-
-    fn render(r: mut renderer.gfx.Renderer) {
-        this.tilePool[0].render(r.frame);
-        r.drawTexture({
-            texture: this.tilePool[0].canvas.asTexture(),
-            pos: Vec2(100, 100),
-            size: Vec2(200, 200),
+    else if shape is TskImageShape {
+        let bbox = shape.getBBox();
+        r.drawRect({
+            pos: Vec2(bbox.left, bbox.top),
+            size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+            fillColor: Color(0.6, 0.6, 0.9, 1.0),
+            borderColor: Color(0.2, 0.2, 0.6, 1.0),
+            borderThickness: 0.5,
         });
+    }
+    else if shape is TskTextblockShape {
+        let bbox = shape.getBBox();
+        r.drawRect({
+            pos: Vec2(bbox.left, bbox.top),
+            size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+            fillColor: Color(0.95, 0.95, 0.8, 1.0),
+            borderColor: Color(0.6, 0.6, 0.3, 1.0),
+            borderThickness: 0.5,
+        });
+    }
+}
+
+// (Re)renders one tile's full content at its native resolution: white page
+// background, then every shape on the page whose bbox overlaps the tile's
+// world rect. Always a full redraw of the tile (not incremental per-shape),
+// which is what makes markShapeDirty()'s "just mark it invalid" enough.
+fn renderTileContent(tile: mut Tile, page: TskPage, frame: mut renderer.gfx.Frame) {
+    let r = renderer.gfx.Renderer(frame, tile.canvas);
+
+    tile.canvas.setViewProj(mat4.ortho(
+        tile.worldMinX, tile.worldMinX + tile.worldSize,
+        tile.worldMinY + tile.worldSize, tile.worldMinY,
+        -100000.0, 100000.0
+    ));
+
+    r.drawRect({
+        pos: Vec2(tile.worldMinX, tile.worldMinY),
+        size: Vec2(tile.worldSize, tile.worldSize),
+        fillColor: Color(1, 1, 1, 1),
+    });
+
+    let tileBBox = BBox {
+        left: tile.worldMinX,
+        right: tile.worldMinX + tile.worldSize,
+        top: tile.worldMinY,
+        bottom: tile.worldMinY + tile.worldSize,
+    };
+
+    for shape in page.shapes {
+        if shapeBBox(shape).overlaps(tileBBox) {
+            drawShapeInto(r, shape);
+        }
+    }
+
+    r.commit(true);
+}
+
+struct Viewport {
+    offsetX: real = 0.0;
+    offsetY: real = 0.0;
+    zoomPxPerMm: real = 4.0;
+}
+
+struct PageTileState {
+    hasCommittedLevel: bool = false;
+    committedLevel: int = 0;
+    // Keyed by "{level}:{tx}:{ty}". LinearMap.K is constrained to
+    // primitives (see containers.hz), so the composite tile position is
+    // string-encoded rather than used as a struct key directly. .keys/
+    // .values are iterated directly (public fields) wherever every entry
+    // needs visiting (the stale-tile sweep, markShapeDirty).
+    slots: LinearMap<str, mut Tile> = {};
+}
+
+struct DocumentRenderer {
+    gfx: mut renderer.gfx.Context;
+    pool: mut TilePool;
+    pages: []mut PageTileState = [];
+    viewport: Viewport = {};
+
+    // Zoom-settle tracking (see render() below).
+    lastZoomPxPerMm: real = 0.0;
+    zoomStableFrames: int = 0;
+
+    // DEBUG: throttles the retile log line, temporary.
+    lastPrintedLevel: int = -999999;
+    lastPrintedPage: int = -1;
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return DocumentRenderer {
+            gfx: gfx,
+            pool: TilePool(gfx),
+        };
+    }
+
+    fn ensurePagesArraySized(doc: TskDocumentFile) {
+        while this.pages.length < doc.data.pages.length {
+            this.pages.push(PageTileState {});
+        }
+    }
+
+    fn releasePageTiles(page: mut PageTileState) {
+        for tile in page.slots.values {
+            this.pool.release(tile);
+        }
+        page.slots.clear();
+    }
+
+    // Pure pan: only ever touches the offset, never forces a retile. This
+    // is also what streams new edge tiles in continuously while panning --
+    // even mid-zoom-gesture, before the zoom itself has settled -- since
+    // render() recomputes each page's visible tx/ty range from the live
+    // offset every frame regardless of committed-level changes.
+    fn pan(dxScreenPx: real, dyScreenPx: real) {
+        this.viewport.offsetX += dxScreenPx;
+        this.viewport.offsetY += dyScreenPx;
+    }
+
+    // Zooms around a fixed screen point (e.g. panel center) by `factor`,
+    // adjusting the offset so the world point currently under that screen
+    // point stays under it after the zoom changes.
+    fn zoomBy(factor: real, pivotScreenX: real, pivotScreenY: real) {
+        let oldZoom = this.viewport.zoomPxPerMm;
+        let newZoom = oldZoom * factor;
+        if newZoom < 0.05 {
+            newZoom = 0.05;
+        }
+        if newZoom > 200.0 {
+            newZoom = 200.0;
+        }
+
+        let worldX = (pivotScreenX - this.viewport.offsetX) / oldZoom;
+        let worldY = (pivotScreenY - this.viewport.offsetY) / oldZoom;
+
+        this.viewport.zoomPxPerMm = newZoom;
+        this.viewport.offsetX = pivotScreenX - worldX * newZoom;
+        this.viewport.offsetY = pivotScreenY - worldY * newZoom;
+    }
+
+    // Rerenders exactly the tiles a given shape's bbox overlaps -- not the
+    // whole page -- across every currently-active tile of the shape's page.
+    // Call after mutating a shape's geometry (points/position/size) and
+    // clearing its cached bbox/tesselation, before the next render().
+    fn markShapeDirty(pageIndex: int, shape: TskShape) {
+        if pageIndex < 0 || pageIndex >= this.pages.length {
+            return;
+        }
+        let bbox = shapeBBox(shape);
+        let page = this.pages[pageIndex];
+        for tile in page.slots.values {
+            let tileBBox = BBox {
+                left: tile.worldMinX,
+                right: tile.worldMinX + tile.worldSize,
+                top: tile.worldMinY,
+                bottom: tile.worldMinY + tile.worldSize,
+            };
+            if bbox.overlaps(tileBBox) {
+                tile.valid = false;
+            }
+        }
+    }
+
+    // Draws every page of `doc` into `r`'s panel: culls offscreen pages
+    // (releasing their tiles back to the pool), syncs each visible page's
+    // tile set against the live viewport (streaming edge tiles in/out every
+    // frame), retiles at a new native resolution only once a zoom gesture
+    // has settled, (re)renders any tile marked dirty, then composites the
+    // page background + every active tile at the *live* on-screen size --
+    // which is what makes tiles visibly stretch/blur mid-zoom instead of
+    // updating.
+    fn render(r: mut renderer.gfx.Renderer, doc: TskDocumentFile) {
+        if this.viewport.zoomPxPerMm <= 0.0 {
+            return;
+        }
+
+        this.ensurePagesArraySized(doc);
+
+        let zoom = this.viewport.zoomPxPerMm;
+        let panelW = r.canvas.size.logicalSize.x as real;
+        let panelH = r.canvas.size.logicalSize.y as real;
+
+        let visMinX = (0.0 - this.viewport.offsetX) / zoom;
+        let visMaxX = (panelW - this.viewport.offsetX) / zoom;
+        let visMinY = (0.0 - this.viewport.offsetY) / zoom;
+        let visMaxY = (panelH - this.viewport.offsetY) / zoom;
+        let visibleBBox = BBox { left: visMinX, right: visMaxX, top: visMinY, bottom: visMaxY };
+
+        let zoomDelta = zoom - this.lastZoomPxPerMm;
+        if zoomDelta < 0.0 {
+            zoomDelta = -zoomDelta;
+        }
+        if zoomDelta > zoomEpsilon {
+            this.zoomStableFrames = 0;
+        } else if this.zoomStableFrames < zoomSettleFrames {
+            this.zoomStableFrames += 1;
+        }
+        this.lastZoomPxPerMm = zoom;
+        let zoomSettled = this.zoomStableFrames >= zoomSettleFrames;
+
+        let targetLevel = tilemath.zoomLevelFor(zoom);
+
+        for (let i = 0; i < doc.data.pages.length; i++) {
+            let page = this.pages[i];
+            let originX = 0.0;
+            let originY = pageOriginY(doc, i);
+            let pageBBox = BBox {
+                left: originX,
+                right: originX + doc.data.pageWidthMm,
+                top: originY,
+                bottom: originY + doc.data.pageHeightMm,
+            };
+
+            if pageBBox.overlaps(visibleBBox) {
+                if !page.hasCommittedLevel {
+                    page.committedLevel = targetLevel;
+                    page.hasCommittedLevel = true;
+                } else if zoomSettled && targetLevel != page.committedLevel {
+                    this.releasePageTiles(page);
+                    page.committedLevel = targetLevel;
+                }
+
+                let tileWorldSizeMm = tilemath.tileWorldSize(page.committedLevel);
+
+                let localMinX = max(visMinX, pageBBox.left) - originX;
+                let localMaxX = min(visMaxX, pageBBox.right) - originX;
+                let localMinY = max(visMinY, pageBBox.top) - originY;
+                let localMaxY = min(visMaxY, pageBBox.bottom) - originY;
+
+                let txMin = tilemath.floorToInt(localMinX / tileWorldSizeMm);
+                let txMax = tilemath.floorToInt(localMaxX / tileWorldSizeMm);
+                let tyMin = tilemath.floorToInt(localMinY / tileWorldSizeMm);
+                let tyMax = tilemath.floorToInt(localMaxY / tileWorldSizeMm);
+
+                let newSlots = LinearMap<str, mut Tile> {};
+                for (let ty = tyMin; ty <= tyMax; ty++) {
+                    for (let tx = txMin; tx <= txMax; tx++) {
+                        let slotKey = f"{page.committedLevel}:{tx}:{ty}";
+                        let existing = page.slots.get(slotKey);
+                        if existing {
+                            newSlots.set(slotKey, existing);
+                        } else {
+                            let worldMinX = originX + tx as real * tileWorldSizeMm;
+                            let worldMinY = originY + ty as real * tileWorldSizeMm;
+                            let tileKey = TileKey { pageIndex: i, level: page.committedLevel, tx: tx, ty: ty };
+                            let tile = this.pool.acquire(tileKey, worldMinX, worldMinY, tileWorldSizeMm);
+                            newSlots.set(slotKey, tile);
+                        }
+                    }
+                }
+
+                for (let k = 0; k < page.slots.keys.length; k++) {
+                    if !newSlots.has(page.slots.keys[k]) {
+                        this.pool.release(page.slots.values[k]);
+                    }
+                }
+                page.slots = newSlots;
+
+                for tile in page.slots.values {
+                    if !tile.valid {
+                        renderTileContent(tile, doc.data.pages[i], r.frame);
+                        tile.valid = true;
+                    }
+                }
+
+                r.drawRect({
+                    pos: Vec2(originX * zoom + this.viewport.offsetX, originY * zoom + this.viewport.offsetY),
+                    size: Vec2(doc.data.pageWidthMm * zoom, doc.data.pageHeightMm * zoom),
+                    fillColor: Color(1, 1, 1, 1),
+                });
+
+                for tile in page.slots.values {
+                    let tileScreenSize = tile.worldSize * zoom;
+                    let tileScreenPos = Vec2(tile.worldMinX * zoom + this.viewport.offsetX, tile.worldMinY * zoom + this.viewport.offsetY);
+                    r.drawTexture({
+                        texture: tile.canvas.asTexture(),
+                        pos: tileScreenPos,
+                        size: Vec2(tileScreenSize, tileScreenSize),
+                    });
+                    // DEBUG: tile boundary outline, temporary -- remove once
+                    // tiling is visually confirmed.
+                    r.drawRect({
+                        pos: tileScreenPos,
+                        size: Vec2(tileScreenSize, tileScreenSize),
+                        fillColor: Color(0, 0, 0, 0),
+                        borderColor: Color(1, 0, 0, 1),
+                        borderThickness: 1.0,
+                    });
+                }
+
+                // DEBUG: prints once per (page, committedLevel) change so we
+                // can see the settle-then-retile behavior in the log without
+                // flooding it every frame -- temporary, remove later.
+                if page.committedLevel != this.lastPrintedLevel || i != this.lastPrintedPage {
+                    fmt.println("[debug] page ", i, " retiled: level=", page.committedLevel, " tiles=", page.slots.size(), " poolTotal=", this.pool.tiles.length);
+                    this.lastPrintedLevel = page.committedLevel;
+                    this.lastPrintedPage = i;
+                }
+            } else {
+                this.releasePageTiles(page);
+            }
+        }
+    }
+
+    // Draws the currently in-progress stroke straight onto the main panel
+    // canvas every frame, bypassing tiles entirely -- so a live pen stroke
+    // never waits on a tile (re)render to become visible.
+    fn renderLiveStroke(r: mut renderer.gfx.Renderer, doc: TskDocumentFile, pageIndex: int, shape: mut TskLineShape) {
+        let tess = shape.ensureTesselated();
+        if tess.indices.length == 0 {
+            return;
+        }
+
+        let zoom = this.viewport.zoomPxPerMm;
+        let originY = pageOriginY(doc, pageIndex);
+
+        let transform = mat4.translation(Vec3(
+            0.0 * zoom + this.viewport.offsetX,
+            originY * zoom + this.viewport.offsetY,
+            0.0
+        )).mul(mat4.scaling(Vec3(zoom, zoom, 1.0)));
+
+        r.addTriangles(tess.vertices, tess.indices, shape.penColor, 0, transform);
     }
 }

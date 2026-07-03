@@ -165,7 +165,7 @@ hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elem
   else {
     return (hzui_optional_bounding_box_t) {
       .bounding_box = {},
-      .found = true,
+      .found = false,
     };
   }
 }

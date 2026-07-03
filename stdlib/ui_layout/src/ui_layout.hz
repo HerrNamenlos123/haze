@@ -594,6 +594,13 @@ export opaque struct Context {
                 applyBoundingBoxUserdata: applyBoundingBoxUserdata,
             }, clayRenderCommandsPtr);
         };
+
+        // See applyBoundingBoxesRecursive's own comment: covers every
+        // element uniformly (including content-less structural
+        // divs/wrappers the render-command pass above never reaches), by
+        // querying Clay directly by ID instead of depending on which
+        // elements happened to emit a visible render command.
+        applyBoundingBoxesRecursive("", element, callbacks.onBoundingBox);
     }
 }
 
@@ -615,6 +622,50 @@ export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
 // correctly-mangling code path), avoids the bug entirely.
 type RenderCanvasCB = (element: ui_elements.CanvasElement) => void;
 type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
+
+// Supplementary to the render-command-driven onBoundingBox calls inside
+// Clay_RenderClayCommands (renderer.c only invokes those for
+// RECTANGLE/TEXT/CUSTOM commands -- i.e. only elements Clay actually deemed
+// worth painting). A content-less structural div (no background, and
+// DivStyle has no border support to worry about -- there's no
+// borderColor/borderThickness field at all) never emits a render command
+// and so never gets one of those calls, even though Clay has already
+// computed a fully resolved layout box for it internally -- which is
+// exactly what leaves it permanently excluded from hit-testing (see
+// ui_components.hz's buildHitPath/updateHoverState) even though it's a
+// perfectly ordinary layout container that should be able to receive
+// pointer events.
+//
+// Only queries Clay for the elements actually missing feedback (Div with
+// backgroundColor.a == 0) instead of every element unconditionally --
+// Text/Canvas always emit a render command and so always already got their
+// box from the pass above; a Div with a real background did too. This still
+// walks the whole tree (cheap: just following .children, no FFI calls for
+// the skipped elements), but only pays for the by-ID Clay hash lookup
+// (hzui_clay_get_element_bounding_box, wrapping Clay_GetElementData) on the
+// subset that's actually missing it -- typically a small minority of a
+// UI tree. Uses the same idPath convention processTreeElement uses to
+// register elements with Clay in the first place, so the IDs queried here
+// are guaranteed to match what Clay actually has (same tree, same
+// algorithm) -- and since Clay's own hover/scroll/animation state already
+// depends on those same IDs being unique per sibling, this introduces no
+// new uniqueness requirement beyond what the framework already relies on.
+fn applyBoundingBoxesRecursive(idPath: str, element: ui_elements.Element, callback: BoundingBoxCB): void :: final {
+    if element is ui_elements.DivElement {
+        let elementId = idPath == "" ? f"{element.id}" : idPath + "/" + f"{element.id}";
+
+        if element.style.backgroundColor.a == 0.0 {
+            let result = ffi.hzui_clay_get_element_bounding_box(elementId);
+            if result.found {
+                callback(element, result.bounding_box.position, result.bounding_box.size);
+            }
+        }
+
+        for child in element.children {
+            applyBoundingBoxesRecursive(elementId, child, callback);
+        }
+    }
+}
 
 export struct RenderCallbacks {
     renderFilledRectangle: RenderFilledRectCB;

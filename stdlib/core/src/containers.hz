@@ -1,0 +1,81 @@
+
+// A TypeScript-Map-shaped associative container backed by two parallel
+// arrays, every lookup a real linear scan. There is no hash map in the
+// stdlib yet; for the modest element counts this is used for (tens, maybe
+// low hundreds of entries) a linear scan is simply not worth the complexity
+// of a hash table. Once interfaces exist, this becomes one possible backing
+// implementation of a shared Map interface alongside a future HashMap.
+//
+// K is constrained by convention (not enforced -- Haze has no interfaces/
+// trait bounds yet) to primitive types (str/int/real/bool): struct equality
+// (`==`) does not compile by default, so a struct key would need its own
+// `operator==` before it could be used here.
+export struct LinearMap<K, V> {
+    keys: []K = [];
+    values: []V = [];
+
+    // The one real linear scan; every other method is built on top of this.
+    // Returns the matching index, or -1. Uses `return` in place of `break`
+    // (not implemented by the compiler yet).
+    fn indexOf(key: K): int {
+        for (let i = 0; i < this.keys.length; i++) {
+            if this.keys[i] == key {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    fn has(key: K): bool {
+        return this.indexOf(key) >= 0;
+    }
+
+    fn get(key: K): V | none {
+        let i = this.indexOf(key);
+        if i >= 0 {
+            return this.values[i];
+        }
+        return none;
+    }
+
+    // Overwrites the existing value in place if `key` is already present,
+    // otherwise appends a new entry.
+    fn set(key: K, value: V): void {
+        let i = this.indexOf(key);
+        if i >= 0 {
+            this.values[i] = value;
+        } else {
+            this.keys.push(key);
+            this.values.push(value);
+        }
+    }
+
+    // Rebuilds both arrays without the matching entry (no splice/remove in
+    // stdlib arrays). Returns whether `key` was actually present.
+    fn delete(key: K): bool {
+        let i = this.indexOf(key);
+        if i < 0 {
+            return false;
+        }
+        let newKeys: []K = [];
+        let newValues: []V = [];
+        for (let j = 0; j < this.keys.length; j++) {
+            if j != i {
+                newKeys.push(this.keys[j]);
+                newValues.push(this.values[j]);
+            }
+        }
+        this.keys = newKeys;
+        this.values = newValues;
+        return true;
+    }
+
+    fn size(): int {
+        return this.keys.length;
+    }
+
+    fn clear(): void {
+        this.keys = [];
+        this.values = [];
+    }
+}

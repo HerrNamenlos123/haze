@@ -1,11 +1,34 @@
 import perfect_freehand
 import tesselate
 
+// math.min/math.max exist in core/src/math.hz but aren't marked `export`, so
+// they're not actually reachable as math.min/math.max from other packages
+// (renderer.hz's gfx namespace works around the same gap with its own local
+// `max<T>` -- this mirrors that).
+fn min<T>(a: T, b: T): T {
+  if a <= b {
+    return a;
+  }
+  return b;
+}
+
+fn max<T>(a: T, b: T): T {
+  if a >= b {
+    return a;
+  }
+  return b;
+}
+
 struct BBox {
   left: real;
   right: real;
   top: real;
   bottom: real;
+
+  fn overlaps(other: BBox): bool {
+    return this.left <= other.right && this.right >= other.left &&
+           this.top <= other.bottom && this.bottom >= other.top;
+  }
 }
 
 struct TskPoint {
@@ -29,8 +52,53 @@ struct TskLineShape {
   tesselationResult?: TesselationResult;
   
   fn getBBox(): BBox {
-    // ...
-    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
+    if this.bbox {
+      return this.bbox;
+    }
+
+    let outline: [][]real = [];
+    if this.cachedOutline {
+      outline = this.cachedOutline;
+    } else {
+      let computed = constructStrokeOutline({ shape: this });
+      for p in computed {
+        outline.push([p.x, p.y]);
+      }
+      this.cachedOutline = outline;
+    }
+
+    if outline.length == 0 {
+      let empty = BBox { left: 0, right: 0, top: 0, bottom: 0 };
+      this.bbox = empty;
+      return empty;
+    }
+
+    let minX = outline[0][0];
+    let maxX = outline[0][0];
+    let minY = outline[0][1];
+    let maxY = outline[0][1];
+    for p in outline {
+      minX = min(minX, p[0]);
+      maxX = max(maxX, p[0]);
+      minY = min(minY, p[1]);
+      maxY = max(maxY, p[1]);
+    }
+
+    let result = BBox { left: minX, right: maxX, top: minY, bottom: maxY };
+    this.bbox = result;
+    return result;
+  }
+
+  // Lazily computes and caches this stroke's tesselation, shared by the
+  // tile renderer and the live in-stroke overlay so neither has to
+  // duplicate the "already tesselated?" check.
+  fn ensureTesselated(): TesselationResult {
+    if this.tesselationResult {
+      return this.tesselationResult;
+    }
+    let result = tesselateStroke({ shape: this });
+    this.tesselationResult = result;
+    return result;
   }
 };
 
@@ -41,10 +109,19 @@ struct TskImageShape {
   base64ImageData: str;
   bbox?: BBox;
   // Image/Canvas/Texture element reference
-  
+
   fn getBBox(): BBox {
-    // ...
-    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
+    if this.bbox {
+      return this.bbox;
+    }
+    let result = BBox {
+      left: this.position.x,
+      right: this.position.x + this.size.x,
+      top: this.position.y,
+      bottom: this.position.y + this.size.y,
+    };
+    this.bbox = result;
+    return result;
   }
 };
 
@@ -55,15 +132,40 @@ struct TskTextblockShape {
   rawText: str;
   bbox?: BBox;
   // Image/Canvas/Texture element reference
-  
+
   fn getBBox(): BBox {
-    // ...
-    return BBox { left: 0, right: 0, bottom: 0, top: 0 };
+    if this.bbox {
+      return this.bbox;
+    }
+    let result = BBox {
+      left: this.position.x,
+      right: this.position.x + this.size.x,
+      top: this.position.y,
+      bottom: this.position.y + this.size.y,
+    };
+    this.bbox = result;
+    return result;
   }
 };
 
 [[json.discriminator="variant"]]
 type TskShape = TskLineShape | TskImageShape | TskTextblockShape;
+
+// Narrows the shape union and calls the right variant's getBBox() -- used by
+// the tile renderer to decide which shapes belong in which tile via
+// BBox.overlaps().
+fn shapeBBox(shape: TskShape): BBox {
+  if shape is TskLineShape {
+    return shape.getBBox();
+  }
+  else if shape is TskImageShape {
+    return shape.getBBox();
+  }
+  else if shape is TskTextblockShape {
+    return shape.getBBox();
+  }
+  return BBox { left: 0, right: 0, top: 0, bottom: 0 };
+}
 
 struct TskPage {
     shapes: []TskShape;
