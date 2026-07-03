@@ -1,0 +1,74 @@
+
+__c__("#include \"ffi/haze_image.c\"");
+export __c__("#include \"ffi/public/haze_image.h\"");
+
+namespace ffi {
+    export extern C fn haze_image_load_memory(data: cptr, length: int, desiredChannels: int): haze_image_result_t :: final;
+    export extern C fn haze_image_failure_reason(): str :: final;
+
+    export extern C noemit inline struct haze_image_result_t {
+        pixels: cptr;
+        width: int;
+        height: int;
+        channels: int;
+        sourceChannels: int;
+    }
+}
+
+// Decoded once at construction into GC-owned memory (see haze_image.c) --
+// there is deliberately no destroy()/free() here: `pixels` behaves like any
+// other GC-managed Bytes and is reclaimed automatically once unreachable.
+export opaque struct Image {
+    width: int;
+    height: int;
+    channels: int;       // channel count of the returned pixel buffer
+    sourceChannels: int; // channel count found in the source file
+    pixels: Bytes;        // width * height * channels, row-major top-to-bottom,
+                          // 8 bits per channel -- ready for a GPU texture upload
+                          // (e.g. wgpu writeTexture) once a WebGPU binding builds on top.
+
+    // desiredChannels: 0 keeps whatever channel count the file itself has
+    // (see Image.sourceChannels); 1=grey, 2=grey+alpha, 3=RGB, 4=RGBA.
+    // Defaults to RGBA since that's what a GPU texture upload usually wants.
+    fn constructor(path: str, desiredChannels: int = 4) {
+        if let d = fs.readBinary(path) {
+            return Image.fromMemory(path, d, desiredChannels);
+        }
+        sys.panic(f"Failed to load image: could not read file '{path}'");
+    }
+
+    fn constructor(data: Bytes, desiredChannels: int = 4) {
+        return Image.fromMemory("<memory>", data, desiredChannels);
+    }
+
+    static fn fromMemory(label: str, data: Bytes, desiredChannels: int): Image {
+        let ptr = none as cptr;
+        let length = 0;
+        __c__("ptr = data.basePtr + data.offset;");
+        __c__("length = data.length;");
+
+        let result = ffi.haze_image_load_memory(ptr, length, desiredChannels);
+
+        let valid = false;
+        __c__("valid = result.pixels != NULL;");
+        if !valid {
+            let reason = ffi.haze_image_failure_reason();
+            sys.panic(f"Failed to decode image '{label}': {reason}");
+        }
+
+        do unsafe {
+            let pixels: Bytes = uninitialized;
+            __c__("pixels.basePtr = result.pixels;");
+            __c__("pixels.offset = 0;");
+            __c__("pixels.length = result.width * result.height * result.channels;");
+
+            return Image {
+                width: result.width,
+                height: result.height,
+                channels: result.channels,
+                sourceChannels: result.sourceChannels,
+                pixels: pixels,
+            };
+        };
+    }
+}
