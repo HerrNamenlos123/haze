@@ -28,4 +28,9 @@ typedef struct {
   float lineh;
 } haze_fontstash_metrics_t;
 
+typedef struct {
+  float width;
+  float height;
+} haze_fontstash_dimensions_t;
+
 #endif // HAZE_FONTSTASH_H

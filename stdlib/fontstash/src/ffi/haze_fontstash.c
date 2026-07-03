@@ -103,3 +103,26 @@ haze_fontstash_metrics_t haze_fontstash_get_metrics(hzstd_cptr_t ctx,
   fonsVertMetrics(fs, &metrics.ascender, &metrics.descender, &metrics.lineh);
   return metrics;
 }
+
+haze_fontstash_dimensions_t haze_fontstash_measure_text(hzstd_cptr_t ctx,
+                                                        hzstd_int_t font,
+                                                        float size,
+                                                        hzstd_str_t text) {
+  FONScontext *fs = ctx;
+
+  fonsSetFont(fs, font);
+  fonsSetSize(fs, size);
+
+  // text.data is a length-prefixed slice, not guaranteed null-terminated --
+  // pass the end pointer explicitly instead of relying on HZSTD_CSTR's
+  // heap-allocating copy (this runs once per word Clay measures).
+  float width = fonsTextBounds(fs, 0, 0, text.data, text.data + text.length, NULL);
+
+  float ascender, descender, lineh;
+  fonsVertMetrics(fs, &ascender, &descender, &lineh);
+
+  haze_fontstash_dimensions_t dims;
+  dims.width = width;
+  dims.height = lineh;
+  return dims;
+}

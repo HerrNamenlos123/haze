@@ -121,4 +121,13 @@ typedef struct {
   bool found;
 } hzui_optional_bounding_box_t;
 
+// Bundles what the injected measureText callback (see hzui_clay_init) needs
+// to measure one text run -- text is a length-prefixed slice, not guaranteed
+// null-terminated.
+typedef struct {
+  hzstd_str_t text;
+  hzstd_int_t fontId;
+  hzstd_real_t fontSize;
+} hzui_measure_text_request_t;
+
 #endif // HZUI_PUBLIC_H

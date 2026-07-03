@@ -19,7 +19,12 @@ namespace ffi {
     extern C noemit fn hzui_clay_define_canvas_element(config: hzui_define_canvas_element_t): void :: final;
     extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
 
-    extern C noemit fn hzui_clay_init(width: int, height: int): void :: final;
+    extern C noemit fn hzui_clay_init(
+        width: int,
+        height: int,
+        measureText: (userdata: cptr, request: hzui_measure_text_request_t) -> Vec2,
+        measureTextUserdata: cptr,
+    ): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit fn Clay_BeginLayout(): void :: final;
     extern C noemit fn Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
@@ -45,6 +50,15 @@ namespace ffi {
     extern C noemit inline struct hzui_bounding_box_t {
         position: Vec2;
         size: Vec2;
+    };
+
+    // What the injected measureText callback (see hzui_clay_init) needs to
+    // measure one text run -- text is a length-prefixed slice, not
+    // guaranteed null-terminated.
+    extern C noemit inline struct hzui_measure_text_request_t {
+        text: str;
+        fontId: int;
+        fontSize: real;
     };
 
     export extern C noemit inline struct hzui_padding_values_t {
@@ -246,7 +260,13 @@ export inline struct ContextOpts {
     height: int;
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
+    // Real glyph-advance measurement for one text run, supplied by whichever
+    // font backend the composition root wired up (see ui_runtime) -- this
+    // module stays agnostic of that backend, same as getFontLineHeight above.
+    measureText: (fontId: int, fontSize: real, text: str) => Vec2;
 }
+
+type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 
 // Pure layout engine: takes an element tree (ui_elements.Element), runs Clay
 // flexbox over it, and emits draw commands purely through callbacks. Reads
@@ -259,12 +279,21 @@ export inline struct ContextOpts {
 export opaque struct Context {
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
+    // Kept alive for as long as this Context lives -- Clay holds onto the
+    // raw userdata pointer we hand it in hzui_clay_init and calls back into
+    // it on every subsequent layout pass, not just during this constructor.
+    measureTextBox: Box<MeasureTextCB>;
 
     fn constructor(opts: ContextOpts) {
-        ffi.hzui_clay_init(opts.width, opts.height);
+        let measureTextBox = Box<MeasureTextCB>(opts.measureText);
+        let measureTextUserdata = none as cptr;
+        __c__("measureTextUserdata = measureTextBox;");
+
+        ffi.hzui_clay_init(opts.width, opts.height, measureTextTrampoline, measureTextUserdata);
         return Context {
             fonts: opts.fonts,
             getFontLineHeight: opts.getFontLineHeight,
+            measureTextBox: measureTextBox,
         };
     }
 
@@ -604,6 +633,18 @@ fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): 
         let callable: Box<RenderTextCB> = uninitialized;
         __c__("callable = userdata;");
         callable.value(element);
+    };
+}
+
+// Called directly by Clay (via Clay_SetMeasureTextFunction, wired up in
+// hzui_clay_init) whenever it needs to measure a word/line -- potentially
+// many times per unique text run, though Clay caches results by
+// text+font+size across frames.
+fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_t): Vec2 {
+    do unsafe {
+        let callable: Box<MeasureTextCB> = uninitialized;
+        __c__("callable = userdata;");
+        return callable.value(request.fontId, request.fontSize, request.text);
     };
 }
 

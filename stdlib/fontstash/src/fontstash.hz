@@ -39,6 +39,13 @@ namespace ffi {
         size: real,
     ): haze_fontstash_metrics_t :: final;
 
+    export extern C fn haze_fontstash_measure_text(
+        ctx: cptr,
+        font: int,
+        size: f32,
+        text: str,
+    ): haze_fontstash_dimensions_t :: final;
+
     export extern C noemit inline struct haze_fontstash_atlas_t {
         pixels: cptr;
         width: int;
@@ -62,6 +69,11 @@ namespace ffi {
         descender: real;
         lineh: real;
     }
+
+    export extern C noemit inline struct haze_fontstash_dimensions_t {
+        width: real;
+        height: real;
+    }
 }
 
 export type Glyph = ffi.haze_fontstash_glyph_t;
@@ -70,6 +82,11 @@ export inline struct Metrics {
     ascender: real;
     descender: real;
     lineh: real;
+}
+
+export inline struct Dimensions {
+    width: real;
+    height: real;
 }
 
 export struct Atlas {
@@ -178,6 +195,23 @@ export opaque struct FontStash {
             ascender: metrics.ascender,
             descender: metrics.descender,
             lineh: metrics.lineh,
+        };
+    }
+
+    // Real glyph-advance measurement (via stb_truetype metrics baked into the
+    // font atlas), as opposed to guessing width from character count -- used
+    // to give the layout engine accurate Fit-sizing for text elements.
+    fn measureText(font: int, fontSize: real, text: str): Dimensions {
+        assert(this.fonsContext, "FontStash Context not available");
+        let dims = ffi.haze_fontstash_measure_text(
+            this.fonsContext,
+            font,
+            fontSize as f32,
+            text,
+        );
+        return {
+            width: dims.width,
+            height: dims.height,
         };
     }
 }

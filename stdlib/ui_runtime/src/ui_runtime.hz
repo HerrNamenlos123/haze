@@ -35,6 +35,10 @@ export opaque struct Runtime {
                 let metrics = args.gfx.fontRenderer.fs.getMetrics(fontId, fontSize as f32);
                 return metrics.lineh;
             },
+            measureText: (fontId: int, fontSize: real, text: str): Vec2 => {
+                let dims = args.gfx.fontRenderer.fs.measureText(fontId, fontSize, text);
+                return Vec2(dims.width, dims.height);
+            },
         });
         let ui = ui_components.UIContext({
             ui: args.ui,

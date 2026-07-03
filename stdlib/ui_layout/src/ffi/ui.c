@@ -86,52 +86,38 @@ void HandleClayErrors(Clay_ErrorData errorData)
   }
 }
 
-// Example measure text function
+// The actual measurement work (real glyph metrics vs. guessing from
+// character count) lives on the Haze side -- whichever font backend the
+// composition root wired up via hzui_clay_init's measureText callback (see
+// ui_runtime, which points this at fontstash). This module only bridges
+// Clay's C callback convention to it, same as it does for render/bounding-box
+// callbacks elsewhere in this file.
+static hzstd_vec2_t (*g_measureText)(void* userdata, hzui_measure_text_request_t request) = NULL;
+static void* g_measureTextUserdata = NULL;
+
 static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElementConfig* config, void* userData)
 {
-  // Clay_TextElementConfig contains members such as fontId, fontSize, letterSpacing etc
-  // Note: Clay_String->chars is not guaranteed to be null terminated
-  return (Clay_Dimensions) { .width = text.length
-                                 * config->fontSize, // <- this will only work for monospace fonts, see the renderers/
-                                                     // directory for more advanced text measurement
-                             .height = config->fontSize };
+  // Note: Clay_StringSlice->chars is not guaranteed to be null terminated --
+  // pass it through as a length-prefixed slice, not a cstr.
+  hzui_measure_text_request_t request = {
+    .text = HZSTD_STRING(text.chars, text.length),
+    .fontId = config->fontId,
+    .fontSize = config->fontSize,
+  };
+  hzstd_vec2_t dimensions = g_measureText(g_measureTextUserdata, request);
+  return (Clay_Dimensions) { .width = (float)dimensions.x, .height = (float)dimensions.y };
 }
 
-// static inline Clay_Dimensions MeasureTextImpl(App* app, int fontId, float fontSize, float letterSpacing, String text)
-// {
-//   auto& fs = app->rendererData.fontContext;
-//   int font = app->rendererData.fonts[fontId];
-
-//   fonsSetFont(fs, font);
-//   fonsSetSize(fs, fontSize);
-//   fonsSetSpacing(fs, letterSpacing);
-//   fonsSetAlign(fs, FONS_ALIGN_MIDDLE);
-
-//   FONStextIter iter;
-//   FONSquad q;
-//   float width = 0;
-
-//   float ascender, descender, lineh;
-//   fonsVertMetrics(fs, &ascender, &descender, &lineh);
-
-//   fonsTextIterInit(fs, &iter, 0, 0, text.data, text.data + text.length);
-//   while (fonsTextIterNext(fs, &iter, &q)) {
-//     width += iter.nextx - iter.x;
-//   }
-
-//   return Clay_Dimensions { width, lineh };
-// }
-
-// static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElementConfig* config, void* app)
-// {
-//   return MeasureTextImpl(
-//       (App*)app, config->fontId, config->fontSize, config->letterSpacing, String::view(text.chars, text.length));
-// }
-
-void hzui_clay_init(hzstd_int_t width, hzstd_int_t height)
+void hzui_clay_init(hzstd_int_t width,
+                     hzstd_int_t height,
+                     hzstd_vec2_t (*measureText)(void* userdata, hzui_measure_text_request_t request),
+                     void* measureTextUserdata)
 {
   uint64_t totalMemorySize = Clay_MinMemorySize();
   Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
+
+  g_measureText = measureText;
+  g_measureTextUserdata = measureTextUserdata;
 
   Clay_Initialize(arena, (Clay_Dimensions) { width, height }, (Clay_ErrorHandler) { HandleClayErrors });
   Clay_SetMeasureTextFunction(MeasureText, NULL);
