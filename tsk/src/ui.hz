@@ -186,31 +186,6 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                     Button(ui, { id: 45, label: "Load file" });
                     Button(ui, { id: 55, label: "Pay respect" });
                     Textbox(ui, { id: 65 });
-                    // Placeholder zoom controls: real gesture input (scroll
-                    // wheel/pinch) isn't wired up yet, this is just enough to
-                    // exercise the settle-then-retile tiling behavior.
-                    // Pivoting around a fixed point (not the panel center)
-                    // is a known rough edge of this throwaway scaffolding.
-                    //
-                    // The handlers are bound to explicitly-typed `let`s
-                    // first rather than passed as inline closure literals:
-                    // a closure that mutates captured state (zoomBy() here)
-                    // fails to convert into ButtonArgs.onClick's optional
-                    // (`?:`) function type when passed inline -- "No
-                    // suitable conversion from (...) :: final, pure to
-                    // (...) :: final | none" -- but converts fine once
-                    // pre-bound to a variable of the unwrapped function
-                    // type first. Confirmed via isolated repro against the
-                    // compiler; same bug independent of ButtonArgs/inline
-                    // struct-ness.
-                    let onZoomIn: (event: ui_components.PointerEvent) => none = (e: ui_components.PointerEvent) => {
-                        documentRenderer.zoomBy(1.25, 300.0, 300.0);
-                    };
-                    let onZoomOut: (event: ui_components.PointerEvent) => none = (e: ui_components.PointerEvent) => {
-                        documentRenderer.zoomBy(0.8, 300.0, 300.0);
-                    };
-                    Button(ui, { id: 70, label: "Zoom In", onClick: onZoomIn });
-                    Button(ui, { id: 75, label: "Zoom Out", onClick: onZoomOut });
                 });
                 // CanvasProps (unlike DivProps) has no onPointerDown/Up of
                 // its own, so the drag-pan handlers go on a wrapping div

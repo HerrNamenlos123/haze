@@ -30,21 +30,32 @@ namespace tilemath {
         return truncated;
     }
 
-    // Largest power-of-two "native" px/mm resolution <= zoomPxPerMm, found
+    // Smallest power-of-two "native" px/mm resolution >= zoomPxPerMm, found
     // by doubling/halving instead of log2 (not available in math.hz).
+    //
+    // On-screen tile size = tileSizePx * zoomPxPerMm / native. For that to
+    // land in (tileSizePx/2, tileSizePx] (i.e. never below half-native
+    // detail, never above 1:1), native must be the smallest power of two
+    // that is still >= zoomPxPerMm -- NOT the largest one <= zoomPxPerMm.
+    // Picking the latter (an earlier version of this function did) instead
+    // gives on-screen size in [tileSizePx, 2*tileSizePx): every tile is
+    // *always* displayed at 1x-2x magnification past its own native
+    // texel resolution, showing up as constant blur regardless of zoom
+    // level -- confirmed by walking the actual on-screen-px math against a
+    // live debug print rather than just guessing.
     fn zoomLevelFor(zoomPxPerMm: real): int {
         if zoomPxPerMm <= 0.0 {
             return 0;
         }
         let level = 0;
         let native = 1.0;
-        if native <= zoomPxPerMm {
-            while native * 2.0 <= zoomPxPerMm {
+        if native < zoomPxPerMm {
+            while native < zoomPxPerMm {
                 native *= 2.0;
                 level += 1;
             }
         } else {
-            while native > zoomPxPerMm {
+            while native / 2.0 >= zoomPxPerMm {
                 native /= 2.0;
                 level -= 1;
             }

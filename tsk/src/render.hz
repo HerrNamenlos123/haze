@@ -236,7 +236,19 @@ struct DocumentRenderer {
         this.lastZoomPxPerMm = zoom;
         let zoomSettled = this.zoomStableFrames >= zoomSettleFrames;
 
-        let targetLevel = tilemath.zoomLevelFor(zoom);
+        // Tile native resolution must target *physical* (framebuffer)
+        // pixel density, not logical -- `zoom` and the on-screen sizes used
+        // to composite tiles below are correctly logical (matching every
+        // other draw call in this UI), but a tile only has tileSizePx
+        // physical texels of actual detail, and on a HiDPI panel
+        // (dpiScale > 1) a tile shown at, say, 400 logical px covers
+        // 400*dpiScale physical px -- picking the native level from the
+        // logical zoom alone systematically under-resolves by a factor of
+        // dpiScale, magnifying every tile's 512 texels well past 1:1 and
+        // showing up as blur uniformly, independent of how "zoomed in" the
+        // page itself looks.
+        let dpiScale = r.canvas.size.dpiScale as real;
+        let targetLevel = tilemath.zoomLevelFor(zoom * dpiScale);
 
         for (let i = 0; i < doc.data.pages.length; i++) {
             let page = this.pages[i];
@@ -335,7 +347,10 @@ struct DocumentRenderer {
                 // can see the settle-then-retile behavior in the log without
                 // flooding it every frame -- temporary, remove later.
                 if page.committedLevel != this.lastPrintedLevel || i != this.lastPrintedPage {
-                    fmt.println("[debug] page ", i, " retiled: level=", page.committedLevel, " tiles=", page.slots.size(), " poolTotal=", this.pool.tiles.length);
+                    let tileWorldSizeMmForPrint = tilemath.tileWorldSize(page.committedLevel);
+                    let onScreenLogicalPx = tileWorldSizeMmForPrint * zoom;
+                    let onScreenPhysicalPx = onScreenLogicalPx * dpiScale;
+                    fmt.println("[debug] page ", i, " retiled: level=", page.committedLevel, " tiles=", page.slots.size(), " poolTotal=", this.pool.tiles.length, " dpiScale=", dpiScale, " tileOnScreenLogicalPx=", onScreenLogicalPx, " tileOnScreenPhysicalPx=", onScreenPhysicalPx, " (texel budget=512)");
                     this.lastPrintedLevel = page.committedLevel;
                     this.lastPrintedPage = i;
                 }
