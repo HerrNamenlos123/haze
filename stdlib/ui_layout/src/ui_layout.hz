@@ -266,7 +266,10 @@ export inline struct ContextOpts {
     measureText: (fontId: int, fontSize: real, text: str) => Vec2;
 }
 
-type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
+// Exported (unlike RenderCanvasCB/BoundingBoxCB below) because it's used as
+// a field type on the exported Context struct (measureTextBox), not just
+// inside a function body -- the cross-module shim generator needs to see it.
+export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 
 // Pure layout engine: takes an element tree (ui_elements.Element), runs Clay
 // flexbox over it, and emits draw commands purely through callbacks. Reads

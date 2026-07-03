@@ -25,7 +25,6 @@ fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
                 presets: [
                     presets.bg(Color(0.9, 0.2, 0.2, 1)),
                     presets.p(4),
-                    presets.align(ui_styling.Align.Center),
                 ]
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
@@ -136,7 +135,6 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                 ref: divRef,
                 style: {
                     direction: ui_styling.Direction.Column,
-                    align: ui_styling.Align.Center,
                 },
                 presets: [
                     presets.p(2),
@@ -351,7 +349,6 @@ fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
                     presets.bg("#181818"),
                     presets.textColor("#F00"),
                     presets.p(15),
-                    presets.align(ui_styling.Align.Center),
                 ],
             }, (): void => {
                 ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
@@ -384,7 +381,11 @@ export fn UI(ui: ui_components.UIContext) {
                     fontSize: 16.0,
                     textColor: Color(1, 1, 1, 1),
                     gap: 10.0,
-                }
+                },
+                presets: [
+                    presets.wGrow(),
+                    presets.hGrow(),
+                ]
             }, (): void => {
                 Header(ui, { id: 15000, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
@@ -394,7 +395,6 @@ export fn UI(ui: ui_components.UIContext) {
                         direction: ui_styling.Direction.Row,
                         padding: ui_styling.StylePaddingSimple { value: 20.0 },
                         backgroundColor: Color(0.25, 0.25, 0.25, 1),
-                        justify: ui_styling.Justify.SpaceBetween,
                         cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 20.0 },
                         gap: 30.0,
                     }
