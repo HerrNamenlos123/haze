@@ -17,9 +17,12 @@ fn pageOriginY(doc: TskDocumentFile, pageIndex: int): real {
 // Draws one shape's content into whatever tile canvas `r` is currently
 // bound to (already in tile-local mm-space via Canvas.setViewProj, so no
 // CPU-side transform is needed here -- raw mm vertices go straight in).
-fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape) {
+// `level` is the tile pyramid level this content is being rendered at --
+// see TskLineShape.ensureTesselated for why tesselation is cached per
+// level rather than once per shape.
+fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int) {
     if shape is TskLineShape {
-        let tess = shape.ensureTesselated();
+        let tess = shape.ensureTesselated(level);
         if tess.indices.length > 0 {
             r.addTriangles(tess.vertices, tess.indices, shape.penColor, 0);
         }
@@ -87,7 +90,7 @@ fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeigh
 
     for shape in page.shapes {
         if shapeBBox(shape).overlaps(tileBBox) {
-            drawShapeInto(r, shape);
+            drawShapeInto(r, shape, tile.key.level);
         }
     }
 
@@ -143,6 +146,19 @@ struct DocumentRenderer {
             this.pool.release(tile);
         }
         page.slots.clear();
+    }
+
+    // Releases every tile on every page and forgets each page's committed
+    // level, forcing a full re-tile (and, combined with clearing the
+    // shapes' own cached bbox/outline/tesselation -- see
+    // documents.hz's clearShapeCache -- a full re-render) on the next
+    // render() call. For manually invalidating stale-looking content
+    // during development.
+    fn clearAll() {
+        for page in this.pages {
+            this.releasePageTiles(page);
+            page.hasCommittedLevel = false;
+        }
     }
 
     // Pure pan: only ever touches the offset, never forces a retile. This
@@ -364,12 +380,19 @@ struct DocumentRenderer {
     // canvas every frame, bypassing tiles entirely -- so a live pen stroke
     // never waits on a tile (re)render to become visible.
     fn renderLiveStroke(r: mut renderer.gfx.Renderer, doc: TskDocumentFile, pageIndex: int, shape: mut TskLineShape) {
-        let tess = shape.ensureTesselated();
+        let zoom = this.viewport.zoomPxPerMm;
+        // Same physical-pixel-density level a tile at this live zoom would
+        // commit to (see render()'s targetLevel) -- this is also what lets
+        // the live overlay and a freshly-tiled version of the same shape
+        // share a cache entry instead of tesselating it twice.
+        let dpiScale = r.canvas.size.dpiScale as real;
+        let level = tilemath.zoomLevelFor(zoom * dpiScale);
+
+        let tess = shape.ensureTesselated(level);
         if tess.indices.length == 0 {
             return;
         }
 
-        let zoom = this.viewport.zoomPxPerMm;
         let originY = pageOriginY(doc, pageIndex);
 
         let transform = mat4.translation(Vec3(

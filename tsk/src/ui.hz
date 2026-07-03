@@ -149,7 +149,8 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
 
         let doc = rx.computed<TskDocumentFile | null>(() => {
             if cache.data.vaultDir {
-                if let d = loadTskDocument(cache.data.vaultDir) {
+                let d = loadTskDocument(cache.data.vaultDir);
+                if d {
                     return d;
                 }
             }
@@ -266,7 +267,11 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
 
                         let d = rx.get(doc); // Manually unwrap because of a compiler bug
                         if d {
+                            fmt.println("Doc");
                             documentRenderer.render(r, d);
+                        }
+                        else {
+                            fmt.println("Doc no");
                         }
                     });
                 });

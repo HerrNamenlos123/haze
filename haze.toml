@@ -42,6 +42,7 @@ app = { path = "stdlib/app" }
 
 tesselate = { path = "stdlib/tesselate" }
 perfect_freehand = { path = "stdlib/perfect_freehand" }
+image = { path = "stdlib/image" }
 
 # gl = { path = "./gl" }
 # glDraw = { path = "./glDraw" }

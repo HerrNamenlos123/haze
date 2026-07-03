@@ -47,10 +47,20 @@ struct TskLineShape {
   bbox?: BBox;
   cachedOutline?: [][]real;
 
-  // Internal, non-serialized data
+  // Internal, non-serialized data. Keyed by tile pyramid level (see
+  // tiles.hz's tilemath namespace) rather than a single cached value --
+  // the same shape can be visible in tiles at different native
+  // resolutions (or in the live in-progress-stroke overlay at yet another,
+  // live-zoom-derived level), and a single fixed-tolerance tesselation
+  // reused across all of them is either wastefully fine when zoomed out or
+  // visibly faceted when zoomed in. Lives on the shape rather than in an
+  // external cache keyed by some shape id (shapes don't have one today) --
+  // this way the cache's lifetime is automatically tied to the shape's
+  // own, with no separate cleanup needed when a shape is mutated or
+  // deleted.
   [[json.ignore]]
-  tesselationResult?: TesselationResult;
-  
+  tesselationCache?: LinearMap<int, TesselationResult> = none;
+
   fn getBBox(): BBox {
     if this.bbox {
       return this.bbox;
@@ -89,15 +99,26 @@ struct TskLineShape {
     return result;
   }
 
-  // Lazily computes and caches this stroke's tesselation, shared by the
-  // tile renderer and the live in-stroke overlay so neither has to
-  // duplicate the "already tesselated?" check.
-  fn ensureTesselated(): TesselationResult {
-    if this.tesselationResult {
-      return this.tesselationResult;
+  // Lazily computes and caches this stroke's tesselation at the given
+  // tile pyramid level, shared by the tile renderer and the live in-stroke
+  // overlay so neither has to duplicate the "already tesselated at this
+  // level?" check. Tolerance is derived from the level's native px/mm
+  // (tilemath.nativeZoomForLevel) so curve flattening targets roughly one
+  // native pixel of deviation regardless of how zoomed in/out that level
+  // is -- coarser (cheaper) tesselation when zoomed out, finer when zoomed
+  // in, instead of one fixed tolerance that's either wasteful or visibly
+  // faceted depending on zoom.
+  fn ensureTesselated(level: int): TesselationResult {
+    if !this.tesselationCache {
+      this.tesselationCache = LinearMap<int, TesselationResult>();
     }
-    let result = tesselateStroke({ shape: this });
-    this.tesselationResult = result;
+    assert(this.tesselationCache);
+    if let cached = this.tesselationCache.get(level) {
+      return cached;
+    }
+    let nativeZoom = tilemath.nativeZoomForLevel(level);
+    let result = tesselateStroke({ shape: this, tolerance: 1.0 / nativeZoom });
+    this.tesselationCache.set(level, result);
     return result;
   }
 };
@@ -167,6 +188,28 @@ fn shapeBBox(shape: TskShape): BBox {
   return BBox { left: 0, right: 0, top: 0, bottom: 0 };
 }
 
+// Resets every cached derived value on a shape (bbox, perfect-freehand
+// outline, tesselation) so the next getBBox()/ensureTesselated() call
+// recomputes from scratch instead of reusing whatever was cached in
+// memory (or, for bbox/cachedOutline, loaded straight from the saved
+// .tsk file's JSON -- those two are persisted, unlike tesselationCache
+// which is [[json.ignore]]d).
+fn clearShapeCache(shape: TskShape): void {
+  if shape is TskLineShape {
+    shape.bbox = none;
+    shape.cachedOutline = none;
+    if shape.tesselationCache {
+      shape.tesselationCache.clear();
+    }
+  }
+  else if shape is TskImageShape {
+    shape.bbox = none;
+  }
+  else if shape is TskTextblockShape {
+    shape.bbox = none;
+  }
+}
+
 struct TskPage {
     shapes: []TskShape;
 }
@@ -198,8 +241,12 @@ fn loadTskDocument(path: str): Result<TskDocumentFile, none> {
     let file = fs.readText(path);
     if !file { return none; }
 
-    if let result = json.parse<TskDocumentFile>(file) {
+    let result = json.parse<TskDocumentFile>(file);
+    if result {
         return result;
+    }
+    else {
+      fmt.println("Document failed to load:", result);
     }
     return none;
 }
@@ -250,7 +297,16 @@ inline struct TesselationResult {
 inline struct StrokeTesselateArgs {
   accuracyScaling: real = 10.0;
   shape: TskLineShape;
-  tolerance: real = 0.25;
+  // Curve-flattening tolerance, in the same mm units the curve itself is
+  // drawn in (post accuracyScaling division). 0.25 (the old default) was
+  // never actually exercised before quadraticBezierTo existed -- straight
+  // lineTo ignores tolerance entirely, so nobody had reason to tune it.
+  // It's wildly coarse for these curves (individual outline-to-outline
+  // segments routinely span well under 1mm): the flattener was treating
+  // every curve as "already flat enough" and emitting it as a single
+  // straight chord, which is why the smoothing looked like no change at
+  // all. 0.02mm actually subdivides.
+  tolerance: real = 0.0001;
 }
 
 fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
@@ -265,11 +321,30 @@ fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
         return result;
     }
 
+    // Standard perfect-freehand smoothing recipe (same one the original
+    // HTML canvas version used, typically via an SVG "Q" path): connecting
+    // the raw outline points with straight lineTo()s makes every direction
+    // change in the outline a visible corner, especially bad on tight
+    // curves. Instead, draw a quadratic curve through the *midpoint* of
+    // each consecutive pair of outline points, using the outline point
+    // itself as that segment's control point -- this is what makes
+    // adjacent segments meet smoothly (C1-continuous) instead of at a
+    // hard corner. The tesselator's quadraticBezierTo already flattens the
+    // curve internally (at `tolerance`), no manual subdivision needed.
+    let n = outline.length;
+    let first = outline[0];
     let tess = tesselate.Tesselator();
     tess.beginPath();
-    tess.moveTo(Vec2(outline[0].x / args.accuracyScaling, outline[0].y / args.accuracyScaling));
-    for (let p = 1; p < outline.length; p++) {
-        tess.lineTo(Vec2(outline[p].x / args.accuracyScaling, outline[p].y / args.accuracyScaling));
+    tess.moveTo(Vec2(first.x / args.accuracyScaling, first.y / args.accuracyScaling));
+    for (let p = 0; p < n; p++) {
+        let cur = outline[p];
+        let next = outline[(p + 1) % n];
+        let control = Vec2(cur.x / args.accuracyScaling, cur.y / args.accuracyScaling);
+        let to = Vec2(
+            (cur.x + next.x) / 2.0 / args.accuracyScaling,
+            (cur.y + next.y) / 2.0 / args.accuracyScaling
+        );
+        tess.quadraticBezierTo(control, to);
     }
     tess.closePath();
     if let t = tess.tessellate(args.tolerance) { 
