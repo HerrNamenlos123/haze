@@ -26,6 +26,7 @@ namespace ffi {
 	extern C type HazeSdlResizeFn = (userdata: cptr, width: i32, height: i32) -> void :: final;
 	extern C type HazeSdlMouseMoveFn = (userdata: cptr, x: f32, y: f32) -> void :: final;
 	extern C type HazeSdlMouseButtonFn = (userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
+	extern C type HazeSdlMouseWheelFn = (userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32) -> void :: final;
 
 	extern C noemit struct haze_sdl_trampolines_t {
 		keyDown: HazeSdlKeyFn;
@@ -34,10 +35,16 @@ namespace ffi {
 		mouseMove: HazeSdlMouseMoveFn;
 		mouseDown: HazeSdlMouseButtonFn;
 		mouseUp: HazeSdlMouseButtonFn;
+		mouseWheel: HazeSdlMouseWheelFn;
 	}
 
 	extern C fn haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
 	export extern C fn haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
+
+	// Stateless poll (SDL_GetModState), not tied to any specific event --
+	// called on demand from each dispatch function below rather than
+	// threaded through every trampoline signature.
+	extern C noemit fn haze_sdl_get_modifiers(): i32 :: final;
 
 	export fn init(): bool {
 		let result = haze_sdl_init();
@@ -49,6 +56,7 @@ namespace ffi {
 				mouseMove: hazeMouseMoveDispatch,
 				mouseDown: hazeMouseDownDispatch,
 				mouseUp: hazeMouseUpDispatch,
+				mouseWheel: hazeMouseWheelDispatch,
 			} as inline haze_sdl_trampolines_t);
 		}
 		return result;
@@ -158,6 +166,7 @@ export enum Key {
 export struct KeyEvent {
 	key: Key;
 	repeat: bool;
+	modifiers: KeyModifiers;
 }
 
 export struct ResizeEvent {
@@ -167,12 +176,23 @@ export struct ResizeEvent {
 
 export struct MouseMoveEvent {
 	pos: Vec2;
+	modifiers: KeyModifiers;
 }
 
 // button: 0=left, 1=middle, 2=right
 export struct MouseButtonEvent {
 	button: int;
 	pos: Vec2;
+	modifiers: KeyModifiers;
+}
+
+// x/y: signed scroll amount (positive = right/away-from-user); pos: mouse
+// position at the time of the scroll, window-relative like every other
+// event here.
+export struct MouseWheelEvent {
+	delta: Vec2;
+	pos: Vec2;
+	modifiers: KeyModifiers;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +203,7 @@ export type KeyEventCallback = (e: KeyEvent) => bool :: final;
 export type ResizeEventCallback = (e: ResizeEvent) => bool :: final;
 export type MouseMoveEventCallback = (e: MouseMoveEvent) => bool :: final;
 export type MouseButtonEventCallback = (e: MouseButtonEvent) => bool :: final;
+export type MouseWheelEventCallback = (e: MouseWheelEvent) => bool :: final;
 
 // ---------------------------------------------------------------------------
 // Internal handler structs (one per event category)
@@ -208,6 +229,11 @@ export struct MouseButtonHandler {
 	callback: MouseButtonEventCallback;
 }
 
+export struct MouseWheelHandler {
+	id: int;
+	callback: MouseWheelEventCallback;
+}
+
 // ---------------------------------------------------------------------------
 // Internal: convert SDL3 scancode integer to Key enum
 // ---------------------------------------------------------------------------
@@ -220,6 +246,18 @@ fn scancodeToKey(scancode: i32): Key :: final {
 	};
 }
 
+// Currently-held modifier keys (Shift/Ctrl/Alt/Gui), collapsed from SDL's
+// left/right variants on the C side (haze_sdl_get_modifiers). A stateless
+// poll, not tied to any specific event -- called fresh by every dispatch
+// function below so every event this module produces carries modifiers.
+export fn getModifiers(): KeyModifiers {
+	do unsafe {
+		let m: KeyModifiers = uninitialized;
+		__c__("m = haze_sdl_get_modifiers();");
+		return m;
+	};
+}
+
 // ---------------------------------------------------------------------------
 // C-side event trampoline functions (called by sdl_impl.c)
 // ---------------------------------------------------------------------------
@@ -228,7 +266,7 @@ fn hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: fin
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat };
+		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
 		window.dispatchKeyDown(e);
 	};
 }
@@ -237,7 +275,7 @@ fn hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat };
+		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
 		window.dispatchKeyUp(e);
 	};
 }
@@ -255,7 +293,7 @@ fn hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseMoveEvent { pos: Vec2(x as real, y as real) };
+		let e = MouseMoveEvent { pos: Vec2(x as real, y as real), modifiers: getModifiers() };
 		window.dispatchMouseMove(e);
 	};
 }
@@ -264,7 +302,7 @@ fn hazeMouseDownDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: f
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real) };
+		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
 		window.dispatchMouseDown(e);
 	};
 }
@@ -273,8 +311,17 @@ fn hazeMouseUpDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: fin
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real) };
+		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
 		window.dispatchMouseUp(e);
+	};
+}
+
+fn hazeMouseWheelDispatch(userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		let e = MouseWheelEvent { delta: Vec2(x as real, y as real), pos: Vec2(mouseX as real, mouseY as real), modifiers: getModifiers() };
+		window.dispatchMouseWheel(e);
 	};
 }
 
@@ -289,6 +336,7 @@ export struct Window {
 	mouseMoveHandlers: []MouseMoveHandler = [];
 	mouseDownHandlers: []MouseButtonHandler = [];
 	mouseUpHandlers: []MouseButtonHandler = [];
+	mouseWheelHandlers: []MouseWheelHandler = [];
 
 	fn makeContextCurrent() {
 		ffi.makeContextCurrent(this.handle);
@@ -399,6 +447,13 @@ export struct Window {
 		return id;
 	}
 
+	fn onMouseWheel(cb: MouseWheelEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.mouseWheelHandlers.push(MouseWheelHandler { id: id, callback: cb });
+		return id;
+	}
+
 	// --- Deregistration ---
 
 	fn removeHandler(id: int) {
@@ -467,6 +522,17 @@ export struct Window {
 			}
 			i = i + 1;
 		}
+
+		i = 0;
+		while i < this.mouseWheelHandlers.length {
+			if this.mouseWheelHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->mouseWheelHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
 	}
 
 	// --- Internal dispatch (called by trampolines) ---
@@ -525,6 +591,16 @@ export struct Window {
 		let i = 0;
 		while i < this.mouseUpHandlers.length {
 			if this.mouseUpHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	fn dispatchMouseWheel(e: MouseWheelEvent) {
+		let i = 0;
+		while i < this.mouseWheelHandlers.length {
+			if this.mouseWheelHandlers[i].callback(e) {
 				return;
 			}
 			i = i + 1;

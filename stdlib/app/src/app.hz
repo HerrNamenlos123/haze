@@ -53,6 +53,12 @@ export opaque struct App {
     mousePosition: Vec2 = {};
     resized: bool = false;
     _pointerButtons: AppPointerButtons = {};
+    // This-frame's accumulated wheel delta/modifiers -- reset at the top of
+    // nextFrame() (before pollEvents() re-accumulates fresh values into it),
+    // so it holds exactly one frame's worth of scroll input by the time
+    // nextFrame() returns, same one-frame-window lifecycle `resized` uses.
+    wheelDeltaThisFrame: Vec2 = {};
+    wheelModifiersThisFrame: KeyModifiers = KeyModifiers.None;
 
     fn constructor(options: AppOptions): Result<App, str> {
         if !sdl.init() { return "SDL init failed"; }
@@ -131,6 +137,12 @@ export opaque struct App {
             if e.button == 2 { pointerButtons.rightHeld = false; }
             return false;
         });
+        window.onMouseWheel((e: sdl.MouseWheelEvent) => {
+            app.wheelDeltaThisFrame.x += e.delta.x;
+            app.wheelDeltaThisFrame.y += e.delta.y;
+            app.wheelModifiersThisFrame = e.modifiers;
+            return false;
+        });
 
         return app;
     }
@@ -151,12 +163,26 @@ export opaque struct App {
         return this._pointerButtons.rightHeld;
     }
 
+    fn wheelDelta(): Vec2 {
+        return this.wheelDeltaThisFrame;
+    }
+
+    fn wheelModifiers(): KeyModifiers {
+        return this.wheelModifiersThisFrame;
+    }
+
     // Polls events, handles resize, and returns a fresh Frame for this tick.
     // Returns none when the window has been closed — use as a while condition.
     fn nextFrame(): mut renderer.gfx.Frame | none {
         if this.window.shouldClose() {
             return none;
         }
+
+        // Cleared *before* polling so this call's pollEvents() accumulates
+        // a fresh delta for this frame, left readable until the next
+        // nextFrame() call clears it again.
+        this.wheelDeltaThisFrame = Vec2(0.0, 0.0);
+        this.wheelModifiersThisFrame = KeyModifiers.None;
 
         sdl.pollEvents();
         fs.pollEvents();

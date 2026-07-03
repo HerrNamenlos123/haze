@@ -10,6 +10,7 @@ export inline struct RuntimeArgs {
     fonts: []ui_layout.FontEntry;
     mousePos: () => Vec2;
     pointerButtons?: ui_components.PointerHeldCallbacks;
+    inputExtras?: ui_components.InputExtrasCallbacks;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -44,6 +45,7 @@ export opaque struct Runtime {
             ui: args.ui,
             mousePos: args.mousePos,
             pointerButtons: args.pointerButtons,
+            inputExtras: args.inputExtras,
         });
         return Runtime {
             gfx: args.gfx,

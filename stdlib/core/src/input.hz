@@ -1,0 +1,26 @@
+
+// Shared modifier-key bitflag, used by every input event across the stack
+// (sdl.hz's raw KeyEvent/MouseMoveEvent/MouseButtonEvent/MouseWheelEvent,
+// and ui_components.hz's PointerEvent/WheelEvent). Lives in core (implicit
+// dependency of every package, same reason Vec2/Color need no import)
+// rather than in sdl.hz, since ui_components.hz is deliberately
+// platform-agnostic and never imports sdl -- see its own PointerButton(s)
+// enums, independently redefined rather than reusing SDL's button
+// numbering, for the same reason.
+export enum bitflag KeyModifiers {
+    Shift, Ctrl, Alt, Gui,
+    // Pinned to 0 and declared last -- see ui_components.hz's PointerButtons
+    // for why an explicit 0 member must not precede auto-assigned ones.
+    None = 0,
+}
+
+// Bitflag enums only support construction/combination via `|` -- there's no
+// language-level `&` expression operator (reserved for reference-of), so
+// this drops to raw C to do the AND. Mirrors ui_components.hz's hasButton().
+export fn hasModifier(mods: KeyModifiers, flag: KeyModifiers): bool :: final {
+    do unsafe {
+        let result: bool = uninitialized;
+        __c__("result = (((int)mods) & ((int)flag)) != 0;");
+        return result;
+    };
+}

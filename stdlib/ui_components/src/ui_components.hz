@@ -55,6 +55,23 @@ export struct PointerEvent {
     buttons: PointerButtons;
     pressure: real;
     isPrimary: bool;
+    modifiers: KeyModifiers;
+    _stopped: bool = false;
+
+    fn stopPropagation() {
+        this._stopped = true;
+    }
+}
+
+// Scroll-wheel event. Not a PointerEventKind variant -- it has no
+// button/pressure semantics, it's a distinct interaction the same way
+// hover/hit already get their own dedicated (non-PointerEventKind) handling
+// below. delta.y > 0 is scroll "away" from the user (matches SDL's
+// convention, see sdl.hz's MouseWheelEvent).
+export struct WheelEvent {
+    pos: Vec2;
+    delta: Vec2;
+    modifiers: KeyModifiers;
     _stopped: bool = false;
 
     fn stopPropagation() {
@@ -73,6 +90,7 @@ export inline struct DivProps {
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
     onClick?: (e: PointerEvent) => none;
+    onWheel?: (e: WheelEvent) => none;
 
     // Capture phase (root -> target). Always runs, even if a descendant's
     // bubble-phase handler calls stopPropagation() -- that call happens
@@ -83,6 +101,7 @@ export inline struct DivProps {
     onPointerUpCapture?: (e: PointerEvent) => none;
     onPointerMoveCapture?: (e: PointerEvent) => none;
     onClickCapture?: (e: PointerEvent) => none;
+    onWheelCapture?: (e: WheelEvent) => none;
 
     // "Hover": mouse is within this element's own bounds, whether or not a
     // child also claims that same point. Matches the DOM/CSS meaning of
@@ -200,11 +219,13 @@ export struct ComponentElementRuntimeData {
     onPointerUp?: (e: PointerEvent) => none;
     onPointerMove?: (e: PointerEvent) => none;
     onClick?: (e: PointerEvent) => none;
+    onWheel?: (e: WheelEvent) => none;
 
     onPointerDownCapture?: (e: PointerEvent) => none;
     onPointerUpCapture?: (e: PointerEvent) => none;
     onPointerMoveCapture?: (e: PointerEvent) => none;
     onClickCapture?: (e: PointerEvent) => none;
+    onWheelCapture?: (e: WheelEvent) => none;
 
     onHoverEnter?: (e: PointerEvent) => none;
     onHoverLeave?: (e: PointerEvent) => none;
@@ -446,6 +467,16 @@ export struct PointerHeldCallbacks {
     rightHeld: () => bool;
 }
 
+// Optional wheel/modifier poll callbacks, bundled for the same reason as
+// PointerHeldCallbacks above. wheelDelta() is this-frame's accumulated
+// scroll delta (zero most frames); modifiers() is read every frame and
+// stamped onto every event this module produces (PointerEvent and
+// WheelEvent alike), not just wheel.
+export struct InputExtrasCallbacks {
+    wheelDelta: () => Vec2;
+    modifiers: () => KeyModifiers;
+}
+
 // Internal pending pointer event before it is dispatched to elements.
 struct PendingPointerEvent {
     kind: PointerEventKind;
@@ -457,6 +488,7 @@ struct PendingPointerEvent {
 export opaque struct UIContext {
     _mousePosCb: (() => Vec2);
     _pointerButtons?: PointerHeldCallbacks;
+    _inputExtras?: InputExtrasCallbacks;
 
     _prevLeftHeld: bool = false;
     _prevMiddleHeld: bool = false;
@@ -491,6 +523,7 @@ export opaque struct UIContext {
         ui: ((ui: UIContext) => none);
         mousePos: () => Vec2;
         pointerButtons?: PointerHeldCallbacks;
+        inputExtras?: InputExtrasCallbacks;
     }
 
     fn constructor(args: UIContextArgs) {
@@ -502,6 +535,7 @@ export opaque struct UIContext {
             _prevTime: time.now(),
             _mousePosCb: args.mousePos,
             _pointerButtons: args.pointerButtons,
+            _inputExtras: args.inputExtras,
         };
 
         // UI Context depends on itself
@@ -618,7 +652,7 @@ export opaque struct UIContext {
                 let pos = mousePos;
                 let b = buttons;
                 eventQueue.push((): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
+                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
                     cb(e);
                 });
             }
@@ -645,13 +679,24 @@ export opaque struct UIContext {
                 let pos = mousePos;
                 let b = buttons;
                 eventQueue.push((): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true };
+                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
                     cb(e);
                 });
             }
         }
 
         return hover;
+    }
+
+    // Currently-held modifier keys, polled once per frame via
+    // UIContextArgs.inputExtras (none if the caller didn't supply one, e.g.
+    // a headless/test UIContext) -- stamped onto every PointerEvent/
+    // WheelEvent this module constructs.
+    fn currentModifiers(): KeyModifiers {
+        if this._inputExtras {
+            return this._inputExtras.modifiers();
+        }
+        return KeyModifiers.None;
     }
 
     // Schedules a pointer event along hitPath from root down to target onto
@@ -673,6 +718,40 @@ export opaque struct UIContext {
                 });
             }
             i = i + 1;
+        }
+    }
+
+    // Wheel's capture/bubble pair, mirroring dispatchCapturing/
+    // dispatchBubbling exactly -- wheel isn't a PointerEventKind (no
+    // button/pressure), so it has no `kind` to switch on and just reads
+    // onWheelCapture/onWheel unconditionally.
+    fn dispatchWheelCapturing(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < hitPath.length {
+            let data = runtimeDataOf(hitPath[i]);
+            let cb = data.onWheelCapture;
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i + 1;
+        }
+    }
+
+    fn dispatchWheelBubbling(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void)): void :: final {
+        let i = hitPath.length - 1;
+        while i >= 0 {
+            let data = runtimeDataOf(hitPath[i]);
+            let cb = data.onWheel;
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i - 1;
         }
     }
 
@@ -826,6 +905,7 @@ export opaque struct UIContext {
                     buttons: pe.buttons,
                     pressure: pressure,
                     isPrimary: true,
+                    modifiers: this.currentModifiers(),
                 };
 
                 if pe.kind == PointerEventKind.Down {
@@ -881,6 +961,7 @@ export opaque struct UIContext {
                         pointerId: 1, pointerType: "mouse", pos: pe.pos,
                         button: pe.button, buttons: pe.buttons,
                         pressure: 0.0, isPrimary: true,
+                        modifiers: this.currentModifiers(),
                     };
                     this.dispatchClickCapturing(hitPath, clickEligible, clickEvent, eventQueue);
                     this.dispatchClickBubbling(hitPath, clickEligible, clickEvent, eventQueue);
@@ -888,6 +969,21 @@ export opaque struct UIContext {
                 else if pe.kind == PointerEventKind.Move {
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Move, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Move, eventQueue);
+                }
+            }
+
+            // Wheel: acts on whatever's currently under the cursor, so it
+            // reuses this same frame's hitPath rather than computing its own.
+            if this._inputExtras {
+                let wheelDelta = this._inputExtras.wheelDelta();
+                if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
+                    let wheelEvent = WheelEvent {
+                        pos: this.mousePos,
+                        delta: wheelDelta,
+                        modifiers: this.currentModifiers(),
+                    };
+                    this.dispatchWheelCapturing(hitPath, wheelEvent, eventQueue);
+                    this.dispatchWheelBubbling(hitPath, wheelEvent, eventQueue);
                 }
             }
         }
@@ -1218,10 +1314,12 @@ export opaque struct UIContext {
         data.onPointerUp = props.onPointerUp;
         data.onPointerMove = props.onPointerMove;
         data.onClick = props.onClick;
+        data.onWheel = props.onWheel;
         data.onPointerDownCapture = props.onPointerDownCapture;
         data.onPointerUpCapture = props.onPointerUpCapture;
         data.onPointerMoveCapture = props.onPointerMoveCapture;
         data.onClickCapture = props.onClickCapture;
+        data.onWheelCapture = props.onWheelCapture;
         data.onHoverEnter = props.onHoverEnter;
         data.onHoverLeave = props.onHoverLeave;
         data.onHitEnter = props.onHitEnter;

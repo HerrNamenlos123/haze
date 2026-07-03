@@ -35,6 +35,10 @@ fn main(): int {
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
             },
+            inputExtras: ui_components.InputExtrasCallbacks {
+                wheelDelta: () => a.wheelDelta(),
+                modifiers: () => a.wheelModifiers(),
+            },
             ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
         });
 

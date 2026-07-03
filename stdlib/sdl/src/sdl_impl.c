@@ -12,6 +12,7 @@ typedef void (*HazeSdlKeyFn)(void* userdata, int scancode, bool repeat);
 typedef void (*HazeSdlResizeFn)(void* userdata, int width, int height);
 typedef void (*HazeSdlMouseMoveFn)(void* userdata, float x, float y);
 typedef void (*HazeSdlMouseButtonFn)(void* userdata, int button, float x, float y);
+typedef void (*HazeSdlMouseWheelFn)(void* userdata, float x, float y, float mouseX, float mouseY);
 
 typedef struct {
   HazeSdlKeyFn keyDown;
@@ -20,11 +21,29 @@ typedef struct {
   HazeSdlMouseMoveFn mouseMove;
   HazeSdlMouseButtonFn mouseDown;
   HazeSdlMouseButtonFn mouseUp;
+  HazeSdlMouseWheelFn mouseWheel;
 } haze_sdl_trampolines_t;
 
-static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL, NULL, NULL };
+static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 void haze_sdl_register_trampolines(haze_sdl_trampolines_t t) { g_haze_trampolines = t; }
+
+/* Collapses SDL's left/right modifier variants into 4 clean bits matching
+   KeyModifiers's auto-assigned values (Shift=1, Ctrl=2, Alt=4, Gui=8) --
+   same "values chosen so a direct cast works" convention sdl.hz's Key enum
+   already uses for scancodes. Stateless poll (SDL_GetModState), not tied to
+   any specific event -- called on demand from Haze rather than threaded
+   through every trampoline signature. */
+int haze_sdl_get_modifiers(void)
+{
+  SDL_Keymod m = SDL_GetModState();
+  int result = 0;
+  if (m & SDL_KMOD_SHIFT) result |= 1;
+  if (m & SDL_KMOD_CTRL) result |= 2;
+  if (m & SDL_KMOD_ALT) result |= 4;
+  if (m & SDL_KMOD_GUI) result |= 8;
+  return result;
+}
 
 void haze_sdl_set_window_event_userdata(SDL_Window* window, void* userdata)
 {
@@ -265,6 +284,17 @@ void haze_sdl_pollEvents(void)
         if (userdata) {
           int btn = (int)event.button.button - 1;
           g_haze_trampolines.mouseUp(userdata, btn, event.button.x, event.button.y);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+      SDL_Window* window = SDL_GetWindowFromID(event.wheel.windowID);
+      if (window && g_haze_trampolines.mouseWheel) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          g_haze_trampolines.mouseWheel(userdata, event.wheel.x, event.wheel.y, event.wheel.mouse_x, event.wheel.mouse_y);
         }
       }
       continue;

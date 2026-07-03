@@ -11,6 +11,10 @@ type DivElement = ui_elements.DivElement;
 type TextElement = ui_elements.TextElement;
 type CanvasElement = ui_elements.CanvasElement;
 
+// Screen pixels of pan per unit of wheel delta -- a tuning knob, not
+// load-bearing; adjust to taste.
+const comptime panSpeed = 50.0;
+
 struct ButtonArgs {
     id: int;
     label: str;
@@ -154,6 +158,7 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
 
         let documentRenderer = DocumentRenderer(gfx);
         let dragging = false;
+        let canvasAreaRef = ui.ref<ui_elements.DivElement>();
 
         return (): void => {
             ui.div({
@@ -219,14 +224,57 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                 let onCanvasPointerUp: (event: ui_components.PointerEvent) => none = (e: ui_components.PointerEvent) => {
                     dragging = false;
                 };
+                // Plain scroll pans (Y -> vertical, X -> horizontal); Shift
+                // swaps which delta axis drives which pan axis (so a
+                // vertical-only wheel can still pan sideways); Ctrl instead
+                // zooms, pivoted on the mouse position converted from
+                // window-global (e.pos, per PointerEvent/WheelEvent's own
+                // doc) to panel-local via canvasAreaRef.position() -- the
+                // same conversion needed anywhere a screen-space pivot is
+                // wanted, since nothing in the event system does it
+                // per-element automatically.
+                let onCanvasWheel: (event: ui_components.WheelEvent) => none = (e: ui_components.WheelEvent) => {
+                    let localX = e.pos.x;
+                    let localY = e.pos.y;
+                    let wrapper = rx.get(canvasAreaRef);
+                    if wrapper {
+                        if let divPos = wrapper.position() {
+                            localX = e.pos.x - divPos.x;
+                            localY = e.pos.y - divPos.y;
+                        }
+                    }
+
+                    if hasModifier(e.modifiers, KeyModifiers.Ctrl) {
+                        // SDL's wheel delta.y is positive scrolling away from
+                        // the user (scroll up/forward) -- that should zoom
+                        // in, so no negation here (confirmed backwards on
+                        // first try: fixed by dropping it).
+                        let factor = math.pow(1.1, e.delta.y);
+                        documentRenderer.zoomBy(factor, localX, localY);
+                    } else {
+                        let dx = e.delta.x;
+                        let dy = e.delta.y;
+                        if hasModifier(e.modifiers, KeyModifiers.Shift) {
+                            dx = e.delta.y;
+                            dy = e.delta.x;
+                        }
+                        // X and Y need opposite signs here -- confirmed by
+                        // trying it: vertical pan felt right with a
+                        // positive coefficient, horizontal only felt right
+                        // negated.
+                        documentRenderer.pan(-dx * panSpeed, dy * panSpeed);
+                    }
+                };
                 ui.div({
                     id: 900,
+                    ref: canvasAreaRef,
                     presets: [
                         presets.wGrow(),
                         presets.hGrow(),
                     ],
                     onPointerDown: onCanvasPointerDown,
                     onPointerUp: onCanvasPointerUp,
+                    onWheel: onCanvasWheel,
                 }, (): void => {
                     ui.canvas({
                         id: 1000,
