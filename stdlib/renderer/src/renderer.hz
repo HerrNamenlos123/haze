@@ -177,6 +177,98 @@ fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.Textur
     return RenderTexture { texture: texture, view: view };
 }
 
+// One level of a CPU-built RGBA8 mip chain (see buildMipChain below).
+inline struct MipLevel {
+    pixels: Bytes;
+    width: int;
+    height: int;
+}
+
+// Box-filters `src` (width x height, RGBA8, 4 bytes/px) down to half size in
+// each dimension (rounding up, so odd sizes still shrink every level down to
+// 1x1 instead of getting stuck). Each destination texel is the average of
+// the 2x2 source block it covers; the last row/column of an odd-sized
+// source is sampled twice (clamped) rather than reading out of bounds --
+// equivalent to clamp-to-edge for the purposes of this filter.
+fn downsampleHalf(src: Bytes, width: int, height: int): MipLevel {
+    let dstWidth = width / 2;
+    if dstWidth < 1 { dstWidth = 1; }
+    let dstHeight = height / 2;
+    if dstHeight < 1 { dstHeight = 1; }
+
+    let buffer = ByteBuffer(dstWidth * dstHeight * 4);
+    buffer.resize(dstWidth * dstHeight * 4);
+
+    for (let y = 0; y < dstHeight; y++) {
+        let y0 = y * 2;
+        let y1 = y0 + 1;
+        if y1 >= height { y1 = y0; }
+        for (let x = 0; x < dstWidth; x++) {
+            let x0 = x * 2;
+            let x1 = x0 + 1;
+            if x1 >= width { x1 = x0; }
+
+            let dstIndex = (y * dstWidth + x) * 4;
+            for (let c = 0; c < 4; c++) {
+                let p00 = src[(y0 * width + x0) * 4 + c] as int;
+                let p10 = src[(y0 * width + x1) * 4 + c] as int;
+                let p01 = src[(y1 * width + x0) * 4 + c] as int;
+                let p11 = src[(y1 * width + x1) * 4 + c] as int;
+                let avg = (p00 + p10 + p01 + p11 + 2) / 4;
+                assert(avg >= u8.min && avg <= u8.max);
+                buffer.setAt(dstIndex + c, avg as u8);
+            }
+        }
+    }
+
+    buffer.commit();
+    return MipLevel { pixels: buffer.bytes(), width: dstWidth, height: dstHeight };
+}
+
+// Builds a full CPU-side RGBA8 mip chain down to 1x1, optionally
+// premultiplying straight alpha into RGB first (see
+// Context.createRGBATexture for why premultiplication happens here rather
+// than in the image-decoding layer). Every coarser level is filtered from
+// the previous one (not from level 0 each time), which is what makes this
+// a proper box-filter pyramid instead of repeated nearest-neighbor
+// shrinking.
+fn buildMipChain(pixels: Bytes, width: int, height: int, premultiply: bool): []MipLevel {
+    let base = pixels;
+    if premultiply {
+        let buffer = ByteBuffer(width * height * 4);
+        buffer.resize(width * height * 4);
+        for (let i = 0; i < width * height; i++) {
+            let a = pixels[i * 4 + 3];
+            let aInt = a as int;
+            let r = (pixels[i * 4 + 0] as int * aInt) / 255;
+            let g = (pixels[i * 4 + 1] as int * aInt) / 255;
+            let b = (pixels[i * 4 + 2] as int * aInt) / 255;
+            assert(r >= u8.min && r <= u8.max);
+            assert(g >= u8.min && g <= u8.max);
+            assert(b >= u8.min && b <= u8.max);
+            buffer.setAt(i * 4 + 0, r as u8);
+            buffer.setAt(i * 4 + 1, g as u8);
+            buffer.setAt(i * 4 + 2, b as u8);
+            buffer.setAt(i * 4 + 3, a);
+        }
+        buffer.commit();
+        base = buffer.bytes();
+    }
+
+    let levels: []MipLevel = [MipLevel { pixels: base, width: width, height: height }];
+    let cur = base;
+    let w = width;
+    let h = height;
+    while w > 1 || h > 1 {
+        let next = downsampleHalf(cur, w, h);
+        levels.push(next);
+        cur = next.pixels;
+        w = next.width;
+        h = next.height;
+    }
+    return levels;
+}
+
 const depthFormat = wgpu.TextureFormat.Depth32Float;
 
 fn depthStencilState(): wgpu.DepthStencilState {
@@ -666,6 +758,74 @@ export opaque struct Context {
     fn allocTextureId(): int {
         this.nextTextureId += 1;
         return this.nextTextureId;
+    }
+
+    // Uploads a CPU-side RGBA8 pixel buffer (row-major, top-to-bottom, 4
+    // bytes/px -- e.g. straight out of the `image` package's stb_image
+    // binding) as a sampleable Texture with a full box-filtered mip chain,
+    // so drawTexture() composites of it stay antialiased instead of
+    // shimmering when shown well below native resolution (a naive
+    // single-level texture has no data below its own resolution for the
+    // sampler to blend between, so minifying it -- e.g. a photo shown at
+    // thumbnail size, or one of this app's tiles rendering it at a coarse
+    // zoomed-out native resolution -- aliases).
+    //
+    // `premultiply`: every fragment shader in this renderer (see
+    // shaders.wgsl's process_textured_quad) assumes the sampled texture is
+    // already premultiplied-alpha, matching this renderer's premultiplied
+    // blend state. Pass true for straight-alpha sources (stb_image, most
+    // image codecs); false if `pixels` is already premultiplied.
+    //
+    // Uses its own sampler (not gfx.defaultSampler) because it needs
+    // mipmapFilter/lodMaxClamp set for the mip chain to actually be
+    // sampled from -- the shared default sampler intentionally leaves
+    // those at their zero-mip-only defaults since every other texture in
+    // this renderer (font atlas, tile composites) only ever has one level.
+    fn createRGBATexture(pixels: Bytes, width: int, height: int, premultiply: bool = false): Texture {
+        let levels = buildMipChain(pixels, width, height, premultiply);
+
+        let texture = this.device.createTexture({
+            usage: wgpu.TextureUsage.TextureBinding | wgpu.TextureUsage.CopyDst,
+            size: { width: width, height: height, depthOrArrayLayers: 1 },
+            format: wgpu.TextureFormat.RGBA8Unorm,
+            mipLevelCount: levels.length,
+            sampleCount: 1,
+        });
+        let view = texture.createView();
+        assert(view);
+
+        let sampler = this.device.createSampler({
+            magFilter: wgpu.FilterMode.Linear,
+            minFilter: wgpu.FilterMode.Linear,
+            mipmapFilter: wgpu.MipmapFilterMode.Linear,
+            lodMinClamp: 0.0,
+            lodMaxClamp: levels.length as real,
+            maxAnisotropy: 1,
+        });
+
+        let bindGroup = this.device.createBindGroup({
+            layout: this.textureLayout,
+            entries: {
+                { binding: 0, textureView: view },
+                { binding: 1, sampler: sampler },
+            },
+        });
+
+        for (let level = 0; level < levels.length; level++) {
+            let mip = levels[level];
+            let mipPixels = mip.pixels;
+            let mipPtr = none as cptr;
+            __c__("mipPtr = mipPixels.basePtr + mipPixels.offset;");
+            this.queue.writeTexture(
+                { texture: texture, mipLevel: level },
+                mipPtr,
+                mip.width * mip.height * 4,
+                { offset: 0, bytesPerRow: mip.width * 4, rowsPerImage: mip.height },
+                { width: mip.width, height: mip.height, depthOrArrayLayers: 1 }
+            );
+        }
+
+        return Texture(this.allocTextureId(), texture, view, bindGroup, width, height);
     }
 
     // Re-uploads the font atlas to the GPU if any text was drawn (through any

@@ -1,4 +1,6 @@
 import renderer
+import base64
+import image
 
 // Vertical gap between stacked pages, in mm (PDF-viewer-style layout: pages
 // stack top to bottom at x=0, each pageHeightMm + pageGapMm below the last).
@@ -14,13 +16,76 @@ fn pageOriginY(doc: TskDocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
 }
 
+// TskImageShape.base64ImageData is stored as a full data URL
+// ("data:image/png;base64,<payload>", per how browsers/paste handlers
+// typically produce it), not a raw base64 payload -- base64.decode only
+// accepts the latter, so the "data:...;base64," header has to be stripped
+// first. A data URL's header can never itself contain a comma (it's
+// exactly "data:[<mediatype>][;base64]"), so the first comma is always the
+// header/payload boundary. Strings with no comma at all (already a raw
+// base64 payload) pass through unchanged.
+fn stripDataUrlPrefix(data: str): str {
+    for (let i = 0; i < data.length; i++) {
+        if data[i] == b"," {
+            return data.substr(i + 1, data.length);
+        }
+    }
+    return data;
+}
+
+// Decoded-image GPU textures, keyed by the shape's raw base64ImageData
+// string. Deliberately *not* a field on TskImageShape itself: that struct
+// participates in json.parse<TskDocumentFile>/json.stringify for the whole
+// document, and a field whose type reaches into opaque wgpu FFI handles
+// (wgpu.Texture/TextureView/BindGroup are forward-declared-only C structs)
+// breaks that generic codegen -- sizeof() on an intentionally-incomplete
+// struct -- even when marked [[json.ignore]]. Living on DocumentRenderer
+// instead (alongside TilePool, which is the same kind of GPU-resource-cache
+// paired with the serializable document) sidesteps that entirely, and keying
+// by content rather than shape identity means two shapes pasted from the
+// same image share one upload for free.
+struct ImageTextureCache {
+    textures: LinearMap<str, renderer.gfx.Texture> = {};
+    // Tracks base64 strings that failed to decode, so a corrupt/invalid
+    // image is only ever attempted once rather than every frame.
+    failed: LinearMap<str, bool> = {};
+
+    fn getOrCreate(r: mut renderer.gfx.Renderer, shape: TskImageShape): renderer.gfx.Texture | none {
+        let key = shape.base64ImageData;
+
+        let existing = this.textures.get(key);
+        if existing {
+            return existing;
+        }
+        if this.failed.has(key) {
+            return none;
+        }
+
+        let decoded = base64.decode(stripDataUrlPrefix(key));
+        if decoded {
+            // stb_image (via the `image` package) returns straight alpha;
+            // createRGBATexture's premultiply=true converts it to the
+            // premultiplied form this renderer's textured-quad shader
+            // assumes.
+            let img = image.Image(decoded);
+            let texture = r.canvas.gfx.createRGBATexture(img.pixels, img.width, img.height, true);
+            this.textures.set(key, texture);
+            return texture;
+        }
+
+        fmt.println("Image shape: failed to decode base64 image data");
+        this.failed.set(key, true);
+        return none;
+    }
+}
+
 // Draws one shape's content into whatever tile canvas `r` is currently
 // bound to (already in tile-local mm-space via Canvas.setViewProj, so no
 // CPU-side transform is needed here -- raw mm vertices go straight in).
 // `level` is the tile pyramid level this content is being rendered at --
 // see TskLineShape.ensureTesselated for why tesselation is cached per
 // level rather than once per shape.
-fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int) {
+fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int, imageCache: mut ImageTextureCache) {
     if shape is TskLineShape {
         let tess = shape.ensureTesselated(level);
         if tess.indices.length > 0 {
@@ -29,13 +94,22 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int) {
     }
     else if shape is TskImageShape {
         let bbox = shape.getBBox();
-        r.drawRect({
-            pos: Vec2(bbox.left, bbox.top),
-            size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
-            fillColor: Color(0.6, 0.6, 0.9, 1.0),
-            borderColor: Color(0.2, 0.2, 0.6, 1.0),
-            borderThickness: 0.5,
-        });
+        let texture = imageCache.getOrCreate(r, shape);
+        if texture {
+            r.drawTexture({
+                texture: texture,
+                pos: Vec2(bbox.left, bbox.top),
+                size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+            });
+        } else {
+            r.drawRect({
+                pos: Vec2(bbox.left, bbox.top),
+                size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+                fillColor: Color(0.6, 0.6, 0.9, 1.0),
+                borderColor: Color(0.2, 0.2, 0.6, 1.0),
+                borderThickness: 0.5,
+            });
+        }
     }
     else if shape is TskTextblockShape {
         let bbox = shape.getBBox();
@@ -56,7 +130,7 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int) {
 // page whose bbox overlaps the tile's page-local rect. Always a full redraw
 // of the tile (not incremental per-shape), which is what makes
 // markShapeDirty()'s "just mark it invalid" enough.
-fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame) {
+fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame, imageCache: mut ImageTextureCache) {
     let r = renderer.gfx.Renderer(frame, tile.canvas);
 
     tile.canvas.setViewProj(mat4.ortho(
@@ -90,7 +164,7 @@ fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeigh
 
     for shape in page.shapes {
         if shapeBBox(shape).overlaps(tileBBox) {
-            drawShapeInto(r, shape, tile.key.level);
+            drawShapeInto(r, shape, tile.key.level, imageCache);
         }
     }
 
@@ -119,6 +193,7 @@ struct DocumentRenderer {
     pool: mut TilePool;
     pages: []mut PageTileState = [];
     viewport: Viewport = {};
+    imageCache: mut ImageTextureCache = {};
 
     // Zoom-settle tracking (see render() below).
     lastZoomPxPerMm: real = 0.0;
@@ -326,7 +401,7 @@ struct DocumentRenderer {
 
                 for tile in page.slots.values {
                     if !tile.valid {
-                        renderTileContent(tile, doc.data.pages[i], doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame);
+                        renderTileContent(tile, doc.data.pages[i], doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame, this.imageCache);
                         tile.valid = true;
                     }
                 }

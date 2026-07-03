@@ -129,7 +129,12 @@ struct TskImageShape {
   size: Vec2;
   base64ImageData: str;
   bbox?: BBox;
-  // Image/Canvas/Texture element reference
+  // The decoded GPU texture is cached outside the document model entirely
+  // (DocumentRenderer.imageTextures, keyed by base64ImageData) rather than
+  // as a field here: this struct participates in json.parse/json.stringify
+  // for the whole document, and a field whose type reaches into opaque
+  // wgpu FFI handles breaks that generic codegen (sizeof on an
+  // intentionally-incomplete C struct) even when marked [[json.ignore]].
 
   fn getBBox(): BBox {
     if this.bbox {
