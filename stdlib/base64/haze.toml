@@ -1,0 +1,6 @@
+name = "base64"
+version = "1.0.0"
+description = "Base64 encoding/decoding for Haze -- convert between Bytes and base64-encoded strings (RFC 4648)"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

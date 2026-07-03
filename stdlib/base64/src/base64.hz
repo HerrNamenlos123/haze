@@ -1,0 +1,48 @@
+
+__c__("#include \"ffi/haze_base64.c\"");
+export __c__("#include \"ffi/public/haze_base64.h\"");
+
+namespace ffi {
+    export extern C fn haze_base64_encode(data: cptr, length: int): str :: final;
+    export extern C fn haze_base64_decode(data: str): haze_base64_decode_result_t :: final;
+
+    export extern C noemit inline struct haze_base64_decode_result_t {
+        success: bool;
+        data: cptr;
+        length: int;
+        error: str;
+    }
+}
+
+export struct Error {
+    message: str;
+}
+
+// Encodes arbitrary bytes into a Base64 (RFC 4648) string. Always succeeds --
+// any byte sequence has a valid Base64 representation.
+export fn encode(data: Bytes): str {
+    let ptr = none as cptr;
+    let length = 0;
+    __c__("ptr = data.basePtr + data.offset;");
+    __c__("length = data.length;");
+
+    return ffi.haze_base64_encode(ptr, length);
+}
+
+// Decodes a Base64 (RFC 4648) string back into raw bytes. Fails if the input
+// length isn't a multiple of 4, or it contains characters outside the Base64
+// alphabet (or a misplaced '=' padding character).
+export fn decode(data: str): Result<Bytes, Error> {
+    let result = ffi.haze_base64_decode(data);
+    if !result.success {
+        return Error { message: result.error };
+    }
+
+    do unsafe {
+        let bytes: Bytes = uninitialized;
+        __c__("bytes.basePtr = result.data;");
+        __c__("bytes.offset = 0;");
+        __c__("bytes.length = result.length;");
+        return Result<Bytes, Error>.Ok(bytes);
+    };
+}
