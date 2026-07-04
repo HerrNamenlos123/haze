@@ -208,8 +208,11 @@ hzstd_dynamic_array_pop(hzstd_dynamic_array_t *da, void *out_elem) {
 }
 
 /* size / capacity accessors */
-static inline size_t hzstd_dynamic_array_size(const hzstd_dynamic_array_t *da) {
-  return da ? da->size : 0;
+// Signed to match Haze's `[]T.length: int` -- see the comment on
+// hzstd_str_t.length in hzstd_string.h for why an unsigned return type here
+// silently breaks signed comparisons like `arr.length > -1`.
+static inline int64_t hzstd_dynamic_array_size(const hzstd_dynamic_array_t *da) {
+  return da ? (int64_t)da->size : 0;
 }
 static inline size_t
 hzstd_dynamic_array_capacity(const hzstd_dynamic_array_t *da) {

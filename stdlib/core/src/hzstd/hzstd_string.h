@@ -7,7 +7,11 @@
 
 typedef struct hzstd_str_t {
   const char *data;
-  uint64_t length;
+  // Signed to match Haze's `str.length: int` -- keeping this unsigned (as a
+  // raw size_t would suggest) let comparisons like `str.length > -1` silently
+  // do the wrong thing, since C promotes the signed side to unsigned instead
+  // of performing the signed comparison Haze's type system promises.
+  int64_t length;
 } hzstd_str_t;
 
 #define HZSTD_STRING(str, len) ((hzstd_str_t){.data = str, .length = len})

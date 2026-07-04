@@ -1842,12 +1842,20 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
 
             const leftType = this.lr.typeDefNodes.get(
-              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.left).type)
-                .type
+              this.lr.typeUseNodes.get(
+                Lowered.resolveAlias(
+                  this.lr,
+                  this.lr.exprNodes.get(expr.left).type
+                )
+              ).type
             );
             const rightType = this.lr.typeDefNodes.get(
-              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.right).type)
-                .type
+              this.lr.typeUseNodes.get(
+                Lowered.resolveAlias(
+                  this.lr,
+                  this.lr.exprNodes.get(expr.right).type
+                )
+              ).type
             );
 
             const left = leftWriter.out.get();
@@ -1896,12 +1904,20 @@ class CodeGenerator {
             tempWriter.write(rightWriter.temp);
 
             const leftType = this.lr.typeDefNodes.get(
-              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.left).type)
-                .type
+              this.lr.typeUseNodes.get(
+                Lowered.resolveAlias(
+                  this.lr,
+                  this.lr.exprNodes.get(expr.left).type
+                )
+              ).type
             );
             const rightType = this.lr.typeDefNodes.get(
-              this.lr.typeUseNodes.get(this.lr.exprNodes.get(expr.right).type)
-                .type
+              this.lr.typeUseNodes.get(
+                Lowered.resolveAlias(
+                  this.lr,
+                  this.lr.exprNodes.get(expr.right).type
+                )
+              ).type
             );
 
             const left = leftWriter.out.get();
