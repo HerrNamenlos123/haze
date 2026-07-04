@@ -28,7 +28,7 @@ test_find() {
     assert(match.start == 6);
     assert(match.end == 11);
 
-    let slice = text.substr(match.start, match.end);
+    let slice = text.slice(match.start, match.end);
     assert(slice == "world");
 }
 
@@ -48,9 +48,9 @@ test_find_all() {
 
     assert(matches.length == 3);
 
-    assert(text.substr(matches[0].start, matches[0].end) == "1");
-    assert(text.substr(matches[1].start, matches[1].end) == "22");
-    assert(text.substr(matches[2].start, matches[2].end) == "333");
+    assert(text.slice(matches[0].start, matches[0].end) == "1");
+    assert(text.slice(matches[1].start, matches[1].end) == "22");
+    assert(text.slice(matches[2].start, matches[2].end) == "333");
 }
 
 test_zero_length() {

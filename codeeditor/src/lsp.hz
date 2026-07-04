@@ -397,12 +397,12 @@ fn update(syntaxEngine: LspIO.Context) {
 // //   pthread_mutex_unlock(&lsp.mutex);
 // }
 
-struct Token {
-  lineIndex: int;
-  startIndex: int;
-  endIndex: int;
-  scopes: []str;
-};
+// struct Token {
+//   lineIndex: int;
+//   startIndex: int;
+//   endIndex: int;
+//   scopes: []str;
+// };
 
 struct LSPHighlightResponse {
   tokens: []Token = [];
