@@ -8993,7 +8993,84 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const code = `__c__("return HZSTD_STRING_SUBSTR(this, start, end);");`;
+          const code = `__c__("return HZSTD_STRING_SUBSTR(this, start, length);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: ["start", "length"],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                exprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                sourceloc
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              exprTypeUse.type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              sourceloc
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: exprId,
+          },
+          sourceloc
+        );
+      }
+      if (name === "slice") {
+        const funcname = "__hz_string_slice_";
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [
+              { optional: false, type: this.sr.b.optionalIntType() },
+              {
+                optional: false,
+                type: this.sr.b.optionalIntType(),
+              },
+            ],
+            returnType: this.sr.b.strType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("return HZSTD_STRING_SLICE(this, start, end);");`;
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,

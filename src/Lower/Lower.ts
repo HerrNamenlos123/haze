@@ -133,6 +133,7 @@ export namespace Lowered {
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
     loweredGlobalVariables: Lowered.StatementId[];
+    loweredGlobalVariableSymbols: Map<Semantic.SymbolId, Lowered.StatementId>;
 
     loweredUnionMappings: TagMapping[];
 
@@ -4488,6 +4489,10 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
     }
 
     case Semantic.ENode.GlobalVariableDefinitionSymbol: {
+      if (lr.loweredGlobalVariableSymbols.has(symbolId)) {
+        return;
+      }
+
       const variableSymbol = lr.sr.symbolNodes.get(symbol.variableSymbol);
       assert(variableSymbol.variant === Semantic.ENode.VariableSymbol);
       assert(variableSymbol.type);
@@ -4533,9 +4538,10 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       });
       assert(
         flattened.length === 0,
-        "Global variables cannot take multi line expressions, rewrite it as scope expression"
+        "Global variables cannot take multi line expressions, rewrite it as scope expression: " +
       );
       lr.loweredGlobalVariables.push(pId);
+      lr.loweredGlobalVariableSymbols.set(symbolId, pId);
       return;
     }
 
@@ -4823,6 +4829,7 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
     loweredGlobalVariables: [],
+    loweredGlobalVariableSymbols: new Map(),
 
     loweredUnionMappings: [],
 
