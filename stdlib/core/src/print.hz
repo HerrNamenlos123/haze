@@ -125,6 +125,20 @@ namespace fmt {
                 }
             }
         }
+        else if comptime T.category == meta.TypeCategory.Array || T.category == meta.TypeCategory.DynamicArray {
+            format_to_proxy<str>(writer, "[", {});
+            for element, i in value {
+                // TODO: This is actually incorrect for escape characters and we would have to preformat each element
+                // and use string escaping to make it correct
+                format_to_proxy<str>(writer, "\"", {});
+                format_to_proxy<T.elementType>(writer, element, args);
+                format_to_proxy<str>(writer, "\"", {});
+                if i != value.length - 1 {
+                    format_to_proxy<str>(writer, ", ", {});
+                }
+            }
+            format_to_proxy<str>(writer, "]", {});
+        }
         else {
             format_to(writer, value as T.baseType, args);
         }
