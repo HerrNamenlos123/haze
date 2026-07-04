@@ -363,7 +363,11 @@ export struct ComponentInstance {
     }
 
     struct ElementCache {
-        id: int;
+        // Full slash-separated id path from the component root (see
+        // RenderContext.idPath), not the bare per-level id -- ids only need
+        // to be unique among siblings, so the path is what actually
+        // identifies an element within this component's flat cache.
+        path: str;
         element: mut ui_elements.Element;
     }
 
@@ -380,39 +384,39 @@ export struct ComponentInstance {
     crashed: bool = false;
     crashInfo: sys.PanicInfo | none = none;
 
-    fn getOrCreateDiv(id: int): mut ui_elements.DivElement {
+    fn getOrCreateDiv(path: str, id: int): mut ui_elements.DivElement {
         for n in this.elementsById {
-            if n.id == id {
+            if n.path == path {
                 assert(n.element is mut ui_elements.DivElement, "Div expected but other node type encountered");
                 return n.element;
             }
         }
         let newElement = ui_elements.DivElement({ id: id, style: {} });
-        this.elementsById.push({ id: id, element: newElement });
+        this.elementsById.push({ path: path, element: newElement });
         return newElement;
     }
 
-    fn getOrCreateText(id: int): mut ui_elements.TextElement {
+    fn getOrCreateText(path: str, id: int): mut ui_elements.TextElement {
         for n in this.elementsById {
-            if n.id == id {
+            if n.path == path {
                 assert(n.element is mut ui_elements.TextElement, "Text element expected but other node type encountered");
                 return n.element;
             }
         }
         let newElement = ui_elements.TextElement({ id: id, text: "", style: {} });
-        this.elementsById.push({ id: id, element: newElement });
+        this.elementsById.push({ path: path, element: newElement });
         return newElement;
     }
 
-    fn getOrCreateCanvas(id: int): mut ui_elements.CanvasElement {
+    fn getOrCreateCanvas(path: str, id: int): mut ui_elements.CanvasElement {
         for n in this.elementsById {
-            if n.id == id {
+            if n.path == path {
                 assert(n.element is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
                 return n.element;
             }
         }
         let newElement = ui_elements.CanvasElement({ id: id, style: {} });
-        this.elementsById.push({ id: id, element: newElement });
+        this.elementsById.push({ path: path, element: newElement });
         return newElement;
     }
 
@@ -447,6 +451,12 @@ export struct ComponentInstance {
 export struct RenderContext {
     currentComponent: ComponentInstance;
     currentParent: ui_elements.DivElement;
+    // Slash-separated path of element ids from the component root down to
+    // currentParent (e.g. "0/3"), mirroring the idPath convention ui_layout.hz
+    // uses for the same tree. Element ids only need to be unique among
+    // siblings, so this is what actually keys ComponentInstance.elementsById --
+    // the bare int id alone is not enough, since it repeats at every depth.
+    idPath: str;
 }
 
 export struct InstanceData<TProps> {
@@ -1094,6 +1104,18 @@ export opaque struct UIContext {
         return this.renderStack[this.renderStack.length - 1].currentComponent;
     }
 
+    fn getCurrentIdPath(): str {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].idPath;
+    }
+
+    // Same convention ui_layout.hz uses to build its idPath while walking the
+    // rendered tree, kept in sync here so both sides agree on what "the path
+    // to this element" means.
+    fn childIdPath(parentPath: str, id: int): str {
+        return parentPath == "" ? f"{id}" : parentPath + "/" + f"{id}";
+    }
+
     fn getCurrentParent() {
         assert(this.renderStack.length > 0);
         return this.renderStack[this.renderStack.length - 1].currentParent;
@@ -1148,7 +1170,7 @@ export opaque struct UIContext {
                 instance.rootElement.children = [];
 
                 if instance.crashed && instance.crashInfo {
-                    let errEl = instance.getOrCreateText(-1);
+                    let errEl = instance.getOrCreateText("-1", -1);
                     errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
                     instance.rootElement.children.push(errEl);
@@ -1160,6 +1182,7 @@ export opaque struct UIContext {
                 this.pushRenderContext({
                     currentComponent: instance,
                     currentParent: instance.rootElement,
+                    idPath: "",
                 });
 
                 assert(instance.currentTemplate);
@@ -1173,7 +1196,7 @@ export opaque struct UIContext {
                     while this.renderStack.length > stackDepthBefore {
                         this.popRenderContext();
                     }
-                    let errEl = instance.getOrCreateText(-1);
+                    let errEl = instance.getOrCreateText("-1", -1);
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
                     instance.rootElement.children.push(errEl);
@@ -1317,7 +1340,8 @@ export opaque struct UIContext {
     }
 
     fn div(props: DivProps, childrenFn: () => void) {
-        let element = this.getCurrentComponent().getOrCreateDiv(props.id);
+        let idPath = this.childIdPath(this.getCurrentIdPath(), props.id);
+        let element = this.getCurrentComponent().getOrCreateDiv(idPath, props.id);
 
         let rawStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawStyle := props.style; }
@@ -1352,6 +1376,7 @@ export opaque struct UIContext {
         this.pushRenderContext({
             currentComponent: this.getCurrentComponent(),
             currentParent: element,
+            idPath: idPath,
         });
 
         childrenFn();
@@ -1368,7 +1393,8 @@ export opaque struct UIContext {
     }
 
     fn text(props: TextProps) {
-        let element = this.getCurrentComponent().getOrCreateText(props.id);
+        let idPath = this.childIdPath(this.getCurrentIdPath(), props.id);
+        let element = this.getCurrentComponent().getOrCreateText(idPath, props.id);
 
         element.text := props.text;
         let rawTextStyle: ui_styling.TextStyle = {};
@@ -1400,7 +1426,8 @@ export opaque struct UIContext {
     // redrawn every frame, draw imperatively whenever via drawToCanvas()
     // (e.g. from an event handler) instead of passing drawFn here.
     fn canvas(props: CanvasProps, drawFn?: CanvasDrawFn) {
-        let element = this.getCurrentComponent().getOrCreateCanvas(props.id);
+        let idPath = this.childIdPath(this.getCurrentIdPath(), props.id);
+        let element = this.getCurrentComponent().getOrCreateCanvas(idPath, props.id);
 
         let rawCanvasStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawCanvasStyle := props.style; }
