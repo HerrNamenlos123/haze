@@ -256,7 +256,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.wGrow(),
                     presets.hGrow(),
                     presets.col(),
-                    presets.bg("#333"),
+                    presets.bg("#181818"),
                     presets.p(8),
                 ],
                 onClick: (event: ui_components.PointerEvent) => {
@@ -320,8 +320,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     ui.div({
                         id: lineIndex,
                     }, (): void => {
-                        for t, i in finalTokens {
-                            ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
+                        if finalTokens.length > 0 {
+                            for t, i in finalTokens {
+                                ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
+                            }
+                        }
+                        else {
+                            ui.text({ id: 0, text: "" });
                         }
                     });
                 };
