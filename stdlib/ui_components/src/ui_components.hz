@@ -489,6 +489,9 @@ export opaque struct UIContext {
     _mousePosCb: (() => Vec2);
     _pointerButtons?: PointerHeldCallbacks;
     _inputExtras?: InputExtrasCallbacks;
+    // Optional so a headless/test UIContext (no layout engine wired up) can
+    // still be constructed -- measureText() below asserts before using it.
+    _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
 
     _prevLeftHeld: bool = false;
     _prevMiddleHeld: bool = false;
@@ -524,6 +527,7 @@ export opaque struct UIContext {
         mousePos: () => Vec2;
         pointerButtons?: PointerHeldCallbacks;
         inputExtras?: InputExtrasCallbacks;
+        measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
     }
 
     fn constructor(args: UIContextArgs) {
@@ -536,6 +540,7 @@ export opaque struct UIContext {
             _mousePosCb: args.mousePos,
             _pointerButtons: args.pointerButtons,
             _inputExtras: args.inputExtras,
+            _measureText: args.measureText,
         };
 
         // UI Context depends on itself
@@ -556,6 +561,18 @@ export opaque struct UIContext {
 
     fn now(): real {
         return this._timeNow;
+    }
+
+    // Measures a standalone run of text (e.g. a single word or label) by
+    // font family name -- resolves the same way and uses the same real
+    // glyph-advance measurement the layout engine applies when it actually
+    // lays this text out (see ui_runtime.Runtime, which wires this up),
+    // so a component can size itself around text before/without waiting on
+    // a layout pass. Callable from anywhere ui (UIContext) is reachable,
+    // e.g. from inside a component's setup or template closure.
+    fn measureText(fontFamily: str, fontSize: real, text: str): Vec2 {
+        assert(this._measureText, "measureText was not provided to this UIContext (see UIContextArgs.measureText)");
+        return this._measureText(fontFamily, fontSize, text);
     }
 
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.

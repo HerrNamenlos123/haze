@@ -368,11 +368,12 @@ export opaque struct Context {
         }
     }
 
-    fn getCurrentFont(ctx: TreeTraverseContext) {
-        assert(ctx.fontFamilyStack.length > 0);
-
-        // Find the font
-        let font = this.getFont(ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1]);
+    // Resolves a font family name to its registered id, falling back to
+    // "default" the same way the tree-walk cascade does -- shared by
+    // getCurrentFont (below) and the standalone measureText() so both agree
+    // on exactly which font a given family name means.
+    fn resolveFontId(fontFamily: str) {
+        let font = this.getFont(fontFamily);
         if font {
             return font;
         }
@@ -383,6 +384,21 @@ export opaque struct Context {
         }
 
         sys.panic("Font could not be found and default font is not available. Default font must always exist.");
+    }
+
+    fn getCurrentFont(ctx: TreeTraverseContext) {
+        assert(ctx.fontFamilyStack.length > 0);
+        return this.resolveFontId(ctx.fontFamilyStack[ctx.fontFamilyStack.length - 1]);
+    }
+
+    // Measures a standalone run of text (e.g. a single word or label) outside
+    // of a Clay layout pass -- same font-name resolution (falls back to
+    // "default") and the same real glyph-advance measurement callback the
+    // tree walk itself uses (see processTreeElement's TextElement branch),
+    // so the result always agrees with how this text would actually lay out.
+    fn measureText(fontFamily: str, fontSize: real, text: str): Vec2 {
+        let fontId = this.resolveFontId(fontFamily);
+        return this.measureTextBox.value(fontId, fontSize, text);
     }
 
     fn getCurrentFontSize(ctx: TreeTraverseContext) {

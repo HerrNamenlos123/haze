@@ -46,6 +46,9 @@ export opaque struct Runtime {
             mousePos: args.mousePos,
             pointerButtons: args.pointerButtons,
             inputExtras: args.inputExtras,
+            measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
+                return layout.measureText(fontFamily, fontSize, text);
+            },
         });
         return Runtime {
             gfx: args.gfx,
@@ -53,6 +56,17 @@ export opaque struct Runtime {
             ui: ui,
             dpiScale: args.windowState.dpiScale as real,
         };
+    }
+
+    // Measures a standalone run of text (e.g. a single word or label) by
+    // font family name -- the same font-name resolution and real
+    // glyph-advance measurement the layout engine itself uses during a
+    // render pass, but callable any time (before the first frame, from an
+    // event handler, ...), not just while a UI tree is being built. Use
+    // ui.measureText() instead from inside component code, which doesn't
+    // have direct access to this Runtime handle.
+    fn measureText(fontFamily: str, fontSize: real, text: str): Vec2 {
+        return this.layout.measureText(fontFamily, fontSize, text);
     }
 
     // Call whenever the render target's logical size or DPI scale changes.
