@@ -655,8 +655,10 @@ bool hzstd_get_cwd(char* buf, size_t buf_size) { return getcwd(buf, buf_size) !=
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
 
-static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_str_t* arr, size_t count)
+static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_dynamic_array_t* arr)
 {
+  size_t count = hzstd_dynamic_array_size(arr);
+  hzstd_str_t* elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(arr);
   char** out = malloc(sizeof(char*) * (count + 2));
   if (!out) {
     return NULL;
@@ -667,7 +669,7 @@ static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe,
     return NULL;
   }
   for (size_t i = 0; i < count; ++i) {
-    out[i + 1] = strdup(arr[i].data);
+    out[i + 1] = strdup(elems[i].data);
     if (!out[i + 1]) {
       for (size_t j = 0; j <= i; ++j) {
         free(out[j]);
@@ -740,11 +742,9 @@ static inline void process_set_error_message(hzstd_process_result_t* out, int er
 }
 
 int hzstd_spawn_process(hzstd_str_t exe,
-                        hzstd_str_t* argv,
-                        size_t argc,
-                        hzstd_str_t* envp,
-                        size_t envc,
-                        hzstd_str_t* cwd,
+                        hzstd_dynamic_array_t* argv,
+                        hzstd_dynamic_array_t* envp,
+                        hzstd_str_t cwd,
                         bool inherit_stdio,
                         hzstd_process_result_t* out)
 {
@@ -777,13 +777,15 @@ int hzstd_spawn_process(hzstd_str_t exe,
     posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
   }
 
-  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv, argc);
+  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
   if (!argv_c) {
     return ENOMEM;
   }
 
+  size_t envc = hzstd_dynamic_array_size(envp);
+  hzstd_str_t* env_elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(envp);
   char** envp_c = NULL;
-  if (envp) {
+  if (envc > 0) {
     envp_c = malloc(sizeof(char*) * (envc + 1));
     if (!envp_c) {
       for (size_t i = 0; argv_c[i]; ++i) {
@@ -793,12 +795,12 @@ int hzstd_spawn_process(hzstd_str_t exe,
       return ENOMEM;
     }
     for (size_t i = 0; i < envc; ++i) {
-      envp_c[i] = strdup(envp[i].data);
+      envp_c[i] = strdup(env_elems[i].data);
     }
     envp_c[envc] = NULL;
   }
 
-  char* cwd_c = cwd ? strdup(cwd->data) : NULL;
+  char* cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
 #ifdef __linux__
   if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
@@ -806,7 +808,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
 #endif
 
   pid_t pid;
-  int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp ? envp_c : environ);
+  int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp_c ? envp_c : environ);
 
   for (size_t i = 0; argv_c[i]; ++i) {
     free(argv_c[i]);

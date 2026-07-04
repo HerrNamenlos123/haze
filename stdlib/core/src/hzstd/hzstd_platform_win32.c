@@ -459,12 +459,14 @@ static inline char *hzstd_strdup_gc(const char *src) {
   return buf;
 }
 
-static inline char **process_str_array_to_cstrv(hzstd_str_t *arr, size_t count) {
+static inline char **process_str_array_to_cstrv(hzstd_dynamic_array_t *arr) {
+  size_t count = hzstd_dynamic_array_size(arr);
+  hzstd_str_t *elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(arr);
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   char **out = hzstd_allocate(allocator, sizeof(char *) * (count + 1));
   if (!out) return NULL;
   for (size_t i = 0; i < count; ++i) {
-    out[i] = hzstd_cstr_from_str(allocator, arr[i]);
+    out[i] = hzstd_cstr_from_str(allocator, elems[i]);
     if (!out[i]) return NULL;
   }
   out[count] = NULL;
@@ -554,8 +556,8 @@ static inline void process_set_error_message(hzstd_process_result_t *out,
   }
 }
 
-int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
-                        hzstd_str_t *envp, size_t envc, hzstd_str_t *cwd,
+int hzstd_spawn_process(hzstd_str_t exe, hzstd_dynamic_array_t *argv,
+                        hzstd_dynamic_array_t *envp, hzstd_str_t cwd,
                         bool inherit_stdio, hzstd_process_result_t *out) {
   out->exit_code   = -1;
   out->stdout_data = NULL;
@@ -565,9 +567,10 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
   char *exe_c = hzstd_cstr_from_str(allocator, exe);
   if (!exe_c) return ENOMEM;
 
-  char **argv_c = process_str_array_to_cstrv(argv, argc);
+  char **argv_c = process_str_array_to_cstrv(argv);
   if (!argv_c)  return ENOMEM;
 
+  size_t argc = hzstd_dynamic_array_size(argv);
   char *cmdline = hzstd_quote_windows_arg(exe_c);
   for (size_t i = 0; i < argc; ++i) {
     char *q   = hzstd_quote_windows_arg(argv_c[i]);
@@ -575,7 +578,7 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_str_t *argv, size_t argc,
     cmdline   = hzstd_append_gc(allocator, cmdline, q);
   }
 
-  char *cwd_c = cwd ? hzstd_cstr_from_str(allocator, *cwd) : NULL;
+  char *cwd_c = cwd.length > 0 ? hzstd_cstr_from_str(allocator, cwd) : NULL;
 
   SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
   HANDLE stdout_read = NULL, stdout_write = NULL;

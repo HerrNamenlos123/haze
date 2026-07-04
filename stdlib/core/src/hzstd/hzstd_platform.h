@@ -67,11 +67,9 @@ typedef struct {
 } hzstd_process_result_t;
 
 int hzstd_spawn_process(hzstd_str_t exe,
-                        hzstd_str_t* argv,
-                        size_t argc,
-                        hzstd_str_t* envp, /* may be NULL → inherit */
-                        size_t envc,
-                        hzstd_str_t* cwd, /* may be NULL */
+                        hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
+                        hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
+                        hzstd_str_t cwd, /* empty → use current working directory */
                         bool inherit_stdio,
                         hzstd_process_result_t* out);
 

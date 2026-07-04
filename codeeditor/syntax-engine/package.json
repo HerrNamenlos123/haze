@@ -1,0 +1,15 @@
+{
+  "name": "syntax-engine",
+  "version": "1.0.0",
+  "description": "",
+  "main": "syntax-engine.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  }
+}

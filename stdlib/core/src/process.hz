@@ -8,62 +8,39 @@ namespace process {
   };
 
   extern C noemit fn hzstd_spawn_process(exe: str,
-                        argv: cptr, // hzstd_str_t[]
-                        argc: usize,
-                        envp: cptr, // hzstd_str_t[], may be NULL → inherit
-                        envc: usize,
-                        cwd: cptr, // hzstd_str_t*, may be NULL
+                        argv: []str,
+                        envp: []str, // empty → inherit
+                        cwd: str, // empty → use current working directory
                         inherit_stdio: bool,
                         out: hzstd_process_result_t): int :: final;
 
   export struct Options {
     env: []str = [];
     cwd: str | none = none;
-    inherit_stdio: bool = false;
+    inherit_stdio: bool = true;
   }
 
-  export fn run(exe: str, args: []str, options?: Options): Result<none, int> {
+  export fn run(exe: str, args: []str, options: Options = {}): Result<none, int> {
     // TODO: The c function expects env variables like ["CC=asdf", "CXX=asdfasdf"]. The stdlib API
     // should have an interface like env: { CC: "asdf", CXX: "asdfasdf" }. Need to find a way
     // to allow this kind of syntax, possibly with templates and anonymous structs.
 
-    let argv: cptr = none;
-    let envp: cptr = none;
-    let cwdValue = "";
-    let cwd: cptr = none;
-    let inherit_stdio = false;
-    let envc = 0;
-    __c__("argv = args->buffer;");
-
-    if options {
-      if options.env.length > 0 {
-        let envArray = options.env;
-        __c__("envp = envArray->buffer;");
-        envc = options.env.length;
-      }
-      inherit_stdio = options.inherit_stdio;
-      let _cwd = options.cwd;
-      if _cwd {
-        cwdValue = _cwd;
-        __c__("cwd = &cwdValue;");
-      }
+    let cwd = "";
+    let userCwd = options.cwd;
+    if userCwd {
+      assert(userCwd.length > 0, "process.run: options.cwd must not be empty");
+      cwd = userCwd;
     }
 
-    let argsLength = args.length;
-    assert(argsLength >= 0);
-
-    let envCount = envc;
-    assert(envCount >= 0);
-
     let out = hzstd_process_result_t {};
-    let result = hzstd_spawn_process(exe, argv, argsLength, envp, envCount, cwd, inherit_stdio, out);
+    let result = hzstd_spawn_process(exe, args, options.env, cwd, options.inherit_stdio, out);
     if result != 0 {
       return Result<none, int>.Err(out.exit_code);
-    } 
+    }
 
     if out.exit_code != 0 {
       return Result<none, int>.Err(out.exit_code);
-    } 
+    }
 
     return Result<none, int>.Ok(none);
   }
