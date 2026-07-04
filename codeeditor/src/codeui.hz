@@ -205,7 +205,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 }
 
                 for selector in selectors {
-                    if selector.length > bestLength && scopeSelectorMatches(selector, scope) {
+                    // >= (not >): themes commonly repeat the same scope with
+                    // a later, more specific rule meant to override an
+                    // earlier default (e.g. a generic "string" rule, then a
+                    // later "string" rule paired with other selectors). Real
+                    // TextMate/VS Code matching lets the later entry in
+                    // tokenColors win on a specificity tie, like a cascade.
+                    if selector.length >= bestLength && scopeSelectorMatches(selector, scope) {
                         if tokenColor.settings.foreground {
                             bestForeground = tokenColor.settings.foreground;
                             bestLength = selector.length;
@@ -222,9 +228,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let defaultTextColor = (): Color => "#FFF";
 
+        // TextMate scope stacks go from least specific to most specific
+        // (e.g. ["source.ts", "meta.block.ts", "keyword.control.ts"]), and
+        // themes are meant to be matched against the *most specific* scope
+        // first -- broad structural scopes like "meta.block" would otherwise
+        // shadow the token's actual, more specific classification.
         let getFirstScopeColor = (scopes: []str): Color => {
-            for scope in scopes {
-                let color = getScopeColor(scope);
+            for (let i = scopes.length - 1; i >= 0; i--) {
+                let color = getScopeColor(scopes[i]);
                 if color {
                     return color;
                 }
