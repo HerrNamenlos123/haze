@@ -216,7 +216,9 @@ namespace json {
     }
 
     export fn parseJsonArray<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
-        if !ffi.hzstd_json_is_array(node) { sys.panic("JSON type mismatch: expected array"); }
+        if !ffi.hzstd_json_is_array(node) {
+            return Error { error: "JSON type mismatch: expected array" };
+        }
         let arr: T = [];
         let count = ffi.hzstd_json_get_array_size(allocator, node);
         for (let i: usize = 0; i < count; i++) {
@@ -443,19 +445,33 @@ namespace json {
                 // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
                 // `none` is excluded here: by the time we have a real node, the value is present, and `none`
                 // (undefined/absent) can only ever come from a missing key, which is handled upstream.
+                let attemptErrors: []str = [];
                 for comptime Variant in T.variants {
                     if comptime Variant is not none {
                         // Node is this type, return it
                         // Store function in variable and then call it to work around a very weird compiler bug
                         // that fails to resolve Variant otherwise
+                        const comptime variantName = Variant.prettyName;
                         let parseFunc = parseJsonNodeFromFfi<Variant>;
-                        if let result = parseFunc(allocator, node) {
-                            return Result<T, Error>.Ok(result);
+                        let attemptResult = parseFunc(allocator, node);
+                        if attemptResult {
+                            return Result<T, Error>.Ok(attemptResult);
+                        }
+                        else {
+                            attemptErrors.push(f"{variantName}: {attemptResult.error}");
                         }
                     }
                 }
 
-                return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value" };
+                let combinedErrors = "";
+                for attemptError, i in attemptErrors {
+                    if i > 0 {
+                        combinedErrors = combinedErrors + "; ";
+                    }
+                    combinedErrors = combinedErrors + attemptError;
+                }
+
+                return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value ({combinedErrors})" };
             }
         }
         else {

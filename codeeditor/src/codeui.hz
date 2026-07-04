@@ -58,6 +58,33 @@ fn split(string: str, delimiter: str): []str {
   sys.unreachable();
 }
 
+fn trim(string: str): str {
+    let start = 0;
+    while start < string.length && (string[start] == b" " || string[start] == b"\t") {
+        start++;
+    }
+
+    let end = string.length;
+    while end > start && (string[end - 1] == b" " || string[end - 1] == b"\t") {
+        end--;
+    }
+
+    return string.substr(start, end - start);
+}
+
+// A TextMate scope selector matches a token's scope if it is the whole
+// scope, or a dot-separated prefix of it (e.g. "string" matches
+// "string.quoted.double", but not "stringify").
+fn scopeSelectorMatches(selector: str, scope: str): bool {
+    if selector.length == 0 || selector.length > scope.length {
+        return false;
+    }
+    if !startsWith(scope, selector) {
+        return false;
+    }
+    return selector.length == scope.length || scope[selector.length] == b".";
+}
+
 struct State {
     highlightEngine: HighlightEngine;
     highlightCommands: []HighlightCommand = [];
@@ -85,12 +112,12 @@ struct HighlightToken {
 struct VscodeTheme {
   struct TokenColor {
     name?: str;
-    scopes: []str;
+    scope: str | []str;
     settings: Settings;
 
     struct Settings {
-      foreground: str;
-      fontStyle: str;
+      foreground?: str;
+      fontStyle?: str;
     };
   };
 
@@ -103,6 +130,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
         let doc = rx.reactive<str | none>(none);
+
+        let theme = rx.reactive<VscodeTheme | none>(none);
 
         let load = () => {
             if cache.data.file {
@@ -137,53 +166,59 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         });
 
         let loadTheme = () => {
-            // auto file = fs::read(app->persistentApplicationArena, "resources/catppuccin-mocha.json");
-            let file = fs.readText("resources/obsidian-radiance-dark.json");
+            let file = fs.readText("codeeditor/resources/obsidian-radiance-dark.json");
             if !file {
                 fmt.println("Failed to load theme");
                 return;
             }
 
-            let theme = VscodeTheme {};
-            let j = json.parseToJsonNode(file);
-            for tokenColor in json["tokenColors"].to<[]str>()) {
-                VscodeTheme::TokenColor token;
-                token.scopes = { app->appArena };
-
-                if (tokenColor.has("name")) {
-                token.name = try(tokenColor["name"].as<String>());
-                }
-
-                if (tokenColor["scope"].isArray()) {
-                for (auto scope : try(tokenColor["scope"].array())) {
-                    token.scopes.push(try(scope.as<String>()));
-                }
-                } else if (tokenColor["scope"].isString()) {
-                token.scopes.push(try(tokenColor["scope"].as<String>()));
-                } else {
-                assert(false && "In Theme, 'scope' is neither an array, nor a string");
-                }
-
-                auto settings = try(tokenColor["settings"].object());
-                if (settings.has("foreground")) {
-                token.settings.foreground = try(settings["foreground"].as<String>());
-                }
-                if (settings.has("fontStyle")) {
-                token.settings.fontStyle = try(settings["fontStyle"].as<String>());
-                }
-
-                theme.tokenColors.push(token);
+            let result = json.parse<VscodeTheme>(file);
+            if !result {
+                fmt.println("Failed to parse theme: ", result);
+                return;
             }
-            app->theme = theme;
-            return Ok {};
-        }
+
+            theme := result;
+        };
 
         // ui.onMounted(() => {
         //     load();
         // });
         load();
+        loadTheme();
 
         let getScopeColor = (scope: str): Color | none => {
+            if !theme {
+                return none;
+            }
+
+            let bestForeground: str | none = none;
+            let bestLength = -1;
+
+            for tokenColor in theme.tokenColors {
+                let scopeField = tokenColor.scope;
+                let selectors: []str = [];
+                if scopeField is str {
+                    for part in split(scopeField, ",") {
+                        selectors.push(trim(part));
+                    }
+                } else {
+                    selectors = scopeField;
+                }
+
+                for selector in selectors {
+                    if selector.length > bestLength && scopeSelectorMatches(selector, scope) {
+                        if tokenColor.settings.foreground {
+                            bestForeground = tokenColor.settings.foreground;
+                            bestLength = selector.length;
+                        }
+                    }
+                }
+            }
+
+            if bestForeground {
+                return Color(bestForeground);
+            }
             return none;
         };
 
@@ -214,7 +249,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.col(),
                     presets.bg("#333"),
                     presets.p(8),
-                ]
+                ],
+                onClick: (event: ui_components.PointerEvent) => {
+                    let state = getState();
+                    let content = rx.get(doc);
+                    if content {
+                        state.highlightEngine.sendHighlightRequest(content);
+                    }
+                }
             }, (): void => {
                 let lines: []str = rx.get(docLines);
                 let id = 1;
@@ -258,20 +300,34 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     let currentIndex = 0;
                     let reconstructedLine = "";
 
+                    let tokens: []Token = [];
                     let hh: []HighlightResult = rx.get(highlights);
-                    for hhh in hh {
-                        for entry in hhh.tokens {
-                            let finalTokens = splitByTokens(lineIndex, line, tokens);
-                            for t in finalTokens {
-                                ui.text({ id: id++, text: t.text, presets: [presets.textColor(t.color)] });
-                            }
-                        }
+                    if hh.length > 0 {
+                        let hhh = hh[hh.length - 1];
+                        tokens = hhh.tokens;
                     }
+
+                    let finalTokens = splitByTokens(lineIndex, line, tokens);
+                    ui.div({
+                        id: id++,
+                    }, (): void => {
+                        for t in finalTokens {
+                            ui.text({ id: id++, text: t.text, presets: [presets.textColor(t.color)] });
+                        }
+                    });
                 };
 
-                for line, lineIndex in lines {
-                    printLine(lineIndex, line);
-                }
+                ui.div({
+                    id: id++,
+                    presets: [
+                        presets.fontFamily("JetBrainsMonoNerdFont-Regular"),
+                        presets.col(),
+                    ]
+                }, (): void => {
+                    for line, lineIndex in lines {
+                        printLine(lineIndex, line);
+                    }
+                });
             });
         };
     });

@@ -21,11 +21,17 @@ fn main(): int {
             "test/Roboto-Regular.ttf"
         );
 
+        let monoFont = a.gfx.fontRenderer.fs.addFont(
+            "JetBrainsMonoNerdFont-Regular",
+            "codeeditor/resources/JetBrainsMonoNerdFont-Regular.ttf"
+        );
+
         let runtime = ui_runtime.Runtime({
             gfx: a.gfx,
             windowState: a.windowState,
             fonts: [
                 { name: "default", id: a.gfx.fontRenderer.defaultFont },
+                { name: "JetBrainsMonoNerdFont-Regular", id: monoFont },
                 { name: "roboto", id: font },
             ],
             mousePos: () => a.mousePos(),

@@ -111,4 +111,8 @@ namespace presets {
     export fn fontSize(value: real): ui_styling.FontSizeOp {
         return ui_styling.FontSizeOp { value: value };
     }
+
+    export fn fontFamily(value: str): ui_styling.FontFamilyOp {
+        return ui_styling.FontFamilyOp { value: value };
+    }
 }

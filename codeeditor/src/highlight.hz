@@ -21,7 +21,7 @@ struct HighlightRequest {
 }
 
 struct ResultObject {
-    tokens: []Token;
+    tokens?: []Token;
     initialized?: bool;
 }
 
@@ -67,13 +67,25 @@ struct HighlightEngine {
         if !this.highlightProcess.isAlive() {
             let result = this.highlightProcess.join();
             fmt.println(f"LSP exited with code {result}");
+            fmt.println(f"stdout:", this.highlightProcess.readStdout());
         }
+    }
+    
+    fn sendHighlightRequest(fileContent: str) {
+        let request = json.stringify(HighlightRequest {
+            id: 2,
+            method: "highlight",
+            fileContent: fileContent,
+        });
+        // fmt.println(request);
+        this.highlightProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
     }
 
     fn loop(): HighlightResult | none {
         this.aliveCheck();
 
-        this.inputBuffer = this.inputBuffer + this.highlightProcess.readStdout();
+        let newStdout = this.highlightProcess.readStdout();
+        this.inputBuffer = this.inputBuffer + newStdout;
 
         let contentLengthText = "Content-Length: ";
         if this.inputBuffer.length > 0 && !startsWith(this.inputBuffer, contentLengthText) {
@@ -103,9 +115,7 @@ struct HighlightEngine {
         // Extract response and shift remaining packet forward
         let response = this.inputBuffer.substr(headerLength, contentLength);
         let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
-        if remainingPacket.length > 0 {
-            this.inputBuffer = remainingPacket;
-        }
+        this.inputBuffer = remainingPacket;
 
         return this.processResponse(response);
     }
@@ -126,9 +136,13 @@ struct HighlightEngine {
                 fmt.println("Highlight Engine initialized");
             }
             else if j.id == 1 {
-                return {
-                    tokens: j.result.tokens,
+                let r = HighlightResult {
+                    tokens: [],
                 };
+                if (j.result.tokens) {
+                    r.tokens = j.result.tokens;
+                }
+                return r;
             }
             else {
                 fmt.println("Received unknown LSP response id: {}", j.id);

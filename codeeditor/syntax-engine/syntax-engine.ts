@@ -259,8 +259,8 @@ async function main() {
         }
         return {
           jsonrpc: "2.0",
-          // id: request.id,
-          id: 2,
+          id: request.id,
+          // id: 2,
           result: await highlight(request.fileContent),
         };
 
