@@ -3556,6 +3556,25 @@ export class SemanticElaborator {
       );
     }
 
+    // Register the symbol (with its type/value still unresolved) before
+    // elaborating its declared type or initializer. Elaborating those can
+    // recursively reach a reference back to this same global (e.g. a struct
+    // field type whose methods are eagerly elaborated and happen to use this
+    // global) before this call would otherwise have cached itself. Without
+    // registering early, that reentrant call sees a cache miss too, and both
+    // calls independently finish and register a distinct GlobalVariableDefinitionSymbol,
+    // producing two definitions for the same variable in the generated code.
+    const [variable, variableId] = this.sr.b.variableSymbol(
+      variableSymbol.name,
+      null as unknown as Semantic.TypeUseId,
+      variableSymbol.comptime,
+      null,
+      variableSymbol.mutability,
+      this.elaborateParentSymbolFromCache(variableSymbol.inScope),
+      variableSymbol.sourceloc
+    );
+    this.sr.elaboratedGlobalVariableSymbols.set(variableSymbolId, variableId);
+
     let type =
       (variableSymbol.type && this.elaborateDatatype(variableSymbol.type)) ||
       null;
@@ -3595,16 +3614,8 @@ export class SemanticElaborator {
       comptimeValue = conversionResult;
     }
 
-    const [variable, variableId] = this.sr.b.variableSymbol(
-      variableSymbol.name,
-      type,
-      variableSymbol.comptime,
-      comptimeValue,
-      variableSymbol.mutability,
-      this.elaborateParentSymbolFromCache(variableSymbol.inScope),
-      variableSymbol.sourceloc
-    );
-    this.sr.elaboratedGlobalVariableSymbols.set(variableSymbolId, variableId);
+    variable.type = type;
+    variable.comptimeValue = comptimeValue;
 
     if (global) {
       assert(variable.comptimeValue);
