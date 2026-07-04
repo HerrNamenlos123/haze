@@ -65,6 +65,7 @@ fn main(): int {
             reactiveCounter: rx.reactive<int>(0),
         });
 
+        buildSyntaxEngine();
         // let engine = installLSP();
         // if !engine {
         //     return 0;

@@ -93,7 +93,7 @@ struct HighlightEngine {
             return;
         }
         let request = json.stringify(HighlightRequest {
-            id: 2,
+            id: 1,
             method: "highlight",
             fileContent: fileContent,
         });

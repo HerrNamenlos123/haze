@@ -20,17 +20,22 @@ fn lspFilePaths(): []str {
   return [vueLspFilePath, "./node_modules/typescript/bin/tsc", "treesitter"];
 }
 
+let syntaxEngineDir = "codeeditor/syntax-engine";
+
+fn buildSyntaxEngine() {
+    return exec("bun build syntax-engine.ts --compile --outfile syntax-engine", {
+        cwd: syntaxEngineDir,
+    });
+}
+
 fn installLSP() {
-    let syntaxEngineDir = "codeeditor/syntax-engine";
 
     attempt {
         fmt.println("Building Syntax Engine...");
         exec("bun install", {
             cwd: syntaxEngineDir,
         })?!;
-        exec("bun build syntax-engine.ts --compile --outfile syntax-engine", {
-            cwd: syntaxEngineDir,
-        })?!;
+        buildSyntaxEngine()?!;
         fmt.println("Building Syntax Engine... Done");
 
         let files = lspFilePaths();

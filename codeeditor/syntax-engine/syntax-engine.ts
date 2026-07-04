@@ -1,7 +1,13 @@
 import fs from "fs";
-import path from "path";
 import vsctm, { type IRawGrammar } from "vscode-textmate";
 import oniguruma from "vscode-oniguruma";
+// `with { type: "file" }` makes Bun embed this asset into standalone
+// executables built via `bun build --compile`, and resolves to a real,
+// readable path both when run as a script and inside the compiled binary.
+// A plain fs.readFileSync(path.join(import.meta.dirname, ...)) does NOT
+// work once compiled, since import.meta.dirname then points into Bun's
+// virtual bundle filesystem, which doesn't contain node_modules.
+import onigWasmPath from "./node_modules/vscode-oniguruma/release/onig.wasm" with { type: "file" };
 // import mocha from "@catppuccin/vscode/themes/mocha.json" with { type: "json" };
 
 // https://github.com/shikijs/textmate-grammars-themes
@@ -23,12 +29,7 @@ function errorMessage(error: Error) {
 function initialize() {}
 
 async function highlight(file: string) {
-  const wasmBin = fs.readFileSync(
-    path.join(
-      import.meta.dirname,
-      "./node_modules/vscode-oniguruma/release/onig.wasm"
-    )
-  ).buffer;
+  const wasmBin = fs.readFileSync(onigWasmPath).buffer;
   const vscodeOnigurumaLib = oniguruma.loadWASM(wasmBin).then(() => {
     return {
       createOnigScanner: (patterns) => new oniguruma.OnigScanner(patterns),
