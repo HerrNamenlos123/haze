@@ -45,4 +45,84 @@ namespace process {
     return Result<none, int>.Ok(none);
   }
 
+  // ── Background processes ─────────────────────────────────────────────────
+
+  extern C noemit struct hzstd_process_spawn_result_t {
+    handle: cptr;
+    error_code: i32;
+    error_message: cstr;
+  };
+
+  extern C noemit fn hzstd_process_spawn(exe: str,
+                        argv: []str,
+                        envp: []str, // empty → inherit
+                        cwd: str): inline hzstd_process_spawn_result_t :: final; // empty → use current working directory
+
+  extern C noemit fn hzstd_process_read_stdout(handle: cptr): cstr :: final;
+  extern C noemit fn hzstd_process_read_stderr(handle: cptr): cstr :: final;
+  extern C noemit fn hzstd_process_write_stdin(handle: cptr, data: str): bool :: final;
+  extern C noemit fn hzstd_process_close_stdin(handle: cptr) :: final;
+  extern C noemit fn hzstd_process_is_alive(handle: cptr): bool :: final;
+  extern C noemit fn hzstd_process_join(handle: cptr): int :: final;
+  extern C noemit fn hzstd_process_release(handle: cptr) :: final;
+
+  export struct SpawnOptions {
+    env: []str = [];
+    cwd: str | none = none;
+  }
+
+  // A process spawned in the background via process.spawn. stdin/stdout/stderr
+  // are always piped, so the process can be interacted with while it runs.
+  export struct Process {
+    handle: cptr;
+
+    // Non-blocking. Reaps the child if it has already exited.
+    fn isAlive(): bool {
+      return hzstd_process_is_alive(this.handle);
+    }
+
+    // Non-blocking. Returns whatever output is currently buffered, or "" if none.
+    fn readStdout(): str {
+      return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stdout(this.handle));
+    }
+
+    // Non-blocking. Returns whatever output is currently buffered, or "" if none.
+    fn readStderr(): str {
+      return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stderr(this.handle));
+    }
+
+    // Writes to the child's stdin. Returns false if the pipe is closed or the write failed.
+    fn writeStdin(data: str): bool {
+      return hzstd_process_write_stdin(this.handle, data);
+    }
+
+    fn closeStdin() {
+      hzstd_process_close_stdin(this.handle);
+    }
+
+    // Blocks until the process exits and returns its exit code. Releases the
+    // underlying OS resources, so the Process must not be used afterwards.
+    fn join(): int {
+      let code = hzstd_process_join(this.handle);
+      hzstd_process_release(this.handle);
+      return code;
+    }
+  }
+
+  export fn spawn(exe: str, args: []str, options: SpawnOptions = {}): Result<Process, int> {
+    let cwd = "";
+    let userCwd = options.cwd;
+    if userCwd {
+      assert(userCwd.length > 0, "process.spawn: options.cwd must not be empty");
+      cwd = userCwd;
+    }
+
+    let result = hzstd_process_spawn(exe, args, options.env, cwd);
+    if result.error_code != 0 {
+      return Result<Process, int>.Err(result.error_code);
+    }
+
+    return Result<Process, int>.Ok(Process { handle: result.handle });
+  }
+
 }

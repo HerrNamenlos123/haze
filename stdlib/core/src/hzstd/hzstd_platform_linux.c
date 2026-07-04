@@ -15,6 +15,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -713,11 +714,8 @@ static inline char* read_all_fd_gc(int fd)
   return buf;
 }
 
-static inline void process_set_error_message(hzstd_process_result_t* out, int err)
+static inline char* process_build_error_message_gc(int err)
 {
-  if (!out) {
-    return;
-  }
   char buf[256];
   const char* msg = NULL;
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
@@ -730,14 +728,26 @@ static inline void process_set_error_message(hzstd_process_result_t* out, int er
     msg = "Unknown error";
   }
 #endif
-  if (msg) {
-    size_t len = strlen(msg);
-    char* gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
-    if (gc) {
-      memcpy(gc, msg, len);
-      gc[len] = '\0';
-      out->stderr_data = gc;
-    }
+  if (!msg) {
+    return NULL;
+  }
+  size_t len = strlen(msg);
+  char* gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+  if (gc) {
+    memcpy(gc, msg, len);
+    gc[len] = '\0';
+  }
+  return gc;
+}
+
+static inline void process_set_error_message(hzstd_process_result_t* out, int err)
+{
+  if (!out) {
+    return;
+  }
+  char* gc = process_build_error_message_gc(err);
+  if (gc) {
+    out->stderr_data = gc;
   }
 }
 
@@ -849,4 +859,257 @@ int hzstd_spawn_process(hzstd_str_t exe,
     close(stderr_pipe[0]);
   }
   return 0;
+}
+
+// ── Background process handle ────────────────────────────────────────────────
+
+typedef struct hzstd_process_t {
+  pid_t pid;
+  int stdin_fd; // write end, -1 once closed
+  int stdout_fd; // read end, non-blocking
+  int stderr_fd; // read end, non-blocking
+  bool exited;
+  int exit_code;
+} hzstd_process_t;
+
+static inline void process_set_nonblocking(int fd)
+{
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags != -1) {
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+}
+
+/* Reads whatever is currently available on a non-blocking fd. Returns "" (never NULL)
+ * once EAGAIN/EWOULDBLOCK or EOF is hit. */
+static inline char* process_read_available_gc(int fd)
+{
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  if (fd < 0) {
+    char* empty = hzstd_allocate(allocator, 1);
+    empty[0] = '\0';
+    return empty;
+  }
+
+  size_t cap = 4096, len = 0;
+  char* buf = hzstd_allocate(allocator, cap + 1);
+  for (;;) {
+    if (len + 2048 > cap) {
+      cap *= 2;
+      char* nb = hzstd_allocate(allocator, cap + 1);
+      memcpy(nb, buf, len);
+      buf = nb;
+    }
+    ssize_t r = read(fd, buf + len, cap - len);
+    if (r > 0) {
+      len += (size_t)r;
+      continue;
+    }
+    break; // r == 0 (EOF) or r < 0 (EAGAIN/EWOULDBLOCK/error)
+  }
+  buf[len] = '\0';
+  return buf;
+}
+
+hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
+                        hzstd_dynamic_array_t* argv,
+                        hzstd_dynamic_array_t* envp,
+                        hzstd_str_t cwd)
+{
+  hzstd_process_spawn_result_t result = { .handle = NULL, .error_code = 0, .error_message = NULL };
+
+  int stdin_pipe[2] = { -1, -1 };
+  int stdout_pipe[2] = { -1, -1 };
+  int stderr_pipe[2] = { -1, -1 };
+
+  if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+    result.error_code = errno;
+    result.error_message = process_build_error_message_gc(errno);
+    for (int i = 0; i < 2; ++i) {
+      if (stdin_pipe[i] >= 0) close(stdin_pipe[i]);
+      if (stdout_pipe[i] >= 0) close(stdout_pipe[i]);
+      if (stderr_pipe[i] >= 0) close(stderr_pipe[i]);
+    }
+    return result;
+  }
+
+  posix_spawn_file_actions_t actions;
+  posix_spawnattr_t attrs;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawnattr_init(&attrs);
+
+  posix_spawn_file_actions_adddup2(&actions, stdin_pipe[0], STDIN_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, stdout_pipe[1], STDOUT_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, stderr_pipe[1], STDERR_FILENO);
+  posix_spawn_file_actions_addclose(&actions, stdin_pipe[1]);
+  posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
+  posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
+
+  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
+  if (!argv_c) {
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attrs);
+    close(stdin_pipe[0]);
+    close(stdin_pipe[1]);
+    close(stdout_pipe[0]);
+    close(stdout_pipe[1]);
+    close(stderr_pipe[0]);
+    close(stderr_pipe[1]);
+    result.error_code = ENOMEM;
+    result.error_message = process_build_error_message_gc(ENOMEM);
+    return result;
+  }
+
+  size_t envc = hzstd_dynamic_array_size(envp);
+  hzstd_str_t* env_elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(envp);
+  char** envp_c = NULL;
+  if (envc > 0) {
+    envp_c = malloc(sizeof(char*) * (envc + 1));
+    if (envp_c) {
+      for (size_t i = 0; i < envc; ++i) {
+        envp_c[i] = strdup(env_elems[i].data);
+      }
+      envp_c[envc] = NULL;
+    }
+  }
+
+  char* cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
+#ifdef __linux__
+  if (cwd_c) {
+    posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
+  }
+#endif
+
+  pid_t pid;
+  int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp_c ? envp_c : environ);
+
+  for (size_t i = 0; argv_c[i]; ++i) {
+    free(argv_c[i]);
+  }
+  free(argv_c);
+  if (envp_c) {
+    for (size_t i = 0; i < envc; ++i) {
+      free(envp_c[i]);
+    }
+    free(envp_c);
+  }
+  free(cwd_c);
+  posix_spawn_file_actions_destroy(&actions);
+  posix_spawnattr_destroy(&attrs);
+
+  // The child ends are only needed by the child process.
+  close(stdin_pipe[0]);
+  close(stdout_pipe[1]);
+  close(stderr_pipe[1]);
+
+  if (rc != 0) {
+    close(stdin_pipe[1]);
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+    result.error_code = rc;
+    result.error_message = process_build_error_message_gc(rc);
+    return result;
+  }
+
+  process_set_nonblocking(stdout_pipe[0]);
+  process_set_nonblocking(stderr_pipe[0]);
+
+  hzstd_process_t* proc = malloc(sizeof(hzstd_process_t));
+  proc->pid = pid;
+  proc->stdin_fd = stdin_pipe[1];
+  proc->stdout_fd = stdout_pipe[0];
+  proc->stderr_fd = stderr_pipe[0];
+  proc->exited = false;
+  proc->exit_code = -1;
+
+  result.handle = proc;
+  return result;
+}
+
+char* hzstd_process_read_stdout(void* proc)
+{
+  return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stdout_fd : -1);
+}
+
+char* hzstd_process_read_stderr(void* proc)
+{
+  return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stderr_fd : -1);
+}
+
+bool hzstd_process_write_stdin(void* proc_, hzstd_str_t data)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc || proc->stdin_fd < 0) {
+    return false;
+  }
+  size_t written = 0;
+  while (written < data.length) {
+    ssize_t n = write(proc->stdin_fd, data.data + written, data.length - written);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    written += (size_t)n;
+  }
+  return true;
+}
+
+void hzstd_process_close_stdin(void* proc_)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc || proc->stdin_fd < 0) {
+    return;
+  }
+  close(proc->stdin_fd);
+  proc->stdin_fd = -1;
+}
+
+bool hzstd_process_is_alive(void* proc_)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc) {
+    return false;
+  }
+  if (proc->exited) {
+    return false;
+  }
+  int status;
+  pid_t r = waitpid(proc->pid, &status, WNOHANG);
+  if (r == 0) {
+    return true;
+  }
+  proc->exited = true;
+  if (r == proc->pid) {
+    proc->exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  }
+  return false;
+}
+
+int hzstd_process_join(void* proc_)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc) {
+    return -1;
+  }
+  if (!proc->exited) {
+    int status;
+    pid_t r = waitpid(proc->pid, &status, 0);
+    proc->exited = true;
+    proc->exit_code = (r == proc->pid && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+  }
+  return proc->exit_code;
+}
+
+void hzstd_process_release(void* proc_)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc) {
+    return;
+  }
+  if (proc->stdin_fd >= 0) close(proc->stdin_fd);
+  if (proc->stdout_fd >= 0) close(proc->stdout_fd);
+  if (proc->stderr_fd >= 0) close(proc->stderr_fd);
+  free(proc);
 }

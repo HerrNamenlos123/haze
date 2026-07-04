@@ -73,6 +73,40 @@ int hzstd_spawn_process(hzstd_str_t exe,
                         bool inherit_stdio,
                         hzstd_process_result_t* out);
 
+// ── Background process handle ────────────────────────────────────────────────
+//
+// Opaque handle (defined privately per-platform) for a process spawned in the
+// background. stdin/stdout/stderr are always piped so the caller can interact
+// with the child; use hzstd_process_release once the process is no longer needed.
+
+typedef struct {
+  void* handle; /* opaque hzstd_process_t*, NULL on failure */
+  int error_code; /* 0 on success */
+  char* error_message; /* GC string, may be NULL */
+} hzstd_process_spawn_result_t;
+
+hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
+                        hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
+                        hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
+                        hzstd_str_t cwd); /* empty → use current working directory */
+
+/* Returns whatever output is currently buffered; "" if none is available yet. */
+char* hzstd_process_read_stdout(void* proc);
+char* hzstd_process_read_stderr(void* proc);
+
+/* Writes to the child's stdin; returns false if the pipe is closed or the write failed. */
+bool hzstd_process_write_stdin(void* proc, hzstd_str_t data);
+void hzstd_process_close_stdin(void* proc);
+
+/* Non-blocking: reaps the child if it has already exited. */
+bool hzstd_process_is_alive(void* proc);
+
+/* Blocks until the child exits and returns its exit code. */
+int hzstd_process_join(void* proc);
+
+/* Releases the handle and any remaining OS resources. Call after hzstd_process_join. */
+void hzstd_process_release(void* proc);
+
 void os_sleep_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
 

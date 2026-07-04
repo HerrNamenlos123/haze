@@ -539,21 +539,27 @@ static inline char *read_all_handle(HANDLE h) {
   return buf;
 }
 
-static inline void process_set_error_message(hzstd_process_result_t *out,
-                                             DWORD err) {
+static inline char *process_build_error_message_gc(DWORD err) {
   LPSTR msg  = NULL;
   DWORD size = FormatMessageA(
       FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
           FORMAT_MESSAGE_IGNORE_INSERTS,
       NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&msg, 0, NULL);
+  char *gc = NULL;
   if (size > 0 && msg) {
-    out->stderr_data = hzstd_allocate(hzstd_make_heap_allocator(), size + 1);
-    if (out->stderr_data) {
-      memcpy(out->stderr_data, msg, size);
-      out->stderr_data[size] = '\0';
+    gc = hzstd_allocate(hzstd_make_heap_allocator(), size + 1);
+    if (gc) {
+      memcpy(gc, msg, size);
+      gc[size] = '\0';
     }
     LocalFree(msg);
   }
+  return gc;
+}
+
+static inline void process_set_error_message(hzstd_process_result_t *out,
+                                             DWORD err) {
+  out->stderr_data = process_build_error_message_gc(err);
 }
 
 int hzstd_spawn_process(hzstd_str_t exe, hzstd_dynamic_array_t *argv,
@@ -632,4 +638,212 @@ int hzstd_spawn_process(hzstd_str_t exe, hzstd_dynamic_array_t *argv,
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
   return 0;
+}
+
+// ── Background process handle ────────────────────────────────────────────────
+
+typedef struct hzstd_process_t {
+  HANDLE process_handle;
+  HANDLE thread_handle;
+  HANDLE stdin_write; // NULL once closed
+  HANDLE stdout_read;
+  HANDLE stderr_read;
+  bool exited;
+  int exit_code;
+} hzstd_process_t;
+
+/* Reads whatever is currently available on the pipe. Returns "" (never NULL) if
+ * nothing is buffered or the pipe has no writer left. */
+static inline char *process_read_available_gc(HANDLE h) {
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  DWORD available = 0;
+  if (!h || !PeekNamedPipe(h, NULL, 0, NULL, &available, NULL) || available == 0) {
+    char *empty = hzstd_allocate(allocator, 1);
+    empty[0] = '\0';
+    return empty;
+  }
+  char *buf = hzstd_allocate(allocator, available + 1);
+  DWORD read_bytes = 0;
+  if (!ReadFile(h, buf, available, &read_bytes, NULL)) {
+    read_bytes = 0;
+  }
+  buf[read_bytes] = '\0';
+  return buf;
+}
+
+hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
+                        hzstd_dynamic_array_t *argv,
+                        hzstd_dynamic_array_t *envp,
+                        hzstd_str_t cwd) {
+  hzstd_process_spawn_result_t result = { NULL, 0, NULL };
+
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  char *exe_c = hzstd_cstr_from_str(allocator, exe);
+  if (!exe_c) {
+    result.error_code = ENOMEM;
+    return result;
+  }
+
+  char **argv_c = process_str_array_to_cstrv(argv);
+  if (!argv_c) {
+    result.error_code = ENOMEM;
+    return result;
+  }
+
+  size_t argc = hzstd_dynamic_array_size(argv);
+  char *cmdline = hzstd_quote_windows_arg(exe_c);
+  for (size_t i = 0; i < argc; ++i) {
+    char *q   = hzstd_quote_windows_arg(argv_c[i]);
+    cmdline   = hzstd_append_gc(allocator, cmdline, " ");
+    cmdline   = hzstd_append_gc(allocator, cmdline, q);
+  }
+
+  char *cwd_c = cwd.length > 0 ? hzstd_cstr_from_str(allocator, cwd) : NULL;
+
+  SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+  HANDLE stdin_read = NULL, stdin_write = NULL;
+  HANDLE stdout_read = NULL, stdout_write = NULL;
+  HANDLE stderr_read = NULL, stderr_write = NULL;
+
+  if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) ||
+      !CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
+      !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
+    DWORD err = GetLastError();
+    result.error_code = (int)err;
+    result.error_message = process_build_error_message_gc(err);
+    if (stdin_read) CloseHandle(stdin_read);
+    if (stdin_write) CloseHandle(stdin_write);
+    if (stdout_read) CloseHandle(stdout_read);
+    if (stdout_write) CloseHandle(stdout_write);
+    if (stderr_read) CloseHandle(stderr_read);
+    if (stderr_write) CloseHandle(stderr_write);
+    return result;
+  }
+
+  // The parent-side ends must not be inherited by the child.
+  SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOA si = {0};
+  si.cb         = sizeof(si);
+  si.hStdInput  = stdin_read;
+  si.hStdOutput = stdout_write;
+  si.hStdError  = stderr_write;
+  si.dwFlags   |= STARTF_USESTDHANDLES;
+
+  PROCESS_INFORMATION pi = {0};
+  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL,
+                           cwd_c ? cwd_c : NULL, &si, &pi);
+
+  // The child-side ends are only needed by the child process.
+  CloseHandle(stdin_read);
+  CloseHandle(stdout_write);
+  CloseHandle(stderr_write);
+
+  if (!ok) {
+    DWORD err = GetLastError();
+    result.error_code = (int)err;
+    result.error_message = process_build_error_message_gc(err);
+    CloseHandle(stdin_write);
+    CloseHandle(stdout_read);
+    CloseHandle(stderr_read);
+    return result;
+  }
+
+  hzstd_process_t *proc = malloc(sizeof(hzstd_process_t));
+  proc->process_handle = pi.hProcess;
+  proc->thread_handle  = pi.hThread;
+  proc->stdin_write     = stdin_write;
+  proc->stdout_read     = stdout_read;
+  proc->stderr_read     = stderr_read;
+  proc->exited          = false;
+  proc->exit_code       = -1;
+
+  result.handle = proc;
+  return result;
+}
+
+char *hzstd_process_read_stdout(void *proc) {
+  return process_read_available_gc(proc ? ((hzstd_process_t *)proc)->stdout_read : NULL);
+}
+
+char *hzstd_process_read_stderr(void *proc) {
+  return process_read_available_gc(proc ? ((hzstd_process_t *)proc)->stderr_read : NULL);
+}
+
+bool hzstd_process_write_stdin(void *proc_, hzstd_str_t data) {
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc || !proc->stdin_write) {
+    return false;
+  }
+  size_t written = 0;
+  while (written < data.length) {
+    size_t remaining = data.length - written;
+    DWORD to_write = remaining > 0xFFFFFFFFu ? 0xFFFFFFFFu : (DWORD)remaining;
+    DWORD chunk = 0;
+    if (!WriteFile(proc->stdin_write, data.data + written, to_write, &chunk, NULL)) {
+      return false;
+    }
+    written += chunk;
+  }
+  return true;
+}
+
+void hzstd_process_close_stdin(void *proc_) {
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc || !proc->stdin_write) {
+    return;
+  }
+  CloseHandle(proc->stdin_write);
+  proc->stdin_write = NULL;
+}
+
+bool hzstd_process_is_alive(void *proc_) {
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc) {
+    return false;
+  }
+  if (proc->exited) {
+    return false;
+  }
+  DWORD code = 0;
+  if (!GetExitCodeProcess(proc->process_handle, &code)) {
+    proc->exited = true;
+    return false;
+  }
+  if (code == STILL_ACTIVE) {
+    return true;
+  }
+  proc->exited    = true;
+  proc->exit_code = (int)code;
+  return false;
+}
+
+int hzstd_process_join(void *proc_) {
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc) {
+    return -1;
+  }
+  if (!proc->exited) {
+    WaitForSingleObject(proc->process_handle, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(proc->process_handle, &code);
+    proc->exited    = true;
+    proc->exit_code = (int)code;
+  }
+  return proc->exit_code;
+}
+
+void hzstd_process_release(void *proc_) {
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc) {
+    return;
+  }
+  if (proc->stdin_write) CloseHandle(proc->stdin_write);
+  if (proc->stdout_read) CloseHandle(proc->stdout_read);
+  if (proc->stderr_read) CloseHandle(proc->stderr_read);
+  CloseHandle(proc->process_handle);
+  CloseHandle(proc->thread_handle);
+  free(proc);
 }
