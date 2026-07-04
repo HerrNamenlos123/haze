@@ -10671,13 +10671,27 @@ export class SemanticElaborator {
           } else if (s.condition) {
             // Variable is NOT convertible to bool but we have a guard, use only guard: Keep as-is
             const [e, eId] = this.expr(s.condition, undefined);
-            resultingConditionId = eId;
             resultFlow.addExitFlows(e.flow);
             resultWrites.addAll(e.writes);
-            this.buildLogicalConstraintSet(
-              thenConstraints,
-              resultingConditionId
+            this.buildLogicalConstraintSet(thenConstraints, eId);
+
+            const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
+              variableSymbolExprId,
+              EAssignmentOperation.Rebind,
+              this.expr(letStatement.value!, undefined)[1],
+              this.currentContext.constraints,
+              s.sourceloc,
+              inference
             );
+            resultingConditionId = this.sr.b.blockScopeExpr(
+              this.sr.b.blockScope(
+                [this.sr.b.exprStatement(assignmentExprId)[1]],
+                eId,
+                s.sourceloc
+              )[1],
+              Semantic.FlowResult.fallthrough().withAll(assignmentExpr.flow),
+              Semantic.WriteResult.empty().withAll(assignmentExpr.writes)
+            )[1];
           } else {
             // Variable is neither convertible to bool nor we have a guard, error
             throw new CompilerError(
