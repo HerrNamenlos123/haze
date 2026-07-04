@@ -75,9 +75,15 @@ struct HighlightEngine {
             return;
         }
         if !this.highlightProcess.isAlive() {
+            // Read stderr before join(), since join() releases the process
+            // handle and it must not be touched afterwards.
+            let stderrOutput = this.highlightProcess.readStderr();
             let result = this.highlightProcess.join();
             this.dead = true;
             fmt.println(f"LSP exited with code {result}");
+            if stderrOutput.length > 0 {
+                fmt.println(f"LSP stderr: {stderrOutput}");
+            }
         }
     }
 
