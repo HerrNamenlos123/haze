@@ -75,34 +75,46 @@ namespace process {
   // are always piped, so the process can be interacted with while it runs.
   export struct Process {
     handle: cptr;
+    // Set once join() has released the underlying OS handle. Every other
+    // method must check this first: touching `handle` after release is a
+    // use-after-free at the C level (observed as heap corruption / "corrupted
+    // double-linked list" crashes), so we panic with a clear message instead.
+    released: bool = false;
 
     // Non-blocking. Reaps the child if it has already exited.
     fn isAlive(): bool {
+      assert(!this.released, "process.Process used after join() released it");
       return hzstd_process_is_alive(this.handle);
     }
 
     // Non-blocking. Returns whatever output is currently buffered, or "" if none.
     fn readStdout(): str {
+      assert(!this.released, "process.Process used after join() released it");
       return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stdout(this.handle));
     }
 
     // Non-blocking. Returns whatever output is currently buffered, or "" if none.
     fn readStderr(): str {
+      assert(!this.released, "process.Process used after join() released it");
       return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stderr(this.handle));
     }
 
     // Writes to the child's stdin. Returns false if the pipe is closed or the write failed.
     fn writeStdin(data: str): bool {
+      assert(!this.released, "process.Process used after join() released it");
       return hzstd_process_write_stdin(this.handle, data);
     }
 
     fn closeStdin() {
+      assert(!this.released, "process.Process used after join() released it");
       hzstd_process_close_stdin(this.handle);
     }
 
     // Blocks until the process exits and returns its exit code. Releases the
     // underlying OS resources, so the Process must not be used afterwards.
     fn join(): int {
+      assert(!this.released, "process.Process.join() called twice");
+      this.released = true;
       let code = hzstd_process_join(this.handle);
       hzstd_process_release(this.handle);
       return code;

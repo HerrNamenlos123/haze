@@ -41,6 +41,9 @@ struct HighlightEngine {
     highlightProcess: process.Process;
     inputBuffer: str = "";
     nextMessageId: int = 1;
+    // Once true, `highlightProcess`'s OS handle has been released (via join())
+    // and must never be touched again.
+    dead: bool = false;
 
     fn constructor(cmdline: str, cwd: str) {
         let p = process.spawn("/bin/bash", ["-c", cmdline], { cwd: cwd });
@@ -60,18 +63,29 @@ struct HighlightEngine {
     }
 
     fn stop() {
+        if this.dead {
+            return;
+        }
+        this.dead = true;
         this.highlightProcess.join();
     }
 
     fn aliveCheck() {
+        if this.dead {
+            return;
+        }
         if !this.highlightProcess.isAlive() {
             let result = this.highlightProcess.join();
+            this.dead = true;
             fmt.println(f"LSP exited with code {result}");
-            fmt.println(f"stdout:", this.highlightProcess.readStdout());
         }
     }
-    
+
     fn sendHighlightRequest(fileContent: str) {
+        if this.dead {
+            fmt.println("Cannot send highlight request: LSP process has exited");
+            return;
+        }
         let request = json.stringify(HighlightRequest {
             id: 2,
             method: "highlight",
@@ -83,6 +97,9 @@ struct HighlightEngine {
 
     fn loop(): HighlightResult | none {
         this.aliveCheck();
+        if this.dead {
+            return none;
+        }
 
         let newStdout = this.highlightProcess.readStdout();
         this.inputBuffer = this.inputBuffer + newStdout;
