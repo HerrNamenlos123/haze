@@ -1,0 +1,188 @@
+
+struct HighlightCommand {
+    fileContent: str;
+}
+
+struct HighlightResult {
+    tokens: []Token;
+}
+
+struct Token {
+  lineIndex: int;
+  startIndex: int;
+  endIndex: int;
+  scopes: []str;
+};
+
+struct HighlightRequest {
+    id: int;
+    method: str;
+    fileContent?: str;
+}
+
+struct ResultObject {
+    tokens: []Token;
+    initialized?: bool;
+}
+
+struct ErrorObject {
+    code: int;
+    message: str;
+}
+
+struct HighlightResponse {
+    jsonrpc: str;
+    id: int;
+    result?: ResultObject;
+    error?: ErrorObject;
+}
+
+struct HighlightEngine {
+    highlightProcess: process.Process;
+    inputBuffer: str = "";
+    nextMessageId: int = 1;
+
+    fn constructor(cmdline: str, cwd: str) {
+        let p = process.spawn("/bin/bash", ["-c", cmdline], { cwd: cwd });
+        if (!p) {
+            return none;
+        }
+
+        let request = json.stringify(HighlightRequest {
+            id: 0,
+            method: "initialize",
+        });
+        p.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+
+        return HighlightEngine {
+            highlightProcess: p,
+        };
+    }
+
+    fn stop() {
+        this.highlightProcess.join();
+    }
+
+    fn aliveCheck() {
+        if !this.highlightProcess.isAlive() {
+            let result = this.highlightProcess.join();
+            fmt.println(f"LSP exited with code {result}");
+        }
+    }
+
+    fn loop(): HighlightResult | none {
+        this.aliveCheck();
+
+        this.inputBuffer = this.inputBuffer + this.highlightProcess.readStdout();
+
+        let contentLengthText = "Content-Length: ";
+        if this.inputBuffer.length > 0 && !startsWith(this.inputBuffer, contentLengthText) {
+            sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+        }
+
+        let separator = "\r\n\r\n";
+        let separatorIndex = find(this.inputBuffer, separator);
+        if !separatorIndex {
+            return none;
+        }
+
+        let numberLength = separatorIndex;
+        let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
+        let contentLength = strToInt(numberString);
+        if !contentLength {
+            fmt.println("LSP Response: Failed to parse content length");
+            return none;
+        }
+        let headerLength = separatorIndex + separator.length;
+        let totalPacketLength = headerLength + contentLength;
+
+        if this.inputBuffer.length < totalPacketLength {
+            return none;
+        }
+
+        // Extract response and shift remaining packet forward
+        let response = this.inputBuffer.substr(headerLength, contentLength);
+        let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
+        if remainingPacket.length > 0 {
+            this.inputBuffer = remainingPacket;
+        }
+
+        return this.processResponse(response);
+    }
+
+    fn processResponse(response: str): HighlightResult | none {
+        let j = json.parse<HighlightResponse>(response);
+        if !j {
+            fmt.println("Failed to parse response: ", j.error);
+            return none;
+        }
+        if j.jsonrpc != "2.0" {
+            fmt.println(f"LSP: Response invalid: Expected jsonrpc version 2.0, but received {j.jsonrpc}");
+            return none;
+        }
+
+        if j.result {
+            if j.id == 0 {
+                fmt.println("Highlight Engine initialized");
+            }
+            else if j.id == 1 {
+                return {
+                    tokens: j.result.tokens,
+                };
+            }
+            else {
+                fmt.println("Received unknown LSP response id: {}", j.id);
+            }
+        } else if j.error {
+            fmt.println("LSP ERROR");
+            // LSPError lspError = (LSPError) { .code = j.error.code, .message = j.error.message };
+            // processLSPError(ctx, lspError);
+        } else {
+            fmt.println("LSP: Response invalid: Has neither result nor error object");
+        }
+        return none;
+    }
+};
+
+fn strToInt(string: str): int | none {
+    if (string.length == 0) {
+        return none;
+    }
+
+    let sign = 1;
+    let i = 0;
+
+    if (string[0] == b"-") {
+        sign = -1;
+        i = 1;
+    } else if (string[0] == b"+") {
+        i = 1;
+    }
+
+    let value = 0;
+    for (let x = 0; i < string.length; i++) {
+        const digit = string[i] as int - 48;
+
+        if (digit < 0 || digit > 9) {
+            return none;
+        }
+
+        value = value * 10 + digit;
+    }
+
+    return sign * value;
+}
+
+fn startsWith(string: str, prefix: str): bool {
+    if prefix.length > string.length {
+        return false;
+    }
+
+    for (let i = 0; i < prefix.length; i++) {
+        if (string[i] != prefix[i]) {
+        return false;
+        }
+    }
+
+    return true;
+}

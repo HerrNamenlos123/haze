@@ -15,8 +15,133 @@ struct RootArgs {
     }
 }
 
+fn find(string: str, search: str): int | none {
+  if (search.length == 0) {
+    return 0;
+  }
+
+  let last = string.length - search.length;
+
+  for (let i = 0; i <= last; i++) {
+    let j = 0;
+
+    while (j < search.length && string[i + j] == search[j]) {
+      j++;
+    }
+
+    if (j == search.length) {
+      return i;
+    }
+  }
+
+  return none;
+}
+
+fn split(string: str, delimiter: str): []str {
+  if (delimiter.length == 0) {
+    return [string];
+  }
+
+  let parts: []str = [];
+
+  while (true) {
+    const index = find(string, delimiter);
+
+    if (index is none) {
+      parts.push(string);
+      return parts;
+    }
+
+    parts.push(string.substr(0, index));
+    string = string.substr(index + delimiter.length, string.length - index - delimiter.length);
+  }
+  sys.unreachable();
+}
+
+struct State {
+    highlightEngine: HighlightEngine;
+    highlightCommands: []HighlightCommand = [];
+    highlightResults: []HighlightResult = [];
+    reactiveCounter: rx.Reactive<int>;
+}
+
+extern C let g_state: State | none = none;
+
+fn initState(state: State) {
+    g_state = state;
+}
+
+fn getState() {
+    let state = g_state;
+    assert(state);
+    return state;
+}
+
+struct HighlightToken {
+    text: str;
+    color: Color;
+}
+
 export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+
+        let cache = json.CacheFile<Cache>("codeeditor.cache.json");
+
+        let doc = rx.reactive<str | none>(none);
+
+        let load = () => {
+            if cache.data.file {
+                let file = fs.readText(cache.data.file as str);
+                if file {
+                    doc := file;
+                }
+                else {
+                    fmt.println("Failed loading file");
+                }
+            }
+        };
+
+        let docLines = rx.computed(() => {
+            if !doc {
+                fmt.println("doc failed");
+                return [] as []str;
+            }
+            let lines = split(doc, "\n");
+            return lines;
+        });
+
+        let highlights = rx.computed(() => {
+            let state = getState();
+            rx.get(state.reactiveCounter);
+            let results = state.highlightResults;
+            state.highlightResults = [];
+            if results.length > 0 {
+                fmt.println("Highlight results");
+            }
+            return results;
+        });
+
+        // ui.onMounted(() => {
+        //     load();
+        // });
+        load();
+
+        let getScopeColor = (scope: str): Color | none => {
+            return none;
+        };
+
+        let defaultTextColor = (): Color => "#FFF";
+
+        let getFirstScopeColor = (scopes: []str): Color => {
+            for scope in scopes {
+                let color = getScopeColor(scope);
+                if color {
+                    return color;
+                }
+            }
+            return defaultTextColor();
+        }
+
         return (): void => {
             ui.div({
                 id: 0,
@@ -32,10 +157,68 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.col(),
                     presets.bg("#333"),
                     presets.p(8),
-                    presets.gap(4),
                 ]
             }, (): void => {
-                ui.text({ id: 1, text: "My Code Editor" });
+                let lines: []str = rx.get(docLines);
+                let id = 1;
+
+                let splitByTokens = (string: str, tokens: []Token): []HighlightToken => {
+                    let parts: []HighlightToken = [];
+                    let position = 0;
+
+                    for token in tokens {
+                        // Text before the token
+                        if (position < token.startIndex) {
+                            parts.push({
+                                text: string.slice(position, token.startIndex),
+                                color: defaultTextColor(),
+                            });
+                        }
+
+                        // The token itself
+                        parts.push({
+                            text: string.slice(token.startIndex, token.endIndex),
+                            color: getFirstScopeColor(token.scopes),
+                        });
+
+                        position = token.endIndex;
+                    }
+
+                    // Remaining text
+                    if (position < string.length) {
+                        parts.push({
+                            text: string.slice(position, string.length),
+                            color: defaultTextColor(),
+                        });
+                    }
+
+                    return parts;
+                }
+
+                let printLine = (lineIndex: int, line: str) => {
+                    let currentIndex = 0;
+                    let reconstructedLine = "";
+
+                    let hh: []HighlightResult = rx.get(highlights);
+                    for hhh in hh {
+                        for entry in hhh.tokens {
+                            if entry.lineIndex == lineIndex {
+                                let tokenText = line.substr(entry.startIndex, entry.endIndex + 1);
+
+                                // h.push({
+                                //     text: tokenText,
+                                //     color: color,
+                                // });
+                            }
+                        }
+                    }
+                    ui.text({ id: id, text: line });
+                    id++;
+                };
+
+                for line, lineIndex in lines {
+                    printLine(lineIndex, line);
+                }
             });
         };
     });

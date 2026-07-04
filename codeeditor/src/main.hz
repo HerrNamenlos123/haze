@@ -49,6 +49,15 @@ fn main(): int {
             }
         }
 
+        let highlightEngine = HighlightEngine("./syntax-engine", "codeeditor/syntax-engine");
+        if (!highlightEngine) {
+            fmt.println("Highlight engine failed to start");
+            return 0;
+        }
+        initState({
+            highlightEngine: highlightEngine,
+            reactiveCounter: rx.reactive<int>(0),
+        });
         // let engine = installLSP();
         // if !engine {
         //     return 0;
@@ -65,7 +74,12 @@ fn main(): int {
             runtime.render(frame, a.canvas);
             frame.present();
 
-            // update(engine);
+            let highlightResult = getState().highlightEngine.loop();
+            if highlightResult {
+                assert(g_state);
+                g_state.highlightResults.push(highlightResult);
+                g_state.reactiveCounter++;
+            }
 
             cache.flush();
         }

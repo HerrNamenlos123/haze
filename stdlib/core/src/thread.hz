@@ -1,0 +1,31 @@
+
+// shared struct Shared<T> {
+//      mutex: Mutex;
+//      _data: T;
+
+//     fn constructor() {
+//          static_assert(!T.isInline);
+//         return Shared<T> {
+
+//         };
+//     }
+
+    // fn get<U>(cb: (data: T) => U): U {
+    //     attempt {
+    //         mutex.lock();
+    //         let result = cb(this.data);
+    //         mutex.unlock();
+    //         return result;
+    //     }
+    //     recover e {
+    //         mutex.unlock();
+    //         sys.panic(e);
+    //     }
+    // }
+
+// inline struct Cache {
+//     path: str;
+//     count: int;
+// }
+
+// let data = Shared<Cache>();
