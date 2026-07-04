@@ -159,9 +159,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             rx.get(state.reactiveCounter);
             let results = state.highlightResults;
             state.highlightResults = [];
-            if results.length > 0 {
-                fmt.println("Highlight results");
-            }
             return results;
         });
 
@@ -193,7 +190,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
 
             let bestForeground: str | none = none;
-            let bestLength = -1;
+            let bestLength: int = -1;
 
             for tokenColor in theme.tokenColors {
                 let scopeField = tokenColor.scope;
@@ -207,10 +204,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 }
 
                 for selector in selectors {
-                    if selector.length > bestLength && scopeSelectorMatches(selector, scope) {
-                        if tokenColor.settings.foreground {
+                    let isMatch = scopeSelectorMatches(selector, scope);
+                    let selectorLen: int = selector.length as int;
+                    let isLonger: bool = selectorLen > bestLength;
+                    let hasFg: bool = tokenColor.settings.foreground is not none;
+                    if isLonger && isMatch {
+                        if hasFg {
                             bestForeground = tokenColor.settings.foreground;
-                            bestLength = selector.length;
+                            bestLength = selectorLen;
                         }
                     }
                 }
@@ -309,16 +310,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
                     let finalTokens = splitByTokens(lineIndex, line, tokens);
                     ui.div({
-                        id: id++,
+                        id: lineIndex,
                     }, (): void => {
-                        for t in finalTokens {
-                            ui.text({ id: id++, text: t.text, presets: [presets.textColor(t.color)] });
+                        for t, i in finalTokens {
+                            ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
                         }
                     });
                 };
 
                 ui.div({
-                    id: id++,
+                    id: 0,
                     presets: [
                         presets.fontFamily("JetBrainsMonoNerdFont-Regular"),
                         presets.col(),

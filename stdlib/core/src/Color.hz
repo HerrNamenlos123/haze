@@ -199,3 +199,14 @@ export extern C noemit inline struct hzstd_colorf_t {
 }
 
 export type Colorf = mut hzstd_colorf_t;
+
+namespace fmt {
+    export fn format_to(writer: mut StringWriter, value: Color, args: FormatArgs) {
+        format_to(writer, "#", {});
+        format_to(writer, value.hex(), {});
+    }
+
+    export fn format_to(writer: mut StringWriter, value: Colorf, args: FormatArgs) {
+        format_to(writer, value as Color, {});
+    }
+}
