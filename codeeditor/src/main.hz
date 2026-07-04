@@ -1,5 +1,13 @@
 
 fn main(): int {
-    installLSP();
+    let engine = installLSP();
+    if !engine {
+        return 0;
+    }
+
+    while (true) {
+        update(engine);
+        time.sleep(0.1);
+    }
     return 0;
 }

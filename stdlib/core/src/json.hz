@@ -446,7 +446,10 @@ namespace json {
                 for comptime Variant in T.variants {
                     if comptime Variant is not none {
                         // Node is this type, return it
-                        if let result = parseJsonNodeFromFfi<Variant>(allocator, node) {
+                        // Store function in variable and then call it to work around a very weird compiler bug
+                        // that fails to resolve Variant otherwise
+                        let parseFunc = parseJsonNodeFromFfi<Variant>;
+                        if let result = parseFunc(allocator, node) {
                             return Result<T, Error>.Ok(result);
                         }
                     }

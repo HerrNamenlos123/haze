@@ -54,10 +54,10 @@ fn installLSP() {
             cwd: syntaxEngineDir,
         })?!;
         fmt.println("Some LSP files missing, installing... Done");
-        return true;
+        return LspThread();
     }
     else {
-        return false;
+        return none;
     };
 }
 
@@ -207,111 +207,141 @@ fn installLSP() {
 //   Result<T, LSPResponseError> result;
 // };
 
-// void* LspThread(void* _app)
-// {
-//   App* app = (App*)_app;
+struct LSPInitializeParams {
+  processId: int;
 
-//   struct LSP& lsp = app->lsp;
-//   lsp.lspState = LSP::State::Starting;
-//   lsp.syntaxEngineState = LSP::State::Starting;
-
-//   lsp.lspIOContext = LspIO::CreateContext(app->appArena, NULL, NULL);
-//   if (!LspIO::StartClient(
-//           lsp.lspIOContext.value(), "node ./node_modules/@vue/language-server/bin/vue-language-server.js --stdio")) {
-//     println("LSP Client failed to start");
-//     return NULL;
-//   }
-
-//   lsp.syntaxEngineIOContext = LspIO::CreateContext(app->appArena, &lsp.highlightResult, &lsp.highlightDone);
-//   if (!LspIO::StartClient(lsp.syntaxEngineIOContext.value(), "./syntax-engine")) {
-//     println("SyntaxEngine Client failed to start");
-//     return NULL;
-//   }
-
-//   auto scratchArena = Arena::create();
-
-//   LSPRequest<LSPInitializeParams> request = {
-//     .jsonrpc = "2.0",
-//     .id = 1,
-//     .method = "initialize",
-//     .params = LSPInitializeParams {
-//        .processId = 0,
-//       .workspaceFolders = ([&]() {
-//         List<LSPInitializeParams::WorkspaceFolder> list {scratchArena};
-//         list.push({
-//           .uri = "/home/fzachs/Projects/CodeEditor",
-//           .name = "CodeEditor",
-//         });
-//         return list;
-//       })(),
-//     },
+//   struct ClientInfo {
+//     String name: str;
+//     Option<String> version;
 //   };
+  // Union<ClientInfo, Null> clientInfo;
+  // Union<String, Null> locale;
 
-//   auto obj = Json::create(scratchArena);
-//   obj["jsonrpc"] = request.jsonrpc;
-//   obj["id"] = request.id;
-//   obj["method"] = request.method;
+  struct WorkspaceFolder {
+    uri: str;
+    name: str;
+  };
 
-//   auto params = obj["params"];
-//   params["processId"] = Null {};
+  workspaceFolders?: []WorkspaceFolder;
+};
 
-//   auto capabilities = params["capabilities"]["test"];
+struct LSPRequest<T> {
+  jsonrpc: str;
+  id: int;
+  method: str;
+  params: T;
+};
 
-//   auto initializationOptions = params["initializationOptions"];
+fn LspThread() {
+    // lsp.lspState = LSP::State::Starting;
+    // lsp.syntaxEngineState = LSP::State::Starting;
 
-//   auto plugins = List<Json>(scratchArena);
-//   {
-//     auto plugin = Json::create(scratchArena);
-//     plugin["name"] = "@vue/typescript-plugin";
-//     plugin["location"] = "/home/fzachs/Projects/CodeEditor/node_modules/@vue/typescript-plugin";
-//     plugin["languages"] = List<Json>(scratchArena, Json::string(scratchArena, "vue"));
-//     plugins.push(plugin);
-//   }
-//   initializationOptions["plugins"] = plugins;
+    // lsp.lspIOContext = LspIO::CreateContext(app->appArena, NULL, NULL);
+    // if (!LspIO::StartClient(
+    //         lsp.lspIOContext.value(), "node ./node_modules/@vue/language-server/bin/vue-language-server.js --stdio")) {
+    //     println("LSP Client failed to start");
+    //     return NULL;
+    // }
 
-//   params["workspaceFolders"] = request.params.workspaceFolders.value().map([&](auto w) {
-//     auto obj = Json::create(scratchArena);
-//     obj["uri"] = w.uri;
-//     obj["name"] = w.name;
-//     return obj;
-//   });
+    let syntaxEngine = LspIO.Context();
+    if (!syntaxEngine.startClient("./syntax-engine", "codeeditor/syntax-engine")) {
+        fmt.println("SyntaxEngine Client failed to start");
+        return none;
+    }
 
-//   auto typescript = initializationOptions["typescript"];
-//   typescript["tsdk"] = "./node_modules/typescript/lib";
+    // let request = LSPRequest<LSPInitializeParams> {
+    //     jsonrpc: "2.0",
+    //     id: 1,
+    //     method: "initialize",
+    //     params: {
+    //         processId: 0,
+                // {
+                //     uri: "/home/fzachs/Projects/CodeEditor",
+                //     name: "CodeEditor",
+                // }
+    //     },
+    // };
 
-//   auto json = obj.print();
-//   // println("JSON: {}", obj.prettyPrint());
-//   fprintf(lsp.lspIOContext.value()->client.stdin(), "Content-Length: %zu\r\n\r\n%s", json.length, json.data);
-//   fflush(lsp.lspIOContext.value()->client.stdin());
+    // let request = LSPRequest<LSPInitializeParams> {
+    //     jsonrpc: "2.0",
+    //     id: 1,
+    //     method: "initialize",
+    //     params: {
+    //         processId: 0,
+    //         capabilities: {},
+    //         initializationOptions: {
+    //             plugins: [
+    //                 {
+    //                     name: "@vue/typescript-plugin",
+    //                     location: "/home/fzachs/Projects/CodeEditor/node_modules/@vue/typescript-plugin",
+    //                     languages: ["vue"],
+    //                 }
+    //             ]
+    //         },
+    //         workspaceFolders: [
+    //             {
+    //                 uri: "/home/fzachs/Projects/CodeEditor",
+    //                 name: "CodeEditor",
+    //             }
+    //         ],
+    //         typescript: {
+    //             tsdk: "./node_modules/typescript/lib",
+    //         }
+    //     },
+    // };
 
-//   // print("Init: {}", cJSON_Print(obj));
+    // let requestString = json.stringify(request);
+    // println("JSON: {}", obj.prettyPrint());
+    // fprintf(lsp.lspIOContext.value()->client.stdin(), 
+    //     f"Content-Length: {requestString.length}\r\n\r\n{requestString}"
+    // );
+    // fflush(lsp.lspIOContext.value()->client.stdin());
 
-//   LspIO::SendInitRequest(*lsp.syntaxEngineIOContext);
+    // print("Init: {}", cJSON_Print(obj));
 
-//   while (!lsp.stopLsp) {
-//     pthread_mutex_lock(&lsp.mutex);
-//     if (lsp.highlightFile && !lsp.highlightDone && !lsp.highlightWaiting) {
-//       lsp.highlightWaiting = true;
-//       LspIO::SendHighlightRequest(*lsp.syntaxEngineIOContext, lsp.fileContent);
-//     }
-//     pthread_mutex_unlock(&lsp.mutex);
+    syntaxEngine.sendInitRequest();
 
-//     lsp.syntaxEngineState = LSP::Ready;
-//     auto lspResponse = LspIO::process(*lsp.lspIOContext);
-//     LspIO::process(*lsp.syntaxEngineIOContext);
+    // while true {
+    //     // pthread_mutex_lock(&lsp.mutex);
+    //     if (lsp.highlightFile && !lsp.highlightDone && !lsp.highlightWaiting) {
+    //         lsp.highlightWaiting = true;
+    //         LspIO::SendHighlightRequest(*lsp.syntaxEngineIOContext, lsp.fileContent);
+    //     }
+    //     // pthread_mutex_unlock(&lsp.mutex);
 
-//     // if (lspResponse) {
-//     //   processResponse(app->lsp, *lspResponse);
-//     // }
-//   }
+    //     lsp.syntaxEngineState = LSP::Ready;
+    //     auto lspResponse = LspIO::process(*lsp.lspIOContext);
+    //     LspIO::process(*lsp.syntaxEngineIOContext);
 
-//   // LspIO::DestroyContext(lsp.lspIOContext.value());
-//   // LspIO::DestroyContext(lsp.syntaxEngineIOContext.value());
+    //     // if (lspResponse) {
+    //     //   processResponse(app->lsp, *lspResponse);
+    //     // }
+    //     time.sleep(0.1);
+    // }
 
-//   Arena::cleanupAndFree(scratchArena);
+    // LspIO::DestroyContext(lsp.lspIOContext.value());
+    // LspIO::DestroyContext(lsp.syntaxEngineIOContext.value());
+    return syntaxEngine;
+}
 
-//   return NULL;
-// }
+fn update(syntaxEngine: LspIO.Context) {
+    // if lsp.highlightFile && !lsp.highlightDone && !lsp.highlightWaiting {
+    if true {
+        // lsp.highlightWaiting = true;
+        let content = fs.readText("/home/fzachs/Projects/Moduro/FE/src/Application.vue");
+        if !content {
+            fmt.println("Failed to read");
+            return;
+        }
+        syntaxEngine.sendHighlightRequest(content);
+        // LspIO::SendHighlightRequest(*lsp.syntaxEngineIOContext, lsp.fileContent);
+    }
+    // pthread_mutex_unlock(&lsp.mutex);
+
+    // lsp.syntaxEngineState = LSP::Ready;
+    // auto lspResponse = LspIO::process(*lsp.lspIOContext);
+    syntaxEngine.doProcess();
+}
 
 // bool startLSP(App* app)
 // {
@@ -367,384 +397,433 @@ fn installLSP() {
 // //   pthread_mutex_unlock(&lsp.mutex);
 // }
 
+struct Token {
+  lineIndex: int;
+  startIndex: int;
+  endIndex: int;
+  scopes: []str;
+};
 
-// namespace LspIO {
+struct LSPHighlightResponse {
+  tokens: []Token = [];
+};
 
-//     struct HighlightRequest {
-//         id: int;
-//         method: str;
-//         fileContent?: str;
-//     }
+namespace LspIO {
 
-//     struct Context {
-//         inputBuffer: ByteBuffer;
-//         clientRunning: bool = false;
-//         client: Subprocess;
-//         nextId: int = 1;
+    struct HighlightRequest {
+        id: int;
+        method: str;
+        fileContent?: str;
+    }
 
-//         // Result
-//         highlightResponse: LSPHighlightResponse = {};
-//         highlightDone: bool = false;
+    struct Context {
+        client?: process.Process;
+        inputBuffer: str = "";
+        nextId: int = 1;
+        clientRunning: bool = false;
 
-//         fn constructor() {
-//             return Context {
-//                 inputBuffer: ByteBuffer(),
-//             };
-//         }
+        // Result
+        highlightResponse: LSPHighlightResponse = {};
+        highlightDone: bool = false;
 
-//         fn startClient(cmdline: str) {
-//             this.stopClient();
+        fn constructor() {
+            return Context {};
+        }
 
-//             auto process = Subprocess::create(List<String>(ctx.arena, "/bin/bash", "-c", cmdline));
-//             if (!process) {
-//                 println("Subprocess failed: {}", process.error());
-//                 return false;
-//             }
+        fn startClient(cmdline: str, cwd: str) {
+            this.stopClient();
 
-//             this.client = *process;
-//             this.clientRunning = true;
+            let p = process.spawn("/bin/bash", ["-c", cmdline], { cwd: cwd });
+            if !p {
+                fmt.println("Subprocess failed: {}", p);
+                return false;
+            }
 
-//             return true;
-//         }
+            this.client = p;
+            this.clientRunning = true;
 
-//         fn stopClient() {
-//             if (!this.clientRunning) {
-//                 return;
-//             }
+            return true;
+        }
 
-//             this.client.join(ctx.arena);
-//             this.clientRunning = false;
-//         }
+        fn stopClient() {
+            if (!this.clientRunning) {
+                return;
+            }
 
-//         fn buildRequestStr(id: int, method: str) {
-//             return json.stringify(HighlightRequest {
-//                 id: id,
-//                 method: method,
-//             });
-//         }
+            assert(this.client);
+            this.client.join();
+            this.client = none;
+            this.clientRunning = false;
+        }
 
-//         fn SendInitRequest() {
-//             let request = this.buildRequestStr(this.nextId++, "initialize");
-//             let string = f"Content-Length: {request.length}\r\n\r\n{request}";
-//             this.aliveCheck();
-//             if !this.clientRunning {
-//                 return;
-//             }
-//             this.client.writeToStdin(str);
-//         }
+        fn buildRequestStr(id: int, method: str) {
+            return json.stringify(HighlightRequest {
+                id: id,
+                method: method,
+            });
+        }
 
-//         fn sendHighlightRequest(fileContent: str) {
-//             let request = json.stringify(HighlightRequest {
-//                 id: id,
-//                 method: method,
-//                 fileContent: fileContent,
-//             });
+        fn sendInitRequest() {
+            let request = this.buildRequestStr(this.nextId++, "initialize");
+            let string = f"Content-Length: {request.length}\r\n\r\n{request}";
+            this.aliveCheck();
+            if !this.clientRunning {
+                return;
+            }
+            assert(this.client);
+            this.client.writeStdin(string);
+        }
 
-//             aliveCheck(ctx);
-//             if !this.clientRunning {
-//                 return;
-//             }
+        fn sendHighlightRequest(fileContent: str) {
+            let request = json.stringify(HighlightRequest {
+                id: this.nextId++,
+                method: "highlight",
+                fileContent: fileContent,
+            });
 
-//             let string = f"Content-Length: {request.length}\r\n\r\n{request}";
-//             this.client.writeToStdin(str);
-//         }
+            this.aliveCheck();
+            if !this.clientRunning {
+                return;
+            }
 
-//         fn aliveCheck() {
-//             if this.clientRunning && !this.client.alive() {
-//                 let result = this.client.join();
-//                 if result {
-//                     // fmt.println("\033[31mLSP died:\033[0m\nstdout = {}\nstderr = {}", result.stdout, result.stderr);
-//                     fmt.println("\033[31mLSP died:\033[0m\nstdout = {}\nstderr = {}");
-//                 } 
-//                 else {
-//                     fmt.println("\033[31mLSP died for an unknown reason!!!\033[0m");
+            assert(this.client);
+            this.client.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        }
+
+        fn aliveCheck() {
+            assert(this.client);
+            if this.clientRunning && !this.client.isAlive() {
+                let result = this.client.join();
+                if result != 0 {
+                    // fmt.println("\033[31mLSP died:\033[0m\nstdout = {}\nstderr = {}", result.stdout, result.stderr);
+                    fmt.println("\\033[31mLSP died:\\033[0m\nstdout = {}\nstderr = {}");
+                } 
+                else {
+                    fmt.println("\\033[31mLSP died for an unknown reason!!!\\033[0m");
+                }
+                this.clientRunning = false;
+            }
+        }
+
+        fn startsWith(string: str, prefix: str): bool {
+            if prefix.length > string.length {
+                return false;
+            }
+
+            for (let i = 0; i < prefix.length; i++) {
+                if (string[i] != prefix[i]) {
+                return false;
+                }
+            }
+
+            return true;
+        }
+
+        fn find(string: str, search: str): int | none {
+            if search.length == 0 {
+                return 0;
+            }
+
+            const last = string.length - search.length;
+
+            for (let i = 0; i <= last; i++) {
+                let j = 0;
+
+                while (j < search.length && string[i + j] == search[j]) {
+                    j++;
+                }
+
+                if (j == search.length) {
+                    return i;
+                }
+            }
+
+            return none;
+        }
+
+        fn strToInt(string: str): int | none {
+            if (string.length == 0) {
+                return none;
+            }
+
+            let sign = 1;
+            let i = 0;
+
+            if (string[0] == b"-") {
+                sign = -1;
+                i = 1;
+            } else if (string[0] == b"+") {
+                i = 1;
+            }
+
+            let value = 0;
+            for (let x = 0; i < string.length; i++) {
+                const digit = string[i] as int - 48;
+
+                if (digit < 0 || digit > 9) {
+                    return none;
+                }
+
+                value = value * 10 + digit;
+            }
+
+            return sign * value;
+        }
+
+        fn processInput() {
+            this.aliveCheck();
+
+            if (!this.clientRunning) {
+                return none;
+            }
+
+            assert(this.client);
+            this.inputBuffer = this.inputBuffer + this.client.readStdout();
+
+            let contentLengthText = "Content-Length: ";
+            if this.inputBuffer.length > 0 && !this.startsWith(this.inputBuffer, contentLengthText) {
+                sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+            }
+
+            let separator = "\r\n\r\n";
+            let separatorIndex = this.find(this.inputBuffer, separator);
+            if !separatorIndex {
+                return none;
+            }
+
+            let numberLength = separatorIndex;
+            let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
+            let contentLength = this.strToInt(numberString);
+            if !contentLength {
+                fmt.println("LSP Response: Failed to parse content length");
+                return none;
+            }
+            let headerLength = separatorIndex + separator.length;
+            let totalPacketLength = headerLength + contentLength;
+
+            if this.inputBuffer.length < totalPacketLength {
+                return none;
+            }
+
+            // Extract response and shift remaining packet forward
+            let response = this.inputBuffer.substr(headerLength, contentLength);
+            let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
+            if remainingPacket.length > 0 {
+                this.inputBuffer = remainingPacket;
+            }
+
+            return response;
+        }
+
+        fn doProcess(): []Token {
+            if let response = this.processInput() {
+                let result = this.processResponse(response);
+                if !result {
+                    fmt.println("LSP: Parsing JSON response failed: {}", result);
+                    return [];
+                }
+                return [];
+            }
+            return [];
+        }
+
+        struct ResultObject {
+            tokens: []Token;
+            initialized?: bool;
+        }
+
+        struct ErrorObject {
+            code: int;
+            message: str;
+        }
+
+        struct Response {
+            jsonrpc: str;
+            id: int;
+            result?: ResultObject;
+            error?: ErrorObject;
+        }
+
+        fn processResponse(response: str): Result<none, str> {
+            let j = json.parse<Response>(response);
+            if !j {
+                return j.error;
+            }
+            if j.jsonrpc != "2.0" {
+                fmt.println(f"LSP: Response invalid: Expected jsonrpc version 2.0, but received {j.jsonrpc}");
+                return Result<none, str>.Err("ERROR");
+            }
+
+            if j.result {
+                if j.id == 0 {
+                    fmt.println("LSP initialized");
+                }
+                else if j.id == 1 {
+                    // let success = processLSPInitResponse(result);
+                    // if (success) {
+                    //     // ctx.lspState = LSP::State::Ready;
+                    // } else {
+                    //     println("LSP Init Response failed: {}", success.error().message);
+                    //     // lsp.lspState = LSP::State::Failed;
+                    // }
+                }
+                else if j.id == 2 {
+                    let success = processHighlightResponse(j.result);
+                    // if (success) {
+                    //     // lsp.lspState = LSP::State::Ready;
+                    // } else {
+                    //     // lsp.lspState = LSP::State::Failed;
+                    // }
+                }
+                else {
+                    fmt.println("Received unknown LSP response id: {}", j.id);
+                }
+            } else if j.error {
+                fmt.println("LSP ERROR");
+                // LSPError lspError = (LSPError) { .code = j.error.code, .message = j.error.message };
+                // processLSPError(ctx, lspError);
+            } else {
+                fmt.println("LSP: Response invalid: Has neither result nor error object");
+            }
+
+            return Result<none, str>.Ok(none);
+        }
+
+        fn processHighlightResponse(value: ResultObject) {
+            let response = LSPHighlightResponse {
+                tokens: value.tokens,
+            };
+
+            // if (ctx.highlightResponse) {
+            //     *ctx.highlightResponse = response;
+            // }
+            // if (ctx.highlightDone) {
+            //     *ctx.highlightDone = true;
+            // }
+
+            return response;
+        }
+
+        fn processSyntaxEngineInitResponse(value: ResultObject) {
+            if value.initialized && value.initialized {
+                fmt.println("Syntax Engine reported not being initialized");
+            }
+        }
+    };
+
+// Result<Ok, Json::Error> processLSPInitResponse(Context& ctx, Json value)
+// {
+//   // println("LSP Init Response: {}", value.prettyPrint());
+
+//   LSPInitResponse response = { .capabilities = ({
+//     auto capabilities = try(value["capabilities"].object());
+//     LSPInitResponse::Capabilities {
+//       .textDocumentSync = try(capabilities["textDocumentSync"].as<real>()),
+//       .workspace = ({
+//         auto workspace = try(capabilities["workspace"].object());
+//         LSPInitResponse::Capabilities::Workspace { .workspaceFolders = ({
+//           auto workspaceFolders = try(workspace["workspaceFolders"].object());
+//           LSPInitResponse::Capabilities::Workspace::WorkspaceFolders {
+//             .supported = try(workspaceFolders["supported"].as<bool>()),
+//             .changeNotifications = try(workspaceFolders["changeNotifications"].as<bool>()),
+//           };
+//         }) };
+//       }),
+//       .selectionRangeProvider = try(capabilities["selectionRangeProvider"].as<bool>()),
+//       .foldingRangeProvider = try(capabilities["foldingRangeProvider"].as<bool>()),
+//       .linkedEditingRangeProvider = try(capabilities["linkedEditingRangeProvider"].as<bool>()),
+//       .colorProvider = try(capabilities["colorProvider"].as<bool>()),
+//       .documentSymbolProvider = try(capabilities["documentSymbolProvider"].as<bool>()),
+//       .documentFormattingProvider = try(capabilities["documentFormattingProvider"].as<bool>()),
+//       .documentRangeFormattingProvider = try(capabilities["documentRangeFormattingProvider"].as<bool>()),
+//       .referencesProvider = try(capabilities["referencesProvider"].as<bool>()),
+//       .definitionProvider = try(capabilities["definitionProvider"].as<bool>()),
+//       .hoverProvider = try(capabilities["hoverProvider"].as<bool>()),
+//       .documentHighlightProvider = try(capabilities["documentHighlightProvider"].as<bool>()),
+//       .renameProvider = ({
+//         auto renameProvider = try(capabilities["renameProvider"].object());
+//         LSPInitResponse::Capabilities::RenameProvider {
+//           .prepareProvider = try(renameProvider["prepareProvider"].as<bool>()),
+//         };
+//       }),
+//       .documentLinkProvider = ({
+//         auto documentLinkProvider = try(capabilities["documentLinkProvider"].object());
+//         LSPInitResponse::Capabilities::DocumentLinkProvider {};
+//       }),
+//       .inlayHintProvider = ({
+//         auto inlayHintProvider = try(capabilities["inlayHintProvider"].object());
+//         LSPInitResponse::Capabilities::InlayHintProvider {};
+//       }),
+//       .completionProvider = ({
+//         auto completionProvider = try(capabilities["completionProvider"].object());
+//         LSPInitResponse::Capabilities::CompletionProvider {
+//           .triggerCharacters = try(completionProvider["triggerCharacters"].array())
+//               .map([](Json v) { return v.as<String>(); })
+//               .filter([](auto res) { return (bool)res; })
+//               .map([](auto res) { return res.unwrap(); }),
+//           .resolveProvider = try(completionProvider["resolveProvider"].as<bool>()),
+//         };
+//       }),
+//       .codeActionProvider = ({
+//         auto codeActionProvider = try(capabilities["codeActionProvider"].object());
+//         LSPInitResponse::Capabilities::CodeActionProvider {
+//           .codeActionKinds = try(codeActionProvider["codeActionKinds"].array())
+//               .map([](Json item) { return item.as<String>(); })
+//               .filter([](auto res) { return (bool)res; })
+//               .map([](auto res) { return res.unwrap(); }),
+//           .resolveProvider = try(codeActionProvider["resolveProvider"].as<bool>()),
+//         };
+//       }),
+//       .documentOnTypeFormattingProvider = ({
+//         auto documentOnTypeFormattingProvider = try(capabilities["documentOnTypeFormattingProvider"].object());
+//         LSPInitResponse::Capabilities::DocumentOnTypeFormattingProvider {
+//           .firstTriggerCharacter = try(documentOnTypeFormattingProvider["firstTriggerCharacter"].as<String>()),
+//           .moreTriggerCharacter = try(documentOnTypeFormattingProvider["moreTriggerCharacter"].array())
+//               .map([](Json v) { return v.as<String>(); })
+//               .filter([](auto res) { return (bool)res; })
+//               .map([](auto res) { return res.unwrap(); }),
+//         };
+//       }),
+//       // .executeCommandProvider = ({
+//       //   auto executeCommandProvider = try(capabilities["executeCommandProvider"].object());
+//       //   LSPInitResponse::Capabilities::ExecuteCommandProvider {
+//       //     .commands = try(executeCommandProvider["commands"].array())
+//       //         .map([](Json v) { return v.as<String>(); })
+//       //         .filter([](auto res) { return (bool)res; })
+//       //         .map([](auto res) { return res.unwrap(); }),
+//       //   };
+//       // }),
+//       .experimental = ({
+//         auto experimental = try(capabilities["experimental"].object());
+//         LSPInitResponse::Capabilities::Experimental {
+//           .autoInsertionProvider = ({
+//             auto autoInsertionProvider = try(experimental["autoInsertionProvider"].object());
+//             LSPInitResponse::Capabilities::Experimental::AutoInsertionProvider {
+//               .triggerCharacters = try(autoInsertionProvider["triggerCharacters"].array())
+//                   .map([](Json v) { return v.as<String>(); })
+//                   .filter([](auto res) { return (bool)res; })
+//                   .map([](auto res) { return res.unwrap(); }),
+//               .configurationSections = try(autoInsertionProvider["configurationSections"].array()).map([](Json v) {
+//                 auto array = v.array();
+//                 if (!array) {
+//                   return List<String> {};
 //                 }
-//                 this.clientRunning = false;
-//             }
-//         }
+//                 return array.unwrap()
+//                     .map([](Json v) { return v.as<String>(); })
+//                     .filter([](auto res) { return (bool)res; })
+//                     .map([](auto res) { return res.unwrap(); });
+//               }),
+//             };
+//           }),
+//           .documentDropEditsProvider = try(experimental["documentDropEditsProvider"].as<bool>()),
+//         };
+//       }),
 //     };
+//   }) };
 
-// Option<String> processInput(Context& ctx)
-// {
-//   aliveCheck(ctx);
-
-//   if (!ctx.clientRunning) {
-//     return {};
-//   }
-
-//   ctx.client.readStdoutToBuffer(ctx.arena, ctx.inputBuffer);
-
-//   auto contentLengthText = "Content-Length: "_s;
-//   if (ctx.inputBuffer.length > 0 && !ctx.inputBuffer.str().startsWith(contentLengthText)) {
-//     ts::panic("LSP: Input Buffer must never start with something other than '{}'", contentLengthText);
-//   }
-
-//   auto separator = "\r\n\r\n"_s;
-//   auto separatorIndex = ctx.inputBuffer.str().find(separator);
-//   if (separatorIndex == -1) {
-//     return {};
-//   }
-
-//   int numberLength = separatorIndex;
-//   auto numberString = ctx.inputBuffer.str().substr(contentLengthText.length, separatorIndex - contentLengthText.length);
-//   auto contentLength = strToInt(numberString);
-//   if (!contentLength) {
-//     ts::println("LSP Response: Failed to parse content length");
-//     return {};
-//   }
-//   size_t headerLength = separatorIndex + separator.length;
-//   size_t totalPacketLength = headerLength + contentLength.unwrap();
-
-//   if (ctx.inputBuffer.length < totalPacketLength) {
-//     return {};
-//   }
-
-//   // Extract response and shift remaining packet forward
-//   String response = ctx.inputBuffer.str().substr(headerLength, contentLength.unwrap());
-//   String remainingPacket = String::clone(
-//       ctx.arena, ctx.inputBuffer.str().substr(totalPacketLength, ctx.inputBuffer.length - totalPacketLength));
-//   if (remainingPacket.length > 0) {
-//     memcpy(ctx.inputBuffer.data, remainingPacket.data, remainingPacket.length);
-//   }
-//   ctx.inputBuffer.length = remainingPacket.length;
-
-//   return response;
-// }
-
-// // Result<Ok, Json::Error> processLSPInitResponse(Context& ctx, Json value)
-// // {
-// //   // println("LSP Init Response: {}", value.prettyPrint());
-
-// //   LSPInitResponse response = { .capabilities = ({
-// //     auto capabilities = try(value["capabilities"].object());
-// //     LSPInitResponse::Capabilities {
-// //       .textDocumentSync = try(capabilities["textDocumentSync"].as<real>()),
-// //       .workspace = ({
-// //         auto workspace = try(capabilities["workspace"].object());
-// //         LSPInitResponse::Capabilities::Workspace { .workspaceFolders = ({
-// //           auto workspaceFolders = try(workspace["workspaceFolders"].object());
-// //           LSPInitResponse::Capabilities::Workspace::WorkspaceFolders {
-// //             .supported = try(workspaceFolders["supported"].as<bool>()),
-// //             .changeNotifications = try(workspaceFolders["changeNotifications"].as<bool>()),
-// //           };
-// //         }) };
-// //       }),
-// //       .selectionRangeProvider = try(capabilities["selectionRangeProvider"].as<bool>()),
-// //       .foldingRangeProvider = try(capabilities["foldingRangeProvider"].as<bool>()),
-// //       .linkedEditingRangeProvider = try(capabilities["linkedEditingRangeProvider"].as<bool>()),
-// //       .colorProvider = try(capabilities["colorProvider"].as<bool>()),
-// //       .documentSymbolProvider = try(capabilities["documentSymbolProvider"].as<bool>()),
-// //       .documentFormattingProvider = try(capabilities["documentFormattingProvider"].as<bool>()),
-// //       .documentRangeFormattingProvider = try(capabilities["documentRangeFormattingProvider"].as<bool>()),
-// //       .referencesProvider = try(capabilities["referencesProvider"].as<bool>()),
-// //       .definitionProvider = try(capabilities["definitionProvider"].as<bool>()),
-// //       .hoverProvider = try(capabilities["hoverProvider"].as<bool>()),
-// //       .documentHighlightProvider = try(capabilities["documentHighlightProvider"].as<bool>()),
-// //       .renameProvider = ({
-// //         auto renameProvider = try(capabilities["renameProvider"].object());
-// //         LSPInitResponse::Capabilities::RenameProvider {
-// //           .prepareProvider = try(renameProvider["prepareProvider"].as<bool>()),
-// //         };
-// //       }),
-// //       .documentLinkProvider = ({
-// //         auto documentLinkProvider = try(capabilities["documentLinkProvider"].object());
-// //         LSPInitResponse::Capabilities::DocumentLinkProvider {};
-// //       }),
-// //       .inlayHintProvider = ({
-// //         auto inlayHintProvider = try(capabilities["inlayHintProvider"].object());
-// //         LSPInitResponse::Capabilities::InlayHintProvider {};
-// //       }),
-// //       .completionProvider = ({
-// //         auto completionProvider = try(capabilities["completionProvider"].object());
-// //         LSPInitResponse::Capabilities::CompletionProvider {
-// //           .triggerCharacters = try(completionProvider["triggerCharacters"].array())
-// //               .map([](Json v) { return v.as<String>(); })
-// //               .filter([](auto res) { return (bool)res; })
-// //               .map([](auto res) { return res.unwrap(); }),
-// //           .resolveProvider = try(completionProvider["resolveProvider"].as<bool>()),
-// //         };
-// //       }),
-// //       .codeActionProvider = ({
-// //         auto codeActionProvider = try(capabilities["codeActionProvider"].object());
-// //         LSPInitResponse::Capabilities::CodeActionProvider {
-// //           .codeActionKinds = try(codeActionProvider["codeActionKinds"].array())
-// //               .map([](Json item) { return item.as<String>(); })
-// //               .filter([](auto res) { return (bool)res; })
-// //               .map([](auto res) { return res.unwrap(); }),
-// //           .resolveProvider = try(codeActionProvider["resolveProvider"].as<bool>()),
-// //         };
-// //       }),
-// //       .documentOnTypeFormattingProvider = ({
-// //         auto documentOnTypeFormattingProvider = try(capabilities["documentOnTypeFormattingProvider"].object());
-// //         LSPInitResponse::Capabilities::DocumentOnTypeFormattingProvider {
-// //           .firstTriggerCharacter = try(documentOnTypeFormattingProvider["firstTriggerCharacter"].as<String>()),
-// //           .moreTriggerCharacter = try(documentOnTypeFormattingProvider["moreTriggerCharacter"].array())
-// //               .map([](Json v) { return v.as<String>(); })
-// //               .filter([](auto res) { return (bool)res; })
-// //               .map([](auto res) { return res.unwrap(); }),
-// //         };
-// //       }),
-// //       // .executeCommandProvider = ({
-// //       //   auto executeCommandProvider = try(capabilities["executeCommandProvider"].object());
-// //       //   LSPInitResponse::Capabilities::ExecuteCommandProvider {
-// //       //     .commands = try(executeCommandProvider["commands"].array())
-// //       //         .map([](Json v) { return v.as<String>(); })
-// //       //         .filter([](auto res) { return (bool)res; })
-// //       //         .map([](auto res) { return res.unwrap(); }),
-// //       //   };
-// //       // }),
-// //       .experimental = ({
-// //         auto experimental = try(capabilities["experimental"].object());
-// //         LSPInitResponse::Capabilities::Experimental {
-// //           .autoInsertionProvider = ({
-// //             auto autoInsertionProvider = try(experimental["autoInsertionProvider"].object());
-// //             LSPInitResponse::Capabilities::Experimental::AutoInsertionProvider {
-// //               .triggerCharacters = try(autoInsertionProvider["triggerCharacters"].array())
-// //                   .map([](Json v) { return v.as<String>(); })
-// //                   .filter([](auto res) { return (bool)res; })
-// //                   .map([](auto res) { return res.unwrap(); }),
-// //               .configurationSections = try(autoInsertionProvider["configurationSections"].array()).map([](Json v) {
-// //                 auto array = v.array();
-// //                 if (!array) {
-// //                   return List<String> {};
-// //                 }
-// //                 return array.unwrap()
-// //                     .map([](Json v) { return v.as<String>(); })
-// //                     .filter([](auto res) { return (bool)res; })
-// //                     .map([](auto res) { return res.unwrap(); });
-// //               }),
-// //             };
-// //           }),
-// //           .documentDropEditsProvider = try(experimental["documentDropEditsProvider"].as<bool>()),
-// //         };
-// //       }),
-// //     };
-// //   }) };
-
-// //   println("LSP Init done");
-
-// //   return Ok {};
-// // }
-
-// Result<Ok, Json::Error> processHighlightResponse(Context& ctx, Json value)
-// {
-//   LSPHighlightResponse response {};
-//   response.tokens = { ctx.arena };
-
-//   for (auto token : try(value["tokens"].array())) {
-//     response.tokens.push((Token) {
-//         .lineIndex = token["lineIndex"].as<int>(),
-//         .startIndex = token["startIndex"].as<int>(),
-//         .endIndex = token["endIndex"].as<int>(),
-//         .scopes = try(token["scopes"].array())
-//             .map([](Json scope) { return scope.as<String>(); })
-//             .filter([](auto res) { return (bool)res; })
-//             .map([](auto item) { return item.unwrap(); }),
-//     });
-//   }
-
-//   if (ctx.highlightResponse) {
-//     *ctx.highlightResponse = response;
-//   }
-//   if (ctx.highlightDone) {
-//     *ctx.highlightDone = true;
-//   }
+//   println("LSP Init done");
 
 //   return Ok {};
 // }
 
-// void processSyntaxEngineInitResponse(Context& ctx, Json value)
-// {
-//   SyntaxEngineInitResponse response;
-
-//   if (auto initialized = value["initialized"].as<bool>()) {
-//     response.initialized = initialized.unwrap();
-//   }
-
-//   if (!response.initialized) {
-//     println("Syntax Engine reported not being initialized");
-//     return;
-//   }
-
-//   return;
-// }
-
-// void processLSPError(Context& ctx, LSPError& error)
-// {
-//   println("LSP Error: code={}: {}", error.code, error.message);
-// }
-
-// Result<Ok, Json::Error> processResponse(Context& ctx, String response)
-// {
-//   auto json = try(Json::parse(ctx.arena, response));
-//   auto jsonrpc = try(json["jsonrpc"].as<String>());
-//   if (jsonrpc != "2.0"_s) {
-//     println("LSP: Response invalid: Expected jsonrpc version 2.0, but received {}", jsonrpc);
-//     return Ok {};
-//   }
-
-//   auto id = try(json["id"].as<int>());
-//   if (json.has("result")) {
-//     auto result = try(json["result"].object());
-
-//     switch (id) {
-//     case 0: {
-//       println("LSP initialized");
-//     } break;
-
-//     case 1: {
-//       auto success = processLSPInitResponse(ctx, result);
-//       if (success) {
-//         // ctx.lspState = LSP::State::Ready;
-//       } else {
-//         println("LSP Init Response failed: {}", success.error().message);
-//         // lsp.lspState = LSP::State::Failed;
-//       }
-//     } break;
-
-//     case 2: {
-//       bool success = processHighlightResponse(ctx, result);
-//       if (success) {
-//         // lsp.lspState = LSP::State::Ready;
-//       } else {
-//         // lsp.lspState = LSP::State::Failed;
-//       }
-//     } break;
-
-//     default:
-//       println("Received unknown LSP response id: {}", id);
-//     }
-//   } else if (json.has("error")) {
-//     auto error = try(json["error"].object());
-//     auto code = try(error["code"].as<int>());
-//     auto message = try(error["message"].as<String>());
-
-//     // Optional<Json::JsonValue> data;
-//     // if (error->has("data")) {
-//     //   data = error->get("data");
-//     // }
-
-//     LSPError lspError = (LSPError) { .code = code, .message = message };
-//     processLSPError(ctx, lspError);
-//   } else {
-//     println("LSP: Response invalid: Has neither result nor error object");
-//   }
-
-//   return Ok {};
-// }
-
-// Option<List<Token>> process(Context& ctx)
-// {
-//   if (auto response = processInput(ctx)) {
-//     auto result = processResponse(ctx, *response);
-//     if (!result) {
-//       println("LSP: Parsing JSON response failed: {}", result.error().message);
-//       return {};
-//     }
-
-//     // return resultTokens;
-//   }
-//   return {};
-// }
-
-// } // namespace LspIO
+} // namespace LspIO

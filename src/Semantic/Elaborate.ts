@@ -5885,6 +5885,9 @@ export class SemanticElaborator {
                     ) {
                       // The only valid place where a return statement can actually return nothing
                     } else {
+                      if (statement.sourceloc) {
+                        console.log(formatSourceLoc(statement.sourceloc));
+                      }
                       assert(false, "TODO: Fix return type checking properly");
                     }
                   }
