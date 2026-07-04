@@ -4538,7 +4538,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       });
       assert(
         flattened.length === 0,
-        "Global variables cannot take multi line expressions, rewrite it as scope expression: " +
+        "Global variables cannot take multi line expressions, rewrite it as scope expression: "
       );
       lr.loweredGlobalVariables.push(pId);
       lr.loweredGlobalVariableSymbols.set(symbolId, pId);
