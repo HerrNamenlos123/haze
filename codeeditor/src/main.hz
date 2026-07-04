@@ -1,13 +1,95 @@
 
+import app
+import ui_runtime
+import ui_components
+import filedialog
+
+struct Cache {
+    file: str | null = null;
+}
+
+const comptime profile = false;
+
 fn main(): int {
-    let engine = installLSP();
-    if !engine {
+    attempt {
+        let a = app.App({
+            title: "Haze CodeEditor",
+        })?!;
+
+        let font = a.gfx.fontRenderer.fs.addFont(
+            "roboto-regular",
+            "test/Roboto-Regular.ttf"
+        );
+
+        let runtime = ui_runtime.Runtime({
+            gfx: a.gfx,
+            windowState: a.windowState,
+            fonts: [
+                { name: "default", id: a.gfx.fontRenderer.defaultFont },
+                { name: "roboto", id: font },
+            ],
+            mousePos: () => a.mousePos(),
+            pointerButtons: ui_components.PointerHeldCallbacks {
+                leftHeld: () => a.pointerLeftHeld(),
+                middleHeld: () => a.pointerMiddleHeld(),
+                rightHeld: () => a.pointerRightHeld(),
+            },
+            inputExtras: ui_components.InputExtrasCallbacks {
+                wheelDelta: () => a.wheelDelta(),
+                modifiers: () => a.wheelModifiers(),
+            },
+            ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
+        });
+
+        let cache = json.CacheFile<Cache>("codeeditor.cache.json");
+
+        if !cache.data.file {
+            if let file = filedialog.pickFile(); file is filedialog.DialogSuccess {
+                cache.data.file := file.path;
+            }
+        }
+
+        // let engine = installLSP();
+        // if !engine {
+        //     return 0;
+        // }
+
+        let profiler = profile ? Profiler({
+            samplingRateHz: 1000,
+        }) : null;
+
+        while let frame = a.nextFrame() {
+            if a.resized {
+                runtime.resize(a.windowState);
+            }
+            runtime.render(frame, a.canvas);
+            frame.present();
+
+            // update(engine);
+
+            cache.flush();
+        }
+        
+        if profiler {
+            profiler.stopAndSave();
+        }
+
+        a.destroy();
         return 0;
     }
-
-    while (true) {
-        update(engine);
-        time.sleep(0.1);
-    }
-    return 0;
+    else e {
+        if e is str {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is fs.Error {
+            fmt.println("Application failed: ", e);
+        }
+        else if e is none {
+            fmt.println("Application failed: ", e);
+        }
+        else {
+            fmt.println("Application failed: ", e);
+        }
+        return 1;
+    };
 }

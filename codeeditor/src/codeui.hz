@@ -1,0 +1,42 @@
+
+import renderer
+import ui_styling
+import headwind
+type presets = headwind.presets;
+
+type SizeMode = ui_components.SizeMode;
+type DivElement = ui_elements.DivElement;
+type TextElement = ui_elements.TextElement;
+type CanvasElement = ui_elements.CanvasElement;
+
+struct RootArgs {
+    fn operator!=(other: RootArgs) {
+        return false;
+    }
+}
+
+export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
+    ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+        return (): void => {
+            ui.div({
+                id: 0,
+                style: {
+                    direction: ui_styling.Direction.Column,
+                    fontFamily: "roboto",
+                    fontSize: 16.0,
+                    textColor: Color(1, 1, 1, 1),
+                },
+                presets: [
+                    presets.wGrow(),
+                    presets.hGrow(),
+                    presets.col(),
+                    presets.bg("#333"),
+                    presets.p(8),
+                    presets.gap(4),
+                ]
+            }, (): void => {
+                ui.text({ id: 1, text: "My Code Editor" });
+            });
+        };
+    });
+}
