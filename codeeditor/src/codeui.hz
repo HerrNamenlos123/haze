@@ -82,6 +82,21 @@ struct HighlightToken {
     color: Color;
 }
 
+struct VscodeTheme {
+  struct TokenColor {
+    name?: str;
+    scopes: []str;
+    settings: Settings;
+
+    struct Settings {
+      foreground: str;
+      fontStyle: str;
+    };
+  };
+
+  tokenColors: []TokenColor = [];
+};
+
 export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
 
@@ -120,6 +135,48 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
             return results;
         });
+
+        let loadTheme = () => {
+            // auto file = fs::read(app->persistentApplicationArena, "resources/catppuccin-mocha.json");
+            let file = fs.readText("resources/obsidian-radiance-dark.json");
+            if !file {
+                fmt.println("Failed to load theme");
+                return;
+            }
+
+            let theme = VscodeTheme {};
+            let j = json.parseToJsonNode(file);
+            for tokenColor in json["tokenColors"].to<[]str>()) {
+                VscodeTheme::TokenColor token;
+                token.scopes = { app->appArena };
+
+                if (tokenColor.has("name")) {
+                token.name = try(tokenColor["name"].as<String>());
+                }
+
+                if (tokenColor["scope"].isArray()) {
+                for (auto scope : try(tokenColor["scope"].array())) {
+                    token.scopes.push(try(scope.as<String>()));
+                }
+                } else if (tokenColor["scope"].isString()) {
+                token.scopes.push(try(tokenColor["scope"].as<String>()));
+                } else {
+                assert(false && "In Theme, 'scope' is neither an array, nor a string");
+                }
+
+                auto settings = try(tokenColor["settings"].object());
+                if (settings.has("foreground")) {
+                token.settings.foreground = try(settings["foreground"].as<String>());
+                }
+                if (settings.has("fontStyle")) {
+                token.settings.fontStyle = try(settings["fontStyle"].as<String>());
+                }
+
+                theme.tokenColors.push(token);
+            }
+            app->theme = theme;
+            return Ok {};
+        }
 
         // ui.onMounted(() => {
         //     load();
@@ -162,26 +219,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 let lines: []str = rx.get(docLines);
                 let id = 1;
 
-                let splitByTokens = (string: str, tokens: []Token): []HighlightToken => {
+                let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
                     let parts: []HighlightToken = [];
                     let position = 0;
 
                     for token in tokens {
-                        // Text before the token
-                        if (position < token.startIndex) {
+                        if token.lineIndex == lineIndex {
+                            // Text before the token
+                            if (position < token.startIndex) {
+                                parts.push({
+                                    text: string.slice(position, token.startIndex),
+                                    color: defaultTextColor(),
+                                });
+                            }
+
+                            // The token itself
                             parts.push({
-                                text: string.slice(position, token.startIndex),
-                                color: defaultTextColor(),
+                                text: string.slice(token.startIndex, token.endIndex),
+                                color: getFirstScopeColor(token.scopes),
                             });
+
+                            position = token.endIndex;
                         }
-
-                        // The token itself
-                        parts.push({
-                            text: string.slice(token.startIndex, token.endIndex),
-                            color: getFirstScopeColor(token.scopes),
-                        });
-
-                        position = token.endIndex;
                     }
 
                     // Remaining text
@@ -202,18 +261,12 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     let hh: []HighlightResult = rx.get(highlights);
                     for hhh in hh {
                         for entry in hhh.tokens {
-                            if entry.lineIndex == lineIndex {
-                                let tokenText = line.substr(entry.startIndex, entry.endIndex + 1);
-
-                                // h.push({
-                                //     text: tokenText,
-                                //     color: color,
-                                // });
+                            let finalTokens = splitByTokens(lineIndex, line, tokens);
+                            for t in finalTokens {
+                                ui.text({ id: id++, text: t.text, presets: [presets.textColor(t.color)] });
                             }
                         }
                     }
-                    ui.text({ id: id, text: line });
-                    id++;
                 };
 
                 for line, lineIndex in lines {
