@@ -20,11 +20,18 @@ export struct Context {
     cursorLastMovedAt: real;
 
     // The cursor is always BETWEEN characters and never ON characters like with VIM bindings. (VIM is coming too).
-    // cursorPos.x is the column, where 
+    // cursorPos.x is the column, where
     // cursorPos.x = 0 -> left of first character
     // cursorPos.x = 1 -> right of first, left of second character
     // cursorPos.x = lineLength -> right of last character
     // The y position refers to actual lineINDICES, starting at 0 for the first line.
+    //
+    // actualCursorPosition is where the cursor is actually rendered/edits happen.
+    // desiredCursorPosition.x is the "sticky column": the x an Up/Down move is
+    // trying to reach, remembered across shorter lines so that arrowing down
+    // through short lines and back onto a long one restores the original
+    // column, like every mainstream text editor. It is only updated by
+    // horizontal movement (left/right/word/home/end), never by up/down.
     desiredCursorPosition: Vec2i = {};
     actualCursorPosition: Vec2i = {};
 
@@ -46,51 +53,148 @@ export struct Context {
     }
 
     fn moveCursorRight() {
-        this._moveCursor({
-            x: 1,
-            y: 0,
-        });
+        let pos = this.actualCursorPosition;
+        let lineLength = this.args.getLineLength(pos.y);
+        if pos.x < lineLength {
+            this._setCursorPosition({ x: pos.x + 1, y: pos.y }, true);
+        }
+        else if pos.y < this.args.getLineCount() - 1 {
+            this._setCursorPosition({ x: 0, y: pos.y + 1 }, true);
+        }
     }
 
     fn moveCursorLeft() {
-        this._moveCursor({
-            x: -1,
-            y: 0,
-        });
+        let pos = this.actualCursorPosition;
+        if pos.x > 0 {
+            this._setCursorPosition({ x: pos.x - 1, y: pos.y }, true);
+        }
+        else if pos.y > 0 {
+            this._setCursorPosition({ x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 }, true);
+        }
     }
 
     fn moveCursorUp() {
-        this._moveCursor({
-            x: 0,
-            y: -1,
-        });
+        let pos = this.actualCursorPosition;
+        if pos.y > 0 {
+            this._setCursorPosition({ x: this.desiredCursorPosition.x, y: pos.y - 1 }, false);
+        }
     }
 
     fn moveCursorDown() {
-        this._moveCursor({
-            x: 0,
-            y: 1,
-        });
+        let pos = this.actualCursorPosition;
+        if pos.y < this.args.getLineCount() - 1 {
+            this._setCursorPosition({ x: this.desiredCursorPosition.x, y: pos.y + 1 }, false);
+        }
     }
 
-    // This function is really only designed to handle single-character movement
-    fn _moveCursor(delta: Vec2i) {
+    // Ctrl+Left in every mainstream editor: jump to the start of the previous
+    // word, crossing to the end of the previous line if already at column 0.
+    fn moveCursorWordLeft() {
+        let pos = this.actualCursorPosition;
+        if pos.x == 0 {
+            if pos.y > 0 {
+                this._setCursorPosition({ x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 }, true);
+            }
+            return;
+        }
+
+        let line = this.args.getLine(pos.y);
+        let x = pos.x;
+
+        // Skip whitespace directly to the left of the cursor
+        while x > 0 && ascii.isWhitespace(line[x - 1]) {
+            x--;
+        }
+
+        // Skip one run of same-class characters to land on the word's start
+        if x > 0 {
+            let targetClass = this._charClassAt(line, x - 1);
+            while x > 0 && this._charClassAt(line, x - 1) == targetClass {
+                x--;
+            }
+        }
+
+        this._setCursorPosition({ x: x, y: pos.y }, true);
+    }
+
+    // Ctrl+Right: jump to the start of the next word, crossing to the start
+    // of the next line if already at the end of the current one.
+    fn moveCursorWordRight() {
+        let pos = this.actualCursorPosition;
+        let lineLength = this.args.getLineLength(pos.y);
+        if pos.x >= lineLength {
+            if pos.y < this.args.getLineCount() - 1 {
+                this._setCursorPosition({ x: 0, y: pos.y + 1 }, true);
+            }
+            return;
+        }
+
+        let line = this.args.getLine(pos.y);
+        let x = pos.x;
+
+        // Skip one run of same-class characters
+        let targetClass = this._charClassAt(line, x);
+        while x < lineLength && this._charClassAt(line, x) == targetClass {
+            x++;
+        }
+
+        // Skip whitespace to land on the next word's start
+        while x < lineLength && ascii.isWhitespace(line[x]) {
+            x++;
+        }
+
+        this._setCursorPosition({ x: x, y: pos.y }, true);
+    }
+
+    // Home / End: start / end of the current line.
+    fn moveCursorHome() {
+        this._setCursorPosition({ x: 0, y: this.actualCursorPosition.y }, true);
+    }
+
+    fn moveCursorEnd() {
+        let pos = this.actualCursorPosition;
+        this._setCursorPosition({ x: this.args.getLineLength(pos.y), y: pos.y }, true);
+    }
+
+    // Ctrl+Home / Ctrl+End: start / end of the whole document.
+    fn moveCursorDocumentStart() {
+        this._setCursorPosition({ x: 0, y: 0 }, true);
+    }
+
+    fn moveCursorDocumentEnd() {
+        let lastLine = this.args.getLineCount() - 1;
+        this._setCursorPosition({ x: this.args.getLineLength(lastLine), y: lastLine }, true);
+    }
+
+    // Single point of truth for placing the cursor: clamps to valid
+    // document/line bounds and decides whether this move updates the sticky
+    // column. Every move function above -- and any future one (selection
+    // extend, click-to-place, etc.) -- should go through this rather than
+    // writing actualCursorPosition/desiredCursorPosition directly.
+    fn _setCursorPosition(pos: Vec2i, updateDesiredX: bool) {
         this.cursorLastMovedAt = this.args.getTimeInSeconds();
 
         let lineCount = this.args.getLineCount();
-        this.desiredCursorPosition.y = clamp<int>(this.desiredCursorPosition.y + delta.y, 0, lineCount);
+        let y = clamp<int>(pos.y, 0, lineCount - 1);
+        let x = clamp<int>(pos.x, 0, this.args.getLineLength(y));
 
-        this.desiredCursorPosition.x = this.desiredCursorPosition.x + delta.x;
-        if this.desiredCursorPosition.x < 0 {
-            this.desiredCursorPosition.y--;
-            this.desiredCursorPosition.x = this.args.getLineLength(this.desiredCursorPosition.y);
-        }
-        else if this.desiredCursorPosition.x > this.args.getLineLength(this.desiredCursorPosition.y) {
-            this.desiredCursorPosition.y++;
-            this.desiredCursorPosition.x = 0;
-        }
+        this.actualCursorPosition.x = x;
+        this.actualCursorPosition.y = y;
 
-        this.actualCursorPosition.x = this.desiredCursorPosition.x;
-        this.actualCursorPosition.y = this.desiredCursorPosition.y;
+        this.desiredCursorPosition.y = y;
+        if updateDesiredX {
+            this.desiredCursorPosition.x = x;
+        }
+    }
+
+    fn _charClassAt(line: str, index: int): int {
+        let b = line[index];
+        if ascii.isWhitespace(b) {
+            return 0;
+        }
+        if ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_" {
+            return 1;
+        }
+        return 2;
     }
 }
