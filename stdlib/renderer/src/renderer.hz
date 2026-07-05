@@ -37,10 +37,17 @@ export inline struct PrimitiveInstance {
     radiusTopRight: f32;           // corner radius for rounded rect
     radiusBottomLeft: f32;           // corner radius for rounded rect
     radiusBottomRight: f32;           // corner radius for rounded rect
-    borderThickness: f32;  // 0 = no border
+    // Independent per-edge border widths -- 0 on all four = no border. The
+    // fragment shader insets a second, independently-cornered rounded rect
+    // by these amounts to carve the border band out of the outer shape; see
+    // process_rounded_rect_border in shaders.wgsl.
+    borderTop: f32;
+    borderRight: f32;
+    borderBottom: f32;
+    borderLeft: f32;
     fillColor: Colorf;
     borderColor: Colorf;
-    type: u32;             // 0 = Filled Rounded Rectangle, 1 = Outlined Rounded Rectangle, 2 = Glyph, 3 = Textured Quad
+    type: u32;             // 0 = Filled Rounded Rectangle, 1 = Bordered Rounded Rectangle, 2 = Glyph, 3 = Textured Quad
 
     // For glyph/texture rendering:
     uvMin: Vec2f;
@@ -386,14 +393,17 @@ export opaque struct Context {
                 { shaderLocation: 5, offset: 24, format: wgpu.VertexFormat.Float32 },   // radiusBottomRight
                 { shaderLocation: 6, offset: 28, format: wgpu.VertexFormat.Float32 },   // radiusBottomLeft
 
-                { shaderLocation: 7, offset: 32, format: wgpu.VertexFormat.Float32 },   // borderThickness
-                { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32x4 }, // fillColor
-                { shaderLocation: 9, offset: 52, format: wgpu.VertexFormat.Float32x4 }, // borderColor
-                { shaderLocation: 10, offset: 68, format: wgpu.VertexFormat.Uint32 },   // type
-                { shaderLocation: 11, offset: 72, format: wgpu.VertexFormat.Float32x2 }, // uvMin
-                { shaderLocation: 12, offset: 80, format: wgpu.VertexFormat.Float32x2 }, // uvMax
-                { shaderLocation: 13, offset: 88, format: wgpu.VertexFormat.Float32 },   // z
-                { shaderLocation: 14, offset: 92, format: wgpu.VertexFormat.Uint32 },    // transformIndex
+                { shaderLocation: 7, offset: 32, format: wgpu.VertexFormat.Float32 },   // borderTop
+                { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32 },   // borderRight
+                { shaderLocation: 9, offset: 40, format: wgpu.VertexFormat.Float32 },   // borderBottom
+                { shaderLocation: 10, offset: 44, format: wgpu.VertexFormat.Float32 },  // borderLeft
+                { shaderLocation: 11, offset: 48, format: wgpu.VertexFormat.Float32x4 }, // fillColor
+                { shaderLocation: 12, offset: 64, format: wgpu.VertexFormat.Float32x4 }, // borderColor
+                { shaderLocation: 13, offset: 80, format: wgpu.VertexFormat.Uint32 },   // type
+                { shaderLocation: 14, offset: 84, format: wgpu.VertexFormat.Float32x2 }, // uvMin
+                { shaderLocation: 15, offset: 92, format: wgpu.VertexFormat.Float32x2 }, // uvMax
+                { shaderLocation: 16, offset: 100, format: wgpu.VertexFormat.Float32 },  // z
+                { shaderLocation: 17, offset: 104, format: wgpu.VertexFormat.Uint32 },   // transformIndex
             },
         };
 
@@ -1277,13 +1287,25 @@ export struct CornerRadius {
     bottomRight: real = 0;
 };
 
+// Independent per-edge border widths -- see RectOpts.borderWidths.
+export struct BorderWidths {
+    top: real = 0;
+    right: real = 0;
+    bottom: real = 0;
+    left: real = 0;
+};
+
 export struct RectOpts {
     pos: Vec2;
     size: Vec2;
     fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
     cornerRadius: CornerRadius = {};
     borderColor: Color = { r: 1, g: 1, b: 1, a: 1 };
+    // Uniform convenience: same width on all four edges. Only used per-edge
+    // where borderWidths itself leaves that edge at 0 -- set borderWidths
+    // directly for independent per-edge widths (e.g. a top-only rule).
     borderThickness: real = 0;
+    borderWidths: BorderWidths = {};
     zIndex: real = 0;
     // Arbitrary placement for this one shape: translate/scale/rotate/shear,
     // in 2D or full 3D (build with mat4.translation/scaling/rotationZ/shear2D
@@ -1403,7 +1425,10 @@ export opaque struct Renderer {
                 radiusTopRight: opts.cornerRadius.topRight as f32,
                 radiusBottomLeft: opts.cornerRadius.bottomLeft as f32,
                 radiusBottomRight: opts.cornerRadius.bottomRight as f32,
-                borderThickness: 0,
+                borderTop: 0,
+                borderRight: 0,
+                borderBottom: 0,
+                borderLeft: 0,
                 fillColor: {
                     r: opts.fillColor.r as f32,
                     g: opts.fillColor.g as f32,
@@ -1417,16 +1442,28 @@ export opaque struct Renderer {
                 transformIndex: transformIndex,
             });
         }
-        if opts.borderColor.a != 0.0 && opts.borderThickness > 0.0 {
+
+        // Per-edge width wins where set; an edge left at 0 in borderWidths
+        // falls back to the uniform borderThickness (so existing callers
+        // that only ever set borderThickness keep working unchanged).
+        let borderTop = opts.borderWidths.top > 0.0 ? opts.borderWidths.top : opts.borderThickness;
+        let borderRight = opts.borderWidths.right > 0.0 ? opts.borderWidths.right : opts.borderThickness;
+        let borderBottom = opts.borderWidths.bottom > 0.0 ? opts.borderWidths.bottom : opts.borderThickness;
+        let borderLeft = opts.borderWidths.left > 0.0 ? opts.borderWidths.left : opts.borderThickness;
+
+        if opts.borderColor.a != 0.0 && (borderTop > 0.0 || borderRight > 0.0 || borderBottom > 0.0 || borderLeft > 0.0) {
             this.primitives.push({
-                type: 1, // Outlined Rounded Rectangle
+                type: 1, // Bordered Rounded Rectangle
                 pos: { x: (opts.pos.x + opts.size.x / 2.0) as f32, y: (opts.pos.y + opts.size.y / 2.0) as f32 },
                 size: { x: opts.size.x as f32, y: opts.size.y as f32 },
                 radiusTopLeft: opts.cornerRadius.topLeft as f32,
                 radiusTopRight: opts.cornerRadius.topRight as f32,
                 radiusBottomLeft: opts.cornerRadius.bottomLeft as f32,
                 radiusBottomRight: opts.cornerRadius.bottomRight as f32,
-                borderThickness: opts.borderThickness as f32,
+                borderTop: borderTop as f32,
+                borderRight: borderRight as f32,
+                borderBottom: borderBottom as f32,
+                borderLeft: borderLeft as f32,
                 fillColor: { r: 0, g: 0, b: 0, a: 0 },
                 borderColor: {
                     r: opts.borderColor.r as f32,
@@ -1492,7 +1529,10 @@ export opaque struct Renderer {
                 radiusBottomLeft: 0,
                 radiusBottomRight: 0,
 
-                borderThickness: 0,
+                borderTop: 0,
+                borderRight: 0,
+                borderBottom: 0,
+                borderLeft: 0,
 
                 fillColor: {
                     r: opts.color.r as f32,
@@ -1532,7 +1572,10 @@ export opaque struct Renderer {
             radiusTopRight: 0,
             radiusBottomLeft: 0,
             radiusBottomRight: 0,
-            borderThickness: 0,
+            borderTop: 0,
+            borderRight: 0,
+            borderBottom: 0,
+            borderLeft: 0,
             fillColor: {
                 r: opts.tint.r as f32,
                 g: opts.tint.g as f32,

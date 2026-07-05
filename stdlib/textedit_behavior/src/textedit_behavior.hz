@@ -1,0 +1,96 @@
+
+// For this entire module, the convention is that
+// "lineIndex" and "lineNumber"
+// are both used, whereas "lineIndex" is the 0-based array index,
+// while "lineNumber" is the user-facing, 1-based line number.
+export inline struct ContextArgs {
+    // In Hertz
+    cursorBlinkFrequency: real = 1;
+
+    getLineLength: (lineIndex: int) => int;
+    getLine: (lineIndex: int) => str;
+    getLineCount: () => int;
+    getTimeInSeconds: () => real;
+}
+
+export struct Context {
+    args: ContextArgs;
+
+    cursorVisible: rx.Computed<bool>;
+    cursorLastMovedAt: real;
+
+    // The cursor is always BETWEEN characters and never ON characters like with VIM bindings. (VIM is coming too).
+    // cursorPos.x is the column, where 
+    // cursorPos.x = 0 -> left of first character
+    // cursorPos.x = 1 -> right of first, left of second character
+    // cursorPos.x = lineLength -> right of last character
+    // The y position refers to actual lineINDICES, starting at 0 for the first line.
+    desiredCursorPosition: Vec2i = {};
+    actualCursorPosition: Vec2i = {};
+
+    fn constructor(args: ContextArgs) {
+        let context = Context {
+            args: args,
+            cursorVisible: rx.computed<bool>(() => false),
+            cursorLastMovedAt: args.getTimeInSeconds(),
+        };
+
+        context.cursorVisible = rx.computed(() => {
+            let now = context.args.getTimeInSeconds();
+            let elapsed = now - context.cursorLastMovedAt;
+            let blinkInterval = 1.0 / context.args.cursorBlinkFrequency;
+            return math.modulo(elapsed, blinkInterval) <= blinkInterval / 2.0;
+        });
+
+        return context;
+    }
+
+    fn moveCursorRight() {
+        this._moveCursor({
+            x: 1,
+            y: 0,
+        });
+    }
+
+    fn moveCursorLeft() {
+        this._moveCursor({
+            x: -1,
+            y: 0,
+        });
+    }
+
+    fn moveCursorUp() {
+        this._moveCursor({
+            x: 0,
+            y: -1,
+        });
+    }
+
+    fn moveCursorDown() {
+        this._moveCursor({
+            x: 0,
+            y: 1,
+        });
+    }
+
+    // This function is really only designed to handle single-character movement
+    fn _moveCursor(delta: Vec2i) {
+        this.cursorLastMovedAt = this.args.getTimeInSeconds();
+
+        let lineCount = this.args.getLineCount();
+        this.desiredCursorPosition.y = clamp<int>(this.desiredCursorPosition.y + delta.y, 0, lineCount);
+
+        this.desiredCursorPosition.x = this.desiredCursorPosition.x + delta.x;
+        if this.desiredCursorPosition.x < 0 {
+            this.desiredCursorPosition.y--;
+            this.desiredCursorPosition.x = this.args.getLineLength(this.desiredCursorPosition.y);
+        }
+        else if this.desiredCursorPosition.x > this.args.getLineLength(this.desiredCursorPosition.y) {
+            this.desiredCursorPosition.y++;
+            this.desiredCursorPosition.x = 0;
+        }
+
+        this.actualCursorPosition.x = this.desiredCursorPosition.x;
+        this.actualCursorPosition.y = this.desiredCursorPosition.y;
+    }
+}

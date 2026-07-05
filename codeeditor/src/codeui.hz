@@ -2,6 +2,7 @@
 import renderer
 import ui_styling
 import headwind
+import textedit_behavior
 type presets = headwind.presets;
 
 type SizeMode = ui_components.SizeMode;
@@ -243,6 +244,33 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return defaultTextColor();
         }
 
+        let getLine = (index: int) => {
+            let lines: []str = rx.get(docLines);
+            return lines[index];
+        }
+
+        let texteditBehavior = textedit_behavior.Context({
+            getLineLength: (lineIndex: int) => {
+                return getLine(lineIndex).length;
+            },
+            getLine: (lineIndex: int) => {
+                return getLine(lineIndex);
+            },
+            getLineCount: () => {
+                let lines: []str = rx.get(docLines);
+                return lines.length;
+            },
+            getTimeInSeconds: () => {
+                return ui.now();
+            },
+        });
+
+        let state = getState();
+        let content = rx.get(doc);
+        if content {
+            state.highlightEngine.sendHighlightRequest(content);
+        }
+
         return (): void => {
             ui.div({
                 id: 0,
@@ -253,17 +281,18 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     textColor: "#FFF" as Color,
                 },
                 presets: [
+                    presets.relative(),
                     presets.wGrow(),
                     presets.hGrow(),
                     presets.col(),
                     presets.bg("#181818"),
-                    presets.p(8),
+                    // presets.p(8),
                 ],
                 onClick: (event: ui_components.PointerEvent) => {
                     let state = getState();
                     let content = rx.get(doc);
                     if content {
-                        state.highlightEngine.sendHighlightRequest(content);
+                        // state.highlightEngine.sendHighlightRequest(content);
                     }
                 }
             }, (): void => {
@@ -335,6 +364,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
                 for line, lineIndex in lines {
                     printLine(lineIndex, line);
+                }
+
+                let position = Vec2i(4, 0);
+
+                if texteditBehavior.cursorVisible {
+                    ui.div({
+                        id: lines.length + 1,
+                        style: {
+                            width: 1.0,
+                            height: characterSize.y,
+                        },
+                        presets: [
+                            presets.absolute(),
+                            presets.top(position.y as real * characterSize.y),
+                            presets.left(position.x as real * characterSize.x),
+                            presets.bg("#FFF"),
+                        ]
+                    }, (): void => {});
                 }
             });
         };

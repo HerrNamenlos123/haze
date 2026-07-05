@@ -1,5 +1,6 @@
 
 namespace ffi {
+    extern C noemit fn fmod(a: real, b: real): real :: final;
     extern C noemit fn sqrt(v: real): real :: final;
     extern C noemit fn pow(a: real, b: real): real :: final;
     extern C noemit fn sin(v: real): real :: final;
@@ -23,6 +24,10 @@ export namespace math {
 
     export fn degToRad(v: real): real {
         return v * math.pi() / 180.0;
+    }
+
+    export fn modulo(a: real, b: real) {
+        return ffi.fmod(a, b);
     }
 
     export fn sqrt(v: real) {
