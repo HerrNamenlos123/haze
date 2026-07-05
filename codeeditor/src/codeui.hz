@@ -223,9 +223,26 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             state.highlightEngine.sendHighlightRequest(content);
         }
 
+        let opened = false;
         let runLspLoop = rx.computed(() => {
             ui.now();
             if lsp {
+
+                if !opened {
+                    opened = true;
+                    assert(doc);
+                    lsp.sendRequest<language_server_protocol.LSPOpenDocumentRequestParams, language_server_protocol.LSPOpenDocumentResponseResult>("textdocument/didOpen", {
+                        textDocument: {
+                            uri: f"file://{cache.data.file}",
+                            languageId: "vue",
+                            version: 1,
+                            text: doc,
+                        }
+                    }, (value: language_server_protocol.LSPOpenDocumentResponseResult) => {
+                        fmt.println("Received doc", json.stringify(value));
+                    });
+                }                
+
                 lsp.loop();
             }
         });
@@ -234,13 +251,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if !lsp {
                 return "LSP Failed";
             }
-
             if !lsp.initResponse {
                 return "LSP Loading...";
             }
-
             return "LSP Ready";
-        })
+        });
 
         return (): void => {
             ui.div({

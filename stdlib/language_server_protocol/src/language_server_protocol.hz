@@ -8,13 +8,13 @@ export inline struct Error {
     message: str;
 }
 
-struct LSPResponse {
+export struct LSPResponse {
     jsonrpc: str;
     id: int;
     result?: json.Node;
 }
 
-struct LSPRequest<Params> {
+export struct LSPRequest<Params> {
     id: int;
     jsonrpc: str;
     method: str;
@@ -316,6 +316,19 @@ export struct LSPInitResponse {
   };
   capabilities: Capabilities;
 };
+
+export struct LSPOpenDocumentRequestParams {
+    struct TextDocument {
+      uri: str;
+      languageId: str;
+      version: int;
+      text: str;
+    };
+    textDocument: TextDocument;
+}
+
+export struct LSPOpenDocumentResponseResult {
+}
 
 fn strToInt(string: str): int | none {
     if (string.length == 0) {
