@@ -228,9 +228,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             ui.now();
             if lsp {
 
-                if !opened {
+                if !opened && lsp.initResponse {
                     opened = true;
                     assert(doc);
+                    fmt.println("Sending open request");
                     lsp.sendRequest<language_server_protocol.LSPOpenDocumentRequestParams, language_server_protocol.LSPOpenDocumentResponseResult>("textdocument/didOpen", {
                         textDocument: {
                             uri: f"file://{cache.data.file}",
@@ -238,8 +239,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             version: 1,
                             text: doc,
                         }
-                    }, (value: language_server_protocol.LSPOpenDocumentResponseResult) => {
-                        fmt.println("Received doc", json.stringify(value));
+                    }, (value: Result<language_server_protocol.LSPOpenDocumentResponseResult, LSPError>) => {
+                        if value {
+                            fmt.println("Received doc", json.stringify(value));
+                        }
+                        else {
+                            fmt.println("Failed", json.stringify(value))
+                        }
                     });
                 }                
 
