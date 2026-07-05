@@ -121,19 +121,19 @@ namespace presets {
     // above. Only meaningful on an Absolute/Fixed element (or one with
     // anchorTo() set) -- a no-op otherwise, same as Tailwind/CSS.
     export fn top(value: real): ui_styling.TopOp {
-        return ui_styling.TopOp { value: computeSize(value) };
+        return ui_styling.TopOp { value: value };
     }
 
     export fn right(value: real): ui_styling.RightOp {
-        return ui_styling.RightOp { value: computeSize(value) };
+        return ui_styling.RightOp { value: value };
     }
 
     export fn bottom(value: real): ui_styling.BottomOp {
-        return ui_styling.BottomOp { value: computeSize(value) };
+        return ui_styling.BottomOp { value: value };
     }
 
     export fn left(value: real): ui_styling.LeftOp {
-        return ui_styling.LeftOp { value: computeSize(value) };
+        return ui_styling.LeftOp { value: value };
     }
 
     // z-<number>: stacking order among floating elements. Like CSS, only
@@ -151,6 +151,39 @@ namespace presets {
     // doesn't matter, see AnchorTarget's own doc comment.
     export fn anchorTo(target: ui_styling.AnchorTarget): ui_styling.AnchorToOp {
         return ui_styling.AnchorToOp { target: target };
+    }
+
+    // border-<width>: sets all four border widths at once, raw pixels (not
+    // on the spacing scale -- Tailwind's own border-width utility isn't
+    // either, it's a small fixed scale of its own). borderT/R/B/L set one
+    // edge independently, combinable in the same presets array (e.g.
+    // `[presets.borderT(2), presets.borderColor("#f00")]` for a top-only
+    // rule). Only draws once borderColor's alpha is also non-zero.
+    export fn border(value: real): ui_styling.BorderWidthOp {
+        return ui_styling.BorderWidthOp { value: value };
+    }
+
+    export fn borderT(value: real): ui_styling.BorderTopWidthOp {
+        return ui_styling.BorderTopWidthOp { value: value };
+    }
+
+    export fn borderR(value: real): ui_styling.BorderRightWidthOp {
+        return ui_styling.BorderRightWidthOp { value: value };
+    }
+
+    export fn borderB(value: real): ui_styling.BorderBottomWidthOp {
+        return ui_styling.BorderBottomWidthOp { value: value };
+    }
+
+    export fn borderL(value: real): ui_styling.BorderLeftWidthOp {
+        return ui_styling.BorderLeftWidthOp { value: value };
+    }
+
+    // One shared color for all of this element's borders -- see the question
+    // asked before implementing: per-edge width is supported, per-edge color
+    // is not (yet).
+    export fn borderColor(color: Color): ui_styling.BorderColorOp {
+        return ui_styling.BorderColorOp { color: color };
     }
 
     export fn rounded(value: real): ui_styling.CornerRadiusOp {

@@ -202,6 +202,22 @@ Clay_ElementId make_id(hzstd_str_t id)
   return CLAY_SID(str);
 }
 
+// Clay only emits a BORDER render command once at least one width > 0 (see
+// Clay_BorderElementConfig's own doc comment) -- safe to always set this
+// unconditionally, Clay itself gates emission.
+static inline Clay_BorderElementConfig ToClayBorderConfig(hzstd_color_t borderColor, hzui_border_widths_t borderWidth)
+{
+  return (Clay_BorderElementConfig) {
+    .color = (Clay_Color) { .r = borderColor.r, .g = borderColor.g, .b = borderColor.b, .a = borderColor.a },
+    .width = {
+      .left = (uint16_t)borderWidth.left,
+      .right = (uint16_t)borderWidth.right,
+      .top = (uint16_t)borderWidth.top,
+      .bottom = (uint16_t)borderWidth.bottom,
+    },
+  };
+}
+
 hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elementId)
 {
   Clay_ElementData data = Clay_GetElementData(make_id(elementId));
@@ -251,6 +267,7 @@ void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div
                         .bottomRight = config.cornerRadius.bottomRight,
                     },
          .floating = ToClayFloatingConfig(config.floating),
+         .border = ToClayBorderConfig(config.borderColor, config.borderWidth),
          .backgroundColor = (Clay_Color) {
              .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a } })
   {
@@ -273,6 +290,7 @@ void hzui_clay_define_canvas_element(hzui_define_canvas_element_t config)
              .bottomRight = config.cornerRadius.bottomRight,
          },
          .floating = ToClayFloatingConfig(config.floating),
+         .border = ToClayBorderConfig(config.borderColor, config.borderWidth),
          .backgroundColor = (Clay_Color) {
              .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a },
          .custom = { .customData = config.elementPtr } });

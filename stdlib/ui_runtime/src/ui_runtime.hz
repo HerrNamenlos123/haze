@@ -118,6 +118,26 @@ export opaque struct Runtime {
             renderCanvas: (element: ui_elements.CanvasElement): void => {
                 this.renderCanvasElement(element, frame, r);
             },
+            renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {
+                r.drawRect({
+                    pos: position,
+                    size: size,
+                    fillColor: Color(0.0, 0.0, 0.0, 0.0),
+                    cornerRadius: {
+                        topLeft: cornerRadius.topLeft,
+                        topRight: cornerRadius.topRight,
+                        bottomLeft: cornerRadius.bottomLeft,
+                        bottomRight: cornerRadius.bottomRight,
+                    },
+                    borderColor: borderColor,
+                    borderWidths: {
+                        top: borderWidth.top,
+                        right: borderWidth.right,
+                        bottom: borderWidth.bottom,
+                        left: borderWidth.left,
+                    },
+                });
+            },
         });
 
         r.commit();

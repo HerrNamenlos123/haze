@@ -20,6 +20,13 @@ typedef struct {
   hzstd_real_t bottom;
 } hzui_padding_values_t;
 
+typedef struct {
+  hzstd_real_t left;
+  hzstd_real_t right;
+  hzstd_real_t top;
+  hzstd_real_t bottom;
+} hzui_border_widths_t;
+
 // How an element is sized along one axis. Mirrors ui_styling.SizeMode/Size on
 // the Haze side (Fit/Grow/a fixed value) -- `value` only matters when
 // `type == hzui_sizing_fixed`.
@@ -97,6 +104,8 @@ typedef struct {
   hzui_align_t mainAxisAlign;
   hzui_align_t crossAxisAlign;
   hzui_floating_config_t floating;
+  hzstd_color_t borderColor;
+  hzui_border_widths_t borderWidth;
   void* elementPtr;
 } hzui_define_div_element_t;
 
@@ -108,6 +117,8 @@ typedef struct {
   hzui_sizing_axis_t width;
   hzui_sizing_axis_t height;
   hzui_floating_config_t floating;
+  hzstd_color_t borderColor;
+  hzui_border_widths_t borderWidth;
   void* elementPtr;
 } hzui_define_canvas_element_t;
 

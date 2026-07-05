@@ -7,10 +7,13 @@ struct VSOut {
     @location(4) radiusTopRight: f32,
     @location(5) radiusBottomLeft: f32,
     @location(6) radiusBottomRight: f32,
-    @location(7) borderThickness: f32,
-    @location(8) _type: u32,
-    @location(9) instSize: vec2<f32>,
-    @location(10) uv: vec2<f32>,
+    @location(7) borderTop: f32,
+    @location(8) borderRight: f32,
+    @location(9) borderBottom: f32,
+    @location(10) borderLeft: f32,
+    @location(11) _type: u32,
+    @location(12) instSize: vec2<f32>,
+    @location(13) uv: vec2<f32>,
 };
 
 struct Globals {
@@ -66,14 +69,17 @@ fn vs_main(
     @location(4) radiusTopRight: f32,
     @location(5) radiusBottomLeft: f32,
     @location(6) radiusBottomRight: f32,
-    @location(7) borderThickness: f32,
-    @location(8) fillColor: vec4<f32>,
-    @location(9) borderColor: vec4<f32>,
-    @location(10) _type: u32,
-    @location(11) uvMin: vec2<f32>,
-    @location(12) uvMax: vec2<f32>,
-    @location(13) z: f32,
-    @location(14) transformIndex: u32,
+    @location(7) borderTop: f32,
+    @location(8) borderRight: f32,
+    @location(9) borderBottom: f32,
+    @location(10) borderLeft: f32,
+    @location(11) fillColor: vec4<f32>,
+    @location(12) borderColor: vec4<f32>,
+    @location(13) _type: u32,
+    @location(14) uvMin: vec2<f32>,
+    @location(15) uvMax: vec2<f32>,
+    @location(16) z: f32,
+    @location(17) transformIndex: u32,
 ) -> VSOut {
     var o: VSOut;
 
@@ -89,14 +95,23 @@ fn vs_main(
         o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
         o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
 
-        o.borderThickness = borderThickness;
+        o.borderTop = 0.0;
+        o.borderRight = 0.0;
+        o.borderBottom = 0.0;
+        o.borderLeft = 0.0;
         o._type = _type;
         o.instSize = instSize;
         o.uv = vec2(0, 0);
     }
-    else if (_type == 1u) { // Outlined Rounded Rectangle
-        let paddingFraction = vec2(borderThickness * 2.0 / instSize.x, borderThickness * 2.0 / instSize.y);
-        let paddedSize = vec2(instSize.x + borderThickness * 2.0, instSize.y + borderThickness * 2.0);
+    else if (_type == 1u) { // Bordered Rounded Rectangle (independent per-edge widths)
+        // Over-provision the rasterized quad by the widest edge on each axis
+        // so every border band is covered regardless of which edge is
+        // thickest; the fragment shader does the exact per-edge math and
+        // discards whatever this padding overshoots.
+        let maxBorderX = max(borderLeft, borderRight);
+        let maxBorderY = max(borderTop, borderBottom);
+        let paddingFraction = vec2(maxBorderX * 2.0 / instSize.x, maxBorderY * 2.0 / instSize.y);
+        let paddedSize = vec2(instSize.x + maxBorderX * 2.0, instSize.y + maxBorderY * 2.0);
         let localPos = quadPos * paddedSize + instPos;
         o.pos = toClipSpace(localPos, z, transformIndex);
         o.localPos = quadPos * (vec2(1, 1) + paddingFraction);
@@ -108,7 +123,10 @@ fn vs_main(
         o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
         o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
 
-        o.borderThickness = borderThickness;
+        o.borderTop = borderTop;
+        o.borderRight = borderRight;
+        o.borderBottom = borderBottom;
+        o.borderLeft = borderLeft;
         o._type = _type;
         o.instSize = instSize;
         o.uv = vec2(0, 0);
@@ -126,7 +144,10 @@ fn vs_main(
         o.radiusBottomRight = 0.0;
 
         o._type = _type;
-        o.borderThickness = 0.0;
+        o.borderTop = 0.0;
+        o.borderRight = 0.0;
+        o.borderBottom = 0.0;
+        o.borderLeft = 0.0;
         o.instSize = instSize;
         o.uv = mix(uvMin, uvMax, quadPos + vec2(0.5,0.5));
     }
@@ -139,26 +160,33 @@ fn vs_main(
 // Fragment shader: SDF rendering
 // ================================
 
-fn rounded_rectangle_sdf(in: VSOut) -> f32 {
-    let halfSize = in.instSize / 2.0;
-    let p = in.localPos * in.instSize;
-
+// Generic rounded-box SDF: `p` is relative to the box's own center, `r*`
+// give each corner's own radius. Factored out of rounded_rectangle_sdf so
+// process_rounded_rect_border (below) can evaluate the same math twice --
+// once for the outer shape, once for an independently inset-and-cornered
+// inner one -- to carve out an asymmetric border band.
+fn rounded_box_sdf(p: vec2<f32>, halfSize: vec2<f32>, rTopLeft: f32, rTopRight: f32, rBottomLeft: f32, rBottomRight: f32) -> f32 {
     var r: f32;
     if (p.x < 0.0 && p.y > 0.0) {
-        r = in.radiusBottomLeft;
+        r = rBottomLeft;
     } else if (p.x > 0.0 && p.y > 0.0) {
-        r = in.radiusBottomRight;
+        r = rBottomRight;
     } else if (p.x < 0.0 && p.y < 0.0) {
-        r = in.radiusTopLeft;
+        r = rTopLeft;
     } else {
-        r = in.radiusTopRight;
+        r = rTopRight;
     }
 
     let q = abs(p) - halfSize + vec2(r, r);
     let outside = max(q, vec2(0.0));
     let insideDist = min(max(q.x, q.y), 0.0); // negative inside edges
-    let sdf = length(outside) + insideDist - r;
-    return sdf;
+    return length(outside) + insideDist - r;
+}
+
+fn rounded_rectangle_sdf(in: VSOut) -> f32 {
+    let halfSize = in.instSize / 2.0;
+    let p = in.localPos * in.instSize;
+    return rounded_box_sdf(p, halfSize, in.radiusTopLeft, in.radiusTopRight, in.radiusBottomLeft, in.radiusBottomRight);
 }
 
 // Every fragment function in this file returns premultiplied-alpha color
@@ -185,16 +213,39 @@ fn process_rounded_rect_fill(in: VSOut) -> vec4<f32> {
     return vec4(in.fillColor.rgb * a, a);
 }
 
-fn process_rounded_rect_outline(in: VSOut) -> vec4<f32> {
-    let edgeSDF = rounded_rectangle_sdf(in);
+// Independent per-edge border widths, still respecting each corner's own
+// radius: the border band is "inside the outer rounded box, outside a
+// second, inset rounded box" -- the inner box is offset from center by each
+// axis's (near - far) edge-width imbalance (so an asymmetric e.g. top-heavy
+// border keeps the *outer* edges fixed, exactly like CSS), and each of its
+// corners' own radius is reduced by that corner's two adjacent edge widths
+// (clamped to 0), so a thick edge correctly flattens the corner it touches
+// instead of leaving a stray sliver of the outer radius showing through.
+fn process_rounded_rect_border(in: VSOut) -> vec4<f32> {
+    let halfSize = in.instSize / 2.0;
+    let p = in.localPos * in.instSize;
 
-    // Turn the inside edge SDF into an SDF for the line (positive both inside and outside rect but negative in border)
-    let lineSDF = abs(edgeSDF - in.borderThickness / 2.0) - in.borderThickness / 2.0;
+    let outerSDF = rounded_box_sdf(p, halfSize, in.radiusTopLeft, in.radiusTopRight, in.radiusBottomLeft, in.radiusBottomRight);
 
-    let fw = fwidth(lineSDF);
-    let fraction = clamp(0.5 - lineSDF / fw, 0.0, 1.0);
+    let innerHalfSize = vec2(
+        max(0.0, halfSize.x - (in.borderLeft + in.borderRight) / 2.0),
+        max(0.0, halfSize.y - (in.borderTop + in.borderBottom) / 2.0),
+    );
+    let innerCenterOffset = vec2((in.borderLeft - in.borderRight) / 2.0, (in.borderTop - in.borderBottom) / 2.0);
+    let pInner = p - innerCenterOffset;
 
-    if (fraction == 0.0) {
+    let innerRadiusTopLeft = max(0.0, in.radiusTopLeft - min(in.borderTop, in.borderLeft));
+    let innerRadiusTopRight = max(0.0, in.radiusTopRight - min(in.borderTop, in.borderRight));
+    let innerRadiusBottomLeft = max(0.0, in.radiusBottomLeft - min(in.borderBottom, in.borderLeft));
+    let innerRadiusBottomRight = max(0.0, in.radiusBottomRight - min(in.borderBottom, in.borderRight));
+
+    let innerSDF = rounded_box_sdf(pInner, innerHalfSize, innerRadiusTopLeft, innerRadiusTopRight, innerRadiusBottomLeft, innerRadiusBottomRight);
+
+    let outerFraction = clamp(0.5 - outerSDF / fwidth(outerSDF), 0.0, 1.0);
+    let innerFraction = clamp(0.5 - innerSDF / fwidth(innerSDF), 0.0, 1.0);
+    let fraction = outerFraction * (1.0 - innerFraction);
+
+    if (fraction <= 0.0) {
         discard;
     }
 
@@ -228,8 +279,8 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     if (in._type == 0u) { // Filled Rounded Rectangle
         return process_rounded_rect_fill(in);
     }
-    else if (in._type == 1u) { // Outlined Rounded Rectangle
-        return process_rounded_rect_outline(in);
+    else if (in._type == 1u) { // Bordered Rounded Rectangle
+        return process_rounded_rect_border(in);
     }
     else if (in._type == 2u) { // Glyph
         return process_glyph(in);

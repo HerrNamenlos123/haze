@@ -16,6 +16,13 @@ export inline struct CornerRadius {
     bottomRight: real = 0.0;
 }
 
+export inline struct BorderWidth {
+    left: real = 0.0;
+    right: real = 0.0;
+    top: real = 0.0;
+    bottom: real = 0.0;
+}
+
 export enum Direction { Row, Column }
 
 // How children are packed along the *main* axis -- the same axis as
@@ -156,6 +163,19 @@ export inline struct StyleCornerRadiusFull {
 
 export type StyleCornerRadius = StyleCornerRadiusSimple | StyleCornerRadiusFull | none;
 
+// Independent optional edges, like PositionValues -- not a Simple/Full union
+// like padding/cornerRadius above, because border widths must be combinable
+// across separate preset calls in the same array (`[presets.borderT(2),
+// presets.borderR(4)]`, mirroring Tailwind's `border-t-2 border-r-4`, each
+// setting one edge independently) rather than one call replacing the whole
+// thing.
+export inline struct BorderWidthValues {
+    top?: real;
+    right?: real;
+    bottom?: real;
+    left?: real;
+}
+
 fn resolvePadding(padding: StylePadding): Padding {
     if padding is StylePaddingSimple {
         let v = padding.value ? padding.value : 0.0;
@@ -188,6 +208,15 @@ fn resolveCornerRadius(cornerRadius: StyleCornerRadius): CornerRadius {
     return CornerRadius {};
 }
 
+fn resolveBorderWidth(values: BorderWidthValues): BorderWidth {
+    return BorderWidth {
+        left: values.left ? values.left : 0.0,
+        right: values.right ? values.right : 0.0,
+        top: values.top ? values.top : 0.0,
+        bottom: values.bottom ? values.bottom : 0.0,
+    };
+}
+
 // User-facing raw styles: everything optional, meaning "not set by this
 // component" -- computeDivStyle()/computeTextStyle() below are the only
 // place that turns "not set" into an actual value.
@@ -210,6 +239,9 @@ export inline struct DivStyle {
     zIndex?: int;
     anchorTarget?: AnchorTarget;
 
+    borderWidth: BorderWidthValues = {};
+    borderColor?: Color;
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -231,6 +263,8 @@ export inline struct DivStyle {
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
+        this.borderWidth = other.borderWidth;
+        this.borderColor = other.borderColor;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -317,6 +351,9 @@ export struct ComputedDivStyle {
     zIndex: int = 0;
     anchorTarget?: AnchorTarget;
 
+    borderWidth: BorderWidth = {};
+    borderColor: Color = {};
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -338,6 +375,8 @@ export struct ComputedDivStyle {
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
+        this.borderWidth = other.borderWidth;
+        this.borderColor = other.borderColor;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -387,6 +426,12 @@ export struct BottomOp { value: real; }
 export struct LeftOp { value: real; }
 export struct ZIndexOp { value: int; }
 export struct AnchorToOp { target: AnchorTarget; }
+export struct BorderWidthOp { value: real; }
+export struct BorderTopWidthOp { value: real; }
+export struct BorderRightWidthOp { value: real; }
+export struct BorderBottomWidthOp { value: real; }
+export struct BorderLeftWidthOp { value: real; }
+export struct BorderColorOp { color: Color; }
 export struct FontFamilyOp { value: str; }
 export struct FontSizeOp { value: real; }
 export struct FontWeightOp { value: real; }
@@ -407,6 +452,8 @@ export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp
+    | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
+    | BorderColorOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
 
 // Applies `ops` onto `raw`, with explicitly-set fields on `raw` always
@@ -434,6 +481,17 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
         else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
         else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
         else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
+        else if op is BorderWidthOp {
+            if !working.borderWidth.top { working.borderWidth.top = op.value; }
+            if !working.borderWidth.right { working.borderWidth.right = op.value; }
+            if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; }
+            if !working.borderWidth.left { working.borderWidth.left = op.value; }
+        }
+        else if op is BorderTopWidthOp { if !working.borderWidth.top { working.borderWidth.top = op.value; } }
+        else if op is BorderRightWidthOp { if !working.borderWidth.right { working.borderWidth.right = op.value; } }
+        else if op is BorderBottomWidthOp { if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; } }
+        else if op is BorderLeftWidthOp { if !working.borderWidth.left { working.borderWidth.left = op.value; } }
+        else if op is BorderColorOp { if !working.borderColor { working.borderColor = op.color; } }
         else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
         else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
         else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
@@ -446,6 +504,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
         cornerRadius: resolveCornerRadius(working.cornerRadius),
         positionValues: working.positionValues,
         anchorTarget: working.anchorTarget,
+        borderWidth: resolveBorderWidth(working.borderWidth),
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
         fontWeight: working.fontWeight,
@@ -462,6 +521,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
     if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
     if working.position { result.position = working.position; }
     if working.zIndex { result.zIndex = working.zIndex; }
+    if working.borderColor { result.borderColor = working.borderColor; }
     return result;
 }
 

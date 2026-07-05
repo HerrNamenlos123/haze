@@ -32,6 +32,15 @@ typedef struct {
   void* renderCustomUserdata;
   void (*applyBoundingBox)(void* userdata, void* elementPtr, double x, double y, double w, double h);
   void* applyBoundingBoxUserdata;
+  void (*renderBorder)(void* userdata,
+                       double x,
+                       double y,
+                       double width,
+                       double height,
+                       hzstd_color_t borderColor,
+                       hzui_corner_radius_values_t cornerRadius,
+                       hzui_border_widths_t borderWidth);
+  void* renderBorderUserdata;
 } ClayCallbacks;
 
 void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
@@ -145,79 +154,31 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     } break;
 
     case CLAY_RENDER_COMMAND_TYPE_BORDER: {
-      //   Clay_BorderRenderData* config = &rcmd->renderData.border;
-
-      //   const float minRadius = MIN(w, h) / 2.0f;
-      //   const Clay_CornerRadius clampedRadii = { .topLeft = MIN(config->cornerRadius.topLeft, minRadius),
-      //                                            .topRight = MIN(config->cornerRadius.topRight, minRadius),
-      //                                            .bottomLeft = MIN(config->cornerRadius.bottomLeft, minRadius),
-      //                                            .bottomRight = MIN(config->cornerRadius.bottomRight, minRadius) };
-      //   // edges
-      //   Clay_Color color = { config->color.r, config->color.g, config->color.b, config->color.a };
-
-      //   if (config->width.left > 0) {
-      //     const float starting_y = y + clampedRadii.topLeft;
-      //     const float length = h - clampedRadii.topLeft - clampedRadii.bottomLeft;
-      //     SDL_FRect line = { rect.x, starting_y, config->width.left, length };
-      //     // SDL_RenderFillRect(rendererData->renderer, &line);
-      //     GL_FillRoundedRect(rendererData, line, 0, zIndex, color);
-      //   }
-      //   if (config->width.right > 0) {
-      //     const float starting_x = rect.x + rect.w - (float)config->width.right;
-      //     const float starting_y = rect.y + clampedRadii.topRight;
-      //     const float length = rect.h - clampedRadii.topRight - clampedRadii.bottomRight;
-      //     SDL_FRect line = { starting_x, starting_y, config->width.right, length };
-      //     // SDL_RenderFillRect(rendererData->renderer, &line);
-      //     GL_FillRoundedRect(rendererData, line, 0, zIndex, color);
-      //   }
-      //   if (config->width.top > 0) {
-      //     const float starting_x = rect.x + clampedRadii.topLeft;
-      //     const float length = rect.w - clampedRadii.topLeft - clampedRadii.topRight;
-      //     SDL_FRect line = { starting_x, rect.y, length, config->width.top };
-      //     // SDL_RenderFillRect(rendererData->renderer, &line);
-      //     GL_FillRoundedRect(rendererData, line, 0, zIndex, color);
-      //   }
-      //   if (config->width.bottom > 0) {
-      //     const float starting_x = rect.x + clampedRadii.bottomLeft;
-      //     const float starting_y = rect.y + rect.h - (float)config->width.bottom;
-      //     const float length = rect.w - clampedRadii.bottomLeft - clampedRadii.bottomRight;
-      //     SDL_FRect line = { starting_x, starting_y, length, config->width.bottom };
-      //     // SDL_SetRenderDrawColor(
-      //     // rendererData->renderer, config->color.r, config->color.g, config->color.b, config->color.a);
-      //     // SDL_RenderFillRect(rendererData->renderer, &line);
-      //     GL_FillRoundedRect(rendererData, line, 0, zIndex, color);
-      //   }
-      //   // corners
-      //   if (config->cornerRadius.topLeft > 0) {
-      //     const float centerX = rect.x + clampedRadii.topLeft - 1;
-      //     const float centerY = rect.y + clampedRadii.topLeft;
-      //     // SDL_Clay_RenderArc(rendererData, (SDL_FPoint) { centerX, centerY }, clampedRadii.topLeft, 180.0f,
-      //     270.0f,
-      //     //     config->width.top, config->color);
-      //   }
-      //   if (config->cornerRadius.topRight > 0) {
-      //     const float centerX = rect.x + rect.w - clampedRadii.topRight - 1;
-      //     const float centerY = rect.y + clampedRadii.topRight;
-      //     // SDL_Clay_RenderArc(rendererData, (SDL_FPoint) { centerX, centerY }, clampedRadii.topRight, 270.0f,
-      //     360.0f,
-      //     //     config->width.top, config->color);
-      //   }
-      //   if (config->cornerRadius.bottomLeft > 0) {
-      //     const float centerX = rect.x + clampedRadii.bottomLeft - 1;
-      //     const float centerY = rect.y + rect.h - clampedRadii.bottomLeft - 1;
-      //     // SDL_Clay_RenderArc(rendererData, (SDL_FPoint) { centerX, centerY }, clampedRadii.bottomLeft, 90.0f,
-      //     180.0f,
-      //     //     config->width.bottom, config->color);
-      //   }
-      //   if (config->cornerRadius.bottomRight > 0) {
-      //     const float centerX
-      //         = rect.x + rect.w - clampedRadii.bottomRight - 1; // TODO: why need to -1 in all calculations???
-      //     const float centerY = rect.y + rect.h - clampedRadii.bottomRight - 1;
-      //     // SDL_Clay_RenderArc(rendererData, (SDL_FPoint) { centerX, centerY }, clampedRadii.bottomRight,
-      //     0.0f, 90.0f,
-      //     //     config->width.bottom, config->color);
-      //   }
-
+      // No applyBoundingBox call here: this element's RECTANGLE command (if
+      // any) already reported its box, and if the background is fully
+      // transparent (so Clay skipped RECTANGLE and only emitted BORDER),
+      // ui_layout.hz's own fallback pass (applyBoundingBoxesRecursive)
+      // already covers that content-less-element case generically by id.
+      Clay_BorderRenderData* config = &rcmd->renderData.border;
+      Clay_Color col = config->color;
+      callbacks.renderBorder(callbacks.renderBorderUserdata,
+                              x,
+                              y,
+                              w,
+                              h,
+                              (hzstd_color_t) { col.r, col.g, col.b, col.a },
+                              (hzui_corner_radius_values_t) {
+                                  .topLeft = config->cornerRadius.topLeft,
+                                  .topRight = config->cornerRadius.topRight,
+                                  .bottomLeft = config->cornerRadius.bottomLeft,
+                                  .bottomRight = config->cornerRadius.bottomRight,
+                              },
+                              (hzui_border_widths_t) {
+                                  .left = config->width.left,
+                                  .right = config->width.right,
+                                  .top = config->width.top,
+                                  .bottom = config->width.bottom,
+                              });
     } break;
     case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
       // Clay_BoundingBox boundingBox = rcmd->boundingBox;

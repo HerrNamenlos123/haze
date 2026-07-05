@@ -41,6 +41,8 @@ namespace ffi {
         renderCustomUserdata: cptr;
         applyBoundingBox: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
         applyBoundingBoxUserdata: cptr;
+        renderBorder: (userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: hzui_border_widths_t) -> void;
+        renderBorderUserdata: cptr;
     };
 
     extern C noemit inline struct hzui_optional_bounding_box_t {
@@ -63,6 +65,13 @@ namespace ffi {
     };
 
     export extern C noemit inline struct hzui_padding_values_t {
+        left: real;
+        right: real;
+        top: real;
+        bottom: real;
+    }
+
+    export extern C noemit inline struct hzui_border_widths_t {
         left: real;
         right: real;
         top: real;
@@ -125,6 +134,8 @@ namespace ffi {
         mainAxisAlign: hzui_align_t;
         crossAxisAlign: hzui_align_t;
         floating: hzui_floating_config_t;
+        borderColor: Color;
+        borderWidth: hzui_border_widths_t;
         elementPtr: cptr;
     }
 
@@ -135,6 +146,8 @@ namespace ffi {
         width: hzui_sizing_axis_t;
         height: hzui_sizing_axis_t;
         floating: hzui_floating_config_t;
+        borderColor: Color;
+        borderWidth: hzui_border_widths_t;
         elementPtr: cptr;
     }
 
@@ -254,6 +267,13 @@ fn noFloating(): ffi.hzui_floating_config_t :: final {
         zIndex: 0,
         parentId: "",
     };
+}
+
+// Same idea as noFloating() above, for the zero-width borderWidth every
+// hzui_define_div_element_t/hzui_define_canvas_element_t literal must also
+// specify explicitly.
+fn noBorder(): ffi.hzui_border_widths_t :: final {
+    return { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 };
 }
 
 // Collapses independent top/right/bottom/left offsets down to the one corner
@@ -385,6 +405,8 @@ fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
         mainAxisAlign: ffi.hzui_align_t.hzui_align_start,
         crossAxisAlign: ffi.hzui_align_t.hzui_align_start,
         floating: noFloating(),
+        borderColor: Color(0.0, 0.0, 0.0, 0.0),
+        borderWidth: noBorder(),
         elementPtr: none as cptr,
     });
 }
@@ -655,6 +677,8 @@ export opaque struct Context {
                         mainAxisAlign: packingToClayAlign(style.packing),
                         crossAxisAlign: crossAlignToClayAlign(style.crossAlign),
                         floating: floating,
+                        borderColor: style.borderColor,
+                        borderWidth: { left: style.borderWidth.left, right: style.borderWidth.right, top: style.borderWidth.top, bottom: style.borderWidth.bottom },
                         elementPtr: elementPtr,
                     }
                 );
@@ -723,6 +747,8 @@ export opaque struct Context {
                 width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
                 height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
                 floating: floating,
+                borderColor: style.borderColor,
+                borderWidth: { left: style.borderWidth.left, right: style.borderWidth.right, top: style.borderWidth.top, bottom: style.borderWidth.bottom },
                 elementPtr: elementPtr,
             });
         }
@@ -784,6 +810,9 @@ export opaque struct Context {
             let onBoundingBox = Box<BoundingBoxCB>(callbacks.onBoundingBox);
             let applyBoundingBoxUserdata = none as cptr;
             __c__("applyBoundingBoxUserdata = onBoundingBox;");
+            let renderBorder = Box<RenderBorderCB>(callbacks.renderBorder);
+            let renderBorderUserdata = none as cptr;
+            __c__("renderBorderUserdata = renderBorder;");
 
             ffi.Clay_RenderClayCommands({
                 renderFilledRect: renderFilledRectTrampoline,
@@ -794,6 +823,8 @@ export opaque struct Context {
                 renderCustomUserdata: renderCustomUserdata,
                 applyBoundingBox: applyBoundingBoxTrampoline,
                 applyBoundingBoxUserdata: applyBoundingBoxUserdata,
+                renderBorder: renderBorderTrampoline,
+                renderBorderUserdata: renderBorderUserdata,
             }, clayRenderCommandsPtr);
         };
 
@@ -808,6 +839,7 @@ export opaque struct Context {
 
 export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;
 export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
+export type RenderBorderCB = (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t, borderWidth: ffi.hzui_border_widths_t) => void;
 // Not exported: these two reference a cross-module qualified type
 // (ui_elements.X) in their body. The compiler's cross-module shim generator
 // mangles qualified types correctly for struct fields, but has a codegen bug
@@ -824,10 +856,11 @@ type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) 
 // Supplementary to the render-command-driven onBoundingBox calls inside
 // Clay_RenderClayCommands (renderer.c only invokes those for
 // RECTANGLE/TEXT/CUSTOM commands -- i.e. only elements Clay actually deemed
-// worth painting). A content-less structural div (no background, and
-// DivStyle has no border support to worry about -- there's no
-// borderColor/borderThickness field at all) never emits a render command
-// and so never gets one of those calls, even though Clay has already
+// worth painting; BORDER commands never call applyBoundingBox at all -- see
+// its own comment in renderer.c). A content-less structural div (no
+// background -- independent of whether it has a border, which this gate
+// deliberately ignores) never emits a RECTANGLE command and so never gets
+// one of those calls, even though Clay has already
 // computed a fully resolved layout box for it internally -- which is
 // exactly what leaves it permanently excluded from hit-testing (see
 // ui_components.hz's buildHitPath/updateHoverState) even though it's a
@@ -870,6 +903,7 @@ export struct RenderCallbacks {
     renderText: RenderTextCB;
     renderCanvas: (element: ui_elements.CanvasElement) => void;
     onBoundingBox: (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
+    renderBorder: RenderBorderCB;
 }
 
 fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
@@ -877,6 +911,14 @@ fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, hei
         let callable: Box<RenderFilledRectCB> = uninitialized;
         __c__("callable = userdata;");
         callable.value(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+    };
+}
+
+fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
+    do unsafe {
+        let callable: Box<RenderBorderCB> = uninitialized;
+        __c__("callable = userdata;");
+        callable.value(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
     };
 }
 
