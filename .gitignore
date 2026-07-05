@@ -178,6 +178,9 @@ bun.lock
 __haze__
 .idea
 
+# Compiler test suite scratch space (generated per-case source files)
+testsuite/.work/
+
 *.tsk
 
 *.cpuprofile

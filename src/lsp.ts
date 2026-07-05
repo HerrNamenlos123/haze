@@ -124,6 +124,7 @@ async function analyzeModule(
     if (err instanceof CompilerError) {
       errorDiag.message = err.rawMessage ?? err.message;
       errorDiag.loc = err.loc;
+      errorDiag.code = err.code;
     } else if (err instanceof SyntaxError && diagnostics.length === 0) {
       errorDiag.message = "Syntax error";
     }

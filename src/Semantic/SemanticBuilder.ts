@@ -19,6 +19,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import {
   type ConstraintPath,
   type ConstraintPathSubscriptIndex,
@@ -1256,7 +1257,8 @@ export class SemanticBuilder {
         ) {
           throw new CompilerError(
             "This expression is not a valid LHS",
-            lhs.sourceloc
+            lhs.sourceloc,
+            HazeErrorCode.ThisExpressionNotValidLHS
           );
         }
         return this.updateLHSDependencies(lhs.expr, dependencies);
@@ -1272,7 +1274,8 @@ export class SemanticBuilder {
         ) {
           throw new CompilerError(
             "This expression is not a valid LHS",
-            lhs.sourceloc
+            lhs.sourceloc,
+            HazeErrorCode.ThisExpressionNotValidLHS2
           );
         }
         return this.updateLHSDependencies(lhs.expr, dependencies);
@@ -1302,7 +1305,8 @@ export class SemanticBuilder {
       default:
         throw new CompilerError(
           "This expression is not a valid LHS",
-          lhs.sourceloc
+          lhs.sourceloc,
+          HazeErrorCode.ThisExpressionNotValidLHS3
         );
       // assert(false, (lhs as any).variant.toString());
     }
@@ -1336,7 +1340,8 @@ export class SemanticBuilder {
     if (target.isTemporary) {
       throw new CompilerError(
         `Cannot assign to a temporary of type ${Semantic.serializeTypeUse(this.sr, target.type)}`,
-        sourceloc
+        sourceloc,
+        HazeErrorCode.CannotAssignTemporaryType
       );
     }
 

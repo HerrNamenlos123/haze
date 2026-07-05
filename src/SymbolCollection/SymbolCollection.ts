@@ -51,6 +51,7 @@ import {
   formatSourceLoc,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { makeTempId } from "../shared/store";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
@@ -1113,7 +1114,8 @@ export function defineVariableSymbol(
         `Symbol '${variable.name}' was already declared in this scope. Previous definition: ${
           (s.sourceloc && formatSourceLoc(s.sourceloc)) || ""
         }`,
-        variable.sourceloc
+        variable.sourceloc,
+        HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
       );
     }
   }
@@ -1186,7 +1188,8 @@ function collectTypeDef(
               }' has already been declared as a Struct, which cannot be extended by a namespace. Original definition: ${
                 (typedef.sourceloc && formatSourceLoc(typedef.sourceloc)) || ""
               }`,
-              item.sourceloc
+              item.sourceloc,
+              HazeErrorCode.SymbolHasAlreadyBeenDeclaredAsStructWhich
             );
           }
         }
@@ -1310,7 +1313,8 @@ function collectTypeDef(
             `Symbol '${fullyQualifiedName}' has already been declared as a Namespace, which cannot be extended by a struct. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.SymbolHasAlreadyBeenDeclaredAsNamespaceWhich
           );
         }
         if (
@@ -1321,7 +1325,8 @@ function collectTypeDef(
             `Struct '${item.name}' is already declared in this scope. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.StructAlreadyDeclaredThisScopeOriginalDefinition
           );
         }
       }
@@ -1614,7 +1619,8 @@ function collectSymbol(
       if (item.static && item.methodType !== EMethodType.Method) {
         throw new CompilerError(
           `A function that is not a method cannot be marked as 'static'`,
-          item.sourceloc
+          item.sourceloc,
+          HazeErrorCode.FunctionThatNotMethodCannotBeMarkedAs
         );
       }
 
@@ -1624,7 +1630,8 @@ function collectSymbol(
       ) {
         throw new CompilerError(
           `'${item.name}' is a reserved name, it cannot be used in userland.`,
-          item.sourceloc
+          item.sourceloc,
+          HazeErrorCode.ReservedNameItCannotBeUsedUserland
         );
       }
 
@@ -2043,7 +2050,8 @@ function collectGlobalDirective(
       if (!dependency) {
         throw new CompilerError(
           `Cannot find import '${item.name}': No such module`,
-          item.sourceloc
+          item.sourceloc,
+          HazeErrorCode.CannotFindImportNoSuchModule
         );
       }
       const globalBuildDir = join(process.cwd(), "__haze__");
@@ -2210,7 +2218,8 @@ function collectScope(
             if (e.letCondition) {
               throw new CompilerError(
                 `'if let' bindings in else-if branches are not supported yet`,
-                item.sourceloc
+                item.sourceloc,
+                HazeErrorCode.IfLetBindingsElseIfBranchesAreNot
               );
             }
 
@@ -2654,7 +2663,8 @@ function collectExpr(
       if (item.lambda.ellipsis) {
         throw new CompilerError(
           "A Lambda Function is not allowed to have unchecked, C-style variadic arguments",
-          item.sourceloc
+          item.sourceloc,
+          HazeErrorCode.LambdaFunctionNotAllowedHaveUncheckedCStyle
         );
       }
 
@@ -2686,7 +2696,8 @@ function collectExpr(
           if (p.kind === "param-pack") {
             throw new CompilerError(
               "Lambda functions cannot have parameter packs",
-              p.sourceloc
+              p.sourceloc,
+              HazeErrorCode.LambdaFunctionsCannotHaveParameterPacks
             );
           }
           return {
@@ -3147,7 +3158,8 @@ function collectExpr(
         if (p.kind === "param-pack") {
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.FunctionDatatypesCannotHaveParameterPacks
           );
         }
 
@@ -3158,7 +3170,8 @@ function collectExpr(
         if (p.defaultValue) {
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.FunctionDatatypesCannotDefineDefaultParameterValues
           );
         }
 
@@ -3201,7 +3214,8 @@ function collectExpr(
         if (p.kind === "param-pack") {
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.FunctionDatatypesCannotHaveParameterPacks2
           );
         }
 
@@ -3212,7 +3226,8 @@ function collectExpr(
         if (p.defaultValue) {
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
-            item.sourceloc
+            item.sourceloc,
+            HazeErrorCode.FunctionDatatypesCannotDefineDefaultParameterValues2
           );
         }
 
@@ -3266,7 +3281,8 @@ function collectExpr(
       if (item.type.variant !== "TaggedUnionTypeExpr") {
         throw new CompilerError(
           "nodiscard can only be applied to tagged unions",
-          item.sourceloc
+          item.sourceloc,
+          HazeErrorCode.NodiscardCanOnlyBeAppliedTaggedUnions
         );
       }
 
@@ -3325,7 +3341,9 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.AttemptExpr,
         attemptScope: collectScope(cc, item.attemptScope, args),
-        elseScope: item.elseScope ? wrapScope(item.elseScope, item.elseVar) : null,
+        elseScope: item.elseScope
+          ? wrapScope(item.elseScope, item.elseVar)
+          : null,
         elseVar: item.elseVar,
         recoverScope: item.recoverScope
           ? wrapScope(item.recoverScope, item.recoverVar)

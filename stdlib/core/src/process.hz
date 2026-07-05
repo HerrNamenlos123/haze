@@ -45,6 +45,36 @@ namespace process {
     return Result<none, int>.Ok(none);
   }
 
+  export struct RunCapturedResult {
+    exitCode: int;
+    stdout: str;
+    stderr: str;
+  }
+
+  // Like run(), but always pipes stdio and returns the captured stdout/stderr
+  // instead of discarding them, regardless of exit code. Since the child is
+  // waited on before its pipes are drained, this is only safe for children
+  // whose combined stdout+stderr stays well under the OS pipe buffer size
+  // (a few tens of KB) before they exit; a child producing more output than
+  // that before exiting can deadlock.
+  export fn runCaptured(exe: str, args: []str, options: Options = {}): RunCapturedResult {
+    let cwd = "";
+    let userCwd = options.cwd;
+    if userCwd {
+      assert(userCwd.length > 0, "process.runCaptured: options.cwd must not be empty");
+      cwd = userCwd;
+    }
+
+    let out = hzstd_process_result_t {};
+    hzstd_spawn_process(exe, args, options.env, cwd, false, out);
+
+    return RunCapturedResult {
+      exitCode: out.exit_code,
+      stdout: ffi.hzstd_str_from_cstr_ref(out.stdout_data),
+      stderr: ffi.hzstd_str_from_cstr_ref(out.stderr_data),
+    };
+  }
+
   // ── Background processes ─────────────────────────────────────────────────
 
   extern C noemit struct hzstd_process_spawn_result_t {

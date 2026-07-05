@@ -98,6 +98,7 @@ import {
   type SourceLoc,
   SyntaxError,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import {
   type AdditiveContext,
@@ -215,7 +216,7 @@ export namespace Parser {
       printErrorMessage(
         msg,
         { filename: this.filename, start: { line: line, column: column } },
-        "SyntaxError"
+        HazeErrorCode.SyntaxError
       );
     }
   }
@@ -742,7 +743,8 @@ class ASTBuilder extends HazeParserListener {
       default:
         throw new CompilerError(
           `The unit '${unit}' is not known to the compiler`,
-          this.loc(ctx)
+          this.loc(ctx),
+          HazeErrorCode.UnitNotKnownCompiler
         );
     }
 
@@ -799,7 +801,8 @@ class ASTBuilder extends HazeParserListener {
       default:
         throw new CompilerError(
           `The unit '${unit}' is not known to the compiler`,
-          this.loc(ctx)
+          this.loc(ctx),
+          HazeErrorCode.UnitNotKnownCompiler2
         );
     }
 
@@ -2328,11 +2331,15 @@ class ASTBuilder extends HazeParserListener {
         const body = attemptBodies[i];
         const scope = produced[i + 1] as ASTScope;
         if (body.ELSE()) {
-          if (elseScope !== null) { throw new InternalError("Duplicate else in attempt"); }
+          if (elseScope !== null) {
+            throw new InternalError("Duplicate else in attempt");
+          }
           elseScope = scope;
           elseVar = body.id() ? body.id()!.getText() : null;
         } else if (body.RECOVER()) {
-          if (recoverScope !== null) { throw new InternalError("Duplicate recover in attempt"); }
+          if (recoverScope !== null) {
+            throw new InternalError("Duplicate recover in attempt");
+          }
           recoverScope = scope;
           recoverVar = body.id() ? body.id()!.getText() : null;
         }
@@ -3086,10 +3093,18 @@ class ASTBuilder extends HazeParserListener {
 
     for (const c of flags.toLowerCase()) {
       if (!allowedFlags.has(c)) {
-        throw new CompilerError(`unknown regex flag '${c}'`, this.loc(ctx));
+        throw new CompilerError(
+          `unknown regex flag '${c}'`,
+          this.loc(ctx),
+          HazeErrorCode.UnknownRegexFlag
+        );
       }
       if (flagSet.has(c)) {
-        throw new CompilerError(`duplicate regex flag '${c}'`, this.loc(ctx));
+        throw new CompilerError(
+          `duplicate regex flag '${c}'`,
+          this.loc(ctx),
+          HazeErrorCode.DuplicateRegexFlag
+        );
       }
       flagSet.add(c);
     }
@@ -3150,7 +3165,11 @@ class ASTBuilder extends HazeParserListener {
 
       const n = raw[++i];
       if (n === undefined) {
-        throw new CompilerError("Invalid escape: trailing \\", sourceloc);
+        throw new CompilerError(
+          "Invalid escape: trailing \\",
+          sourceloc,
+          HazeErrorCode.InvalidEscapeTrailing
+        );
       }
 
       switch (n) {
@@ -3179,7 +3198,11 @@ class ASTBuilder extends HazeParserListener {
         case "x": {
           const hex = raw.slice(i + 1, i + 3);
           if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
-            throw new CompilerError("Invalid \\x escape", sourceloc);
+            throw new CompilerError(
+              "Invalid \\x escape",
+              sourceloc,
+              HazeErrorCode.InvalidXEscape
+            );
           }
           out += String.fromCharCode(Number.parseInt(hex, 16));
           i += 2;
@@ -3189,7 +3212,11 @@ class ASTBuilder extends HazeParserListener {
         case "u": {
           const hex = raw.slice(i + 1, i + 5);
           if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
-            throw new CompilerError("Invalid \\u escape", sourceloc);
+            throw new CompilerError(
+              "Invalid \\u escape",
+              sourceloc,
+              HazeErrorCode.InvalidUEscape
+            );
           }
           out += String.fromCharCode(Number.parseInt(hex, 16));
           i += 4;
@@ -3199,7 +3226,11 @@ class ASTBuilder extends HazeParserListener {
         case "U": {
           const hex = raw.slice(i + 1, i + 9);
           if (!/^[0-9a-fA-F]{8}$/.test(hex)) {
-            throw new CompilerError("Invalid \\U escape", sourceloc);
+            throw new CompilerError(
+              "Invalid \\U escape",
+              sourceloc,
+              HazeErrorCode.InvalidUEscape2
+            );
           }
           out += String.fromCodePoint(Number.parseInt(hex, 16));
           i += 8;
@@ -3221,7 +3252,11 @@ class ASTBuilder extends HazeParserListener {
             }
             out += String.fromCharCode(Number.parseInt(oct, 8));
           } else {
-            throw new CompilerError(`Unknown escape: \\${n}`, sourceloc);
+            throw new CompilerError(
+              `Unknown escape: \\${n}`,
+              sourceloc,
+              HazeErrorCode.UnknownEscape
+            );
           }
         }
       }
@@ -3260,7 +3295,11 @@ class ASTBuilder extends HazeParserListener {
     if (text.startsWith("\\x")) {
       const hex = text.slice(2);
       if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
-        throw new CompilerError(`Invalid \\x escape: ${text}`, sourceloc);
+        throw new CompilerError(
+          `Invalid \\x escape: ${text}`,
+          sourceloc,
+          HazeErrorCode.InvalidXEscape2
+        );
       }
       return String.fromCharCode(Number.parseInt(hex, 16));
     }
@@ -3268,7 +3307,11 @@ class ASTBuilder extends HazeParserListener {
     if (text.startsWith("\\u")) {
       const hex = text.slice(2);
       if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
-        throw new CompilerError(`Invalid \\u escape: ${text}`, sourceloc);
+        throw new CompilerError(
+          `Invalid \\u escape: ${text}`,
+          sourceloc,
+          HazeErrorCode.InvalidUEscape3
+        );
       }
       return String.fromCharCode(Number.parseInt(hex, 16));
     }
@@ -3276,7 +3319,11 @@ class ASTBuilder extends HazeParserListener {
     if (text.startsWith("\\U")) {
       const hex = text.slice(2);
       if (!/^[0-9a-fA-F]{8}$/.test(hex)) {
-        throw new CompilerError(`Invalid \\U escape: ${text}`, sourceloc);
+        throw new CompilerError(
+          `Invalid \\U escape: ${text}`,
+          sourceloc,
+          HazeErrorCode.InvalidUEscape4
+        );
       }
       return String.fromCodePoint(Number.parseInt(hex, 16));
     }
@@ -3463,7 +3510,8 @@ class ASTBuilder extends HazeParserListener {
     if (!stringLiteral) {
       throw new CompilerError(
         "Missing source location filename",
-        this.loc(ctx)
+        this.loc(ctx),
+        HazeErrorCode.MissingSourceLocationFilename
       );
     }
 
@@ -3480,7 +3528,8 @@ class ASTBuilder extends HazeParserListener {
     if (!match) {
       throw new CompilerError(
         `Invalid source location format: expected "/path/to/file.hz:line:col[-endcol]", got "${fullPath}"`,
-        this.loc(ctx)
+        this.loc(ctx),
+        HazeErrorCode.InvalidSourceLocationFormatExpectedPathFileHz
       );
     }
 

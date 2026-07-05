@@ -29,6 +29,7 @@ import {
   printWarningMessage,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { makeTempName } from "../shared/store";
 
 const ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION = true;
@@ -3920,7 +3921,11 @@ function lowerBlockScope(
       start: firstStrippedStatement.start,
       end: lastStrippedStatement.end,
     };
-    printWarningMessage("Dead code detected and stripped", location);
+    printWarningMessage(
+      "Dead code detected and stripped",
+      location,
+      HazeErrorCode.DeadCodeDetectedAndStripped
+    );
   }
 
   assert(blockScope.emittedExpr !== -1);

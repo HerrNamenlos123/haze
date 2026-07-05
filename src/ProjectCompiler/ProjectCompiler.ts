@@ -16,6 +16,7 @@ import {
   InternalError,
   UnreachableCode,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { acquireBuildLock } from "../ModuleCompiler/Lock";
 import {
   Cache,
@@ -610,7 +611,8 @@ export class ProjectCompiler {
         } else {
           throw new CompilerError(
             "This Distro/Package Manager is not supported yet, please report",
-            null
+            null,
+            HazeErrorCode.ThisDistroPackageManagerNotSupportedYetPlease
           );
         }
         this.markStepDone(MARKERS.ncursesLib);

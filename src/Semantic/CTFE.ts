@@ -12,6 +12,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { Conversion } from "./Conversion";
 import { Semantic } from "./SemanticTypes";
 
@@ -40,7 +41,11 @@ export function EvalCTFEOrFail(
 ) {
   const valueResult = EvalCTFE(sr, exprId);
   if (!valueResult.ok) {
-    throw new CompilerError(valueResult.error, sourceloc);
+    throw new CompilerError(
+      valueResult.error,
+      sourceloc,
+      HazeErrorCode.CtfeEvaluationFailed
+    );
   }
   return valueResult.value;
 }
@@ -338,7 +343,11 @@ export function EvalCTFENumericValue(
 ) {
   const r = EvalCTFE(sr, exprId);
   if (!r.ok) {
-    throw new CompilerError(r.error, sourceloc);
+    throw new CompilerError(
+      r.error,
+      sourceloc,
+      HazeErrorCode.CtfeNumericEvaluationFailed
+    );
   }
   const [result] = r.value;
   assert(result.variant === Semantic.ENode.LiteralExpr);
@@ -359,7 +368,8 @@ export function EvalCTFENumericValue(
   }
   throw new CompilerError(
     "This value cannot be evaluated as an integer",
-    result.sourceloc
+    result.sourceloc,
+    HazeErrorCode.ThisValueCannotBeEvaluatedAsInteger
   );
 }
 
@@ -367,7 +377,11 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
   const r = EvalCTFE(sr, exprId);
   const expr = sr.exprNodes.get(exprId);
   if (!r.ok) {
-    throw new CompilerError(r.error, expr.sourceloc);
+    throw new CompilerError(
+      r.error,
+      expr.sourceloc,
+      HazeErrorCode.CtfeBooleanEvaluationFailed
+    );
   }
   const [result] = r.value;
 
@@ -381,7 +395,8 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
           ? "Enum Literal"
           : primitiveToString(result.literal.type)
       } value cannot be tested for truthiness, use explicit comparisons.`,
-      result.sourceloc
+      result.sourceloc,
+      HazeErrorCode.ValueCannotBeTestedTruthinessUseExplicitComparisons
     );
   }
 
@@ -400,19 +415,22 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
             ? "Enum Literal"
             : primitiveToString(typeDef.literalValue.type)
         } value cannot be tested for truthiness, use explicit comparisons.`,
-        result.sourceloc
+        result.sourceloc,
+        HazeErrorCode.ValueCannotBeTestedTruthinessUseExplicitComparisons2
       );
     }
 
     throw new CompilerError(
       "Type expression cannot be evaluated as a boolean value",
-      result.sourceloc
+      result.sourceloc,
+      HazeErrorCode.TypeExpressionCannotBeEvaluatedAsBooleanValue
     );
   }
 
   throw new CompilerError(
     "Expression cannot be evaluated as a boolean value at compile time",
-    expr.sourceloc
+    expr.sourceloc,
+    HazeErrorCode.ExpressionCannotBeEvaluatedAsBooleanValueCompile
   );
 }
 
@@ -854,7 +872,8 @@ export function ctValueToExpr(
     case "list":
       throw new CompilerError(
         "Cannot convert complex CTValue to expression yet",
-        sourceloc
+        sourceloc,
+        HazeErrorCode.CannotConvertComplexCTValueExpressionYet
       );
 
     default:
