@@ -99,8 +99,7 @@ fn indexVault(vaultPath: str) {
 
 
 fn processFile(path: str) {
-    let extension = path.substr(path.length - 4, 4);
-    // if (!(path[path.length - 4] == b"." && path[path.length - 3] == b"t" && path[path.length - 2] == b"s" && path[path.length - 1] == b"k")) {
+    let extension = path.slice(-4);
     if (extension != ".tsk") {
         return;
     }
