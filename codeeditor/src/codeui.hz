@@ -98,7 +98,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             fmt.println("LANGUAGE SERVER FAILED", lsp.message);
         }
 
-        let docLines = rx.computed<[]str>((): []str => {
+        let docLines = rx.computed<[]str>(() => {
             if !doc {
                 fmt.println("doc failed");
                 return [];
