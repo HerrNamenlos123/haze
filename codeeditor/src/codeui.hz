@@ -256,7 +256,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return "LSP Ready";
         });
 
-        return (): void => {
+        return () => {
             ui.div({
                 id: 0,
                 presets: [
@@ -267,7 +267,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.p(4),
                     presets.gap(2),
                 ]
-            }, (): void => {
+            }, () => {
                 ui.text({
                     id: 0,
                     text: lspMessage,
@@ -298,7 +298,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             // state.highlightEngine.sendHighlightRequest(content);
                         }
                     }
-                }, (): void => {
+                }, () => {
                     let lines: []str = rx.get(docLines);
                     let id = 1;
 
@@ -384,7 +384,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.left(position.x as real * characterSize.x),
                                 presets.bg("#FFF"),
                             ]
-                        }, (): void => {});
+                        }, () => {});
                     }
                 });
             });
