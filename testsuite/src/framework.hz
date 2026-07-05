@@ -59,6 +59,20 @@ namespace testsuite {
         diagnosticChecks: []ErrorCheck = [];
     }
 
+    // Batching guidance: every case here pays for its own full compile (and,
+    // for run()/runExitCode(), its own subprocess execution too) — compiling
+    // is the slow part of this harness by a wide margin. When a check can be
+    // expressed as something the *program itself* verifies at runtime (a
+    // static_assert, an assertion, a printed value compared against expected
+    // stdout) rather than as a distinct process exit code or a distinct
+    // must-fail-to-compile expectation, prefer bundling many such checks as
+    // separate functions inside ONE run() case over registering many small
+    // separate cases. A single case with ten internal checks is one compile;
+    // ten separate run() cases are ten. Only give a scenario its own case
+    // when it is a genuine singularity that can't share a compilation with
+    // anything else: it expects a *different* exit code than other checks,
+    // or it must fail to compile (compileFails) while everything around it
+    // must succeed — those cannot coexist in one program or one build.
     export struct Suite {
         cases: []TestCase = [];
 

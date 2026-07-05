@@ -1,0 +1,167 @@
+
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+// (Contrast with cases_examples.hz, which only demonstrates the harness API
+// with throwaway snippets.) This is the first real regression test added to
+// the suite. Do not delete or water it down without understanding the bug
+// below first.
+//
+// Bug: boolean guard-clause narrowing incorrectly narrowed BOTH sides of a
+// `!a && !b` condition to non-none after a guard clause, e.g.:
+//
+//   if !result.result && !result.error {
+//       return;
+//   }
+//   // BUG: both result.result and result.error were narrowed to non-none
+//   // here. Unsound: by De Morgan's law, falling through
+//   // `!result.result && !result.error` only proves
+//   // `result.result || result.error` (at least one is present) — never
+//   // that BOTH are. Neither may be narrowed individually.
+//
+// Root cause (src/Semantic/Constraint.ts, ConstraintSet.inverse()): before
+// inverting `A && B` into `!A && !B` (only sound when A and B constrain the
+// very same thing), the code checked "how many distinct things does this
+// constrain" by grouping path-based constraints by their PATH'S ROOT SYMBOL
+// ONLY. `result.result` and `result.error` are different paths that happen
+// to share a root variable (`result`), so they were wrongly counted as one
+// target, and the unsound inversion went through. Fixed by counting
+// distinct full paths instead of just root symbols.
+//
+// Every check below is a static_assert on the exact narrowed (or correctly
+// un-narrowed) type at a specific point, combined with a few runtime prints
+// that prove real guarded access still works — all bundled into a single
+// compile + run. See the note in framework.hz: checks backed by runtime
+// assertions/output belong in one program together, since compiling is the
+// slow part; only exit-code-specific or must-fail-to-compile tests need
+// their own separate compilation.
+// ============================================================================
+
+namespace cases_narrowing_bug {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "boolean guard-clause narrowing does not over-narrow independent paths (De Morgan)",
+            """
+struct Pair {
+    a: int | none;
+    b: int | none;
+}
+
+struct Triple {
+    a: int | none;
+    b: int | none;
+    c: int | none;
+}
+
+// Variation A — THE REPORTED BUG. `!p.a && !p.b` failing only proves
+// `p.a || p.b`; neither p.a nor p.b may be narrowed to non-none afterward.
+fn variation_a_demorgan_and_different_paths(): void {
+    let p = Pair { a: 5 as int | none, b: none };
+
+    if !p.a && !p.b {
+        return;
+    }
+
+    static_assert(typeof(p.a).prettyName == "(int | none)",
+        "regression: p.a was wrongly narrowed to non-none after a `!p.a && !p.b` guard");
+    static_assert(typeof(p.b).prettyName == "(int | none)",
+        "regression: p.b was wrongly narrowed to non-none after a `!p.a && !p.b` guard");
+
+    if p.a is int {
+        fmt.println(f"variation_a: p.a present, value={p.a}");
+    }
+    if p.b is int {
+        fmt.println("variation_a: p.b present (should not print)");
+    } else {
+        fmt.println("variation_a: p.b absent, as expected");
+    }
+}
+
+// Variation B — the forward/true-branch direction of the exact same
+// condition is a genuine conjunction: the branch only runs when BOTH sides
+// hold, so each narrows correctly on its own. This direction was never
+// broken; kept here to pin down that the fix doesn't overcorrect it.
+fn variation_b_demorgan_and_forward_direction(): void {
+    let p = Pair { a: none, b: none };
+
+    if !p.a && !p.b {
+        static_assert(typeof(p.a).prettyName == "none",
+            "regression: p.a should narrow to plain `none` inside a `!p.a && !p.b` branch");
+        static_assert(typeof(p.b).prettyName == "none",
+            "regression: p.b should narrow to plain `none` inside a `!p.a && !p.b` branch");
+        fmt.println("variation_b: both none inside the branch, as expected");
+    }
+}
+
+// Variation C — baseline single-path guard clause (no && at all). Must keep
+// narrowing correctly; this is the common case the fix must not break.
+fn variation_c_single_path_guard_clause(): void {
+    let p = Pair { a: 5 as int | none, b: none };
+
+    if !p.a {
+        return;
+    }
+
+    static_assert(typeof(p.a).prettyName == "int",
+        "regression: a plain single-path guard clause must still narrow afterward");
+    fmt.println(f"variation_c: p.a = {p.a}");
+}
+
+// Variation D — two independent ROOT variables (no shared struct) combined
+// with &&. This case already worked before the fix since the two paths
+// never shared a root symbol; kept as a guard that switching to path-based
+// counting doesn't regress the plain-variable case.
+fn variation_d_different_root_variables_in_and(): void {
+    let x = 5 as int | none;
+    let y = none as int | none;
+
+    if !x && !y {
+        return;
+    }
+
+    static_assert(typeof(x).prettyName == "(int | none)",
+        "regression: two different root variables combined with && must not be narrowed on the fallthrough path");
+    static_assert(typeof(y).prettyName == "(int | none)",
+        "regression: two different root variables combined with && must not be narrowed on the fallthrough path");
+    fmt.println("variation_d: neither x nor y narrowed, as expected");
+}
+
+// Variation E — three-way && across three sibling paths off the same root.
+// Extends variation A to prove the fix isn't accidentally special-cased for
+// exactly two paths.
+fn variation_e_three_way_and_different_paths(): void {
+    let t = Triple { a: 5 as int | none, b: none, c: none };
+
+    if !t.a && !t.b && !t.c {
+        return;
+    }
+
+    static_assert(typeof(t.a).prettyName == "(int | none)",
+        "regression: three-way De Morgan AND across sibling paths must not narrow any of them");
+    static_assert(typeof(t.b).prettyName == "(int | none)",
+        "regression: three-way De Morgan AND across sibling paths must not narrow any of them");
+    static_assert(typeof(t.c).prettyName == "(int | none)",
+        "regression: three-way De Morgan AND across sibling paths must not narrow any of them");
+    fmt.println("variation_e: none narrowed, as expected");
+}
+
+fn main(): int {
+    variation_a_demorgan_and_different_paths();
+    variation_b_demorgan_and_forward_direction();
+    variation_c_single_path_guard_clause();
+    variation_d_different_root_variables_in_and();
+    variation_e_three_way_and_different_paths();
+    return 0;
+}
+""",
+            """
+variation_a: p.a present, value=5
+variation_a: p.b absent, as expected
+variation_b: both none inside the branch, as expected
+variation_c: p.a = 5
+variation_d: neither x nor y narrowed, as expected
+variation_e: none narrowed, as expected
+"""
+        );
+    }
+}

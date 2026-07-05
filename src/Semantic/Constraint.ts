@@ -422,16 +422,38 @@ export class ConstraintSet {
     return [...this.map.values()];
   }
 
-  /** Get the number of distinct symbols that have constraints */
+  /**
+   * Get the number of distinct constraint targets (variables or paths).
+   * Two constraints on different paths that merely share the same root
+   * symbol (e.g. `result.result` and `result.error`) must count as distinct
+   * targets here: they are independent facts, not two constraints on the
+   * same thing, so `A && B` over them cannot be soundly inverted into
+   * `!A && !B` (see inverse()).
+   *
+   * Legacy (variableSymbol-based) and path-based constraints are keyed
+   * through the same pathToKey() format — a legacy constraint on a plain
+   * variable and a path constraint on that same variable (empty path,
+   * matching root) must land on the same key, since both are commonly
+   * recorded for the exact same simple-variable guard (see the "Legacy:
+   * also add symbol-based constraint for backward compatibility" comment in
+   * buildLogicalConstraintSet). Prefixing them into separate namespaces
+   * would double-count a single variable as two distinct targets and
+   * wrongly block narrowing on the most common single-symbol guard clause.
+   */
   distinctSymbolCount(): number {
-    const symbols = new Set<Semantic.SymbolId>();
+    const targets = new Set<string>();
     for (const c of this.map.values()) {
-      symbols.add(c.variableSymbol);
+      targets.add(
+        pathToKey({
+          root: { kind: "symbol", symbolId: c.variableSymbol },
+          path: [],
+        })
+      );
     }
     for (const { path } of this.pathMap.values()) {
-      symbols.add(path.root.symbolId);
+      targets.add(pathToKey(path));
     }
-    return symbols.size;
+    return targets.size;
   }
 
   // ---- inversion -----------------------------------------------------------

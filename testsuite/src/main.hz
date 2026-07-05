@@ -35,6 +35,7 @@ fn main(): int {
 
     let suite = testsuite.Suite {};
     cases_examples.register(suite);
+    cases_narrowing_bug.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -8,10 +8,16 @@ export inline struct Error {
     message: str;
 }
 
+export inline struct LSPError {
+    code: int;
+    message: str;
+}
+
 export struct LSPResponse {
     jsonrpc: str;
     id: int;
     result?: json.Node;
+    error?: LSPError;
 }
 
 export struct LSPRequest<Params> {
@@ -66,7 +72,8 @@ export struct Context {
 
     struct PendingRequest {
         requestId: int;
-        callback: (response: json.Node) => none;
+        successCallback: (response: json.Node) => none;
+        errorCallback: (error: LSPError) => none;
     }
     _pendingRequests: []PendingRequest = [];
     _nextId: int = 0;
@@ -107,12 +114,9 @@ export struct Context {
             typescript: {
                 tsdk: "./codeeditor/syntax-engine/node_modules/typescript/lib",
             }
-        }, (value: LSPInitResponse) => {
+        }, (value: Result<LSPInitResponse, LSPError>) => {
+            assert(value);
             context.initResponse := value;
-        });
-
-        context.sendRequest<none, none>("initialized", none, (value: none) => {
-            fmt.println("Initialized done");
         });
 
         return context;
@@ -130,7 +134,7 @@ export struct Context {
         }
     }
 
-    fn sendRequest<TParams, TResponse>(method: str, params: TParams, onReceive: (value: TResponse) => none) {
+    fn sendRequest<TParams, TResponse>(method: str, params: TParams, onReceive: (value: Result<TResponse, LSPError>) => none) {
         assert(this._running);
         let id = this._nextId++;
         let request = json.stringify(LSPRequest<TParams> {
@@ -142,13 +146,16 @@ export struct Context {
 
         this._pendingRequests.push({
             requestId: id,
-            callback: (response: json.Node) => {
+            successCallback: (response: json.Node) => {
                 let result = json.parse<TResponse>(response);
                 if !result {
                     fmt.println("Invalid LSP response: ", result);
                     return;
                 }
-                onReceive(result);
+                onReceive(Result<TResponse, LSPError>.Ok(result));
+            },
+            errorCallback: (error: LSPError) => {
+                onReceive(Result<TResponse, LSPError>.Err(error));
             },
         });
 
@@ -194,7 +201,7 @@ export struct Context {
         this._processResponse(response);
     }
 
-    fn _dispatchResponse(requestId: int, response: json.Node) {
+    fn _dispatchResponse(requestId: int, response: json.Node | LSPError) {
         let found = false;
         for entry in this._pendingRequests {
             if entry.requestId == requestId {
@@ -208,7 +215,12 @@ export struct Context {
             let remainingRequests: []PendingRequest = [];
             for entry in this._pendingRequests {
                 if entry.requestId == requestId {
-                    entry.callback(response);
+                    if response is json.Node {
+                        entry.successCallback(response);
+                    }
+                    else {
+                        entry.errorCallback(response);
+                    }
                 }
                 else {
                     remainingRequests.push(entry);
@@ -229,8 +241,20 @@ export struct Context {
             return;
         }
 
-        if !result.result {
-            fmt.println(f"LSP: Response invalid: Result field missing");
+        static_print(f"{typeof(result.result).prettyName} {typeof(result.result).prettyName}");
+        if !result.result && !result.error {
+            fmt.println(f"LSP: Response invalid: Result and Error fields are both missing");
+            return;
+        }
+        static_print(f"{typeof(result.result).prettyName} {typeof(result.result).prettyName}");
+
+        if result.result && result.error {
+            fmt.println(f"LSP: Response invalid: Result and Error fields both exist");
+            return;
+        }
+
+        if result.error {
+            this._dispatchResponse(result.id, result.result);
             return;
         }
 
