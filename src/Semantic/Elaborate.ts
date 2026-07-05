@@ -211,7 +211,8 @@ export class SemanticElaborator {
     if (expr.variant === Semantic.ENode.IntrinsicSymbol) {
       throw new CompilerError(
         `Intrinsic functions (like builtin.embed_file) can only be called directly, not ${context}`,
-        expr.sourceloc
+        expr.sourceloc,
+        7001
       );
     }
   }
@@ -327,13 +328,15 @@ export class SemanticElaborator {
         if (leftUse.type !== rightUse.type) {
           throw new CompilerError(
             `Bitwise Or operation between '${Semantic.serializeTypeUse(this.sr, left.type)}' and '${Semantic.serializeTypeUse(this.sr, right.type)}' is not allowed since the enums are unrelated`,
-            binaryExpr.sourceloc
+            binaryExpr.sourceloc,
+            7002
           );
         }
         if (!leftDef.bitflag) {
           throw new CompilerError(
             `Bitwise Or operation on '${Semantic.serializeTypeUse(this.sr, left.type)}' is not allowed since it is not a bitflag enum`,
-            binaryExpr.sourceloc
+            binaryExpr.sourceloc,
+            7003
           );
         }
 
@@ -346,7 +349,8 @@ export class SemanticElaborator {
       }
       throw new CompilerError(
         "Bitwise Or operation is only allowed on bitflag enums",
-        binaryExpr.sourceloc
+        binaryExpr.sourceloc,
+        7004
       );
     }
     if (
@@ -665,7 +669,8 @@ export class SemanticElaborator {
           if (leftMembers.difference(rightMembers).size !== 0) {
             throw new CompilerError(
               `Cannot compare unions of incompatible types '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedLeftTypeUseId)}' and '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedRightTypeUseId)}'`,
-              binaryExpr.sourceloc
+              binaryExpr.sourceloc,
+              7005
             );
           }
 
@@ -817,7 +822,8 @@ export class SemanticElaborator {
     if (expr.genericArgs.length !== 0) {
       throw new CompilerError(
         `The ${functionName} function cannot take any type parameters`,
-        expr.sourceloc
+        expr.sourceloc,
+        7006
       );
     }
   }
@@ -831,13 +837,15 @@ export class SemanticElaborator {
       if (expr.arguments.length < n[0] || expr.arguments.length > n[1]) {
         throw new CompilerError(
           `The ${functionName} function must take between ${n[0]} and ${n[1]} parameters`,
-          expr.sourceloc
+          expr.sourceloc,
+          7007
         );
       }
     } else if (expr.arguments.length !== n) {
       throw new CompilerError(
         `The ${functionName} function must take exactly ${n} parameter(s)`,
-        expr.sourceloc
+        expr.sourceloc,
+        7008
       );
     }
   }
@@ -857,7 +865,8 @@ export class SemanticElaborator {
           this.sr,
           allocatorType.type
         )}`,
-        sourceloc
+        sourceloc,
+        7009
       );
     }
   }
@@ -909,7 +918,8 @@ export class SemanticElaborator {
     if (callExpr.arguments.length !== 1) {
       throw new CompilerError(
         `${intrinsicName}() takes exactly 1 argument, got ${callExpr.arguments.length}`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7010
       );
     }
 
@@ -945,7 +955,8 @@ export class SemanticElaborator {
     if (filePath === null) {
       throw new CompilerError(
         `${intrinsicName}() argument must be a string literal or a string literal type (LiteralDatatype)`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7011
       );
     }
 
@@ -1006,14 +1017,16 @@ export class SemanticElaborator {
           if (fileSize >= MB_100) {
             throw new CompilerError(
               `Embedded file size (${(fileSize / 1024 / 1024).toFixed(2)} MB) exceeds 100 MB limit: ${absolutePath}`,
-              callExpr.sourceloc
+              callExpr.sourceloc,
+              7012
             );
           }
 
           if (fileSize >= MB_50) {
             printWarningMessage(
               `Embedded file size (${(fileSize / 1024 / 1024).toFixed(2)} MB) exceeds 50 MB: ${absolutePath}`,
-              callExpr.sourceloc
+              callExpr.sourceloc,
+              9002
             );
           }
 
@@ -1024,7 +1037,8 @@ export class SemanticElaborator {
           }
           throw new CompilerError(
             `Failed to read embedded file: ${absolutePath}\n${(error as any).message}`,
-            callExpr.sourceloc
+            callExpr.sourceloc,
+            7013
           );
         }
 
@@ -1157,7 +1171,8 @@ export class SemanticElaborator {
           ) {
             throw new CompilerError(
               "The static_assert function requires the second parameter to be a compile-time-evaluable string, or none",
-              collectedExpr.sourceloc
+              collectedExpr.sourceloc,
+              7014
             );
           }
           second = s;
@@ -1176,11 +1191,12 @@ export class SemanticElaborator {
           str = second.literal.value; // Bypass and don't escape it to make message look better
         }
         if (str) {
-          throw new CompilerError(str, callExpr.sourceloc);
+          throw new CompilerError(str, callExpr.sourceloc, 7015);
         }
         throw new CompilerError(
           "static_assert evaluated to false",
-          callExpr.sourceloc
+          callExpr.sourceloc,
+          7016
         );
       }
       if (collectedExpr.name === "static_print") {
@@ -1198,7 +1214,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             "The static_print function requires the second parameter to be a compile-time-evaluable string, or none",
-            collectedExpr.sourceloc
+            collectedExpr.sourceloc,
+            7017
           );
         }
         const value = s.literal.value;
@@ -1214,13 +1231,15 @@ export class SemanticElaborator {
         assertCompilerError(
           collectedExpr.genericArgs.length === 0,
           "Primitive constructors cannot take any type parameters",
-          collectedExpr.sourceloc
+          collectedExpr.sourceloc,
+          7018
         );
         if (primitive === EPrimitive.str) {
           assertCompilerError(
             callingArguments.length >= 1 && callingArguments.length <= 2,
             "'str' constructor must take one or two parameters",
-            collectedExpr.sourceloc
+            collectedExpr.sourceloc,
+            7019
           );
           const first = this.sr.exprNodes.get(callingArguments[0]);
           const firstType = this.sr.typeDefNodes.get(
@@ -1281,12 +1300,14 @@ export class SemanticElaborator {
                 )
               )
               .join(", ")})`,
-            callExpr.sourceloc
+            callExpr.sourceloc,
+            7020
           );
         }
         throw new CompilerError(
           `Primitive ${primitiveToString(primitive)} is not constructible`,
-          callExpr.sourceloc
+          callExpr.sourceloc,
+          7021
         );
       }
     }
@@ -1388,7 +1409,10 @@ export class SemanticElaborator {
         if (!isDeferredClosureArgument(this.sr, p)) {
           return;
         }
-        decisiveArguments[i] = { index: i, exprId: this.sr.e.expr(p, inference)[1] };
+        decisiveArguments[i] = {
+          index: i,
+          exprId: this.sr.e.expr(p, inference)[1],
+        };
         promotedAny = true;
       });
 
@@ -1526,7 +1550,8 @@ export class SemanticElaborator {
     if (!this.inFunction) {
       throw new CompilerError(
         "Function calls are not allowed here. Struct member default values, global constant initializers, and other compile-time contexts cannot contain function calls.",
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7022
       );
     }
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
@@ -1563,7 +1588,8 @@ export class SemanticElaborator {
     if (calledExprType.variant === Semantic.ENode.DeferredFunctionDatatype) {
       throw new CompilerError(
         `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7023
       );
     }
     if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
@@ -1700,7 +1726,8 @@ export class SemanticElaborator {
     if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
       throw new CompilerError(
         `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, calledExpr.type)} is not callable`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7024
       );
     }
     assert(
@@ -1760,7 +1787,8 @@ export class SemanticElaborator {
       assertCompilerError(
         givenArgs.length >= requiredParams.length,
         `This call requires at least ${requiredParams.length} arguments but ${givenArgs.length} were given`,
-        callSourceloc
+        callSourceloc,
+        7025
       );
     } else {
       // No vararg/pack: exact match or with optional params
@@ -1771,7 +1799,8 @@ export class SemanticElaborator {
         `This call requires ${minParams}${
           minParams === maxParams ? "" : `-${maxParams}`
         } arguments but ${givenArgs.length} were given`,
-        callSourceloc
+        callSourceloc,
+        7026
       );
     }
 
@@ -1834,7 +1863,8 @@ export class SemanticElaborator {
             if (value.genericArgs.length !== 0) {
               throw new CompilerError(
                 `'default' initializer cannot take any generics`,
-                value.sourceloc
+                value.sourceloc,
+                7027
               );
             }
             defaultExprId = Conversion.MakeDefaultValue(
@@ -2067,7 +2097,8 @@ export class SemanticElaborator {
     if (!resolved) {
       throw new CompilerError(
         `Struct ${calledExprType.name} is called, but it does not provide a constructor`,
-        callSourceloc
+        callSourceloc,
+        7028
       );
     }
     const { elaboratedMethodId, constructorFunctype } = resolved;
@@ -2409,7 +2440,8 @@ export class SemanticElaborator {
             `Value ${literalExpr.literal.value} is out of range for literal type ${primitiveToString(
               typeDef.primitive
             )}`,
-            literalExpr.sourceloc
+            literalExpr.sourceloc,
+            7029
           );
         }
       }
@@ -2420,7 +2452,8 @@ export class SemanticElaborator {
           `Value ${literalExpr.literal.value} is out of range for literal type ${primitiveToString(
             literalExpr.literal.type
           )}`,
-          literalExpr.sourceloc
+          literalExpr.sourceloc,
+          7030
         );
       }
     }
@@ -2436,7 +2469,8 @@ export class SemanticElaborator {
       if (bytes.length !== 1) {
         throw new CompilerError(
           `A b"..."-prefixed string defines a single-byte ASCII character and cannot encode a non-ASCII, multi-byte character.`,
-          literalExpr.sourceloc
+          literalExpr.sourceloc,
+          7031
         );
       }
 
@@ -2822,7 +2856,8 @@ export class SemanticElaborator {
         if (!referencedValue) {
           throw new CompilerError(
             `Enum value '${literal.valueName}' does not exist in '${referencedEnum.name}'`,
-            sourceloc
+            sourceloc,
+            7032
           );
         }
 
@@ -2836,7 +2871,8 @@ export class SemanticElaborator {
           this.sr,
           literal
         )}'`,
-        sourceloc
+        sourceloc,
+        7033
       );
     };
 
@@ -2899,7 +2935,8 @@ export class SemanticElaborator {
                   this.sr,
                   this.sr.b.strType()
                 )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
-                value.sourceloc
+                value.sourceloc,
+                7034
               );
             }
 
@@ -2912,14 +2949,16 @@ export class SemanticElaborator {
             ) {
               throw new CompilerError(
                 "This value does not resolve to an integer that is a power of two/an integer with exactly one bit set",
-                value.sourceloc
+                value.sourceloc,
+                7035
               );
             }
 
             if (usedValues.has(normalizedIntValue)) {
               throw new CompilerError(
                 `Multiple fields with value ${normalizedIntValue} not allowed`,
-                value.sourceloc
+                value.sourceloc,
+                7036
               );
             }
 
@@ -2979,7 +3018,8 @@ export class SemanticElaborator {
             if (usedValues.has(nextValue)) {
               throw new CompilerError(
                 `Multiple fields with value ${nextValue} not allowed`,
-                value.sourceloc
+                value.sourceloc,
+                7037
               );
             }
             usedValues.add(nextValue);
@@ -2989,7 +3029,8 @@ export class SemanticElaborator {
         if (enumValue.bitflag) {
           throw new CompilerError(
             "bitflag enums are required to have integer values",
-            enumValue.sourceloc
+            enumValue.sourceloc,
+            7038
           );
         }
 
@@ -3013,7 +3054,8 @@ export class SemanticElaborator {
                   this.sr,
                   this.sr.b.intType()
                 )}' and '${Semantic.serializeTypeUse(this.sr, enumDatatypeId)}'`,
-                value.sourceloc
+                value.sourceloc,
+                7039
               );
             }
 
@@ -3039,14 +3081,16 @@ export class SemanticElaborator {
             if (usedValues.has(normalizedStrValue)) {
               throw new CompilerError(
                 `Multiple fields with value "${normalizedStrValue}" not allowed`,
-                value.sourceloc
+                value.sourceloc,
+                7040
               );
             }
             usedValues.add(normalizedStrValue);
           } else {
             throw new CompilerError(
               "An enum with string values requires all values to be defined",
-              value.sourceloc
+              value.sourceloc,
+              7041
             );
           }
         }
@@ -3078,7 +3122,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7042
       );
     }
 
@@ -3093,7 +3138,8 @@ export class SemanticElaborator {
     if (noneIndex === -1 && nullIndex === -1) {
       throw new CompilerError(
         `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7043
       );
     }
 
@@ -3104,7 +3150,8 @@ export class SemanticElaborator {
     if (remainingMembers.size === 0) {
       throw new CompilerError(
         `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant and at least one other variant.`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7044
       );
     }
 
@@ -3375,7 +3422,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `'fn' intrinsic object does not have a member named '${memberAccess.memberName}'`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7045
       );
     }
 
@@ -3414,7 +3462,8 @@ export class SemanticElaborator {
 
       throw new CompilerError(
         `builtin namespace does not define any declarations named '${memberAccess.memberName}'`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7046
       );
     }
 
@@ -3443,7 +3492,8 @@ export class SemanticElaborator {
     if (memberResultExpr.variant !== Semantic.ENode.LiteralExpr) {
       throw new CompilerError(
         "Compile-time member access requires the member expression to evaluate to a string literal",
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7047
       );
     }
 
@@ -3458,7 +3508,8 @@ export class SemanticElaborator {
           this.sr,
           memberLiteral
         )}`,
-        memberAccess.sourceloc
+        memberAccess.sourceloc,
+        7048
       );
     }
 
@@ -3590,7 +3641,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `Comptime variables must be declared as 'const'. Use 'const comptime', not 'let comptime'.`,
-        variableSymbol.sourceloc
+        variableSymbol.sourceloc,
+        7049
       );
     }
 
@@ -3623,7 +3675,8 @@ export class SemanticElaborator {
       if (!variableSymbol.globalValueInitializer) {
         throw new CompilerError(
           "A global constant is by definition immutable and is always required to be initialized with a value that can be evaluated at compile time.",
-          variableSymbol.sourceloc
+          variableSymbol.sourceloc,
+          7050
         );
       }
       const [_expr, exprId] = this.sr.e.expr(
@@ -3706,7 +3759,8 @@ export class SemanticElaborator {
         if (!result.ok) {
           throw new CompilerError(
             "This expression is not evaluable at compile time",
-            e.sourceloc
+            e.sourceloc,
+            7051
           );
         }
 
@@ -3719,7 +3773,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             "This intrinsic can only take compile-time-evaluable string literals",
-            e.sourceloc
+            e.sourceloc,
+            7052
           );
         }
 
@@ -3744,7 +3799,8 @@ export class SemanticElaborator {
     if (definedStructType.generics.length !== genericArgs.length) {
       throw new CompilerError(
         `Type ${definedStructType.name} expects ${definedStructType.generics.length} type parameters but got ${genericArgs.length}`,
-        sourceloc
+        sourceloc,
+        7053
       );
     }
 
@@ -3915,7 +3971,8 @@ export class SemanticElaborator {
         if (value.genericArgs.length !== 0) {
           throw new CompilerError(
             `'default' initializer cannot take any generics`,
-            symbol.sourceloc
+            symbol.sourceloc,
+            7054
           );
         }
         defaultExprId = Conversion.MakeDefaultValue(
@@ -4237,14 +4294,16 @@ export class SemanticElaborator {
       if (givenArguments === undefined) {
         throw new CompilerError(
           `Function ${functionName} uses a Parameter Pack, but there is not enough context around the function access to determine the types it is going to be called with`,
-          sourceloc
+          sourceloc,
+          7055
         );
       }
 
       if (givenArguments.length < numParametersWithoutPack) {
         throw new CompilerError(
           `Function ${functionName} requires at least ${numParametersWithoutPack} parameters, but ${givenArguments.length} are given`,
-          sourceloc
+          sourceloc,
+          7056
         );
       }
 
@@ -4275,7 +4334,8 @@ export class SemanticElaborator {
     if (calledWithArgs === undefined) {
       throw new CompilerError(
         `Function '${overloadGroup.name}' is overloaded but not directly called, so there is not enough context to disambiguate the overload. Overloaded functions must be immediately called to disambiguate the call using the given arguments`,
-        usageSourceLocation
+        usageSourceLocation,
+        7057
       );
     }
 
@@ -4608,7 +4668,7 @@ export class SemanticElaborator {
           assert(candidate.reason);
           str += `Failed because: ${candidate.reason}\n`;
         }
-        throw new CompilerError(str, usageSourceLocation);
+        throw new CompilerError(str, usageSourceLocation, 7058);
       }
 
       let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
@@ -4630,7 +4690,7 @@ export class SemanticElaborator {
       }
       str +=
         "You must use explicit type annotations to disambiguate the call\n";
-      throw new CompilerError(str, usageSourceLocation);
+      throw new CompilerError(str, usageSourceLocation, 7059);
     }
 
     let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: Multiple functions fit the criteria:\n`;
@@ -4652,7 +4712,7 @@ export class SemanticElaborator {
     }
     str +=
       "You must use explicit struct initializations in order to disambiguate the call\n";
-    throw new CompilerError(str, usageSourceLocation);
+    throw new CompilerError(str, usageSourceLocation, 7060);
   }
 
   sequenceControlFlow(
@@ -5105,7 +5165,8 @@ export class SemanticElaborator {
         assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
         throw new CompilerError(
           `Conflicting deductions for generic parameter '${genericSym.name}' of function '${collectedFunc.name}'. Please specify it explicitly.`,
-          sourceloc
+          sourceloc,
+          7061
         );
       }
 
@@ -5121,7 +5182,8 @@ export class SemanticElaborator {
         assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
         throw new GenericDeductionIncompleteError(
           `Could not infer generic parameter '${genericSym.name}' for function '${collectedFunc.name}'. Please specify it explicitly.`,
-          sourceloc
+          sourceloc,
+          7169
         );
       }
 
@@ -5147,7 +5209,8 @@ export class SemanticElaborator {
     if (func.generics.length !== genericArgs.length) {
       throw new CompilerError(
         `Function ${func.name} expects ${func.generics.length} type parameters but got ${genericArgs.length}`,
-        usageSourceLocation
+        usageSourceLocation,
+        7062
       );
     }
 
@@ -5158,7 +5221,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `Non-Extern function '${func.name}' is generic or uses a parameter pack, but does not define a body. (Generic functions cannot be forward declared)`,
-        func.sourceloc
+        func.sourceloc,
+        7063
       );
     }
 
@@ -5330,7 +5394,8 @@ export class SemanticElaborator {
         if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
           throw new CompilerError(
             `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
-            func.sourceloc
+            func.sourceloc,
+            7064
           );
         }
 
@@ -5340,13 +5405,15 @@ export class SemanticElaborator {
               if (i !== func.parameters.length - 1) {
                 throw new CompilerError(
                   "A Parameter Pack may only appear at the very end of the parameter list",
-                  func.sourceloc
+                  func.sourceloc,
+                  7065
                 );
               }
               if (func.extern !== EExternLanguage.None) {
                 throw new CompilerError(
                   "A Parameter Pack may not be used on an extern function",
-                  func.sourceloc
+                  func.sourceloc,
+                  7066
                 );
               }
               symbol.parameterPack = true;
@@ -5448,7 +5515,8 @@ export class SemanticElaborator {
             if (hasSeenDefaultOrOptional && !hasDefault && !isOptional) {
               throw new CompilerError(
                 `Non-default parameter '${param.name}' cannot follow a default or optional parameter`,
-                param.sourceloc
+                param.sourceloc,
+                7067
               );
             }
 
@@ -5491,7 +5559,8 @@ export class SemanticElaborator {
                 if (value.genericArgs.length !== 0) {
                   throw new CompilerError(
                     `'default' initializer cannot take any generics`,
-                    param.sourceloc
+                    param.sourceloc,
+                    7068
                   );
                 }
                 const paramType = parameters.find((_p, i) => {
@@ -5503,7 +5572,8 @@ export class SemanticElaborator {
                 if (!paramType) {
                   throw new CompilerError(
                     `Cannot find type for parameter '${param.name}'`,
-                    param.sourceloc
+                    param.sourceloc,
+                    7069
                   );
                 }
                 defaultExprId = Conversion.MakeDefaultValue(
@@ -5591,7 +5661,8 @@ export class SemanticElaborator {
             if (paramIndex === -1) {
               throw new CompilerError(
                 `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
-                e.sourceloc
+                e.sourceloc,
+                7070
               );
             }
 
@@ -5606,7 +5677,8 @@ export class SemanticElaborator {
             ) {
               throw new CompilerError(
                 "Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet",
-                e.sourceloc
+                e.sourceloc,
+                7071
               );
             }
 
@@ -5620,7 +5692,8 @@ export class SemanticElaborator {
           } else {
             throw new CompilerError(
               "Unsupported expression in noreturn_if() construct",
-              e.sourceloc
+              e.sourceloc,
+              7072
             );
           }
         }
@@ -5644,7 +5717,8 @@ export class SemanticElaborator {
         if (!(func.functionScope || func.requires.final)) {
           throw new CompilerError(
             `Function '${func.name}' does not have a body, so nothing can be inferred by the compiler. Therefore it requires manual constraints as well as a ':: final' annotation to fix the constraints.`,
-            func.sourceloc
+            func.sourceloc,
+            7073
           );
         }
 
@@ -5795,12 +5869,14 @@ export class SemanticElaborator {
                       `Multiply defined main function: Previous definition at ${formatSourceLoc(
                         existing.sourceloc
                       )}`,
-                      func.sourceloc
+                      func.sourceloc,
+                      7074
                     );
                   }
                   throw new CompilerError(
                     "Multiply defined main function",
-                    func.sourceloc
+                    func.sourceloc,
+                    7075
                   );
                 }
                 this.sr.globalMainFunction = symbolId;
@@ -5973,7 +6049,8 @@ export class SemanticElaborator {
     if (typedef.generics.length !== genericArgs.length) {
       throw new CompilerError(
         `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${genericArgs.length}`,
-        typedef.sourceloc
+        typedef.sourceloc,
+        7076
       );
     }
 
@@ -6073,7 +6150,8 @@ export class SemanticElaborator {
 
     throw new CompilerError(
       `Expression '${Semantic.serializeExpr(this.sr, exprId)}' does not evaluate to a datatype`,
-      expr.sourceloc
+      expr.sourceloc,
+      7077
     );
   }
 
@@ -6166,7 +6244,8 @@ export class SemanticElaborator {
           if (leftExpr.genericArgs.length !== 0) {
             throw new CompilerError(
               `'builtin' Namespace cannot take generic arguments`,
-              type.sourceloc
+              type.sourceloc,
+              7078
             );
           }
           const builtinSymbol = this.handleBuiltinSymbolValues(
@@ -6850,7 +6929,8 @@ export class SemanticElaborator {
         } else {
           throw new CompilerError(
             `Unexpected binary operation on a datatype`,
-            type.sourceloc
+            type.sourceloc,
+            7079
           );
         }
       }
@@ -6933,7 +7013,8 @@ export class SemanticElaborator {
         if (exactMatchId !== undefined) {
           throw new CompilerError(
             "Operator access is ambiguous",
-            assignment.sourceloc
+            assignment.sourceloc,
+            7080
           );
         }
         exactMatchId = m;
@@ -6992,7 +7073,8 @@ export class SemanticElaborator {
           this.sr,
           targetExpr.type
         )}' is not a valid LHS, no matching assignment operator overload exists`,
-        assignment.sourceloc
+        assignment.sourceloc,
+        7081
       );
     }
 
@@ -7004,7 +7086,8 @@ export class SemanticElaborator {
       if (targetExpr.isTemporary) {
         throw new CompilerError(
           `Cannot assign to a temporary of type ${Semantic.serializeTypeUse(this.sr, targetExpr.type)}`,
-          assignment.sourceloc
+          assignment.sourceloc,
+          7082
         );
       }
 
@@ -7185,25 +7268,29 @@ export class SemanticElaborator {
     if (!(lhsIsInteger || lhsIsFloat)) {
       throw new CompilerError(
         `Operator '${opText}' requires a numeric left-hand side, got '${lhsTypeText}'`,
-        sourceloc
+        sourceloc,
+        7083
       );
     }
     if (!(rhsIsInteger || rhsIsFloat)) {
       throw new CompilerError(
         `Operator '${opText}' requires a numeric right-hand side, got '${rhsTypeText}'`,
-        sourceloc
+        sourceloc,
+        7084
       );
     }
     if (lhsIsInteger && rhsIsFloat) {
       throw new CompilerError(
         `Cannot use '${opText}' to mutate integer '${lhsTypeText}' with a floating-point value '${rhsTypeText}': approximate values cannot implicitly mutate exact integer realms. Use an explicit conversion (e.g. 'value.floor() as ${lhsTypeText}') to choose a rounding strategy`,
-        sourceloc
+        sourceloc,
+        7085
       );
     }
     if (lhsIsFloat && rhsIsFloat && lhsTypeId !== rhsTypeId) {
       throw new CompilerError(
         `Cannot use '${opText}' between different floating-point realms '${lhsTypeText}' and '${rhsTypeText}': explicit precision realms must not silently mix. Cast the right-hand side to '${lhsTypeText}' first`,
-        sourceloc
+        sourceloc,
+        7086
       );
     }
     // All other combos (integer+integer, float+integer) are allowed by target-realm semantics
@@ -7230,7 +7317,8 @@ export class SemanticElaborator {
     if (!(innerIsInteger || innerIsFloat)) {
       throw new CompilerError(
         `'${opStr}' can only be applied to reactive values wrapping numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
-        sourceloc
+        sourceloc,
+        7087
       );
     }
     const oneLiteral = innerIsFloat
@@ -7316,7 +7404,8 @@ export class SemanticElaborator {
       const opStr = preIncr.operation === EIncrOperation.Incr ? "++" : "--";
       throw new CompilerError(
         `Prefix '${opStr}' can only be applied to numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
-        preIncr.sourceloc
+        preIncr.sourceloc,
+        7088
       );
     }
     return this.sr.b.addExpr(this.sr, {
@@ -7365,7 +7454,8 @@ export class SemanticElaborator {
       const opStr = postIncr.operation === EIncrOperation.Incr ? "++" : "--";
       throw new CompilerError(
         `Postfix '${opStr}' can only be applied to numeric types, got '${Semantic.serializeTypeUse(this.sr, exprNode.type)}'`,
-        postIncr.sourceloc
+        postIncr.sourceloc,
+        7089
       );
     }
     return this.sr.b.addExpr(this.sr, {
@@ -7685,7 +7775,8 @@ export class SemanticElaborator {
               ? " Existing definition at: " + formatSourceLoc(ori.sourceloc)
               : ""
           }`,
-          functionSymbol.sourceloc
+          functionSymbol.sourceloc,
+          7090
         );
       }
     }
@@ -7767,7 +7858,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `Function ${functionSymbol.name}() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
-        sourceloc
+        sourceloc,
+        7091
       );
     }
 
@@ -7862,7 +7954,8 @@ export class SemanticElaborator {
       if (genericArgs.length > 0) {
         throw new CompilerError(
           `Member '${name}' does not expect any type arguments, but ${genericArgs.length} are given`,
-          sourceloc
+          sourceloc,
+          7092
         );
       }
       const member = this.sr.symbolNodes.get(memberId);
@@ -8011,7 +8104,8 @@ export class SemanticElaborator {
               this.sr,
               elaboratedMethodId
             )}() is static but is called through an object`,
-            sourceloc
+            sourceloc,
+            7093
           );
         }
         return this.sr.b.symbolValue(elaboratedMethodId, sourceloc);
@@ -8023,7 +8117,8 @@ export class SemanticElaborator {
             this.sr,
             elaboratedMethodId
           )}() is not static but is called through the type — did you mean to add 'static'?`,
-          sourceloc
+          sourceloc,
+          7094
         );
       }
 
@@ -8036,7 +8131,8 @@ export class SemanticElaborator {
             this.sr,
             elaboratedMethodId
           )}() can mutate the object but is not called on an object that is mutable. Is it called on a const object?`,
-          sourceloc
+          sourceloc,
+          7095
         );
       }
 
@@ -8049,7 +8145,8 @@ export class SemanticElaborator {
             this.sr,
             elaboratedMethodId
           )}() requires the object it is called on to be const (fully immutable).`,
-          sourceloc
+          sourceloc,
+          7096
         );
       }
 
@@ -8112,7 +8209,8 @@ export class SemanticElaborator {
       if (generics.length > 0) {
         throw new CompilerError(
           `Member '${name}' does not expect any type arguments, but ${generics.length} are given`,
-          sourceloc
+          sourceloc,
+          7097
         );
       }
       const member = this.sr.symbolNodes.get(memberId);
@@ -8272,7 +8370,8 @@ export class SemanticElaborator {
         } else {
           throw new CompilerError(
             `Type values cannot exist at runtime; use 'for comptime' or a compile-time index to access type array elements`,
-            sourceloc
+            sourceloc,
+            7098
           );
         }
       }
@@ -8455,7 +8554,8 @@ export class SemanticElaborator {
           if (resolvedTypeDef.parameters === null) {
             throw new CompilerError(
               "Parameter Pack is not substituted yet and does not have enough context to know its length",
-              sourceloc
+              sourceloc,
+              7099
             );
           }
           return this.sr.b.literalValue(
@@ -8469,7 +8569,8 @@ export class SemanticElaborator {
         }
         throw new CompilerError(
           `Parameter Pack does not have a member named '${name}'`,
-          sourceloc
+          sourceloc,
+          7100
         );
       }
 
@@ -8561,7 +8662,8 @@ export class SemanticElaborator {
         if (generics.length !== 0) {
           throw new CompilerError(
             `Enums cannot take generic arguments`,
-            sourceloc
+            sourceloc,
+            7101
           );
         }
 
@@ -8576,7 +8678,8 @@ export class SemanticElaborator {
 
         throw new CompilerError(
           `Enum '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a value named '${name}'`,
-          sourceloc
+          sourceloc,
+          7102
         );
       }
 
@@ -8620,7 +8723,8 @@ export class SemanticElaborator {
         if (generics.length !== 0) {
           throw new CompilerError(
             `Unions cannot take generic arguments`,
-            sourceloc
+            sourceloc,
+            7103
           );
         }
 
@@ -8685,7 +8789,8 @@ export class SemanticElaborator {
 
         throw new CompilerError(
           `Union '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a tag named '${name}'`,
-          sourceloc
+          sourceloc,
+          7104
         );
       }
 
@@ -8750,7 +8855,8 @@ export class SemanticElaborator {
 
         throw new CompilerError(
           `Namespace '${collectedNamespace.name}' does not define any declarations named '${name}'`,
-          sourceloc
+          sourceloc,
+          7105
         );
 
         // lookupAndElaborateStaticStructAccess(
@@ -8842,7 +8948,8 @@ export class SemanticElaborator {
           this.sr,
           expr.type
         )}' does not have a member named '${name}'`,
-        sourceloc
+        sourceloc,
+        7106
       );
     }
 
@@ -9056,9 +9163,10 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const argList = [...parameters.map((p) => p.name), ...trailingCArgs].join(
-            ", "
-          );
+          const argList = [
+            ...parameters.map((p) => p.name),
+            ...trailingCArgs,
+          ].join(", ");
           const code = `__c__("return ${cFunction}(this${argList.length > 0 ? ", " + argList : ""});");`;
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
@@ -9240,7 +9348,8 @@ export class SemanticElaborator {
           this.sr,
           expr.type
         )}' does not have a member named '${name}'`,
-        sourceloc
+        sourceloc,
+        7107
       );
     } else if (exprType.variant === Semantic.ENode.DynamicArrayDatatype) {
       for (const fieldId of exprType.syntheticFields) {
@@ -9500,7 +9609,8 @@ export class SemanticElaborator {
           this.sr,
           expr.type
         )}' does not have a member named '${name}'`,
-        sourceloc
+        sourceloc,
+        7108
       );
     } else if (exprType.variant === Semantic.ENode.FixedArrayDatatype) {
       if (name === "length") {
@@ -9518,7 +9628,8 @@ export class SemanticElaborator {
           this.sr,
           expr.type
         )}' does not have a member named '${name}'`,
-        sourceloc
+        sourceloc,
+        7109
       );
     } else if (
       exprType.variant === Semantic.ENode.NamespaceDatatype ||
@@ -9548,7 +9659,8 @@ export class SemanticElaborator {
 
     throw new CompilerError(
       `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, expr.type)}' does not have a member called ${name}`,
-      sourceloc
+      sourceloc,
+      7110
     );
   }
 
@@ -9688,7 +9800,8 @@ export class SemanticElaborator {
 
     throw new CompilerError(
       `Reactive dynamic array does not have a member named '${name}'`,
-      sourceloc
+      sourceloc,
+      7111
     );
   }
 
@@ -9710,7 +9823,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `The ${functionName} function requires a compile-time-evaluable string argument`,
-        sourceloc
+        sourceloc,
+        7112
       );
     }
     return valueResult.literal.value;
@@ -9833,7 +9947,8 @@ export class SemanticElaborator {
     if (collectedExpr.genericArgs.length !== 1) {
       throw new CompilerError(
         `The ${memberName} function requires exactly one type parameter`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7113
       );
     }
     const genericSemanticExprId = this.expressionAsGenericArg(
@@ -9856,7 +9971,8 @@ export class SemanticElaborator {
     if (found === undefined) {
       throw new CompilerError(
         `Type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7114
       );
     }
     if (found.value === null) {
@@ -9868,7 +9984,8 @@ export class SemanticElaborator {
     if (!this.literalValueMatchesTypeDef(found.value, genericTypeUse.type)) {
       throw new CompilerError(
         `Attribute '${key}' on type ${Semantic.serializeTypeUse(this.sr, expr.type)} has a value that is not of type '${Semantic.serializeTypeUse(this.sr, genericExpr.type)}'`,
-        callExpr.sourceloc
+        callExpr.sourceloc,
+        7115
       );
     }
     return this.sr.b.literalValue(found.value, callExpr.sourceloc);
@@ -9893,7 +10010,8 @@ export class SemanticElaborator {
       if (m.key) {
         throw new CompilerError(
           `An array literal requires all elements to be plain values and not 'key: value'-pairs.`,
-          sourceloc
+          sourceloc,
+          7116
         );
       }
 
@@ -9918,7 +10036,8 @@ export class SemanticElaborator {
     ) {
       throw new CompilerError(
         `Array datatype requires ${array.length} elements, but ${values.length} are given`,
-        sourceloc
+        sourceloc,
+        7117
       );
     }
 
@@ -9986,7 +10105,8 @@ export class SemanticElaborator {
             this.sr,
             structUse.type
           )}' is marked as 'opaque' and therefore no struct literals are allowed outside of its own definition. Did you mean to call a constructor instead?`,
-          sourceloc
+          sourceloc,
+          7118
         );
       }
     }
@@ -10005,7 +10125,8 @@ export class SemanticElaborator {
       if (!m.key) {
         throw new CompilerError(
           `A struct literal requires all elements to be 'key: value'-pairs. Direct symbols and spreading objects is not implemented yet.`,
-          sourceloc
+          sourceloc,
+          7119
         );
       }
 
@@ -10020,7 +10141,8 @@ export class SemanticElaborator {
           `${Semantic.serializeTypeDef(this.sr, structUse.type)} does not have a member named '${
             m.key
           }'`,
-          sourceloc
+          sourceloc,
+          7120
         );
       }
       const variable = this.sr.symbolNodes.get(variableId);
@@ -10029,7 +10151,8 @@ export class SemanticElaborator {
       if (assignedMembers.includes(m.key)) {
         throw new CompilerError(
           `Cannot assign member ${m.key} twice`,
-          sourceloc
+          sourceloc,
+          7121
         );
       }
 
@@ -10073,7 +10196,8 @@ export class SemanticElaborator {
     assertCompilerError(
       remainingMembers.length === 0,
       `Members ${remainingMembers.join(", ")} were not assigned and no default value is known`,
-      sourceloc
+      sourceloc,
+      7122
     );
 
     let mutability = structUse.mutability;
@@ -10579,7 +10703,8 @@ export class SemanticElaborator {
         if (!result.ok) {
           throw new CompilerError(
             "This expression is not evaluable at compile time",
-            e.sourceloc
+            e.sourceloc,
+            7123
           );
         }
 
@@ -10592,7 +10717,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             "This intrinsic can only take compile-time-evaluable string literals",
-            e.sourceloc
+            e.sourceloc,
+            7124
           );
         }
 
@@ -10616,7 +10742,8 @@ export class SemanticElaborator {
           if (!s.condition) {
             throw new CompilerError(
               `Comptime 'if let' statements not supported yet`,
-              s.sourceloc
+              s.sourceloc,
+              7125
             );
           }
           const [conditionExpr, conditionExprId] = this.expr(
@@ -10651,7 +10778,8 @@ export class SemanticElaborator {
             if (!elif.condition) {
               throw new CompilerError(
                 `Comptime 'if let' statements not supported yet`,
-                s.sourceloc
+                s.sourceloc,
+                7126
               );
             }
             const [elifConditionExpr, elifConditionExprId] = this.expr(
@@ -10872,7 +11000,8 @@ export class SemanticElaborator {
             // Variable is neither convertible to bool nor we have a guard, error
             throw new CompilerError(
               `The type of the 'if let' expression is not implicitly convertible to bool, therefore a guard of the form 'if let a; b' is required.`,
-              s.sourceloc
+              s.sourceloc,
+              7127
             );
           }
         } else {
@@ -11194,7 +11323,8 @@ export class SemanticElaborator {
             // Variable is neither convertible to bool nor we have a guard, error
             throw new CompilerError(
               `The type of the 'while let' expression is not implicitly convertible to bool, therefore a 'while let ... if ...'-guard is required.`,
-              s.sourceloc
+              s.sourceloc,
+              7128
             );
           }
         } else {
@@ -11252,7 +11382,8 @@ export class SemanticElaborator {
         if (!this.inFunction) {
           throw new CompilerError(
             `Cannot return in this context, it's not in a function context`,
-            s.sourceloc
+            s.sourceloc,
+            7129
           );
         }
 
@@ -11330,13 +11461,15 @@ export class SemanticElaborator {
             if (value.genericArgs.length !== 0) {
               throw new CompilerError(
                 `The 'uninitialized' directive requires 0 type arguments`,
-                s.sourceloc
+                s.sourceloc,
+                7130
               );
             }
             if (!inference?.unsafe) {
               throw new CompilerError(
                 `The 'uninitialized' directive may only appear in an explicit unsafe block`,
-                s.sourceloc
+                s.sourceloc,
+                7131
               );
             }
             uninitialized = true;
@@ -11362,7 +11495,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             `Comptime variables must be declared as 'const'. Use 'const comptime', not 'let comptime'.`,
-            s.sourceloc
+            s.sourceloc,
+            7132
           );
         }
 
@@ -11395,7 +11529,8 @@ export class SemanticElaborator {
           ) {
             printWarningMessage(
               `This 'mut' modifier will be overruled by the 'const' declaration and have no effect`,
-              s.sourceloc
+              s.sourceloc,
+              9003
             );
           }
         }
@@ -11410,13 +11545,15 @@ export class SemanticElaborator {
             if (sValue.genericArgs.length !== 0) {
               throw new CompilerError(
                 `'default' initializer cannot take any generics`,
-                s.sourceloc
+                s.sourceloc,
+                7133
               );
             }
             if (!variableSymbol.type) {
               throw new CompilerError(
                 `Variable initializations with a 'default' initializer require an explicit datatype to be specified`,
-                s.sourceloc
+                s.sourceloc,
+                7134
               );
             }
             valueId = Conversion.MakeDefaultValue(
@@ -11441,14 +11578,16 @@ export class SemanticElaborator {
         if (!((valueId && value) || uninitialized)) {
           throw new CompilerError(
             `Variable '${variableSymbol.name}' requires an initialization value`,
-            s.sourceloc
+            s.sourceloc,
+            7135
           );
         }
 
         if (value?.variant === Semantic.ENode.DatatypeAsValueExpr) {
           throw new CompilerError(
             "A variable cannot be assigned a datatype",
-            value.sourceloc
+            value.sourceloc,
+            7136
           );
         }
 
@@ -11506,7 +11645,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             `A variable cannot be assigned a 'void' value`,
-            value?.sourceloc || s.sourceloc
+            value?.sourceloc || s.sourceloc,
+            7137
           );
         }
 
@@ -11518,7 +11658,8 @@ export class SemanticElaborator {
               this.sr,
               variableSymbolType.type
             )}`,
-            value?.sourceloc || s.sourceloc
+            value?.sourceloc || s.sourceloc,
+            7138
           );
         }
 
@@ -11534,7 +11675,8 @@ export class SemanticElaborator {
           if (r === null) {
             throw new CompilerError(
               "This expression is not evaluable at compile time",
-              s.sourceloc
+              s.sourceloc,
+              7139
             );
           }
           // Keep symbol-based propagation as expression IDs; CTValue is the evaluator.
@@ -11610,7 +11752,8 @@ export class SemanticElaborator {
         if (Conversion.isNodiscardById(this.sr, typeUse.type)) {
           throw new CompilerError(
             `This expression produces a value of type '${Semantic.serializeTypeUse(this.sr, e.type)}' which must be handled`,
-            s.sourceloc
+            s.sourceloc,
+            7140
           );
         }
 
@@ -11867,13 +12010,14 @@ export class SemanticElaborator {
 
           const r = EvalCTFE(this.sr, valueId);
           if (!r.ok) {
-            throw new CompilerError(r.error, s.sourceloc);
+            throw new CompilerError(r.error, s.sourceloc, 7141);
           }
           const comptimeValue = r.value[0];
           if (comptimeValue.variant !== Semantic.ENode.SymbolValueExpr) {
             throw new CompilerError(
               "For each loop over something other than a parameter pack is not implemented yet",
-              s.sourceloc
+              s.sourceloc,
+              7142
             );
           }
           const comptimeExpr = this.sr.typeDefNodes.get(
@@ -11882,7 +12026,8 @@ export class SemanticElaborator {
           if (comptimeExpr.variant !== Semantic.ENode.ParameterPackDatatype) {
             throw new CompilerError(
               "For each loop over something other than a parameter pack is not implemented yet",
-              s.sourceloc
+              s.sourceloc,
+              7143
             );
           }
 
@@ -11995,7 +12140,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             `For-each loop requires an array type, but got '${Semantic.serializeTypeUse(this.sr, arrayExpr.type)}'`,
-            s.sourceloc
+            s.sourceloc,
+            7144
           );
         }
 
@@ -12096,7 +12242,8 @@ export class SemanticElaborator {
         if (!this.inAttemptExpr) {
           throw new CompilerError(
             `A 'raise' statement can only be used in conjunction with a attempt/else construct, no corresponding construct for this statement is found`,
-            s.sourceloc
+            s.sourceloc,
+            7145
           );
         }
 
@@ -12407,7 +12554,8 @@ export class SemanticElaborator {
     if (!structId) {
       throw new CompilerError(
         "This struct is anonymous and must be type-inferred, but there is not enough context to infer it. Either it is not directly passed to something that expects a specific type, or it is being passed to an overloaded function.",
-        structInst.sourceloc
+        structInst.sourceloc,
+        7146
       );
     }
 
@@ -12498,7 +12646,8 @@ export class SemanticElaborator {
         this.sr,
         structId
       )}' is not a valid type for an aggregate literal`,
-      structInst.sourceloc
+      structInst.sourceloc,
+      7147
     );
   }
 
@@ -12587,7 +12736,8 @@ export class SemanticElaborator {
       if (generics.length !== count) {
         throw new CompilerError(
           `builtin.${name}<T> requires exactly ${count} generic ${count === 1 ? "argument" : "arguments"}`,
-          sourceloc
+          sourceloc,
+          7148
         );
       }
     };
@@ -12601,7 +12751,8 @@ export class SemanticElaborator {
       if (expr.variant !== Semantic.ENode.DatatypeAsValueExpr) {
         throw new CompilerError(
           `builtin.${name}${args} requires ${arg} to resolve to a datatype`,
-          sourceloc
+          sourceloc,
+          7149
         );
       }
       return expr;
@@ -12718,7 +12869,8 @@ export class SemanticElaborator {
       if (genericArgs.length !== 0) {
         throw new CompilerError(
           "A variable access cannot have a type parameter list",
-          sourceloc
+          sourceloc,
+          7150
         );
       }
       let elaboratedSymbolId = undefined as Semantic.SymbolId | undefined;
@@ -12741,7 +12893,8 @@ export class SemanticElaborator {
         if (!elaboratedSymbol.type) {
           throw new CompilerError(
             `Symbol '${elaboratedSymbol.name}' cannot be used before it's declared`,
-            sourceloc
+            sourceloc,
+            7151
           );
         }
         if (elaboratedSymbol.comptime && elaboratedSymbol.comptimeValue) {
@@ -12952,7 +13105,8 @@ export class SemanticElaborator {
     }
     throw new CompilerError(
       `Symbol cannot be used as a value: Code ${symbol.variant}`,
-      sourceloc
+      sourceloc,
+      7152
     );
   }
 
@@ -12982,7 +13136,8 @@ export class SemanticElaborator {
       if (symbolValue.genericArgs.length > 0) {
         throw new CompilerError(
           `Type ${symbolValue.name} is not generic`,
-          symbolValue.sourceloc
+          symbolValue.sourceloc,
+          7153
         );
       }
       return this.sr.b.datatypeUseAsValue(
@@ -13045,7 +13200,8 @@ export class SemanticElaborator {
     if (typeDef.variant !== Semantic.ENode.TaggedUnionDatatype) {
       throw new CompilerError(
         `The '?!' error propagation operator can only be used on expressions with a tagged union type`,
-        errPropExpr.sourceloc
+        errPropExpr.sourceloc,
+        7154
       );
     }
 
@@ -13055,7 +13211,8 @@ export class SemanticElaborator {
     if (!(srcOkTag && srcErrTag)) {
       throw new CompilerError(
         `The '?!' error propagation operator can only be used on tagged union types that provide both a Ok and a Err tag.`,
-        errPropExpr.sourceloc
+        errPropExpr.sourceloc,
+        7155
       );
     }
 
@@ -13256,7 +13413,8 @@ export class SemanticElaborator {
             this.sr,
             comparisonType
           )}' is not a member of the union '${Semantic.serializeTypeUse(this.sr, sourceExpr.type)}'.`,
-          exprIsType.sourceloc
+          exprIsType.sourceloc,
+          7156
         );
       }
 
@@ -13280,7 +13438,8 @@ export class SemanticElaborator {
     if (arraySubscript.indices.length > 1) {
       throw new CompilerError(
         "Multidimensional array subscripting is not implemented yet",
-        arraySubscript.sourceloc
+        arraySubscript.sourceloc,
+        7157
       );
     }
     const [value, valueId] = this.expr(arraySubscript.expr, undefined);
@@ -13309,7 +13468,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             "Only integers can be used to index arrays",
-            arraySubscript.sourceloc
+            arraySubscript.sourceloc,
+            7158
           );
         }
       }
@@ -13325,7 +13485,8 @@ export class SemanticElaborator {
         ) {
           throw new CompilerError(
             "Only integers can be used to index arrays",
-            arraySubscript.sourceloc
+            arraySubscript.sourceloc,
+            7159
           );
         }
       }
@@ -13339,7 +13500,8 @@ export class SemanticElaborator {
       ) {
         throw new CompilerError(
           `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)} cannot be subscripted`,
-          arraySubscript.sourceloc
+          arraySubscript.sourceloc,
+          7160
         );
       }
 
@@ -13415,7 +13577,8 @@ export class SemanticElaborator {
           }
           throw new CompilerError(
             `Struct '${Semantic.serializeTypeUse(this.sr, normalizedValue.type)}' does not have a field named '${fieldName}'`,
-            arraySubscript.sourceloc
+            arraySubscript.sourceloc,
+            7161
           );
         }
       }
@@ -13467,7 +13630,8 @@ export class SemanticElaborator {
       ) {
         throw new CompilerError(
           "Only integers can be used to index arrays",
-          arraySubscript.sourceloc
+          arraySubscript.sourceloc,
+          7162
         );
       }
 
@@ -13477,7 +13641,8 @@ export class SemanticElaborator {
       ) {
         throw new CompilerError(
           `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)} cannot be subscripted`,
-          arraySubscript.sourceloc
+          arraySubscript.sourceloc,
+          7163
         );
       }
 
@@ -13502,7 +13667,8 @@ export class SemanticElaborator {
       if (arraySubscript.indices.length !== 1) {
         throw new CompilerError(
           "Strings cannot be indexed in multiple dimensions",
-          arraySubscript.sourceloc
+          arraySubscript.sourceloc,
+          7164
         );
       }
       return this.sr.b.addExpr(this.sr, {
@@ -13552,7 +13718,8 @@ export class SemanticElaborator {
         if (exactMatchId !== undefined) {
           throw new CompilerError(
             "Operator access is ambiguous",
-            value.sourceloc
+            value.sourceloc,
+            7165
           );
         }
         exactMatchId = mId;
@@ -13606,12 +13773,14 @@ export class SemanticElaborator {
           this.sr,
           value.type
         )}' for index type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, index.type)}' is available`,
-        value.sourceloc
+        value.sourceloc,
+        7166
       );
     }
     throw new CompilerError(
       `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, value.type)}' cannot be subscripted`,
-      value.sourceloc
+      value.sourceloc,
+      7167
     );
   }
 
@@ -14519,7 +14688,8 @@ export class SemanticElaborator {
     }
     throw new CompilerError(
       "This expression is not suitable as a generic type argument or literal value",
-      expr.sourceloc
+      expr.sourceloc,
+      7168
     );
   }
 

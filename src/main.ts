@@ -56,6 +56,15 @@ async function main(): Promise<number> {
     dest: "showTiming",
     help: "Print per-phase timing for each module after the build",
   });
+  build_parser.add_argument("--quiet", {
+    action: "store_true",
+    dest: "quiet",
+    help: "Suppress progress bars; only print diagnostics",
+  });
+  build_parser.add_argument("filename", {
+    nargs: "?",
+    help: "Single file to build without running it (no haze.toml needed)",
+  });
 
   const get_parser = subparsers.add_parser("get", { help: "Download a file" });
   get_parser.add_argument("url", { help: "URL to download" });
@@ -102,6 +111,11 @@ async function main(): Promise<number> {
     dest: "showTiming",
     help: "Print per-phase timing for each module after the build",
   });
+  run_parser.add_argument("--quiet", {
+    action: "store_true",
+    dest: "quiet",
+    help: "Suppress progress bars; only print diagnostics",
+  });
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -140,6 +154,11 @@ async function main(): Promise<number> {
     dest: "showTiming",
     help: "Print per-phase timing for each module after the build",
   });
+  exec_parser.add_argument("--quiet", {
+    action: "store_true",
+    dest: "quiet",
+    help: "Suppress progress bars; only print diagnostics",
+  });
   exec_parser.add_argument("filename", {
     nargs: "?",
     help: "File to run",
@@ -174,7 +193,8 @@ async function main(): Promise<number> {
         Boolean(args.verbose),
         Boolean(args.ignoreLock),
         Boolean(args.strip),
-        Boolean(args.showTiming)
+        Boolean(args.showTiming),
+        Boolean(args.quiet)
       );
 
       if (

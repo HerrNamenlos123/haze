@@ -1110,7 +1110,8 @@ export namespace Semantic {
     }
     throw new CompilerError(
       "This expression is not suitable as a generic type argument or literal value",
-      expr.sourceloc
+      expr.sourceloc,
+      3001
     );
   }
 
@@ -1322,7 +1323,8 @@ export namespace Semantic {
     }
     throw new CompilerError(
       `Symbol '${name}' was not declared in this scope`,
-      args.sourceloc
+      args.sourceloc,
+      3002
     );
   }
 
@@ -1755,14 +1757,16 @@ export namespace Semantic {
         if (sr.globalMainFunction) {
           throw new CompilerError(
             "main function is defined, but not allowed because module is built as library",
-            null
+            null,
+            3003
           );
         }
       } else {
         if (!sr.globalMainFunction) {
           throw new CompilerError(
             "No main function is defined in global scope",
-            null
+            null,
+            3004
           );
         }
 
@@ -1779,7 +1783,8 @@ export namespace Semantic {
         ) {
           throw new CompilerError(
             "Main function must return int",
-            mainFunctionSymbol.sourceloc
+            mainFunctionSymbol.sourceloc,
+            3005
           );
         }
       }

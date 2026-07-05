@@ -6,6 +6,29 @@ export enum ErrorType {
   Info = 2,
 }
 
+// ── Diagnostic codes ────────────────────────────────────────────────────────
+//
+// Every user-facing compiler diagnostic (CompilerError / assertCompilerError /
+// printWarningMessage) carries a stable numeric code, printed as `H<code>`
+// (e.g. `H2351`), analogous to MSVC's C-numbers. These codes are the contract
+// the test suite (testsuite/) asserts against, so they must stay stable once
+// assigned: don't renumber an existing code, only add new ones.
+//
+// Ranges, one block of 1000 per phase, plus a shared block for warnings:
+//   1000        generic ANTLR syntax error (Parser.ts error listener)
+//   1001-1999   Parser.ts        (explicit parser errors)
+//   2001-2999   SymbolCollection.ts
+//   3001-3999   Semantic/SemanticTypes.ts
+//   4001-4999   Semantic/Conversion.ts
+//   5001-5999   Semantic/CTFE.ts
+//   6001-6999   Semantic/SemanticBuilder.ts
+//   7001-7999   Semantic/Elaborate.ts
+//   8001-8999   ProjectCompiler.ts (build/project-level errors)
+//   9001-9999   warnings (any file)
+export function formatDiagnosticCode(code: number): string {
+  return `H${code}`;
+}
+
 export type SourceLocNotNull = {
   filename: string;
   start: {
@@ -25,6 +48,7 @@ export type CompilerDiagnostic = {
   message: string;
   loc?: SourceLoc;
   title?: string;
+  code?: number;
 };
 
 type DiagnosticSink = (diag: CompilerDiagnostic) => void;
@@ -52,20 +76,26 @@ function formatCompilerMessage(
   type: ErrorType,
   error: string | null,
   msg: string,
-  loc?: SourceLoc
+  loc?: SourceLoc,
+  code?: number
 ): string {
   let text = "";
   if (loc) {
     text += `\x1b[31m${formatSourceLoc(loc)}: \x1b[0m`;
   }
 
-  if (error) {
+  const title =
+    error && code !== undefined
+      ? `${error} ${formatDiagnosticCode(code)}`
+      : error;
+
+  if (title) {
     if (type === ErrorType.Error) {
-      text += `\x1b[31m${error}\x1b[0m: ${msg}`;
+      text += `\x1b[31m${title}\x1b[0m: ${msg}`;
     } else if (type === ErrorType.Warning) {
-      text += `\x1b[33m${error}\x1b[0m: ${msg}`;
+      text += `\x1b[33m${title}\x1b[0m: ${msg}`;
     } else {
-      text += `${error}: ${msg}`;
+      text += `${title}: ${msg}`;
     }
   } else {
     text += msg;
@@ -77,7 +107,8 @@ export function printCompilerMessage(
   type: ErrorType,
   error: string | null,
   msg: string,
-  loc?: SourceLoc
+  loc?: SourceLoc,
+  code?: number
 ): void {
   if (diagnosticSink) {
     diagnosticSink({
@@ -85,34 +116,48 @@ export function printCompilerMessage(
       message: msg,
       loc: loc,
       title: error ?? undefined,
+      code: code,
     });
     return;
   }
   if (type === ErrorType.Error) {
-    printLine(formatCompilerMessage(type, error, msg, loc));
+    printLine(formatCompilerMessage(type, error, msg, loc, code));
   } else {
-    printLineWarning(formatCompilerMessage(type, error, msg, loc));
+    printLineWarning(formatCompilerMessage(type, error, msg, loc, code));
   }
 }
 
-export function formatErrorMessage(msg: string, loc?: SourceLoc): string {
-  return formatCompilerMessage(ErrorType.Error, "Error", msg, loc);
+export function formatErrorMessage(
+  msg: string,
+  loc?: SourceLoc,
+  code?: number
+): string {
+  return formatCompilerMessage(ErrorType.Error, "Error", msg, loc, code);
 }
 
 export function printErrorMessage(
   msg: string,
-  loc?: SourceLoc,
+  loc: SourceLoc | undefined,
+  code: number,
   title?: string
 ): void {
-  printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc);
+  printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc, code);
 }
 
-export function formatWarningMessage(msg: string, loc?: SourceLoc): string {
-  return formatCompilerMessage(ErrorType.Warning, "Warning", msg, loc);
+export function formatWarningMessage(
+  msg: string,
+  loc?: SourceLoc,
+  code?: number
+): string {
+  return formatCompilerMessage(ErrorType.Warning, "Warning", msg, loc, code);
 }
 
-export function printWarningMessage(msg: string, loc?: SourceLoc): void {
-  printCompilerMessage(ErrorType.Warning, "Warning", msg, loc);
+export function printWarningMessage(
+  msg: string,
+  loc: SourceLoc | undefined,
+  code: number
+): void {
+  printCompilerMessage(ErrorType.Warning, "Warning", msg, loc, code);
 }
 
 const callerLocationRegex = /at (?:(.+)\s+\()?(.+?):(\d+):(\d+)/;
@@ -141,11 +186,13 @@ export function getCallerLocation(depth = 1): SourceLoc {
 export class CompilerError extends Error {
   loc: SourceLoc;
   rawMessage: string;
+  code: number;
 
-  constructor(msg: string, loc: SourceLoc) {
-    super(formatErrorMessage(msg, loc));
+  constructor(msg: string, loc: SourceLoc, code: number) {
+    super(formatErrorMessage(msg, loc, code));
     this.loc = loc;
     this.rawMessage = msg;
+    this.code = code;
   }
 }
 
@@ -222,9 +269,10 @@ export function assert(
 export function assertCompilerError(
   condition: unknown,
   message: string,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
+  code: number
 ): asserts condition {
   if (!condition) {
-    throw new CompilerError(message, sourceloc);
+    throw new CompilerError(message, sourceloc, code);
   }
 }

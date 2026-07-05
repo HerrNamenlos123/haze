@@ -3920,7 +3920,7 @@ function lowerBlockScope(
       start: firstStrippedStatement.start,
       end: lastStrippedStatement.end,
     };
-    printWarningMessage("Dead code detected and stripped", location);
+    printWarningMessage("Dead code detected and stripped", location, 9001);
   }
 
   assert(blockScope.emittedExpr !== -1);

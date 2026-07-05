@@ -40,7 +40,7 @@ export function EvalCTFEOrFail(
 ) {
   const valueResult = EvalCTFE(sr, exprId);
   if (!valueResult.ok) {
-    throw new CompilerError(valueResult.error, sourceloc);
+    throw new CompilerError(valueResult.error, sourceloc, 5001);
   }
   return valueResult.value;
 }
@@ -338,7 +338,7 @@ export function EvalCTFENumericValue(
 ) {
   const r = EvalCTFE(sr, exprId);
   if (!r.ok) {
-    throw new CompilerError(r.error, sourceloc);
+    throw new CompilerError(r.error, sourceloc, 5002);
   }
   const [result] = r.value;
   assert(result.variant === Semantic.ENode.LiteralExpr);
@@ -359,7 +359,8 @@ export function EvalCTFENumericValue(
   }
   throw new CompilerError(
     "This value cannot be evaluated as an integer",
-    result.sourceloc
+    result.sourceloc,
+    5003
   );
 }
 
@@ -367,7 +368,7 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
   const r = EvalCTFE(sr, exprId);
   const expr = sr.exprNodes.get(exprId);
   if (!r.ok) {
-    throw new CompilerError(r.error, expr.sourceloc);
+    throw new CompilerError(r.error, expr.sourceloc, 5004);
   }
   const [result] = r.value;
 
@@ -381,7 +382,8 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
           ? "Enum Literal"
           : primitiveToString(result.literal.type)
       } value cannot be tested for truthiness, use explicit comparisons.`,
-      result.sourceloc
+      result.sourceloc,
+      5005
     );
   }
 
@@ -400,19 +402,22 @@ export function EvalCTFEBoolean(sr: Semantic.Context, exprId: Semantic.ExprId) {
             ? "Enum Literal"
             : primitiveToString(typeDef.literalValue.type)
         } value cannot be tested for truthiness, use explicit comparisons.`,
-        result.sourceloc
+        result.sourceloc,
+        5006
       );
     }
 
     throw new CompilerError(
       "Type expression cannot be evaluated as a boolean value",
-      result.sourceloc
+      result.sourceloc,
+      5007
     );
   }
 
   throw new CompilerError(
     "Expression cannot be evaluated as a boolean value at compile time",
-    expr.sourceloc
+    expr.sourceloc,
+    5008
   );
 }
 
@@ -854,7 +859,8 @@ export function ctValueToExpr(
     case "list":
       throw new CompilerError(
         "Cannot convert complex CTValue to expression yet",
-        sourceloc
+        sourceloc,
+        5009
       );
 
     default:

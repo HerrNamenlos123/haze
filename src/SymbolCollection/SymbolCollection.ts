@@ -1113,7 +1113,8 @@ export function defineVariableSymbol(
         `Symbol '${variable.name}' was already declared in this scope. Previous definition: ${
           (s.sourceloc && formatSourceLoc(s.sourceloc)) || ""
         }`,
-        variable.sourceloc
+        variable.sourceloc,
+        2001
       );
     }
   }
@@ -1186,7 +1187,8 @@ function collectTypeDef(
               }' has already been declared as a Struct, which cannot be extended by a namespace. Original definition: ${
                 (typedef.sourceloc && formatSourceLoc(typedef.sourceloc)) || ""
               }`,
-              item.sourceloc
+              item.sourceloc,
+              2002
             );
           }
         }
@@ -1310,7 +1312,8 @@ function collectTypeDef(
             `Symbol '${fullyQualifiedName}' has already been declared as a Namespace, which cannot be extended by a struct. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
-            item.sourceloc
+            item.sourceloc,
+            2003
           );
         }
         if (
@@ -1321,7 +1324,8 @@ function collectTypeDef(
             `Struct '${item.name}' is already declared in this scope. Original definition: ${
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
-            item.sourceloc
+            item.sourceloc,
+            2004
           );
         }
       }
@@ -1614,7 +1618,8 @@ function collectSymbol(
       if (item.static && item.methodType !== EMethodType.Method) {
         throw new CompilerError(
           `A function that is not a method cannot be marked as 'static'`,
-          item.sourceloc
+          item.sourceloc,
+          2005
         );
       }
 
@@ -1624,7 +1629,8 @@ function collectSymbol(
       ) {
         throw new CompilerError(
           `'${item.name}' is a reserved name, it cannot be used in userland.`,
-          item.sourceloc
+          item.sourceloc,
+          2006
         );
       }
 
@@ -2043,7 +2049,8 @@ function collectGlobalDirective(
       if (!dependency) {
         throw new CompilerError(
           `Cannot find import '${item.name}': No such module`,
-          item.sourceloc
+          item.sourceloc,
+          2007
         );
       }
       const globalBuildDir = join(process.cwd(), "__haze__");
@@ -2210,7 +2217,8 @@ function collectScope(
             if (e.letCondition) {
               throw new CompilerError(
                 `'if let' bindings in else-if branches are not supported yet`,
-                item.sourceloc
+                item.sourceloc,
+                2008
               );
             }
 
@@ -2654,7 +2662,8 @@ function collectExpr(
       if (item.lambda.ellipsis) {
         throw new CompilerError(
           "A Lambda Function is not allowed to have unchecked, C-style variadic arguments",
-          item.sourceloc
+          item.sourceloc,
+          2009
         );
       }
 
@@ -2686,7 +2695,8 @@ function collectExpr(
           if (p.kind === "param-pack") {
             throw new CompilerError(
               "Lambda functions cannot have parameter packs",
-              p.sourceloc
+              p.sourceloc,
+              2010
             );
           }
           return {
@@ -3147,7 +3157,8 @@ function collectExpr(
         if (p.kind === "param-pack") {
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
-            item.sourceloc
+            item.sourceloc,
+            2011
           );
         }
 
@@ -3158,7 +3169,8 @@ function collectExpr(
         if (p.defaultValue) {
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
-            item.sourceloc
+            item.sourceloc,
+            2012
           );
         }
 
@@ -3201,7 +3213,8 @@ function collectExpr(
         if (p.kind === "param-pack") {
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
-            item.sourceloc
+            item.sourceloc,
+            2013
           );
         }
 
@@ -3212,7 +3225,8 @@ function collectExpr(
         if (p.defaultValue) {
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
-            item.sourceloc
+            item.sourceloc,
+            2014
           );
         }
 
@@ -3266,7 +3280,8 @@ function collectExpr(
       if (item.type.variant !== "TaggedUnionTypeExpr") {
         throw new CompilerError(
           "nodiscard can only be applied to tagged unions",
-          item.sourceloc
+          item.sourceloc,
+          2015
         );
       }
 
@@ -3325,7 +3340,9 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.AttemptExpr,
         attemptScope: collectScope(cc, item.attemptScope, args),
-        elseScope: item.elseScope ? wrapScope(item.elseScope, item.elseVar) : null,
+        elseScope: item.elseScope
+          ? wrapScope(item.elseScope, item.elseVar)
+          : null,
         elseVar: item.elseVar,
         recoverScope: item.recoverScope
           ? wrapScope(item.recoverScope, item.recoverVar)

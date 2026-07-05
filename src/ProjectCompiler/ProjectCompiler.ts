@@ -610,7 +610,8 @@ export class ProjectCompiler {
         } else {
           throw new CompilerError(
             "This Distro/Package Manager is not supported yet, please report",
-            null
+            null,
+            8001
           );
         }
         this.markStepDone(MARKERS.ncursesLib);

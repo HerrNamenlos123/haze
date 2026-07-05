@@ -1123,7 +1123,7 @@ export namespace Conversion {
     if (c.ok) {
       return c.expr;
     }
-    throw new CompilerError(c.error, sourceloc);
+    throw new CompilerError(c.error, sourceloc, 4001);
   }
 
   type ConversionPlanSuccess =
@@ -2553,7 +2553,8 @@ export namespace Conversion {
       );
       if (
         resolvedSourceTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
-        resolvedSourceTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
+        resolvedSourceTypeDef.variant ===
+          Semantic.ENode.ShallowReactiveDatatype ||
         resolvedSourceTypeDef.variant === Semantic.ENode.ComputedDatatype
       ) {
         const wrappedTypeUseId = resolvedSourceTypeDef.wrappedType;
@@ -2704,7 +2705,8 @@ export namespace Conversion {
           sr,
           targetTypeId
         )}' is requested, but this struct has no default value because not all members specify a default value`,
-        sourceloc
+        sourceloc,
+        4002
       );
     }
 
@@ -2713,7 +2715,8 @@ export namespace Conversion {
         sr,
         targetTypeId
       )}' is requested, but no safe default value is known for that type`,
-      sourceloc
+      sourceloc,
+      4003
     );
   }
 
@@ -2752,7 +2755,8 @@ export namespace Conversion {
           sr,
           leftTypeUseId
         )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
-        sourceloc
+        sourceloc,
+        4004
       );
     }
 
@@ -2814,7 +2818,8 @@ export namespace Conversion {
         sr,
         leftTypeUseId
       )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
-      sourceloc
+      sourceloc,
+      4005
     );
   }
 
@@ -2878,7 +2883,8 @@ export namespace Conversion {
         sr,
         leftTypeUseId
       )}' and '${Semantic.serializeTypeUseWithAliasAKA(sr, rightTypeUseId)}'`,
-      sourceloc
+      sourceloc,
+      4006
     );
   }
 
@@ -3075,7 +3081,8 @@ export namespace Conversion {
       `No unary ${UnaryOperationToString(
         operation
       )} operation is known for type '${Semantic.serializeTypeUse(sr, a)}'`,
-      sourceloc
+      sourceloc,
+      4007
     );
   }
 }

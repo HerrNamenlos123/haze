@@ -1,0 +1,12 @@
+
+name = "testsuite"
+version = "0.1.0"
+description = "Compiler test suite for the Haze compiler itself"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[scripts]
+build = "haze build"
+run = "haze run"

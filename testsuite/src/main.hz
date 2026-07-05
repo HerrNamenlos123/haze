@@ -1,0 +1,40 @@
+
+// Entry point for the compiler test suite. Reads which haze binary/stdlib to
+// drive from the environment (set by scripts/run-tests.sh) so this program
+// never has to guess a path, then registers every case file and runs them.
+//
+// This program is itself built and run through dist/haze — see
+// scripts/run-tests.sh, which is the only supported way to invoke this.
+
+fn buildConfig(): testsuite.RunnerConfig {
+    let hazeBinary = env.get("HAZE_TEST_BINARY");
+    if !hazeBinary {
+        sys.panic("HAZE_TEST_BINARY is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    let stdlibDir = env.get("HAZE_STDLIB_DIR");
+    if !stdlibDir {
+        sys.panic("HAZE_STDLIB_DIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    let workDir = env.get("HAZE_TEST_WORKDIR");
+    if !workDir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+
+    return testsuite.RunnerConfig {
+        hazeBinary: hazeBinary,
+        stdlibDir: stdlibDir,
+        workDir: workDir,
+    };
+}
+
+fn main(): int {
+    let config = buildConfig();
+    fmt.println(f"haze binary: {config.hazeBinary}");
+    fmt.println(f"stdlib dir:  {config.stdlibDir}");
+    fmt.println("");
+
+    let suite = testsuite.Suite {};
+    cases_examples.register(suite);
+
+    return testsuite.runAll(config, suite);
+}
