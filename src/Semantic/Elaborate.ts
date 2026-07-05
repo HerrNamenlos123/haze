@@ -8971,29 +8971,42 @@ export class SemanticElaborator {
         );
       }
 
-      if (name === "substr") {
-        const funcname = "__hz_string_substr_";
-
+      const provideBuiltinMethod = (
+        lowLevelFuncName: string,
+        cFunction: string,
+        parameters: {
+          name: string;
+          optional?: boolean;
+          type: Semantic.TypeUseId;
+        }[],
+        returnType: Semantic.TypeUseId
+      ) => {
         let [func, funcId] = [null, null] as [
           Semantic.FunctionSymbol | null,
           Semantic.SymbolId | null,
         ];
-        if (this.sr.syntheticFunctions.has(funcname)) {
-          funcId = this.sr.syntheticFunctions.get(funcname)!;
+
+        const thisPtrType = makeTypeUse(
+          this.sr,
+          exprTypeUse.type,
+          EDatatypeMutability.Mut,
+          "force-no-inline",
+          sourceloc
+        )[1];
+
+        if (this.sr.syntheticFunctions.has(lowLevelFuncName)) {
+          funcId = this.sr.syntheticFunctions.get(lowLevelFuncName)!;
           assert(funcId);
           const sym = this.sr.symbolNodes.get(funcId);
           assert(sym.variant === Semantic.ENode.FunctionSymbol);
           func = sym;
         } else {
           const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [
-              { optional: false, type: this.sr.b.optionalIntType() },
-              {
-                optional: false,
-                type: this.sr.b.optionalIntType(),
-              },
-            ],
-            returnType: this.sr.b.strType(),
+            parameters: parameters.map((p) => ({
+              optional: p.optional ?? false,
+              type: p.type,
+            })),
+            returnType: returnType,
             requires: {
               final: true,
               pure: false,
@@ -9004,27 +9017,22 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const code = `__c__("return HZSTD_STRING_SUBSTR(this, start, length);");`;
+          const paramList = parameters.map((p) => p.name).join(", ");
+          const code = `__c__("return ${cFunction}(this${parameters.length > 0 ? ", " + paramList : ""});");`;
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
-            parameterNames: ["start", "length"],
-            funcname: funcname,
+            parameterNames: parameters.map((p) => p.name),
+            funcname: lowLevelFuncName,
             bodySourceCode: code,
             currentScope: this.currentContext.currentScope,
             sourceloc: sourceloc,
             envType: {
               type: "method",
-              thisExprType: makeTypeUse(
-                this.sr,
-                exprTypeUse.type,
-                EDatatypeMutability.Mut,
-                "force-no-inline",
-                sourceloc
-              )[1],
+              thisExprType: thisPtrType,
             },
           });
-          this.sr.syntheticFunctions.set(funcname, funcId);
+          this.sr.syntheticFunctions.set(lowLevelFuncName, funcId);
         }
 
         assert(func && funcId);
@@ -9033,13 +9041,7 @@ export class SemanticElaborator {
           funcId,
           {
             type: "method",
-            thisExprType: makeTypeUse(
-              this.sr,
-              exprTypeUse.type,
-              EDatatypeMutability.Mut,
-              "force-no-inline",
-              sourceloc
-            )[1],
+            thisExprType: thisPtrType,
           },
           {
             type: "method",
@@ -9047,82 +9049,78 @@ export class SemanticElaborator {
           },
           sourceloc
         );
-      }
+      };
+
       if (name === "slice") {
-        const funcname = "__hz_string_slice_";
-
-        let [func, funcId] = [null, null] as [
-          Semantic.FunctionSymbol | null,
-          Semantic.SymbolId | null,
-        ];
-        if (this.sr.syntheticFunctions.has(funcname)) {
-          funcId = this.sr.syntheticFunctions.get(funcname)!;
-          assert(funcId);
-          const sym = this.sr.symbolNodes.get(funcId);
-          assert(sym.variant === Semantic.ENode.FunctionSymbol);
-          func = sym;
-        } else {
-          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: [
-              { optional: false, type: this.sr.b.optionalIntType() },
-              {
-                optional: false,
-                type: this.sr.b.optionalIntType(),
-              },
-            ],
-            returnType: this.sr.b.strType(),
-            requires: {
-              final: true,
-              pure: false,
-              noreturn: false,
-              noreturnIf: null,
+        return provideBuiltinMethod(
+          "__hz_string_slice_",
+          "HZSTD_STRING_SLICE",
+          [
+            {
+              name: "start",
+              type: this.sr.b.optionalIntType(),
             },
-            sourceloc: sourceloc,
-            vararg: false,
-          });
-
-          const code = `__c__("return HZSTD_STRING_SLICE(this, start, end);");`;
-
-          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
-            functionTypeId: functionType,
-            parameterNames: ["start", "end"],
-            funcname: funcname,
-            bodySourceCode: code,
-            currentScope: this.currentContext.currentScope,
-            sourceloc: sourceloc,
-            envType: {
-              type: "method",
-              thisExprType: makeTypeUse(
-                this.sr,
-                exprTypeUse.type,
-                EDatatypeMutability.Mut,
-                "force-no-inline",
-                sourceloc
-              )[1],
+            {
+              name: "end",
+              optional: true,
+              type: this.sr.b.optionalIntType(),
             },
-          });
-          this.sr.syntheticFunctions.set(funcname, funcId);
-        }
-
-        assert(func && funcId);
-
-        return this.sr.b.callableExpr(
-          funcId,
-          {
-            type: "method",
-            thisExprType: makeTypeUse(
-              this.sr,
-              exprTypeUse.type,
-              EDatatypeMutability.Mut,
-              "force-no-inline",
-              sourceloc
-            )[1],
-          },
-          {
-            type: "method",
-            thisExpr: exprId,
-          },
-          sourceloc
+          ],
+          this.sr.b.strType()
+        );
+      }
+      if (name === "startsWith") {
+        return provideBuiltinMethod(
+          "__hz_string_starts_with_",
+          "HZSTD_STRING_STARTS_WITH",
+          [
+            {
+              name: "search",
+              type: this.sr.b.strType(),
+            },
+            {
+              name: "position",
+              optional: true,
+              type: this.sr.b.optionalIntType(),
+            },
+          ],
+          this.sr.b.boolType()
+        );
+      }
+      if (name === "endsWith") {
+        return provideBuiltinMethod(
+          "__hz_string_ends_with_",
+          "HZSTD_STRING_ENDS_WITH",
+          [
+            {
+              name: "search",
+              type: this.sr.b.strType(),
+            },
+            {
+              name: "endPosition",
+              optional: true,
+              type: this.sr.b.optionalIntType(),
+            },
+          ],
+          this.sr.b.boolType()
+        );
+      }
+      if (name === "contains") {
+        return provideBuiltinMethod(
+          "__hz_string_contains_",
+          "HZSTD_STRING_CONTAINS",
+          [
+            {
+              name: "search",
+              type: this.sr.b.strType(),
+            },
+            {
+              name: "startIndex",
+              optional: true,
+              type: this.sr.b.intType(),
+            },
+          ],
+          this.sr.b.boolType()
         );
       }
 
