@@ -49,6 +49,37 @@ typedef enum {
   hzui_align_end = 2,
 } hzui_align_t;
 
+// What this element's floating config should attach to, mirroring Clay's own
+// Clay_FloatingAttachToElement but collapsed to only the cases the Haze side
+// ever produces -- ui_layout.hz always resolves "nearest positioned ancestor
+// or this viewport" itself (see ui_styling.Position), so CLAY_ATTACH_TO_PARENT
+// is never needed here.
+typedef enum {
+  hzui_attach_to_none = 0,
+  hzui_attach_to_root = 1,
+  hzui_attach_to_element = 2,
+} hzui_attach_to_t;
+
+// Which corner of the floating element attaches to the same corner of its
+// target. Collapsed from Clay's full 3x3 attach-point grid down to the 4
+// corners a CSS-style top/right/bottom/left offset pair can express.
+typedef enum {
+  hzui_attach_top_left = 0,
+  hzui_attach_top_right = 1,
+  hzui_attach_bottom_left = 2,
+  hzui_attach_bottom_right = 3,
+} hzui_attach_point_t;
+
+typedef struct {
+  hzui_attach_to_t attachTo;
+  hzui_attach_point_t attachPoint;
+  hzstd_vec2_t offset;
+  int zIndex;
+  // Only read when attachTo == hzui_attach_to_element -- the target's Clay
+  // id string (same idPath convention as the `id` field above).
+  hzstd_str_t parentId;
+} hzui_floating_config_t;
+
 // Bundles every parameter hzui_clay_define_div_element() needs into one
 // struct instead of a long positional parameter list -- named fields at the
 // call site are self-documenting and can't silently shift out of order the
@@ -65,6 +96,7 @@ typedef struct {
   // Already resolved to axis-agnostic Start/Center/End -- see hzui_align_t.
   hzui_align_t mainAxisAlign;
   hzui_align_t crossAxisAlign;
+  hzui_floating_config_t floating;
   void* elementPtr;
 } hzui_define_div_element_t;
 
@@ -75,6 +107,7 @@ typedef struct {
   hzui_corner_radius_values_t cornerRadius;
   hzui_sizing_axis_t width;
   hzui_sizing_axis_t height;
+  hzui_floating_config_t floating;
   void* elementPtr;
 } hzui_define_canvas_element_t;
 

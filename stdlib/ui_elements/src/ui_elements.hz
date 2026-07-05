@@ -19,6 +19,12 @@ export struct DivElement {
     children: []Element = [];
     style: ui_styling.ComputedDivStyle = {};
     _runtimeData?: TypeErasedBox;
+    // The Clay id string ui_layout resolved for this element the last time
+    // its tree walk visited it -- set by ui_layout, read by ui_layout when
+    // resolving another element's explicit anchorTo() target. Not touched by
+    // this module or ui_components; see ui_styling.AnchorTarget's own
+    // comment for why it can't just be a path precomputed at declare time.
+    _resolvedClayId?: str;
 
     fn constructor(args: DivElementArgs) {
         return DivElement {

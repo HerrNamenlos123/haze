@@ -24,7 +24,8 @@ namespace ffi {
         height: int,
         measureText: (userdata: cptr, request: hzui_measure_text_request_t) -> Vec2,
         measureTextUserdata: cptr,
-    ): void :: final;
+    ): cptr :: final;
+    extern C noemit fn hzui_clay_activate_context(context: cptr): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit fn Clay_BeginLayout(): void :: final;
     extern C noemit fn Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
@@ -89,6 +90,29 @@ namespace ffi {
         hzui_align_end,
     }
 
+    // Mirrors ui_styling.Position, collapsed to what Clay's floating config
+    // actually needs -- see the comment on the C side (hzui_public.h).
+    export extern C noemit enum hzui_attach_to_t {
+        hzui_attach_to_none,
+        hzui_attach_to_root,
+        hzui_attach_to_element,
+    }
+
+    export extern C noemit enum hzui_attach_point_t {
+        hzui_attach_top_left,
+        hzui_attach_top_right,
+        hzui_attach_bottom_left,
+        hzui_attach_bottom_right,
+    }
+
+    export extern C noemit inline struct hzui_floating_config_t {
+        attachTo: hzui_attach_to_t;
+        attachPoint: hzui_attach_point_t;
+        offset: Vec2;
+        zIndex: int;
+        parentId: str;
+    }
+
     export extern C noemit inline struct hzui_define_div_element_t {
         id: str;
         backgroundColor: Color;
@@ -100,6 +124,7 @@ namespace ffi {
         height: hzui_sizing_axis_t;
         mainAxisAlign: hzui_align_t;
         crossAxisAlign: hzui_align_t;
+        floating: hzui_floating_config_t;
         elementPtr: cptr;
     }
 
@@ -109,6 +134,7 @@ namespace ffi {
         cornerRadius: CornerRadiusValues;
         width: hzui_sizing_axis_t;
         height: hzui_sizing_axis_t;
+        floating: hzui_floating_config_t;
         elementPtr: cptr;
     }
 
@@ -216,6 +242,118 @@ fn effectiveSize(size: ui_styling.Size, forceGrow: bool): ui_styling.Size :: fin
     return size;
 }
 
+// Shared "not floating" value -- every hzui_define_div_element_t/
+// hzui_define_canvas_element_t literal has to specify `floating` explicitly
+// (no C-side defaults), so this is the one spot both defineSpacer and
+// resolveFloating's Static/Relative-with-no-anchor case reuse.
+fn noFloating(): ffi.hzui_floating_config_t :: final {
+    return {
+        attachTo: ffi.hzui_attach_to_t.hzui_attach_to_none,
+        attachPoint: ffi.hzui_attach_point_t.hzui_attach_top_left,
+        offset: Vec2(0.0, 0.0),
+        zIndex: 0,
+        parentId: "",
+    };
+}
+
+// Collapses independent top/right/bottom/left offsets down to the one corner
+// Clay actually needs (see ToClayAttachPoint in ui.c for why both sides of
+// the pair always share this same corner). If both edges on an axis are set,
+// left/top wins -- see PositionValues' own doc comment for why.
+fn resolveAttachPoint(values: ui_styling.PositionValues): ffi.hzui_attach_point_t :: final {
+    let useRight = values.right is not none && values.left is none;
+    let useBottom = values.bottom is not none && values.top is none;
+    if useRight && useBottom { return ffi.hzui_attach_point_t.hzui_attach_bottom_right; }
+    if useRight { return ffi.hzui_attach_point_t.hzui_attach_top_right; }
+    if useBottom { return ffi.hzui_attach_point_t.hzui_attach_bottom_left; }
+    return ffi.hzui_attach_point_t.hzui_attach_top_left;
+}
+
+// The single offset vector Clay applies after aligning attachPoint corners --
+// a `right`/`bottom` value pushes inward (negative), matching CSS: `right: 8`
+// means "8px in from the right edge", not "8px further right".
+fn resolveOffset(values: ui_styling.PositionValues, attachPoint: ffi.hzui_attach_point_t): Vec2 :: final {
+    let x = 0.0;
+    let y = 0.0;
+    if attachPoint == ffi.hzui_attach_point_t.hzui_attach_top_right || attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_right {
+        if values.right { x = -values.right; }
+    } else {
+        if values.left { x = values.left; }
+    }
+    if attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_left || attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_right {
+        if values.bottom { y = -values.bottom; }
+    } else {
+        if values.top { y = values.top; }
+    }
+    return Vec2(x, y);
+}
+
+// The CSS containing-block algorithm: an explicit anchorTo() always wins;
+// otherwise Fixed always targets this viewport; otherwise Absolute walks up
+// `positioningContext` (the nearest enclosing Relative/Absolute/Fixed
+// ancestor's already-known-this-frame id, pushed/popped by processTreeElement
+// below) and falls back to this viewport if there isn't one. Static/Relative
+// with no explicit anchor stay in normal flow entirely (CLAY_ATTACH_TO_NONE).
+fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle): ffi.hzui_floating_config_t :: final {
+    let explicitAnchor: str | none = none;
+    if style.anchorTarget is not none {
+        let resolved = rx.get(style.anchorTarget);
+        if resolved is TypeErasedBox {
+            let targetDiv = resolved.get<ui_elements.DivElement>();
+            if targetDiv._resolvedClayId is not none {
+                explicitAnchor = targetDiv._resolvedClayId;
+            }
+        }
+    }
+
+    let isFloating = style.position == ui_styling.Position.Absolute
+        || style.position == ui_styling.Position.Fixed
+        || explicitAnchor is not none;
+    if !isFloating {
+        return noFloating();
+    }
+
+    let attachPoint = resolveAttachPoint(style.positionValues);
+    let offset = resolveOffset(style.positionValues, attachPoint);
+
+    if explicitAnchor is not none {
+        return {
+            attachTo: ffi.hzui_attach_to_t.hzui_attach_to_element,
+            attachPoint: attachPoint,
+            offset: offset,
+            zIndex: style.zIndex,
+            parentId: explicitAnchor,
+        };
+    }
+
+    if style.position == ui_styling.Position.Fixed {
+        return {
+            attachTo: ffi.hzui_attach_to_t.hzui_attach_to_root,
+            attachPoint: attachPoint,
+            offset: offset,
+            zIndex: style.zIndex,
+            parentId: "",
+        };
+    }
+
+    if positioningContext.length > 0 {
+        return {
+            attachTo: ffi.hzui_attach_to_t.hzui_attach_to_element,
+            attachPoint: attachPoint,
+            offset: offset,
+            zIndex: style.zIndex,
+            parentId: positioningContext[positioningContext.length - 1],
+        };
+    }
+    return {
+        attachTo: ffi.hzui_attach_to_t.hzui_attach_to_root,
+        attachPoint: attachPoint,
+        offset: offset,
+        zIndex: style.zIndex,
+        parentId: "",
+    };
+}
+
 // Packing.SpaceBetween has no Clay equivalent, so it's emulated the way
 // low-level layout engines without native space-between usually do it:
 // insert an invisible Grow element between each pair of children. Since
@@ -246,6 +384,7 @@ fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
         height: mainAxisIsWidth ? fitAxis : growAxis,
         mainAxisAlign: ffi.hzui_align_t.hzui_align_start,
         crossAxisAlign: ffi.hzui_align_t.hzui_align_start,
+        floating: noFloating(),
         elementPtr: none as cptr,
     });
 }
@@ -286,18 +425,35 @@ export opaque struct Context {
     // raw userdata pointer we hand it in hzui_clay_init and calls back into
     // it on every subsequent layout pass, not just during this constructor.
     measureTextBox: Box<MeasureTextCB>;
+    // The Clay_Context* this instance owns. Clay_Initialize implicitly makes
+    // whichever context it just created the globally active one, so every
+    // entry point that talks to Clay on behalf of *this* instance must first
+    // reactivate it via hzui_clay_activate_context -- otherwise, with more
+    // than one Context alive at once (e.g. multiple windows/canvases), calls
+    // meant for this instance would silently operate on whichever instance
+    // happened to be constructed most recently, process-wide.
+    clayContextPtr: cptr;
 
     fn constructor(opts: ContextOpts) {
         let measureTextBox = Box<MeasureTextCB>(opts.measureText);
         let measureTextUserdata = none as cptr;
         __c__("measureTextUserdata = measureTextBox;");
 
-        ffi.hzui_clay_init(opts.width, opts.height, measureTextTrampoline, measureTextUserdata);
+        let clayContextPtr = ffi.hzui_clay_init(opts.width, opts.height, measureTextTrampoline, measureTextUserdata);
         return Context {
             fonts: opts.fonts,
             getFontLineHeight: opts.getFontLineHeight,
             measureTextBox: measureTextBox,
+            clayContextPtr: clayContextPtr,
         };
+    }
+
+    // Call whenever the render target's logical size changes (see
+    // Runtime.resize). A method (not the old module-level free function) so
+    // it activates *this* instance's Clay context first -- see clayContextPtr.
+    fn setLayoutSize(width: int, height: int) {
+        ffi.hzui_clay_activate_context(this.clayContextPtr);
+        ffi.hzui_clay_set_layout_dimensions(width, height);
     }
 
     struct TreeTraverseContext {
@@ -308,6 +464,9 @@ export opaque struct Context {
         textColorStack: []Color = [];
         elementBoxes: []Box<ui_elements.Element> = [];
         idPath: str;
+        // Stack of Clay ids for enclosing Relative/Absolute/Fixed/anchored
+        // ancestors, nearest last -- see resolveFloating's doc comment.
+        positioningContext: []str = [];
 
         fn validateEmpty() {
             assert(this.fontFamilyStack.length == 0);
@@ -315,6 +474,7 @@ export opaque struct Context {
             assert(this.fontWeightStack.length == 0);
             assert(this.lineHeightStack.length == 0);
             assert(this.textColorStack.length == 0);
+            assert(this.positioningContext.length == 0);
         }
     }
 
@@ -440,6 +600,10 @@ export opaque struct Context {
                 let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
                 let savedIdPath = ctx.idPath;
                 ctx.idPath = elementId;
+                // Read back by resolveFloating() when some other element's
+                // anchorTo() targets this one -- see AnchorTarget's comment
+                // for why this can't just be precomputed at declare time.
+                element._resolvedClayId = elementId;
 
                 let style = element.style;
 
@@ -466,6 +630,17 @@ export opaque struct Context {
                 __c__("func = (void*)renderChildren.fn;");
                 __c__("env = (void*)renderChildren.env;");
 
+                // Resolved against positioningContext's state *before* this
+                // element pushes itself below -- an element's own placement
+                // is always relative to whatever ancestor context already
+                // existed, never to itself.
+                let floating = resolveFloating(ctx.positioningContext, style);
+                let pushesPositioningContext = style.position == ui_styling.Position.Relative
+                    || floating.attachTo != ffi.hzui_attach_to_t.hzui_attach_to_none;
+                if pushesPositioningContext {
+                    ctx.positioningContext.push(elementId);
+                }
+
                 ffi.hzui_clay_define_div_element(
                     func, env,
                     {
@@ -479,9 +654,14 @@ export opaque struct Context {
                         height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
                         mainAxisAlign: packingToClayAlign(style.packing),
                         crossAxisAlign: crossAlignToClayAlign(style.crossAlign),
+                        floating: floating,
                         elementPtr: elementPtr,
                     }
                 );
+
+                if pushesPositioningContext {
+                    ctx.positioningContext.pop();
+                }
 
                 ctx.idPath = savedIdPath;
             });
@@ -532,12 +712,17 @@ export opaque struct Context {
 
             let style = element.style;
 
+            // No push onto positioningContext here -- a canvas is always a
+            // leaf, so there's no descendant that could ever read it back.
+            let floating = resolveFloating(ctx.positioningContext, style);
+
             ffi.hzui_clay_define_canvas_element({
                 id: elementId,
                 backgroundColor: style.backgroundColor,
                 cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
                 width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
                 height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
+                floating: floating,
                 elementPtr: elementPtr,
             });
         }
@@ -552,6 +737,7 @@ export opaque struct Context {
     }
 
     fn render(element: ui_elements.Element, callbacks: RenderCallbacks) {
+        ffi.hzui_clay_activate_context(this.clayContextPtr);
         ffi.Clay_BeginLayout();
 
         let ctx = TreeTraverseContext { idPath: "" };
@@ -618,10 +804,6 @@ export opaque struct Context {
         // elements happened to emit a visible render command.
         applyBoundingBoxesRecursive("", element, callbacks.onBoundingBox);
     }
-}
-
-export fn setLayoutSize(width: int, height: int) {
-    ffi.hzui_clay_set_layout_dimensions(width, height);
 }
 
 export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;

@@ -84,6 +84,11 @@ export inline struct DivProps {
     style?: ui_styling.DivStyle;
     presets?: []ui_styling.DivStyleOp;
     ref?: ElementRef<ui_elements.DivElement>;
+    // Registers this element's resolved id into `anchor` the moment it's
+    // declared -- see ui_styling.AnchorTarget and UIContext.anchor(). Lets
+    // some other element elsewhere in the tree target this one via
+    // headwind.presets.anchorTo(), regardless of declaration order.
+    anchor?: ui_styling.AnchorTarget;
 
     // Bubble phase (target -> root). Runs after the capture phase below.
     onPointerDown?: (e: PointerEvent) => none;
@@ -1380,6 +1385,10 @@ export opaque struct UIContext {
         let idPath = this.childIdPath(this.getCurrentIdPath(), props.id);
         let element = this.getCurrentComponent().getOrCreateDiv(idPath, props.id);
 
+        if props.anchor is not none {
+            props.anchor := TypeErasedBox<ui_elements.DivElement>(element);
+        }
+
         let rawStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawStyle := props.style; }
         let opsList: []ui_styling.DivStyleOp = [];
@@ -1466,6 +1475,7 @@ export opaque struct UIContext {
         let idPath = this.childIdPath(this.getCurrentIdPath(), props.id);
         let element = this.getCurrentComponent().getOrCreateCanvas(idPath, props.id);
 
+
         let rawCanvasStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawCanvasStyle := props.style; }
         let canvasOpsList: []ui_styling.DivStyleOp = [];
@@ -1528,6 +1538,13 @@ export opaque struct UIContext {
 
     fn ref<T>(): ElementRef<T> {
         return rx.shallowReactive<ElementWrapper<T> | null>(null);
+    }
+
+    // A hollow position-anchor handle -- see ui_styling.AnchorTarget. Create
+    // once, hand to a target element's `anchor:` prop, and pass to any
+    // number of other elements' headwind.presets.anchorTo() in either order.
+    fn anchor(): ui_styling.AnchorTarget {
+        return rx.shallowReactive<TypeErasedBox | null>(null);
     }
 }
 

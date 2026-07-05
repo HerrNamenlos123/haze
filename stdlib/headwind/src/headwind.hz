@@ -102,6 +102,57 @@ namespace presets {
         return ui_styling.DirectionOp { value: ui_styling.Direction.Column };
     }
 
+    // position: static/relative/absolute/fixed -- see ui_styling.Position for
+    // exactly what each one resolves against.
+    export fn relative(): ui_styling.PositionOp {
+        return ui_styling.PositionOp { value: ui_styling.Position.Relative };
+    }
+
+    export fn absolute(): ui_styling.PositionOp {
+        return ui_styling.PositionOp { value: ui_styling.Position.Absolute };
+    }
+
+    export fn fixed(): ui_styling.PositionOp {
+        return ui_styling.PositionOp { value: ui_styling.Position.Fixed };
+    }
+
+    // top-<number>/right-<number>/bottom-<number>/left-<number>: offset from
+    // that edge of the containing block, same spacing scale as p()/gap()
+    // above. Only meaningful on an Absolute/Fixed element (or one with
+    // anchorTo() set) -- a no-op otherwise, same as Tailwind/CSS.
+    export fn top(value: real): ui_styling.TopOp {
+        return ui_styling.TopOp { value: computeSize(value) };
+    }
+
+    export fn right(value: real): ui_styling.RightOp {
+        return ui_styling.RightOp { value: computeSize(value) };
+    }
+
+    export fn bottom(value: real): ui_styling.BottomOp {
+        return ui_styling.BottomOp { value: computeSize(value) };
+    }
+
+    export fn left(value: real): ui_styling.LeftOp {
+        return ui_styling.LeftOp { value: computeSize(value) };
+    }
+
+    // z-<number>: stacking order among floating elements. Like CSS, only
+    // affects an element that's actually taken out of flow (Absolute/Fixed/
+    // anchorTo) -- Clay's zIndex lives on its floating config, so it has no
+    // effect on an element still in normal flow.
+    export fn z(value: int): ui_styling.ZIndexOp {
+        return ui_styling.ZIndexOp { value: value };
+    }
+
+    // Anchors this element to an arbitrary other element elsewhere in the
+    // tree (not necessarily an ancestor) -- the one case CSS itself can't
+    // express. `target` is a hollow ui_styling.AnchorTarget created via
+    // ui.anchor() and handed to the other element's `anchor:` prop; order
+    // doesn't matter, see AnchorTarget's own doc comment.
+    export fn anchorTo(target: ui_styling.AnchorTarget): ui_styling.AnchorToOp {
+        return ui_styling.AnchorToOp { target: target };
+    }
+
     export fn rounded(value: real): ui_styling.CornerRadiusOp {
         return ui_styling.CornerRadiusOp {
             cornerRadius: ui_styling.StyleCornerRadiusSimple { value: value },

@@ -77,6 +77,49 @@ export fn sizeEquals(a: Size, b: Size): bool {
     return false;
 }
 
+// CSS-like out-of-flow positioning, resolved by the layout engine (ui_layout)
+// against the element tree, not by anything in this module.
+//   - Static: normal flow (default).
+//   - Relative: normal flow, but becomes the containing block that a
+//     descendant `Absolute` element resolves against if it doesn't name an
+//     explicit anchor -- mirrors CSS's "nearest positioned ancestor" rule.
+//   - Absolute: out of flow. Resolves against an explicit `anchorTo` target
+//     if one is set; otherwise the nearest enclosing Relative/Absolute/Fixed
+//     ancestor; otherwise this UI Context's own viewport.
+//   - Fixed: out of flow, always relative to this UI Context's own viewport
+//     (not a literal OS screen -- a given ui_layout.Context only ever knows
+//     about its own root, so this is already scoped correctly for apps with
+//     multiple simultaneous UI contexts/canvases).
+export enum Position { Static, Relative, Absolute, Fixed }
+
+// top/right/bottom/left offsets, CSS/Tailwind-style -- independent optional
+// edges, not Clay's corner-pair attach points (that stays an internal
+// ui_layout concern). Only one edge per axis is meaningful: if both left and
+// right (or both top and bottom) are set, left/top wins -- there's no Clay
+// equivalent of "stretch by opposing offsets" since floating elements are
+// never sized from their offsets, only positioned by them.
+export inline struct PositionValues {
+    top?: real;
+    right?: real;
+    bottom?: real;
+    left?: real;
+}
+
+// A hollow anchor handle: created empty (see ui_components.UIContext.anchor),
+// handed to a target element's `anchor:` prop, and to any number of other
+// elements' `anchorTo()` position op -- in either order. The target element
+// registers *itself* (via TypeErasedBox, type-erased here the same way
+// ui_elements' own `_runtimeData` is, since this module can't name
+// ui_elements.DivElement without an import cycle) the moment it's declared.
+// ui_layout resolves it to an actual Clay id lazily, off the element's own
+// `_resolvedClayId` -- not a path string precomputed here -- because the
+// component system's own idPath convention (scoped per component, reset at
+// each component boundary) and ui_layout's structural tree-walk idPath
+// (which counts every node, including a component's own wrapper root) are
+// two independently-computed, *not* interchangeable strings; only
+// ui_layout's own walk ever produces the one Clay actually uses.
+export type AnchorTarget = rx.ShallowReactive<TypeErasedBox | null>;
+
 export enum LineHeightMode { Auto, Relative, Pixels }
 export struct LineHeight {
     mode: LineHeightMode;
@@ -162,6 +205,11 @@ export inline struct DivStyle {
     gap?: real;
     backgroundColor?: Color;
 
+    position?: Position;
+    positionValues: PositionValues = {};
+    zIndex?: int;
+    anchorTarget?: AnchorTarget;
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -179,6 +227,10 @@ export inline struct DivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.position = other.position;
+        this.positionValues = other.positionValues;
+        this.zIndex = other.zIndex;
+        this.anchorTarget = other.anchorTarget;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -195,6 +247,8 @@ export inline struct DivStyle {
             this.packing == other.packing &&
             this.crossAlign == other.crossAlign &&
             this.gap == other.gap &&
+            this.position == other.position &&
+            this.zIndex == other.zIndex &&
             this.fontFamily == other.fontFamily &&
             this.fontSize == other.fontSize &&
             this.fontWeight == other.fontWeight &&
@@ -258,6 +312,11 @@ export struct ComputedDivStyle {
     gap: real = 0.0;
     backgroundColor: Color = {};
 
+    position: Position = Position.Static;
+    positionValues: PositionValues = {};
+    zIndex: int = 0;
+    anchorTarget?: AnchorTarget;
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -275,6 +334,10 @@ export struct ComputedDivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.position = other.position;
+        this.positionValues = other.positionValues;
+        this.zIndex = other.zIndex;
+        this.anchorTarget = other.anchorTarget;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -317,6 +380,13 @@ export struct DirectionOp { value: Direction; }
 export struct CornerRadiusOp { cornerRadius: StyleCornerRadius; }
 export struct WidthOp { value: Size; }
 export struct HeightOp { value: Size; }
+export struct PositionOp { value: Position; }
+export struct TopOp { value: real; }
+export struct RightOp { value: real; }
+export struct BottomOp { value: real; }
+export struct LeftOp { value: real; }
+export struct ZIndexOp { value: int; }
+export struct AnchorToOp { target: AnchorTarget; }
 export struct FontFamilyOp { value: str; }
 export struct FontSizeOp { value: real; }
 export struct FontWeightOp { value: real; }
@@ -336,6 +406,7 @@ export type TextStyleOp =
 export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
+    | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
 
 // Applies `ops` onto `raw`, with explicitly-set fields on `raw` always
@@ -356,6 +427,13 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
         else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
         else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
         else if op is HeightOp { if isUnset(working.height) { working.height = op.value; } }
+        else if op is PositionOp { if !working.position { working.position = op.value; } }
+        else if op is TopOp { if !working.positionValues.top { working.positionValues.top = op.value; } }
+        else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
+        else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
+        else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
+        else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
+        else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
         else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
         else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
         else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
@@ -366,6 +444,8 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
     let result = ComputedDivStyle {
         padding: resolvePadding(working.padding),
         cornerRadius: resolveCornerRadius(working.cornerRadius),
+        positionValues: working.positionValues,
+        anchorTarget: working.anchorTarget,
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
         fontWeight: working.fontWeight,
@@ -380,6 +460,8 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
     if working.crossAlign { result.crossAlign = working.crossAlign; }
     if working.gap { result.gap = working.gap; }
     if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
+    if working.position { result.position = working.position; }
+    if working.zIndex { result.zIndex = working.zIndex; }
     return result;
 }
 

@@ -72,7 +72,7 @@ export opaque struct Runtime {
     // Call whenever the render target's logical size or DPI scale changes.
     fn resize(windowState: renderer.gfx.CanvasSize) {
         this.dpiScale = windowState.dpiScale as real;
-        ui_layout.setLayoutSize(windowState.logicalSize.x, windowState.logicalSize.y);
+        this.layout.setLayoutSize(windowState.logicalSize.x, windowState.logicalSize.y);
     }
 
     // Runs this frame's component tree + flexbox layout, drawing the result

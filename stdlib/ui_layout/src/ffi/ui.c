@@ -108,10 +108,18 @@ static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElemen
   return (Clay_Dimensions) { .width = (float)dimensions.x, .height = (float)dimensions.y };
 }
 
-void hzui_clay_init(hzstd_int_t width,
-                     hzstd_int_t height,
-                     hzstd_vec2_t (*measureText)(void* userdata, hzui_measure_text_request_t request),
-                     void* measureTextUserdata)
+// Every hzui_clay_* entry point below operates on "whichever Clay_Context is
+// currently active" (Clay's own global, Clay__currentContext) -- Clay_Initialize
+// implicitly activates the context it just created, so constructing a second
+// ui_layout.Context previously stole the active context out from under the
+// first one for the rest of the process, silently corrupting any interleaved
+// use of multiple simultaneous instances (e.g. multiple windows/canvases).
+// hzui_clay_activate_context (below) lets the Haze side re-select the right
+// one before touching Clay for a given instance.
+void* hzui_clay_init(hzstd_int_t width,
+                      hzstd_int_t height,
+                      hzstd_vec2_t (*measureText)(void* userdata, hzui_measure_text_request_t request),
+                      void* measureTextUserdata)
 {
   uint64_t totalMemorySize = Clay_MinMemorySize();
   Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(totalMemorySize, malloc(totalMemorySize));
@@ -119,8 +127,14 @@ void hzui_clay_init(hzstd_int_t width,
   g_measureText = measureText;
   g_measureTextUserdata = measureTextUserdata;
 
-  Clay_Initialize(arena, (Clay_Dimensions) { width, height }, (Clay_ErrorHandler) { HandleClayErrors });
+  Clay_Context* context = Clay_Initialize(arena, (Clay_Dimensions) { width, height }, (Clay_ErrorHandler) { HandleClayErrors });
   Clay_SetMeasureTextFunction(MeasureText, NULL);
+  return (void*)context;
+}
+
+void hzui_clay_activate_context(void* context)
+{
+  Clay_SetCurrentContext((Clay_Context*)context);
 }
 
 void hzui_clay_set_layout_dimensions(hzstd_int_t width, hzstd_int_t height)
@@ -135,6 +149,51 @@ Clay_ElementId make_id_int(hzstd_int_t id)
   snprintf(id_cstr, sizeof(id_cstr), "%" PRIu64, id);
   Clay_String id_str = (Clay_String) { .chars = id_cstr, .length = strlen(id_cstr) };
   return CLAY_SID(id_str);
+}
+
+// Both sides of a Clay_FloatingAttachPoints pair always get the same corner
+// in our model (see ui_layout.hz's resolveAttachPoint) -- the floating
+// element's own corner attaches to the identical corner on its target, and
+// `offset` (computed on the Haze side from top/right/bottom/left) does the
+// rest, the same way CSS's top/right/bottom/left offsets always measure from
+// one shared edge/corner pair, never opposite ones.
+static inline Clay_FloatingAttachPointType ToClayAttachPoint(hzui_attach_point_t p)
+{
+  switch (p) {
+  case hzui_attach_top_right:
+    return CLAY_ATTACH_POINT_RIGHT_TOP;
+  case hzui_attach_bottom_left:
+    return CLAY_ATTACH_POINT_LEFT_BOTTOM;
+  case hzui_attach_bottom_right:
+    return CLAY_ATTACH_POINT_RIGHT_BOTTOM;
+  case hzui_attach_top_left:
+  default:
+    return CLAY_ATTACH_POINT_LEFT_TOP;
+  }
+}
+
+Clay_ElementId make_id(hzstd_str_t id);
+
+static inline Clay_FloatingElementConfig ToClayFloatingConfig(hzui_floating_config_t config)
+{
+  Clay_FloatingElementConfig floating = {0};
+  if (config.attachTo == hzui_attach_to_none) {
+    return floating;
+  }
+
+  Clay_FloatingAttachPointType point = ToClayAttachPoint(config.attachPoint);
+  floating.attachPoints = (Clay_FloatingAttachPoints) { .element = point, .parent = point };
+  floating.offset = (Clay_Vector2) { .x = (float)config.offset.x, .y = (float)config.offset.y };
+  floating.zIndex = (int16_t)config.zIndex;
+
+  if (config.attachTo == hzui_attach_to_root) {
+    floating.attachTo = CLAY_ATTACH_TO_ROOT;
+  }
+  else if (config.attachTo == hzui_attach_to_element) {
+    floating.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
+    floating.parentId = make_id(config.parentId).id;
+  }
+  return floating;
 }
 
 Clay_ElementId make_id(hzstd_str_t id)
@@ -191,6 +250,7 @@ void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div
                         .bottomLeft = config.cornerRadius.bottomLeft,
                         .bottomRight = config.cornerRadius.bottomRight,
                     },
+         .floating = ToClayFloatingConfig(config.floating),
          .backgroundColor = (Clay_Color) {
              .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a } })
   {
@@ -212,6 +272,7 @@ void hzui_clay_define_canvas_element(hzui_define_canvas_element_t config)
              .bottomLeft = config.cornerRadius.bottomLeft,
              .bottomRight = config.cornerRadius.bottomRight,
          },
+         .floating = ToClayFloatingConfig(config.floating),
          .backgroundColor = (Clay_Color) {
              .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a },
          .custom = { .customData = config.elementPtr } });
