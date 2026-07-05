@@ -7,7 +7,9 @@ import oniguruma from "vscode-oniguruma";
 // A plain fs.readFileSync(path.join(import.meta.dirname, ...)) does NOT
 // work once compiled, since import.meta.dirname then points into Bun's
 // virtual bundle filesystem, which doesn't contain node_modules.
-import onigWasmPath from "./node_modules/vscode-oniguruma/release/onig.wasm" with { type: "file" };
+import onigWasmPath from "./node_modules/vscode-oniguruma/release/onig.wasm" with {
+  type: "file",
+};
 // import mocha from "@catppuccin/vscode/themes/mocha.json" with { type: "json" };
 
 // https://github.com/shikijs/textmate-grammars-themes
@@ -287,7 +289,7 @@ async function main() {
 
     const contentLengthText = "Content-Length: ";
     const separator = "\r\n\r\n";
-    if (
+    while (
       buffer.startsWith(contentLengthText) &&
       buffer.indexOf(separator) !== -1
     ) {
@@ -299,18 +301,20 @@ async function main() {
 
       const totalPacketLength =
         frontHeaderLength + separator.length + contentLength;
-      if (buffer.length >= totalPacketLength) {
-        const packetContent = buffer.slice(
-          frontHeaderLength + separator.length
-        );
-        buffer = buffer.slice(totalPacketLength);
-        const response = await handleRequest(JSON.parse(packetContent));
-        const result = JSON.stringify(response);
-        // console.log(`Content-Length: ${result.length}\r\n\r\n${result}`);
-        process.stdout.write(
-          `Content-Length: ${result.length}\r\n\r\n${result}`
-        );
+      if (buffer.length < totalPacketLength) {
+        break;
       }
+
+      const packetContent = buffer.slice(
+        frontHeaderLength + separator.length,
+        totalPacketLength
+      );
+      buffer = buffer.slice(totalPacketLength);
+      const response = await handleRequest(JSON.parse(packetContent));
+      const result = JSON.stringify(response);
+      process.stdout.write(
+        `Content-Length: ${result.length}\r\n\r\n${result}`
+      );
     }
   }
 }
