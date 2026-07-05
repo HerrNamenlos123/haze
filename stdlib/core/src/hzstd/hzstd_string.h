@@ -2,6 +2,7 @@
 #ifndef HZSTD_STRING_H
 #define HZSTD_STRING_H
 
+#include "hzstd_array.h"
 #include "hzstd_common.h"
 #include "hzstd_memory.h"
 
@@ -171,6 +172,131 @@ typedef struct hzstd_str_t {
     }                                                                          \
                                                                                \
     __result;                                                                  \
+  })
+
+// Mirrors JavaScript's String.prototype.split(separator, limit) exactly,
+// including: empty separator splitting into individual bytes, unmatched
+// separators yielding the whole string as the only element, trailing
+// separators producing a trailing empty element, and `limit` wrapping like
+// ToUint32 (so a negative limit is effectively unlimited).
+#define HZSTD_STRING_SPLIT(string, separator, limit, allocator)               \
+  ({                                                                          \
+    hzstd_allocator_t __hz_alloc = (allocator);                              \
+    hzstd_str_t __hz_str = (string);                                         \
+    hzstd_str_t __hz_sep = (separator);                                      \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_limit = (limit);                      \
+                                                                              \
+    uint32_t __hz_lim = UINT32_MAX;                                          \
+    if (__hz_limit.tag == 0) {                                               \
+      __hz_lim = (uint32_t)__hz_limit.as_tag_0;                              \
+    }                                                                        \
+                                                                              \
+    hzstd_dynamic_array_t *__hz_result =                                     \
+        HZSTD_DYNAMIC_ARRAY_CREATE(__hz_alloc, hzstd_str_t, 4);              \
+                                                                              \
+    if (__hz_lim == 0) {                                                     \
+      /* limit of zero always yields an empty array */                       \
+    } else if (__hz_sep.length == 0) {                                       \
+      for (hzstd_int_t __i = 0; __i < __hz_str.length; __i++) {              \
+        if ((hzstd_int_t)hzstd_dynamic_array_size(__hz_result) >=            \
+            (hzstd_int_t)__hz_lim) {                                         \
+          break;                                                             \
+        }                                                                    \
+        hzstd_str_t __hz_part = HZSTD_STRING(__hz_str.data + __i, 1);        \
+        HZSTD_ARRAY_PUSH(__hz_result, hzstd_str_t, __hz_part);               \
+      }                                                                      \
+    } else {                                                                 \
+      hzstd_int_t __p = 0;                                                   \
+      hzstd_int_t __q = 0;                                                   \
+      bool __hz_stop = false;                                                \
+                                                                              \
+      while (!__hz_stop && __q <= __hz_str.length - __hz_sep.length) {       \
+        bool __match = true;                                                 \
+                                                                              \
+        for (hzstd_int_t __i = 0; __i < __hz_sep.length; __i++) {            \
+          if (__hz_str.data[__q + __i] != __hz_sep.data[__i]) {              \
+            __match = false;                                                 \
+            break;                                                           \
+          }                                                                  \
+        }                                                                    \
+                                                                              \
+        if (__match) {                                                       \
+          hzstd_str_t __hz_part =                                            \
+              HZSTD_STRING(__hz_str.data + __p, __q - __p);                  \
+          HZSTD_ARRAY_PUSH(__hz_result, hzstd_str_t, __hz_part);             \
+                                                                              \
+          if ((hzstd_int_t)hzstd_dynamic_array_size(__hz_result) >=          \
+              (hzstd_int_t)__hz_lim) {                                       \
+            __hz_stop = true;                                                \
+          } else {                                                           \
+            __p = __q + __hz_sep.length;                                     \
+            __q = __p;                                                       \
+          }                                                                  \
+        } else {                                                             \
+          __q++;                                                             \
+        }                                                                    \
+      }                                                                      \
+                                                                              \
+      if (!__hz_stop) {                                                      \
+        hzstd_str_t __hz_part =                                              \
+            HZSTD_STRING(__hz_str.data + __p, __hz_str.length - __p);        \
+        HZSTD_ARRAY_PUSH(__hz_result, hzstd_str_t, __hz_part);               \
+      }                                                                      \
+    }                                                                        \
+                                                                              \
+    __hz_result;                                                             \
+  })
+
+// ASCII whitespace, matching the byte-oriented scope of the rest of this
+// file (the other string macros operate on raw bytes, not decoded Unicode
+// codepoints).
+static inline bool hzstd_str_is_whitespace_byte(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+
+#define HZSTD_STRING_TRIM_START(string)                                       \
+  ({                                                                          \
+    hzstd_str_t __hz_str = (string);                                         \
+    hzstd_int_t __hz_start = 0;                                              \
+                                                                              \
+    while (__hz_start < __hz_str.length &&                                   \
+           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {        \
+      __hz_start++;                                                          \
+    }                                                                        \
+                                                                              \
+    HZSTD_STRING(__hz_str.data + __hz_start, __hz_str.length - __hz_start);  \
+  })
+
+#define HZSTD_STRING_TRIM_END(string)                                        \
+  ({                                                                         \
+    hzstd_str_t __hz_str = (string);                                        \
+    hzstd_int_t __hz_end = __hz_str.length;                                 \
+                                                                              \
+    while (__hz_end > 0 &&                                                  \
+           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {     \
+      __hz_end--;                                                           \
+    }                                                                       \
+                                                                              \
+    HZSTD_STRING(__hz_str.data, __hz_end);                                  \
+  })
+
+#define HZSTD_STRING_TRIM(string)                                           \
+  ({                                                                        \
+    hzstd_str_t __hz_str = (string);                                       \
+    hzstd_int_t __hz_start = 0;                                            \
+    hzstd_int_t __hz_end = __hz_str.length;                                \
+                                                                             \
+    while (__hz_start < __hz_end &&                                        \
+           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {      \
+      __hz_start++;                                                        \
+    }                                                                      \
+    while (__hz_end > __hz_start &&                                        \
+           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {    \
+      __hz_end--;                                                          \
+    }                                                                      \
+                                                                             \
+    HZSTD_STRING(__hz_str.data + __hz_start, __hz_end - __hz_start);       \
   })
 
 // This is only possible for haze strings with known length, and not for c

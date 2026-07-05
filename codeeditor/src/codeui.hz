@@ -16,63 +16,6 @@ struct RootArgs {
     }
 }
 
-fn find(string: str, search: str): int | none {
-  if (search.length == 0) {
-    return 0;
-  }
-
-  let last = string.length - search.length;
-
-  for (let i = 0; i <= last; i++) {
-    let j = 0;
-
-    while (j < search.length && string[i + j] == search[j]) {
-      j++;
-    }
-
-    if (j == search.length) {
-      return i;
-    }
-  }
-
-  return none;
-}
-
-fn split(string: str, delimiter: str): []str {
-  if (delimiter.length == 0) {
-    return [string];
-  }
-
-  let parts: []str = [];
-
-  while (true) {
-    const index = find(string, delimiter);
-
-    if (index is none) {
-      parts.push(string);
-      return parts;
-    }
-
-    parts.push(string.substr(0, index));
-    string = string.substr(index + delimiter.length, string.length - index - delimiter.length);
-  }
-  sys.unreachable();
-}
-
-fn trim(string: str): str {
-    let start = 0;
-    while start < string.length && (string[start] == b" " || string[start] == b"\t") {
-        start++;
-    }
-
-    let end = string.length;
-    while end > start && (string[end - 1] == b" " || string[end - 1] == b"\t") {
-        end--;
-    }
-
-    return string.substr(start, end - start);
-}
-
 // A TextMate scope selector matches a token's scope if it is the whole
 // scope, or a dot-separated prefix of it (e.g. "string" matches
 // "string.quoted.double", but not "stringify").
@@ -151,7 +94,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 fmt.println("doc failed");
                 return [] as []str;
             }
-            let lines = split(doc, "\n");
+            let lines = doc.split("\n");
             return lines;
         });
 
@@ -198,7 +141,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 let scopeField = tokenColor.scope;
                 let selectors: []str = [];
                 if scopeField is str {
-                    for part in split(scopeField, ",") {
+                    for part in scopeField.split(",") {
                         selectors.push(trim(part));
                     }
                 } else {

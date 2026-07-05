@@ -121,26 +121,26 @@ struct HighlightEngine {
             return none;
         }
 
-        let numberLength = separatorIndex;
-        let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
-        let contentLength = strToInt(numberString);
-        if !contentLength {
-            fmt.println("LSP Response: Failed to parse content length");
-            return none;
-        }
-        let headerLength = separatorIndex + separator.length;
-        let totalPacketLength = headerLength + contentLength;
+        // let numberLength = separatorIndex;
+        // let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
+        // let contentLength = strToInt(numberString);
+        // if !contentLength {
+        //     fmt.println("LSP Response: Failed to parse content length");
+        //     return none;
+        // }
+        // let headerLength = separatorIndex + separator.length;
+        // let totalPacketLength = headerLength + contentLength;
 
-        if this.inputBuffer.length < totalPacketLength {
-            return none;
-        }
+        // if this.inputBuffer.length < totalPacketLength {
+        //     return none;
+        // }
 
-        // Extract response and shift remaining packet forward
-        let response = this.inputBuffer.substr(headerLength, contentLength);
-        let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
-        this.inputBuffer = remainingPacket;
+        // // Extract response and shift remaining packet forward
+        // let response = this.inputBuffer.substr(headerLength, contentLength);
+        // let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
+        // this.inputBuffer = remainingPacket;
 
-        return this.processResponse(response);
+        // return this.processResponse(response);
     }
 
     fn processResponse(response: str): HighlightResult | none {

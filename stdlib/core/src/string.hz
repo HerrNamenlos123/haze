@@ -31,24 +31,3 @@ fn find(string: str, search: str): int | none {
 
   return none;
 }
-
-fn split(string: str, delimiter: str): []str {
-  if (delimiter.length == 0) {
-    return [string];
-  }
-
-  let parts: []str = [];
-
-  while (true) {
-    const index = find(string, delimiter);
-
-    if (index is none) {
-      parts.push(string);
-      return parts;
-    }
-
-    parts.push(string.slice(0, index));
-    string = string.substr(index + delimiter.length, string.length - index - delimiter.length);
-  }
-  sys.unreachable();
-}

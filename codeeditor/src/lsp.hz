@@ -345,7 +345,7 @@ fn update(syntaxEngine: LspIO.Context) {
 
     // lsp.syntaxEngineState = LSP::Ready;
     // auto lspResponse = LspIO::process(*lsp.lspIOContext);
-    syntaxEngine.doProcess();
+    // syntaxEngine.doProcess();
 }
 
 // bool startLSP(App* app)
@@ -582,55 +582,55 @@ namespace LspIO {
                 return none;
             }
 
-            assert(this.client);
-            this.inputBuffer = this.inputBuffer + this.client.readStdout();
+            // assert(this.client);
+            // this.inputBuffer = this.inputBuffer + this.client.readStdout();
 
-            let contentLengthText = "Content-Length: ";
-            if this.inputBuffer.length > 0 && !this.startsWith(this.inputBuffer, contentLengthText) {
-                sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
-            }
+            // let contentLengthText = "Content-Length: ";
+            // if this.inputBuffer.length > 0 && !this.startsWith(this.inputBuffer, contentLengthText) {
+            //     sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+            // }
 
-            let separator = "\r\n\r\n";
-            let separatorIndex = this.find(this.inputBuffer, separator);
-            if !separatorIndex {
-                return none;
-            }
+            // let separator = "\r\n\r\n";
+            // let separatorIndex = this.find(this.inputBuffer, separator);
+            // if !separatorIndex {
+            //     return none;
+            // }
 
-            let numberLength = separatorIndex;
-            let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
-            let contentLength = this.strToInt(numberString);
-            if !contentLength {
-                fmt.println("LSP Response: Failed to parse content length");
-                return none;
-            }
-            let headerLength = separatorIndex + separator.length;
-            let totalPacketLength = headerLength + contentLength;
+            // let numberLength = separatorIndex;
+            // let numberString = this.inputBuffer.slice(contentLengthText.length, separatorIndex);
+            // let contentLength = this.strToInt(numberString);
+            // if !contentLength {
+            //     fmt.println("LSP Response: Failed to parse content length");
+            //     return none;
+            // }
+            // let headerLength = separatorIndex + separator.length;
+            // let totalPacketLength = headerLength + contentLength;
 
-            if this.inputBuffer.length < totalPacketLength {
-                return none;
-            }
+            // if this.inputBuffer.length < totalPacketLength {
+            //     return none;
+            // }
 
-            // Extract response and shift remaining packet forward
-            let response = this.inputBuffer.substr(headerLength, contentLength);
-            let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
-            if remainingPacket.length > 0 {
-                this.inputBuffer = remainingPacket;
-            }
+            // // Extract response and shift remaining packet forward
+            // let response = this.inputBuffer.slice(headerLength, headerLength + contentLength);
+            // let remainingPacket = this.inputBuffer.slice(totalPacketLength, this.inputBuffer.length);
+            // if remainingPacket.length > 0 {
+            //     this.inputBuffer = remainingPacket;
+            // }
 
-            return response;
+            // return response;
         }
 
-        fn doProcess(): []Token {
-            if let response = this.processInput() {
-                let result = this.processResponse(response);
-                if !result {
-                    fmt.println("LSP: Parsing JSON response failed: {}", result);
-                    return [];
-                }
-                return [];
-            }
-            return [];
-        }
+        // fn doProcess(): []Token {
+        //     if let response = this.processInput() {
+        //         let result = this.processResponse(response);
+        //         if !result {
+        //             fmt.println("LSP: Parsing JSON response failed: {}", result);
+        //             return [];
+        //         }
+        //         return [];
+        //     }
+        //     return [];
+        // }
 
         struct ResultObject {
             tokens: []Token;

@@ -8979,7 +8979,8 @@ export class SemanticElaborator {
           optional?: boolean;
           type: Semantic.TypeUseId;
         }[],
-        returnType: Semantic.TypeUseId
+        returnType: Semantic.TypeUseId,
+        trailingCArgs: string[] = []
       ) => {
         let [func, funcId] = [null, null] as [
           Semantic.FunctionSymbol | null,
@@ -9017,8 +9018,10 @@ export class SemanticElaborator {
             vararg: false,
           });
 
-          const paramList = parameters.map((p) => p.name).join(", ");
-          const code = `__c__("return ${cFunction}(this${parameters.length > 0 ? ", " + paramList : ""});");`;
+          const argList = [...parameters.map((p) => p.name), ...trailingCArgs].join(
+            ", "
+          );
+          const code = `__c__("return ${cFunction}(this${argList.length > 0 ? ", " + argList : ""});");`;
 
           [func, funcId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,
@@ -9121,6 +9124,55 @@ export class SemanticElaborator {
             },
           ],
           this.sr.b.boolType()
+        );
+      }
+      if (name === "split") {
+        return provideBuiltinMethod(
+          "__hz_string_split_",
+          "HZSTD_STRING_SPLIT",
+          [
+            {
+              name: "separator",
+              type: this.sr.b.strType(),
+            },
+            {
+              name: "limit",
+              optional: true,
+              type: this.sr.b.optionalIntType(),
+            },
+          ],
+          makeDynamicArrayDatatypeAvailable(
+            this.sr,
+            this.sr.b.strType(),
+            EDatatypeMutability.Mut,
+            false,
+            sourceloc
+          ),
+          ["hzstd_make_heap_allocator()"]
+        );
+      }
+      if (name === "trim") {
+        return provideBuiltinMethod(
+          "__hz_string_trim_",
+          "HZSTD_STRING_TRIM",
+          [],
+          this.sr.b.strType()
+        );
+      }
+      if (name === "trimStart") {
+        return provideBuiltinMethod(
+          "__hz_string_trim_start_",
+          "HZSTD_STRING_TRIM_START",
+          [],
+          this.sr.b.strType()
+        );
+      }
+      if (name === "trimEnd") {
+        return provideBuiltinMethod(
+          "__hz_string_trim_end_",
+          "HZSTD_STRING_TRIM_END",
+          [],
+          this.sr.b.strType()
         );
       }
 
