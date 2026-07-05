@@ -29,7 +29,18 @@ export struct LSPRequest<Params> {
     params: Params;
 }
 
-struct LSPInitializeParams {
+export struct WorkspaceFolder {
+    uri: str;
+    name: str;
+}
+
+export struct InitializeOptions<TInitializationOptions> {
+    rootUri: str;
+    workspaceFolders: []WorkspaceFolder = [];
+    initializationOptions: TInitializationOptions;
+}
+
+export struct LSPInitializeParams<TInitializationOptions> {
     processId: int;
 
     struct ClientInfo {
@@ -39,34 +50,17 @@ struct LSPInitializeParams {
     // Union<ClientInfo, Null> clientInfo;
     // Union<String, Null> locale;
 
-    struct InitializationOptions {
-        struct Plugin {
-            name: str;
-            location: str;
-            languages: []str;
-        };
-        plugins: []Plugin;
-
-        struct TypeScript {
-            tsdk: str;
-        };
-        typescript?: TypeScript;
-    };
-    initializationOptions: InitializationOptions;
+    initializationOptions: TInitializationOptions;
 
     rootUri: str;
 
     struct Capabilities {};
     capabilities: Capabilities;
 
-    struct WorkspaceFolder {
-        uri: str;
-        name: str;
-    };
     workspaceFolders?: []WorkspaceFolder;
 };
 
-export struct Context {
+export struct Context<TInitializationOptions> {
     _args: ContextArgs;
     _serverProcess: process.Process;
     _running: bool;
@@ -76,6 +70,12 @@ export struct Context {
 
     _logAllRequests: bool = true;
 
+    // Called for any notification this module doesn't itself understand (i.e. every
+    // method except "initialize"'s response handling, which stays internal). This is
+    // the extension point for language-server-specific protocols (e.g. Vue's tsserver
+    // bridge) that don't belong in a general-purpose LSP client.
+    onNotification: ((method: str, params: json.Node) => none) | none = none;
+
     struct PendingRequest {
         requestId: int;
         successCallback: (response: json.Node) => none;
@@ -84,43 +84,27 @@ export struct Context {
     _pendingRequests: []PendingRequest = [];
     _nextId: int = 0;
 
-    fn constructor(_args: ContextArgs): Result<Context, Error> {
+    fn constructor(_args: ContextArgs, init: InitializeOptions<TInitializationOptions>): Result<Context<TInitializationOptions>, Error> {
         let _serverProcess = process.spawn(_args.exe, _args.args);
         if !_serverProcess {
-            return Error { 
+            return Error {
                 message: f"Server failed to launch: Exit code {_serverProcess}",
             };
         }
 
-        let context = Context {
+        let context = Context<TInitializationOptions> {
             _args: _args,
             _serverProcess: _serverProcess,
             _running: true,
             initResponse: rx.shallowReactive<LSPInitResponse | none>(none),
         };
 
-        context.sendRequest<LSPInitializeParams, LSPInitResponse>("initialize", {
+        context.sendRequest<LSPInitializeParams<TInitializationOptions>, LSPInitResponse>("initialize", {
             processId: 0,
-            workspaceFolders: [
-                {
-                    uri: "file:///home/fzachs/Projects/technicalsketcher.web",
-                    name: "technicalsketcher.web"
-                }
-            ],
+            workspaceFolders: init.workspaceFolders,
             capabilities: {},
-            initializationOptions: {
-                plugins: [
-                    {
-                        name: "@vue/typescript-plugin",
-                        location: "/home/fzachs/Projects/CodeEditor/node_modules/@vue/typescript-plugin",
-                        languages: ["vue"],
-                    }
-                ],
-                typescript: {
-                    tsdk: "/home/fzachs/Projects/haze/codeeditor/syntax-engine/node_modules/typescript/lib",
-                }
-            },
-            rootUri: "file:///home/fzachs/Projects/technicalsketcher.web",
+            initializationOptions: init.initializationOptions,
+            rootUri: init.rootUri,
         }, (value: Result<LSPInitResponse, LSPError>) => {
             assert(value);
             context.initResponse := value;
@@ -189,8 +173,10 @@ export struct Context {
         this.writeRequest(request);
     }
 
-    fn sendDocumentHoverRequest(filepath: str, line: int, character: int, callback: (response: Result<LSPDocumentHoverResponse, LSPError>) => none) {
-        this.sendRequest<LSPDocumentHoverRequestParams, LSPDocumentHoverResponse>("textDocument/hover", {
+    // Per the LSP spec, textDocument/hover resolves to `Hover | null` -- there's simply no
+    // hover information at every position, and that's not an error.
+    fn sendDocumentHoverRequest(filepath: str, line: int, character: int, callback: (response: Result<LSPDocumentHoverResponse | null, LSPError>) => none) {
+        this.sendRequest<LSPDocumentHoverRequestParams, LSPDocumentHoverResponse | null>("textDocument/hover", {
             textDocument: {
                 uri: f"file://{filepath}",
             },
@@ -229,43 +215,21 @@ export struct Context {
     fn _processStdout(stdout: str) {
         this._inputBuffer = this._inputBuffer + stdout;
 
-        let contentLengthText = "Content-Length: ";
-        if this._inputBuffer.length > 0 && !this._inputBuffer.startsWith(contentLengthText) {
-            sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+        // Drain every complete message already sitting in the buffer, not just one per call --
+        // a single readStdout() can return more than one framed message at once.
+        while true {
+            let framed = extractFramedMessage(this._inputBuffer);
+            if !framed {
+                return;
+            }
+            this._inputBuffer = framed.remaining;
+            this._processResponse(framed.message);
         }
-
-        let separator = "\r\n\r\n";
-        let separatorIndex = find(this._inputBuffer, separator);
-        if !separatorIndex {
-            return none;
-        }
-
-        let numberLength = separatorIndex;
-        let numberString = this._inputBuffer.slice(contentLengthText.length, separatorIndex);
-        let contentLength = strToInt(numberString);
-        if !contentLength {
-            fmt.println("LSP Response: Failed to parse content length");
-            return none;
-        }
-        let headerLength = separatorIndex + separator.length;
-        let totalPacketLength = headerLength + contentLength;
-
-        if this._inputBuffer.length < totalPacketLength {
-            return none;
-        }
-
-        // Extract response and shift remaining packet forward
-        let response = this._inputBuffer.slice(headerLength, headerLength + contentLength);
-        let remainingPacket = this._inputBuffer.slice(totalPacketLength);
-        this._inputBuffer = remainingPacket;
-
-        this._processResponse(response);
     }
 
     fn _dispatchNotificationResponse(method: str, response: json.Node) {
-        if method == "tsserver/request" {
-            // TODO: Implement this. This is a custom extension implemented by the Vue LSP
-            // fmt.println(json.stringify(response));
+        if this.onNotification {
+            this.onNotification(method, response);
         }
         else {
             fmt.println(f"Unsupported method '{method}'");
@@ -364,7 +328,11 @@ export struct LSPDocumentHoverRequestParams {
 }
 
 export struct LSPDocumentHoverResponse {
-
+    struct MarkupContent {
+        kind: str;
+        value: str;
+    };
+    contents: MarkupContent;
 }
 
 export struct LSPInitializedNotification {}
@@ -453,6 +421,46 @@ export struct LSPOpenDocumentRequestParams {
 }
 
 export struct LSPOpenDocumentResponseResult {
+}
+
+// Extracts one "Content-Length: N\r\n\r\n<N bytes>" framed message from the front of
+// `buffer`, if a full one is present. This is the wire framing LSP itself uses, but it's
+// also what e.g. TypeScript's tsserver emits on its own stdout, so it's exposed here for
+// reuse by code outside this module that talks to a second, LSP-adjacent process.
+export struct FramedMessage {
+    message: str;
+    remaining: str;
+}
+
+export fn extractFramedMessage(buffer: str): FramedMessage | none {
+    let contentLengthText = "Content-Length: ";
+    if buffer.length > 0 && !buffer.startsWith(contentLengthText) {
+        sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+    }
+
+    let separator = "\r\n\r\n";
+    let separatorIndex = find(buffer, separator);
+    if !separatorIndex {
+        return none;
+    }
+
+    let numberString = buffer.slice(contentLengthText.length, separatorIndex);
+    let contentLength = strToInt(numberString);
+    if !contentLength {
+        fmt.println("LSP Response: Failed to parse content length");
+        return none;
+    }
+    let headerLength = separatorIndex + separator.length;
+    let totalPacketLength = headerLength + contentLength;
+
+    if buffer.length < totalPacketLength {
+        return none;
+    }
+
+    return FramedMessage {
+        message: buffer.slice(headerLength, headerLength + contentLength),
+        remaining: buffer.slice(totalPacketLength),
+    };
 }
 
 fn strToInt(string: str): int | none {

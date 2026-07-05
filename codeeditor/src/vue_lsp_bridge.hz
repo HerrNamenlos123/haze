@@ -1,0 +1,236 @@
+
+import language_server_protocol
+
+// `@vue/language-server` only runs in "hybrid mode": for every document feature (hover,
+// completion, diagnostics, ...) it defers to a TypeScript `tsserver` process that has
+// `@vue/typescript-plugin` loaded, by emitting a "tsserver/request" notification
+// ([requestId, command, args]) and waiting for a matching "tsserver/response". This is
+// Vue/TypeScript-specific glue, so it lives here rather than in the general-purpose
+// language_server_protocol module -- it's wired up via that module's generic
+// `onNotification` extension point.
+
+export struct VueInitializationOptions {
+    struct Plugin {
+        name: str;
+        location: str;
+        languages: []str;
+    };
+    plugins: []Plugin;
+
+    struct TypeScript {
+        tsdk: str;
+    };
+    typescript?: TypeScript;
+}
+
+struct TsServerRequestMessage {
+    seq: int;
+    type: str;
+    command: str;
+    arguments: json.Node;
+}
+
+struct TsServerResponseMessage {
+    seq: int;
+    type: str;
+    request_seq?: int;
+    success?: bool;
+    command?: str;
+    body?: json.Node;
+    message?: str;
+}
+
+struct OpenArgs {
+    file: str;
+    fileContent: str;
+}
+
+export struct VueLspBridge {
+    _tsserverProcess: process.Process;
+    _tsserverInputBuffer: str = "";
+    _tsserverNextSeq: int = 0;
+    _logAllRequests: bool = true;
+
+    struct PendingTsRequest {
+        seq: int;
+        vueRequestId: int;
+    }
+    _tsserverPendingRequests: []PendingTsRequest = [];
+
+    // Spawns tsserver with the Vue plugin loaded globally, so it understands `.vue` files
+    // for any project it ends up servicing. `tsdk` is the directory containing
+    // `tsserver.js` (typescript's own `lib/`); `nodeModulesDir` is the `node_modules`
+    // directory that contains `@vue/typescript-plugin` (tsserver's default plugin search
+    // path already includes the node_modules three levels up from tsserver.js, so this is
+    // mostly belt-and-braces via `--pluginProbeLocations`).
+    fn constructor(tsdk: str, nodeModulesDir: str): Result<VueLspBridge, language_server_protocol.Error> {
+        let tsserverProcess = process.spawn("node", [
+            f"{tsdk}/tsserver.js",
+            "--globalPlugins", "@vue/typescript-plugin",
+            "--pluginProbeLocations", nodeModulesDir,
+        ]);
+        if !tsserverProcess {
+            return language_server_protocol.Error {
+                message: f"tsserver failed to launch: Exit code {tsserverProcess}",
+            };
+        }
+
+        return VueLspBridge {
+            _tsserverProcess: tsserverProcess,
+        };
+    }
+
+    // Mirrors a textDocument/didOpen into tsserver's own `open` command, so the
+    // plugin-patched project service knows about the file before the vue-language-server
+    // asks tsserver anything about it (e.g. "_vue:projectInfo"). Mirroring didChange /
+    // didClose into tsserver's `change` / `close` commands isn't needed for initial-load +
+    // hover and is left for later.
+    fn openDocument(lsp: language_server_protocol.Context<VueInitializationOptions>, filepath: str, languageId: str, version: int, fileContent: str) {
+        lsp.sendDocumentOpenNotification(filepath, languageId, version, fileContent);
+
+        let argsNode = json.encodeToJsonNode<OpenArgs>({ file: filepath, fileContent: fileContent });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'open' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        this._sendTsServerCommand(this._tsserverNextSeq, "open", argsNode);
+    }
+
+    // Called once, registered as `lsp.onNotification`, for any "tsserver/request" the
+    // vue-language-server sends us. `params` arrives as `[[requestId, command, args]]` --
+    // vscode-jsonrpc wraps a single positional array argument in another array.
+    fn handleNotification(method: str, params: json.Node) {
+        if method != "tsserver/request" {
+            fmt.println(f"vue_lsp_bridge: unsupported notification '{method}'");
+            return;
+        }
+
+        let outer = json.parse<[]json.Node>(params);
+        if !outer {
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request notification: {outer}");
+            return;
+        }
+        let inner = json.parse<[]json.Node>(outer[0]);
+        if !inner {
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request payload: {inner}");
+            return;
+        }
+        let requestId = json.parse<int>(inner[0]);
+        if !requestId {
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request id: {requestId}");
+            return;
+        }
+        let command = json.parse<str>(inner[1]);
+        if !command {
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request command: {command}");
+            return;
+        }
+        let args = inner[2];
+
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._tsserverPendingRequests.push({ seq: seq, vueRequestId: requestId });
+        this._sendTsServerCommand(seq, command, args);
+    }
+
+    // Drains tsserver's output and relays any completed response back to the
+    // vue-language-server as "tsserver/response". Called every frame, alongside `lsp.loop()`.
+    fn loop(lsp: language_server_protocol.Context<VueInitializationOptions>) {
+        let stderr = this._tsserverProcess.readStderr();
+        if stderr.length > 0 {
+            fmt.println("tsserver stderr: ", stderr);
+        }
+
+        let stdout = this._tsserverProcess.readStdout();
+        if stdout.length == 0 {
+            return;
+        }
+        this._tsserverInputBuffer = this._tsserverInputBuffer + stdout;
+
+        while true {
+            let framed = language_server_protocol.extractFramedMessage(this._tsserverInputBuffer);
+            if !framed {
+                return;
+            }
+            this._tsserverInputBuffer = framed.remaining;
+            this._handleTsServerMessage(lsp, framed.message);
+        }
+    }
+
+    fn _sendTsServerCommand(seq: int, command: str, arguments: json.Node) {
+        let message = json.stringify(TsServerRequestMessage {
+            seq: seq,
+            type: "request",
+            command: command,
+            arguments: arguments,
+        });
+        if this._logAllRequests {
+            fmt.println(f"ts-> {message}");
+        }
+        this._tsserverProcess.writeStdin(message + "\n");
+    }
+
+    fn _handleTsServerMessage(lsp: language_server_protocol.Context<VueInitializationOptions>, message: str) {
+        if this._logAllRequests {
+            fmt.println(f"ts<- {message}");
+        }
+
+        let result = json.parse<TsServerResponseMessage>(message);
+        if !result {
+            fmt.println(f"vue_lsp_bridge: failed to parse tsserver message: {result}");
+            return;
+        }
+        if result.type != "response" {
+            // Events (e.g. "requestCompleted", telemetry) aren't relevant to the bridge.
+            return;
+        }
+        let requestSeq = result.request_seq;
+        if !requestSeq {
+            return;
+        }
+        let matchedVueRequestId: int | none = none;
+        let remaining: []PendingTsRequest = [];
+        for entry in this._tsserverPendingRequests {
+            if entry.seq == requestSeq {
+                matchedVueRequestId = entry.vueRequestId;
+            }
+            else {
+                remaining.push(entry);
+            }
+        }
+        this._tsserverPendingRequests = remaining;
+
+        if !matchedVueRequestId {
+            return;
+        }
+
+        this._emitTsServerResponse(lsp, matchedVueRequestId, result.body);
+    }
+
+    // Sends "tsserver/response" with params `[[vueRequestId, body]]`, mirroring the exact
+    // wrapping vscode-jsonrpc applies on the sending side (confirmed empirically: a single
+    // positional array argument gets wrapped in another array on the wire).
+    fn _emitTsServerResponse(lsp: language_server_protocol.Context<VueInitializationOptions>, vueRequestId: int, body: json.Node | none) {
+        let idNode = json.encodeToJsonNode<int>(vueRequestId);
+        if !idNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver/response id");
+        }
+
+        let resolvedBody = body;
+        if !resolvedBody {
+            resolvedBody = json.encodeToJsonNode<null>(null);
+        }
+        if !resolvedBody {
+            sys.panic("vue_lsp_bridge: failed to encode null tsserver/response body");
+        }
+
+        let pair: []json.Node = [idNode, resolvedBody];
+        let pairNode = json.encodeToJsonNode<[]json.Node>(pair);
+        if !pairNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver/response pair");
+        }
+
+        let outer: []json.Node = [pairNode];
+        lsp.sendNotification<[]json.Node>("tsserver/response", outer);
+    }
+}
