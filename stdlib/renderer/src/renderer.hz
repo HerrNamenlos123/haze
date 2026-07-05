@@ -388,22 +388,20 @@ export opaque struct Context {
                 { shaderLocation: 1, offset: 0,  format: wgpu.VertexFormat.Float32x2 }, // pos
                 { shaderLocation: 2, offset: 8,  format: wgpu.VertexFormat.Float32x2 }, // size
 
-                { shaderLocation: 3, offset: 16, format: wgpu.VertexFormat.Float32 },   // radiusTopLeft
-                { shaderLocation: 4, offset: 20, format: wgpu.VertexFormat.Float32 },   // radiusTopRight
-                { shaderLocation: 5, offset: 24, format: wgpu.VertexFormat.Float32 },   // radiusBottomRight
-                { shaderLocation: 6, offset: 28, format: wgpu.VertexFormat.Float32 },   // radiusBottomLeft
-
-                { shaderLocation: 7, offset: 32, format: wgpu.VertexFormat.Float32 },   // borderTop
-                { shaderLocation: 8, offset: 36, format: wgpu.VertexFormat.Float32 },   // borderRight
-                { shaderLocation: 9, offset: 40, format: wgpu.VertexFormat.Float32 },   // borderBottom
-                { shaderLocation: 10, offset: 44, format: wgpu.VertexFormat.Float32 },  // borderLeft
-                { shaderLocation: 11, offset: 48, format: wgpu.VertexFormat.Float32x4 }, // fillColor
-                { shaderLocation: 12, offset: 64, format: wgpu.VertexFormat.Float32x4 }, // borderColor
-                { shaderLocation: 13, offset: 80, format: wgpu.VertexFormat.Uint32 },   // type
-                { shaderLocation: 14, offset: 84, format: wgpu.VertexFormat.Float32x2 }, // uvMin
-                { shaderLocation: 15, offset: 92, format: wgpu.VertexFormat.Float32x2 }, // uvMax
-                { shaderLocation: 16, offset: 100, format: wgpu.VertexFormat.Float32 },  // z
-                { shaderLocation: 17, offset: 104, format: wgpu.VertexFormat.Uint32 },   // transformIndex
+                // radiusTopLeft/radiusTopRight/radiusBottomLeft/radiusBottomRight are four
+                // contiguous f32 fields in PrimitiveInstance -- read as one Float32x4 attribute
+                // (rather than 4 separate locations) to stay under WebGPU's 16-vertex-attribute
+                // limit across this whole layout; the shader unpacks it via .x/.y/.z/.w.
+                { shaderLocation: 3, offset: 16, format: wgpu.VertexFormat.Float32x4 }, // radii (topLeft, topRight, bottomLeft, bottomRight)
+                // borderTop/borderRight/borderBottom/borderLeft, same trick.
+                { shaderLocation: 4, offset: 32, format: wgpu.VertexFormat.Float32x4 }, // borders (top, right, bottom, left)
+                { shaderLocation: 5, offset: 48, format: wgpu.VertexFormat.Float32x4 }, // fillColor
+                { shaderLocation: 6, offset: 64, format: wgpu.VertexFormat.Float32x4 }, // borderColor
+                { shaderLocation: 7, offset: 80, format: wgpu.VertexFormat.Uint32 },   // type
+                { shaderLocation: 8, offset: 84, format: wgpu.VertexFormat.Float32x2 }, // uvMin
+                { shaderLocation: 9, offset: 92, format: wgpu.VertexFormat.Float32x2 }, // uvMax
+                { shaderLocation: 10, offset: 100, format: wgpu.VertexFormat.Float32 },  // z
+                { shaderLocation: 11, offset: 104, format: wgpu.VertexFormat.Uint32 },   // transformIndex
             },
         };
 

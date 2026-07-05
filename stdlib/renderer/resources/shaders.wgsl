@@ -65,21 +65,17 @@ fn vs_main(
     @location(0) quadPos: vec2<f32>,
     @location(1) instPos: vec2<f32>,
     @location(2) instSize: vec2<f32>,
-    @location(3) radiusTopLeft: f32,
-    @location(4) radiusTopRight: f32,
-    @location(5) radiusBottomLeft: f32,
-    @location(6) radiusBottomRight: f32,
-    @location(7) borderTop: f32,
-    @location(8) borderRight: f32,
-    @location(9) borderBottom: f32,
-    @location(10) borderLeft: f32,
-    @location(11) fillColor: vec4<f32>,
-    @location(12) borderColor: vec4<f32>,
-    @location(13) _type: u32,
-    @location(14) uvMin: vec2<f32>,
-    @location(15) uvMax: vec2<f32>,
-    @location(16) z: f32,
-    @location(17) transformIndex: u32,
+    // Packed to stay under WebGPU's 16-vertex-attribute limit: radii = (topLeft,
+    // topRight, bottomLeft, bottomRight), borders = (top, right, bottom, left).
+    @location(3) radii: vec4<f32>,
+    @location(4) borders: vec4<f32>,
+    @location(5) fillColor: vec4<f32>,
+    @location(6) borderColor: vec4<f32>,
+    @location(7) _type: u32,
+    @location(8) uvMin: vec2<f32>,
+    @location(9) uvMax: vec2<f32>,
+    @location(10) z: f32,
+    @location(11) transformIndex: u32,
 ) -> VSOut {
     var o: VSOut;
 
@@ -90,10 +86,10 @@ fn vs_main(
         o.fillColor = fillColor;
         o.borderColor = borderColor;
 
-        o.radiusTopLeft = min(min(radiusTopLeft, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusTopRight = min(min(radiusTopRight, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopLeft = min(min(radii.x, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopRight = min(min(radii.y, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomLeft = min(min(radii.z, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomRight = min(min(radii.w, instSize.x / 2.0), instSize.y / 2.0);
 
         o.borderTop = 0.0;
         o.borderRight = 0.0;
@@ -108,8 +104,8 @@ fn vs_main(
         // so every border band is covered regardless of which edge is
         // thickest; the fragment shader does the exact per-edge math and
         // discards whatever this padding overshoots.
-        let maxBorderX = max(borderLeft, borderRight);
-        let maxBorderY = max(borderTop, borderBottom);
+        let maxBorderX = max(borders.w, borders.y);
+        let maxBorderY = max(borders.x, borders.z);
         let paddingFraction = vec2(maxBorderX * 2.0 / instSize.x, maxBorderY * 2.0 / instSize.y);
         let paddedSize = vec2(instSize.x + maxBorderX * 2.0, instSize.y + maxBorderY * 2.0);
         let localPos = quadPos * paddedSize + instPos;
@@ -118,15 +114,15 @@ fn vs_main(
         o.fillColor = fillColor;
         o.borderColor = borderColor;
 
-        o.radiusTopLeft = min(min(radiusTopLeft, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusTopRight = min(min(radiusTopRight, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusBottomLeft = min(min(radiusBottomLeft, instSize.x / 2.0), instSize.y / 2.0);
-        o.radiusBottomRight = min(min(radiusBottomRight, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopLeft = min(min(radii.x, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusTopRight = min(min(radii.y, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomLeft = min(min(radii.z, instSize.x / 2.0), instSize.y / 2.0);
+        o.radiusBottomRight = min(min(radii.w, instSize.x / 2.0), instSize.y / 2.0);
 
-        o.borderTop = borderTop;
-        o.borderRight = borderRight;
-        o.borderBottom = borderBottom;
-        o.borderLeft = borderLeft;
+        o.borderTop = borders.x;
+        o.borderRight = borders.y;
+        o.borderBottom = borders.z;
+        o.borderLeft = borders.w;
         o._type = _type;
         o.instSize = instSize;
         o.uv = vec2(0, 0);
