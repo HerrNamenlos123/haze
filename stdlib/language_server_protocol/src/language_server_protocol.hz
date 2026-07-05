@@ -241,12 +241,10 @@ export struct Context {
             return;
         }
 
-        static_print(f"{typeof(result.result).prettyName} {typeof(result.result).prettyName}");
         if !result.result && !result.error {
             fmt.println(f"LSP: Response invalid: Result and Error fields are both missing");
             return;
         }
-        static_print(f"{typeof(result.result).prettyName} {typeof(result.result).prettyName}");
 
         if result.result && result.error {
             fmt.println(f"LSP: Response invalid: Result and Error fields both exist");
@@ -254,10 +252,11 @@ export struct Context {
         }
 
         if result.error {
-            this._dispatchResponse(result.id, result.result);
+            this._dispatchResponse(result.id, result.error);
             return;
         }
 
+        assert(result.result);
         this._dispatchResponse(result.id, result.result);
     }
 
