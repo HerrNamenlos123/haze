@@ -80,9 +80,9 @@ struct HighlightEngine {
             let stderrOutput = this.highlightProcess.readStderr();
             let result = this.highlightProcess.join();
             this.dead = true;
-            fmt.println(f"LSP exited with code {result}");
+            fmt.println(f"Syntax Highlighter exited with code {result}");
             if stderrOutput.length > 0 {
-                fmt.println(f"LSP stderr: {stderrOutput}");
+                fmt.println(f"Syntax Highlight stderr: {stderrOutput}");
             }
         }
     }

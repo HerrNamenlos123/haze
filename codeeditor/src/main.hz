@@ -55,6 +55,9 @@ fn main(): int {
             }
         }
 
+        buildSyntaxEngine();
+        // installLSP();
+
         let highlightEngine = HighlightEngine("./syntax-engine", "codeeditor/syntax-engine");
         if (!highlightEngine) {
             fmt.println("Highlight engine failed to start");
@@ -64,8 +67,6 @@ fn main(): int {
             highlightEngine: highlightEngine,
             reactiveCounter: rx.reactive<int>(0),
         });
-
-        buildSyntaxEngine();
         // let engine = installLSP();
         // if !engine {
         //     return 0;
