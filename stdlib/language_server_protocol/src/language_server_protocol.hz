@@ -111,6 +111,10 @@ export struct Context {
             context.initResponse := value;
         });
 
+        context.sendRequest<none, none>("initialized", none, (value: none) => {
+            fmt.println("Initialized done", json.stringify(value))
+        });
+
         return context;
     }
 

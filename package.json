@@ -20,6 +20,7 @@
     "fast-glob": "^3.3.3",
     "gunzip-maybe": "^1.4.2",
     "open": "^11.0.0",
+    "tar-fs": "^3.1.3",
     "typescript-eslint": "^8.53.0",
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.12",
