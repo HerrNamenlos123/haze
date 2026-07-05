@@ -239,7 +239,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             version: 1,
                             text: doc,
                         }
-                    }, (value: Result<language_server_protocol.LSPOpenDocumentResponseResult, LSPError>) => {
+                    }, (value: Result<language_server_protocol.LSPOpenDocumentResponseResult, language_server_protocol.LSPError>) => {
                         if value {
                             fmt.println("Received doc", json.stringify(value));
                         }
