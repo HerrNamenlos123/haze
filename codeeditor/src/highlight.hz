@@ -111,7 +111,7 @@ struct HighlightEngine {
         this.inputBuffer = this.inputBuffer + newStdout;
 
         let contentLengthText = "Content-Length: ";
-        if this.inputBuffer.length > 0 && !startsWith(this.inputBuffer, contentLengthText) {
+        if this.inputBuffer.length > 0 && !this.inputBuffer.startsWith(contentLengthText) {
             sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
         }
 
@@ -121,26 +121,26 @@ struct HighlightEngine {
             return none;
         }
 
-        // let numberLength = separatorIndex;
-        // let numberString = this.inputBuffer.substr(contentLengthText.length, separatorIndex - contentLengthText.length);
-        // let contentLength = strToInt(numberString);
-        // if !contentLength {
-        //     fmt.println("LSP Response: Failed to parse content length");
-        //     return none;
-        // }
-        // let headerLength = separatorIndex + separator.length;
-        // let totalPacketLength = headerLength + contentLength;
+        let numberLength = separatorIndex;
+        let numberString = this.inputBuffer.slice(contentLengthText.length, separatorIndex);
+        let contentLength = strToInt(numberString);
+        if !contentLength {
+            fmt.println("LSP Response: Failed to parse content length");
+            return none;
+        }
+        let headerLength = separatorIndex + separator.length;
+        let totalPacketLength = headerLength + contentLength;
 
-        // if this.inputBuffer.length < totalPacketLength {
-        //     return none;
-        // }
+        if this.inputBuffer.length < totalPacketLength {
+            return none;
+        }
 
-        // // Extract response and shift remaining packet forward
-        // let response = this.inputBuffer.substr(headerLength, contentLength);
-        // let remainingPacket = this.inputBuffer.substr(totalPacketLength, this.inputBuffer.length - totalPacketLength);
-        // this.inputBuffer = remainingPacket;
+        // Extract response and shift remaining packet forward
+        let response = this.inputBuffer.slice(headerLength, headerLength + contentLength);
+        let remainingPacket = this.inputBuffer.slice(totalPacketLength);
+        this.inputBuffer = remainingPacket;
 
-        // return this.processResponse(response);
+        return this.processResponse(response);
     }
 
     fn processResponse(response: str): HighlightResult | none {
@@ -210,16 +210,24 @@ fn strToInt(string: str): int | none {
     return sign * value;
 }
 
-fn startsWith(string: str, prefix: str): bool {
-    if prefix.length > string.length {
-        return false;
+fn find(string: str, search: str): int | none {
+  if (search.length == 0) {
+    return 0;
+  }
+
+  let last = string.length - search.length;
+
+  for (let i = 0; i <= last; i++) {
+    let j = 0;
+
+    while (j < search.length && string[i + j] == search[j]) {
+      j++;
     }
 
-    for (let i = 0; i < prefix.length; i++) {
-        if (string[i] != prefix[i]) {
-        return false;
-        }
+    if (j == search.length) {
+      return i;
     }
+  }
 
-    return true;
+  return none;
 }

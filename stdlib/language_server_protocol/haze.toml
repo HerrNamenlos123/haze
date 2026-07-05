@@ -1,0 +1,6 @@
+name = "language_server_protocol"
+version = "1.0.0"
+description = "A module implementing the client side of LSP, to allow interaction with language servers"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

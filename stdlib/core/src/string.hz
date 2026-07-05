@@ -9,25 +9,3 @@ namespace ffi {
     extern C fn hzstd_str_from_cstr_ref(data: cstr): str :: final;
     extern C fn hzstd_str_from_cstr_dup(allocator: Allocator, data: cstr): str :: final;
 }
-
-fn find(string: str, search: str): int | none {
-  if (search.length == 0) {
-    return 0;
-  }
-
-  let last = string.length - search.length;
-
-  for (let i = 0; i <= last; i++) {
-    let j = 0;
-
-    while (j < search.length && string[i + j] == search[j]) {
-      j++;
-    }
-
-    if (j == search.length) {
-      return i;
-    }
-  }
-
-  return none;
-}

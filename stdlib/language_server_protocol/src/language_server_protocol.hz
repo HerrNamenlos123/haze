@@ -1,0 +1,282 @@
+
+export inline struct ContextArgs {
+    serverPath: str;
+}
+
+export inline struct Error {
+    message: str;
+}
+
+// struct ResultObject {
+//     tokens: []Token;
+//     initialized?: bool;
+// }
+
+// struct ErrorObject {
+//     code: int;
+//     message: str;
+// }
+
+struct LSPResponse<T> {
+    jsonrpc: str;
+    id: int;
+    body?: T;
+    // result?: ResultObject;
+    // error?: ErrorObject;
+}
+
+struct LSPRequest<T> {
+    id: int;
+    method: str;
+    body?: T;
+}
+
+export struct Context {
+    args: ContextArgs;
+    serverProcess: process.Process;
+    running: bool;
+
+    initResponseId: int;
+    inputBuffer: str = "";
+
+    struct PendingRequest {
+        requestId: int;
+        callback: (response: str) => none;
+    }
+    pendingRequests: []PendingRequest = [];
+    nextId: int = 0;
+
+    fn constructor(args: ContextArgs): Result<Context, Error> {
+        let serverProcess = process.spawn(args.serverPath, ["--stdio"]);
+        if !serverProcess {
+            return Error { 
+                message: f"Server failed to launch: Exit code {serverProcess}",
+            };
+        }
+
+        let context = Context {
+            args: args,
+            serverProcess: serverProcess,
+            initResponseId: -1,
+            running: true,
+        };
+
+        context.initResponseId = context.sendRequest<none, none>("initialize", none, (value: none) => {
+            fmt.println("Received init response");
+        });
+
+        return context;
+    }
+
+    fn loop() {
+        let stdout = this.serverProcess.readStdout();
+        if stdout.length > 0 {
+            this._processStdout(stdout);
+        }
+    }
+
+    fn sendRequest<TRequest, TResponse>(method: str, body: TRequest, onReceive: (value: TResponse) => none) {
+        assert(this.running);
+        let id = this.nextId++;
+        let request = json.stringify(LSPRequest<TRequest> {
+            id: id,
+            method: method,
+            body: body,
+        });
+
+        this.pendingRequests.push({
+            requestId: id,
+            callback: (response: str) => {},
+        });
+
+        this.serverProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        return id;
+    }
+
+    fn _processStdout(stdout: str) {
+        this.inputBuffer = this.inputBuffer + stdout;
+
+        let contentLengthText = "Content-Length: ";
+        if this.inputBuffer.length > 0 && !this.inputBuffer.startsWith(contentLengthText) {
+            sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+        }
+
+        let separator = "\r\n\r\n";
+        let separatorIndex = find(this.inputBuffer, separator);
+        if !separatorIndex {
+            return none;
+        }
+
+        let numberLength = separatorIndex;
+        let numberString = this.inputBuffer.slice(contentLengthText.length, separatorIndex);
+        let contentLength = strToInt(numberString);
+        if !contentLength {
+            fmt.println("LSP Response: Failed to parse content length");
+            return none;
+        }
+        let headerLength = separatorIndex + separator.length;
+        let totalPacketLength = headerLength + contentLength;
+
+        if this.inputBuffer.length < totalPacketLength {
+            return none;
+        }
+
+        // Extract response and shift remaining packet forward
+        let response = this.inputBuffer.slice(headerLength, headerLength + contentLength);
+        let remainingPacket = this.inputBuffer.slice(totalPacketLength);
+        if remainingPacket.length > 0 {
+            this.inputBuffer = remainingPacket;
+        }
+
+        this._processResponse(response);
+    }
+
+    fn _dispatchResponse() {
+
+    }
+
+    fn _processResponse(response: str) {
+        fmt.println("GOT RESPONSE", response);
+        let j = json.parse<LSPResponse<none>>(response);
+        if !j {
+            fmt.println(f"Json response failed to parse: {j.error}");
+            return;
+        }
+        if j.jsonrpc != "2.0" {
+            fmt.println(f"LSP: Response invalid: Expected jsonrpc version 2.0, but received {j.jsonrpc}");
+            return;
+        }
+
+        // this._dispatchResponse(j.result);
+    }
+
+    fn stop() {
+        assert(this.running);
+        this.serverProcess.join();
+        this.running = false;
+    }
+}
+
+struct LSPInitResponse {
+  struct Capabilities {
+    textDocumentSync: int;
+
+    struct Workspace {
+      struct WorkspaceFolders {
+        supported: bool;
+        changeNotifications: bool;
+      };
+      workspaceFolders: WorkspaceFolders;
+    };
+    workspace: Workspace;
+
+    selectionRangeProvider: bool;
+    foldingRangeProvider: bool;
+    linkedEditingRangeProvider: bool;
+    colorProvider: bool;
+    documentSymbolProvider: bool;
+    documentFormattingProvider: bool;
+    documentRangeFormattingProvider: bool;
+    referencesProvider: bool;
+    definitionProvider: bool;
+    hoverProvider: bool;
+    documentHighlightProvider: bool;
+
+    struct RenameProvider {
+      prepareProvider: bool;
+    };
+    renameProvider: RenameProvider;
+
+    struct DocumentLinkProvider {
+    };
+    documentLinkProvider: DocumentLinkProvider;
+
+    struct InlayHintProvider {
+    };
+    inlayHintProvider: InlayHintProvider;
+
+    struct CompletionProvider {
+      triggerCharacters: []str;
+      resolveProvider: bool;
+    };
+    completionProvider: CompletionProvider;
+
+    struct CodeActionProvider {
+      codeActionKinds: []str;
+      resolveProvider: bool;
+    };
+    codeActionProvider: CodeActionProvider;
+
+    struct DocumentOnTypeFormattingProvider {
+      firstTriggerCharacter: str;
+      moreTriggerCharacter: []str;
+    };
+    documentOnTypeFormattingProvider: DocumentOnTypeFormattingProvider;
+
+    // struct ExecuteCommandProvider {
+    //   List<String> commands;
+    // } executeCommandProvider;
+
+    struct Experimental {
+      struct AutoInsertionProvider {
+        triggerCharacters: []str;
+        configurationSections: [][]str;
+      };
+      autoInsertionProvider: AutoInsertionProvider;
+      documentDropEditsProvider: bool;
+    };
+    experimental: Experimental;
+  };
+  capabilities: Capabilities;
+};
+
+fn strToInt(string: str): int | none {
+    if (string.length == 0) {
+        return none;
+    }
+
+    let sign = 1;
+    let i = 0;
+
+    if (string[0] == b"-") {
+        sign = -1;
+        i = 1;
+    } else if (string[0] == b"+") {
+        i = 1;
+    }
+
+    let value = 0;
+    for (let x = 0; i < string.length; i++) {
+        const digit = string[i] as int - 48;
+
+        if (digit < 0 || digit > 9) {
+            return none;
+        }
+
+        value = value * 10 + digit;
+    }
+
+    return sign * value;
+}
+
+fn find(string: str, search: str): int | none {
+  if (search.length == 0) {
+    return 0;
+  }
+
+  let last = string.length - search.length;
+
+  for (let i = 0; i <= last; i++) {
+    let j = 0;
+
+    while (j < search.length && string[i + j] == search[j]) {
+      j++;
+    }
+
+    if (j == search.length) {
+      return i;
+    }
+  }
+
+  return none;
+}

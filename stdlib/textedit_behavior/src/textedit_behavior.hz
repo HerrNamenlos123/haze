@@ -38,7 +38,7 @@ export struct Context {
     fn constructor(args: ContextArgs) {
         let context = Context {
             args: args,
-            cursorVisible: rx.computed<bool>(() => false),
+            cursorVisible: rx.computed(() => false),
             cursorLastMovedAt: args.getTimeInSeconds(),
         };
 

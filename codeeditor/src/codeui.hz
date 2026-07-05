@@ -23,7 +23,7 @@ fn scopeSelectorMatches(selector: str, scope: str): bool {
     if selector.length == 0 || selector.length > scope.length {
         return false;
     }
-    if !startsWith(scope, selector) {
+    if !scope.startsWith(selector) {
         return false;
     }
     return selector.length == scope.length || scope[selector.length] == b".";
@@ -89,10 +89,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         };
 
-        let docLines = rx.computed(() => {
+        let docLines = rx.computed<[]str>((): []str => {
             if !doc {
                 fmt.println("doc failed");
-                return [] as []str;
+                return [];
             }
             let lines = doc.split("\n");
             return lines;
@@ -142,7 +142,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 let selectors: []str = [];
                 if scopeField is str {
                     for part in scopeField.split(",") {
-                        selectors.push(trim(part));
+                        selectors.push(part.trim());
                     }
                 } else {
                     selectors = scopeField;
