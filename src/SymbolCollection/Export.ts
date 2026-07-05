@@ -283,13 +283,12 @@ export function ExportTypeDef(
           } else {
             file.writeLine(`fn ${methodName}(${parameters});`);
           }
-        } else {
-          const originalFunc = sr.cc.symbolNodes.get(
-            method.originalCollectedFunction
-          );
-          assert(originalFunc.variant === Collect.ENode.FunctionSymbol);
-          file.writeLine(originalFunc.originalSourcecode);
         }
+        // Elaborated instantiations of generic methods (method.generics.length > 0)
+        // are intentionally skipped here: each call site with distinct type
+        // arguments produces its own entry in typedef.methods, which would
+        // otherwise re-emit the same raw generic source once per instantiation.
+        // The loop below emits the generic template exactly once instead.
       }
 
       // Emit generic methods. Those are NOT elaborated yet, so we have to workaround through the collected symbol.
