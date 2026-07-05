@@ -36,6 +36,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { ConstraintSet } from "./Constraint";
 import { SemanticElaborator } from "./Elaborate";
 import { SemanticBuilder } from "./SemanticBuilder";
@@ -1111,7 +1112,7 @@ export namespace Semantic {
     throw new CompilerError(
       "This expression is not suitable as a generic type argument or literal value",
       expr.sourceloc,
-      3001
+      HazeErrorCode.ThisExpressionNotSuitableAsGenericTypeArgument
     );
   }
 
@@ -1324,7 +1325,7 @@ export namespace Semantic {
     throw new CompilerError(
       `Symbol '${name}' was not declared in this scope`,
       args.sourceloc,
-      3002
+      HazeErrorCode.SymbolWasNotDeclaredThisScope
     );
   }
 
@@ -1758,7 +1759,7 @@ export namespace Semantic {
           throw new CompilerError(
             "main function is defined, but not allowed because module is built as library",
             null,
-            3003
+            HazeErrorCode.MainFunctionDefinedButNotAllowedBecauseModule
           );
         }
       } else {
@@ -1766,7 +1767,7 @@ export namespace Semantic {
           throw new CompilerError(
             "No main function is defined in global scope",
             null,
-            3004
+            HazeErrorCode.NoMainFunctionDefinedGlobalScope
           );
         }
 
@@ -1784,7 +1785,7 @@ export namespace Semantic {
           throw new CompilerError(
             "Main function must return int",
             mainFunctionSymbol.sourceloc,
-            3005
+            HazeErrorCode.MainFunctionMustReturnInt
           );
         }
       }

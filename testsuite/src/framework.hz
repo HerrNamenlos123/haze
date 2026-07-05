@@ -4,8 +4,9 @@
 // Haze source plus an expectation about what the real Haze compiler (the
 // dist/haze binary configured for this run, see main.hz) does with it.
 //
-// Diagnostic codes referenced here (H1000, H4001, ...) come from the
-// compiler's stable error-code scheme documented in src/shared/Errors.ts.
+// Diagnostic codes are referenced by name through errorcodes.Code (see
+// error_codes.hz), which mirrors src/shared/ErrorCodes.ts — the single
+// source of truth for which named code maps to which numeric H-code.
 
 namespace testsuite {
 
@@ -22,16 +23,16 @@ namespace testsuite {
         count: int = 0;
     }
 
-    export fn mustHave(code: int): ErrorCheck {
-        return ErrorCheck { code: code, kind: CheckKind.MustBePresent };
+    export fn mustHave(code: errorcodes.Code): ErrorCheck {
+        return ErrorCheck { code: errorcodes.toInt(code), kind: CheckKind.MustBePresent };
     }
 
-    export fn mustNotHave(code: int): ErrorCheck {
-        return ErrorCheck { code: code, kind: CheckKind.MustBeAbsent };
+    export fn mustNotHave(code: errorcodes.Code): ErrorCheck {
+        return ErrorCheck { code: errorcodes.toInt(code), kind: CheckKind.MustBeAbsent };
     }
 
-    export fn exactCount(code: int, count: int): ErrorCheck {
-        return ErrorCheck { code: code, kind: CheckKind.ExactCount, count: count };
+    export fn exactCount(code: errorcodes.Code, count: int): ErrorCheck {
+        return ErrorCheck { code: errorcodes.toInt(code), kind: CheckKind.ExactCount, count: count };
     }
 
     export fn totalErrors(count: int): ErrorCheck {

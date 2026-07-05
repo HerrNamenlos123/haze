@@ -1,4 +1,5 @@
 import { printLine, printLineWarning } from "../ModuleCompiler/CLIPrinter";
+import { HazeErrorCode } from "./ErrorCodes";
 
 export enum ErrorType {
   Error = 0,
@@ -25,7 +26,7 @@ export enum ErrorType {
 //   7001-7999   Semantic/Elaborate.ts
 //   8001-8999   ProjectCompiler.ts (build/project-level errors)
 //   9001-9999   warnings (any file)
-export function formatDiagnosticCode(code: number): string {
+export function formatDiagnosticCode(code: HazeErrorCode): string {
   return `H${code}`;
 }
 
@@ -48,7 +49,7 @@ export type CompilerDiagnostic = {
   message: string;
   loc?: SourceLoc;
   title?: string;
-  code?: number;
+  code?: HazeErrorCode;
 };
 
 type DiagnosticSink = (diag: CompilerDiagnostic) => void;
@@ -77,7 +78,7 @@ function formatCompilerMessage(
   error: string | null,
   msg: string,
   loc?: SourceLoc,
-  code?: number
+  code?: HazeErrorCode
 ): string {
   let text = "";
   if (loc) {
@@ -108,7 +109,7 @@ export function printCompilerMessage(
   error: string | null,
   msg: string,
   loc?: SourceLoc,
-  code?: number
+  code?: HazeErrorCode
 ): void {
   if (diagnosticSink) {
     diagnosticSink({
@@ -130,7 +131,7 @@ export function printCompilerMessage(
 export function formatErrorMessage(
   msg: string,
   loc?: SourceLoc,
-  code?: number
+  code?: HazeErrorCode
 ): string {
   return formatCompilerMessage(ErrorType.Error, "Error", msg, loc, code);
 }
@@ -138,7 +139,7 @@ export function formatErrorMessage(
 export function printErrorMessage(
   msg: string,
   loc: SourceLoc | undefined,
-  code: number,
+  code: HazeErrorCode,
   title?: string
 ): void {
   printCompilerMessage(ErrorType.Error, title ?? "Error", msg, loc, code);
@@ -147,7 +148,7 @@ export function printErrorMessage(
 export function formatWarningMessage(
   msg: string,
   loc?: SourceLoc,
-  code?: number
+  code?: HazeErrorCode
 ): string {
   return formatCompilerMessage(ErrorType.Warning, "Warning", msg, loc, code);
 }
@@ -155,7 +156,7 @@ export function formatWarningMessage(
 export function printWarningMessage(
   msg: string,
   loc: SourceLoc | undefined,
-  code: number
+  code: HazeErrorCode
 ): void {
   printCompilerMessage(ErrorType.Warning, "Warning", msg, loc, code);
 }
@@ -186,9 +187,9 @@ export function getCallerLocation(depth = 1): SourceLoc {
 export class CompilerError extends Error {
   loc: SourceLoc;
   rawMessage: string;
-  code: number;
+  code: HazeErrorCode;
 
-  constructor(msg: string, loc: SourceLoc, code: number) {
+  constructor(msg: string, loc: SourceLoc, code: HazeErrorCode) {
     super(formatErrorMessage(msg, loc, code));
     this.loc = loc;
     this.rawMessage = msg;
@@ -270,7 +271,7 @@ export function assertCompilerError(
   condition: unknown,
   message: string,
   sourceloc: SourceLoc,
-  code: number
+  code: HazeErrorCode
 ): asserts condition {
   if (!condition) {
     throw new CompilerError(message, sourceloc, code);

@@ -38,8 +38,8 @@ fn main(): int {
         );
 
         // A single fatal error: the compiler is fail-fast, so exactly one
-        // H-code is expected, and it must be H4001 (Conversion.ts's
-        // "no suitable conversion" error).
+        // H-code is expected, and it must be NoSuitableConversionFound
+        // (Conversion.ts's "no suitable conversion" error).
         s.compileFails(
             "assigning a str to an int field is rejected",
             """
@@ -49,27 +49,28 @@ fn main(): int {
 }
 """,
             [
-                testsuite.mustHave(4001),
-                testsuite.mustNotHave(1000),
+                testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound),
+                testsuite.mustNotHave(errorcodes.Code.SyntaxError),
                 testsuite.totalErrors(1),
             ]
         );
 
         // A plain syntax error goes through the generic ANTLR listener,
-        // which always reports H1000.
+        // which always reports errorcodes.Code.SyntaxError.
         s.compileFails(
             "unterminated block is a syntax error",
             """
 fn main(): int {
     let x: int = 1;
 """,
-            [testsuite.mustHave(1000)]
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]
         );
 
         // Warnings accumulate (the compiler doesn't stop at the first one),
         // so this is where exactCount/totalErrors on a *successful* compile
         // are demonstrated: two redundant 'mut' modifiers on 'const'
-        // declarations produce two H9003 warnings.
+        // declarations produce two ThisMutModifierWillBeOverruledByConst
+        // warnings.
         s.compileOkWithChecks(
             "redundant 'mut' on 'const' warns for each declaration",
             """
@@ -81,7 +82,7 @@ fn main(): int {
 }
 """,
             [
-                testsuite.exactCount(9003, 2),
+                testsuite.exactCount(errorcodes.Code.ThisMutModifierWillBeOverruledByConst, 2),
                 testsuite.totalErrors(2),
             ]
         );

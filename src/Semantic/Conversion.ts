@@ -17,6 +17,7 @@ import {
   InternalError,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import type {
   ConstraintPath,
   ConstraintPathSubscriptIndex,
@@ -1123,7 +1124,11 @@ export namespace Conversion {
     if (c.ok) {
       return c.expr;
     }
-    throw new CompilerError(c.error, sourceloc, 4001);
+    throw new CompilerError(
+      c.error,
+      sourceloc,
+      HazeErrorCode.NoSuitableConversionFound
+    );
   }
 
   type ConversionPlanSuccess =
@@ -2706,7 +2711,7 @@ export namespace Conversion {
           targetTypeId
         )}' is requested, but this struct has no default value because not all members specify a default value`,
         sourceloc,
-        4002
+        HazeErrorCode.DefaultValueTypeRequestedButThisStructHas
       );
     }
 
@@ -2716,7 +2721,7 @@ export namespace Conversion {
         targetTypeId
       )}' is requested, but no safe default value is known for that type`,
       sourceloc,
-      4003
+      HazeErrorCode.DefaultValueTypeRequestedButNoSafeDefault
     );
   }
 
@@ -2756,7 +2761,7 @@ export namespace Conversion {
           leftTypeUseId
         )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
         sourceloc,
-        4004
+        HazeErrorCode.NoSafeComparisonAvailableBetweenTypesAnd
       );
     }
 
@@ -2819,7 +2824,7 @@ export namespace Conversion {
         leftTypeUseId
       )}' and '${Semantic.serializeTypeUse(sr, rightTypeUseId)}'`,
       sourceloc,
-      4005
+      HazeErrorCode.NoSafeComparisonAvailableBetweenTypesAnd2
     );
   }
 
@@ -2884,7 +2889,7 @@ export namespace Conversion {
         leftTypeUseId
       )}' and '${Semantic.serializeTypeUseWithAliasAKA(sr, rightTypeUseId)}'`,
       sourceloc,
-      4006
+      HazeErrorCode.NoSafeOperationKnownBetweenTypesAnd
     );
   }
 
@@ -3082,7 +3087,7 @@ export namespace Conversion {
         operation
       )} operation is known for type '${Semantic.serializeTypeUse(sr, a)}'`,
       sourceloc,
-      4007
+      HazeErrorCode.NoUnaryOperationKnownType
     );
   }
 }

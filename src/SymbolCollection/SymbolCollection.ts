@@ -51,6 +51,7 @@ import {
   formatSourceLoc,
   type SourceLoc,
 } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
 import { makeTempId } from "../shared/store";
 
 const RESERVED_METHOD_NAMES = ["toString", "clone", "freezeClone"];
@@ -1114,7 +1115,7 @@ export function defineVariableSymbol(
           (s.sourceloc && formatSourceLoc(s.sourceloc)) || ""
         }`,
         variable.sourceloc,
-        2001
+        HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
       );
     }
   }
@@ -1188,7 +1189,7 @@ function collectTypeDef(
                 (typedef.sourceloc && formatSourceLoc(typedef.sourceloc)) || ""
               }`,
               item.sourceloc,
-              2002
+              HazeErrorCode.SymbolHasAlreadyBeenDeclaredAsStructWhich
             );
           }
         }
@@ -1313,7 +1314,7 @@ function collectTypeDef(
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
             item.sourceloc,
-            2003
+            HazeErrorCode.SymbolHasAlreadyBeenDeclaredAsNamespaceWhich
           );
         }
         if (
@@ -1325,7 +1326,7 @@ function collectTypeDef(
               (sym.sourceloc && formatSourceLoc(sym.sourceloc)) || ""
             }`,
             item.sourceloc,
-            2004
+            HazeErrorCode.StructAlreadyDeclaredThisScopeOriginalDefinition
           );
         }
       }
@@ -1619,7 +1620,7 @@ function collectSymbol(
         throw new CompilerError(
           `A function that is not a method cannot be marked as 'static'`,
           item.sourceloc,
-          2005
+          HazeErrorCode.FunctionThatNotMethodCannotBeMarkedAs
         );
       }
 
@@ -1630,7 +1631,7 @@ function collectSymbol(
         throw new CompilerError(
           `'${item.name}' is a reserved name, it cannot be used in userland.`,
           item.sourceloc,
-          2006
+          HazeErrorCode.ReservedNameItCannotBeUsedUserland
         );
       }
 
@@ -2050,7 +2051,7 @@ function collectGlobalDirective(
         throw new CompilerError(
           `Cannot find import '${item.name}': No such module`,
           item.sourceloc,
-          2007
+          HazeErrorCode.CannotFindImportNoSuchModule
         );
       }
       const globalBuildDir = join(process.cwd(), "__haze__");
@@ -2218,7 +2219,7 @@ function collectScope(
               throw new CompilerError(
                 `'if let' bindings in else-if branches are not supported yet`,
                 item.sourceloc,
-                2008
+                HazeErrorCode.IfLetBindingsElseIfBranchesAreNot
               );
             }
 
@@ -2663,7 +2664,7 @@ function collectExpr(
         throw new CompilerError(
           "A Lambda Function is not allowed to have unchecked, C-style variadic arguments",
           item.sourceloc,
-          2009
+          HazeErrorCode.LambdaFunctionNotAllowedHaveUncheckedCStyle
         );
       }
 
@@ -2696,7 +2697,7 @@ function collectExpr(
             throw new CompilerError(
               "Lambda functions cannot have parameter packs",
               p.sourceloc,
-              2010
+              HazeErrorCode.LambdaFunctionsCannotHaveParameterPacks
             );
           }
           return {
@@ -3158,7 +3159,7 @@ function collectExpr(
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
             item.sourceloc,
-            2011
+            HazeErrorCode.FunctionDatatypesCannotHaveParameterPacks
           );
         }
 
@@ -3170,7 +3171,7 @@ function collectExpr(
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
             item.sourceloc,
-            2012
+            HazeErrorCode.FunctionDatatypesCannotDefineDefaultParameterValues
           );
         }
 
@@ -3214,7 +3215,7 @@ function collectExpr(
           throw new CompilerError(
             `Function datatypes cannot have parameter packs`,
             item.sourceloc,
-            2013
+            HazeErrorCode.FunctionDatatypesCannotHaveParameterPacks2
           );
         }
 
@@ -3226,7 +3227,7 @@ function collectExpr(
           throw new CompilerError(
             `Function datatypes cannot define default parameter values`,
             item.sourceloc,
-            2014
+            HazeErrorCode.FunctionDatatypesCannotDefineDefaultParameterValues2
           );
         }
 
@@ -3281,7 +3282,7 @@ function collectExpr(
         throw new CompilerError(
           "nodiscard can only be applied to tagged unions",
           item.sourceloc,
-          2015
+          HazeErrorCode.NodiscardCanOnlyBeAppliedTaggedUnions
         );
       }
 
