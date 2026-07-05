@@ -1,114 +1,173 @@
 
 export inline struct ContextArgs {
-    serverPath: str;
+    exe: str;
+    args: []str;
 }
 
 export inline struct Error {
     message: str;
 }
 
-// struct ResultObject {
-//     tokens: []Token;
-//     initialized?: bool;
-// }
-
-// struct ErrorObject {
-//     code: int;
-//     message: str;
-// }
-
-struct LSPResponse<T> {
+struct LSPResponse {
     jsonrpc: str;
     id: int;
-    body?: T;
-    // result?: ResultObject;
-    // error?: ErrorObject;
+    result?: json.Node;
 }
 
-struct LSPRequest<T> {
+struct LSPRequest<Params> {
     id: int;
+    jsonrpc: str;
     method: str;
-    body?: T;
+    params: Params;
 }
+
+struct LSPInitializeParams {
+    processId: int;
+
+    struct ClientInfo {
+        name: str;
+        version?: str;
+    };
+    // Union<ClientInfo, Null> clientInfo;
+    // Union<String, Null> locale;
+
+    struct InitializationOptions {
+        struct Plugin {
+            name: str;
+            location: str;
+            languages: []str;
+        };
+        plugins: []Plugin;
+    };
+    initializationOptions: InitializationOptions;
+
+    struct Capabilities {};
+    capabilities: Capabilities;
+
+    struct WorkspaceFolder {
+        uri: str;
+        name: str;
+    };
+    workspaceFolders?: []WorkspaceFolder;
+
+    struct TypeScript {
+        tsdk: str;
+    };
+    typescript?: TypeScript;
+};
 
 export struct Context {
-    args: ContextArgs;
-    serverProcess: process.Process;
-    running: bool;
+    _args: ContextArgs;
+    _serverProcess: process.Process;
+    _running: bool;
 
-    initResponseId: int;
-    inputBuffer: str = "";
+    initResponse: rx.ShallowReactive<LSPInitResponse | none>;
+    _inputBuffer: str = "";
 
     struct PendingRequest {
         requestId: int;
-        callback: (response: str) => none;
+        callback: (response: json.Node) => none;
     }
-    pendingRequests: []PendingRequest = [];
-    nextId: int = 0;
+    _pendingRequests: []PendingRequest = [];
+    _nextId: int = 0;
 
-    fn constructor(args: ContextArgs): Result<Context, Error> {
-        let serverProcess = process.spawn(args.serverPath, ["--stdio"]);
-        if !serverProcess {
+    fn constructor(_args: ContextArgs): Result<Context, Error> {
+        let _serverProcess = process.spawn(_args.exe, _args.args);
+        if !_serverProcess {
             return Error { 
-                message: f"Server failed to launch: Exit code {serverProcess}",
+                message: f"Server failed to launch: Exit code {_serverProcess}",
             };
         }
 
         let context = Context {
-            args: args,
-            serverProcess: serverProcess,
-            initResponseId: -1,
-            running: true,
+            _args: _args,
+            _serverProcess: _serverProcess,
+            _running: true,
+            initResponse: rx.shallowReactive<LSPInitResponse | none>(none),
         };
 
-        context.initResponseId = context.sendRequest<none, none>("initialize", none, (value: none) => {
-            fmt.println("Received init response");
+        context.sendRequest<LSPInitializeParams, LSPInitResponse>("initialize", {
+            processId: 0,
+            workspaceFolders: [
+                {
+                    uri: "/home/fzachs/Projects/technicalsketcher.web",
+                    name: "technicalsketcher.web"
+                }
+            ],
+            capabilities: {},
+            initializationOptions: {
+                plugins: [
+                    {
+                        name: "@vue/typescript-plugin",
+                        location: "/home/fzachs/Projects/CodeEditor/node_modules/@vue/typescript-plugin",
+                        languages: ["vue"],
+                    }
+                ]
+            },
+            typescript: {
+                tsdk: "./codeeditor/syntax-engine/node_modules/typescript/lib",
+            }
+        }, (value: LSPInitResponse) => {
+            context.initResponse := value;
         });
 
         return context;
     }
 
     fn loop() {
-        let stdout = this.serverProcess.readStdout();
+        let stderr = this._serverProcess.readStderr();
+        if stderr.length > 0 {
+            fmt.println("LSP Error: ", stderr);
+        }
+
+        let stdout = this._serverProcess.readStdout();
         if stdout.length > 0 {
             this._processStdout(stdout);
         }
     }
 
-    fn sendRequest<TRequest, TResponse>(method: str, body: TRequest, onReceive: (value: TResponse) => none) {
-        assert(this.running);
-        let id = this.nextId++;
-        let request = json.stringify(LSPRequest<TRequest> {
+    fn sendRequest<TParams, TResponse>(method: str, params: TParams, onReceive: (value: TResponse) => none) {
+        assert(this._running);
+        let id = this._nextId++;
+        let request = json.stringify(LSPRequest<TParams> {
             id: id,
+            jsonrpc: "2.0",
             method: method,
-            body: body,
+            params: params,
         });
 
-        this.pendingRequests.push({
+        this._pendingRequests.push({
             requestId: id,
-            callback: (response: str) => {},
+            callback: (response: json.Node) => {
+                let result = json.parse<TResponse>(response);
+                if !result {
+                    fmt.println("Invalid LSP response: ", result);
+                    return;
+                }
+                onReceive(result);
+            },
         });
 
-        this.serverProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        this._serverProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
         return id;
     }
 
     fn _processStdout(stdout: str) {
-        this.inputBuffer = this.inputBuffer + stdout;
+        this._inputBuffer = this._inputBuffer + stdout;
 
         let contentLengthText = "Content-Length: ";
-        if this.inputBuffer.length > 0 && !this.inputBuffer.startsWith(contentLengthText) {
+        if this._inputBuffer.length > 0 && !this._inputBuffer.startsWith(contentLengthText) {
             sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
         }
 
         let separator = "\r\n\r\n";
-        let separatorIndex = find(this.inputBuffer, separator);
+        let separatorIndex = find(this._inputBuffer, separator);
         if !separatorIndex {
             return none;
         }
 
         let numberLength = separatorIndex;
-        let numberString = this.inputBuffer.slice(contentLengthText.length, separatorIndex);
+        let numberString = this._inputBuffer.slice(contentLengthText.length, separatorIndex);
         let contentLength = strToInt(numberString);
         if !contentLength {
             fmt.println("LSP Response: Failed to parse content length");
@@ -117,47 +176,71 @@ export struct Context {
         let headerLength = separatorIndex + separator.length;
         let totalPacketLength = headerLength + contentLength;
 
-        if this.inputBuffer.length < totalPacketLength {
+        if this._inputBuffer.length < totalPacketLength {
             return none;
         }
 
         // Extract response and shift remaining packet forward
-        let response = this.inputBuffer.slice(headerLength, headerLength + contentLength);
-        let remainingPacket = this.inputBuffer.slice(totalPacketLength);
+        let response = this._inputBuffer.slice(headerLength, headerLength + contentLength);
+        let remainingPacket = this._inputBuffer.slice(totalPacketLength);
         if remainingPacket.length > 0 {
-            this.inputBuffer = remainingPacket;
+            this._inputBuffer = remainingPacket;
         }
 
         this._processResponse(response);
     }
 
-    fn _dispatchResponse() {
+    fn _dispatchResponse(requestId: int, response: json.Node) {
+        let found = false;
+        for entry in this._pendingRequests {
+            if entry.requestId == requestId {
+                found = true;
+            }
+        }
 
+        // Doing the loop twice because otherwise we would reconstruct the pending array every frame while
+        // nothing changed which is incredibly wasteful
+        if found {
+            let remainingRequests: []PendingRequest = [];
+            for entry in this._pendingRequests {
+                if entry.requestId == requestId {
+                    entry.callback(response);
+                }
+                else {
+                    remainingRequests.push(entry);
+                }
+            }
+            this._pendingRequests = remainingRequests;
+        }
     }
 
     fn _processResponse(response: str) {
-        fmt.println("GOT RESPONSE", response);
-        let j = json.parse<LSPResponse<none>>(response);
-        if !j {
-            fmt.println(f"Json response failed to parse: {j.error}");
+        let result = json.parse<LSPResponse>(response);
+        if !result {
+            fmt.println(f"Json response failed to parse: {result}");
             return;
         }
-        if j.jsonrpc != "2.0" {
-            fmt.println(f"LSP: Response invalid: Expected jsonrpc version 2.0, but received {j.jsonrpc}");
+        if result.jsonrpc != "2.0" {
+            fmt.println(f"LSP: Response invalid: Expected jsonrpc version 2.0, but received {result.jsonrpc}");
             return;
         }
 
-        // this._dispatchResponse(j.result);
+        if !result.result {
+            fmt.println(f"LSP: Response invalid: Result field missing");
+            return;
+        }
+
+        this._dispatchResponse(result.id, result.result);
     }
 
     fn stop() {
-        assert(this.running);
-        this.serverProcess.join();
-        this.running = false;
+        assert(this._running);
+        this._serverProcess.join();
+        this._running = false;
     }
 }
 
-struct LSPInitResponse {
+export struct LSPInitResponse {
   struct Capabilities {
     textDocumentSync: int;
 

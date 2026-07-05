@@ -320,6 +320,12 @@ namespace json {
                 static_assert(false, f"json.parse() only supports comptime literals that are str or int");
             }
         }
+        else if comptime T is Node {
+            return Node {
+                allocator: allocator,
+                data: node,
+            };
+        }
         else if comptime T is none {
             return none;
         }
@@ -538,6 +544,9 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
             return dumpJsonNode<rx.UnwrapReactive<T>>(allocator, rx.get(value));
+        }
+        else if comptime T is Node {
+            return value.data;
         }
         else if comptime T is str {
             return ffi.hzstd_json_create_string(allocator, value);

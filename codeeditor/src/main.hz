@@ -30,9 +30,9 @@ fn main(): int {
             gfx: a.gfx,
             windowState: a.windowState,
             fonts: [
-                { name: "default", id: a.gfx.fontRenderer.defaultFont },
-                { name: "JetBrainsMonoNerdFont-Regular", id: monoFont },
                 { name: "roboto", id: font },
+                { name: "JetBrainsMonoNerdFont-Regular", id: monoFont },
+                { name: "default", id: font },
             ],
             mousePos: () => a.mousePos(),
             pointerButtons: ui_components.PointerHeldCallbacks {

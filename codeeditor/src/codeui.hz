@@ -3,6 +3,7 @@ import renderer
 import ui_styling
 import headwind
 import textedit_behavior
+import language_server_protocol
 type presets = headwind.presets;
 
 type SizeMode = ui_components.SizeMode;
@@ -88,6 +89,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 }
             }
         };
+
+        let lsp = language_server_protocol.Context({
+            exe: "node",
+            args: ["./codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js", "--stdio"]
+        });
+        if !lsp {
+            fmt.println("LANGUAGE SERVER FAILED", lsp.message);
+        }
 
         let docLines = rx.computed<[]str>((): []str => {
             if !doc {
@@ -214,118 +223,156 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             state.highlightEngine.sendHighlightRequest(content);
         }
 
+        let runLspLoop = rx.computed(() => {
+            ui.now();
+            if lsp {
+                lsp.loop();
+            }
+        });
+
+        let lspMessage = rx.computed(() => {
+            if !lsp {
+                return "LSP Failed";
+            }
+
+            if !lsp.initResponse {
+                return "LSP Loading...";
+            }
+
+            return "LSP Ready";
+        })
+
         return (): void => {
             ui.div({
                 id: 0,
-                style: {
-                    direction: ui_styling.Direction.Column,
-                    fontFamily: "JetBrainsMonoNerdFont-Regular",
-                    fontSize: 16.0,
-                    textColor: "#FFF" as Color,
-                },
                 presets: [
-                    presets.relative(),
+                    presets.col(),
                     presets.wGrow(),
                     presets.hGrow(),
-                    presets.col(),
-                    presets.bg("#181818"),
-                    // presets.p(8),
-                ],
-                onClick: (event: ui_components.PointerEvent) => {
-                    let state = getState();
-                    let content = rx.get(doc);
-                    if content {
-                        // state.highlightEngine.sendHighlightRequest(content);
-                    }
-                }
+                    presets.textColor("#FFF"),
+                    presets.p(4),
+                    presets.gap(2),
+                ]
             }, (): void => {
-                let lines: []str = rx.get(docLines);
-                let id = 1;
+                ui.text({
+                    id: 0,
+                    text: lspMessage,
+                });
 
-                let characterSize = ui.measureText("X");
+                rx.get(runLspLoop);
 
-                let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
-                    let parts: []HighlightToken = [];
-                    let position = 0;
+                ui.div({
+                    id: 1,
+                    style: {
+                        direction: ui_styling.Direction.Column,
+                        fontFamily: "JetBrainsMonoNerdFont-Regular",
+                        fontSize: 16.0,
+                        textColor: "#FFF" as Color,
+                    },
+                    presets: [
+                        presets.relative(),
+                        presets.wGrow(),
+                        presets.hGrow(),
+                        presets.col(),
+                        presets.bg("#181818"),
+                        // presets.p(8),
+                    ],
+                    onClick: (event: ui_components.PointerEvent) => {
+                        let state = getState();
+                        let content = rx.get(doc);
+                        if content {
+                            // state.highlightEngine.sendHighlightRequest(content);
+                        }
+                    }
+                }, (): void => {
+                    let lines: []str = rx.get(docLines);
+                    let id = 1;
 
-                    for token in tokens {
-                        if token.lineIndex == lineIndex {
-                            // Text before the token
-                            if (position < token.startIndex) {
+                    let characterSize = ui.measureText("X");
+
+                    let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
+                        let parts: []HighlightToken = [];
+                        let position = 0;
+
+                        for token in tokens {
+                            if token.lineIndex == lineIndex {
+                                // Text before the token
+                                if (position < token.startIndex) {
+                                    parts.push({
+                                        text: string.slice(position, token.startIndex),
+                                        color: defaultTextColor(),
+                                    });
+                                }
+
+                                // The token itself
                                 parts.push({
-                                    text: string.slice(position, token.startIndex),
-                                    color: defaultTextColor(),
+                                    text: string.slice(token.startIndex, token.endIndex),
+                                    color: getFirstScopeColor(token.scopes),
                                 });
-                            }
 
-                            // The token itself
+                                position = token.endIndex;
+                            }
+                        }
+
+                        // Remaining text
+                        if (position < string.length) {
                             parts.push({
-                                text: string.slice(token.startIndex, token.endIndex),
-                                color: getFirstScopeColor(token.scopes),
+                                text: string.slice(position, string.length),
+                                color: defaultTextColor(),
                             });
-
-                            position = token.endIndex;
                         }
+
+                        return parts;
                     }
 
-                    // Remaining text
-                    if (position < string.length) {
-                        parts.push({
-                            text: string.slice(position, string.length),
-                            color: defaultTextColor(),
-                        });
-                    }
+                    let printLine = (lineIndex: int, line: str) => {
+                        let currentIndex = 0;
+                        let reconstructedLine = "";
 
-                    return parts;
-                }
+                        let tokens: []Token = [];
+                        let hh: []HighlightResult = rx.get(highlights);
+                        if hh.length > 0 {
+                            let hhh = hh[hh.length - 1];
+                            tokens = hhh.tokens;
+                        }
 
-                let printLine = (lineIndex: int, line: str) => {
-                    let currentIndex = 0;
-                    let reconstructedLine = "";
-
-                    let tokens: []Token = [];
-                    let hh: []HighlightResult = rx.get(highlights);
-                    if hh.length > 0 {
-                        let hhh = hh[hh.length - 1];
-                        tokens = hhh.tokens;
-                    }
-
-                    let finalTokens = splitByTokens(lineIndex, line, tokens);
-                    ui.div({
-                        id: lineIndex,
-                    }, (): void => {
-                        if finalTokens.length > 0 {
-                            for t, i in finalTokens {
-                                ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
+                        let finalTokens = splitByTokens(lineIndex, line, tokens);
+                        ui.div({
+                            id: lineIndex,
+                        }, (): void => {
+                            if finalTokens.length > 0 {
+                                for t, i in finalTokens {
+                                    ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
+                                }
                             }
-                        }
-                        else {
-                            ui.text({ id: 0, text: "" });
-                        }
-                    });
-                };
+                            else {
+                                ui.text({ id: 0, text: "" });
+                            }
+                        });
+                    };
 
-                for line, lineIndex in lines {
-                    printLine(lineIndex, line);
-                }
+                    for line, lineIndex in lines {
+                        printLine(lineIndex, line);
+                    }
 
-                let position = Vec2i(4, 0);
+                    let position = Vec2i(4, 0);
 
-                if texteditBehavior.cursorVisible {
-                    ui.div({
-                        id: lines.length + 1,
-                        style: {
-                            width: 1.0,
-                            height: characterSize.y,
-                        },
-                        presets: [
-                            presets.absolute(),
-                            presets.top(position.y as real * characterSize.y),
-                            presets.left(position.x as real * characterSize.x),
-                            presets.bg("#FFF"),
-                        ]
-                    }, (): void => {});
-                }
+                    if texteditBehavior.cursorVisible {
+                        ui.div({
+                            id: lines.length + 1,
+                            style: {
+                                width: 1.0,
+                                height: characterSize.y,
+                            },
+                            presets: [
+                                presets.absolute(),
+                                presets.top(position.y as real * characterSize.y),
+                                presets.left(position.x as real * characterSize.x),
+                                presets.bg("#FFF"),
+                            ]
+                        }, (): void => {});
+                    }
+                });
             });
         };
     });
