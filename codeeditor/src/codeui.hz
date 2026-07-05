@@ -244,7 +244,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             fmt.println("Received doc", json.stringify(value));
                         }
                         else {
-                            fmt.println("Failed", json.stringify(value))
+                            fmt.println("Failed", json.stringify(value));
                         }
                     });
                 }                
