@@ -15,13 +15,15 @@ export inline struct LSPError {
 
 export struct LSPResponse {
     jsonrpc: str;
-    id: int;
+    method?: str;
+    id?: int;
     result?: json.Node;
+    params?: json.Node;
     error?: LSPError;
 }
 
 export struct LSPRequest<Params> {
-    id: int;
+    id?: int;
     jsonrpc: str;
     method: str;
     params: Params;
@@ -44,8 +46,15 @@ struct LSPInitializeParams {
             languages: []str;
         };
         plugins: []Plugin;
+
+        struct TypeScript {
+            tsdk: str;
+        };
+        typescript?: TypeScript;
     };
     initializationOptions: InitializationOptions;
+
+    rootUri: str;
 
     struct Capabilities {};
     capabilities: Capabilities;
@@ -55,11 +64,6 @@ struct LSPInitializeParams {
         name: str;
     };
     workspaceFolders?: []WorkspaceFolder;
-
-    struct TypeScript {
-        tsdk: str;
-    };
-    typescript?: TypeScript;
 };
 
 export struct Context {
@@ -69,6 +73,8 @@ export struct Context {
 
     initResponse: rx.ShallowReactive<LSPInitResponse | none>;
     _inputBuffer: str = "";
+
+    _logAllRequests: bool = true;
 
     struct PendingRequest {
         requestId: int;
@@ -97,7 +103,7 @@ export struct Context {
             processId: 0,
             workspaceFolders: [
                 {
-                    uri: "/home/fzachs/Projects/technicalsketcher.web",
+                    uri: "file:///home/fzachs/Projects/technicalsketcher.web",
                     name: "technicalsketcher.web"
                 }
             ],
@@ -109,15 +115,18 @@ export struct Context {
                         location: "/home/fzachs/Projects/CodeEditor/node_modules/@vue/typescript-plugin",
                         languages: ["vue"],
                     }
-                ]
+                ],
+                typescript: {
+                    tsdk: "/home/fzachs/Projects/haze/codeeditor/syntax-engine/node_modules/typescript/lib",
+                }
             },
-            typescript: {
-                tsdk: "./codeeditor/syntax-engine/node_modules/typescript/lib",
-            }
+            rootUri: "file:///home/fzachs/Projects/technicalsketcher.web",
         }, (value: Result<LSPInitResponse, LSPError>) => {
             assert(value);
             context.initResponse := value;
         });
+
+        context.sendNotification<LSPInitializedNotification>("initialized", {});
 
         return context;
     }
@@ -159,8 +168,62 @@ export struct Context {
             },
         });
 
-        this._serverProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        this.writeRequest(request);
         return id;
+    }
+
+    fn writeRequest(request: str) {
+        if this._logAllRequests {
+            fmt.println(f" -> {request}");
+        }
+        this._serverProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+    }
+
+    fn sendNotification<TParams>(method: str, params: TParams) {
+        assert(this._running);
+        let request = json.stringify(LSPRequest<TParams> {
+            jsonrpc: "2.0",
+            method: method,
+            params: params,
+        });
+        this.writeRequest(request);
+    }
+
+    fn sendDocumentHoverRequest(filepath: str, line: int, character: int, callback: (response: Result<LSPDocumentHoverResponse, LSPError>) => none) {
+        this.sendRequest<LSPDocumentHoverRequestParams, LSPDocumentHoverResponse>("textDocument/hover", {
+            textDocument: {
+                uri: f"file://{filepath}",
+            },
+            position: {
+                line: line,
+                character: character,
+            },
+        }, callback);
+    }
+
+
+    fn sendDocumentPublishDiagnosticsNotifications(filepath: str, languageId: str, version: int, fileContent: str) {
+        // this.sendNotification<LSPOpenDocumentRequestParams>("textdocument/publishDiagnostics", {
+        //     uri: f"file://{filepath}",
+        //     diagnostics: [
+        //         {
+        //             range: {
+        //                 start: { line: ,  }
+        //             }
+        //         }
+        //     ]
+        // });
+    }
+
+    fn sendDocumentOpenNotification(filepath: str, languageId: str, version: int, fileContent: str) {
+        this.sendNotification<LSPOpenDocumentRequestParams>("textDocument/didOpen", {
+            textDocument: {
+                uri: f"file://{filepath}",
+                languageId: languageId,
+                version: version,
+                text: fileContent,
+            }
+        });
     }
 
     fn _processStdout(stdout: str) {
@@ -194,11 +257,19 @@ export struct Context {
         // Extract response and shift remaining packet forward
         let response = this._inputBuffer.slice(headerLength, headerLength + contentLength);
         let remainingPacket = this._inputBuffer.slice(totalPacketLength);
-        if remainingPacket.length > 0 {
-            this._inputBuffer = remainingPacket;
-        }
+        this._inputBuffer = remainingPacket;
 
         this._processResponse(response);
+    }
+
+    fn _dispatchNotificationResponse(method: str, response: json.Node) {
+        if method == "tsserver/request" {
+            // TODO: Implement this. This is a custom extension implemented by the Vue LSP
+            // fmt.println(json.stringify(response));
+        }
+        else {
+            fmt.println(f"Unsupported method '{method}'");
+        }
     }
 
     fn _dispatchResponse(requestId: int, response: json.Node | LSPError) {
@@ -241,7 +312,15 @@ export struct Context {
             return;
         }
 
+        if result.id is none {
+            assert(result.params, "Notifications require params obj");
+            assert(result.method, "Notifications require a method");
+            this._dispatchNotificationResponse(result.method, result.params);
+            return;
+        }
+
         if !result.result && !result.error {
+            fmt.println(response);
             fmt.println(f"LSP: Response invalid: Result and Error fields are both missing");
             return;
         }
@@ -249,6 +328,10 @@ export struct Context {
         if result.result && result.error {
             fmt.println(f"LSP: Response invalid: Result and Error fields both exist");
             return;
+        }
+
+        if this._logAllRequests {
+            fmt.println(f" <- {json.stringify(response)}");
         }
 
         if result.error {
@@ -266,6 +349,25 @@ export struct Context {
         this._running = false;
     }
 }
+
+export struct LSPDocumentHoverRequestParams {
+    struct TextDocument {
+        uri: str;
+    };
+    textDocument: TextDocument;
+
+    struct Position {
+        line: int;
+        character: int;
+    };
+    position: Position;
+}
+
+export struct LSPDocumentHoverResponse {
+
+}
+
+export struct LSPInitializedNotification {}
 
 export struct LSPInitResponse {
   struct Capabilities {

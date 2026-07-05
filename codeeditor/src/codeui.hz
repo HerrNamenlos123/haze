@@ -226,25 +226,18 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let opened = false;
         let runLspLoop = rx.computed(() => {
             ui.now();
-            if lsp {
+            if lsp && cache.data.file {
 
                 if !opened && lsp.initResponse {
                     opened = true;
                     assert(doc);
-                    fmt.println("Sending open request");
-                    lsp.sendRequest<language_server_protocol.LSPOpenDocumentRequestParams, language_server_protocol.LSPOpenDocumentResponseResult>("textdocument/didOpen", {
-                        textDocument: {
-                            uri: f"file://{cache.data.file}",
-                            languageId: "vue",
-                            version: 1,
-                            text: doc,
-                        }
-                    }, (value: Result<language_server_protocol.LSPOpenDocumentResponseResult, language_server_protocol.LSPError>) => {
-                        if value {
-                            fmt.println("Received doc", json.stringify(value));
+                    lsp.sendDocumentOpenNotification(cache.data.file, "vue", 1, doc);
+                    lsp.sendDocumentHoverRequest(cache.data.file, 5, 5, (response: Result<language_server_protocol.LSPDocumentHoverResponse, language_server_protocol.LSPError>) => {
+                        if response {
+                            fmt.println("HOVER", json.stringify(response));
                         }
                         else {
-                            fmt.println("Failed", json.stringify(value));
+                            fmt.println("no");
                         }
                     });
                 }                
