@@ -1908,10 +1908,13 @@ export class ModuleCompiler {
       }
       await execAsync(cmd);
 
+      // "c" tells ar not to print "ar: creating <file>" to stderr when the archive
+      // doesn't exist yet -- that's an informational notice, not a warning/error,
+      // but execAsync surfaces any non-empty stderr on a successful run.
       const archiveCmd =
         PLATFORM === Platform.Linux
-          ? `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
-          : `"${ARCHIVE_TOOL}" r "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`;
+          ? `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
+          : `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`;
       if (this.verbose) {
         this.printCmd(archiveCmd);
       }

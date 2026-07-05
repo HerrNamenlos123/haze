@@ -68,6 +68,11 @@ function isPowerOfTwo(x: bigint): boolean {
   return x > 0n && (x & (x - 1n)) === 0n;
 }
 
+// Thrown specifically when a generic parameter has zero deduction candidates (as opposed to
+// conflicting ones). Callers may catch this to retry after eagerly elaborating a deferred
+// closure argument to provide a missing candidate; see callExpr()'s promote-and-retry logic.
+class GenericDeductionIncompleteError extends CompilerError {}
+
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   inFunction: Semantic.SymbolId | null = null;
@@ -1343,7 +1348,7 @@ export class SemanticElaborator {
     });
 
     // Choose all arguments that can contribute to disambiguating an overloaded function call
-    const [calledExpr, calledExprId] =
+    const resolveCalledExpr = () =>
       constructorCalleeSymbol === null
         ? this.sr.e.expr(callExpr.calledExpr, {
             gonnaCallFunctionWithParameterValues: decisiveArguments,
@@ -1359,6 +1364,39 @@ export class SemanticElaborator {
             constructorCalleeSymbol.crossedLambdaScope,
             collectedExpr.sourceloc
           );
+
+    let calledExpr: Semantic.Expression;
+    let calledExprId: Semantic.ExprId;
+    try {
+      [calledExpr, calledExprId] = resolveCalledExpr();
+    } catch (e) {
+      if (!(e instanceof GenericDeductionIncompleteError)) {
+        throw e;
+      }
+
+      // Generic deduction failed because it had no candidates for some parameter. If any
+      // argument was deferred specifically because it's a return-type-less closure, promote
+      // it to decisive now (eagerly elaborate it from its body, exactly as the decisive path
+      // above would have) and retry once. Closures deferred for other reasons (e.g. untyped
+      // anonymous struct literals) are left alone -- they have no body-inference fallback and
+      // promoting them would just relocate an unrelated, unfixable failure.
+      let promotedAny = false;
+      callExpr.arguments.forEach((p, i) => {
+        if (decisiveArguments[i].exprId !== null) {
+          return;
+        }
+        if (!isDeferredClosureArgument(this.sr, p)) {
+          return;
+        }
+        decisiveArguments[i] = { index: i, exprId: this.sr.e.expr(p, inference)[1] };
+        promotedAny = true;
+      });
+
+      if (!promotedAny) {
+        throw e;
+      }
+      [calledExpr, calledExprId] = resolveCalledExpr();
+    }
 
     // Handle intrinsic function calls
     if (calledExpr.variant === Semantic.ENode.IntrinsicSymbol) {
@@ -5081,7 +5119,7 @@ export class SemanticElaborator {
       if (!inferredType) {
         const genericSym = this.sr.cc.symbolNodes.get(genericParamSymbolId);
         assert(genericSym.variant === Collect.ENode.GenericTypeParameterSymbol);
-        throw new CompilerError(
+        throw new GenericDeductionIncompleteError(
           `Could not infer generic parameter '${genericSym.name}' for function '${collectedFunc.name}'. Please specify it explicitly.`,
           sourceloc
         );
@@ -15187,49 +15225,45 @@ export function IsExprDecisiveForOverloadResolution(
       return IsExprDecisiveForOverloadResolution(sr, expr.expr);
     }
 
-    // A callable whose body is solely `return <anonymous-struct>` is NOT
-    // decisive: the anonymous struct requires the expected parameter type to
-    // infer its concrete type, so the callable must be elaborated after the
-    // overload is resolved and the parameter type is known.
+    // A callable with no explicit return type annotation is NOT decisive:
+    // its return type may need to be inferred from the expected parameter
+    // type (e.g. a callable-typed parameter or generic argument), so it must
+    // be elaborated after the overload is resolved and that type is known.
+    // If the expected type turns out to depend on this very closure (e.g. a
+    // generic parameter that can only be deduced from it), callExpr() will
+    // catch the resulting GenericDeductionIncompleteError and promote it to
+    // decisive on retry — see isDeferredClosureArgument below.
     case Collect.ENode.CallableExpr: {
       const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
       if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
         return true;
       }
-      if (funcSym.functionScope === null) {
-        return true;
-      }
-      const funcScope = sr.cc.scopeNodes.get(funcSym.functionScope);
-      if (funcScope.variant !== Collect.ENode.FunctionScope) {
-        return true;
-      }
-      const blockScope = sr.cc.scopeNodes.get(funcScope.blockScope);
-      if (blockScope.variant !== Collect.ENode.BlockScope) {
-        return true;
-      }
-      if (blockScope.statements.length !== 1) {
-        return true;
-      }
-      const stmt = sr.cc.statementNodes.get(blockScope.statements[0]);
-      if (stmt.variant !== Collect.ENode.ReturnStatement || !stmt.expr) {
-        return true;
-      }
-      const retExpr = sr.cc.exprNodes.get(stmt.expr);
-      // Unwrap parentheses
-      const innerExpr =
-        retExpr.variant === Collect.ENode.ParenthesisExpr
-          ? sr.cc.exprNodes.get(retExpr.expr)
-          : retExpr;
-      if (
-        innerExpr.variant === Collect.ENode.AggregateLiteralExpr &&
-        innerExpr.structType === null
-      ) {
-        return false;
-      }
-      return true;
+      return funcSym.returnType !== null;
     }
 
     default:
       return true;
   }
+}
+
+// Identifies arguments that IsExprDecisiveForOverloadResolution deferred specifically because
+// they are closures without an explicit return type (as opposed to e.g. untyped anonymous
+// struct literals, which are also deferred but have no body-inference fallback and must never
+// be promoted). Used by callExpr()'s promote-and-retry logic after a failed generic deduction.
+function isDeferredClosureArgument(
+  sr: Semantic.Context,
+  exprId: Collect.ExprId
+): boolean {
+  const expr = sr.cc.exprNodes.get(exprId);
+  if (expr.variant === Collect.ENode.ParenthesisExpr) {
+    return isDeferredClosureArgument(sr, expr.expr);
+  }
+  if (expr.variant !== Collect.ENode.CallableExpr) {
+    return false;
+  }
+  const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
+  if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
+    return false;
+  }
+  return funcSym.returnType === null;
 }
