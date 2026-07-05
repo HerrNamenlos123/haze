@@ -232,7 +232,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     opened = true;
                     assert(doc);
                     lsp.sendDocumentOpenNotification(cache.data.file, "vue", 1, doc);
-                    lsp.sendDocumentHoverRequest(cache.data.file, 5, 5, (response: Result<language_server_protocol.LSPDocumentHoverResponse, language_server_protocol.LSPError>) => {
+                    lsp.sendDocumentHoverRequest(cache.data.file, 11, 19, (response: Result<language_server_protocol.LSPDocumentHoverResponse, language_server_protocol.LSPError>) => {
                         if response {
                             fmt.println("HOVER", json.stringify(response));
                         }
@@ -369,7 +369,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         printLine(lineIndex, line);
                     }
 
-                    let position = Vec2i(4, 0);
+                    let position = Vec2i(19, 11);
 
                     if texteditBehavior.cursorVisible {
                         ui.div({
