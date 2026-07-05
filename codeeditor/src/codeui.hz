@@ -248,9 +248,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 id: 0,
                 style: {
                     direction: ui_styling.Direction.Column,
-                    fontFamily: "roboto",
+                    fontFamily: "JetBrainsMonoNerdFont-Regular",
                     fontSize: 16.0,
-                    textColor: Color(1, 1, 1, 1),
+                    textColor: "#FFF" as Color,
                 },
                 presets: [
                     presets.wGrow(),
@@ -269,6 +269,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }, (): void => {
                 let lines: []str = rx.get(docLines);
                 let id = 1;
+
+                let characterSize = ui.measureText("X");
 
                 let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
                     let parts: []HighlightToken = [];
@@ -331,17 +333,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     });
                 };
 
-                ui.div({
-                    id: 0,
-                    presets: [
-                        presets.fontFamily("JetBrainsMonoNerdFont-Regular"),
-                        presets.col(),
-                    ]
-                }, (): void => {
-                    for line, lineIndex in lines {
-                        printLine(lineIndex, line);
-                    }
-                });
+                for line, lineIndex in lines {
+                    printLine(lineIndex, line);
+                }
             });
         };
     });

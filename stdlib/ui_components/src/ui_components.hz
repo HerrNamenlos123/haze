@@ -573,16 +573,53 @@ export opaque struct UIContext {
         return this._timeNow;
     }
 
-    // Measures a standalone run of text (e.g. a single word or label) by
-    // font family name -- resolves the same way and uses the same real
-    // glyph-advance measurement the layout engine applies when it actually
-    // lays this text out (see ui_runtime.Runtime, which wires this up),
-    // so a component can size itself around text before/without waiting on
-    // a layout pass. Callable from anywhere ui (UIContext) is reachable,
-    // e.g. from inside a component's setup or template closure.
-    fn measureText(fontFamily: str, fontSize: real, text: str): Vec2 {
+    // Finds whichever font family/size is currently in effect at this exact
+    // point in the tree, by walking the div-ancestor chain -- renderStack,
+    // innermost (top) first -- the same way ui_layout's render-time cascade
+    // walks its fontFamilyStack/fontSizeStack. Each div already has its
+    // fully-resolved style by the time childrenFn() runs (see div() below:
+    // computeDivStyle() happens before the push), so this sees exactly the
+    // same values a sibling ui.text() call at this point would inherit.
+    // Falls back to "default"/16.0 if nothing in the chain sets it, matching
+    // the root defaults ui_layout.Context.render() itself pushes before
+    // walking the tree.
+    fn currentFontFamily(): str {
+        let i = this.renderStack.length - 1;
+        while i >= 0 {
+            let fontFamily = this.renderStack[i].currentParent.style.fontFamily;
+            if fontFamily {
+                return fontFamily;
+            }
+            i = i - 1;
+        }
+        return "default";
+    }
+
+    fn currentFontSize(): real {
+        let i = this.renderStack.length - 1;
+        while i >= 0 {
+            let fontSize = this.renderStack[i].currentParent.style.fontSize;
+            if fontSize {
+                return fontSize;
+            }
+            i = i - 1;
+        }
+        return 16.0;
+    }
+
+    // Measures a standalone run of text (e.g. a single word or label) using
+    // the same real glyph-advance measurement the layout engine applies when
+    // it actually lays this text out (see ui_runtime.Runtime, which wires
+    // this up) -- so a component can size itself around text before/without
+    // waiting on a layout pass. fontFamily/fontSize default to whatever is
+    // currently cascading at this point in the tree (see currentFontFamily/
+    // currentFontSize above), i.e. exactly what a sibling ui.text() call
+    // would use; pass them explicitly to measure as a different font/size.
+    fn measureText(text: str, fontFamily?: str, fontSize?: real): Vec2 {
+        let family = fontFamily ? fontFamily : this.currentFontFamily();
+        let size = fontSize ? fontSize : this.currentFontSize();
         assert(this._measureText, "measureText was not provided to this UIContext (see UIContextArgs.measureText)");
-        return this._measureText(fontFamily, fontSize, text);
+        return this._measureText(family, size, text);
     }
 
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.
