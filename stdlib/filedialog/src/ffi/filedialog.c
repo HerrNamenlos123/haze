@@ -1,6 +1,6 @@
 
 #include <hzstd/include/hzstd_array.h>
-#include <hzstd/include/hzstd_types.h>
+#include <hzstd/hzstd_types.h>
 #include <hzstd/include/hzstd_string.h>
 
 #include "ffi/nfd.h"

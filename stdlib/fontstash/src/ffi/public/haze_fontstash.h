@@ -2,7 +2,7 @@
 #ifndef HAZE_FONTSTASH_H
 #define HAZE_FONTSTASH_H
 
-#include "hzstd/include/hzstd_types.h"
+#include "hzstd/hzstd_types.h"
 
 typedef struct {
   hzstd_f32_t x0;

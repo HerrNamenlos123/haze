@@ -2,7 +2,7 @@
 #ifndef HZUI_PUBLIC_H
 #define HZUI_PUBLIC_H
 
-#include "hzstd/include/hzstd_types.h"
+#include "hzstd/hzstd_types.h"
 #include "hzstd/include/hzstd_string.h"
 #include "hzstd/include/hzstd_utils.h"
 

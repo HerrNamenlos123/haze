@@ -1,6 +1,6 @@
 
 #include "ffi/hzui_public.h"
-#include "hzstd/include/hzstd_types.h"
+#include "hzstd/hzstd_types.h"
 #include "hzstd/include/hzstd_memory.h"
 #include "hzstd/include/hzstd_runtime.h"
 #include "hzstd/include/hzstd_string.h"
