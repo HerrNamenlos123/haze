@@ -2,54 +2,16 @@
 #ifndef HZSTD_RUNTIME_H
 #define HZSTD_RUNTIME_H
 
+#include "hzstd_types.h"
 #include "hzstd_array.h"
-#include "hzstd_common.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
-#include <setjmp.h>
 #include <stdio.h>
 
-// ── Stack frame & trace types ────────────────────────────────────────────────
-
-typedef struct {
-  size_t id;
-  hzstd_cptr_t instructionPointer;
-  hzstd_str_t name;
-  hzstd_source_location_t sourceloc; /* absent when _filename.length == 0 */
-} hzstd_stackframe_t;
-
-typedef enum {
-  // This must match with system.hz!!!
-  hzstd_panic_type_unknown = 0,
-  hzstd_panic_type_user = 1,
-  hzstd_panic_type_segfault = 2,
-  hzstd_panic_type_stackoverflow = 3,
-  hzstd_panic_type_arithmetic = 4,
-} hzstd_panic_type_t;
-
-// Captured stack frames (value type — no heap allocation for the wrapper).
-// The frames array inside IS heap-allocated; the struct itself is a value.
-typedef struct {
-  hzstd_dynamic_array_t* frames; /* hzstd_stackframe_t[], heap-allocated */
-  hzstd_int_t skip_n_frames;
-} hzstd_stacktrace_t;
-
-// Full panic context: message, type, and frames (value type).
-typedef struct {
-  hzstd_stacktrace_t stacktrace;
-  hzstd_str_t message;
-  hzstd_panic_type_t type;
-} hzstd_panic_info_t;
-
-// ── longjmp shim ─────────────────────────────────────────────────────────────
-//
-// We use plain jmp_buf / setjmp / longjmp on all platforms.  On Linux the
-// signal mask is restored manually after longjmp (see hzstd_platform_linux.c)
-// so sigjmp_buf is not needed in this shared header.
-
-#define HZSTD_JMP_BUF jmp_buf
-#define HZSTD_SETJMP(buf) setjmp(buf)
-#define HZSTD_LONGJMP(buf, v) longjmp((buf), (v))
+// hzstd_stackframe_t, hzstd_panic_type_t, hzstd_stacktrace_t,
+// hzstd_panic_info_t, HZSTD_JMP_BUF/SETJMP/LONGJMP,
+// hzstd_panic_recovery_cleanup_entry_t, hzstd_panic_recovery_frame_t are
+// defined in hzstd_types.h.
 
 // ── Thread-local panic stacktrace ────────────────────────────────────────────
 //
@@ -57,19 +19,6 @@ typedef struct {
 // the nearest recovery frame.  Read it from the recover: label that follows a
 // HAZE_ATTEMPT block.  NULL if no panic has reached this thread.
 extern _Thread_local hzstd_panic_info_t _hz_panic_stacktrace;
-
-// ── Panic recovery frame ─────────────────────────────────────────────────────
-
-typedef struct {
-  void (*fn)(void*);
-  void* env;
-} hzstd_panic_recovery_cleanup_entry_t;
-
-typedef struct {
-  hzstd_dynamic_array_t* cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
-  HZSTD_JMP_BUF recovery_point;
-  hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
-} hzstd_panic_recovery_frame_t;
 
 // ── Recovery frame API ───────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 
 #include "../include/hzstd_memory.h"
-#include "../include/hzstd_common.h"
+#include "../include/hzstd_types.h"
 
 #include "../include/hzstd_array.h"
 #include "../include/hzstd_demangle.h"

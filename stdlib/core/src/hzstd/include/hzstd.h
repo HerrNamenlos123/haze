@@ -2,6 +2,7 @@
 #ifndef HZSTD_H
 #define HZSTD_H
 
+#include "hzstd_types.h"
 #include "hzstd_arithmetic.h"
 #include "hzstd_demangle.h"
 #include "hzstd_env.h"

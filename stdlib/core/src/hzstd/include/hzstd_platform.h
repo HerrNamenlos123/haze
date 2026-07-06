@@ -2,28 +2,11 @@
 #ifndef HZSTD_PLATFORM_H
 #define HZSTD_PLATFORM_H
 
+#include "hzstd_types.h"
 #include "hzstd_array.h"
-#include "hzstd_common.h"
 #include "hzstd_runtime.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
-
-#if defined(HAZE_PLATFORM_LINUX)
-#include "hzstd_platform_linux.h"
-#elif defined(HAZE_PLATFORM_WIN32)
-#include "hzstd_platform_win32.h"
-#else
-#error Unsupported platform for Haze stdlib, compiler defines are not set correctly
-#endif
-
-typedef hzstd_u64_t hzstd_thread_id_t;
-typedef hzstd_u64_t hzstd_process_id_t;
-
-typedef enum {
-  hzstd_platform_runtime_unknown = 0,
-  hzstd_platform_runtime_linux = 1,
-  hzstd_platform_runtime_win32 = 2,
-} hzstd_platform_runtime_t;
 
 static inline hzstd_platform_runtime_t hzstd_platform_runtime(void)
 {
@@ -49,7 +32,10 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
 bool hzstd_get_cwd(char* buf, size_t buf_size);
 
-bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore);
+// Allocates and constructs a new semaphore, initial count 0. Returns NULL on failure.
+hzstd_semaphore_t* hzstd_create_semaphore(void);
+// Releases OS resources and frees the handle. Must not be used again afterward.
+void hzstd_destroy_semaphore(hzstd_semaphore_t* semaphore);
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
 void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
 // Returns true if signaled before the timeout, false if it timed out. A `timeout_ns` of 0 is a
@@ -59,12 +45,6 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeo
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);
-
-typedef struct {
-  int exit_code;
-  char* stdout_data;
-  char* stderr_data;
-} hzstd_process_result_t;
 
 int hzstd_spawn_process(hzstd_str_t exe,
                         hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
@@ -78,12 +58,6 @@ int hzstd_spawn_process(hzstd_str_t exe,
 // Opaque handle (defined privately per-platform) for a process spawned in the
 // background. stdin/stdout/stderr are always piped so the caller can interact
 // with the child; use hzstd_process_release once the process is no longer needed.
-
-typedef struct {
-  void* handle; /* opaque hzstd_process_t*, NULL on failure */
-  int error_code; /* 0 on success */
-  char* error_message; /* GC string, may be NULL */
-} hzstd_process_spawn_result_t;
 
 hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
                         hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */

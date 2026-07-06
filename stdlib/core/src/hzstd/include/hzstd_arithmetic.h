@@ -2,7 +2,7 @@
 #ifndef HZSTD_ARITHMETIC_H
 #define HZSTD_ARITHMETIC_H
 
-#include "hzstd_common.h"
+#include "hzstd_types.h"
 #include "hzstd_runtime.h"
 
 // This file defines arithmetic functions that implement runtime overflow

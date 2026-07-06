@@ -2,11 +2,11 @@
 #ifndef HZSTD_JSON_H
 #define HZSTD_JSON_H
 
-#include "../hzstd_common.h"
+#include "../hzstd_types.h"
 #include "../hzstd_memory.h"
 #include "../hzstd_string.h"
 
-typedef struct hzstd_json_node_t hzstd_json_node_t;
+// hzstd_json_node_t is defined in hzstd_types.h.
 
 hzstd_json_node_t *hzstd_json_parse(hzstd_allocator_t allocator,
                                     hzstd_str_t data, hzstd_str_ref_t *error);

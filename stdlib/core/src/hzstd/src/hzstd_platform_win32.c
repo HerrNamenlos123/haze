@@ -6,7 +6,7 @@
 #include <excpt.h>
 #include <windows.h>
 
-#include "../include/hzstd_platform_win32.h"
+#include "../include/hzstd_types.h"
 #include <synchapi.h>
 
 #include <dbghelp.h>
@@ -26,27 +26,36 @@
 
 #include <minwinbase.h>
 
-// ── Platform init ─────────────────────────────────────────────────────────────
+// ── Semaphore ────────────────────────────────────────────────────────────────
+//
+// hzstd_semaphore_t is opaque in hzstd_types.h -- its concrete layout (a
+// win32 HANDLE) is private to this file, so callers only ever need the type
+// layer plus this module's function pointer table, never knowing which
+// platform is underneath.
 
-static hzstd_semaphore_t infinite_block_event;
-static int64_t           startup_counter_qpc;
-static int64_t           perf_frequency_qpc;
+struct hzstd_semaphore_t {
+  HANDLE handle;
+};
 
-void hzstd_initialize_platform(void) {
-  assert(hzstd_create_semaphore(&infinite_block_event));
-  hzstd_time_now(); // force lazy init; t=0 is application startup
-}
-
-_Noreturn void hzstd_block_thread_forever(void) {
-  hzstd_wait_for_semaphore(&infinite_block_event);
-  abort();
-}
-
-bool hzstd_create_semaphore(hzstd_semaphore_t *semaphore) {
+hzstd_semaphore_t *hzstd_create_semaphore(void) {
+  hzstd_semaphore_t *semaphore = malloc(sizeof(hzstd_semaphore_t));
+  if (!semaphore) {
+    return NULL;
+  }
   semaphore->handle = CreateEvent(NULL, FALSE, FALSE, NULL);
-  if (semaphore->handle == NULL)
-    hzstd_trap_ccstr("hzstd_create_semaphore: CreateEvent failed");
-  return true;
+  if (semaphore->handle == NULL) {
+    free(semaphore);
+    return NULL;
+  }
+  return semaphore;
+}
+
+void hzstd_destroy_semaphore(hzstd_semaphore_t *semaphore) {
+  if (!semaphore) {
+    return;
+  }
+  CloseHandle(semaphore->handle);
+  free(semaphore);
 }
 
 bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore) {
@@ -60,6 +69,23 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore) {
 bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeout_ns) {
   DWORD timeout_ms = (DWORD)(timeout_ns / 1000000ull);
   return WaitForSingleObject(semaphore->handle, timeout_ms) == WAIT_OBJECT_0;
+}
+
+// ── Platform init ─────────────────────────────────────────────────────────────
+
+static hzstd_semaphore_t *infinite_block_event;
+static int64_t           startup_counter_qpc;
+static int64_t           perf_frequency_qpc;
+
+void hzstd_initialize_platform(void) {
+  infinite_block_event = hzstd_create_semaphore();
+  assert(infinite_block_event);
+  hzstd_time_now(); // force lazy init; t=0 is application startup
+}
+
+_Noreturn void hzstd_block_thread_forever(void) {
+  hzstd_wait_for_semaphore(infinite_block_event);
+  abort();
 }
 
 // ── Panic global state ────────────────────────────────────────────────────────
@@ -97,8 +123,8 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 
 // panic_trigger  : panicking thread → worker
 // panic_response : worker → panicking thread (recovery or build_only)
-static hzstd_semaphore_t panic_trigger;
-static hzstd_semaphore_t panic_response;
+static hzstd_semaphore_t *panic_trigger;
+static hzstd_semaphore_t *panic_response;
 
 static hzstd_stacktrace_t  panic_built_stacktrace; /* build-only mode result (value) */
 static hzstd_panic_info_t  panic_info_storage;     /* panic mode result (value)      */
@@ -135,7 +161,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
   }
 
   for (;;) {
-    hzstd_wait_for_semaphore(&panic_trigger);
+    hzstd_wait_for_semaphore(panic_trigger);
 
     hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
@@ -236,7 +262,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       panic_built_stacktrace.frames        = frameArray;
       panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
       atomic_store(&panic_in_progress, 0);
-      hzstd_trigger_semaphore(&panic_response);
+      hzstd_trigger_semaphore(panic_response);
     } else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len  = panic_reason.length;
@@ -252,7 +278,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _) {
       if (has_recovery) {
         panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
         atomic_store(&panic_in_progress, 0);
-        hzstd_trigger_semaphore(&panic_response);
+        hzstd_trigger_semaphore(panic_response);
       } else {
         hzstd_print_panic_report(&panic_info_storage);
         fflush(stdout);
@@ -317,7 +343,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
                                : NULL;
   panic_mode             = PANIC_MODE_CRASH;
 
-  hzstd_trigger_semaphore(&panic_trigger);
+  hzstd_trigger_semaphore(panic_trigger);
 
   if (panic_recovery_target == NULL) {
     // Worker will print & _exit; park this thread.
@@ -325,7 +351,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo) {
   }
 
   // Wait for the worker to finish building the stacktrace.
-  WaitForSingleObject(panic_response.handle, INFINITE);
+  WaitForSingleObject(panic_response->handle, INFINITE);
 
   // Restore the guard page BEFORE any further stack use (including longjmp
   // itself uses a tiny amount of stack, which is fine with the guarantee).
@@ -359,12 +385,12 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg,
                                : NULL;
   panic_mode             = PANIC_MODE_CRASH;
 
-  hzstd_trigger_semaphore(&panic_trigger);
+  hzstd_trigger_semaphore(panic_trigger);
 
   if (panic_recovery_target == NULL)
     hzstd_block_thread_forever();
 
-  WaitForSingleObject(panic_response.handle, INFINITE);
+  WaitForSingleObject(panic_response->handle, INFINITE);
 
   _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
   HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
@@ -386,8 +412,8 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames) {
   panic_recovery_target  = NULL;
   panic_mode             = PANIC_MODE_BUILD_ONLY;
 
-  hzstd_trigger_semaphore(&panic_trigger);
-  WaitForSingleObject(panic_response.handle, INFINITE);
+  hzstd_trigger_semaphore(panic_trigger);
+  WaitForSingleObject(panic_response->handle, INFINITE);
 
   return panic_built_stacktrace;
 }
@@ -395,8 +421,9 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames) {
 // ── hzstd_setup_panic_handler ─────────────────────────────────────────────────
 
 void hzstd_setup_panic_handler(void) {
-  assert(hzstd_create_semaphore(&panic_trigger));
-  assert(hzstd_create_semaphore(&panic_response));
+  panic_trigger = hzstd_create_semaphore();
+  panic_response = hzstd_create_semaphore();
+  assert(panic_trigger && panic_response);
 
   HANDLE hWorker = CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
   (void)hWorker;

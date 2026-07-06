@@ -1,16 +1,12 @@
 #ifndef HZSTD_ARRAY_H
 #define HZSTD_ARRAY_H
 
-#include <stdlib.h>
-
-#include "hzstd_memory.h"
-
 #include <assert.h>
 #include <inttypes.h>
-#include <stdalign.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <string.h>
+
+#include "hzstd_types.h"
+#include "hzstd_memory.h"
 
 #define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4
 
@@ -90,34 +86,6 @@
     }                                                                          \
     __hz_temp_element;                                                         \
   })
-
-/*
- * Dynamic arrays are GC-managed mutable objects.
- *
- * - The control structure is allocated using the provided allocator.
- * - The backing buffer is always allocated on the GC heap and may be
- *   reallocated independently of the allocator used for the control structure.
- *
- * This design avoids conflicts between realloc semantics and arena allocation.
- */
-
-typedef struct {
-  void *buffer;
-  size_t elem_size;
-  size_t size;
-  size_t capacity;
-} hzstd_dynamic_array_t;
-
-// This type is to be used for encoding the actual type in the code, so we know
-// what it is, even if actually irrelevant.
-#define HZSTD_DARRAY(arraytype) hzstd_dynamic_array_t *
-
-typedef enum {
-  hzstd_dynamic_array_result_ok,
-  hzstd_dynamic_array_result_max_array_size,
-  hzstd_dynamic_array_result_out_of_memory,
-  hzstd_dynamic_array_result_out_of_bounds,
-} hzstd_dynamic_array_result_t;
 
 hzstd_dynamic_array_t *hzstd_dynamic_array_create(hzstd_allocator_t allocator,
                                                   size_t elem_size,

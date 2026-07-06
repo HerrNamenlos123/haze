@@ -1,7 +1,7 @@
 
 // This file is conditionally imported in hzstd_main.c depending on platform!
 
-#include "../include/hzstd_platform_linux.h"
+#include "../include/hzstd_types.h"
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_string.h"
 #include <signal.h>
@@ -34,27 +34,36 @@
 
 extern char** environ;
 
-// ── Platform init ─────────────────────────────────────────────────────────────
+// ── Semaphore ────────────────────────────────────────────────────────────────
+//
+// hzstd_semaphore_t is opaque in hzstd_types.h -- its concrete layout (sem_t)
+// is private to this file, so callers only ever need the type layer plus this
+// module's function pointer table, never knowing which platform is underneath.
 
-static hzstd_semaphore_t infinite_block_event;
-static struct timespec startup_ts;
+struct hzstd_semaphore_t {
+  sem_t handle;
+};
 
-void hzstd_initialize_platform(void)
+hzstd_semaphore_t* hzstd_create_semaphore(void)
 {
-  assert(hzstd_create_semaphore(&infinite_block_event));
-  clock_gettime(CLOCK_MONOTONIC, &startup_ts);
+  hzstd_semaphore_t* semaphore = malloc(sizeof(hzstd_semaphore_t));
+  if (!semaphore) {
+    return NULL;
+  }
+  if (sem_init(&semaphore->handle, 0, 0) != 0) {
+    free(semaphore);
+    return NULL;
+  }
+  return semaphore;
 }
 
-_Noreturn void hzstd_block_thread_forever(void)
+void hzstd_destroy_semaphore(hzstd_semaphore_t* semaphore)
 {
-  hzstd_wait_for_semaphore(&infinite_block_event);
-  abort();
-}
-
-bool hzstd_create_semaphore(hzstd_semaphore_t* semaphore)
-{
-  assert(sem_init(&semaphore->handle, 0, 0) == 0);
-  return true;
+  if (!semaphore) {
+    return;
+  }
+  sem_destroy(&semaphore->handle);
+  free(semaphore);
 }
 
 bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&semaphore->handle) == 0; }
@@ -98,6 +107,24 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeo
   return true;
 }
 
+// ── Platform init ─────────────────────────────────────────────────────────────
+
+static hzstd_semaphore_t* infinite_block_event;
+static struct timespec startup_ts;
+
+void hzstd_initialize_platform(void)
+{
+  infinite_block_event = hzstd_create_semaphore();
+  assert(infinite_block_event);
+  clock_gettime(CLOCK_MONOTONIC, &startup_ts);
+}
+
+_Noreturn void hzstd_block_thread_forever(void)
+{
+  hzstd_wait_for_semaphore(infinite_block_event);
+  abort();
+}
+
 // ── Panic global state ────────────────────────────────────────────────────────
 //
 // DESIGN: hzstd_panic_with_stacktrace and the signal handler do as little as
@@ -136,8 +163,8 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 
 // panic_trigger  : panicking thread → worker (start building)
 // panic_response : worker → panicking thread (done; longjmp or return)
-static hzstd_semaphore_t panic_trigger;
-static hzstd_semaphore_t panic_response;
+static hzstd_semaphore_t* panic_trigger;
+static hzstd_semaphore_t* panic_response;
 
 // Set by worker before signaling panic_response.
 static hzstd_stacktrace_t panic_built_stacktrace; /* build-only mode result (value) */
@@ -284,7 +311,7 @@ static void* hzstd_panic_handler_thread(void* _)
   (void)_;
 
   for (;;) {
-    hzstd_wait_for_semaphore(&panic_trigger);
+    hzstd_wait_for_semaphore(panic_trigger);
 
     // Never GC-backed -- see the big comment above this function.
     hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
@@ -314,7 +341,7 @@ static void* hzstd_panic_handler_thread(void* _)
       panic_built_stacktrace.frames = frameArray;
       panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
       atomic_store(&panic_in_progress, 0);
-      hzstd_trigger_semaphore(&panic_response);
+      hzstd_trigger_semaphore(panic_response);
     }
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
@@ -331,7 +358,7 @@ static void* hzstd_panic_handler_thread(void* _)
       if (has_recovery) {
         panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
         atomic_store(&panic_in_progress, 0);
-        hzstd_trigger_semaphore(&panic_response);
+        hzstd_trigger_semaphore(panic_response);
       }
       else {
         hzstd_print_panic_report(&panic_info_storage);
@@ -431,7 +458,7 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   panic_mode = PANIC_MODE_CRASH;
 
   // Hand off to worker.
-  hzstd_trigger_semaphore(&panic_trigger);
+  hzstd_trigger_semaphore(panic_trigger);
 
   if (panic_recovery_target == NULL) {
     // Worker will print & _exit; park this thread.
@@ -439,7 +466,7 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   }
 
   // Wait for worker to finish building the stacktrace.
-  hzstd_wait_for_semaphore(&panic_response);
+  hzstd_wait_for_semaphore(panic_response);
 
   // Restore the signal mask: plain longjmp (unlike siglongjmp) does not
   // unblock signals, so SIGSEGV would remain blocked after the jump.
@@ -479,13 +506,13 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
 
-  hzstd_trigger_semaphore(&panic_trigger);
+  hzstd_trigger_semaphore(panic_trigger);
 
   if (panic_recovery_target == NULL) {
     hzstd_block_thread_forever();
   }
 
-  hzstd_wait_for_semaphore(&panic_response);
+  hzstd_wait_for_semaphore(panic_response);
 
   _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
   HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
@@ -512,8 +539,8 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   panic_recovery_target = NULL;
   panic_mode = PANIC_MODE_BUILD_ONLY;
 
-  hzstd_trigger_semaphore(&panic_trigger);
-  hzstd_wait_for_semaphore(&panic_response);
+  hzstd_trigger_semaphore(panic_trigger);
+  hzstd_wait_for_semaphore(panic_response);
 
   return panic_built_stacktrace;
 }
@@ -574,8 +601,9 @@ void hzstd_setup_panic_handler(void)
   // it is dead anyways, so that when the GC hits it, it has enough stack space.
   static thread_local char altstack_buf[65536];
 
-  assert(hzstd_create_semaphore(&panic_trigger));
-  assert(hzstd_create_semaphore(&panic_response));
+  panic_trigger = hzstd_create_semaphore();
+  panic_response = hzstd_create_semaphore();
+  assert(panic_trigger && panic_response);
 
   pthread_t worker;
   int result = pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);
