@@ -5,7 +5,7 @@
 #include <inttypes.h>
 #include <string.h>
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_memory.h"
 
 #define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4

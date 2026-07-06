@@ -6,7 +6,7 @@
 #include <excpt.h>
 #include <windows.h>
 
-#include "../include/hzstd_types.h"
+#include "../hzstd_types.h"
 #include <synchapi.h>
 
 #include <dbghelp.h>

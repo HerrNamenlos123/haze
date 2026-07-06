@@ -2,7 +2,7 @@
 #ifndef HZSTD_MEMORY_H
 #define HZSTD_MEMORY_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 
 void* hzstd_heap_allocate(size_t size);
 void* hzstd_heap_allocate_atomic(size_t size);

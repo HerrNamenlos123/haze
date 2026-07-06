@@ -2,7 +2,7 @@
 #ifndef HZSTD_UTILS_H
 #define HZSTD_UTILS_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_string.h"
 
 // hzstd_color_t, hzstd_colorf_t, hzstd_vec2_t, hzstd_vec2f_t, hzstd_vec2i_t,

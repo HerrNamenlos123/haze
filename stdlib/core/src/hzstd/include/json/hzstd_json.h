@@ -2,7 +2,7 @@
 #ifndef HZSTD_JSON_H
 #define HZSTD_JSON_H
 
-#include "../hzstd_types.h"
+#include "../../hzstd_types.h"
 #include "../hzstd_memory.h"
 #include "../hzstd_string.h"
 

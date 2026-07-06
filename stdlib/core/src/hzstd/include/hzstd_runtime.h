@@ -2,7 +2,7 @@
 #ifndef HZSTD_RUNTIME_H
 #define HZSTD_RUNTIME_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_array.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"

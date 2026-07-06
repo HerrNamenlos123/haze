@@ -2,7 +2,7 @@
 #ifndef HZSTD_REGEX_H
 #define HZSTD_REGEX_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_array.h"
 #include "hzstd_string.h"
 

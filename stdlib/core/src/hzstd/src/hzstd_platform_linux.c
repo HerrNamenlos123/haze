@@ -1,7 +1,7 @@
 
 // This file is conditionally imported in hzstd_main.c depending on platform!
 
-#include "../include/hzstd_types.h"
+#include "../hzstd_types.h"
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_string.h"
 #include <signal.h>

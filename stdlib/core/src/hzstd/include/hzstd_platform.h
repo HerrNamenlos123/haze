@@ -2,7 +2,7 @@
 #ifndef HZSTD_PLATFORM_H
 #define HZSTD_PLATFORM_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_array.h"
 #include "hzstd_runtime.h"
 #include "hzstd_source_location.h"

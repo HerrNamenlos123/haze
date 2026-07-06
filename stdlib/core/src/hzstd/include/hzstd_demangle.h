@@ -2,7 +2,7 @@
 #ifndef HZSTD_DEMANGLE_H
 #define HZSTD_DEMANGLE_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_string.h"
 #include "hzstd_memory.h"
 

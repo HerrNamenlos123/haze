@@ -2,7 +2,7 @@
 #ifndef HZSTD_FILESYSTEM_H
 #define HZSTD_FILESYSTEM_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 #include "hzstd_string.h"
 
 // hzstd_fs_error_code_t, hzstd_fs_error_t, hzstd_fs_copy_options_t,

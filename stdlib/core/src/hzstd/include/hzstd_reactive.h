@@ -2,7 +2,7 @@
 #ifndef HZSTD_REACTIVE_H
 #define HZSTD_REACTIVE_H
 
-#include "hzstd_types.h"
+#include "../hzstd_types.h"
 
 // hzstd_computed_fn_t, hzstd_dep_edge_t, hzstd_node_t, hzstd_cell_dep_t,
 // hzstd_reactive_cell_t, hzstd_computed_node_t are defined in hzstd_types.h.
