@@ -47,8 +47,8 @@ namespace process {
 
   export struct RunCapturedResult {
     exitCode: int;
-    stdout: str;
-    stderr: str;
+    stdoutResult: str;
+    stderrResult: str;
   }
 
   // Like run(), but always pipes stdio and returns the captured stdout/stderr
@@ -70,8 +70,8 @@ namespace process {
 
     return RunCapturedResult {
       exitCode: out.exit_code,
-      stdout: ffi.hzstd_str_from_cstr_ref(out.stdout_data),
-      stderr: ffi.hzstd_str_from_cstr_ref(out.stderr_data),
+      stdoutResult: ffi.hzstd_str_from_cstr_ref(out.stdout_data),
+      stderrResult: ffi.hzstd_str_from_cstr_ref(out.stderr_data),
     };
   }
 
