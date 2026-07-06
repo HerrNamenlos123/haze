@@ -2,9 +2,9 @@
 #ifndef HZUI_PUBLIC_H
 #define HZUI_PUBLIC_H
 
-#include "hzstd/hzstd_common.h"
-#include "hzstd/hzstd_string.h"
-#include "hzstd/hzstd_utils.h"
+#include "hzstd/include/hzstd_types.h"
+#include "hzstd/include/hzstd_string.h"
+#include "hzstd/include/hzstd_utils.h"
 
 typedef struct {
   hzstd_real_t topLeft;

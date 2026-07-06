@@ -1,6 +1,6 @@
 
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_string.h"
+#include "hzstd/include/hzstd_memory.h"
+#include "hzstd/include/hzstd_string.h"
 
 #include "public/haze_base64.h"
 

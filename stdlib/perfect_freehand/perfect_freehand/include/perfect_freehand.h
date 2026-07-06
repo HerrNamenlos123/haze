@@ -1,5 +1,5 @@
 #pragma once
-#include "hzstd/hzstd_common.h"
+#include "hzstd/include/hzstd_types.h"
 
 #ifdef __cplusplus
 extern "C" {

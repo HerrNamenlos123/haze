@@ -1,14 +1,14 @@
 
 #include "ffi/hzui_public.h"
-#include "hzstd/hzstd_common.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_runtime.h"
-#include "hzstd/hzstd_string.h"
-#include "hzstd/hzstd_utils.h"
+#include "hzstd/include/hzstd_types.h"
+#include "hzstd/include/hzstd_memory.h"
+#include "hzstd/include/hzstd_runtime.h"
+#include "hzstd/include/hzstd_string.h"
+#include "hzstd/include/hzstd_utils.h"
 
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
-#include "hzstd/hzstd.h"
+#include "hzstd/include/hzstd.h"
 #include <stdio.h>
 
 #include "renderer.c"

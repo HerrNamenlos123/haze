@@ -1,11 +1,11 @@
 
-#include <hzstd/hzstd_array.h>
-#include <hzstd/hzstd_common.h>
-#include <hzstd/hzstd_string.h>
+#include <hzstd/include/hzstd_array.h>
+#include <hzstd/include/hzstd_types.h>
+#include <hzstd/include/hzstd_string.h>
 
 #include "ffi/nfd.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_string.h"
+#include "hzstd/include/hzstd_memory.h"
+#include "hzstd/include/hzstd_string.h"
 #include "nfd_common.c"
 
 #if defined(HAZE_PLATFORM_WIN32)

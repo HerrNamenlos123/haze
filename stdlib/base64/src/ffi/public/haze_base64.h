@@ -2,8 +2,8 @@
 #ifndef HAZE_BASE64_H
 #define HAZE_BASE64_H
 
-#include "hzstd/hzstd_common.h"
-#include "hzstd/hzstd_string.h"
+#include "hzstd/include/hzstd_types.h"
+#include "hzstd/include/hzstd_string.h"
 
 typedef struct {
   hzstd_bool_t success;

@@ -1,6 +1,6 @@
 #include "clay.h"
-#include "hzstd/hzstd_string.h"
-#include "hzstd/hzstd_utils.h"
+#include "hzstd/include/hzstd_string.h"
+#include "hzstd/include/hzstd_utils.h"
 #include "hzui_public.h"
 
 #include "stdio.h"

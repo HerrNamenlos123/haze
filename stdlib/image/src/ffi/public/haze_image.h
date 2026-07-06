@@ -2,7 +2,7 @@
 #ifndef HAZE_IMAGE_H
 #define HAZE_IMAGE_H
 
-#include "hzstd/hzstd_common.h"
+#include "hzstd/include/hzstd_types.h"
 
 typedef struct {
   void* pixels;         // stbi-allocated buffer, or NULL on failure

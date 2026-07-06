@@ -1,6 +1,6 @@
 
-#include "hzstd/hzstd_array.h"
-#include "hzstd/hzstd_string.h"
+#include "hzstd/include/hzstd_array.h"
+#include "hzstd/include/hzstd_string.h"
 
 #include <stdio.h>
 #include <stdlib.h>
