@@ -11,68 +11,68 @@
 // translation unit, to make sure they are not referenced anywhere else and
 // inlined into the function where they are used.
 
-#define DEFINE_HZSTD_ARITHMETIC(type)                                                                                  \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_add_##type(type a, type b)                        \
-  {                                                                                                                    \
-    type result;                                                                                                       \
-    if (__builtin_expect(__builtin_add_overflow(a, b, &result), 0)) {                                                  \
-      HZSTD_PANIC_FMT("Integer overflow in add operation");                                                            \
-    }                                                                                                                  \
-    return result;                                                                                                     \
-  }                                                                                                                    \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_sub_##type(type a, type b)                        \
-  {                                                                                                                    \
-    type result;                                                                                                       \
-    if (__builtin_expect(__builtin_sub_overflow(a, b, &result), 0)) {                                                  \
-      HZSTD_PANIC_FMT("Integer overflow in sub operation");                                                            \
-    }                                                                                                                  \
-    return result;                                                                                                     \
-  }                                                                                                                    \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_mul_##type(type a, type b)                        \
-  {                                                                                                                    \
-    type result;                                                                                                       \
-    if (__builtin_expect(__builtin_mul_overflow(a, b, &result), 0)) {                                                  \
-      HZSTD_PANIC_FMT("Integer overflow in mul operation");                                                            \
-    }                                                                                                                  \
-    return result;                                                                                                     \
+#define DEFINE_HZSTD_ARITHMETIC(type)                                          \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_add_##type(type a, type b) {                                \
+    type result;                                                               \
+    if (__builtin_expect(__builtin_add_overflow(a, b, &result), 0)) {          \
+      hzstd_panic_fmt("Integer overflow in add operation");                    \
+    }                                                                          \
+    return result;                                                             \
+  }                                                                            \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_sub_##type(type a, type b) {                                \
+    type result;                                                               \
+    if (__builtin_expect(__builtin_sub_overflow(a, b, &result), 0)) {          \
+      hzstd_panic_fmt("Integer overflow in sub operation");                    \
+    }                                                                          \
+    return result;                                                             \
+  }                                                                            \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_mul_##type(type a, type b) {                                \
+    type result;                                                               \
+    if (__builtin_expect(__builtin_mul_overflow(a, b, &result), 0)) {          \
+      hzstd_panic_fmt("Integer overflow in mul operation");                    \
+    }                                                                          \
+    return result;                                                             \
   }
 
-#define DEFINE_HZSTD_ARITHMETIC_UNSIGNED_DIV(type)                                                                     \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_div_##type(type a, type b)                        \
-  {                                                                                                                    \
-    if (__builtin_expect(b == 0, 0)) {                                                                                 \
-      HZSTD_PANIC_FMT("Division by Zero");                                                                             \
-    }                                                                                                                  \
-    return a / b;                                                                                                      \
-  }                                                                                                                    \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_mod_##type(type a, type b)                        \
-  {                                                                                                                    \
-    if (__builtin_expect(b == 0, 0)) {                                                                                 \
-      HZSTD_PANIC_FMT("Division by Zero");                                                                             \
-    }                                                                                                                  \
-    return a % b;                                                                                                      \
+#define DEFINE_HZSTD_ARITHMETIC_UNSIGNED_DIV(type)                             \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_div_##type(type a, type b) {                                \
+    if (__builtin_expect(b == 0, 0)) {                                         \
+      hzstd_panic_fmt("Division by Zero");                                     \
+    }                                                                          \
+    return a / b;                                                              \
+  }                                                                            \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_mod_##type(type a, type b) {                                \
+    if (__builtin_expect(b == 0, 0)) {                                         \
+      hzstd_panic_fmt("Division by Zero");                                     \
+    }                                                                          \
+    return a % b;                                                              \
   }
 
-#define DEFINE_HZSTD_ARITHMETIC_SIGNED_DIV(type, minValue)                                                             \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_div_##type(type a, type b)                        \
-  {                                                                                                                    \
-    if (__builtin_expect(b == 0, 0)) {                                                                                 \
-      HZSTD_PANIC_FMT("Division by Zero");                                                                             \
-    }                                                                                                                  \
-    if (__builtin_expect(a == minValue && b == -1, 0)) {                                                               \
-      HZSTD_PANIC_FMT("Integer Overflow in Division");                                                                 \
-    }                                                                                                                  \
-    return a / b;                                                                                                      \
-  }                                                                                                                    \
-  static inline __attribute__((always_inline)) type hzstd_arithmetic_mod_##type(type a, type b)                        \
-  {                                                                                                                    \
-    if (__builtin_expect(b == 0, 0)) {                                                                                 \
-      HZSTD_PANIC_FMT("Modulo Division by Zero");                                                                      \
-    }                                                                                                                  \
-    if (__builtin_expect(a == minValue && b == -1, 0)) {                                                               \
-      HZSTD_PANIC_FMT("Integer Overflow in Modulo Division");                                                          \
-    }                                                                                                                  \
-    return a % b;                                                                                                      \
+#define DEFINE_HZSTD_ARITHMETIC_SIGNED_DIV(type, minValue)                     \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_div_##type(type a, type b) {                                \
+    if (__builtin_expect(b == 0, 0)) {                                         \
+      hzstd_panic_fmt("Division by Zero");                                     \
+    }                                                                          \
+    if (__builtin_expect(a == minValue && b == -1, 0)) {                       \
+      hzstd_panic_fmt("Integer Overflow in Division");                         \
+    }                                                                          \
+    return a / b;                                                              \
+  }                                                                            \
+  static inline __attribute__((always_inline)) type                            \
+  hzstd_arithmetic_mod_##type(type a, type b) {                                \
+    if (__builtin_expect(b == 0, 0)) {                                         \
+      hzstd_panic_fmt("Modulo Division by Zero");                              \
+    }                                                                          \
+    if (__builtin_expect(a == minValue && b == -1, 0)) {                       \
+      hzstd_panic_fmt("Integer Overflow in Modulo Division");                  \
+    }                                                                          \
+    return a % b;                                                              \
   }
 
 DEFINE_HZSTD_ARITHMETIC(hzstd_i8_t)

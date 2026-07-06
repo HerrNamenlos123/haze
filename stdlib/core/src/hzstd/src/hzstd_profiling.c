@@ -3,11 +3,12 @@
 #include "../include/hzstd_array.h"
 #include "../include/hzstd_demangle.h"
 #include "../include/hzstd_memory.h"
-#include "../include/hzstd_runtime.h"
 #include "../include/hzstd_platform.h"
+#include "../include/hzstd_runtime.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <signal.h>
+
 
 #ifdef HAZE_PLATFORM_LINUX
 #include <link.h>
@@ -50,42 +51,50 @@
 // hzstd_profiling_end().
 typedef struct {
   uint16_t depth;
-  void* pcs[HZSTD_MAX_FRAMES];
+  void *pcs[HZSTD_MAX_FRAMES];
   double timestamp; // hzstd_time_now(), taken at the very start of the signal
                     // handler
   double sampling_duration; // wall time spent capturing this sample (handler +
                             // stackwalker)
 } hzstd_profiling_raw_sample_t;
 
-// Fixed capacity of the allocation-free handoff ring described below. Sized to comfortably
-// absorb the gap between sampling ticks even under scheduling jitter; at one in-flight sample at
-// a time (see sample_in_progress), this only ever needs to hold a small handful of entries.
+// Fixed capacity of the allocation-free handoff ring described below. Sized to
+// comfortably absorb the gap between sampling ticks even under scheduling
+// jitter; at one in-flight sample at a time (see sample_in_progress), this only
+// ever needs to hold a small handful of entries.
 #define HZSTD_PROFILING_RING_CAPACITY 1024
 
-// Upper bound on how long the profiled thread will ever wait for one sample to be captured (see
-// the big comment on profiling_handler / hzstd_profiling_invoke_sampling for why this exists).
-// Generous relative to a normal capture (which takes microseconds), but small enough that even
-// hitting it repeatedly is just a minor, bounded hitch instead of a frozen process.
+// Upper bound on how long the profiled thread will ever wait for one sample to
+// be captured (see the big comment on profiling_handler /
+// hzstd_profiling_invoke_sampling for why this exists). Generous relative to a
+// normal capture (which takes microseconds), but small enough that even hitting
+// it repeatedly is just a minor, bounded hitch instead of a frozen process.
 #define HZSTD_PROFILING_SAMPLE_TIMEOUT_NS (50ull * 1000 * 1000)
 
-// `samples` (the accumulated history of every captured sample for the whole session) is
-// append-only and, for a long-running session at a decent sampling rate, can grow into the tens
-// of thousands of entries. A doubling, copy-on-grow hzstd_dynamic_array_t is the wrong fit for
-// that: every time it outgrows its capacity, it reallocates and copies its *entire* accumulated
-// history into a new, ever-larger block -- wasted, repeated copying that gets worse the longer
-// profiling runs, and exactly the pattern that trips GC's "Repeated allocation of very large
-// block" warning. Since nothing ever needs random access into `samples` (it's only ever appended
-// to, then walked once in order in hzstd_profiling_end), a singly-linked list of fixed-size,
-// append-only chunks fits much better: each chunk is allocated exactly once and never touched
-// again once full, so old samples are never recopied no matter how long the session runs.
+// `samples` (the accumulated history of every captured sample for the whole
+// session) is append-only and, for a long-running session at a decent sampling
+// rate, can grow into the tens of thousands of entries. A doubling,
+// copy-on-grow hzstd_dynamic_array_t is the wrong fit for that: every time it
+// outgrows its capacity, it reallocates and copies its *entire* accumulated
+// history into a new, ever-larger block -- wasted, repeated copying that gets
+// worse the longer profiling runs, and exactly the pattern that trips GC's
+// "Repeated allocation of very large block" warning. Since nothing ever needs
+// random access into `samples` (it's only ever appended to, then walked once in
+// order in hzstd_profiling_end), a singly-linked list of fixed-size,
+// append-only chunks fits much better: each chunk is allocated exactly once and
+// never touched again once full, so old samples are never recopied no matter
+// how long the session runs.
 #define HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY 128
 
 typedef struct hzstd_profiling_sample_chunk_t {
-  struct hzstd_profiling_sample_chunk_t* next; // the only field the GC needs to scan in this header
-  size_t count; // number of valid entries in this chunk (== capacity for every chunk but the tail)
-  // `entries` is its own separate, atomic (unscanned) allocation -- see hzstd_profiling_samples_append
-  // for why this can't just be an inline array in this same, GC-scanned struct.
-  hzstd_profiling_raw_sample_t* entries;
+  struct hzstd_profiling_sample_chunk_t
+      *next;    // the only field the GC needs to scan in this header
+  size_t count; // number of valid entries in this chunk (== capacity for every
+                // chunk but the tail)
+  // `entries` is its own separate, atomic (unscanned) allocation -- see
+  // hzstd_profiling_samples_append for why this can't just be an inline array
+  // in this same, GC-scanned struct.
+  hzstd_profiling_raw_sample_t *entries;
 } hzstd_profiling_sample_chunk_t;
 
 struct hzstd_profiling_context_t {
@@ -112,85 +121,109 @@ struct hzstd_profiling_context_t {
   // Whenever this semaphore is triggered, the stackwalker wakes up. If
   // stop_profiling=false, it adds a new sample. If stop_profiling=true, it
   // exits.
-  hzstd_semaphore_t* stackwalker_trigger_semaphore;
-  hzstd_semaphore_t* stackwalker_done_semaphore;
-  // Append-only history of every sample captured this session; see hzstd_profiling_sample_chunk_t
-  // above for why this is a chunked list rather than a single growing array.
-  hzstd_profiling_sample_chunk_t* samples_head; // oldest chunk, or NULL if nothing captured yet
-  hzstd_profiling_sample_chunk_t* samples_tail; // chunk currently being filled
+  hzstd_semaphore_t *stackwalker_trigger_semaphore;
+  hzstd_semaphore_t *stackwalker_done_semaphore;
+  // Append-only history of every sample captured this session; see
+  // hzstd_profiling_sample_chunk_t above for why this is a chunked list rather
+  // than a single growing array.
+  hzstd_profiling_sample_chunk_t
+      *samples_head; // oldest chunk, or NULL if nothing captured yet
+  hzstd_profiling_sample_chunk_t *samples_tail; // chunk currently being filled
   size_t sample_count; // total entries across every chunk
 
-  // ── Allocation-free handoff (see hzstd_profiling_ring_push/hzstd_profiling_drain_ring) ──────
+  // ── Allocation-free handoff (see
+  // hzstd_profiling_ring_push/hzstd_profiling_drain_ring) ──────
   //
-  // While a sample is in flight, the profiled thread is parked at a completely arbitrary point in
-  // its own execution -- possibly mid GC_malloc/GC_realloc, holding the GC allocator's lock. The
-  // stackwalker thread must therefore never allocate while a sample might be in flight, so it
-  // never touches `samples` (GC-backed, can reallocate) directly. It only ever writes into this
-  // plain calloc'd, fixed-size, never-reallocated ring buffer; `samples` is grown later, from
-  // hzstd_profiling_drain_ring, only at points where no thread is parked.
-  hzstd_profiling_raw_sample_t* ring_buffer; // calloc'd once in hzstd_profiling_start
+  // While a sample is in flight, the profiled thread is parked at a completely
+  // arbitrary point in its own execution -- possibly mid GC_malloc/GC_realloc,
+  // holding the GC allocator's lock. The stackwalker thread must therefore
+  // never allocate while a sample might be in flight, so it never touches
+  // `samples` (GC-backed, can reallocate) directly. It only ever writes into
+  // this plain calloc'd, fixed-size, never-reallocated ring buffer; `samples`
+  // is grown later, from hzstd_profiling_drain_ring, only at points where no
+  // thread is parked.
+  hzstd_profiling_raw_sample_t
+      *ring_buffer; // calloc'd once in hzstd_profiling_start
   size_t ring_capacity;
-  atomic_size_t ring_write_count; // advanced only by the stackwalker thread (single producer)
-  atomic_size_t ring_read_count; // advanced only by the draining thread (single consumer)
-  size_t ring_dropped_count; // samples lost if the ring ever fills faster than it drains
-  // Slot the most recently captured sample landed in, or SIZE_MAX if it was dropped (ring full).
-  // Set by the stackwalker thread and read back by whichever thread is waiting on the done
-  // semaphore, to patch in `sampling_duration` -- the same "stackwalker writes, then the waiter
-  // safely reaches in once woken" pattern this file already used for `samples` directly.
+  atomic_size_t ring_write_count; // advanced only by the stackwalker thread
+                                  // (single producer)
+  atomic_size_t
+      ring_read_count; // advanced only by the draining thread (single consumer)
+  size_t ring_dropped_count; // samples lost if the ring ever fills faster than
+                             // it drains
+  // Slot the most recently captured sample landed in, or SIZE_MAX if it was
+  // dropped (ring full). Set by the stackwalker thread and read back by
+  // whichever thread is waiting on the done semaphore, to patch in
+  // `sampling_duration` -- the same "stackwalker writes, then the waiter safely
+  // reaches in once woken" pattern this file already used for `samples`
+  // directly.
   size_t last_ring_slot;
 };
 
-// Writes `sample` into the ring buffer (no allocation, ever) and records where it landed in
-// context->last_ring_slot, or SIZE_MAX if the ring was full and the sample had to be dropped.
-// Called only from the stackwalker thread, which is the sole producer.
-static void hzstd_profiling_ring_push(hzstd_profiling_context_t* context, hzstd_profiling_raw_sample_t sample)
-{
-  size_t writeCount = atomic_load_explicit(&context->ring_write_count, memory_order_relaxed);
-  size_t readCount = atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
+// Writes `sample` into the ring buffer (no allocation, ever) and records where
+// it landed in context->last_ring_slot, or SIZE_MAX if the ring was full and
+// the sample had to be dropped. Called only from the stackwalker thread, which
+// is the sole producer.
+static void hzstd_profiling_ring_push(hzstd_profiling_context_t *context,
+                                      hzstd_profiling_raw_sample_t sample) {
+  size_t writeCount =
+      atomic_load_explicit(&context->ring_write_count, memory_order_relaxed);
+  size_t readCount =
+      atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
   if (writeCount - readCount >= context->ring_capacity) {
-    // The consumer has fallen behind faster than the ring (generously sized for normal
-    // scheduling jitter) can absorb. Drop rather than overwrite an entry not yet read.
+    // The consumer has fallen behind faster than the ring (generously sized for
+    // normal scheduling jitter) can absorb. Drop rather than overwrite an entry
+    // not yet read.
     context->ring_dropped_count++;
     context->last_ring_slot = SIZE_MAX;
     return;
   }
   size_t slot = writeCount % context->ring_capacity;
   context->ring_buffer[slot] = sample;
-  // Publish the entry before the count: a consumer that observes the incremented count via the
-  // matching acquire load in hzstd_profiling_drain_ring is guaranteed to see this write too.
-  atomic_store_explicit(&context->ring_write_count, writeCount + 1, memory_order_release);
+  // Publish the entry before the count: a consumer that observes the
+  // incremented count via the matching acquire load in
+  // hzstd_profiling_drain_ring is guaranteed to see this write too.
+  atomic_store_explicit(&context->ring_write_count, writeCount + 1,
+                        memory_order_release);
   context->last_ring_slot = slot;
 }
 
-// Appends to the session's sample history, allocating a new fixed-size chunk whenever the
-// current tail is full. Each chunk, once full, is never touched again -- only the small header of
-// the (possibly brand new) tail chunk is ever written here, never the contents of older chunks.
-static void hzstd_profiling_samples_append(hzstd_profiling_context_t* context, hzstd_profiling_raw_sample_t sample)
-{
-  if (!context->samples_tail || context->samples_tail->count == HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY) {
-    // Each entry carries a `pcs[HZSTD_MAX_FRAMES]` array of raw instruction-pointer values --
-    // real addresses inside the program's own mapped code, but not pointers we ever want the GC
-    // to follow (they're just opaque historical data, read back later in hzstd_profiling_end for
-    // symbol resolution). A conservative collector can't tell the difference: if this whole chunk
-    // were one ordinary GC_malloc'd block, every one of those ~128 values per entry would be
-    // scanned as a *candidate* pointer, and since they really do point into mapped memory, the GC
-    // would black-list whatever they "point to" -- here, scattered spots across the program's own
-    // code segment, over and over, once per sample. That black-listing pressure is what was
-    // actually tripping the "Repeated allocation of very large block" warning at high sampling
-    // rates (more samples per second = more chunks = more self-inflicted black-listing), not the
-    // chunk's size by itself. Splitting the bulk entries off into their own GC_malloc_atomic
-    // allocation (never scanned at all) avoids this entirely; only this small header -- which has
-    // exactly one real pointer, `next` -- needs to stay scanned, so the chain itself remains
-    // reachable from context->samples_head.
-    hzstd_profiling_sample_chunk_t* chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t));
+// Appends to the session's sample history, allocating a new fixed-size chunk
+// whenever the current tail is full. Each chunk, once full, is never touched
+// again -- only the small header of the (possibly brand new) tail chunk is ever
+// written here, never the contents of older chunks.
+static void
+hzstd_profiling_samples_append(hzstd_profiling_context_t *context,
+                               hzstd_profiling_raw_sample_t sample) {
+  if (!context->samples_tail ||
+      context->samples_tail->count == HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY) {
+    // Each entry carries a `pcs[HZSTD_MAX_FRAMES]` array of raw
+    // instruction-pointer values -- real addresses inside the program's own
+    // mapped code, but not pointers we ever want the GC to follow (they're just
+    // opaque historical data, read back later in hzstd_profiling_end for symbol
+    // resolution). A conservative collector can't tell the difference: if this
+    // whole chunk were one ordinary GC_malloc'd block, every one of those ~128
+    // values per entry would be scanned as a *candidate* pointer, and since
+    // they really do point into mapped memory, the GC would black-list whatever
+    // they "point to" -- here, scattered spots across the program's own code
+    // segment, over and over, once per sample. That black-listing pressure is
+    // what was actually tripping the "Repeated allocation of very large block"
+    // warning at high sampling rates (more samples per second = more chunks =
+    // more self-inflicted black-listing), not the chunk's size by itself.
+    // Splitting the bulk entries off into their own GC_malloc_atomic allocation
+    // (never scanned at all) avoids this entirely; only this small header --
+    // which has exactly one real pointer, `next` -- needs to stay scanned, so
+    // the chain itself remains reachable from context->samples_head.
+    hzstd_profiling_sample_chunk_t *chunk =
+        hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t));
     chunk->next = NULL;
     chunk->count = 0;
     chunk->entries =
-        hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t));
+        hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY *
+                                   sizeof(hzstd_profiling_raw_sample_t));
     if (context->samples_tail) {
       context->samples_tail->next = chunk;
-    }
-    else {
+    } else {
       context->samples_head = chunk;
     }
     context->samples_tail = chunk;
@@ -199,29 +232,33 @@ static void hzstd_profiling_samples_append(hzstd_profiling_context_t* context, h
   context->sample_count++;
 }
 
-// Moves every ring entry the stackwalker has finished writing since the last drain into the
-// sample history above. Only ever safe to call from a thread that is not itself parked waiting
-// for a sample (the scheduler thread between ticks, or the caller of hzstd_profiling_end once
-// both worker threads have already been joined) -- never from inside the signal handler /
-// suspended-thread window that hzstd_profiling_ring_push exists to keep allocation-free.
-static void hzstd_profiling_drain_ring(hzstd_profiling_context_t* context)
-{
-  size_t writeCount = atomic_load_explicit(&context->ring_write_count, memory_order_acquire);
-  size_t readCount = atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
+// Moves every ring entry the stackwalker has finished writing since the last
+// drain into the sample history above. Only ever safe to call from a thread
+// that is not itself parked waiting for a sample (the scheduler thread between
+// ticks, or the caller of hzstd_profiling_end once both worker threads have
+// already been joined) -- never from inside the signal handler /
+// suspended-thread window that hzstd_profiling_ring_push exists to keep
+// allocation-free.
+static void hzstd_profiling_drain_ring(hzstd_profiling_context_t *context) {
+  size_t writeCount =
+      atomic_load_explicit(&context->ring_write_count, memory_order_acquire);
+  size_t readCount =
+      atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
   while (readCount < writeCount) {
-    hzstd_profiling_raw_sample_t sample = context->ring_buffer[readCount % context->ring_capacity];
+    hzstd_profiling_raw_sample_t sample =
+        context->ring_buffer[readCount % context->ring_capacity];
     hzstd_profiling_samples_append(context, sample);
     readCount++;
   }
-  atomic_store_explicit(&context->ring_read_count, readCount, memory_order_relaxed);
+  atomic_store_explicit(&context->ring_read_count, readCount,
+                        memory_order_relaxed);
 }
 
 #ifdef HAZE_PLATFORM_LINUX
 // TODO: In the future we should have proper thread management in haze, and this
 // should be queried once in the runtime and later only accessed in the thread
 // local datastructure.
-static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void)
-{
+static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void) {
   pid_t tid = gettid();
   assert(sizeof(hzstd_thread_id_t) >= sizeof(tid));
   return (hzstd_thread_id_t)tid;
@@ -230,8 +267,7 @@ static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void)
 // TODO: In the future we should have proper process management in haze, and
 // this should be queried once in the runtime and later only accessed in a
 // global datastructure
-static hzstd_process_id_t hzstd_profiling_get_current_process_id(void)
-{
+static hzstd_process_id_t hzstd_profiling_get_current_process_id(void) {
   pid_t pid = getpid();
   assert(sizeof(hzstd_process_id_t) >= sizeof(pid));
   return (hzstd_process_id_t)pid;
@@ -240,9 +276,8 @@ static hzstd_process_id_t hzstd_profiling_get_current_process_id(void)
 
 #ifdef HAZE_PLATFORM_LINUX
 
-void* hzstd_profiling_stackwalker_thread(void* _context)
-{
-  hzstd_profiling_context_t* context = _context;
+void *hzstd_profiling_stackwalker_thread(void *_context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
 
   while (!atomic_load(&context->stop_stackwalker)) {
@@ -254,61 +289,66 @@ void* hzstd_profiling_stackwalker_thread(void* _context)
 
     unw_cursor_t cursor;
     unw_init_local2(&cursor, &context->unwind_context, UNW_INIT_SIGNAL_FRAME);
-    hzstd_profiling_raw_sample_t sample = { 0 };
+    hzstd_profiling_raw_sample_t sample = {0};
     sample.timestamp = context->sample_started_at;
     do {
       unw_word_t pc;
       unw_get_reg(&cursor, UNW_REG_IP, &pc);
 
       if (sample.depth < HZSTD_MAX_FRAMES) {
-        sample.pcs[sample.depth++] = (void*)pc;
+        sample.pcs[sample.depth++] = (void *)pc;
       }
-      // unw_step resolves which loaded module `pc` belongs to via dl_iterate_phdr whenever it
-      // hasn't seen that code range before, which briefly takes glibc's process-wide loader lock.
-      // If the profiled thread itself happens to be parked here holding that very lock (e.g. it
-      // was interrupted mid-dlopen/dlsym -- routine for GPU drivers lazily loading shader-cache
-      // or driver modules), this call blocks until it's released. profiling_handler's bounded
-      // wait (see HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the process:
-      // it gives up and lets the profiled thread resume (and thus release the lock) instead of
-      // waiting on this thread forever.
+      // unw_step resolves which loaded module `pc` belongs to via
+      // dl_iterate_phdr whenever it hasn't seen that code range before, which
+      // briefly takes glibc's process-wide loader lock. If the profiled thread
+      // itself happens to be parked here holding that very lock (e.g. it was
+      // interrupted mid-dlopen/dlsym -- routine for GPU drivers lazily loading
+      // shader-cache or driver modules), this call blocks until it's released.
+      // profiling_handler's bounded wait (see
+      // HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the
+      // process: it gives up and lets the profiled thread resume (and thus
+      // release the lock) instead of waiting on this thread forever.
     } while (unw_step(&cursor) > 0);
 
-    // Hand the finished sample to the ring buffer (no allocation) before signaling done, so by
-    // the time the signal handler wakes up from the done semaphore it can safely read
-    // context->last_ring_slot to patch the sampling duration onto the sample we just added.
+    // Hand the finished sample to the ring buffer (no allocation) before
+    // signaling done, so by the time the signal handler wakes up from the done
+    // semaphore it can safely read context->last_ring_slot to patch the
+    // sampling duration onto the sample we just added.
     hzstd_profiling_ring_push(context, sample);
 
     hzstd_trigger_semaphore(context->stackwalker_done_semaphore);
-    // This thread is the only one that ever knows for certain a round is truly finished -- the
-    // waiter in profiling_handler may have already given up on it via the timeout above. Clearing
-    // this here (and only here, always *after* the done-trigger above so a new round's CAS below
-    // can never succeed before this round's trigger is visible to it) is what lets profiling
-    // self-recover once whatever this round was stuck on resolves, instead of permanently
-    // wedging after the first slow sample.
+    // This thread is the only one that ever knows for certain a round is truly
+    // finished -- the waiter in profiling_handler may have already given up on
+    // it via the timeout above. Clearing this here (and only here, always
+    // *after* the done-trigger above so a new round's CAS below can never
+    // succeed before this round's trigger is visible to it) is what lets
+    // profiling self-recover once whatever this round was stuck on resolves,
+    // instead of permanently wedging after the first slow sample.
     atomic_store(&context->sample_in_progress, 0);
   }
 
   return NULL;
 }
 
-static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t* context)
-{
+static void
+hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   tgkill(context->pid, context->tid, SIGUSR1);
 }
 
-void* hzstd_profiling_scheduler_thread(void* _context)
-{
-  hzstd_profiling_context_t* context = _context;
+void *hzstd_profiling_scheduler_thread(void *_context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
     os_sleep_ns(interval_ns);
-    // Drain whatever finished since the last tick before asking for another sample. This thread
-    // is never the one targeted by the profiling signal, so growing `samples` here is always safe.
+    // Drain whatever finished since the last tick before asking for another
+    // sample. This thread is never the one targeted by the profiling signal, so
+    // growing `samples` here is always safe.
     hzstd_profiling_drain_ring(context);
     hzstd_profiling_invoke_sampling(context);
   }
-  // Pick up the very last sample, which may have finished after the loop condition flipped.
+  // Pick up the very last sample, which may have finished after the loop
+  // condition flipped.
   hzstd_profiling_drain_ring(context);
   return NULL;
 }
@@ -320,9 +360,8 @@ void* hzstd_profiling_scheduler_thread(void* _context)
 // captures it directly (see hzstd_profiling_invoke_sampling below) and the
 // stackwalker just walks whatever CONTEXT is currently sitting in
 // context->unwind_context once woken up.
-static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
-{
-  hzstd_profiling_context_t* context = _context;
+static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
 
   HANDLE hProcess = GetCurrentProcess();
@@ -351,45 +390,42 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
 #error Only 64-bit is supported
 #endif
 
-    hzstd_profiling_raw_sample_t sample = { 0 };
+    hzstd_profiling_raw_sample_t sample = {0};
     sample.timestamp = context->sample_started_at;
 
-    while (StackWalk64(machineType,
-                       hProcess,
-                       context->profiled_thread_handle,
-                       &sf,
-                       &ctx,
-                       NULL,
-                       SymFunctionTableAccess64,
-                       SymGetModuleBase64,
-                       NULL)) {
+    while (StackWalk64(machineType, hProcess, context->profiled_thread_handle,
+                       &sf, &ctx, NULL, SymFunctionTableAccess64,
+                       SymGetModuleBase64, NULL)) {
       if (sf.AddrPC.Offset == 0) {
         break;
       }
       if (sample.depth < HZSTD_MAX_FRAMES) {
-        sample.pcs[sample.depth++] = (void*)sf.AddrPC.Offset;
-      }
-      else {
+        sample.pcs[sample.depth++] = (void *)sf.AddrPC.Offset;
+      } else {
         break;
       }
-      // StackWalk64/dbghelp can lazily load module symbol info on a not-yet-seen module, which
-      // takes process-wide locks of its own. If the profiled thread happens to be suspended while
-      // holding one of those, this call blocks until it's released. invoke_sampling's bounded
-      // wait (HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the process: it
-      // resumes the profiled thread instead of waiting here forever.
+      // StackWalk64/dbghelp can lazily load module symbol info on a
+      // not-yet-seen module, which takes process-wide locks of its own. If the
+      // profiled thread happens to be suspended while holding one of those,
+      // this call blocks until it's released. invoke_sampling's bounded wait
+      // (HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the
+      // process: it resumes the profiled thread instead of waiting here
+      // forever.
     }
 
-    // Hand the finished sample to the ring buffer (no allocation) before signaling done, so by
-    // the time the scheduler thread wakes up from the done semaphore it can safely read
-    // context->last_ring_slot to patch the sampling duration onto the sample we just added.
+    // Hand the finished sample to the ring buffer (no allocation) before
+    // signaling done, so by the time the scheduler thread wakes up from the
+    // done semaphore it can safely read context->last_ring_slot to patch the
+    // sampling duration onto the sample we just added.
     hzstd_profiling_ring_push(context, sample);
 
     hzstd_trigger_semaphore(context->stackwalker_done_semaphore);
-    // This thread is the only one that ever knows for certain a round is truly finished -- the
-    // waiter in invoke_sampling may have already given up on it via the timeout there. Clearing
-    // this here (and only here, always *after* the done-trigger above) is what lets profiling
-    // self-recover once whatever this round was stuck on resolves, instead of permanently
-    // wedging after the first slow sample. See invoke_sampling for the matching half of this.
+    // This thread is the only one that ever knows for certain a round is truly
+    // finished -- the waiter in invoke_sampling may have already given up on it
+    // via the timeout there. Clearing this here (and only here, always *after*
+    // the done-trigger above) is what lets profiling self-recover once whatever
+    // this round was stuck on resolves, instead of permanently wedging after
+    // the first slow sample. See invoke_sampling for the matching half of this.
     atomic_store(&context->sample_in_progress, 0);
   }
 
@@ -403,24 +439,30 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
 // on top of its own stack; here, the scheduler thread does the equivalent by
 // suspending it from the outside, since Windows threads cannot be interrupted
 // with arbitrary user signals.
-static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t* context)
-{
+static void
+hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   int expected = 0;
-  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected, 1)) {
-    // A sample is already ongoing -- either a normal overlap, or the previous round's wait below
-    // timed out and the stackwalker is still working through it. Either way, ignore this tick;
-    // the stackwalker thread clears sample_in_progress once the in-flight round actually finishes.
+  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
+                                      1)) {
+    // A sample is already ongoing -- either a normal overlap, or the previous
+    // round's wait below timed out and the stackwalker is still working through
+    // it. Either way, ignore this tick; the stackwalker thread clears
+    // sample_in_progress once the in-flight round actually finishes.
     return;
   }
 
-  // Discard any leftover "done" signal from a previous round whose wait below timed out, before
-  // arming this round's wait. Without this, a stale signal from that abandoned round could be
-  // mistaken for this round's completion the moment we trigger the stackwalker below.
-  while (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) { }
+  // Discard any leftover "done" signal from a previous round whose wait below
+  // timed out, before arming this round's wait. Without this, a stale signal
+  // from that abandoned round could be mistaken for this round's completion the
+  // moment we trigger the stackwalker below.
+  while (
+      hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) {
+  }
 
   if (SuspendThread(context->profiled_thread_handle) == (DWORD)-1) {
-    // No round actually started (the stackwalker was never triggered), so it's safe -- and
-    // necessary -- to release the gate ourselves here, unlike the timeout path below.
+    // No round actually started (the stackwalker was never triggered), so it's
+    // safe -- and necessary -- to release the gate ourselves here, unlike the
+    // timeout path below.
     atomic_store(&context->sample_in_progress, 0);
     return;
   }
@@ -430,7 +472,8 @@ static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t* context)
   context->sample_started_at = startedAt;
 
   context->unwind_context.ContextFlags = CONTEXT_FULL;
-  if (!GetThreadContext(context->profiled_thread_handle, &context->unwind_context)) {
+  if (!GetThreadContext(context->profiled_thread_handle,
+                        &context->unwind_context)) {
     ResumeThread(context->profiled_thread_handle);
     atomic_store(&context->sample_in_progress, 0);
     return;
@@ -439,37 +482,39 @@ static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t* context)
   // Hand off to stackwalker.
   hzstd_trigger_semaphore(context->stackwalker_trigger_semaphore);
 
-  // Wait for the worker to finish building the stacktrace -- but only up to a bound. The
-  // stackwalker can rarely block for a while on a process-wide lock it doesn't control (see the
-  // comment in hzstd_profiling_stackwalker_thread). Since the profiled thread is fully suspended
-  // (not just running a signal handler, as on Linux) until we call ResumeThread below, waiting
-  // unboundedly here would deadlock the whole process if it's the one holding that lock. Bounding
-  // the wait breaks that cycle: on timeout we resume it anyway, which lets it release whatever
-  // lock it might be holding and in turn unblocks the stackwalker. sample_in_progress is
-  // deliberately left set in that case; see hzstd_profiling_stackwalker_thread for why it alone
-  // clears it.
-  bool finished
-      = hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, HZSTD_PROFILING_SAMPLE_TIMEOUT_NS);
+  // Wait for the worker to finish building the stacktrace -- but only up to a
+  // bound. The stackwalker can rarely block for a while on a process-wide lock
+  // it doesn't control (see the comment in hzstd_profiling_stackwalker_thread).
+  // Since the profiled thread is fully suspended (not just running a signal
+  // handler, as on Linux) until we call ResumeThread below, waiting unboundedly
+  // here would deadlock the whole process if it's the one holding that lock.
+  // Bounding the wait breaks that cycle: on timeout we resume it anyway, which
+  // lets it release whatever lock it might be holding and in turn unblocks the
+  // stackwalker. sample_in_progress is deliberately left set in that case; see
+  // hzstd_profiling_stackwalker_thread for why it alone clears it.
+  bool finished = hzstd_wait_for_semaphore_timed(
+      context->stackwalker_done_semaphore, HZSTD_PROFILING_SAMPLE_TIMEOUT_NS);
 
   ResumeThread(context->profiled_thread_handle);
 
   if (finished) {
     double samplingDuration = hzstd_time_now() - startedAt;
     if (context->last_ring_slot != SIZE_MAX) {
-      context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+      context->ring_buffer[context->last_ring_slot].sampling_duration =
+          samplingDuration;
     }
   }
 }
 
-static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
-{
-  hzstd_profiling_context_t* context = _context;
+static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
+  hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
     os_sleep_ns(interval_ns);
     hzstd_profiling_invoke_sampling(context);
-    // This thread is never suspended for sampling, so growing `samples` here is always safe.
+    // This thread is never suspended for sampling, so growing `samples` here is
+    // always safe.
     hzstd_profiling_drain_ring(context);
   }
   hzstd_profiling_drain_ring(context);
@@ -478,35 +523,36 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
 
 #endif
 
-static hzstd_profiling_context_t* g_profiling_context = NULL;
+static hzstd_profiling_context_t *g_profiling_context = NULL;
 
 #ifdef HAZE_PLATFORM_LINUX
 static void install_profiler_handler(void);
 static void hzstd_profiling_prewarm_unwind_cache(void);
 #endif
 
-hzstd_profiling_context_t* hzstd_profiling_start(int samplingRateHz)
-{
-  // samples_head/samples_tail start NULL: the first chunk is allocated lazily, on the first
-  // sample drained, by hzstd_profiling_samples_append.
-  hzstd_profiling_context_t newContext = { 0 };
+hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
+  // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
+  // on the first sample drained, by hzstd_profiling_samples_append.
+  hzstd_profiling_context_t newContext = {0};
 #ifdef HAZE_PLATFORM_LINUX
   newContext.tid = hzstd_profiling_get_current_thread_id();
   newContext.pid = hzstd_profiling_get_current_process_id();
 #endif
 
-  hzstd_profiling_context_t* context
-      = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
+  hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
+      hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
   context->stackwalker_trigger_semaphore = hzstd_create_semaphore();
   context->stackwalker_done_semaphore = hzstd_create_semaphore();
   context->sampling_rate_hz = samplingRateHz;
 
-  // Plain calloc, deliberately outside the GC heap: this is the buffer the stackwalker thread
-  // writes into while a sample is in flight, and it must never need to grow (see the big comment
-  // on hzstd_profiling_context_t for why).
+  // Plain calloc, deliberately outside the GC heap: this is the buffer the
+  // stackwalker thread writes into while a sample is in flight, and it must
+  // never need to grow (see the big comment on hzstd_profiling_context_t for
+  // why).
   context->ring_capacity = HZSTD_PROFILING_RING_CAPACITY;
-  context->ring_buffer = calloc(context->ring_capacity, sizeof(hzstd_profiling_raw_sample_t));
+  context->ring_buffer =
+      calloc(context->ring_capacity, sizeof(hzstd_profiling_raw_sample_t));
   if (!context->ring_buffer) {
     hzstd_panic("Failed to allocate profiling ring buffer");
   }
@@ -516,41 +562,42 @@ hzstd_profiling_context_t* hzstd_profiling_start(int samplingRateHz)
   context->last_ring_slot = SIZE_MAX;
 
 #ifdef HAZE_PLATFORM_LINUX
-  int result = pthread_create(&context->stackwalker_thread, NULL, hzstd_profiling_stackwalker_thread, context);
+  int result = pthread_create(&context->stackwalker_thread, NULL,
+                              hzstd_profiling_stackwalker_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling stackwalker thread");
   }
 
-  result = pthread_create(&context->scheduler_thread, NULL, hzstd_profiling_scheduler_thread, context);
+  result = pthread_create(&context->scheduler_thread, NULL,
+                          hzstd_profiling_scheduler_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling scheduler thread");
   }
 
   g_profiling_context = context;
-  // Touches every currently-loaded module's unwind tables once, synchronously, before the signal
-  // handler can ever run -- see hzstd_profiling_prewarm_unwind_cache for why.
+  // Touches every currently-loaded module's unwind tables once, synchronously,
+  // before the signal handler can ever run -- see
+  // hzstd_profiling_prewarm_unwind_cache for why.
   hzstd_profiling_prewarm_unwind_cache();
   install_profiler_handler();
 #elif defined(HAZE_PLATFORM_WIN32)
   // GetCurrentThread() only returns a pseudo-handle valid within the calling
   // thread; duplicate it into a real handle so the scheduler thread can
   // SuspendThread/GetThreadContext/ResumeThread it from the outside.
-  if (!DuplicateHandle(GetCurrentProcess(),
-                       GetCurrentThread(),
-                       GetCurrentProcess(),
-                       &context->profiled_thread_handle,
-                       0,
-                       FALSE,
-                       DUPLICATE_SAME_ACCESS)) {
+  if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
+                       GetCurrentProcess(), &context->profiled_thread_handle, 0,
+                       FALSE, DUPLICATE_SAME_ACCESS)) {
     hzstd_panic("Failed to duplicate the profiled thread handle");
   }
 
-  context->stackwalker_thread = CreateThread(NULL, 0, hzstd_profiling_stackwalker_thread, context, 0, NULL);
+  context->stackwalker_thread = CreateThread(
+      NULL, 0, hzstd_profiling_stackwalker_thread, context, 0, NULL);
   if (context->stackwalker_thread == NULL) {
     hzstd_panic("Failed to create profiling stackwalker thread");
   }
 
-  context->scheduler_thread = CreateThread(NULL, 0, hzstd_profiling_scheduler_thread, context, 0, NULL);
+  context->scheduler_thread =
+      CreateThread(NULL, 0, hzstd_profiling_scheduler_thread, context, 0, NULL);
   if (context->scheduler_thread == NULL) {
     hzstd_panic("Failed to create profiling scheduler thread");
   }
@@ -572,7 +619,8 @@ hzstd_profiling_context_t* hzstd_profiling_start(int samplingRateHz)
 // this resolves all the way back to original Haze source locations.
 
 typedef struct {
-  Dwarf_Addr address; // link-time address (i.e. relative to this module's load bias)
+  Dwarf_Addr
+      address; // link-time address (i.e. relative to this module's load bias)
   Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs
                            // to (exclusive)
   hzstd_str_t filename;
@@ -581,16 +629,17 @@ typedef struct {
 
 static bool g_dwarf_init_done = false;
 static uintptr_t g_dwarf_module_base = 0;
-static uintptr_t g_dwarf_module_extent = 0; // size of the main module's mapped image
-static hzstd_profiling_dwarf_line_t* g_dwarf_lines = NULL;
+static uintptr_t g_dwarf_module_extent =
+    0; // size of the main module's mapped image
+static hzstd_profiling_dwarf_line_t *g_dwarf_lines = NULL;
 static size_t g_dwarf_line_count = 0;
 
 // Addresses in shared libraries (libc, SDL, ...) are not covered by our own
 // executable's .debug_line, so a naive "nearest address below" search would
 // otherwise silently produce a bogus match for them. Restricting lookups to
 // [base, base + extent) of the main executable's mapped image avoids that.
-static int hzstd_profiling_find_main_module(struct dl_phdr_info* info, size_t size, void* data)
-{
+static int hzstd_profiling_find_main_module(struct dl_phdr_info *info,
+                                            size_t size, void *data) {
   (void)size;
   (void)data;
   // dl_iterate_phdr reports the main executable with an empty name; everything
@@ -602,7 +651,8 @@ static int hzstd_profiling_find_main_module(struct dl_phdr_info* info, size_t si
       if (info->dlpi_phdr[i].p_type != PT_LOAD) {
         continue;
       }
-      uintptr_t segmentEnd = (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
+      uintptr_t segmentEnd =
+          (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
       if (segmentEnd > g_dwarf_module_extent) {
         g_dwarf_module_extent = segmentEnd;
       }
@@ -612,10 +662,9 @@ static int hzstd_profiling_find_main_module(struct dl_phdr_info* info, size_t si
   return 0;
 }
 
-static int hzstd_profiling_dwarf_line_compare(const void* a, const void* b)
-{
-  const hzstd_profiling_dwarf_line_t* la = a;
-  const hzstd_profiling_dwarf_line_t* lb = b;
+static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b) {
+  const hzstd_profiling_dwarf_line_t *la = a;
+  const hzstd_profiling_dwarf_line_t *lb = b;
   if (la->address < lb->address) {
     return -1;
   }
@@ -625,8 +674,7 @@ static int hzstd_profiling_dwarf_line_compare(const void* a, const void* b)
   return 0;
 }
 
-static void hzstd_profiling_dwarf_build_line_table(void)
-{
+static void hzstd_profiling_dwarf_build_line_table(void) {
   g_dwarf_init_done = true; // only ever try once, even if this fails
 
   dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
@@ -640,33 +688,26 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
   Dwarf_Debug dbg = NULL;
   Dwarf_Error error = NULL;
-  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg, &error) != DW_DLV_OK) {
+  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg,
+                      &error) != DW_DLV_OK) {
     return;
   }
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   size_t capacity = 1024;
   size_t count = 0;
-  hzstd_profiling_dwarf_line_t* lines = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+  hzstd_profiling_dwarf_line_t *lines = hzstd_allocate(
+      allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
 
   Dwarf_Unsigned cuHeaderLength, abbrevOffset, typeOffset, nextCuHeaderOffset;
   Dwarf_Half versionStamp, addressSize, lengthSize, extensionSize, headerCuType;
   Dwarf_Sig8 typeSignature;
 
-  while (dwarf_next_cu_header_d(dbg,
-                                true,
-                                &cuHeaderLength,
-                                &versionStamp,
-                                &abbrevOffset,
-                                &addressSize,
-                                &lengthSize,
-                                &extensionSize,
-                                &typeSignature,
-                                &typeOffset,
-                                &nextCuHeaderOffset,
-                                &headerCuType,
-                                &error)
-         == DW_DLV_OK) {
+  while (dwarf_next_cu_header_d(dbg, true, &cuHeaderLength, &versionStamp,
+                                &abbrevOffset, &addressSize, &lengthSize,
+                                &extensionSize, &typeSignature, &typeOffset,
+                                &nextCuHeaderOffset, &headerCuType,
+                                &error) == DW_DLV_OK) {
     Dwarf_Die cuDie = NULL;
     if (dwarf_siblingof_b(dbg, NULL, true, &cuDie, &error) != DW_DLV_OK) {
       continue;
@@ -675,10 +716,12 @@ static void hzstd_profiling_dwarf_build_line_table(void)
     Dwarf_Unsigned lineVersion;
     Dwarf_Small lineTableCount;
     Dwarf_Line_Context lineContext = NULL;
-    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext, &error) == DW_DLV_OK) {
-      Dwarf_Line* lineBuf = NULL;
+    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext,
+                         &error) == DW_DLV_OK) {
+      Dwarf_Line *lineBuf = NULL;
       Dwarf_Signed lineCount = 0;
-      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount, &error) == DW_DLV_OK) {
+      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount,
+                                          &error) == DW_DLV_OK) {
         // DWARF line tables are a series of contiguous code ranges
         // ("sequences"), each terminated by a synthetic end_sequence row.
         // Addresses are only meaningfully comparable within the same sequence —
@@ -697,7 +740,8 @@ static void hzstd_profiling_dwarf_build_line_table(void)
           }
 
           Dwarf_Bool isEndSequence = false;
-          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) != DW_DLV_OK) {
+          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) !=
+              DW_DLV_OK) {
             isEndSequence = false;
           }
           if (isEndSequence) {
@@ -709,7 +753,7 @@ static void hzstd_profiling_dwarf_build_line_table(void)
           }
 
           Dwarf_Unsigned lineno = 0;
-          char* filename = NULL;
+          char *filename = NULL;
           if (dwarf_lineno(lineBuf[i], &lineno, &error) != DW_DLV_OK) {
             continue;
           }
@@ -719,14 +763,15 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
           if (count >= capacity) {
             capacity *= 2;
-            hzstd_profiling_dwarf_line_t* grown
-                = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+            hzstd_profiling_dwarf_line_t *grown = hzstd_allocate(
+                allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
             memcpy(grown, lines, count * sizeof(hzstd_profiling_dwarf_line_t));
             lines = grown;
           }
 
           lines[count].address = addr;
-          lines[count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
+          lines[count].sequence_end =
+              0; // backfilled once this sequence's end_sequence row is seen
           lines[count].filename = hzstd_str_from_cstr_dup(allocator, filename);
           lines[count].line = (hzstd_int_t)lineno;
           count++;
@@ -740,7 +785,8 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
   dwarf_finish(dbg);
 
-  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t), hzstd_profiling_dwarf_line_compare);
+  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t),
+        hzstd_profiling_dwarf_line_compare);
 
   g_dwarf_lines = lines;
   g_dwarf_line_count = count;
@@ -748,9 +794,10 @@ static void hzstd_profiling_dwarf_build_line_table(void)
 
 // Binary search for the nearest line at or below `address` (the standard
 // addr2line algorithm).
-static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
-{
-  hzstd_source_location_t absent = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
+static hzstd_source_location_t
+hzstd_profiling_resolve_sourceloc(void *address) {
+  hzstd_source_location_t absent = {
+      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
 
   if (!g_dwarf_init_done) {
     hzstd_profiling_dwarf_build_line_table();
@@ -763,7 +810,8 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
   // code, ...): they are not covered by this DWARF table at all, and a
   // nearest-below search would otherwise pick a bogus match from a completely
   // unrelated function.
-  if ((uintptr_t)address < g_dwarf_module_base || (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
+  if ((uintptr_t)address < g_dwarf_module_base ||
+      (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
     return absent;
   }
 
@@ -774,8 +822,7 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     size_t mid = lo + (hi - lo) / 2;
     if (g_dwarf_lines[mid].address <= target) {
       lo = mid + 1;
-    }
-    else {
+    } else {
       hi = mid;
     }
   }
@@ -784,7 +831,7 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     return absent;
   }
 
-  hzstd_profiling_dwarf_line_t* match = &g_dwarf_lines[lo - 1];
+  hzstd_profiling_dwarf_line_t *match = &g_dwarf_lines[lo - 1];
 
   // The match is only valid if `target` actually falls within the same
   // contiguous code range (sequence) that line belongs to. Otherwise it's a gap
@@ -794,34 +841,37 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void* address)
     return absent;
   }
 
-  return (hzstd_source_location_t) {
-    ._filename = match->filename,
-    ._line = match->line,
-    ._column = 0,
+  return (hzstd_source_location_t){
+      ._filename = match->filename,
+      ._line = match->line,
+      ._column = 0,
   };
 }
 
-// unw_get_proc_name_by_ip resolves a bare PC completely from scratch (no live unwind cursor to
-// reuse, unlike the panic handler's crash backtraces): it re-reads /proc/self/maps, mmaps
-// whatever file backs that address's mapping, and walks that image's ELF symbol tables by hand.
-// That's not robust against every address a real sample can contain -- in particular, addresses
-// inside anonymously-mapped, JIT-generated code (e.g. a GPU driver's runtime shader compiler
-// output, which is common in any frame that happens to be sampled during shader compilation) have
-// no backing ELF file at all, and libunwind ends up walking memory that isn't actually a valid
-// ELF image, which can run off the end of a mapping and segfault. A single bad address must not
-// be allowed to take down an entire profiling session just to report a name for it, so this
-// temporarily installs a recovery handler around the call and treats a crash the same as "no
-// symbol info found" for that one address -- exactly like a real symbolizer/profiler has to.
+// unw_get_proc_name_by_ip resolves a bare PC completely from scratch (no live
+// unwind cursor to reuse, unlike the panic handler's crash backtraces): it
+// re-reads /proc/self/maps, mmaps whatever file backs that address's mapping,
+// and walks that image's ELF symbol tables by hand. That's not robust against
+// every address a real sample can contain -- in particular, addresses inside
+// anonymously-mapped, JIT-generated code (e.g. a GPU driver's runtime shader
+// compiler output, which is common in any frame that happens to be sampled
+// during shader compilation) have no backing ELF file at all, and libunwind
+// ends up walking memory that isn't actually a valid ELF image, which can run
+// off the end of a mapping and segfault. A single bad address must not be
+// allowed to take down an entire profiling session just to report a name for
+// it, so this temporarily installs a recovery handler around the call and
+// treats a crash the same as "no symbol info found" for that one address --
+// exactly like a real symbolizer/profiler has to.
 static sigjmp_buf g_profiling_resolve_recovery;
 
-static void hzstd_profiling_resolve_crash_handler(int sig)
-{
+static void hzstd_profiling_resolve_crash_handler(int sig) {
   (void)sig;
   siglongjmp(g_profiling_resolve_recovery, 1);
 }
 
-static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char* buf, size_t buf_len, unw_word_t* offp)
-{
+static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf,
+                                                    size_t buf_len,
+                                                    unw_word_t *offp) {
   struct sigaction newAction, oldSegvAction, oldBusAction;
   memset(&newAction, 0, sizeof(newAction));
   newAction.sa_handler = hzstd_profiling_resolve_crash_handler;
@@ -832,10 +882,11 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char* buf, si
 
   int result;
   if (sigsetjmp(g_profiling_resolve_recovery, 1) == 0) {
-    result = unw_get_proc_name_by_ip(unw_local_addr_space, ip, buf, buf_len, offp, NULL);
-  }
-  else {
-    result = -1; // crashed partway through -- treat like libunwind's own "not found"
+    result = unw_get_proc_name_by_ip(unw_local_addr_space, ip, buf, buf_len,
+                                     offp, NULL);
+  } else {
+    result =
+        -1; // crashed partway through -- treat like libunwind's own "not found"
   }
 
   sigaction(SIGSEGV, &oldSegvAction, NULL);
@@ -854,25 +905,26 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char* buf, si
 // standard fix every unwinder/symbolizer applies is to look up `pc - 1` for
 // those, so the lookup lands on the call instruction itself rather than
 // whatever follows it.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool isLeaf)
-{
-  void* lookupAddress = isLeaf ? address : (void*)((uintptr_t)address - 1);
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
+                                                             bool isLeaf) {
+  void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
 
   char rawName[4096];
   unw_word_t offset;
-  if (hzstd_profiling_safe_get_proc_name_by_ip((unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) == 0) {
+  if (hzstd_profiling_safe_get_proc_name_by_ip(
+          (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) == 0) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
     name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
                              : hzstd_str_from_cstr_dup(allocator, rawName);
   }
 
-  return (hzstd_profiling_frame_t) {
-    .address = address,
-    .name = name,
-    .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
+  return (hzstd_profiling_frame_t){
+      .address = address,
+      .name = name,
+      .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
   };
 }
 
@@ -886,22 +938,22 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool
 // This mirrors what the panic handler in hzstd_platform_win32.c already does
 // for crash stacktraces.
 
-#define HZSTD_PROFILING_SYM_BUF_SIZE (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+#define HZSTD_PROFILING_SYM_BUF_SIZE                                           \
+  (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
 
 static bool g_profiling_sym_initialized = false;
 
 // See hzstd_profiling_resolve_frame's Linux counterpart above for why `isLeaf`
 // matters: caller frames hold a return address, so the lookup is offset by one
 // byte to land back on the call instruction itself.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool isLeaf)
-{
-  void* lookupAddress = isLeaf ? address : (void*)((uintptr_t)address - 1);
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
+                                                             bool isLeaf) {
+  void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   if (!g_profiling_sym_initialized) {
     if (!SymInitialize(GetCurrentProcess(), NULL, TRUE)) {
-      fprintf(stderr,
-              "Warning: SymInitialize failed — profiling symbol "
-              "names/source locations will be unavailable.\n");
+      fprintf(stderr, "Warning: SymInitialize failed — profiling symbol "
+                      "names/source locations will be unavailable.\n");
     }
     g_profiling_sym_initialized = true;
   }
@@ -915,25 +967,28 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool
   pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
   pSym->MaxNameLen = MAX_SYM_NAME;
   DWORD64 displacement = 0;
-  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement, pSym)) {
+  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement,
+                  pSym)) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, pSym->Name);
     name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
                              : hzstd_str_from_cstr_dup(allocator, pSym->Name);
   }
 
-  hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
+  hzstd_source_location_t sourceloc = {
+      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
   IMAGEHLP_LINE64 lineInfo;
   lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
   DWORD lineDisp = 0;
-  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress, &lineDisp, &lineInfo)) {
+  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress,
+                           &lineDisp, &lineInfo)) {
     sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
     sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
   }
 
-  return (hzstd_profiling_frame_t) {
-    .address = address,
-    .name = name,
-    .sourceloc = sourceloc,
+  return (hzstd_profiling_frame_t){
+      .address = address,
+      .name = name,
+      .sourceloc = sourceloc,
   };
 }
 
@@ -942,16 +997,18 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void* address, bool
 // Intern `address` into `frames`, deduplicating by instruction pointer (the
 // same function hit by many samples must only be resolved/stored once), and
 // return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
-static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* address, bool isLeaf)
-{
+static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t *frames,
+                                           void *address, bool isLeaf) {
   for (size_t i = 0; i < hzstd_dynamic_array_size(frames); i++) {
-    hzstd_profiling_frame_t existing = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
+    hzstd_profiling_frame_t existing =
+        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
     if (existing.address == address) {
       return i;
     }
   }
 
-  hzstd_profiling_frame_t frame = hzstd_profiling_resolve_frame(address, isLeaf);
+  hzstd_profiling_frame_t frame =
+      hzstd_profiling_resolve_frame(address, isLeaf);
   HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
   return hzstd_dynamic_array_size(frames) - 1;
 }
@@ -959,27 +1016,30 @@ static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t* frames, void* 
 // Turn one raw sample (bare addresses) into a postprocessed sample (interned
 // frame indices into `resultFrames`, innermost first, same order libunwind
 // walked them in).
-static hzstd_profiling_sample_t hzstd_profiling_build_sample(hzstd_dynamic_array_t* resultFrames,
-                                                             hzstd_profiling_raw_sample_t raw)
-{
-  hzstd_dynamic_array_t* frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
+static hzstd_profiling_sample_t
+hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
+                             hzstd_profiling_raw_sample_t raw) {
+  hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(
+      hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
-    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, raw.pcs[i], i == 0);
+    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(
+        resultFrames, raw.pcs[i], i == 0);
     HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, index);
   }
 
-  return (hzstd_profiling_sample_t) {
-    .timestamp = raw.timestamp,
-    .sampling_duration = raw.sampling_duration,
-    .frames = frameIndices,
+  return (hzstd_profiling_sample_t){
+      .timestamp = raw.timestamp,
+      .sampling_duration = raw.sampling_duration,
+      .frames = frameIndices,
   };
 }
 
-hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context)
-{
-  if (atomic_load(&context->stop_scheduler) || atomic_load(&context->stop_stackwalker)) {
-    HZSTD_PANIC_FMT("Profiling was already stopped");
+hzstd_profiling_result_t
+hzstd_profiling_end(hzstd_profiling_context_t *context) {
+  if (atomic_load(&context->stop_scheduler) ||
+      atomic_load(&context->stop_stackwalker)) {
+    hzstd_panic_fmt("Profiling was already stopped");
   }
 
   // First stop the scheduler and wait for it.
@@ -1002,13 +1062,14 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context)
   CloseHandle(context->profiled_thread_handle);
 #endif
 
-  // Both worker threads are joined, so there is no producer left and this final drain is not
-  // racing anything: pick up whatever the stackwalker wrote but never got a chance to hand to
-  // `samples` before the loop exited.
+  // Both worker threads are joined, so there is no producer left and this final
+  // drain is not racing anything: pick up whatever the stackwalker wrote but
+  // never got a chance to hand to `samples` before the loop exited.
   hzstd_profiling_drain_ring(context);
   if (context->ring_dropped_count > 0) {
     fprintf(stderr,
-            "Warning: profiling dropped %zu sample(s) because the internal buffer filled up "
+            "Warning: profiling dropped %zu sample(s) because the internal "
+            "buffer filled up "
             "faster than it could be drained\n",
             context->ring_dropped_count);
   }
@@ -1020,46 +1081,53 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context)
   // raw sample into a list of indices into that table.
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
-  hzstd_dynamic_array_t* frames = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, 64);
-  hzstd_dynamic_array_t* samples
-      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_sample_t, context->sample_count);
+  hzstd_dynamic_array_t *frames =
+      HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, 64);
+  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_profiling_sample_t, context->sample_count);
 
-  for (hzstd_profiling_sample_chunk_t* chunk = context->samples_head; chunk != NULL; chunk = chunk->next) {
+  for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head;
+       chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
-      hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(frames, chunk->entries[i]);
+      hzstd_profiling_sample_t sample =
+          hzstd_profiling_build_sample(frames, chunk->entries[i]);
       HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
     }
   }
 
-  return (hzstd_profiling_result_t) {
-    .frames = frames,
-    .samples = samples,
-    .sampling_rate_hz = context->sampling_rate_hz,
+  return (hzstd_profiling_result_t){
+      .frames = frames,
+      .samples = samples,
+      .sampling_rate_hz = context->sampling_rate_hz,
   };
 }
 
 #ifdef HAZE_PLATFORM_LINUX
 
-static void profiling_handler(int sig, siginfo_t* info, void* ucontext)
-{
+static void profiling_handler(int sig, siginfo_t *info, void *ucontext) {
   (void)sig;
   (void)info;
 
-  hzstd_profiling_context_t* context = g_profiling_context;
+  hzstd_profiling_context_t *context = g_profiling_context;
 
   int expected = 0;
-  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected, 1)) {
-    // A sample is already ongoing -- either a normal overlap (shouldn't really happen given the
-    // scheduler's cadence), or the previous round's wait below timed out and the stackwalker is
-    // still working through it. Either way, ignore this tick; the stackwalker thread clears
-    // sample_in_progress once the in-flight round actually finishes.
+  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
+                                      1)) {
+    // A sample is already ongoing -- either a normal overlap (shouldn't really
+    // happen given the scheduler's cadence), or the previous round's wait below
+    // timed out and the stackwalker is still working through it. Either way,
+    // ignore this tick; the stackwalker thread clears sample_in_progress once
+    // the in-flight round actually finishes.
     return;
   }
 
-  // Discard any leftover "done" signal from a previous round whose wait below timed out, before
-  // arming this round's wait. Without this, a stale signal from that abandoned round could be
-  // mistaken for this round's completion the moment we trigger the stackwalker below.
-  while (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) { }
+  // Discard any leftover "done" signal from a previous round whose wait below
+  // timed out, before arming this round's wait. Without this, a stale signal
+  // from that abandoned round could be mistaken for this round's completion the
+  // moment we trigger the stackwalker below.
+  while (
+      hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) {
+  }
 
   // Taken as close to the suspension point as possible, before anything else in
   // the handler runs.
@@ -1071,78 +1139,89 @@ static void profiling_handler(int sig, siginfo_t* info, void* ucontext)
   // Hand off to stackwalker.
   hzstd_trigger_semaphore(context->stackwalker_trigger_semaphore);
 
-  // Wait for the worker to finish building the stacktrace -- but only up to a bound. The
-  // stackwalker can rarely block for a while on a process-wide lock it doesn't control (see the
-  // comment in hzstd_profiling_stackwalker_thread, e.g. glibc's loader lock via dl_iterate_phdr).
-  // If this thread is the one holding that lock when it got signaled, waiting unboundedly would
-  // deadlock the whole process: this thread can't proceed until the stackwalker finishes, and the
-  // stackwalker can't finish until this thread (the lock holder) proceeds. Bounding the wait
-  // breaks that cycle -- on timeout we just give up on this one sample and let this thread carry
-  // on, which lets it release whatever lock it might be holding and in turn unblocks the
+  // Wait for the worker to finish building the stacktrace -- but only up to a
+  // bound. The stackwalker can rarely block for a while on a process-wide lock
+  // it doesn't control (see the comment in hzstd_profiling_stackwalker_thread,
+  // e.g. glibc's loader lock via dl_iterate_phdr). If this thread is the one
+  // holding that lock when it got signaled, waiting unboundedly would deadlock
+  // the whole process: this thread can't proceed until the stackwalker
+  // finishes, and the stackwalker can't finish until this thread (the lock
+  // holder) proceeds. Bounding the wait breaks that cycle -- on timeout we just
+  // give up on this one sample and let this thread carry on, which lets it
+  // release whatever lock it might be holding and in turn unblocks the
   // stackwalker. sample_in_progress is deliberately left set in that case; see
   // hzstd_profiling_stackwalker_thread for why it alone clears it.
-  if (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, HZSTD_PROFILING_SAMPLE_TIMEOUT_NS)) {
-    // The stackwalker has just pushed the new sample into the ring buffer (synchronised by the
-    // done semaphore above), so it is safe to reach into the slot it recorded and patch in the
-    // total time this sample cost the profiled thread, measured as close to resuming it as
-    // possible.
+  if (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore,
+                                     HZSTD_PROFILING_SAMPLE_TIMEOUT_NS)) {
+    // The stackwalker has just pushed the new sample into the ring buffer
+    // (synchronised by the done semaphore above), so it is safe to reach into
+    // the slot it recorded and patch in the total time this sample cost the
+    // profiled thread, measured as close to resuming it as possible.
     double samplingDuration = hzstd_time_now() - startedAt;
     if (context->last_ring_slot != SIZE_MAX) {
-      context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
+      context->ring_buffer[context->last_ring_slot].sampling_duration =
+          samplingDuration;
     }
   }
 }
 
-// Walking the current thread's own stack once, synchronously, before the signal handler is ever
-// installed, forces libunwind to populate its internal per-module unwind-info caches (built
-// lazily -- via plain malloc, independent of the GC -- the first time each loaded module's CFI
-// table is actually touched) for every module mapped right now. Without this, the very first
-// sample that happens to step through a not-yet-cached module would have the stackwalker thread
-// call malloc while the profiled thread might be parked holding some unrelated lock: the same
-// hazard the ring buffer exists to avoid, just one level deeper inside libunwind itself.
+// Walking the current thread's own stack once, synchronously, before the signal
+// handler is ever installed, forces libunwind to populate its internal
+// per-module unwind-info caches (built lazily -- via plain malloc, independent
+// of the GC -- the first time each loaded module's CFI table is actually
+// touched) for every module mapped right now. Without this, the very first
+// sample that happens to step through a not-yet-cached module would have the
+// stackwalker thread call malloc while the profiled thread might be parked
+// holding some unrelated lock: the same hazard the ring buffer exists to avoid,
+// just one level deeper inside libunwind itself.
 //
-// This only covers modules mapped at profiling-start time; a dlopen() afterwards introduces a
-// fresh, unprewarmed module and reintroduces a (much rarer) version of the same risk. Not handled
-// here -- would need hooking dlopen to re-prewarm on demand.
-static void hzstd_profiling_prewarm_unwind_cache(void)
-{
+// This only covers modules mapped at profiling-start time; a dlopen()
+// afterwards introduces a fresh, unprewarmed module and reintroduces a (much
+// rarer) version of the same risk. Not handled here -- would need hooking
+// dlopen to re-prewarm on demand.
+static void hzstd_profiling_prewarm_unwind_cache(void) {
   unw_context_t ctx;
   unw_getcontext(&ctx);
   unw_cursor_t cursor;
   unw_init_local2(&cursor, &ctx, 0);
   do {
-    // Just walking is enough to populate the caches; nothing to extract from the frames here.
+    // Just walking is enough to populate the caches; nothing to extract from
+    // the frames here.
   } while (unw_step(&cursor) > 0);
 }
 
-static void install_profiler_handler(void)
-{
+static void install_profiler_handler(void) {
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
 
   sa.sa_sigaction = profiling_handler;
-  // Deliberately *not* SA_ONSTACK, unlike the panic handler: this handler has no risk of running
-  // out of stack (a handful of locals, no recursion), so it has no need for the small thread_local
-  // sigaltstack hzstd_setup_panic_handler sets up for crash recovery. Running there anyway was
-  // actively harmful: while this handler (or anything it calls, e.g. the bounded wait below) is
-  // on that altstack, its stack pointer sits inside an 8 KiB buffer with no relation to the
-  // thread's real stack. Boehm GC's stop-the-world signal doesn't use SA_ONSTACK, so if it lands
-  // on this thread during that window, it captures that altstack-resident pointer as the thread's
-  // "current" one -- and a later mark phase combining that with the thread's registered (real)
-  // stack bounds computes a scan range that belongs to neither, walking off into unmapped memory.
-  // Staying on the normal stack, which is what's actually registered with the GC for this thread,
-  // avoids the mismatch entirely.
+  // Deliberately *not* SA_ONSTACK, unlike the panic handler: this handler has
+  // no risk of running out of stack (a handful of locals, no recursion), so it
+  // has no need for the small thread_local sigaltstack
+  // hzstd_setup_panic_handler sets up for crash recovery. Running there anyway
+  // was actively harmful: while this handler (or anything it calls, e.g. the
+  // bounded wait below) is on that altstack, its stack pointer sits inside an 8
+  // KiB buffer with no relation to the thread's real stack. Boehm GC's
+  // stop-the-world signal doesn't use SA_ONSTACK, so if it lands on this thread
+  // during that window, it captures that altstack-resident pointer as the
+  // thread's "current" one -- and a later mark phase combining that with the
+  // thread's registered (real) stack bounds computes a scan range that belongs
+  // to neither, walking off into unmapped memory. Staying on the normal stack,
+  // which is what's actually registered with the GC for this thread, avoids the
+  // mismatch entirely.
   //
-  // SA_RESTART matters a lot here too: without it, every SIGUSR1 tick can interrupt *any* blocking
-  // syscall anywhere in the process -- not just our own waits (which already retry on EINTR
-  // manually, since sem_wait/sem_timedwait are specifically documented to never auto-restart
-  // regardless of this flag, so this changes nothing for them) -- including code in other
-  // libraries that was never written to expect a "foreign" signal and never retries itself. At
-  // high sampling rates that's frequent enough to truncate things like a read() of a Wayland
-  // keymap string mid-transfer, which is exactly what a "malformed number literal" parse error
-  // immediately afterwards looks like. SA_RESTART asks the kernel to transparently resume most
-  // interrupted blocking syscalls instead of returning EINTR, so code with no SIGUSR1-awareness
-  // of its own never notices it was interrupted at all.
+  // SA_RESTART matters a lot here too: without it, every SIGUSR1 tick can
+  // interrupt *any* blocking syscall anywhere in the process -- not just our
+  // own waits (which already retry on EINTR manually, since
+  // sem_wait/sem_timedwait are specifically documented to never auto-restart
+  // regardless of this flag, so this changes nothing for them) -- including
+  // code in other libraries that was never written to expect a "foreign" signal
+  // and never retries itself. At high sampling rates that's frequent enough to
+  // truncate things like a read() of a Wayland keymap string mid-transfer,
+  // which is exactly what a "malformed number literal" parse error immediately
+  // afterwards looks like. SA_RESTART asks the kernel to transparently resume
+  // most interrupted blocking syscalls instead of returning EINTR, so code with
+  // no SIGUSR1-awareness of its own never notices it was interrupted at all.
   sa.sa_flags = SA_SIGINFO | SA_RESTART;
 
   sigemptyset(&sa.sa_mask);

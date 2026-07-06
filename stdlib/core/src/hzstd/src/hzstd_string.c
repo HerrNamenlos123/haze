@@ -1,68 +1,79 @@
 
 #include "../include/hzstd_string.h"
 #include "../include/hzstd_memory.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data)
-{
+hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator,
+                                 hzstd_str_t data) {
   if (data.length > 0) {
     hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1);
     memcpy(buffer, data.data, data.length);
     buffer[data.length] = '\0';
     return buffer;
-  }
-  else {
+  } else {
     hzstd_cstr_t buffer = hzstd_allocate(allocator, 1);
     buffer[0] = '\0';
     return buffer;
   }
 }
 
-hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data)
-{
-  return (hzstd_str_t) {
-    .data = data,
-    .length = strlen(data),
+hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data) {
+  return (hzstd_str_t){
+      .data = data,
+      .length = strlen(data),
   };
 }
 
-hzstd_str_t hzstd_str_dup(hzstd_str_t data)
-{
-  char* buffer = hzstd_heap_allocate_atomic(data.length);
+hzstd_str_t hzstd_str_dup(hzstd_str_t data) {
+  char *buffer = hzstd_heap_allocate_atomic(data.length);
   memcpy(buffer, data.data, data.length);
   return HZSTD_STRING(buffer, data.length);
 }
 
-hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data) { return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), data); }
+hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data) {
+  return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), data);
+}
 
-hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data)
-{
+hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator,
+                                    hzstd_cstr_t data) {
   size_t length = strlen(data);
 
   if (length == 0) {
-    return (hzstd_str_t) { .length = 0, .data = 0 };
-  }
-  else {
-    char* buffer = hzstd_allocate(allocator, length);
+    return (hzstd_str_t){.length = 0, .data = 0};
+  } else {
+    char *buffer = hzstd_allocate(allocator, length);
     memcpy(buffer, data, length);
-    return (hzstd_str_t) {
-      .data = buffer,
-      .length = length,
+    return (hzstd_str_t){
+        .data = buffer,
+        .length = length,
     };
   }
 }
 
-hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b)
-{
+int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  int n = vsnprintf(buf, bufferSize, fmt, args);
+  va_end(args);
+  return n;
+}
+
+void hzstd_print_str_stdout(hzstd_str_t str) {
+  fwrite(str.data, 1, str.length, stdout);
+}
+
+hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b) {
   if (a.length != b.length) {
     return false;
   }
   return memcmp(a.data, b.data, a.length) == 0;
 }
 
-const char* hzstd_raw_malloc_null_terminated_str(hzstd_str_t str)
-{
-  char* buffer = malloc(str.length + 1);
+const char *hzstd_raw_malloc_null_terminated_str(hzstd_str_t str) {
+  char *buffer = malloc(str.length + 1);
   memcpy(buffer, str.data, str.length);
   buffer[str.length] = '\0';
   return buffer;

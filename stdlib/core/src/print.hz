@@ -1,10 +1,9 @@
 
-__c__("#include <stdio.h>");
-
 fn watchBinary(): rx.ShallowReactive<mut Bytes> :: final;
 
 namespace ffi {
     export extern C noemit fn printf(fmt: ccstr, ...) :: final;
+    export extern C noemit fn hzstd_print_str_stdout(string: str) :: final;
 }
 
 namespace fmt {
@@ -81,8 +80,7 @@ namespace fmt {
             }
         }
         writer.commit();
-        let string = writer.string();
-        __c__("fwrite(string.data, 1, string.length, stdout);");
+        ffi.hzstd_print_str_stdout(writer.string());
     }
 
     export fn println(args: ...) :: final {
@@ -97,8 +95,7 @@ namespace fmt {
         }
         writer.write("\n");
         writer.commit();
-        let string = writer.string();
-        __c__("fwrite(string.data, 1, string.length, stdout);");
+        ffi.hzstd_print_str_stdout(writer.string());
     }
 
     export fn format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
@@ -232,7 +229,7 @@ namespace fmt {
         let string = "";
         __c__(f"""
 char buf[{BufferSize}];
-n = snprintf(buf, sizeof(buf), {Fmt}, value);
+n = hzstd_snprintf(buf, sizeof(buf), {Fmt}, value);
 string = HZSTD_STRING_FROM_CSTR(buf);
         """);
         if n > 0 && n < BufferSize {

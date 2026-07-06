@@ -29,7 +29,7 @@
     hzstd_dynamic_array_result_t result =                                      \
         hzstd_dynamic_array_get_addr(__hz_temp_array, __hz_temp_index, &ptr);  \
     if (result == hzstd_dynamic_array_result_out_of_bounds) {                  \
-      HZSTD_PANIC_FMT(                                                         \
+      hzstd_panic_fmt(                                                         \
           "array index out of range [%" PRId64 "] with length %" PRId64,       \
           __hz_temp_index, hzstd_dynamic_array_size(__hz_temp_array));         \
     }                                                                          \
@@ -43,7 +43,7 @@
   *({                                                                          \
     hzstd_int_t __hz_temp_index = index;                                       \
     if (__hz_temp_index < 0 || __hz_temp_index >= (hzstd_int_t)length) {       \
-      HZSTD_PANIC_FMT("array index out of range [%" PRId64                     \
+      hzstd_panic_fmt("array index out of range [%" PRId64                     \
                       "] with length %" PRId64,                                \
                       __hz_temp_index, (hzstd_int_t)length);                   \
     }                                                                          \
@@ -56,10 +56,10 @@
     hzstd_dynamic_array_result_t result =                                      \
         hzstd_dynamic_array_push(array, &__hz_temp_element);                   \
     if (result == hzstd_dynamic_array_result_max_array_size) {                 \
-      HZSTD_PANIC_FMT("max dynamic array size reached");                       \
+      hzstd_panic_fmt("max dynamic array size reached");                       \
     }                                                                          \
     if (result == hzstd_dynamic_array_result_out_of_memory) {                  \
-      HZSTD_PANIC_FMT("out of memory");                                        \
+      hzstd_panic_fmt("out of memory");                                        \
     }                                                                          \
     if (result != hzstd_dynamic_array_result_ok) {                             \
       hzstd_unreachable(0);                                                    \
@@ -71,15 +71,15 @@
     elementType __hz_temp_element;                                             \
     hzstd_dynamic_array_t *__hz_temp_array = array;                            \
     if (hzstd_dynamic_array_size(__hz_temp_array) == 0) {                      \
-      HZSTD_PANIC_FMT("cannot pop from dynamic array: length == 0");           \
+      hzstd_panic_fmt("cannot pop from dynamic array: length == 0");           \
     }                                                                          \
     hzstd_dynamic_array_result_t result =                                      \
         hzstd_dynamic_array_pop(array, &__hz_temp_element);                    \
     if (result == hzstd_dynamic_array_result_max_array_size) {                 \
-      HZSTD_PANIC_FMT("max dynamic array size reached");                       \
+      hzstd_panic_fmt("max dynamic array size reached");                       \
     }                                                                          \
     if (result == hzstd_dynamic_array_result_out_of_memory) {                  \
-      HZSTD_PANIC_FMT("out of memory");                                        \
+      hzstd_panic_fmt("out of memory");                                        \
     }                                                                          \
     if (result != hzstd_dynamic_array_result_ok) {                             \
       hzstd_unreachable(0);                                                    \
@@ -179,7 +179,8 @@ hzstd_dynamic_array_pop(hzstd_dynamic_array_t *da, void *out_elem) {
 // Signed to match Haze's `[]T.length: int` -- see the comment on
 // hzstd_str_t.length in hzstd_string.h for why an unsigned return type here
 // silently breaks signed comparisons like `arr.length > -1`.
-static inline int64_t hzstd_dynamic_array_size(const hzstd_dynamic_array_t *da) {
+static inline int64_t
+hzstd_dynamic_array_size(const hzstd_dynamic_array_t *da) {
   return da ? (int64_t)da->size : 0;
 }
 static inline size_t

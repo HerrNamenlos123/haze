@@ -1,6 +1,6 @@
 
-#include "../include/hzstd_memory.h"
 #include "../hzstd_types.h"
+#include "../include/hzstd_memory.h"
 
 #include "../include/hzstd_array.h"
 #include "../include/hzstd_demangle.h"
@@ -21,16 +21,17 @@ _Thread_local hzstd_panic_info_t _hz_panic_stacktrace = {0};
 
 // ── ANSI colours ─────────────────────────────────────────────────────────────
 
-#define A_RESET   "\x1b[0m"
-#define A_BOLD    "\x1b[1m"
-#define A_DIM     "\x1b[90m"
-#define A_RED_B   "\x1b[1;31m"
-#define A_WHITE   "\x1b[37m"
+#define A_RESET "\x1b[0m"
+#define A_BOLD "\x1b[1m"
+#define A_DIM "\x1b[90m"
+#define A_RED_B "\x1b[1;31m"
+#define A_WHITE "\x1b[37m"
 #define A_WHITE_B "\x1b[1;37m"
-#define A_YELLOW  "\x1b[33m"
+#define A_YELLOW "\x1b[33m"
 #define A_YELLOW_B "\x1b[1;33m"
 
-// ── Frame-system registry ─────────────────────────────────────────────────────
+// ── Frame-system registry
+// ─────────────────────────────────────────────────────
 
 typedef struct {
   const char *fn_name;
@@ -38,36 +39,46 @@ typedef struct {
 } hzstd_frame_system_entry_t;
 
 static const hzstd_frame_system_entry_t hzstd_frame_systems[] = {
-    {"main",                    "runtime"},
-    {"_start",                  "runtime"},
-    {"__libc_start_main",       "runtime"},
-    {"__libc_start_call_main",  "runtime"},
-    {"invoke_main",             "crt"},
-    {"__scrt_common_main",      "crt"},
-    {"__scrt_common_main_seh",  "crt"},
-    {"mainCRTStartup",          "crt"},
-    {"BaseThreadInitThunk",     "kernel"},
-    {"RtlUserThreadStart",      "kernel"},
+    {"main", "runtime"},
+    {"_start", "runtime"},
+    {"__libc_start_main", "runtime"},
+    {"__libc_start_call_main", "runtime"},
+    {"invoke_main", "crt"},
+    {"__scrt_common_main", "crt"},
+    {"__scrt_common_main_seh", "crt"},
+    {"mainCRTStartup", "crt"},
+    {"BaseThreadInitThunk", "kernel"},
+    {"RtlUserThreadStart", "kernel"},
     {NULL, NULL},
 };
 
 static const char *frame_system(hzstd_str_t name) {
   for (size_t i = 0; hzstd_frame_systems[i].fn_name; i++) {
-    const char *fn  = hzstd_frame_systems[i].fn_name;
-    size_t      len = strlen(fn);
+    const char *fn = hzstd_frame_systems[i].fn_name;
+    size_t len = strlen(fn);
     if (name.length == len && memcmp(name.data, fn, len) == 0)
       return hzstd_frame_systems[i].system_name;
   }
   return NULL;
 }
 
-// ── Panic functions ───────────────────────────────────────────────────────────
+// ── Panic functions
+// ───────────────────────────────────────────────────────────
 
 hzstd_str_t hzstd_errno_to_str(int err) {
   const char *msg = strerror(err);
   if (!msg)
     return HZSTD_STRING("", 0);
   return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)msg);
+}
+
+_Noreturn void hzstd_panic_fmt(const char *fmt, ...) {
+  char buf[1024];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  hzstd_panic_str(HZSTD_STRING_FROM_CSTR(buf));
 }
 
 _Noreturn void hzstd_panic(hzstd_ccstr_t msg) {
@@ -88,7 +99,16 @@ _Noreturn void hzstd_unreachable(int skip_n_frames) {
       2 + skip_n_frames);
 }
 
-// ── Path helpers ──────────────────────────────────────────────────────────────
+void hzstd_print_stderr_cstr(const char *str) { fprintf(stderr, "%s", str); }
+
+void hzstd_print_stderr_str(hzstd_str_t str) {
+  fwrite(str.data, 1, str.length, stderr);
+}
+
+void hzstd_flush_stderr() { fflush(stderr); }
+
+// ── Path helpers
+// ──────────────────────────────────────────────────────────────
 
 static hzstd_str_t basename_of(hzstd_str_t path) {
   size_t sep = 0;
@@ -102,9 +122,12 @@ static void print_path_hyperlink(hzstd_str_t full_path, hzstd_str_t linecol) {
   fprintf(stderr, "\033]8;;file:///");
   for (size_t i = 0; i < full_path.length; i++) {
     char c = full_path.data[i];
-    if (c == '\\')       fputc('/', stderr);
-    else if (c == ' ')   fputs("%20", stderr);
-    else                 fputc(c, stderr);
+    if (c == '\\')
+      fputc('/', stderr);
+    else if (c == ' ')
+      fputs("%20", stderr);
+    else
+      fputc(c, stderr);
   }
   fprintf(stderr, "\033\\");
 
@@ -118,13 +141,14 @@ static void print_path_hyperlink(hzstd_str_t full_path, hzstd_str_t linecol) {
   }
 }
 
-// ── Panic-message parser ──────────────────────────────────────────────────────
+// ── Panic-message parser
+// ──────────────────────────────────────────────────────
 
 static bool split_panic_message(hzstd_str_t msg, hzstd_str_t *out_loc,
                                 hzstd_str_t *out_body) {
-  const char *p         = msg.data;
-  size_t      n         = msg.length;
-  size_t      scan_from = 0;
+  const char *p = msg.data;
+  size_t n = msg.length;
+  size_t scan_from = 0;
 
 #if defined(HAZE_PLATFORM_WIN32)
   if (n >= 2 && p[1] == ':')
@@ -132,16 +156,23 @@ static bool split_panic_message(hzstd_str_t msg, hzstd_str_t *out_loc,
 #endif
 
   for (size_t i = scan_from; i < n; i++) {
-    if (p[i] != ':') continue;
+    if (p[i] != ':')
+      continue;
     size_t j = i + 1;
-    if (j >= n || p[j] < '0' || p[j] > '9') continue;
-    while (j < n && p[j] >= '0' && p[j] <= '9') j++;
-    if (j >= n || p[j] != ':') continue;
+    if (j >= n || p[j] < '0' || p[j] > '9')
+      continue;
+    while (j < n && p[j] >= '0' && p[j] <= '9')
+      j++;
+    if (j >= n || p[j] != ':')
+      continue;
     j++;
-    if (j >= n || p[j] < '0' || p[j] > '9') continue;
-    while (j < n && p[j] >= '0' && p[j] <= '9') j++;
-    if (j + 1 >= n || p[j] != ':' || p[j + 1] != ' ') continue;
-    *out_loc  = (hzstd_str_t){.data = p,         .length = j};
+    if (j >= n || p[j] < '0' || p[j] > '9')
+      continue;
+    while (j < n && p[j] >= '0' && p[j] <= '9')
+      j++;
+    if (j + 1 >= n || p[j] != ':' || p[j + 1] != ' ')
+      continue;
+    *out_loc = (hzstd_str_t){.data = p, .length = j};
     *out_body = (hzstd_str_t){.data = p + j + 2, .length = n - j - 2};
     return true;
   }
@@ -170,41 +201,46 @@ static hzstd_str_t loc_line_col(hzstd_str_t loc) {
   return (hzstd_str_t){.data = "", .length = 0};
 }
 
-// ── Display name ──────────────────────────────────────────────────────────────
+// ── Display name
+// ──────────────────────────────────────────────────────────────
 
-static hzstd_str_t frame_display_name(hzstd_allocator_t alloc, hzstd_str_t raw) {
+static hzstd_str_t frame_display_name(hzstd_allocator_t alloc,
+                                      hzstd_str_t raw) {
   char *tmp = (char *)hzstd_allocate(alloc, raw.length + 1);
-  if (!tmp) return raw;
+  if (!tmp)
+    return raw;
   memcpy(tmp, raw.data, raw.length);
   tmp[raw.length] = '\0';
 
   hzstd_demangle_result_t r = hzstd_demangle(alloc, tmp);
-  if (!r.success) return raw;
+  if (!r.success)
+    return raw;
   return hzstd_demangle_display(alloc, &r);
 }
 
-// ── Growable string builder ───────────────────────────────────────────────────
+// ── Growable string builder
+// ───────────────────────────────────────────────────
 
 typedef struct {
   hzstd_allocator_t alloc;
-  char             *data;
-  size_t            len;
-  size_t            cap;
+  char *data;
+  size_t len;
+  size_t cap;
 } hzstd_sbuf_t;
 
 static void sbuf_init(hzstd_sbuf_t *b, hzstd_allocator_t alloc) {
   b->alloc = alloc;
-  b->cap   = 512;
-  b->data  = (char *)hzstd_allocate(alloc, b->cap);
-  b->len   = 0;
+  b->cap = 512;
+  b->data = (char *)hzstd_allocate(alloc, b->cap);
+  b->len = 0;
 }
 
 static void sbuf_grow(hzstd_sbuf_t *b, size_t need) {
   while (b->len + need > b->cap) {
-    size_t new_cap  = b->cap * 2;
-    char  *new_data = (char *)hzstd_allocate(b->alloc, new_cap);
+    size_t new_cap = b->cap * 2;
+    char *new_data = (char *)hzstd_allocate(b->alloc, new_cap);
     memcpy(new_data, b->data, b->len);
-    b->cap  = new_cap;
+    b->cap = new_cap;
     b->data = new_data;
   }
 }
@@ -216,7 +252,8 @@ static void sbuf_write(hzstd_sbuf_t *b, const char *data, size_t len) {
 }
 
 static void sbuf_cstr(hzstd_sbuf_t *b, const char *s) {
-  if (s) sbuf_write(b, s, strlen(s));
+  if (s)
+    sbuf_write(b, s, strlen(s));
 }
 
 static void sbuf_str(hzstd_sbuf_t *b, hzstd_str_t s) {
@@ -224,12 +261,13 @@ static void sbuf_str(hzstd_sbuf_t *b, hzstd_str_t s) {
 }
 
 static void sbuf_fmt(hzstd_sbuf_t *b, const char *fmt, ...) {
-  char    tmp[512];
+  char tmp[512];
   va_list ap;
   va_start(ap, fmt);
   int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
   va_end(ap);
-  if (n > 0) sbuf_write(b, tmp, (size_t)n);
+  if (n > 0)
+    sbuf_write(b, tmp, (size_t)n);
 }
 
 static hzstd_str_t sbuf_finish(hzstd_sbuf_t *b) {
@@ -252,7 +290,8 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
     hzstd_stackframe_t frame =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
     hzstd_str_t dn = frame_display_name(alloc, frame.name);
-    if (dn.length > name_col) name_col = dn.length;
+    if (dn.length > name_col)
+      name_col = dn.length;
   }
   name_col += 3;
 
@@ -265,7 +304,7 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
     hzstd_stackframe_t frame =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
 
-    size_t max_L  = (n_frames - i < 32) ? n_frames - i : 32;
+    size_t max_L = (n_frames - i < 32) ? n_frames - i : 32;
     size_t cyc_len = 0, cyc_rep = 1;
     for (size_t L = 1; L <= max_L && i + 2 * L <= n_frames; L++) {
       bool match = true;
@@ -274,9 +313,11 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
             HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
         hzstd_stackframe_t b =
             HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + L + k);
-        if (a.id != b.id) match = false;
+        if (a.id != b.id)
+          match = false;
       }
-      if (!match) continue;
+      if (!match)
+        continue;
       size_t cnt = 2;
       while (i + cnt * L + L <= n_frames) {
         bool m2 = true;
@@ -285,12 +326,18 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
               HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
           hzstd_stackframe_t b2 = HZSTD_DYNAMIC_ARRAY_GET(
               frames, hzstd_stackframe_t, i + cnt * L + k);
-          if (a.id != b2.id) m2 = false;
+          if (a.id != b2.id)
+            m2 = false;
         }
-        if (!m2) break;
+        if (!m2)
+          break;
         cnt++;
       }
-      if (cnt > 1) { cyc_len = L; cyc_rep = cnt; break; }
+      if (cnt > 1) {
+        cyc_len = L;
+        cyc_rep = cnt;
+        break;
+      }
     }
 
     if (cyc_len > 0) {
@@ -313,7 +360,7 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
     }
 
     const char *sys = frame_system(frame.name);
-    hzstd_str_t dn  = frame_display_name(alloc, frame.name);
+    hzstd_str_t dn = frame_display_name(alloc, frame.name);
 
     fprintf(stderr, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
     fprintf(stderr, sys ? A_DIM : A_WHITE);
@@ -321,17 +368,19 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc,
     fprintf(stderr, A_RESET);
 
     size_t pad = (dn.length < name_col) ? name_col - dn.length : 1;
-    for (size_t p2 = 0; p2 < pad; p2++) fputc(' ', stderr);
+    for (size_t p2 = 0; p2 < pad; p2++)
+      fputc(' ', stderr);
 
     if (sys) {
       fprintf(stderr, A_DIM "<%s>" A_RESET, sys);
     } else if (frame.sourceloc._filename.length > 0) {
       char linecol_buf[32] = {0};
-      hzstd_str_t linecol  = {.data = linecol_buf, .length = 0};
+      hzstd_str_t linecol = {.data = linecol_buf, .length = 0};
       if (frame.sourceloc._line != 0) {
         int n = snprintf(linecol_buf, sizeof(linecol_buf), "%lld",
                          (long long)frame.sourceloc._line);
-        if (n > 0) linecol.length = (size_t)n;
+        if (n > 0)
+          linecol.length = (size_t)n;
       }
       fprintf(stderr, A_YELLOW);
       print_path_hyperlink(frame.sourceloc._filename, linecol);
@@ -358,7 +407,8 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
     hzstd_stackframe_t fr =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
     hzstd_str_t dn = frame_display_name(scratch, fr.name);
-    if (dn.length > name_col) name_col = dn.length;
+    if (dn.length > name_col)
+      name_col = dn.length;
   }
   name_col += 3;
 
@@ -371,7 +421,7 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
     hzstd_stackframe_t fr =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
 
-    size_t max_L  = (n_frames - i < 32) ? n_frames - i : 32;
+    size_t max_L = (n_frames - i < 32) ? n_frames - i : 32;
     size_t cyc_len = 0, cyc_rep = 1;
     for (size_t L = 1; L <= max_L && i + 2 * L <= n_frames; L++) {
       bool match = true;
@@ -380,9 +430,11 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
             HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
         hzstd_stackframe_t bb =
             HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + L + k);
-        if (a.id != bb.id) match = false;
+        if (a.id != bb.id)
+          match = false;
       }
-      if (!match) continue;
+      if (!match)
+        continue;
       size_t cnt = 2;
       while (i + cnt * L + L <= n_frames) {
         bool m2 = true;
@@ -391,12 +443,18 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
               HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
           hzstd_stackframe_t bb2 = HZSTD_DYNAMIC_ARRAY_GET(
               frames, hzstd_stackframe_t, i + cnt * L + k);
-          if (a.id != bb2.id) m2 = false;
+          if (a.id != bb2.id)
+            m2 = false;
         }
-        if (!m2) break;
+        if (!m2)
+          break;
         cnt++;
       }
-      if (cnt > 1) { cyc_len = L; cyc_rep = cnt; break; }
+      if (cnt > 1) {
+        cyc_len = L;
+        cyc_rep = cnt;
+        break;
+      }
     }
 
     if (cyc_len > 0) {
@@ -419,7 +477,7 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
     }
 
     const char *sys = frame_system(fr.name);
-    hzstd_str_t dn  = frame_display_name(scratch, fr.name);
+    hzstd_str_t dn = frame_display_name(scratch, fr.name);
 
     sbuf_fmt(b, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
     sbuf_cstr(b, sys ? A_DIM : A_WHITE);
@@ -427,7 +485,8 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
     sbuf_cstr(b, A_RESET);
 
     size_t pad = (dn.length < name_col) ? name_col - dn.length : 1;
-    for (size_t p2 = 0; p2 < pad; p2++) sbuf_cstr(b, " ");
+    for (size_t p2 = 0; p2 < pad; p2++)
+      sbuf_cstr(b, " ");
 
     if (sys) {
       sbuf_fmt(b, A_DIM "<%s>" A_RESET, sys);
@@ -447,15 +506,16 @@ static void sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch,
   sbuf_cstr(b, "\n");
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API
+// ────────────────────────────────────────────────────────────────
 
 // Prints the full panic report: header + message + "at" location + frames.
 void hzstd_print_panic_info(hzstd_panic_info_t info) {
   hzstd_allocator_t alloc = hzstd_make_arena_allocator();
 
   hzstd_str_t loc_str = {.data = NULL, .length = 0};
-  hzstd_str_t body    = info.message;
-  bool        has_loc = split_panic_message(info.message, &loc_str, &body);
+  hzstd_str_t body = info.message;
+  bool has_loc = split_panic_message(info.message, &loc_str, &body);
 
   fprintf(stderr, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
   fprintf(stderr, A_WHITE_B);
@@ -463,23 +523,23 @@ void hzstd_print_panic_info(hzstd_panic_info_t info) {
   fprintf(stderr, A_RESET "\n");
 
   hzstd_dynamic_array_t *frames = info.stacktrace.frames;
-  size_t                 n_frames = hzstd_dynamic_array_size(frames);
-  hzstd_int_t            skip    = info.stacktrace.skip_n_frames;
+  size_t n_frames = hzstd_dynamic_array_size(frames);
+  hzstd_int_t skip = info.stacktrace.skip_n_frames;
 
-  hzstd_stackframe_t first_user    = {0};
-  bool               has_first_user = false;
+  hzstd_stackframe_t first_user = {0};
+  bool has_first_user = false;
   for (size_t i = (size_t)skip; i < n_frames; i++) {
     hzstd_stackframe_t frame =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
     if (!frame_system(frame.name)) {
-      first_user     = frame;
+      first_user = frame;
       has_first_user = true;
       break;
     }
   }
 
   if (has_loc && has_first_user) {
-    hzstd_str_t p  = loc_path(loc_str);
+    hzstd_str_t p = loc_path(loc_str);
     hzstd_str_t lc = loc_line_col(loc_str);
     fprintf(stderr, "\n" A_DIM "  at " A_RESET A_YELLOW_B);
     print_path_hyperlink(p, lc);
@@ -508,15 +568,15 @@ void hzstd_print_stacktrace(hzstd_stacktrace_t st) {
 
 // Stringifies the full panic report (header + message + frames).
 hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
-                                        hzstd_panic_info_t info) {
+                                       hzstd_panic_info_t info) {
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
 
   hzstd_allocator_t scratch = hzstd_make_arena_allocator();
 
   hzstd_str_t loc_str = {.data = NULL, .length = 0};
-  hzstd_str_t body    = info.message;
-  bool        has_loc = split_panic_message(info.message, &loc_str, &body);
+  hzstd_str_t body = info.message;
+  bool has_loc = split_panic_message(info.message, &loc_str, &body);
 
   sbuf_cstr(&b, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
   sbuf_cstr(&b, A_WHITE_B);
@@ -524,27 +584,30 @@ hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
   sbuf_cstr(&b, A_RESET "\n");
 
   hzstd_dynamic_array_t *frames = info.stacktrace.frames;
-  size_t                 n_frames = hzstd_dynamic_array_size(frames);
-  hzstd_int_t            skip    = info.stacktrace.skip_n_frames;
+  size_t n_frames = hzstd_dynamic_array_size(frames);
+  hzstd_int_t skip = info.stacktrace.skip_n_frames;
 
-  hzstd_stackframe_t first_user    = {0};
-  bool               has_first_user = false;
+  hzstd_stackframe_t first_user = {0};
+  bool has_first_user = false;
   for (size_t i = (size_t)skip; i < n_frames; i++) {
     hzstd_stackframe_t fr =
         HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
     if (!frame_system(fr.name)) {
-      first_user     = fr;
+      first_user = fr;
       has_first_user = true;
       break;
     }
   }
 
   if (has_loc && has_first_user) {
-    hzstd_str_t p  = loc_path(loc_str);
+    hzstd_str_t p = loc_path(loc_str);
     hzstd_str_t lc = loc_line_col(loc_str);
     sbuf_cstr(&b, "\n" A_DIM "  at " A_RESET A_YELLOW_B);
     sbuf_str(&b, basename_of(p));
-    if (lc.length) { sbuf_cstr(&b, ":"); sbuf_str(&b, lc); }
+    if (lc.length) {
+      sbuf_cstr(&b, ":");
+      sbuf_str(&b, lc);
+    }
     sbuf_cstr(&b, A_RESET "\n");
     hzstd_str_t in_name = frame_display_name(scratch, first_user.name);
     sbuf_cstr(&b, A_DIM "     in " A_RESET A_WHITE);
@@ -558,7 +621,7 @@ hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc,
 
 // Stringifies only the "Stack trace:" section (no message/type header).
 hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
-                                        hzstd_stacktrace_t st) {
+                                       hzstd_stacktrace_t st) {
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
   hzstd_allocator_t scratch = hzstd_make_arena_allocator();
@@ -566,10 +629,11 @@ hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
   return sbuf_finish(&b);
 }
 
-// ── Panic recovery frame stack ────────────────────────────────────────────────
+// ── Panic recovery frame stack
+// ────────────────────────────────────────────────
 
-static hzstd_dynamic_array_t *panic_recovery_frames             = NULL;
-static bool                   panic_recovery_frames_initialized = false;
+static hzstd_dynamic_array_t *panic_recovery_frames = NULL;
+static bool panic_recovery_frames_initialized = false;
 
 static void hzstd_init_panic_recovery_frames(void) {
   if (!panic_recovery_frames_initialized) {
@@ -584,8 +648,7 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void) {
 
   hzstd_panic_recovery_frame_t frame = {
       .cleanup_handlers = HZSTD_DYNAMIC_ARRAY_CREATE(
-          hzstd_make_heap_allocator(),
-          hzstd_panic_recovery_cleanup_entry_t, 1),
+          hzstd_make_heap_allocator(), hzstd_panic_recovery_cleanup_entry_t, 1),
       ._hz_panic_stacktrace = {0},
   };
 
@@ -616,11 +679,10 @@ hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void) {
   hzstd_init_panic_recovery_frames();
   int length = hzstd_dynamic_array_size(panic_recovery_frames);
   if (length == 0)
-    hzstd_trap_ccstr(
-        "getting panic recovery frame failed: No frame available");
+    hzstd_trap_ccstr("getting panic recovery frame failed: No frame available");
 
   return HZSTD_DYNAMIC_ARRAY_GET(panic_recovery_frames,
-                                  hzstd_panic_recovery_frame_t *, length - 1);
+                                 hzstd_panic_recovery_frame_t *, length - 1);
 }
 
 void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {

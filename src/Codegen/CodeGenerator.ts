@@ -504,7 +504,9 @@ class CodeGenerator {
     writer.write(this.out.function_definitions);
     writer.writeLine();
 
-    writer.write("\n\n// Trailer section (hzstd unity-build splice, see hzstd_types.h comment)\n");
+    writer.write(
+      "\n\n// Trailer section (hzstd unity-build splice, see hzstd_types.h comment)\n"
+    );
     writer.write(this.out.trailer);
     writer.writeLine();
 
@@ -519,7 +521,6 @@ class CodeGenerator {
     this.includeSystemHeader("inttypes.h");
     this.includeSystemHeader("stdbool.h");
     this.includeSystemHeader("stdalign.h");
-    this.includeSystemHeader("stdio.h");
     this.includeSystemHeader("limits.h");
     this.includeSystemHeader("string.h");
     this.includeSystemHeader("math.h");
