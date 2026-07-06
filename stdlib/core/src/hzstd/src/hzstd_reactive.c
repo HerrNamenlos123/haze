@@ -1,7 +1,7 @@
 
-#include "hzstd_reactive.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd_common.h"
+#include "../include/hzstd_reactive.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_common.h"
 
 #include <string.h>
 

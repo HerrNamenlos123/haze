@@ -1,18 +1,18 @@
 
 
-#include "hzstd_string.h"
+#include "../include/hzstd_string.h"
 #define GC_THREADS
 #include <gc/gc.h>
 
-#include "hzstd_memory.h"
-#include "hzstd_runtime.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_runtime.h"
 #include <memory.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
 
-#include "hzstd_memory.h"
-#include "hzstd_runtime.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_runtime.h"
 
 void* hzstd_heap_allocate(size_t size)
 {

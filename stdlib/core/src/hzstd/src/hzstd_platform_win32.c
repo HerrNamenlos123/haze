@@ -6,19 +6,17 @@
 #include <excpt.h>
 #include <windows.h>
 
-#include "hzstd_platform_win32.h"
+#include "../include/hzstd_platform_win32.h"
 #include <synchapi.h>
 
 #include <dbghelp.h>
 #include <stdint.h>
 #include <winnt.h>
 
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_string.h"
-#include "hzstd_memory.h"
-#include "hzstd_platform.h"
-#include "hzstd_runtime.h"
-#include "hzstd_string.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_string.h"
+#include "../include/hzstd_platform.h"
+#include "../include/hzstd_runtime.h"
 
 #include <assert.h>
 #include <malloc.h>

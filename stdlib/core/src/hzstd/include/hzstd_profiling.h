@@ -2,8 +2,8 @@
 #ifndef HZSTD_PROFILING_H
 #define HZSTD_PROFILING_H
 
-#include "hzstd/hzstd_array.h"
-#include "hzstd/hzstd_platform.h"
+#include "hzstd_array.h"
+#include "hzstd_platform.h"
 #include "hzstd_common.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"

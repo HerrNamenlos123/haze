@@ -1,11 +1,11 @@
 
-#include "hzstd_regex.h"
+#include "../include/hzstd_regex.h"
 #include "gc/gc.h"
-#include "hzstd/hzstd_array.h"
-#include "hzstd/hzstd_common.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_runtime.h"
-#include "hzstd/hzstd_string.h"
+#include "../include/hzstd_array.h"
+#include "../include/hzstd_common.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_runtime.h"
+#include "../include/hzstd_string.h"
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>

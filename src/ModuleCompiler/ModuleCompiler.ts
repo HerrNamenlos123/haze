@@ -1589,6 +1589,7 @@ export class ModuleCompiler {
             HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
             HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
             HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+            HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
             HAZE_C_COMPILER: HAZE_C_COMPILER,
             HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
           },
@@ -2097,9 +2098,9 @@ export class ModuleCompiler {
           // this module referenced this build, with the exact absolute path
           // already resolved for embedding -- record those too, so a later
           // build's pre-analysis check (above) can tell one of them changed.
-          const embeddedFiles = [...sr.elaboratedEmbeddedFileTable.values()].map(
-            (data) => data.absolutePath
-          );
+          const embeddedFiles = [
+            ...sr.elaboratedEmbeddedFileTable.values(),
+          ].map((data) => data.absolutePath);
           const finalRelevantFiles = [
             ...(await this.gatherModuleRelevantFiles()),
             ...embeddedFiles,

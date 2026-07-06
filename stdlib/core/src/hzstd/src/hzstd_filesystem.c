@@ -1,9 +1,7 @@
 
-#include "hzstd_filesystem.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_string.h"
-#include "hzstd_memory.h"
-#include "hzstd_string.h"
+#include "../include/hzstd_filesystem.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_string.h"
 
 #include <errno.h>
 #include <fcntl.h>

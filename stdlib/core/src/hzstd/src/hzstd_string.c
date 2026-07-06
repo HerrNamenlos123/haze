@@ -1,7 +1,6 @@
 
-#include "hzstd_string.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd_memory.h"
+#include "../include/hzstd_string.h"
+#include "../include/hzstd_memory.h"
 #include <string.h>
 
 hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data)

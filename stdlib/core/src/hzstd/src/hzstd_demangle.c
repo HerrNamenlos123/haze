@@ -1,5 +1,5 @@
 
-#include "hzstd_demangle.h"
+#include "../include/hzstd_demangle.h"
 
 #include <stdio.h>
 #include <string.h>

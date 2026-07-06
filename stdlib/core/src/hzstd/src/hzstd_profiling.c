@@ -1,15 +1,13 @@
 
-#include "hzstd_profiling.h"
-#include "hzstd/hzstd_array.h"
-#include "hzstd/hzstd_demangle.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd/hzstd_runtime.h"
-#include "hzstd_platform.h"
+#include "../include/hzstd_profiling.h"
+#include "../include/hzstd_array.h"
+#include "../include/hzstd_demangle.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_runtime.h"
+#include "../include/hzstd_platform.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <signal.h>
-
-#include "hzstd/hzstd_platform.h"
 
 #ifdef HAZE_PLATFORM_LINUX
 #include <link.h>

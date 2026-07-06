@@ -1,5 +1,5 @@
 
-#include "hzstd_utils.h"
+#include "../include/hzstd_utils.h"
 
 static int hex_digit(char c) {
   if (c >= '0' && c <= '9')

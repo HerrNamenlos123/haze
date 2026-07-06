@@ -1,6 +1,6 @@
 
-#include "hzstd_array.h"
-#include "hzstd_memory.h"
+#include "../include/hzstd_array.h"
+#include "../include/hzstd_memory.h"
 
 /* Internal helper: expand buffer to at least new_capacity (in elements) */
 static hzstd_dynamic_array_result_t hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t* da, size_t new_capacity)

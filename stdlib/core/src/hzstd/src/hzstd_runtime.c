@@ -1,13 +1,12 @@
 
-#include "hzstd/hzstd_memory.h"
-#include "hzstd_common.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_common.h"
 
-#include "hzstd_array.h"
-#include "hzstd_demangle.h"
-#include "hzstd_memory.h"
-#include "hzstd_platform.h"
-#include "hzstd_runtime.h"
-#include "hzstd_string.h"
+#include "../include/hzstd_array.h"
+#include "../include/hzstd_demangle.h"
+#include "../include/hzstd_platform.h"
+#include "../include/hzstd_runtime.h"
+#include "../include/hzstd_string.h"
 
 #include <stdarg.h>
 #include <stdio.h>

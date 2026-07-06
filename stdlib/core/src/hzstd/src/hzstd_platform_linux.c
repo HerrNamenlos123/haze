@@ -1,10 +1,9 @@
 
 // This file is conditionally imported in hzstd_main.c depending on platform!
 
-#include "hzstd_platform_linux.h"
-#include "hzstd/hzstd_memory.h"
-#include "hzstd_memory.h"
-#include "hzstd_string.h"
+#include "../include/hzstd_platform_linux.h"
+#include "../include/hzstd_memory.h"
+#include "../include/hzstd_string.h"
 #include <signal.h>
 #include <time.h>
 
@@ -21,8 +20,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "hzstd_platform.h"
-#include "hzstd_runtime.h"
+#include "../include/hzstd_platform.h"
+#include "../include/hzstd_runtime.h"
 
 #include <assert.h>
 #include <semaphore.h>

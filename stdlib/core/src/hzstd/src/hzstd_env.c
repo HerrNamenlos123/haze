@@ -1,5 +1,5 @@
 
-#include "hzstd_env.h"
+#include "../include/hzstd_env.h"
 
 #include <stdlib.h>
 #include <string.h>

@@ -17,6 +17,13 @@ type = "lib"
 # strict = true
 # warnings_as_errors = false
 
+[generator.build-hzstd]
+exec = "scripts/build-hzstd.hz"
+inputs = []
+outputs = [
+    { module="this", dir="bin", path="include/SDL3/SDL.h" },
+]
+
 [compiler]
 flags = ["-D_XOPEN_SOURCE=500"]
 
