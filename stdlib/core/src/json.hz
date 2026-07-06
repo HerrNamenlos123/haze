@@ -1,37 +1,37 @@
 
 namespace ffi {
-    export extern C noemit struct cJSON {};
+    export extern C noemit struct hzstd_json_node_t {};
 
-    export extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): cJSON | none :: final;
-    export extern C fn hzstd_json_create_string(allocator: Allocator, data: str): cJSON :: final;
-    export extern C fn hzstd_json_create_number(allocator: Allocator, data: real): cJSON :: final;
-    export extern C fn hzstd_json_create_bool(allocator: Allocator, data: bool): cJSON :: final;
-    export extern C fn hzstd_json_create_object(allocator: Allocator): cJSON :: final;
-    export extern C fn hzstd_json_create_array(allocator: Allocator): cJSON :: final;
-    export extern C fn hzstd_json_create_null(allocator: Allocator): cJSON :: final;
+    export extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): hzstd_json_node_t | none :: final;
+    export extern C fn hzstd_json_create_string(allocator: Allocator, data: str): hzstd_json_node_t :: final;
+    export extern C fn hzstd_json_create_number(allocator: Allocator, data: real): hzstd_json_node_t :: final;
+    export extern C fn hzstd_json_create_bool(allocator: Allocator, data: bool): hzstd_json_node_t :: final;
+    export extern C fn hzstd_json_create_object(allocator: Allocator): hzstd_json_node_t :: final;
+    export extern C fn hzstd_json_create_array(allocator: Allocator): hzstd_json_node_t :: final;
+    export extern C fn hzstd_json_create_null(allocator: Allocator): hzstd_json_node_t :: final;
 
-    export extern C fn hzstd_json_object_has_attribute(json: cJSON, name: str): bool :: final;
-    export extern C fn hzstd_json_is_string(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_object(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_bool(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_true(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_false(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_number(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_array(json: cJSON): bool :: final;
-    export extern C fn hzstd_json_is_null(json: cJSON): bool :: final;
+    export extern C fn hzstd_json_object_has_attribute(json: hzstd_json_node_t, name: str): bool :: final;
+    export extern C fn hzstd_json_is_string(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_object(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_bool(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_true(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_false(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_number(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_array(json: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_is_null(json: hzstd_json_node_t): bool :: final;
 
-    export extern C fn hzstd_json_get_string_value(allocator: Allocator, json: cJSON): ffi.hzstd_str_ref_t | none :: final;
-    export extern C fn hzstd_json_get_number_value(allocator: Allocator, json: cJSON): real :: final;
+    export extern C fn hzstd_json_get_string_value(allocator: Allocator, json: hzstd_json_node_t): ffi.hzstd_str_ref_t | none :: final;
+    export extern C fn hzstd_json_get_number_value(allocator: Allocator, json: hzstd_json_node_t): real :: final;
 
-    export extern C fn hzstd_json_get_object_item(allocator: Allocator, json: cJSON, name: str): cJSON | none :: final;
-    export extern C fn hzstd_json_get_array_size(allocator: Allocator, json: cJSON): usize :: final;
-    export extern C fn hzstd_json_get_array_item(allocator: Allocator, json: cJSON, index: usize): cJSON :: final;
+    export extern C fn hzstd_json_get_object_item(allocator: Allocator, json: hzstd_json_node_t, name: str): hzstd_json_node_t | none :: final;
+    export extern C fn hzstd_json_get_array_size(allocator: Allocator, json: hzstd_json_node_t): usize :: final;
+    export extern C fn hzstd_json_get_array_item(allocator: Allocator, json: hzstd_json_node_t, index: usize): hzstd_json_node_t :: final;
 
-    export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: cJSON, name: str, item: cJSON): bool :: final;
-    export extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: cJSON, item: cJSON): bool :: final;
+    export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: hzstd_json_node_t, name: str, item: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: hzstd_json_node_t, item: hzstd_json_node_t): bool :: final;
 
-    export extern C fn hzstd_json_print_unformatted(allocator: Allocator, json: cJSON): str :: final;
-    export extern C fn hzstd_json_print(allocator: Allocator, json: cJSON): str :: final;
+    export extern C fn hzstd_json_print_unformatted(allocator: Allocator, json: hzstd_json_node_t): str :: final;
+    export extern C fn hzstd_json_print(allocator: Allocator, json: hzstd_json_node_t): str :: final;
 }
 
 namespace json {
@@ -41,7 +41,7 @@ namespace json {
 
     export struct Node {
         allocator: Allocator;
-        data: ffi.cJSON;
+        data: ffi.hzstd_json_node_t;
 
         struct Proxy {
             json: Node;
@@ -215,7 +215,7 @@ namespace json {
         return { allocator: allocator, data: obj };
     }
 
-    export fn parseJsonArray<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
+    export fn parseJsonArray<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_array(node) {
             return Error { error: "JSON type mismatch: expected array" };
         }
@@ -231,7 +231,7 @@ namespace json {
         return arr;
     }
 
-    export fn parseJsonFixedArray<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
+    export fn parseJsonFixedArray<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_array(node) { 
             return Error { error: "JSON type mismatch: expected array" };
         }
@@ -253,7 +253,7 @@ namespace json {
         };
     }
 
-    export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
+    export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_object(node) { 
             return Error { error: "JSON type mismatch: expected object" };
         }
@@ -298,7 +298,7 @@ namespace json {
         };
     }
 
-    export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.cJSON): Result<T, Error> {
+    export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if comptime T.category == meta.TypeCategory.Literal {
             if comptime T.baseType is str {
                 let resultValue = parseJsonNodeFromFfi<str>(allocator, node);
@@ -499,7 +499,7 @@ namespace json {
         return parse<T>(Alloc.arena(), data);
     }
 
-    export fn dumpJsonArray<T>(allocator: Allocator, value: T): ffi.cJSON {
+    export fn dumpJsonArray<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t {
         let arr = ffi.hzstd_json_create_array(allocator);
         for (let i = 0; i < value.length; i++) {
             let item = dumpJsonNode<T.elementType>(allocator, value[i]);
@@ -510,7 +510,7 @@ namespace json {
         return arr;
     }
 
-    export fn dumpJsonFixedArray<T>(allocator: Allocator, value: T): ffi.cJSON {
+    export fn dumpJsonFixedArray<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t {
         let arr = ffi.hzstd_json_create_array(allocator);
         for (let i = 0; i < T.length; i++) {
             let item = dumpJsonNode<T.elementType>(allocator, value[i]);
@@ -521,7 +521,7 @@ namespace json {
         return arr;
     }
 
-    export fn dumpJsonStruct<T>(allocator: Allocator, value: T): ffi.cJSON {
+    export fn dumpJsonStruct<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t {
         let obj = ffi.hzstd_json_create_object(allocator);
         for comptime field in T.fields {
             const comptime fieldName = field.name;
@@ -534,7 +534,7 @@ namespace json {
         return obj;
     }
 
-    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.cJSON | none :: final {
+    export fn dumpJsonNode<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t | none :: final {
         if comptime T.category == meta.TypeCategory.Literal {
             let v: T.baseType = value;
             return dumpJsonNode(allocator, v);

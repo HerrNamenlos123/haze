@@ -1,2 +1,7 @@
 
+// This is spliced in at the very end of the generated translation unit (see
+// CodeGenerator.ts's HAZE_STDLIB_NAME/"trailer" special case), not where it
+// textually appears here -- hzstd_main.c pulls in windows.h on win32, which
+// would otherwise poison every other declaration in this same file with
+// legacy macros like `near`/`far`.
 __c__("#include \"hzstd/hzstd_main.c\"");

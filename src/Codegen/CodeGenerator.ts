@@ -2,7 +2,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { Lowered, lowerExpr, lowerTypeDef } from "../Lower/Lower";
-import { HAZE_GLOBAL_DIR } from "../ModuleCompiler/ModuleCompiler";
+import {
+  HAZE_GLOBAL_DIR,
+  HAZE_STDLIB_NAME,
+} from "../ModuleCompiler/ModuleCompiler";
 import { Conversion } from "../Semantic/Conversion";
 import type { Semantic } from "../Semantic/SemanticTypes";
 import {
@@ -88,6 +91,11 @@ class CodeGenerator {
     function_declarations: new OutputWriter(),
     refinement_helpers: new OutputWriter(),
     function_definitions: new OutputWriter(),
+    // Only ever holds hzstd's own unity-build `#include` (see the cInjections
+    // loop below) -- emitted last, after every other section, so windows.h
+    // (pulled in transitively on win32) never poisons earlier declarations
+    // in this same translation unit with its legacy macros (e.g. near/far).
+    trailer: new OutputWriter(),
     global_variables: new OutputWriter(),
   };
 
@@ -102,7 +110,9 @@ class CodeGenerator {
     public lr: Lowered.Module
   ) {
     if (this.config.hzstdLocation) {
-      this.includeLocalHeader(this.config.hzstdLocation + "/hzstd/hzstd.h");
+      this.includeLocalHeader(
+        this.config.hzstdLocation + "/hzstd/include/hzstd.h"
+      );
     } else {
       this.includeLocalHeader("hzstd.h");
     }
@@ -400,7 +410,7 @@ class CodeGenerator {
     assert(this.config.hzstdLocation);
     h += "#include <stddef.h>\n";
     h += "#include <stdint.h>\n\n";
-    h += `#include "${this.config.hzstdLocation}/hzstd/hzstd_regex.h"\n\n`;
+    h += `#include "${this.config.hzstdLocation}/hzstd/include/hzstd_regex.h"\n\n`;
 
     h += '#ifdef __cplusplus\nextern "C" {\n#endif\n\n';
 
@@ -426,7 +436,6 @@ class CodeGenerator {
 
     c += "#include <stdint.h>\n";
     c += "#include <stddef.h>\n\n";
-    h += `#include "${this.config.hzstdLocation}/hzstd/hzstd_regex.h"\n\n`;
     c += `#include "__hz_${prefix}_regex_table.h"\n\n`;
 
     for (const { id } of entries) {
@@ -495,6 +504,10 @@ class CodeGenerator {
     writer.write(this.out.function_definitions);
     writer.writeLine();
 
+    writer.write("\n\n// Trailer section (hzstd unity-build splice, see hzstd_types.h comment)\n");
+    writer.write(this.out.trailer);
+    writer.writeLine();
+
     // writer.writeLine("// clang-format on");
 
     return writer.get();
@@ -519,7 +532,17 @@ class CodeGenerator {
     this.sortTypes(new Set(), sortedLoweredTypes);
 
     for (const decl of this.lr.cInjections) {
-      this.out.cDecls.writeLine(decl);
+      // hzstd's own unity-build splice (Main.hz) must land after every other
+      // declaration in this file, not alongside ordinary top-level __c__
+      // injections -- see the `trailer` section comment above.
+      if (
+        this.config.name === HAZE_STDLIB_NAME &&
+        decl.includes('"hzstd/hzstd_main.c"')
+      ) {
+        this.out.trailer.writeLine(decl);
+      } else {
+        this.out.cDecls.writeLine(decl);
+      }
     }
 
     for (const [_id, symbol] of this.lr.loweredFunctions) {
