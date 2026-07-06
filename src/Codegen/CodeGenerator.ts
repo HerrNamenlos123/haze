@@ -192,6 +192,10 @@ class CodeGenerator {
     this.out.includes.writeLine(`#include "${filename}"`);
   }
 
+  undef(name: string) {
+    this.out.includes.writeLine(`#undef ${name}`);
+  }
+
   modulePrefix() {
     const modulePrefix = getModuleGlobalNamespaceName(
       this.config.name,
