@@ -550,6 +550,8 @@ class CodeGenerator {
       this.emitFunction(symbol);
     }
 
+    this.emitModuleMetadata();
+
     for (const symbolInfo of sortedLoweredTypes) {
       if (symbolInfo.type === "def") {
         const symbol = this.lr.typeDefNodes.get(symbolInfo.id);
@@ -1039,12 +1041,25 @@ class CodeGenerator {
     return `hzstd_arithmetic_${opStr}_${this.mangleName(plainResultType.name)}`;
   }
 
-  emitFunction(symbolId: Lowered.FunctionId) {
-    const symbol = this.lr.functionNodes.get(symbolId);
+  functionSignatureParts(symbol: Lowered.FunctionSymbol) {
     const ftype = this.lr.typeDefNodes.get(symbol.type);
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
-    const mangledName = this.mangleFunctionSymbol(symbol);
+    return {
+      mangledName: this.mangleFunctionSymbol(symbol),
+      returnType: this.mangleTypeUse(ftype.returnType),
+      params: ftype.parameters.map((p, i) => ({
+        type: this.mangleTypeUse(p),
+        name: symbol.parameterNames[i],
+      })),
+      vararg: ftype.vararg,
+    };
+  }
+
+  emitFunction(symbolId: Lowered.FunctionId) {
+    const symbol = this.lr.functionNodes.get(symbolId);
+    const { mangledName, returnType, params, vararg } =
+      this.functionSignatureParts(symbol);
 
     let signature = "";
     if (symbol.isLibraryLocal) {
@@ -1055,11 +1070,9 @@ class CodeGenerator {
       signature += "_Noreturn ";
     }
 
-    signature += this.mangleTypeUse(ftype.returnType) + " " + mangledName + "(";
-    signature += ftype.parameters
-      .map((p, i) => `${this.mangleTypeUse(p)} ${symbol.parameterNames[i]}`)
-      .join(", ");
-    if (ftype.vararg) {
+    signature += returnType + " " + mangledName + "(";
+    signature += params.map((p) => `${p.type} ${p.name}`).join(", ");
+    if (vararg) {
       signature += ", ...";
     }
     signature += ")";
@@ -1077,6 +1090,133 @@ class CodeGenerator {
     if (symbol.closureTrampoline) {
       this.emitFunction(symbol.closureTrampoline);
     }
+  }
+
+  // Emits the single genuinely-exported symbol for this module: a
+  // hzstd_module_metadata_t global listing every `export fn`/`export extern
+  // C fn` by name, alongside a same-order table of generated trampolines
+  // (currently identity wrappers -- refcounting hooks land later). Everything
+  // else about a module's callable surface is meant to be discovered by
+  // walking these tables, not via individual OS-level symbol exports.
+  emitModuleMetadata() {
+    const exportedFunctionIds: Lowered.FunctionId[] = [];
+    for (const fId of this.lr.loweredFunctions.values()) {
+      const symbol = this.lr.functionNodes.get(fId);
+      if (symbol.exported) {
+        exportedFunctionIds.push(fId);
+      }
+    }
+
+    const prefix = this.modulePrefix();
+    const functionsArrayName = `__hz_${prefix}_module_functions`;
+    const trampolineArrayName = `__hz_${prefix}_module_trampoline_functions`;
+    const metadataName = `__hz_${prefix}_module_info`;
+
+    const functionEntries: string[] = [];
+    const trampolineEntries: string[] = [];
+
+    for (const fId of exportedFunctionIds) {
+      const symbol = this.lr.functionNodes.get(fId);
+      const { mangledName, returnType, params, vararg } =
+        this.functionSignatureParts(symbol);
+      const [escapedName, nameLen] = escapeStringForC(mangledName);
+      const nameLiteral = `HZSTD_STRING("${escapedName}", ${nameLen})`;
+
+      functionEntries.push(
+        `{ .name = ${nameLiteral}, .function_ptr = (void*)&${mangledName} }`
+      );
+
+      // Varargs can't be generically forwarded to another vararg function
+      // without va_list plumbing (e.g. the exported `printf` wrapper) -- for
+      // those, the trampoline table just points at the real function too.
+      if (vararg) {
+        trampolineEntries.push(
+          `{ .name = ${nameLiteral}, .function_ptr = (void*)&${mangledName} }`
+        );
+        continue;
+      }
+
+      const trampolineName = `__hz_modtramp_${mangledName}`;
+      const paramList = params.map((p) => `${p.type} ${p.name}`).join(", ");
+      // By-ref parameters carry a leading "*" baked into their name (so
+      // `${type} ${name}` renders as a valid pointer declaration, and uses
+      // of the name elsewhere in the original function body read as a
+      // dereference). Forwarding the pointer itself onward -- as opposed to
+      // using its value -- needs the name with that "*" stripped back off.
+      const argList = params
+        .map((p) => (p.name.startsWith("*") ? p.name.slice(1) : p.name))
+        .join(", ");
+      const trampolineSignature = `static ${returnType} ${trampolineName}(${paramList})`;
+
+      this.out.function_declarations.writeLine(trampolineSignature + ";");
+      this.out.function_definitions
+        .writeLine(trampolineSignature + " {")
+        .pushIndent();
+      this.out.function_definitions.writeLine("// refcount hook: none yet");
+      if (returnType === "hzstd_void_t") {
+        this.out.function_definitions.writeLine(`${mangledName}(${argList});`);
+        this.out.function_definitions.writeLine("// refcount hook: none yet");
+        this.out.function_definitions.writeLine("return;");
+      } else {
+        this.out.function_definitions.writeLine(
+          `${returnType} __hz_r = ${mangledName}(${argList});`
+        );
+        this.out.function_definitions.writeLine("// refcount hook: none yet");
+        this.out.function_definitions.writeLine("return __hz_r;");
+      }
+      this.out.function_definitions.popIndent().writeLine("}").writeLine();
+
+      trampolineEntries.push(
+        `{ .name = ${nameLiteral}, .function_ptr = (void*)&${trampolineName} }`
+      );
+    }
+
+    const count = exportedFunctionIds.length;
+
+    if (count > 0) {
+      this.out.global_variables
+        .writeLine(
+          `static const hzstd_module_function_entry_t ${functionsArrayName}[] = {`
+        )
+        .pushIndent();
+      for (const entry of functionEntries) {
+        this.out.global_variables.writeLine(entry + ",");
+      }
+      this.out.global_variables.popIndent().writeLine("};");
+
+      this.out.global_variables
+        .writeLine(
+          `static const hzstd_module_function_entry_t ${trampolineArrayName}[] = {`
+        )
+        .pushIndent();
+      for (const entry of trampolineEntries) {
+        this.out.global_variables.writeLine(entry + ",");
+      }
+      this.out.global_variables.popIndent().writeLine("};");
+    }
+
+    const [escapedModuleName, moduleNameLen] = escapeStringForC(
+      this.config.name
+    );
+    const [escapedVersion, versionLen] = escapeStringForC(this.config.version);
+
+    this.out.global_variables
+      .writeLine(`hzstd_module_metadata_t ${metadataName} = {`)
+      .pushIndent();
+    this.out.global_variables.writeLine(`.module_id = HZSTD_STRING("", 0),`);
+    this.out.global_variables.writeLine(
+      `.module_name = HZSTD_STRING("${escapedModuleName}", ${moduleNameLen}),`
+    );
+    this.out.global_variables.writeLine(
+      `.version = HZSTD_STRING("${escapedVersion}", ${versionLen}),`
+    );
+    this.out.global_variables.writeLine(
+      `.functions = { .entries = ${count > 0 ? functionsArrayName : "NULL"}, .count = ${count} },`
+    );
+    this.out.global_variables.writeLine(
+      `.trampoline_functions = { .entries = ${count > 0 ? trampolineArrayName : "NULL"}, .count = ${count} },`
+    );
+    this.out.global_variables.popIndent().writeLine("};");
   }
 
   emitScope(scopeId: Lowered.BlockScopeId): {

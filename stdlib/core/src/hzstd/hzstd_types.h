@@ -274,6 +274,33 @@ static inline bool hzstd_str_is_whitespace_byte(char c) {
     HZSTD_STRING(__hz_str.data + __hz_start, __hz_end - __hz_start);       \
   })
 
+// ── Module metadata ──────────────────────────────────────────────────────────
+
+// One entry per exported function: its callable name (mangled Haze name, or
+// the bare C name for `export extern C fn`) paired with a function pointer.
+// The pointer is untyped -- the name fully determines the real signature.
+typedef struct hzstd_module_function_entry_t {
+  hzstd_str_t name;
+  void *function_ptr;
+} hzstd_module_function_entry_t;
+
+typedef struct hzstd_module_function_table_t {
+  const hzstd_module_function_entry_t *entries;
+  hzstd_usize_t count;
+} hzstd_module_function_table_t;
+
+// The single genuinely-exported symbol per module. `functions` holds raw
+// function pointers; `trampoline_functions` holds the same entries in the
+// same order, pointing at generated wrapper functions instead (used once
+// hot-reload refcounting hooks land).
+typedef struct hzstd_module_metadata_t {
+  hzstd_str_t module_id;   // always empty for now -- real IDs are not implemented yet
+  hzstd_str_t module_name; // from haze.toml
+  hzstd_str_t version;     // from haze.toml
+  hzstd_module_function_table_t functions;
+  hzstd_module_function_table_t trampoline_functions;
+} hzstd_module_metadata_t;
+
 // ── Allocator / arena ────────────────────────────────────────────────────────
 
 typedef struct hzstd_allocator_t {

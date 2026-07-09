@@ -549,6 +549,7 @@ export namespace Lowered {
     parameterNames: string[];
     externLanguage: EExternLanguage;
     isLibraryLocal: boolean;
+    exported: boolean;
     noreturn: boolean;
     envType: EnvBlockType;
     // For closures, the main FunctionSymbol is the native one with all captures directly passed.
@@ -4165,6 +4166,12 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           (!exported &&
             symbol.extern !== EExternLanguage.Extern_C &&
             symbol.scope !== null),
+        // `exported` above (Semantic.isSymbolExported) answers "does this
+        // need real C linkage" -- always false for extern C, and true for
+        // some non-`export` symbols like the module's own `main`. The
+        // module metadata table needs the literal Haze `export` keyword
+        // instead (true for both `export fn` and `export extern C fn`).
+        exported: symbol.export,
         scope: null,
         sourceloc: symbol.sourceloc,
         externLanguage: symbol.extern,
@@ -4209,6 +4216,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               (!exported &&
                 symbol.extern !== EExternLanguage.Extern_C &&
                 symbol.scope !== null),
+            exported: false,
             scope: null,
             sourceloc: symbol.sourceloc,
             externLanguage: symbol.extern,
