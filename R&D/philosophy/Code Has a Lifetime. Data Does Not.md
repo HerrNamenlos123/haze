@@ -43,6 +43,32 @@ a hope.
 
 ---
 
+## The OpenGL Lesson
+
+Before Haze: an OpenGL app, built handmade-hero style. App logic compiled
+as a dynamic library. A thin executable loaded it, for instant hot code
+reload.
+
+It reloaded. OpenGL state corrupted. App state crashed. Allocations
+crossing the executable/library boundary crashed.
+
+The realization that mattered: this wasn't a distributed system. Not two
+processes, not a security boundary, not even two different memory spaces.
+One process. One address space. The library was supposed to do nothing
+more than call a function. And it still wasn't safe to let an allocation
+cross that line.
+
+The fix was not a smarter allocator. The fix was: move all OpenGL state
+into the reloadable module, completely. Zero OpenGL state in the
+executable. Every reload, recompile every shader from scratch, reinit
+everything, from nothing.
+
+That's not a workaround. That's the actual lesson. Sharing an address
+space was never the same thing as sharing ownership. Unix's model gives
+you the former and calls it done.
+
+---
+
 ## Every Shared Library Can Become Its Own Universe
 
 Nothing stops a `.so` from statically linking its own copy of a helper
@@ -110,6 +136,39 @@ a feature the programmer has to be careful around.
 
 ---
 
+## Strategic Limitations, Not Restrictions
+
+Pointers are not a one-off trick for hot reload. They're one instance of a
+pattern that shows up everywhere in Haze.
+
+Panic recovery works the same way. There is no such thing as a reference
+to a stack local in Haze. Nothing could ever have taken a pointer into the
+stack. Which means panic — and segfault — recovery can `longjmp` straight
+back to a checkpoint and discard the entire stack above it, unconditionally.
+Nothing is invalidated, because nothing outside the stack ever pointed into
+it in the first place. The recovery mechanism isn't clever. The absence of
+the problem is.
+
+The GC is the same story, learned the hard way. Years were spent trying to
+avoid one — tracked arenas, implicit arena inference, ownership-adjacent
+schemes that tried to get memory safety without paying for a collector.
+Every one of them was worse. The GC was never the compromise. It was the
+unlock. A large number of Haze's features are only reachable because of
+it — not harder without a GC, actually unreachable at the same level of
+simplicity without reinventing something GC-shaped anyway. RAII and
+Rust-style ownership solve real problems, but they solve them by making
+ownership a first-class concern the programmer carries everywhere. Haze
+routes around the entire category.
+
+Same shape every time: give up something that looks essential, in a place
+where giving it up costs almost nothing for the actual target — multimedia
+apps and tools, not device drivers — and an entire category of previously
+impossible feature falls out for free. None of this reads as a restriction
+while writing ordinary application code. It only reads as one to someone
+used to a language that never made the trade.
+
+---
+
 ## What Each Model Actually Buys You
 
 Unix: total pointer freedom, C ABI compatible with nearly anything, at the
@@ -124,6 +183,44 @@ was never designed for it.
 
 One of these is a system you audit forever. The other is a system that
 audits itself.
+
+---
+
+## The General Problem Doesn't Have a General Solution
+
+Dioxus, in Rust, spends enormous engineering effort on hot reload: the
+compiler patches the running executable in memory, rewrites function
+pointers, all to change a numeric constant or a string literal in under
+0.1 seconds. Anything past that — a rebuild, multiple seconds, narrow in
+scope even then, and still never a guarantee against a full process
+restart.
+
+That's not a criticism of the engineering. It's a consequence of the
+problem they took on. Hot-reloading arbitrary code changes in a language
+with unrestricted pointers and RAII/ownership-based memory management is,
+in the general case, equivalent to safely patching arbitrary machine code
+underneath a running program while it holds arbitrary references into
+itself. That is not a hard problem with a hard solution. It is one where a general solution is impossible.
+
+Rust has to attempt it anyway, because Rust is general-purpose. It cannot
+assume anything about how a given program manages memory, so any hot-reload
+story it builds has to work for every possible way a Rust program might
+have used a pointer. It inherits the full generality of the problem and
+pays for it with narrow scope, multi-second fallback, and no safety
+guarantee once the patch gets ambitious.
+
+Haze does not attempt the general case. It fixes the granularity of a
+reload to the module, up front, as a deliberate restriction — and gives up
+arbitrary in-place patching to get it. What it gets back: a reload
+mechanism that isn't partial. A changed constant, a changed function body,
+a changed struct — all handled at the same guarantee level, every time.
+Reject if unsafe. Always safe if accepted. Never "we can't guarantee this
+one.". The result is a system where every reload, if permitted by what changed, is guaranteed to be 100% safe, can never cause a crash or corruption, and scales to an arbitrary number of modules. 
+
+Choosing the problem is not settling for less. It's refusing to pay for
+generality the actual target domain never needed. Rust can't make that
+trade — its whole premise is not making it. Haze can, because Haze was
+never trying to be a general-purpose systems language in the first place.
 
 ---
 
@@ -153,3 +250,10 @@ all of it traces back to conflating those two lifetimes into one.
 
 Haze keeps them separate by construction. Not as a hot-reload feature.
 As the foundation hot reload is built on.
+
+The pointer restriction that makes this possible is the same one behind
+panic recovery, and the GC underneath it is the same trade that keeps
+paying off everywhere else in the language. None of these are limitations
+Haze tolerates. They're the ones it chose, specifically because giving
+them up buys back far more than they cost.
+Choosing those restrictions are what allow Haze to be Haze in the first place.
