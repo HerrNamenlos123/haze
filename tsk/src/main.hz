@@ -34,6 +34,12 @@ fn main(): int {
                 leftHeld: () => a.pointerLeftHeld(),
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
+                leftPressed: () => a.pointerLeftPressed(),
+                middlePressed: () => a.pointerMiddlePressed(),
+                rightPressed: () => a.pointerRightPressed(),
+                leftReleased: () => a.pointerLeftReleased(),
+                middleReleased: () => a.pointerMiddleReleased(),
+                rightReleased: () => a.pointerRightReleased(),
             },
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),

@@ -17,7 +17,7 @@ export struct Context {
     args: ContextArgs;
 
     cursorVisible: rx.Computed<bool>;
-    cursorLastMovedAt: real;
+    _cursorLastMovedAt: real;
 
     // The cursor is always BETWEEN characters and never ON characters like with VIM bindings. (VIM is coming too).
     // cursorPos.x is the column, where
@@ -26,25 +26,26 @@ export struct Context {
     // cursorPos.x = lineLength -> right of last character
     // The y position refers to actual lineINDICES, starting at 0 for the first line.
     //
-    // actualCursorPosition is where the cursor is actually rendered/edits happen.
-    // desiredCursorPosition.x is the "sticky column": the x an Up/Down move is
+    // cursorPosition is where the cursor is actually rendered/edits happen.
+    // _desiredCursorPosition.x is the "sticky column": the x an Up/Down move is
     // trying to reach, remembered across shorter lines so that arrowing down
     // through short lines and back onto a long one restores the original
     // column, like every mainstream text editor. It is only updated by
     // horizontal movement (left/right/word/home/end), never by up/down.
-    desiredCursorPosition: Vec2i = {};
-    actualCursorPosition: Vec2i = {};
+    _desiredCursorPosition: Vec2i = {};
+    cursorPosition: rx.Reactive<Vec2i>;
 
     fn constructor(args: ContextArgs) {
         let context = Context {
             args: args,
             cursorVisible: rx.computed(() => false),
-            cursorLastMovedAt: args.getTimeInSeconds(),
+            _cursorLastMovedAt: args.getTimeInSeconds(),
+            cursorPosition: rx.reactive(Vec2i(0, 0)),
         };
 
         context.cursorVisible = rx.computed(() => {
             let now = context.args.getTimeInSeconds();
-            let elapsed = now - context.cursorLastMovedAt;
+            let elapsed = now - context._cursorLastMovedAt;
             let blinkInterval = 1.0 / context.args.cursorBlinkFrequency;
             return math.modulo(elapsed, blinkInterval) <= blinkInterval / 2.0;
         });
@@ -53,7 +54,7 @@ export struct Context {
     }
 
     fn moveCursorRight() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         let lineLength = this.args.getLineLength(pos.y);
         if pos.x < lineLength {
             this._setCursorPosition({ x: pos.x + 1, y: pos.y }, true);
@@ -64,7 +65,7 @@ export struct Context {
     }
 
     fn moveCursorLeft() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         if pos.x > 0 {
             this._setCursorPosition({ x: pos.x - 1, y: pos.y }, true);
         }
@@ -74,23 +75,23 @@ export struct Context {
     }
 
     fn moveCursorUp() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         if pos.y > 0 {
-            this._setCursorPosition({ x: this.desiredCursorPosition.x, y: pos.y - 1 }, false);
+            this._setCursorPosition({ x: this._desiredCursorPosition.x, y: pos.y - 1 }, false);
         }
     }
 
     fn moveCursorDown() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         if pos.y < this.args.getLineCount() - 1 {
-            this._setCursorPosition({ x: this.desiredCursorPosition.x, y: pos.y + 1 }, false);
+            this._setCursorPosition({ x: this._desiredCursorPosition.x, y: pos.y + 1 }, false);
         }
     }
 
     // Ctrl+Left in every mainstream editor: jump to the start of the previous
     // word, crossing to the end of the previous line if already at column 0.
     fn moveCursorWordLeft() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         if pos.x == 0 {
             if pos.y > 0 {
                 this._setCursorPosition({ x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 }, true);
@@ -120,7 +121,7 @@ export struct Context {
     // Ctrl+Right: jump to the start of the next word, crossing to the start
     // of the next line if already at the end of the current one.
     fn moveCursorWordRight() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         let lineLength = this.args.getLineLength(pos.y);
         if pos.x >= lineLength {
             if pos.y < this.args.getLineCount() - 1 {
@@ -139,7 +140,8 @@ export struct Context {
         }
 
         // Skip whitespace to land on the next word's start
-        while x < lineLength && ascii.isWhitespace(line[x]) {
+        // TODO: line[x] is a compiler bug when x is reactive
+        while x < lineLength && ascii.isWhitespace(line[rx.get(x)]) {
             x++;
         }
 
@@ -148,11 +150,11 @@ export struct Context {
 
     // Home / End: start / end of the current line.
     fn moveCursorHome() {
-        this._setCursorPosition({ x: 0, y: this.actualCursorPosition.y }, true);
+        this._setCursorPosition({ x: 0, y: this.cursorPosition.y }, true);
     }
 
     fn moveCursorEnd() {
-        let pos = this.actualCursorPosition;
+        let pos = this.cursorPosition;
         this._setCursorPosition({ x: this.args.getLineLength(pos.y), y: pos.y }, true);
     }
 
@@ -170,20 +172,24 @@ export struct Context {
     // document/line bounds and decides whether this move updates the sticky
     // column. Every move function above -- and any future one (selection
     // extend, click-to-place, etc.) -- should go through this rather than
-    // writing actualCursorPosition/desiredCursorPosition directly.
+    // writing cursorPosition/_desiredCursorPosition directly.
     fn _setCursorPosition(pos: Vec2i, updateDesiredX: bool) {
-        this.cursorLastMovedAt = this.args.getTimeInSeconds();
+        this._cursorLastMovedAt = this.args.getTimeInSeconds();
 
         let lineCount = this.args.getLineCount();
         let y = clamp<int>(pos.y, 0, lineCount - 1);
         let x = clamp<int>(pos.x, 0, this.args.getLineLength(y));
 
-        this.actualCursorPosition.x = x;
-        this.actualCursorPosition.y = y;
+        if this.cursorPosition.x != x {
+            this.cursorPosition.x := x;
+        }
+        if this.cursorPosition.y != y {
+            this.cursorPosition.y := y;
+        }
 
-        this.desiredCursorPosition.y = y;
+        this._desiredCursorPosition.y = y;
         if updateDesiredX {
-            this.desiredCursorPosition.x = x;
+            this._desiredCursorPosition.x = x;
         }
     }
 

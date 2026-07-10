@@ -40,6 +40,26 @@ export struct AppPointerButtons {
     rightHeld: bool = false;
 }
 
+// This-frame's press/release edges, latched (OR'd) by the SDL callbacks and
+// reset at the top of nextFrame() -- see App.wheelDeltaThisFrame below for
+// the same one-frame-window lifecycle. Needed *in addition to* the level
+// state above: if a button's down and up both arrive within the same
+// pollEvents() call (i.e. within one rendered frame -- easy to hit on a
+// slow/variable frame, and even on a fast one for a quick tap), sampling the
+// level state once per frame sees leftHeld go true-then-false and lands back
+// on the same value the previous frame already had, so the transition is
+// invisible and the whole click silently vanishes. Latching every edge as it
+// happens, independent of the level, means a same-frame down+up still
+// produces both.
+export struct AppPointerEdges {
+    leftPressed: bool = false;
+    middlePressed: bool = false;
+    rightPressed: bool = false;
+    leftReleased: bool = false;
+    middleReleased: bool = false;
+    rightReleased: bool = false;
+}
+
 export opaque struct App {
     window: mut sdl.Window;
     device: mut wgpu.Device;
@@ -53,6 +73,7 @@ export opaque struct App {
     mousePosition: Vec2 = {};
     resized: bool = false;
     _pointerButtons: AppPointerButtons = {};
+    _pointerEdgesThisFrame: AppPointerEdges = {};
     // This-frame's accumulated wheel delta/modifiers -- reset at the top of
     // nextFrame() (before pollEvents() re-accumulates fresh values into it),
     // so it holds exactly one frame's worth of scroll input by the time
@@ -126,15 +147,15 @@ export opaque struct App {
             return false;
         });
         window.onMouseDown((e: sdl.MouseButtonEvent) => {
-            if e.button == 0 { pointerButtons.leftHeld = true; }
-            if e.button == 1 { pointerButtons.middleHeld = true; }
-            if e.button == 2 { pointerButtons.rightHeld = true; }
+            if e.button == 0 { pointerButtons.leftHeld = true; app._pointerEdgesThisFrame.leftPressed = true; }
+            if e.button == 1 { pointerButtons.middleHeld = true; app._pointerEdgesThisFrame.middlePressed = true; }
+            if e.button == 2 { pointerButtons.rightHeld = true; app._pointerEdgesThisFrame.rightPressed = true; }
             return false;
         });
         window.onMouseUp((e: sdl.MouseButtonEvent) => {
-            if e.button == 0 { pointerButtons.leftHeld = false; }
-            if e.button == 1 { pointerButtons.middleHeld = false; }
-            if e.button == 2 { pointerButtons.rightHeld = false; }
+            if e.button == 0 { pointerButtons.leftHeld = false; app._pointerEdgesThisFrame.leftReleased = true; }
+            if e.button == 1 { pointerButtons.middleHeld = false; app._pointerEdgesThisFrame.middleReleased = true; }
+            if e.button == 2 { pointerButtons.rightHeld = false; app._pointerEdgesThisFrame.rightReleased = true; }
             return false;
         });
         window.onMouseWheel((e: sdl.MouseWheelEvent) => {
@@ -163,6 +184,33 @@ export opaque struct App {
         return this._pointerButtons.rightHeld;
     }
 
+    // Press/release edges latched this frame -- see AppPointerEdges for why
+    // these exist alongside pointer*Held() above instead of callers just
+    // diffing the held state themselves frame to frame.
+    fn pointerLeftPressed(): bool {
+        return this._pointerEdgesThisFrame.leftPressed;
+    }
+
+    fn pointerMiddlePressed(): bool {
+        return this._pointerEdgesThisFrame.middlePressed;
+    }
+
+    fn pointerRightPressed(): bool {
+        return this._pointerEdgesThisFrame.rightPressed;
+    }
+
+    fn pointerLeftReleased(): bool {
+        return this._pointerEdgesThisFrame.leftReleased;
+    }
+
+    fn pointerMiddleReleased(): bool {
+        return this._pointerEdgesThisFrame.middleReleased;
+    }
+
+    fn pointerRightReleased(): bool {
+        return this._pointerEdgesThisFrame.rightReleased;
+    }
+
     fn wheelDelta(): Vec2 {
         return this.wheelDeltaThisFrame;
     }
@@ -183,6 +231,7 @@ export opaque struct App {
         // nextFrame() call clears it again.
         this.wheelDeltaThisFrame = Vec2(0.0, 0.0);
         this.wheelModifiersThisFrame = KeyModifiers.None;
+        this._pointerEdgesThisFrame = {};
 
         sdl.pollEvents();
         fs.pollEvents();

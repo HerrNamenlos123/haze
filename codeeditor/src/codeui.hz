@@ -258,6 +258,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             state.highlightEngine.sendHighlightRequest(content);
         }
 
+        let cursorChanged = rx.computed(() => {
+            rx.get(texteditBehavior.cursorPosition.x);
+            rx.get(texteditBehavior.cursorPosition.y);
+            if lsp && cache.data.file {
+                fmt.println("Send hover request");
+                lsp.sendDocumentHoverRequest(cache.data.file, 125, 4, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
+                    if response {
+                        let hover = response;
+                        if hover {
+                            hoverResult := hover.contents.value;
+                        }
+                        else {
+                            hoverResult := "(no hover info at this position)";
+                        }
+                    }
+                    else {
+                        hoverResult := f"hover error: {response.message}";
+                    }
+                });
+            }
+        });
+
         let opened = false;
         let runLspLoop = rx.computed(() => {
             ui.now();
@@ -267,20 +289,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     opened = true;
                     assert(doc);
                     vueBridge.openDocument(lsp, cache.data.file, "vue", 1, doc);
-                    lsp.sendDocumentHoverRequest(cache.data.file, 125, 4, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
-                        if response {
-                            let hover = response;
-                            if hover {
-                                hoverResult := hover.contents.value;
-                            }
-                            else {
-                                hoverResult := "(no hover info at this position)";
-                            }
-                        }
-                        else {
-                            hoverResult := f"hover error: {response.message}";
-                        }
-                    });
                 }
 
                 lsp.loop();
@@ -341,6 +349,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // presets.p(8),
                     ],
                     onClick: (event: ui_components.PointerEvent) => {
+                        fmt.println("Click");
+                        texteditBehavior.moveCursorDown();
                         let state = getState();
                         let content = rx.get(doc);
                         if content {
@@ -418,8 +428,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         printLine(lineIndex, line);
                     }
 
-                    let position = Vec2i(19, 11);
-
                     if texteditBehavior.cursorVisible {
                         ui.div({
                             id: lines.length + 1,
@@ -429,8 +437,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             },
                             presets: [
                                 presets.absolute(),
-                                presets.top(position.y as real * characterSize.y),
-                                presets.left(position.x as real * characterSize.x),
+                                presets.top(texteditBehavior.cursorPosition.y as real * characterSize.y),
+                                presets.left(texteditBehavior.cursorPosition.x as real * characterSize.x),
                                 presets.bg("#FFF"),
                             ]
                         }, () => {});
