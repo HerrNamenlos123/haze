@@ -474,26 +474,37 @@ export struct InstanceData<TProps> {
     }
 }
 
+export enum PointerEdgeKind { Pressed, Released }
+
+// One this-frame press or release, in the exact order the platform layer
+// delivered it, with the cursor position at that moment. edgesThisFrame()
+// below returns every one of these queued so far this frame -- not just
+// whether *a* press/release happened -- because a single boolean (whether
+// read as a level or a latch) can only ever describe one transition per
+// frame. Two, three, or a burst of clicks landing within the same frame
+// (trivially reachable at a low frame rate, or from a fast enough clicker
+// even at a high one) would otherwise collapse to whatever the net effect
+// happens to be -- typically nothing, since each down+up pair cancels out --
+// silently dropping every click but the last. See UIContext.process(), which
+// replays this queue in order so nothing reported within a frame is ever
+// lost, no matter how many events land in that frame.
+export struct PointerEdge {
+    button: PointerButton;
+    kind: PointerEdgeKind;
+    pos: Vec2;
+}
+
 // Optional pointer-button callbacks bundled as a struct. Using a struct avoids
 // the (() => bool) | none union that Haze cannot implicitly coerce a lambda into.
 //
 // *Held is the continuous level state (used for the PointerEvent.buttons
-// bitmask and for Move's drag pressure). *Pressed/*Released are this-frame's
-// latched edges, reported independently of the level -- see UIContext.process()
-// for why: diffing *Held frame-to-frame misses a down+up that both land
-// within the same frame (e.g. a quick click, or any frame slow enough that
-// two SDL events land in one poll), since the level ends the frame right
-// back where it started and no transition is ever observed.
+// bitmask and for Move's drag pressure). edgesThisFrame() is the ordered
+// press/release queue described on PointerEdge above, used for Down/Up/Click.
 export struct PointerHeldCallbacks {
     leftHeld: () => bool;
     middleHeld: () => bool;
     rightHeld: () => bool;
-    leftPressed: () => bool;
-    middlePressed: () => bool;
-    rightPressed: () => bool;
-    leftReleased: () => bool;
-    middleReleased: () => bool;
-    rightReleased: () => bool;
+    edgesThisFrame: () => []PointerEdge;
 }
 
 // Optional wheel/modifier poll callbacks, bundled for the same reason as
@@ -918,24 +929,24 @@ export opaque struct UIContext {
         };
 
         // Read pointer button level state (for the buttons bitmask/drag
-        // pressure) and this-frame's latched press/release edges (for
-        // Down/Up events). Edges are read separately from -- not derived by
-        // diffing -- the level: a down+up that both land within this same
-        // frame (a quick click, or any frame slow enough for two SDL events
-        // to land in one poll) would leave the level exactly where it
-        // started, so a frame-to-frame level diff can never see it. The
-        // level alone is still fine for the buttons bitmask, since that only
-        // needs to reflect "what's held right now".
+        // pressure, and to seed the replay below) plus this-frame's queued
+        // press/release edges (for Down/Up events). The queue is read as-is,
+        // not derived by diffing the level frame-to-frame: any number of
+        // down+up pairs landing within this same frame (a burst of clicks,
+        // or any frame slow enough for multiple SDL events to land in one
+        // poll) each still needs its own Down and Up -- see PointerEdge for
+        // why a level or a latch can't do that.
+        let prevLeftHeld = this._leftHeld;
+        let prevMiddleHeld = this._middleHeld;
+        let prevRightHeld = this._rightHeld;
         this._leftHeld = this._pointerButtons ? this._pointerButtons.leftHeld() : false;
         this._middleHeld = this._pointerButtons ? this._pointerButtons.middleHeld() : false;
         this._rightHeld = this._pointerButtons ? this._pointerButtons.rightHeld() : false;
 
-        let leftPressed = this._pointerButtons ? this._pointerButtons.leftPressed() : false;
-        let middlePressed = this._pointerButtons ? this._pointerButtons.middlePressed() : false;
-        let rightPressed = this._pointerButtons ? this._pointerButtons.rightPressed() : false;
-        let leftReleased = this._pointerButtons ? this._pointerButtons.leftReleased() : false;
-        let middleReleased = this._pointerButtons ? this._pointerButtons.middleReleased() : false;
-        let rightReleased = this._pointerButtons ? this._pointerButtons.rightReleased() : false;
+        let edges: []PointerEdge = [];
+        if this._pointerButtons {
+            edges = this._pointerButtons.edgesThisFrame();
+        }
 
         let makeButtons = (left: bool, middle: bool, right: bool): PointerButtons => {
             let b: PointerButtons = PointerButtons.None;
@@ -947,24 +958,29 @@ export opaque struct UIContext {
 
         let buttons = makeButtons(this._leftHeld, this._middleHeld, this._rightHeld);
 
+        // Replay the queue in order, tracking a running held-state per
+        // button seeded from last frame's final level (i.e. the level as it
+        // stood *before* any of this frame's edges applied) so each
+        // PendingPointerEvent.buttons reflects exactly what was actually
+        // held at that specific edge, not just this frame's net result.
+        let runningLeft = prevLeftHeld;
+        let runningMiddle = prevMiddleHeld;
+        let runningRight = prevRightHeld;
+
         let pendingEvents: []PendingPointerEvent = [];
-        if leftPressed {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Left, buttons: makeButtons(true, this._middleHeld, this._rightHeld), pos: this.mousePos });
-        }
-        if middlePressed {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Middle, buttons: makeButtons(this._leftHeld, true, this._rightHeld), pos: this.mousePos });
-        }
-        if rightPressed {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Right, buttons: makeButtons(this._leftHeld, this._middleHeld, true), pos: this.mousePos });
-        }
-        if leftReleased {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Left, buttons: makeButtons(false, this._middleHeld, this._rightHeld), pos: this.mousePos });
-        }
-        if middleReleased {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Middle, buttons: makeButtons(this._leftHeld, false, this._rightHeld), pos: this.mousePos });
-        }
-        if rightReleased {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Right, buttons: makeButtons(this._leftHeld, this._middleHeld, false), pos: this.mousePos });
+        for edge in edges {
+            if edge.kind == PointerEdgeKind.Pressed {
+                if edge.button == PointerButton.Left { runningLeft = true; }
+                else if edge.button == PointerButton.Middle { runningMiddle = true; }
+                else if edge.button == PointerButton.Right { runningRight = true; }
+                pendingEvents.push({ kind: PointerEventKind.Down, button: edge.button, buttons: makeButtons(runningLeft, runningMiddle, runningRight), pos: edge.pos });
+            }
+            else {
+                if edge.button == PointerButton.Left { runningLeft = false; }
+                else if edge.button == PointerButton.Middle { runningMiddle = false; }
+                else if edge.button == PointerButton.Right { runningRight = false; }
+                pendingEvents.push({ kind: PointerEventKind.Up, button: edge.button, buttons: makeButtons(runningLeft, runningMiddle, runningRight), pos: edge.pos });
+            }
         }
         if this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0 {
             pendingEvents.push({ kind: PointerEventKind.Move, button: PointerButton.None, buttons: buttons, pos: this.mousePos });
@@ -982,15 +998,23 @@ export opaque struct UIContext {
 
         if this.rootComponent {
             let tree = this.rootComponent.rootElement;
-            let hitPath = this.buildHitPath(tree, this.mousePos);
 
-            // Hover state + enter/leave events (no bubbling)
+            // Hover state + enter/leave events (no bubbling) reflect where
+            // the pointer physically is *right now* -- always this frame's
+            // current position, regardless of where any of pendingEvents
+            // below happened.
+            let finalHitPath = this.buildHitPath(tree, this.mousePos);
             this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
 
             // Capture phase (root -> target), then bubble phase (target ->
             // root), for down/up/move; then, on up, the same two phases again
-            // for the synthesized click.
+            // for the synthesized click. Each event hit-tests against its
+            // *own* pe.pos (the cursor position at the moment that specific
+            // press/release happened), not this frame's final mouse
+            // position -- multiple edges landing in one frame can each have
+            // their own position if the pointer also moved in between.
             for pe in pendingEvents {
+                let hitPath = this.buildHitPath(tree, pe.pos);
                 let pressure = 0.0;
                 if pe.kind == PointerEventKind.Down { pressure = 0.5; }
                 else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
@@ -1070,7 +1094,7 @@ export opaque struct UIContext {
             }
 
             // Wheel: acts on whatever's currently under the cursor, so it
-            // reuses this same frame's hitPath rather than computing its own.
+            // reuses this frame's finalHitPath rather than computing its own.
             if this._inputExtras {
                 let wheelDelta = this._inputExtras.wheelDelta();
                 if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
@@ -1079,8 +1103,8 @@ export opaque struct UIContext {
                         delta: wheelDelta,
                         modifiers: this.currentModifiers(),
                     };
-                    this.dispatchWheelCapturing(hitPath, wheelEvent, eventQueue);
-                    this.dispatchWheelBubbling(hitPath, wheelEvent, eventQueue);
+                    this.dispatchWheelCapturing(finalHitPath, wheelEvent, eventQueue);
+                    this.dispatchWheelBubbling(finalHitPath, wheelEvent, eventQueue);
                 }
             }
         }
