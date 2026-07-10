@@ -1584,14 +1584,29 @@ class CodeGenerator {
         const eTypeDef = this.lr.typeDefNodes.get(eTypeUse.type);
 
         if (eTypeDef.variant === Lowered.ENode.StructDatatype) {
+          let exprCode = exprWriter.out.get();
+
+          let requiresParens = true;
+          if (e.variant === Lowered.ENode.SymbolValueExpr) {
+            // This is still a bit of a hack, we should find a better solution for hoisting
+            // by introducing another compiler phase and separating
+            // lowering and code generation further, so we can lower into a real
+            // AST that has C features, and only THEN actually emit C code.
+            // Currently the issue is that we go straight from lowering to C code,
+            // and lowering is actually mainly a cleanup and optimization pass,
+            // but the output it produces does not actually represent the raw C language.
+            if (!e.name.mangledName.startsWith("*")) {
+              requiresParens = false;
+            }
+          }
+          if (requiresParens) {
+            exprCode = `(${exprCode})`;
+          }
+
           if (expr.requiresDeref) {
-            outWriter.write(
-              "(" + exprWriter.out.get() + ")->" + expr.memberName
-            );
+            outWriter.write(exprCode + "->" + expr.memberName);
           } else {
-            outWriter.write(
-              "(" + exprWriter.out.get() + ")." + expr.memberName
-            );
+            outWriter.write(exprCode + "." + expr.memberName);
           }
         } else if (
           eTypeDef.variant === Lowered.ENode.PrimitiveDatatype &&
