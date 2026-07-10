@@ -16,6 +16,23 @@ the distinction is made.
 
 ---
 
+## Choosing the Problem
+
+Haze is not about solving problems cleverly.
+
+It is about being clever about which problems to solve.
+
+Reframe a problem from a different angle and the hard part can stop
+existing entirely — not get solved, disappear. Nothing clever left to
+build, because nothing is left standing in the way.
+
+Every idea in this document is that same move, aimed at a different
+problem: pointers, panic recovery, garbage collection, hot reload. None of
+them are solved in the usual sense. Each one had its hard version removed
+from consideration before an implementation was ever needed.
+
+---
+
 ## The Unix Model Never Had an Ownership Story
 
 `dlopen` gives you symbol resolution. It does not give you an answer to:
