@@ -10,6 +10,24 @@ struct Cache {
 
 const comptime profile = false;
 
+// Translates app's platform-level pointer edge queue into ui_components'
+// own PointerEdge type -- kept as a small glue function here (rather than
+// having either module import the other's types) so app stays ignorant of
+// the UI component tree and ui_components stays ignorant of SDL/app, same
+// as mousePos/wheelDelta/modifiers just below.
+fn toUIPointerEdges(a: app.App): []ui_components.PointerEdge {
+    let result: []ui_components.PointerEdge = [];
+    for e in a.pointerEdges() {
+        let button = ui_components.PointerButton.None;
+        if e.button == 0 { button = ui_components.PointerButton.Left; }
+        else if e.button == 1 { button = ui_components.PointerButton.Middle; }
+        else if e.button == 2 { button = ui_components.PointerButton.Right; }
+        let kind = e.kind == app.PointerEdgeKind.Pressed ? ui_components.PointerEdgeKind.Pressed : ui_components.PointerEdgeKind.Released;
+        result.push({ button: button, kind: kind, pos: e.pos });
+    }
+    return result;
+}
+
 fn main(): int {
     attempt {
         let a = app.App({
@@ -39,12 +57,7 @@ fn main(): int {
                 leftHeld: () => a.pointerLeftHeld(),
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
-                leftPressed: () => a.pointerLeftPressed(),
-                middlePressed: () => a.pointerMiddlePressed(),
-                rightPressed: () => a.pointerRightPressed(),
-                leftReleased: () => a.pointerLeftReleased(),
-                middleReleased: () => a.pointerMiddleReleased(),
-                rightReleased: () => a.pointerRightReleased(),
+                edgesThisFrame: () => toUIPointerEdges(a),
             },
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),
