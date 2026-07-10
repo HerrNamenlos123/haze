@@ -79,6 +79,120 @@ export struct WheelEvent {
     }
 }
 
+// Physical key identity, independent of the platform layer's own key enum
+// (e.g. sdl.Key) -- same reasoning as PointerButton(s) above: this module
+// never imports sdl, so it can't reuse SDL's enum directly, and shouldn't
+// bake in an assumption that every future runtime numbers keys the same way
+// SDL happens to. Values are deliberately pinned to match USB HID usage IDs
+// (the same real hardware-standard numbering SDL3 scancodes already use --
+// see sdl.hz's own Key enum), purely as a pragmatic choice so the
+// SDL-to-ui_components translation glue (see main.hz) is a single cheap cast
+// instead of an N-armed mapping function; nothing here actually depends on
+// SDL, and a future non-SDL runtime is free to translate however it needs to
+// in its own glue layer.
+export enum Key {
+    Unknown = 0,
+    A = 4, B = 5, C = 6, D = 7, E = 8, F = 9, G = 10, H = 11,
+    I = 12, J = 13, K = 14, L = 15, M = 16, N = 17, O = 18, P = 19,
+    Q = 20, R = 21, S = 22, T = 23, U = 24, V = 25, W = 26, X = 27,
+    Y = 28, Z = 29,
+    Num1 = 30, Num2 = 31, Num3 = 32, Num4 = 33, Num5 = 34,
+    Num6 = 35, Num7 = 36, Num8 = 37, Num9 = 38, Num0 = 39,
+    Return = 40,
+    Escape = 41,
+    Backspace = 42,
+    Tab = 43,
+    Space = 44,
+    Minus = 45,
+    Equals = 46,
+    LeftBracket = 47,
+    RightBracket = 48,
+    Backslash = 49,
+    Semicolon = 51,
+    Apostrophe = 52,
+    Grave = 53,
+    Comma = 54,
+    Period = 55,
+    Slash = 56,
+    CapsLock = 57,
+    F1 = 58, F2 = 59, F3 = 60, F4 = 61, F5 = 62, F6 = 63,
+    F7 = 64, F8 = 65, F9 = 66, F10 = 67, F11 = 68, F12 = 69,
+    Insert = 73,
+    Home = 74,
+    PageUp = 75,
+    Delete = 76,
+    End = 77,
+    PageDown = 78,
+    Right = 79,
+    Left = 80,
+    Down = 81,
+    Up = 82,
+    LCtrl = 224,
+    LShift = 225,
+    LAlt = 226,
+    LGui = 227,
+    RCtrl = 228,
+    RShift = 229,
+    RAlt = 230,
+    RGui = 231,
+}
+
+// Which phase/kind of key edge this is. Internal bookkeeping, exported only
+// because it appears in UIContext's dispatch method signatures.
+export enum KeyEdgeKind { Pressed, Released }
+
+// Platform-independent physical key event, modelled after the DOM's
+// KeyboardEvent (keydown/keyup). Fires for *every* physical key, modifiers
+// included -- doesn't tell you what character (if any) was produced; that's
+// TextInputEvent below, same division of labor as the DOM's keydown vs.
+// input/beforeinput. Use this for shortcuts (modifiers + key, e.g. ctrl+L)
+// and non-character keys (F5, Escape, arrows, ...).
+export struct KeyboardEvent {
+    key: Key;
+    repeat: bool;
+    modifiers: KeyModifiers;
+    _stopped: bool = false;
+
+    fn stopPropagation() {
+        this._stopped = true;
+    }
+}
+
+// Committed, layout/unicode-aware text ready to insert -- e.g. the physical
+// key event for shift+A is a single KeyboardEvent{key: A, modifiers: Shift},
+// but the resulting TextInputEvent carries the already-resolved "A" (or "Ä",
+// or nothing yet mid-IME-composition). Use this for textbox content, not
+// KeyboardEvent -- trying to reconstruct typed text from raw key events
+// yourself would have to reinvent shift/caps-lock/layout/IME handling that
+// the platform layer already did once, correctly.
+export struct TextInputEvent {
+    text: str;
+    _stopped: bool = false;
+
+    fn stopPropagation() {
+        this._stopped = true;
+    }
+}
+
+// One key press or release, in the exact order the platform layer delivered
+// it -- same reasoning as PointerEdge: a single level/latch can only
+// describe one transition per frame, and typing (or key auto-repeat) easily
+// produces several within one frame.
+export struct KeyEdge {
+    key: Key;
+    kind: KeyEdgeKind;
+    repeat: bool;
+    modifiers: KeyModifiers;
+}
+
+// Optional keyboard callbacks bundled as a struct, same reasoning as
+// PointerHeldCallbacks. keyEdgesThisFrame()/textInputThisFrame() are this
+// frame's queues, in order -- see KeyEdge and TextInputEvent above.
+export struct KeyboardCallbacks {
+    keyEdgesThisFrame: () => []KeyEdge;
+    textInputThisFrame: () => []str;
+}
+
 export inline struct DivProps {
     id: int;
     style?: ui_styling.DivStyle;
@@ -121,6 +235,30 @@ export inline struct DivProps {
     // HTML/CSS has no equivalent to this one; it's stricter than :hover.
     onHitEnter?: (e: PointerEvent) => none;
     onHitLeave?: (e: PointerEvent) => none;
+
+    // Opts this element into being a click target for focus (see
+    // UIContext.process()'s Down handling): clicking anywhere inside a
+    // focusable element focuses the *nearest* focusable element on the
+    // click path (innermost wins, like tabindex on a DOM container),
+    // clicking outside every focusable element blurs whatever was focused.
+    // Unfocusable (the default) elements are simply skipped when searching
+    // the click path for a focus target -- they neither gain focus
+    // themselves nor block an ancestor from getting it.
+    focusable?: bool;
+    onFocus?: () => none;
+    onBlur?: () => none;
+
+    // Keyboard/text input is delivered only to the currently focused
+    // element's ancestor chain (capture root->target, then bubble
+    // target->root) -- there's no cursor position to hit-test against, so
+    // unlike pointer events there's no "topmost element wins" concept here.
+    onKeyDown?: (e: KeyboardEvent) => none;
+    onKeyUp?: (e: KeyboardEvent) => none;
+    onTextInput?: (e: TextInputEvent) => none;
+
+    onKeyDownCapture?: (e: KeyboardEvent) => none;
+    onKeyUpCapture?: (e: KeyboardEvent) => none;
+    onTextInputCapture?: (e: TextInputEvent) => none;
 }
 
 export inline struct TextProps {
@@ -236,12 +374,33 @@ export struct ComponentElementRuntimeData {
     onHoverLeave?: (e: PointerEvent) => none;
     onHitEnter?: (e: PointerEvent) => none;
     onHitLeave?: (e: PointerEvent) => none;
+
+    // Focus: see DivProps.focusable. `focused` is plain per-element state
+    // (not a UIContext-held pointer to "the" focused element) so that
+    // finding the currently-focused element's ancestor chain each frame is
+    // just a tree walk checking this flag (see UIContext.buildFocusPath) --
+    // deliberately avoiding needing to compare two element/struct handles
+    // for identity, which Haze has no safe operator for.
+    focusable: bool = false;
+    focused: bool = false;
+    focusVersion: rx.Reactive<bool>;
+
+    onFocus?: () => none;
+    onBlur?: () => none;
+
+    onKeyDown?: (e: KeyboardEvent) => none;
+    onKeyUp?: (e: KeyboardEvent) => none;
+    onTextInput?: (e: TextInputEvent) => none;
+    onKeyDownCapture?: (e: KeyboardEvent) => none;
+    onKeyUpCapture?: (e: KeyboardEvent) => none;
+    onTextInputCapture?: (e: TextInputEvent) => none;
 }
 
 fn newRuntimeData(): ComponentElementRuntimeData {
     return ComponentElementRuntimeData {
         renderFeedbackVersion: rx.reactive<bool>(false),
         inputFeedbackVersion: rx.reactive<bool>(false),
+        focusVersion: rx.reactive<bool>(false),
     };
 }
 
@@ -318,6 +477,14 @@ export fn ui_active(element: ui_elements.Element): bool {
     rx.get(data.inputFeedbackVersion);
     if !data.inputFeedback { return false; }
     return data.inputFeedback.hover && data.inputFeedback.pointerDownHere;
+}
+
+// Mirrors CSS :focus -- true for the one element (if any) currently focused.
+// See DivProps.focusable/onFocus/onBlur for how an element becomes focused.
+export fn ui_focused(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.focusVersion);
+    return data.focused;
 }
 
 // Sets pointerDownHere and bumps inputFeedbackVersion, but only when the
@@ -529,6 +696,7 @@ export opaque struct UIContext {
     _mousePosCb: (() => Vec2);
     _pointerButtons?: PointerHeldCallbacks;
     _inputExtras?: InputExtrasCallbacks;
+    _keyboard?: KeyboardCallbacks;
     // Optional so a headless/test UIContext (no layout engine wired up) can
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
@@ -564,6 +732,7 @@ export opaque struct UIContext {
         mousePos: () => Vec2;
         pointerButtons?: PointerHeldCallbacks;
         inputExtras?: InputExtrasCallbacks;
+        keyboard?: KeyboardCallbacks;
         measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
     }
 
@@ -577,6 +746,7 @@ export opaque struct UIContext {
             _mousePosCb: args.mousePos,
             _pointerButtons: args.pointerButtons,
             _inputExtras: args.inputExtras,
+            _keyboard: args.keyboard,
             _measureText: args.measureText,
         };
 
@@ -685,6 +855,76 @@ export opaque struct UIContext {
         let path: []ui_elements.Element = [];
         path.push(element);
         return path;
+    }
+
+    // Returns ordered path [root, ..., focused-element], mirroring
+    // buildHitPath's shape but keyed on the persistent focused flag (see
+    // ComponentElementRuntimeData.focused) instead of mouse position -- a
+    // full-tree walk each frame rather than tracking a stored "focus
+    // target" handle, since Haze has no safe way to compare two element/
+    // struct handles for identity (see runtimeDataOf's callers elsewhere in
+    // this file, which all key persistent per-element state off the element
+    // reached during a traversal, never off a remembered handle compared
+    // later). Empty when nothing is focused, or when whatever *was* focused
+    // didn't get rendered this frame (e.g. its branch was conditionally
+    // unmounted) -- both cases naturally fall out of not finding the flag
+    // during the walk, no explicit cleanup needed.
+    fn buildFocusPath(element: ui_elements.Element): []ui_elements.Element :: final {
+        if element is ui_elements.DivElement {
+            let i = 0;
+            while i < element.children.length {
+                let childPath = this.buildFocusPath(element.children[i]);
+                if childPath.length > 0 {
+                    let path: []ui_elements.Element = [];
+                    path.push(element);
+                    for c in childPath { path.push(c); }
+                    return path;
+                }
+                i = i + 1;
+            }
+        }
+        let data = runtimeDataOf(element);
+        if data.focused {
+            let path: []ui_elements.Element = [];
+            path.push(element);
+            return path;
+        }
+        return [];
+    }
+
+    // Focuses `newTarget` (a click landed on it, or a descendant, and it's
+    // the nearest focusable ancestor -- see process()'s Down handling), or
+    // just blurs whatever's currently focused if `newTarget` is null (the
+    // click landed outside every focusable element). No-op if `newTarget`
+    // is already the focused element. Schedules onBlur/onFocus onto
+    // `eventQueue` same as every other callback in this module -- see FIRE
+    // PHASE in process().
+    fn applyFocusChange(tree: ui_elements.Element, newTarget: ComponentElementRuntimeData | null, eventQueue: [](() => void)): void :: final {
+        if newTarget is not null {
+            if newTarget.focused {
+                return;
+            }
+        }
+
+        let oldPath = this.buildFocusPath(tree);
+        if oldPath.length > 0 {
+            let oldData = runtimeDataOf(oldPath[oldPath.length - 1]);
+            oldData.focused = false;
+            oldData.focusVersion := !oldData.focusVersion;
+            let cb = oldData.onBlur;
+            if cb {
+                eventQueue.push((): void => { cb(); });
+            }
+        }
+
+        if newTarget is not null {
+            newTarget.focused = true;
+            newTarget.focusVersion := !newTarget.focusVersion;
+            let cb = newTarget.onFocus;
+            if cb {
+                eventQueue.push((): void => { cb(); });
+            }
+        }
     }
 
     // Traverses the full tree, updates hover/hit reactive state, and
@@ -836,6 +1076,74 @@ export opaque struct UIContext {
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheel;
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i - 1;
+        }
+    }
+
+    // Key/text input's capture/bubble pairs, mirroring the wheel pair above
+    // exactly -- `focusPath` (root -> focused element, see buildFocusPath)
+    // plays the same role `hitPath` plays for pointer events, just found by
+    // focus instead of hit-testing.
+    fn dispatchKeyCapturing(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < focusPath.length {
+            let data = runtimeDataOf(focusPath[i]);
+            let cb = none as ((e: KeyboardEvent) => none) | none;
+            if kind == KeyEdgeKind.Pressed { cb = data.onKeyDownCapture; }
+            else { cb = data.onKeyUpCapture; }
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i + 1;
+        }
+    }
+
+    fn dispatchKeyBubbling(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: [](() => void)): void :: final {
+        let i = focusPath.length - 1;
+        while i >= 0 {
+            let data = runtimeDataOf(focusPath[i]);
+            let cb = none as ((e: KeyboardEvent) => none) | none;
+            if kind == KeyEdgeKind.Pressed { cb = data.onKeyDown; }
+            else { cb = data.onKeyUp; }
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i - 1;
+        }
+    }
+
+    fn dispatchTextInputCapturing(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < focusPath.length {
+            let data = runtimeDataOf(focusPath[i]);
+            let cb = data.onTextInputCapture;
+            if cb {
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    cb(event);
+                });
+            }
+            i = i + 1;
+        }
+    }
+
+    fn dispatchTextInputBubbling(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: [](() => void)): void :: final {
+        let i = focusPath.length - 1;
+        while i >= 0 {
+            let data = runtimeDataOf(focusPath[i]);
+            let cb = data.onTextInput;
             if cb {
                 eventQueue.push((): void => {
                     if event._stopped { return; }
@@ -1048,6 +1356,24 @@ export opaque struct UIContext {
                         setPointerDownHere(d, true);
                         this._pointerDownTargets.push(d);
                     }
+
+                    // Focus: click-to-focus the nearest focusable ancestor
+                    // in this Down's hitPath (innermost wins), or blur
+                    // whatever's focused if there isn't one -- see
+                    // DivProps.focusable and applyFocusChange.
+                    let newFocusTarget: ComponentElementRuntimeData | null = null;
+                    let fi = hitPath.length - 1;
+                    while fi >= 0 {
+                        let fd = runtimeDataOf(hitPath[fi]);
+                        if fd.focusable {
+                            newFocusTarget = fd;
+                            fi = -1;
+                        } else {
+                            fi = fi - 1;
+                        }
+                    }
+                    this.applyFocusChange(tree, newFocusTarget, eventQueue);
+
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
                 }
@@ -1105,6 +1431,40 @@ export opaque struct UIContext {
                     };
                     this.dispatchWheelCapturing(finalHitPath, wheelEvent, eventQueue);
                     this.dispatchWheelBubbling(finalHitPath, wheelEvent, eventQueue);
+                }
+            }
+
+            // Keyboard + text input: delivered only to the currently
+            // focused element's ancestor chain, not hit-tested by position
+            // at all (see dispatchKeyCapturing/Bubbling). Recomputed fresh
+            // here rather than reusing any hitPath/finalHitPath above, since
+            // a Down event just above this may have changed focus this very
+            // frame -- that new focus target should still receive this
+            // frame's key/text queues, same as a real UI wouldn't drop a
+            // keystroke that lands in the same tick as the click that
+            // focused the field it's meant for.
+            let keyEdges: []KeyEdge = [];
+            if this._keyboard { keyEdges = this._keyboard.keyEdgesThisFrame(); }
+            let textChunks: []str = [];
+            if this._keyboard { textChunks = this._keyboard.textInputThisFrame(); }
+
+            if keyEdges.length > 0 || textChunks.length > 0 {
+                let focusPath = this.buildFocusPath(tree);
+                if focusPath.length > 0 {
+                    for ke in keyEdges {
+                        let keyEvent = KeyboardEvent {
+                            key: ke.key,
+                            repeat: ke.repeat,
+                            modifiers: ke.modifiers,
+                        };
+                        this.dispatchKeyCapturing(focusPath, keyEvent, ke.kind, eventQueue);
+                        this.dispatchKeyBubbling(focusPath, keyEvent, ke.kind, eventQueue);
+                    }
+                    for chunk in textChunks {
+                        let textEvent = TextInputEvent { text: chunk };
+                        this.dispatchTextInputCapturing(focusPath, textEvent, eventQueue);
+                        this.dispatchTextInputBubbling(focusPath, textEvent, eventQueue);
+                    }
                 }
             }
         }
@@ -1463,6 +1823,15 @@ export opaque struct UIContext {
         data.onHoverLeave = props.onHoverLeave;
         data.onHitEnter = props.onHitEnter;
         data.onHitLeave = props.onHitLeave;
+        data.focusable = props.focusable is not none ? props.focusable : false;
+        data.onFocus = props.onFocus;
+        data.onBlur = props.onBlur;
+        data.onKeyDown = props.onKeyDown;
+        data.onKeyUp = props.onKeyUp;
+        data.onTextInput = props.onTextInput;
+        data.onKeyDownCapture = props.onKeyDownCapture;
+        data.onKeyUpCapture = props.onKeyUpCapture;
+        data.onTextInputCapture = props.onTextInputCapture;
 
         // attach into current parent
         this.getCurrentParent().children.push(element);
@@ -1627,6 +1996,11 @@ export struct ElementWrapper<T> {
     // this element, given the press also started here (or on a descendant).
     fn active(): bool {
         return ui_active(this._element);
+    }
+
+    // Mirrors CSS :focus -- see DivProps.focusable.
+    fn focused(): bool {
+        return ui_focused(this._element);
     }
 
     fn position(): Vec2 | none {

@@ -29,6 +29,33 @@ fn toUIPointerEdges(a: app.App): []ui_components.PointerEdge {
     return result;
 }
 
+// Reinterprets app.KeyEdge.key (an sdl.Key, though this file doesn't import
+// sdl to name it directly -- T just infers as that) into a ui_components.Key
+// -- both enums are independently pinned to the same USB HID scancode
+// numbering (see ui_components.Key's doc comment), so this is a cheap
+// raw-int reinterpret rather than an N-armed mapping, same trick sdl.hz's
+// own scancodeToKey() uses to build a sdl.Key out of a raw scancode in the
+// first place. Plain `as` doesn't allow this (Haze has no built-in
+// conversion between two unrelated enum types), hence dropping to unsafe C.
+fn sdlKeyToUIKey<T>(k: T): ui_components.Key :: final {
+    do unsafe {
+        let result: ui_components.Key = uninitialized;
+        __c__("result = (int)k;");
+        return result;
+    };
+}
+
+// Translates app's platform-level key edge queue into ui_components' own
+// KeyEdge type.
+fn toUIKeyEdges(a: app.App): []ui_components.KeyEdge {
+    let result: []ui_components.KeyEdge = [];
+    for e in a.keyEdges() {
+        let kind = e.kind == app.KeyEdgeKind.Pressed ? ui_components.KeyEdgeKind.Pressed : ui_components.KeyEdgeKind.Released;
+        result.push({ key: sdlKeyToUIKey(e.key), kind: kind, repeat: e.repeat, modifiers: e.modifiers });
+    }
+    return result;
+}
+
 fn main(): int {
     attempt {
         let a = app.App({
@@ -57,6 +84,10 @@ fn main(): int {
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),
                 modifiers: () => a.wheelModifiers(),
+            },
+            keyboard: ui_components.KeyboardCallbacks {
+                keyEdgesThisFrame: () => toUIKeyEdges(a),
+                textInputThisFrame: () => a.textInput(),
             },
             ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
         });

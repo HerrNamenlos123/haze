@@ -1,4 +1,5 @@
 name = "textedit_behavior"
+id = "ehFR3Lq6"
 version = "1.0.0"
 description = "A foundational module for implementing text edit behavior"
 license = "MIT"

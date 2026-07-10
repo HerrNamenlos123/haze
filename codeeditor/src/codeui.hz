@@ -131,7 +131,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             };
         }
 
-        let hoverResult = rx.reactive<str>("");
+        let hoverResult = rx.reactive<str | null>(null);
 
         let docLines = rx.computed<[]str>(() => {
             if !doc {
@@ -306,9 +306,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if !lsp.initResponse {
                 return "LSP Loading...";
             }
-            let hover = rx.get(hoverResult);
-            if hover.length > 0 {
-                return f"LSP Ready -- hover: {hover}";
+            if hoverResult {
+                return f"LSP Ready -- hover: {hoverResult}";
             }
             return "LSP Ready";
         });
@@ -348,9 +347,42 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         presets.bg("#181818"),
                         // presets.p(8),
                     ],
+                    focusable: true,
+                    onKeyDown: (event: ui_components.KeyboardEvent) => {
+                        fmt.println("Key Down");
+                        if (hasModifier(event.modifiers, KeyModifiers.Ctrl)) {
+                            if (event.key == ui_components.Key.Up) {
+                                texteditBehavior.moveCursorUp();
+                            }
+                            if (event.key == ui_components.Key.Down) {
+                                texteditBehavior.moveCursorDown();
+                            }
+                            if (event.key == ui_components.Key.Left) {
+                                texteditBehavior.moveCursorLeft();
+                            }
+                            if (event.key == ui_components.Key.Right) {
+                                texteditBehavior.moveCursorRight();
+                            }
+                        }
+                        else {
+                            if (event.key == ui_components.Key.Up) {
+                                texteditBehavior.moveCursorUp();
+                            }
+                            if (event.key == ui_components.Key.Down) {
+                                texteditBehavior.moveCursorDown();
+                            }
+                            if (event.key == ui_components.Key.Left) {
+                                texteditBehavior.moveCursorWordLeft();
+                            }
+                            if (event.key == ui_components.Key.Right) {
+                                texteditBehavior.moveCursorWordRight();
+                            }
+                        }
+                    },
                     onClick: (event: ui_components.PointerEvent) => {
                         fmt.println("Click");
                         texteditBehavior.moveCursorDown();
+                        hoverResult := null;
                         let state = getState();
                         let content = rx.get(doc);
                         if content {
@@ -429,6 +461,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     }
 
                     if texteditBehavior.cursorVisible {
+                        let cursorPos = Vec2(
+                            texteditBehavior.cursorPosition.y as real * characterSize.y,
+                            texteditBehavior.cursorPosition.x as real * characterSize.x,
+                        );
                         ui.div({
                             id: lines.length + 1,
                             style: {
@@ -437,11 +473,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             },
                             presets: [
                                 presets.absolute(),
-                                presets.top(texteditBehavior.cursorPosition.y as real * characterSize.y),
-                                presets.left(texteditBehavior.cursorPosition.x as real * characterSize.x),
+                                presets.top(cursorPos.y),
+                                presets.left(cursorPos.x),
                                 presets.bg("#FFF"),
                             ]
                         }, () => {});
+
+                        if hoverResult {
+                            ui.div({
+                                id: lines.length + 2,
+                                presets: [
+                                    presets.absolute(),
+                                    presets.top(cursorPos.y + characterSize.y + 10.0),
+                                    presets.left(cursorPos.x),
+                                    presets.bg("#181818"),
+                                    presets.border(1),
+                                    presets.borderColor("#4F4F4F"),
+                                    presets.rounded(2),
+                                ]
+                            }, () => {
+                                ui.text({ id: 0, text: hoverResult });
+                            });
+                        }
                     }
                 });
             });

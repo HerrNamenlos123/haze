@@ -1,180 +1,180 @@
 
 export extern C noemit inline struct hzstd_vec2_t {
-  x: real = 0.0;
-  y: real = 0.0;
+    x: real = 0.0;
+    y: real = 0.0;
 
-  fn constructor(x: real, y: real) {
-    return hzstd_vec2_t {
-      x: x,
-      y: y,
-    };
-  }
+    fn constructor(x: real, y: real) {
+        return hzstd_vec2_t {
+        x: x,
+        y: y,
+        };
+    }
 
-  fn neg() {
-    return hzstd_vec2_t(-this.x, -this.y);
-  }
+    fn neg() {
+        return hzstd_vec2_t(-this.x, -this.y);
+    }
 
-  fn add(other: hzstd_vec2_t) {
-    return hzstd_vec2_t(this.x + other.x, this.y + other.y);
-  }
+    fn add(other: hzstd_vec2_t) {
+        return hzstd_vec2_t(this.x + other.x, this.y + other.y);
+    }
 
-  fn sub(other: hzstd_vec2_t) {
-    return hzstd_vec2_t(this.x - other.x, this.y - other.y);
-  }
+    fn sub(other: hzstd_vec2_t) {
+        return hzstd_vec2_t(this.x - other.x, this.y - other.y);
+    }
 
-  fn mul(v: real) {
-    return hzstd_vec2_t(this.x * v, this.y * v);
-  }
+    fn mul(v: real) {
+        return hzstd_vec2_t(this.x * v, this.y * v);
+    }
 
-  fn div(v: real) {
-    return hzstd_vec2_t(this.x / v, this.y / v);
-  }
+    fn div(v: real) {
+        return hzstd_vec2_t(this.x / v, this.y / v);
+    }
 
-  fn length(): real {
-    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0));
-  }
+    fn length(): real {
+        return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0));
+    }
 
-  fn normalize() {
-    return this.div(this.length());
-  }
+    fn normalize() {
+        return this.div(this.length());
+    }
 
-  fn dot(other: hzstd_vec2_t) {
-    return this.x * other.x + this.y * other.y;
-  }
+    fn dot(other: hzstd_vec2_t) {
+        return this.x * other.x + this.y * other.y;
+    }
 }
 export type Vec2 = hzstd_vec2_t;
 
 export extern C noemit inline struct hzstd_vec2f_t {
-  x: f32 = 0.0;
-  y: f32 = 0.0;
+    x: f32 = 0.0;
+    y: f32 = 0.0;
 
-  fn constructor(x: f32, y: f32) {
-    return hzstd_vec2f_t {
-      x: x,
-      y: y,
-    };
-  }
+    fn constructor(x: f32, y: f32) {
+        return hzstd_vec2f_t {
+        x: x,
+        y: y,
+        };
+    }
 
-  fn neg() {
-    return hzstd_vec2f_t(-this.x, -this.y);
-  }
+    fn neg() {
+        return hzstd_vec2f_t(-this.x, -this.y);
+    }
 
-  fn add(other: hzstd_vec2f_t) {
-    return hzstd_vec2f_t(this.x + other.x, this.y + other.y);
-  }
+    fn add(other: hzstd_vec2f_t) {
+        return hzstd_vec2f_t(this.x + other.x, this.y + other.y);
+    }
 
-  fn sub(other: hzstd_vec2f_t) {
-    return hzstd_vec2f_t(this.x - other.x, this.y - other.y);
-  }
+    fn sub(other: hzstd_vec2f_t) {
+        return hzstd_vec2f_t(this.x - other.x, this.y - other.y);
+    }
 
-  fn mul(v: f32) {
-    return hzstd_vec2f_t(this.x * v, this.y * v);
-  }
+    fn mul(v: f32) {
+        return hzstd_vec2f_t(this.x * v, this.y * v);
+    }
 
-  fn div(v: f32) {
-    return hzstd_vec2f_t(this.x / v, this.y / v);
-  }
+    fn div(v: f32) {
+        return hzstd_vec2f_t(this.x / v, this.y / v);
+    }
 
-  fn length(): f32 {
-    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as f32;
-  }
+    fn length(): f32 {
+        return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0)) as f32;
+    }
 
-  fn normalize() {
-    return this.div(this.length());
-  }
+    fn normalize() {
+        return this.div(this.length());
+    }
 
-  fn dot(other: hzstd_vec2f_t) {
-    return this.x * other.x + this.y * other.y;
-  }
+    fn dot(other: hzstd_vec2f_t) {
+        return this.x * other.x + this.y * other.y;
+    }
 }
 export type Vec2f = hzstd_vec2f_t;
 
 export extern C noemit inline struct hzstd_vec2i_t {
-  x: int = 0;
-  y: int = 0;
+    x: int = 0;
+    y: int = 0;
 
-  fn constructor(x: int, y: int) {
-    return hzstd_vec2i_t {
-      x: x,
-      y: y,
-    };
-  }
+    fn constructor(x: int, y: int) {
+        return hzstd_vec2i_t {
+        x: x,
+        y: y,
+        };
+    }
 
-  fn neg() {
-    return hzstd_vec2i_t(-this.x, -this.y);
-  }
+    fn neg() {
+        return hzstd_vec2i_t(-this.x, -this.y);
+    }
 
-  fn add(other: hzstd_vec2i_t) {
-    return hzstd_vec2i_t(this.x + other.x, this.y + other.y);
-  }
+    fn add(other: hzstd_vec2i_t) {
+        return hzstd_vec2i_t(this.x + other.x, this.y + other.y);
+    }
 
-  fn sub(other: hzstd_vec2i_t) {
-    return hzstd_vec2i_t(this.x - other.x, this.y - other.y);
-  }
+    fn sub(other: hzstd_vec2i_t) {
+        return hzstd_vec2i_t(this.x - other.x, this.y - other.y);
+    }
 
-  fn mul(v: int) {
-    return hzstd_vec2i_t(this.x * v, this.y * v);
-  }
+    fn mul(v: int) {
+        return hzstd_vec2i_t(this.x * v, this.y * v);
+    }
 
-  fn div(v: int) {
-    return hzstd_vec2i_t(this.x / v, this.y / v);
-  }
+    fn div(v: int) {
+        return hzstd_vec2i_t(this.x / v, this.y / v);
+    }
 
-  fn length(): real {
-    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0));
-  }
+    fn length(): real {
+        return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0));
+    }
 
-  fn dot(other: hzstd_vec2i_t) {
-    return this.x * other.x + this.y * other.y;
-  }
+    fn dot(other: hzstd_vec2i_t) {
+        return this.x * other.x + this.y * other.y;
+    }
 }
 export type Vec2i = hzstd_vec2i_t;
 
 export inline struct _Vec3<T> {
-  x: T = default;
-  y: T = default;
-  z: T = default;
+    x: T = default;
+    y: T = default;
+    z: T = default;
 
-  fn constructor(x: T, y: T, z: T): _Vec3<T> {
-    return _Vec3<T> {
-      x: x,
-      y: y,
-      z: z,
-    };
-  }
+    fn constructor(x: T, y: T, z: T): _Vec3<T> {
+        return _Vec3<T> {
+        x: x,
+        y: y,
+        z: z,
+        };
+    }
 
-  fn neg(): _Vec3<T> {
-    return _Vec3<T>(-this.x, -this.y, -this.z);
-  }
+    fn neg(): _Vec3<T> {
+        return _Vec3<T>(-this.x, -this.y, -this.z);
+    }
 
-  fn add(other: _Vec3<T>): _Vec3<T> {
-    return _Vec3<T>(this.x + other.x, this.y + other.y, this.z + other.z);
-  }
+    fn add(other: _Vec3<T>): _Vec3<T> {
+        return _Vec3<T>(this.x + other.x, this.y + other.y, this.z + other.z);
+    }
 
-  fn sub(other: _Vec3<T>): _Vec3<T> {
-    return _Vec3<T>(this.x - other.x, this.y - other.y, this.z - other.z);
-  }
+    fn sub(other: _Vec3<T>): _Vec3<T> {
+        return _Vec3<T>(this.x - other.x, this.y - other.y, this.z - other.z);
+    }
 
-  fn mul(v: T): _Vec3<T> {
-    return _Vec3<T>(this.x * v, this.y * v, this.z * v);
-  }
+    fn mul(v: T): _Vec3<T> {
+        return _Vec3<T>(this.x * v, this.y * v, this.z * v);
+    }
 
-  fn div(v: T): _Vec3<T> {
-    return _Vec3<T>(this.x / v, this.y / v, this.z / v);
-  }
+    fn div(v: T): _Vec3<T> {
+        return _Vec3<T>(this.x / v, this.y / v, this.z / v);
+    }
 
-  fn length(): T {
-    return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0) + math.pow(this.z as real, 2.0)) as T;
-  }
+    fn length(): T {
+        return math.sqrt(math.pow(this.x as real, 2.0) + math.pow(this.y as real, 2.0) + math.pow(this.z as real, 2.0)) as T;
+    }
 
-  fn normalize(): _Vec3<T> {
-    let a = this.div(this.length());
-    return _Vec3<T>(a.x, a.y, a.z);
-  }
+    fn normalize(): _Vec3<T> {
+        let a = this.div(this.length());
+        return _Vec3<T>(a.x, a.y, a.z);
+    }
 
-  fn dot(other: _Vec3<T>): T {
-    return this.x * other.x + this.y * other.y + this.z * other.z;
-  }
+    fn dot(other: _Vec3<T>): T {
+        return this.x * other.x + this.y * other.y + this.z * other.z;
+    }
 }
 
 export type Vec3 = _Vec3<real>;
@@ -182,53 +182,87 @@ export type Vec3i = _Vec3<int>;
 export type Vec3f = _Vec3<f32>;
 
 export inline struct _Vec4<T> {
-  x: T = default;
-  y: T = default;
-  z: T = default;
-  w: T = default;
+    x: T = default;
+    y: T = default;
+    z: T = default;
+    w: T = default;
 
-  fn constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
-    return _Vec4<T> {
-      x: x,
-      y: y,
-      z: z,
-      w: w,
-    };
-  }
+    fn constructor(x: T, y: T, z: T, w: T): _Vec4<T> {
+        return _Vec4<T> {
+        x: x,
+        y: y,
+        z: z,
+        w: w,
+        };
+    }
 
-  fn neg(): _Vec4<T> {
-    return _Vec4<T>(-this.x, -this.y, -this.z, -this.w);
-  }
+    fn neg(): _Vec4<T> {
+        return _Vec4<T>(-this.x, -this.y, -this.z, -this.w);
+    }
 
-  fn add(other: _Vec4<T>): _Vec4<T> {
-    return _Vec4<T>(this.x + other.x, this.y + other.y, this.z + other.z, this.w + other.w);
-  }
+    fn add(other: _Vec4<T>): _Vec4<T> {
+        return _Vec4<T>(this.x + other.x, this.y + other.y, this.z + other.z, this.w + other.w);
+    }
 
-  fn sub(other: _Vec4<T>): _Vec4<T> {
-    return _Vec4<T>(this.x - other.x, this.y - other.y, this.z - other.z, this.w - other.w);
-  }
+    fn sub(other: _Vec4<T>): _Vec4<T> {
+        return _Vec4<T>(this.x - other.x, this.y - other.y, this.z - other.z, this.w - other.w);
+    }
 
-  fn mul(v: T): _Vec4<T> {
-    return _Vec4<T>(this.x * v, this.y * v, this.z * v, this.w * v);
-  }
+    fn mul(v: T): _Vec4<T> {
+        return _Vec4<T>(this.x * v, this.y * v, this.z * v, this.w * v);
+    }
 
-  fn div(v: T): _Vec4<T> {
-    return _Vec4<T>(this.x / v, this.y / v, this.z / v, this.w / v);
-  }
+    fn div(v: T): _Vec4<T> {
+        return _Vec4<T>(this.x / v, this.y / v, this.z / v, this.w / v);
+    }
 
-  fn length(): T {
-    return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0) + math.pow(this.w, 2.0)) as T;
-  }
+    fn length(): T {
+        return math.sqrt(math.pow(this.x, 2.0) + math.pow(this.y, 2.0) + math.pow(this.z, 2.0) + math.pow(this.w, 2.0)) as T;
+    }
 
-  fn normalize(): _Vec4<T> {
-    return this.div(this.length());
-  }
+    fn normalize(): _Vec4<T> {
+        return this.div(this.length());
+    }
 
-  fn dot(other: _Vec4<T>): T {
-    return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w;
-  }
+    fn dot(other: _Vec4<T>): T {
+        return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w;
+    }
 }
 
 export type Vec4 = _Vec4<real>;
 export type Vec4i = _Vec4<int>;
 export type Vec4f = _Vec4<f32>;
+
+namespace fmt {
+    export fn format_to(writer: mut StringWriter, value: Vec2, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to(writer, value.y, args);
+        format_to(writer, ")", args);
+    }
+
+    export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to(writer, value.y, args);
+        format_to(writer, ")", args);
+    }
+
+    export fn format_to(writer: mut StringWriter, value: Vec2i, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to(writer, value.y, args);
+        format_to(writer, ")", args);
+    }
+
+    export fn format_to(writer: mut StringWriter, value: rx.Deep<Vec2i>, args: FormatArgs) {
+        format_to(writer, "(", args);
+        format_to_proxy(writer, value.x, args);
+        format_to(writer, ", ", args);
+        format_to_proxy(writer, value.y, args);
+        format_to(writer, ")", args);
+    }
+}

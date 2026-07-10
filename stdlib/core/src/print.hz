@@ -258,20 +258,4 @@ string = HZSTD_STRING_FROM_CSTR(buf);
             writer.write("<no location>");
         }
     }
-
-    export fn format_to(writer: mut StringWriter, value: Vec2, args: FormatArgs) {
-        format_to(writer, "(", args);
-        format_to(writer, value.x, args);
-        format_to(writer, ", ", args);
-        format_to(writer, value.y, args);
-        format_to(writer, ")", args);
-    }
-
-    export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
-        format_to(writer, "(", args);
-        format_to(writer, value.x, args);
-        format_to(writer, ", ", args);
-        format_to(writer, value.y, args);
-        format_to(writer, ")", args);
-    }
 }

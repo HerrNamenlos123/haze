@@ -186,6 +186,7 @@ export struct Context {
         if this.cursorPosition.y != y {
             this.cursorPosition.y := y;
         }
+        fmt.println("Updating cursor pos", this.cursorPosition);
 
         this._desiredCursorPosition.y = y;
         if updateDesiredX {

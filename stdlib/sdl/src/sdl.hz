@@ -27,6 +27,7 @@ namespace ffi {
 	extern C type HazeSdlMouseMoveFn = (userdata: cptr, x: f32, y: f32) -> void :: final;
 	extern C type HazeSdlMouseButtonFn = (userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
 	extern C type HazeSdlMouseWheelFn = (userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32) -> void :: final;
+	extern C type HazeSdlTextInputFn = (userdata: cptr, text: ccstr) -> void :: final;
 
 	extern C noemit struct haze_sdl_trampolines_t {
 		keyDown: HazeSdlKeyFn;
@@ -36,7 +37,15 @@ namespace ffi {
 		mouseDown: HazeSdlMouseButtonFn;
 		mouseUp: HazeSdlMouseButtonFn;
 		mouseWheel: HazeSdlMouseWheelFn;
+		textInput: HazeSdlTextInputFn;
 	}
+
+	// Duplicates a C string into an owned, GC'd Haze str -- needed because
+	// SDL's SDL_TextInputEvent.text points into a buffer SDL owns and reuses
+	// across events, so it's only valid for the duration of this exact
+	// trampoline call. hazeTextInputDispatch below copies it immediately via
+	// this before the string ever reaches a Haze-level queue.
+	extern C fn hzstd_cstr_dup(data: cstr): str :: final;
 
 	extern C fn haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
 	export extern C fn haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
@@ -57,6 +66,7 @@ namespace ffi {
 				mouseDown: hazeMouseDownDispatch,
 				mouseUp: hazeMouseUpDispatch,
 				mouseWheel: hazeMouseWheelDispatch,
+				textInput: hazeTextInputDispatch,
 			} as inline haze_sdl_trampolines_t);
 		}
 		return result;
@@ -195,6 +205,15 @@ export struct MouseWheelEvent {
 	modifiers: KeyModifiers;
 }
 
+// Committed, layout/unicode-aware text (SDL_EVENT_TEXT_INPUT) -- distinct
+// from KeyEvent: a KeyEvent for the physical "A" key doesn't tell you
+// whether that produced "a", "A", "ä", or (mid-IME-composition) nothing at
+// all yet. This is the already-resolved character(s) to actually insert,
+// same division of labor as the DOM's keydown vs. input events.
+export struct TextInputEvent {
+	text: str;
+}
+
 // ---------------------------------------------------------------------------
 // Callback type aliases
 // ---------------------------------------------------------------------------
@@ -204,6 +223,7 @@ export type ResizeEventCallback = (e: ResizeEvent) => bool :: final;
 export type MouseMoveEventCallback = (e: MouseMoveEvent) => bool :: final;
 export type MouseButtonEventCallback = (e: MouseButtonEvent) => bool :: final;
 export type MouseWheelEventCallback = (e: MouseWheelEvent) => bool :: final;
+export type TextInputEventCallback = (e: TextInputEvent) => bool :: final;
 
 // ---------------------------------------------------------------------------
 // Internal handler structs (one per event category)
@@ -232,6 +252,11 @@ export struct MouseButtonHandler {
 export struct MouseWheelHandler {
 	id: int;
 	callback: MouseWheelEventCallback;
+}
+
+export struct TextInputHandler {
+	id: int;
+	callback: TextInputEventCallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +350,19 @@ fn hazeMouseWheelDispatch(userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f
 	};
 }
 
+fn hazeTextInputDispatch(userdata: cptr, text: ccstr): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		// hzstd_cstr_dup only reads its argument (to copy it) despite taking
+		// a non-const char* -- safe to drop the const here.
+		let mutableText: cstr = uninitialized;
+		__c__("mutableText = (char*)text;");
+		let e = TextInputEvent { text: ffi.hzstd_cstr_dup(mutableText) };
+		window.dispatchTextInput(e);
+	};
+}
+
 export struct Window {
 	handle: ffi.SDL_Window;
 
@@ -336,6 +374,7 @@ export struct Window {
 	mouseMoveHandlers: []MouseMoveHandler = [];
 	mouseDownHandlers: []MouseButtonHandler = [];
 	mouseUpHandlers: []MouseButtonHandler = [];
+	textInputHandlers: []TextInputHandler = [];
 	mouseWheelHandlers: []MouseWheelHandler = [];
 
 	fn makeContextCurrent() {
@@ -454,6 +493,13 @@ export struct Window {
 		return id;
 	}
 
+	fn onTextInput(cb: TextInputEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.textInputHandlers.push(TextInputHandler { id: id, callback: cb });
+		return id;
+	}
+
 	// --- Deregistration ---
 
 	fn removeHandler(id: int) {
@@ -533,6 +579,17 @@ export struct Window {
 			}
 			i = i + 1;
 		}
+
+		i = 0;
+		while i < this.textInputHandlers.length {
+			if this.textInputHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->textInputHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
 	}
 
 	// --- Internal dispatch (called by trampolines) ---
@@ -601,6 +658,16 @@ export struct Window {
 		let i = 0;
 		while i < this.mouseWheelHandlers.length {
 			if this.mouseWheelHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	fn dispatchTextInput(e: TextInputEvent) {
+		let i = 0;
+		while i < this.textInputHandlers.length {
+			if this.textInputHandlers[i].callback(e) {
 				return;
 			}
 			i = i + 1;

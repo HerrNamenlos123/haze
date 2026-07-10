@@ -13,6 +13,7 @@ typedef void (*HazeSdlResizeFn)(void* userdata, int width, int height);
 typedef void (*HazeSdlMouseMoveFn)(void* userdata, float x, float y);
 typedef void (*HazeSdlMouseButtonFn)(void* userdata, int button, float x, float y);
 typedef void (*HazeSdlMouseWheelFn)(void* userdata, float x, float y, float mouseX, float mouseY);
+typedef void (*HazeSdlTextInputFn)(void* userdata, const char* text);
 
 typedef struct {
   HazeSdlKeyFn keyDown;
@@ -22,9 +23,10 @@ typedef struct {
   HazeSdlMouseButtonFn mouseDown;
   HazeSdlMouseButtonFn mouseUp;
   HazeSdlMouseWheelFn mouseWheel;
+  HazeSdlTextInputFn textInput;
 } haze_sdl_trampolines_t;
 
-static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+static haze_sdl_trampolines_t g_haze_trampolines = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 void haze_sdl_register_trampolines(haze_sdl_trampolines_t t) { g_haze_trampolines = t; }
 
@@ -139,6 +141,14 @@ SDL_Window* haze_sdl_createWindow(int width, int height, const char* title, bool
 
   haze_sdl_set_window_should_close(window, false);
   haze_sdl_set_window_size_changed(window, true);
+
+  /* Layout/unicode-aware character events (SDL_EVENT_TEXT_INPUT) only fire
+     once text input is "started" for the window -- there's no per-widget
+     text focus concept below the Haze UI layer, so this is enabled
+     unconditionally for the window's whole lifetime; ui_components.hz's
+     focus tracking is what actually decides which element (if any) a
+     frame's text/key events get delivered to. */
+  SDL_StartTextInput(window);
 
   if (!noApi) {
     SDL_GLContext context = SDL_GL_CreateContext(window);
@@ -284,6 +294,17 @@ void haze_sdl_pollEvents(void)
         if (userdata) {
           int btn = (int)event.button.button - 1;
           g_haze_trampolines.mouseUp(userdata, btn, event.button.x, event.button.y);
+        }
+      }
+      continue;
+    }
+
+    if (event.type == SDL_EVENT_TEXT_INPUT) {
+      SDL_Window* window = SDL_GetWindowFromID(event.text.windowID);
+      if (window && g_haze_trampolines.textInput) {
+        void* userdata = haze_sdl_get_window_event_userdata(window);
+        if (userdata) {
+          g_haze_trampolines.textInput(userdata, event.text.text);
         }
       }
       continue;

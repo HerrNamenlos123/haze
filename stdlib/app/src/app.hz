@@ -63,6 +63,20 @@ export struct PointerEdge {
     pos: Vec2;
 }
 
+export enum KeyEdgeKind { Pressed, Released }
+
+// One key press or release, queued in order -- same reasoning as PointerEdge
+// above: a burst of keystrokes (someone typing at a normal pace while a
+// frame takes a while, or just fast typing/repeat) can easily produce
+// several key down/up pairs within one frame, and a level or single-edge
+// latch would silently drop all but the net effect.
+export struct KeyEdge {
+    key: sdl.Key;
+    kind: KeyEdgeKind;
+    repeat: bool;
+    modifiers: KeyModifiers;
+}
+
 export opaque struct App {
     window: mut sdl.Window;
     device: mut wgpu.Device;
@@ -77,6 +91,11 @@ export opaque struct App {
     resized: bool = false;
     _pointerButtons: AppPointerButtons = {};
     _pointerEdgeQueue: []PointerEdge = [];
+    _keyEdgeQueue: []KeyEdge = [];
+    // Committed text chunks (SDL_EVENT_TEXT_INPUT) queued this frame, in
+    // order -- see sdl.TextInputEvent for why this is separate from key
+    // edges above.
+    _textInputQueue: []str = [];
     // This-frame's accumulated wheel delta/modifiers -- reset at the top of
     // nextFrame() (before pollEvents() re-accumulates fresh values into it),
     // so it holds exactly one frame's worth of scroll input by the time
@@ -169,6 +188,18 @@ export opaque struct App {
             app.wheelModifiersThisFrame = e.modifiers;
             return false;
         });
+        window.onKeyDown((e: sdl.KeyEvent) => {
+            app._keyEdgeQueue.push({ key: e.key, kind: KeyEdgeKind.Pressed, repeat: e.repeat, modifiers: e.modifiers });
+            return false;
+        });
+        window.onKeyUp((e: sdl.KeyEvent) => {
+            app._keyEdgeQueue.push({ key: e.key, kind: KeyEdgeKind.Released, repeat: e.repeat, modifiers: e.modifiers });
+            return false;
+        });
+        window.onTextInput((e: sdl.TextInputEvent) => {
+            app._textInputQueue.push(e.text);
+            return false;
+        });
 
         return app;
     }
@@ -196,6 +227,16 @@ export opaque struct App {
         return this._pointerEdgeQueue;
     }
 
+    // Every key press/release queued this frame, in order -- see KeyEdge.
+    fn keyEdges(): []KeyEdge {
+        return this._keyEdgeQueue;
+    }
+
+    // Every committed text chunk queued this frame, in order.
+    fn textInput(): []str {
+        return this._textInputQueue;
+    }
+
     fn wheelDelta(): Vec2 {
         return this.wheelDeltaThisFrame;
     }
@@ -217,6 +258,8 @@ export opaque struct App {
         this.wheelDeltaThisFrame = Vec2(0.0, 0.0);
         this.wheelModifiersThisFrame = KeyModifiers.None;
         this._pointerEdgeQueue = [];
+        this._keyEdgeQueue = [];
+        this._textInputQueue = [];
 
         sdl.pollEvents();
         fs.pollEvents();

@@ -11,6 +11,7 @@ export inline struct RuntimeArgs {
     mousePos: () => Vec2;
     pointerButtons?: ui_components.PointerHeldCallbacks;
     inputExtras?: ui_components.InputExtrasCallbacks;
+    keyboard?: ui_components.KeyboardCallbacks;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -46,6 +47,7 @@ export opaque struct Runtime {
             mousePos: args.mousePos,
             pointerButtons: args.pointerButtons,
             inputExtras: args.inputExtras,
+            keyboard: args.keyboard,
             measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
                 return layout.measureText(fontFamily, fontSize, text);
             },
