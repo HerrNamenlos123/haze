@@ -259,11 +259,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         }
 
         let cursorChanged = rx.computed(() => {
-            rx.get(texteditBehavior.cursorPosition.x);
-            rx.get(texteditBehavior.cursorPosition.y);
             if lsp && cache.data.file {
-                fmt.println("Send hover request");
-                lsp.sendDocumentHoverRequest(cache.data.file, 125, 4, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
+                lsp.sendDocumentHoverRequest(cache.data.file, texteditBehavior.cursorPosition.y, texteditBehavior.cursorPosition.x, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
                     if response {
                         let hover = response;
                         if hover {
@@ -283,6 +280,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let opened = false;
         let runLspLoop = rx.computed(() => {
             ui.now();
+            rx.get(cursorChanged);
             if lsp && vueBridge && cache.data.file {
 
                 if !opened && lsp.initResponse {
@@ -294,6 +292,61 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 lsp.loop();
                 vueBridge.loop(lsp);
             }
+        });
+
+        let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
+            let parts: []HighlightToken = [];
+            let position = 0;
+
+            for token in tokens {
+                if token.lineIndex == lineIndex {
+                    // Text before the token
+                    if (position < token.startIndex) {
+                        parts.push({
+                            text: string.slice(position, token.startIndex),
+                            color: defaultTextColor(),
+                        });
+                    }
+
+                    // The token itself
+                    parts.push({
+                        text: string.slice(token.startIndex, token.endIndex),
+                        color: getFirstScopeColor(token.scopes),
+                    });
+
+                    position = token.endIndex;
+                }
+            }
+
+            // Remaining text
+            if (position < string.length) {
+                parts.push({
+                    text: string.slice(position, string.length),
+                    color: defaultTextColor(),
+                });
+            }
+
+            return parts;
+        }
+
+        let highlightedLines = rx.computed(() => {
+            let resultTokens: [][]HighlightToken = [];
+            let s: []str = docLines;
+            for line, lineIndex in s {
+                let currentIndex = 0;
+                let reconstructedLine = "";
+
+                let tokens: []Token = [];
+                let hh: []HighlightResult = rx.get(highlights);
+                if hh.length > 0 {
+                    let hhh = hh[hh.length - 1];
+                    tokens = hhh.tokens;
+                }
+
+                let finalTokens: []HighlightToken = splitByTokens(lineIndex, line, tokens);
+                resultTokens.push(finalTokens);
+            }
+            return resultTokens;
         });
 
         let lspMessage = rx.computed(() => {
@@ -349,22 +402,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     ],
                     focusable: true,
                     onKeyDown: (event: ui_components.KeyboardEvent) => {
-                        fmt.println("Key Down");
                         if (hasModifier(event.modifiers, KeyModifiers.Ctrl)) {
-                            if (event.key == ui_components.Key.Up) {
-                                texteditBehavior.moveCursorUp();
-                            }
-                            if (event.key == ui_components.Key.Down) {
-                                texteditBehavior.moveCursorDown();
-                            }
-                            if (event.key == ui_components.Key.Left) {
-                                texteditBehavior.moveCursorLeft();
-                            }
-                            if (event.key == ui_components.Key.Right) {
-                                texteditBehavior.moveCursorRight();
-                            }
-                        }
-                        else {
                             if (event.key == ui_components.Key.Up) {
                                 texteditBehavior.moveCursorUp();
                             }
@@ -378,11 +416,23 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 texteditBehavior.moveCursorWordRight();
                             }
                         }
+                        else {
+                            if (event.key == ui_components.Key.Up) {
+                                texteditBehavior.moveCursorUp();
+                            }
+                            if (event.key == ui_components.Key.Down) {
+                                texteditBehavior.moveCursorDown();
+                            }
+                            if (event.key == ui_components.Key.Left) {
+                                texteditBehavior.moveCursorLeft();
+                            }
+                            if (event.key == ui_components.Key.Right) {
+                                texteditBehavior.moveCursorRight();
+                            }
+                        }
+                        hoverResult := null;
                     },
                     onClick: (event: ui_components.PointerEvent) => {
-                        fmt.println("Click");
-                        texteditBehavior.moveCursorDown();
-                        hoverResult := null;
                         let state = getState();
                         let content = rx.get(doc);
                         if content {
@@ -395,58 +445,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
                     let characterSize = ui.measureText("X");
 
-                    let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
-                        let parts: []HighlightToken = [];
-                        let position = 0;
-
-                        for token in tokens {
-                            if token.lineIndex == lineIndex {
-                                // Text before the token
-                                if (position < token.startIndex) {
-                                    parts.push({
-                                        text: string.slice(position, token.startIndex),
-                                        color: defaultTextColor(),
-                                    });
-                                }
-
-                                // The token itself
-                                parts.push({
-                                    text: string.slice(token.startIndex, token.endIndex),
-                                    color: getFirstScopeColor(token.scopes),
-                                });
-
-                                position = token.endIndex;
-                            }
-                        }
-
-                        // Remaining text
-                        if (position < string.length) {
-                            parts.push({
-                                text: string.slice(position, string.length),
-                                color: defaultTextColor(),
-                            });
-                        }
-
-                        return parts;
-                    }
-
-                    let printLine = (lineIndex: int, line: str) => {
-                        let currentIndex = 0;
-                        let reconstructedLine = "";
-
-                        let tokens: []Token = [];
-                        let hh: []HighlightResult = rx.get(highlights);
-                        if hh.length > 0 {
-                            let hhh = hh[hh.length - 1];
-                            tokens = hhh.tokens;
-                        }
-
-                        let finalTokens = splitByTokens(lineIndex, line, tokens);
+                    let l: [][]HighlightToken = highlightedLines;
+                    for tokens, i in l {
                         ui.div({
-                            id: lineIndex,
+                            id: i,
                         }, (): void => {
-                            if finalTokens.length > 0 {
-                                for t, i in finalTokens {
+                            if tokens.length > 0 {
+                                for t, i in tokens {
                                     ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
                                 }
                             }
@@ -454,47 +459,41 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 ui.text({ id: 0, text: "" });
                             }
                         });
-                    };
-
-                    for line, lineIndex in lines {
-                        printLine(lineIndex, line);
                     }
 
-                    if texteditBehavior.cursorVisible {
-                        let cursorPos = Vec2(
-                            texteditBehavior.cursorPosition.y as real * characterSize.y,
-                            texteditBehavior.cursorPosition.x as real * characterSize.x,
-                        );
+                    let cursorPos = Vec2(
+                        texteditBehavior.cursorPosition.x as real * characterSize.x,
+                        texteditBehavior.cursorPosition.y as real * characterSize.y,
+                    );
+                    ui.div({
+                        id: lines.length + 1,
+                        style: {
+                            width: 1.0,
+                            height: characterSize.y,
+                        },
+                        presets: [
+                            presets.absolute(),
+                            presets.top(cursorPos.y),
+                            presets.left(cursorPos.x),
+                            texteditBehavior.cursorVisible ? presets.bg("#FFF") : presets.bg("#00000000"),
+                        ]
+                    }, () => {});
+
+                    if hoverResult {
                         ui.div({
-                            id: lines.length + 1,
-                            style: {
-                                width: 1.0,
-                                height: characterSize.y,
-                            },
+                            id: lines.length + 2,
                             presets: [
                                 presets.absolute(),
-                                presets.top(cursorPos.y),
+                                presets.top(cursorPos.y + characterSize.y + 10.0),
                                 presets.left(cursorPos.x),
-                                presets.bg("#FFF"),
+                                presets.bg("#181818"),
+                                presets.border(1),
+                                presets.borderColor("#4F4F4F"),
+                                presets.rounded(2),
                             ]
-                        }, () => {});
-
-                        if hoverResult {
-                            ui.div({
-                                id: lines.length + 2,
-                                presets: [
-                                    presets.absolute(),
-                                    presets.top(cursorPos.y + characterSize.y + 10.0),
-                                    presets.left(cursorPos.x),
-                                    presets.bg("#181818"),
-                                    presets.border(1),
-                                    presets.borderColor("#4F4F4F"),
-                                    presets.rounded(2),
-                                ]
-                            }, () => {
-                                ui.text({ id: 0, text: hoverResult });
-                            });
-                        }
+                        }, () => {
+                            ui.text({ id: 0, text: hoverResult });
+                        });
                     }
                 });
             });

@@ -21,7 +21,7 @@ export fn clamp<T>(value: T, min: T, max: T): T {
         return max;
     }
     else {
-        return min;
+        return value;
     }
 }
 
