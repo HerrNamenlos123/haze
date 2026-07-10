@@ -212,11 +212,17 @@ nameExpr
     ;
 
 primaryExpr
-    : LB expr RB
+    // `lambda` must be tried before the bare `LB expr RB` parenthesis alternative:
+    // since closure parameter types are now optional, a single untyped parameter
+    // like `(x)` is a token-for-token prefix of both a parenthesized identifier
+    // expression and a one-parameter lambda, and only the arrow after the closing
+    // `)` disambiguates them. ANTLR resolves genuine alternative ties by picking
+    // whichever is listed first, so `lambda` has to come first here.
+    : lambda
+    | LB expr RB
     | doScope
     | TYPE typeExpr
     | TYPEOF LB expr RB
-    | lambda
     | literal
     | interpolatedString
     | arrayExpr
