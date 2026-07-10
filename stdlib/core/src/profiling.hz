@@ -166,6 +166,7 @@ export struct Profiler {
     context: ffi.hzstd_profiling_context_t;
 
     fn constructor(config: ProfilerConfig = {}) {
+        fmt.println(f"Profiling was started at {config.samplingRateHz} Hz");
         let context = ffi.hzstd_profiling_start(config.samplingRateHz);
         return Profiler {
             context: context,
@@ -174,11 +175,14 @@ export struct Profiler {
 
     // TODO: This profiler must turn into a resource so it's panic recovery safe
     fn stop(): profiling.ProfilingResult {
+        fmt.println("Profiling stopped, postprocessing...");
         return ffi.hzstd_profiling_end(this.context);
     }
 
     fn stopAndSave(path: str = "out.cpuprofile") {
         const result = this.stop();
-        return profiling.writeCpuProfile(result, path);
+        let r = profiling.writeCpuProfile(result, path);
+        fmt.println(f"Results were written to {path}");
+        return r;
     }
 }

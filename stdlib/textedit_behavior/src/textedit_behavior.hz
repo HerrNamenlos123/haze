@@ -467,16 +467,23 @@ export struct Context {
         let line = this.args.getLine(pos.y);
         let x = pos.x;
 
-        // Skip one run of same-class characters
-        let targetClass = this._charClassAt(line, x);
-        while x < lineLength && this._charClassAt(line, x) == targetClass {
-            x++;
-        }
-
-        // Skip whitespace to land on the next word's start
+        // Skip whitespace immediately ahead, if any -- matching Chrome's
+        // textarea: Ctrl+Right from inside a word stops at the end of THAT
+        // word (doesn't also swallow the whitespace after it), but from
+        // whitespace (or the end of a word) it skips the gap and stops at
+        // the end of the next run instead. So whitespace is only ever
+        // consumed as a leading skip, never trailing.
         // TODO: line[x] is a compiler bug when x is reactive
         while x < lineLength && ascii.isWhitespace(line[rx.get(x)]) {
             x++;
+        }
+
+        // Skip one run of the resulting class (word or punctuation).
+        if x < lineLength {
+            let targetClass = this._charClassAt(line, x);
+            while x < lineLength && this._charClassAt(line, x) == targetClass {
+                x++;
+            }
         }
 
         return { x: x, y: pos.y };

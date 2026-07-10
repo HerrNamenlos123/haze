@@ -81,37 +81,37 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // is the joined full text, derived FROM docLines (rather than the
         // other way around, like before this buffer existed), kept around
         // because the LSP bridge and the highlighter both want one string.
-        let docLines = rx.reactive<[]str>([""]);
+        // rx.reactive<[]str> (no union) wraps each element individually --
+        // an array of per-line reactive cells, meant for surgical
+        // single-line edits via push/pop. This buffer instead replaces the
+        // whole array on every edit (see the comment above), which through
+        // that path meant popping and re-pushing every line -- i.e. one
+        // heap alloc/free per line, per keystroke -- and was the actual
+        // source of the per-keystroke freeze. Wrapping the array type in
+        // `| none` routes it through the plain/shallow reactive path
+        // instead (same mechanism selectionAnchor: Vec2i | none uses in the
+        // engine): a single opaque cell holding one []str value, swappable
+        // in one `:=` with no per-element bookkeeping. It's never actually
+        // none; that's just how to opt out of the per-element wrapping.
+        let docLines = rx.reactive<[]str | none>([""]);
 
-        // rx.reactive<[]str> wraps each element individually (an array of
-        // per-line reactive cells, so a single line's edit doesn't have to
-        // touch the whole array's identity) -- so a plain []str for a
-        // whole-array read has to be rebuilt by unwrapping every element.
-        // getLine() below skips that for the (very hot -- called by the
-        // engine multiple times per keystroke) single-line case.
         let getPlainLines = (): []str => {
-            let result: []str = [];
-            for (let i = 0; i < docLines.length; i++) {
-                result.push(docLines[i]);
+            let ls = rx.get(docLines);
+            if ls {
+                return ls;
             }
-            return result;
+            return [];
         };
 
+        // Very hot -- called by the engine multiple times per keystroke --
+        // but there's no cheaper single-line path left now that a whole-
+        // array read is just one unwrap; keep it as a thin convenience.
         let getLine = (index: int): str => {
-            return docLines[index];
+            return getPlainLines()[index];
         };
 
-        // Reactive arrays don't accept a plain []str via `:=` (each element
-        // is its own reactive cell, not a swappable-whole-array value) --
-        // pop everything and push the replacement through the array's own
-        // mutation methods instead.
         let replaceAllLines = (newLines: []str) => {
-            while docLines.length > 0 {
-                docLines.pop();
-            }
-            for line in newLines {
-                docLines.push(line);
-            }
+            docLines := newLines;
         };
 
         let joinLines = (ls: []str): str => {
@@ -290,7 +290,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 return getLine(lineIndex);
             },
             getLineCount: () => {
-                return docLines.length;
+                return getPlainLines().length;
             },
             getTimeInSeconds: () => {
                 return ui.now();
@@ -303,19 +303,48 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             state.highlightEngine.sendHighlightRequest(rx.get(doc));
         }
 
-        let cursorChanged = rx.computed(() => {
-            if vueBridge && cache.data.file {
-                vueBridge.hover(texteditBehavior.cursorPosition.y, texteditBehavior.cursorPosition.x, (text: str | null) => {
-                    hoverResult := text ? text : "(no hover info at this position)";
-                });
-            }
-        });
+        // Hover used to be requested every time the cursor moved, including
+        // every single keystroke while typing (typing moves the cursor) --
+        // each one kicking off a tsserver + LSP round trip. Typing quickly
+        // queued requests faster than they drained, and editing ground to a
+        // halt. Debounce instead: only ask for hover once the cursor has
+        // been still for a bit, and only if it's actually at a new position.
+        let hoverDebounceSeconds = 0.2;
+        let lastEditAt = rx.reactive<real>(-1000.0);
+        let lastHoverPos = rx.reactive<Vec2i | none>(none);
+
+        // Exponentially-smoothed FPS, recomputed alongside the LSP drain
+        // below since that's already the one thing guaranteed to re-run
+        // every frame (it depends on ui.now()).
+        let lastFrameAt = rx.reactive<real>(0.0);
+        let fps = rx.reactive<real>(0.0);
+        let fpsText = rx.computed(() => f"{fps as int} FPS");
 
         let runLspLoop = rx.computed(() => {
-            ui.now();
+            let now = ui.now();
+
+            let dt = now - lastFrameAt;
+            lastFrameAt := now;
+            if dt > 0.0 {
+                fps := fps * 0.9 + (1.0 / dt) * 0.1;
+            }
+
             if vueBridge && cache.data.file {
                 vueBridge.openDocument(cache.data.file, "vue", 1, rx.get(doc));
-                rx.get(cursorChanged);
+
+                if now - lastEditAt > hoverDebounceSeconds {
+                    let cursor = texteditBehavior.cursorPosition;
+                    let curPos: Vec2i = { x: cursor.x, y: cursor.y };
+                    let prevPos = rx.get(lastHoverPos);
+                    let samePos = prevPos && prevPos.x == curPos.x && prevPos.y == curPos.y;
+                    if !samePos {
+                        lastHoverPos := curPos;
+                        vueBridge.hover(curPos.y, curPos.x, (text: str | null) => {
+                            hoverResult := text ? text : "(no hover info at this position)";
+                        });
+                    }
+                }
+
                 vueBridge.loop();
             }
         });
@@ -375,19 +404,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return resultTokens;
         });
 
-        let lspMessage = rx.computed(() => {
-            if !vueBridge {
-                return "Vue language server failed to start";
-            }
-            if !vueBridge.isReady() {
-                return "LSP Loading...";
-            }
-            if hoverResult {
-                return f"LSP Ready -- hover: {hoverResult}";
-            }
-            return "LSP Ready";
-        });
-
         return () => {
             ui.div({
                 id: 0,
@@ -402,7 +418,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }, () => {
                 ui.text({
                     id: 0,
-                    text: lspMessage,
+                    text: fpsText,
                 });
 
                 rx.get(runLspLoop);
@@ -426,6 +442,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     focusable: true,
                     onTextInput: (event: ui_components.TextInputEvent) => {
                         texteditBehavior.insertText(event.text);
+                        lastEditAt := ui.now();
                         hoverResult := null;
                     },
                     onKeyDown: (event: ui_components.KeyboardEvent) => {
@@ -476,6 +493,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             texteditBehavior.paste();
                         }
 
+                        lastEditAt := ui.now();
                         hoverResult := null;
                     },
                 }, () => {
