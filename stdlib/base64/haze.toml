@@ -1,4 +1,5 @@
 name = "base64"
+id = "rMEPi70k"
 version = "1.0.0"
 description = "Base64 encoding/decoding for Haze -- convert between Bytes and base64-encoded strings (RFC 4648)"
 license = "MIT"

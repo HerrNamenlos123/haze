@@ -809,6 +809,7 @@ export type ASTModuleNamespaceDefinition = {
   variant: "ModuleNamespaceDefinition";
   export: boolean;
   moduleName: string;
+  moduleId: string;
   moduleVersion: string; // "major.minor.patch"
   declarations: ASTSymbolDefinition[];
   sourceloc: SourceLoc;

@@ -3025,10 +3025,12 @@ class ASTBuilder extends HazeParserListener {
 
     assert(ctx._moduleName);
     const moduleName = ctx._moduleName.getText();
-    // _moduleVersion is a Token (STRING_LITERAL), use .text to get value
+    // _moduleVersion/_moduleId are Tokens (STRING_LITERAL), use .text to get value
     const moduleVersionRaw = ctx._moduleVersion?.text ?? '""';
-    // Strip surrounding quotes from the string literal
+    const moduleIdRaw = ctx._moduleId?.text ?? '""';
+    // Strip surrounding quotes from the string literals
     const moduleVersion = moduleVersionRaw.slice(1, -1);
+    const moduleId = moduleIdRaw.slice(1, -1);
 
     const node: ASTModuleNamespaceDefinition = {
       variant: "ModuleNamespaceDefinition",
@@ -3036,6 +3038,7 @@ class ASTBuilder extends HazeParserListener {
       export: Boolean(ctx._export_),
       moduleName: moduleName,
       moduleVersion: moduleVersion,
+      moduleId: moduleId,
       sourceloc: this.loc(ctx),
     };
 

@@ -1,4 +1,5 @@
 name = "wgpu"
+id = "2KnuPGlK"
 version = "1.0.0"
 description = "WebGPU Bindings for Haze (Native + Web)"
 license = "MIT"

@@ -1,8 +1,9 @@
 import * as child_process from "node:child_process";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
+  generateModuleId,
   type ModuleConfig,
   ModuleType,
   PlatformStrings,
@@ -124,6 +125,10 @@ export class ProjectCompiler {
         nostdlib: false,
         platform: getCurrentPlatform(),
         name: toCIdentifier(basename(singleFilename)),
+        // No haze.toml exists for a single-file `haze exec` run, so there's
+        // nothing to persist an id into -- generate a fresh one in memory
+        // each time, same as any other ephemeral/scratch config field here.
+        id: generateModuleId(),
         version: "0.0.0",
         scripts: {
           any: [],
@@ -281,6 +286,50 @@ export class ProjectCompiler {
       };
 
       await loadModule(config);
+
+      // -----------------------------------------------------------------------
+      // Module id conflict detection, project-local only.
+      //
+      // A machine-global registry (catching collisions across unrelated
+      // projects on the same machine, per "expected to be globally unique
+      // across all projects ever built by anyone" in
+      // `R&D/Hot Reload & Module Identity.md`) is explicitly deferred, not
+      // built here. This only catches collisions within this project's own
+      // dependency graph, persisted across builds so a stale/removed
+      // module's id isn't forgotten the moment its build cache is cleared.
+      // -----------------------------------------------------------------------
+      if (!singleFilename) {
+        const moduleIdsPath = join(this.globalBuildDir, "module-ids.json");
+        let idCache: Record<string, string> = {};
+        if (existsSync(moduleIdsPath)) {
+          idCache = JSON.parse(readFileSync(moduleIdsPath, "utf-8"));
+        }
+
+        const conflicts: string[] = [];
+        for (const [, entry] of modules) {
+          const existingName = idCache[entry.config.id];
+          if (existingName === undefined) {
+            idCache[entry.config.id] = entry.config.name;
+          } else if (existingName !== entry.config.name) {
+            conflicts.push(
+              `  id '${entry.config.id}': previously registered to module '${existingName}', now also claimed by module '${entry.config.name}'`
+            );
+          }
+        }
+
+        if (conflicts.length > 0) {
+          throw new GeneralError(
+            `Module id conflict detected -- two different modules share the same id:\n${conflicts.join("\n")}\n\n` +
+              "This means two unrelated modules were assigned the same id -- either an accidental collision (e.g. a copy-pasted haze.toml) or a stale cache entry.\n" +
+              "Normal fix: regenerate the id of whichever module is actually new/unrelated by deleting its 'id = \"...\"' line from haze.toml and rebuilding.\n" +
+              `Only edit or delete the entry directly in '${moduleIdsPath}' if you are confident it is stale (e.g. left over from a module that no longer exists on disk).`
+          );
+        }
+
+        // Nothing is persisted if a conflict was found above -- fails closed,
+        // same as this design's other atomic reload/validation checks.
+        writeFileSync(moduleIdsPath, JSON.stringify(idCache, null, 2));
+      }
 
       // -----------------------------------------------------------------------
       // Register all modules with the printer in topological order so indices

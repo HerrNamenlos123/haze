@@ -1,4 +1,5 @@
 name = "sdl_wgpu"
+id = "lYH7LxY2"
 version = "1.0.0"
 description = "WebGPU integration for SDL3"
 license = "MIT"

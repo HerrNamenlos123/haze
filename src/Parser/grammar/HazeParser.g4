@@ -56,11 +56,12 @@ namespaceDefinition
     : (export=EXPORT)? NAMESPACE id (DOT id)* LCURLY globalDeclaration* RCURLY
     ;
 
-// A module namespace definition carries the module name and semantic version.
-// Syntax: module_namespace <name> <version> { ... }
-// Example: module_namespace sdl 1.0.0 { ... }
+// A module namespace definition carries the module name, semantic version,
+// and 8-character module id (see `R&D/Hot Reload & Module Identity.md`).
+// Syntax: module_namespace <name> <version> <id> { ... }
+// Example: module_namespace sdl "1.0.0" "AbC12xY9" { ... }
 moduleNamespaceDefinition
-    : (export=EXPORT)? MODULE_NAMESPACE moduleName=id moduleVersion=STRING_LITERAL LCURLY globalDeclaration* RCURLY
+    : (export=EXPORT)? MODULE_NAMESPACE moduleName=id moduleVersion=STRING_LITERAL moduleId=STRING_LITERAL LCURLY globalDeclaration* RCURLY
     ;
 
 // Directives

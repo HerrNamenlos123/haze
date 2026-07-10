@@ -1,4 +1,5 @@
 name = "image"
+id = "sLv0YawM"
 version = "1.0.0"
 description = "stb_image bindings for Haze -- decode images from disk or memory into raw pixel data"
 license = "MIT"

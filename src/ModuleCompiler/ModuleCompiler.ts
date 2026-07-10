@@ -971,6 +971,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
+      this.config.id,
       collectionMode
     );
   }
@@ -998,6 +999,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
+      this.config.id,
       collectionMode
     );
   }
@@ -1073,6 +1075,7 @@ export class ModuleCompiler {
       filepath,
       this.config.name,
       this.config.version,
+      this.config.id,
       ECollectionMode.ImportUnderRootDirectly
     );
   }
@@ -1730,7 +1733,7 @@ export class ModuleCompiler {
 
   private async phaseGenerate(
     lowered: ReturnType<ModuleCompiler["phaseLower"]>,
-    allModules: [string, string][],
+    allModules: [string, string, string][],
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
   ) {
     await mkdir(join(this.moduleDir, "build/"), { recursive: true });
@@ -1742,7 +1745,7 @@ export class ModuleCompiler {
   private async phaseCCompile(
     sr: ReturnType<ModuleCompiler["phaseAnalyze"]>,
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
-    allModules: [string, string][],
+    allModules: [string, string, string][],
     isTopLevelModule: boolean
   ) {
     const compilerFlags = this.config.compilerFlags;
@@ -1930,6 +1933,7 @@ export class ModuleCompiler {
         compilerVersion: version,
         fileformatVersion: 1,
         name: this.config.name,
+        id: this.config.id,
         version: this.config.version,
         libs: [
           {
@@ -2078,8 +2082,8 @@ export class ModuleCompiler {
           this.advancePhase(EModulePrintCompilerPhase.Lowering);
           const lowered = this.phaseLower(sr);
 
-          const allModules: [string, string][] = [
-            [this.config.name, this.config.version],
+          const allModules: [string, string, string][] = [
+            [this.config.name, this.config.version, this.config.id],
             ...(await this.loadDependencyModuleGraph()),
           ];
 
@@ -2174,7 +2178,7 @@ export class ModuleCompiler {
   private async loadDependencyModuleGraph() {
     const metadata = await this.loadDependenciesMetadata();
 
-    const modules: [string, string][] = [];
+    const modules: [string, string, string][] = [];
 
     metadata.forEach((meta) => {
       modules.push(...meta.fullModuleGraph);

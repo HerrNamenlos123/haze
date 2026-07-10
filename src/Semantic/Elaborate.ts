@@ -1087,7 +1087,8 @@ export class SemanticElaborator {
 
           const moduleName = getModuleGlobalNamespaceName(
             this.sr.cc.config.name,
-            this.sr.cc.config.version
+            this.sr.cc.config.version,
+            this.sr.cc.config.id
           );
 
           const innerCode = isBinary
@@ -2730,7 +2731,8 @@ export class SemanticElaborator {
       namespace.export,
       namespace.isModuleNamespace,
       namespace.moduleName,
-      namespace.moduleVersion
+      namespace.moduleVersion,
+      namespace.moduleId
     );
     this.sr.elaboratedNamespaceSymbols.push({
       originalSharedInstance: namespace.sharedInstance,
@@ -5871,7 +5873,8 @@ export class SemanticElaborator {
             if (func.name === "main" && parentSymbolId) {
               const modulePrefix = getModuleGlobalNamespaceName(
                 this.sr.cc.config.name,
-                this.sr.cc.config.version
+                this.sr.cc.config.version,
+                this.sr.cc.config.id
               );
               const parentDef = this.sr.symbolNodes.get(parentSymbolId);
               assert(parentDef.variant === Semantic.ENode.TypeDefSymbol);

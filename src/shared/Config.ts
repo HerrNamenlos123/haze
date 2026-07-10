@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { parse } from "@ltd/j-toml";
 import { getCurrentPlatform } from "../ModuleCompiler/ModuleCompiler";
@@ -28,6 +29,23 @@ if (process.platform === "win32") {
 }
 
 export type ModuleDependency = { name: string; path: string };
+
+const MODULE_ID_ALPHABET =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// 8 chars from a 62-symbol alphabet, ~48 bits -- matches
+// `R&D/Hot Reload & Module Identity.md`. Not cryptographic; a module id
+// only needs to be practically collision-free, not attacker-resistant, so
+// the minor modulo bias from `byte % 62` (256 isn't a multiple of 62) is a
+// non-issue at this scale.
+export function generateModuleId(): string {
+  const bytes = randomBytes(8);
+  let id = "";
+  for (let i = 0; i < 8; i++) {
+    id += MODULE_ID_ALPHABET[bytes[i] % MODULE_ID_ALPHABET.length];
+  }
+  return id;
+}
 
 export type ScriptDef = {
   name: string;
@@ -155,6 +173,13 @@ export type GeneratorGraphNode = {
 
 export type ModuleConfig = {
   name: string;
+  // 8-character mixed-case alphanumeric module identity, distinct from
+  // `name` -- see `R&D/Hot Reload & Module Identity.md`. Auto-generated and
+  // persisted into haze.toml on first parse if absent; strictly validated
+  // (exactly 8 chars, [0-9A-Za-z]) if present, since the module-namespace
+  // mangling scheme (`getModuleNamespaceMangledSegment`) relies on this
+  // being a fixed 8-character width with no length prefix.
+  id: string;
   version: string;
   description?: string;
   license?: string;
@@ -243,13 +268,14 @@ export type ModuleMetadata = {
   compilerVersion: string;
   fileformatVersion: number;
   name: string;
+  id: string;
   version: string;
   libs: ModuleLibMetadata[];
   includeDirs: PlatformStrings;
   interfaceMacros: PlatformStrings;
   linkerFlags: PlatformStrings;
   interfaceLinkerFlags: PlatformStrings;
-  fullModuleGraph: [string, string][];
+  fullModuleGraph: [string, string, string][];
   compileCommands: CompileCommands;
   importFile: "import.hz";
 };
@@ -339,6 +365,7 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
     compilerVersion: getString(obj["compilerVersion"]),
     fileformatVersion: getNumber(obj["fileformatVersion"]),
     name: getString(obj["name"]),
+    id: getString(obj["id"]),
     version: getString(obj["version"]),
     libs: getLibs(obj["libs"]),
     includeDirs: new PlatformStrings({
@@ -367,26 +394,52 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   };
 }
 
+// `moduleId` is threaded in here too, not just `getModuleNamespaceMangledSegment`
+// below -- this function produces the prefix for global C symbols emitted
+// directly by the compiler (`__hz_<prefix>_module_info`, `..._regex_table`,
+// etc, see CodeGenerator.ts), which link into the same final binary as
+// every other module's symbols. Without `id` here, two unrelated modules
+// that happened to share a name+version (module names aren't required to
+// be globally unique -- see `R&D/Hot Reload & Module Identity.md`) would
+// collide with a duplicate-symbol link error, same failure mode the type/
+// function mangling scheme is protected against below.
 export function getModuleGlobalNamespaceName(
   moduleName: string,
-  moduleVersion: string
+  moduleVersion: string,
+  moduleId: string
 ) {
-  return `${moduleName.replaceAll("-", "_")}_v${moduleVersion.replaceAll(".", "_")}`;
+  // `name` deliberately stays first: unlike `getModuleNamespaceMangledSegment`
+  // below (a machine-encoded C-mangling scheme, never re-parsed as Haze
+  // source), this function's result is also used as a literal Haze
+  // *identifier* -- the module's own root namespace name gets this value
+  // directly (`SymbolCollection.ts`'s "ModuleNamespaceDefinition" case), and
+  // that name later gets re-embedded into generated/synthesized Haze source
+  // text that's parsed again (e.g. `SemanticBuilder.syntheticFunctionFromCode`,
+  // used by generator bindings like SDL's callback registration). `moduleId`
+  // can start with a digit (valid per its own schema, e.g. "5on3vWOk"), which
+  // would make the result an invalid identifier if placed first. `name` is
+  // already required to be identifier-safe today (this exact assumption
+  // predates `id`), so keeping it first guarantees the whole result always
+  // starts with a valid identifier character regardless of what `id` is.
+  return `${moduleName.replaceAll("-", "_")}_${moduleId}_v${moduleVersion.replaceAll(".", "_")}`;
 }
 
 /** Build the mangled segment for a module namespace using the HM encoding.
- *  Format: HM<nameLen><name><majorLen><major><minorLen><minor><patchLen><patch>
- *  Example: "test" v0.1.0 → "HM4test101110"
+ *  Format: HM<id><nameLen><name><majorLen><major><minorLen><minor><patchLen><patch>
+ *  `id` is always exactly 8 raw characters -- no length prefix needed, unlike
+ *  `name` (user-chosen, variable-length). See `ConfigParser.MODULE_ID_PATTERN`.
+ *  Example: id "AbC12xY9", "test" v0.1.0 → "HMAbC12xY9_4test101110"
  */
 export function getModuleNamespaceMangledSegment(
   moduleName: string,
-  moduleVersion: string
+  moduleVersion: string,
+  moduleId: string
 ): string {
   const name = moduleName.replaceAll("-", "_");
   const [major = "0", minor = "0", patch = "0"] = moduleVersion.split(".");
   // Trailing '_' terminates the patch field; without it the next segment's
   // leading digit would merge into the patch during demangling.
-  return `HM${name.length}${name}_${major}_${minor}_${patch}_`;
+  return `HM${moduleId}_${name.length}${name}_${major}_${minor}_${patch}_`;
 }
 
 export class ConfigParser {
@@ -579,6 +632,51 @@ export class ConfigParser {
     return deps;
   }
 
+  static readonly MODULE_ID_PATTERN = /^[0-9A-Za-z]{8}$/;
+
+  // Validates an existing `id` against the exact schema, or generates and
+  // persists a new one if absent. Must only be called once every other
+  // required field has already validated successfully (see call site) --
+  // an id is never generated for a file that's about to fail validation
+  // elsewhere.
+  async resolveModuleId(toml: any): Promise<string> {
+    if (typeof toml["id"] === "string") {
+      const id = toml["id"];
+      if (!ConfigParser.MODULE_ID_PATTERN.test(id)) {
+        throw new GeneralError(
+          `Field 'id' in file ${this.configPath} must be exactly 8 characters, each one of [0-9A-Za-z] (got '${id}'). ` +
+            `This is a strict requirement, not a formatting nitpick -- the module-namespace mangling scheme depends on 'id' always being exactly 8 raw characters.`
+        );
+      }
+      return id;
+    }
+    if ("id" in toml) {
+      throw new GeneralError(
+        `Field 'id' in file ${this.configPath} must be of type string`
+      );
+    }
+    const generated = generateModuleId();
+    await this.persistGeneratedModuleId(generated);
+    return generated;
+  }
+
+  // Targeted textual insertion, not parse-mutate-restringify: the TOML
+  // library in use (`@ltd/j-toml`) does not round-trip-preserve comments,
+  // whitespace, or key order on `stringify`. Only a single `id = "..."`
+  // line is added, immediately after the (required, already-validated)
+  // `name` line -- nothing else in the file is touched.
+  private async persistGeneratedModuleId(id: string): Promise<void> {
+    const content = await readFile(this.configPath, "utf-8");
+    const lines = content.split("\n");
+    const nameLineIndex = lines.findIndex((line) => /^\s*name\s*=/.test(line));
+    assert(
+      nameLineIndex !== -1,
+      `Could not find the 'name' field textually in ${this.configPath} to insert the generated 'id' next to it`
+    );
+    lines.splice(nameLineIndex + 1, 0, `id = "${id}"`);
+    await writeFile(this.configPath, lines.join("\n"));
+  }
+
   async parseConfig(sourceloc?: boolean): Promise<ModuleConfig> {
     const content = await readFile(this.configPath, "utf-8");
     const toml = parse(content, { bigint: false });
@@ -589,6 +687,11 @@ export class ConfigParser {
 
     const config: ModuleConfig = {
       name: this.getString(toml, "name"),
+      // Placeholder -- resolved (validated or generated+persisted) at the
+      // very end of this function, after every other field below has
+      // already validated successfully. An id must never be generated for
+      // a file that's about to fail validation elsewhere.
+      id: "",
       version: this.getString(toml, "version"),
       authors: this.getOptionalStringArray(toml, "authors"),
       description: this.getOptionalString(toml, "description"),
@@ -832,6 +935,10 @@ export class ConfigParser {
         config.generators.push(generator);
       }
     }
+
+    // Last step, deliberately: every other field above has already
+    // validated successfully by this point.
+    config.id = await this.resolveModuleId(toml);
 
     return config;
   }

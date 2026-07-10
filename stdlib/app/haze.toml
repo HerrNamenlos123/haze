@@ -1,4 +1,5 @@
 name = "app"
+id = "XU5Hz137"
 version = "0.0.1"
 description = "High-level application bootstrap: SDL window + WGPU device + renderer canvas in one struct"
 license = "MIT"
