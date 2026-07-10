@@ -1,5 +1,5 @@
-import { EDatatypeMutability } from "../shared/AST";
-import { type EPrimitive, primitiveToString } from "../shared/common";
+import type { ASTMetaAnnotationItem } from "../shared/AST";
+import { EPrimitive, type LiteralValue, primitiveToString } from "../shared/common";
 import { assert, InternalError } from "../shared/Errors";
 import { Semantic } from "./SemanticTypes";
 
@@ -177,6 +177,88 @@ function mangledTypeUseName(
   return mangled.wasMangled ? "_H" + mangled.name : mangled.name;
 }
 
+// Compile-time annotations (`[[json.discriminator="foo"]]`) can change how
+// code compiles/behaves around a type (e.g. a JSON serializer branching on
+// the annotation), so two otherwise-identical types that differ only in
+// annotations must NOT fingerprint equal. Only `StructDatatypeDef` and
+// `TypeAliasDatatypeDef` carry `annotations` today -- enums, unions, and
+// individual struct members do not (member-level annotations are parsed,
+// `ASTStructMemberDefinition.annotations`, but dropped when lowered into
+// `Collect.VariableSymbol`/`Semantic.VariableSymbol` -- they never survive
+// to this point at all, a separate, pre-existing gap, not something this
+// function can fold in because there's nothing here to read).
+function foldAnnotations(
+  sr: Semantic.Context,
+  state: bigint,
+  annotations: ASTMetaAnnotationItem[]
+): bigint {
+  // Order is not semantically meaningful (annotations are addressed by key,
+  // linear `.find` by key elsewhere in the compiler) -- sort so a harmless
+  // reordering in source doesn't produce a spurious fingerprint mismatch.
+  const sorted = [...annotations].sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+  );
+  state = fnv1a64FoldBigint(state, BigInt(sorted.length));
+  for (const item of sorted) {
+    state = fnv1a64FoldString(state, item.key);
+    state = foldLiteralValue(sr, state, item.value);
+  }
+  return state;
+}
+
+function foldLiteralValue(
+  sr: Semantic.Context,
+  state: bigint,
+  value: LiteralValue | null
+): bigint {
+  if (value === null) {
+    return fnv1a64FoldString(state, "null");
+  }
+  if (value.type === "enum") {
+    state = fnv1a64FoldString(state, "enum");
+    state = fnv1a64FoldBigint(
+      state,
+      computeTypeDefFingerprint(sr, value.enumType)
+    );
+    return fnv1a64FoldString(state, value.valueName);
+  }
+  state = fnv1a64FoldString(state, primitiveToString(value.type));
+  switch (value.type) {
+    case EPrimitive.bool:
+      return fnv1a64FoldBigint(state, value.value ? 1n : 0n);
+    case EPrimitive.null:
+    case EPrimitive.none:
+      return state;
+    case EPrimitive.str:
+    case EPrimitive.cstr:
+    case EPrimitive.ccstr:
+      state = fnv1a64FoldString(state, value.prefix ?? "");
+      return fnv1a64FoldString(state, value.value);
+    case EPrimitive.i8:
+    case EPrimitive.i16:
+    case EPrimitive.i32:
+    case EPrimitive.i64:
+    case EPrimitive.u8:
+    case EPrimitive.u16:
+    case EPrimitive.u32:
+    case EPrimitive.u64:
+    case EPrimitive.usize:
+    case EPrimitive.int:
+      return fnv1a64FoldBigint(state, value.value);
+    case EPrimitive.f32:
+    case EPrimitive.f64:
+    case EPrimitive.real:
+      return fnv1a64FoldString(state, value.value.toString());
+    default:
+      // Annotation values are only ever simple literals in practice
+      // (string/bool/null/none/number). Fail loudly rather than silently
+      // ignore a value kind this hasn't been taught about yet.
+      throw new InternalError(
+        `Fingerprint: unhandled annotation literal value kind '${primitiveToString(value.type)}'`
+      );
+  }
+}
+
 export function computeTypeDefFingerprint(
   sr: Semantic.Context,
   typeDefId: Semantic.TypeDefId
@@ -217,6 +299,7 @@ function computeTypeDefFingerprintUncached(
         fnv1a64Init(),
         mangledTypeDefName(sr, typeDefId)
       );
+      state = foldAnnotations(sr, state, def.annotations);
       state = fnv1a64FoldBigint(state, BigInt(def.members.length));
       for (const memberSymbolId of def.members) {
         const member = sr.symbolNodes.get(memberSymbolId);
@@ -372,10 +455,20 @@ function computeTypeDefFingerprintUncached(
     }
 
     case Semantic.ENode.TypeAliasDatatype: {
-      // Transparent alias (invariant is implicit here, not a numbered one
-      // above since it follows directly from "alias is not a distinct
-      // nominal identity"): unwrap and reuse the target's fingerprint as-is.
-      return computeTypeUseFingerprint(sr, def.targetType);
+      // Transparent regarding identity/name (an alias is not a distinct
+      // nominal identity from its target -- unwrap and start from the
+      // target's fingerprint), but NOT transparent regarding annotations:
+      // `[[json.discriminator="foo"]] type Foo = A | B;` attaches real,
+      // behaviorally-relevant metadata at the alias itself (e.g. read by
+      // reflection-driven serialization code), which the bare union/target
+      // has no way to carry. Two aliases of the same target with different
+      // annotations must NOT fingerprint equal.
+      let state = fnv1a64FoldBigint(
+        fnv1a64Init(),
+        computeTypeUseFingerprint(sr, def.targetType)
+      );
+      state = foldAnnotations(sr, state, def.annotations);
+      return state;
     }
 
     case Semantic.ENode.ParameterPackDatatype:

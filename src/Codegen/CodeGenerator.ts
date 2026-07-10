@@ -1205,11 +1205,14 @@ class CodeGenerator {
       this.config.name
     );
     const [escapedVersion, versionLen] = escapeStringForC(this.config.version);
+    const [escapedModuleId, moduleIdLen] = escapeStringForC(this.config.id);
 
     this.out.global_variables
       .writeLine(`hzstd_module_metadata_t ${metadataName} = {`)
       .pushIndent();
-    this.out.global_variables.writeLine(`.module_id = HZSTD_STRING("", 0),`);
+    this.out.global_variables.writeLine(
+      `.module_id = HZSTD_STRING("${escapedModuleId}", ${moduleIdLen}),`
+    );
     this.out.global_variables.writeLine(
       `.module_name = HZSTD_STRING("${escapedModuleName}", ${moduleNameLen}),`
     );

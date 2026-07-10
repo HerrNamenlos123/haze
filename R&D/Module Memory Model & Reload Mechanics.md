@@ -198,6 +198,27 @@ binary shape. Every input is length-prefixed before folding in, so
   straight to the wrapped function type instead of ever touching its own
   name, or fingerprints would differ on every compile for no structural
   reason.
+- **Compile-time annotations (`[[json.discriminator="foo"]]`) are folded
+  in**, not just structural shape. Two types identical in layout but
+  differing only in annotation contents must not fingerprint equal, since
+  annotations can change compiled behavior (e.g. reflection-driven
+  serialization branching on the annotation). Folded for `StructDatatype`
+  and `TypeAliasDatatype` (the two variants that carry `annotations` in
+  `Semantic.Context` today), sorted by key first since annotation order
+  isn't semantically meaningful (addressed by key everywhere else in the
+  compiler) and shouldn't cause a spurious mismatch on harmless reordering.
+  An alias's own annotations are folded on top of its (still-transparent)
+  target fingerprint — the alias isn't a distinct nominal identity, but its
+  annotations are still real, alias-level metadata the bare target has no
+  way to carry.
+- **Known gap, not fixed, discovered while adding the above**: struct
+  *member*-level annotations (`[[...]] x: int;` inside a struct body) are
+  parsed (`ASTStructMemberDefinition.annotations`) but silently dropped when
+  lowered into `Collect.VariableSymbol`/`Semantic.VariableSymbol` — neither
+  carries an `annotations` field, so member annotations don't survive
+  compilation at all today, independent of fingerprinting. Nothing for the
+  fingerprint (or anything else) to read. A real feature gap, out of scope
+  for the fingerprint work itself.
 
 ## Import Table
 

@@ -294,7 +294,7 @@ typedef struct hzstd_module_function_table_t {
 // same order, pointing at generated wrapper functions instead (used once
 // hot-reload refcounting hooks land).
 typedef struct hzstd_module_metadata_t {
-  hzstd_str_t module_id;   // always empty for now -- real IDs are not implemented yet
+  hzstd_str_t module_id;   // 8-character mixed-case alphanumeric, from haze.toml
   hzstd_str_t module_name; // from haze.toml
   hzstd_str_t version;     // from haze.toml
   hzstd_module_function_table_t functions;
