@@ -13,8 +13,11 @@
 //   _H[N <segs> E] <params>
 //
 // Each segment is one of:
-//   <n><name>          — regular namespace / function name
-//   HM<n><name><n><major><n><minor><n><patch>  — module namespace
+//   <n><name>                                          — regular namespace / function name
+//   HM<id8>_<n><name>_<major>_<minor>_<patch>_          — module namespace
+// `id8` is always exactly 8 raw characters (module id, see
+// `R&D/Hot Reload & Module Identity.md`), no length prefix needed since its
+// width is fixed by construction -- unlike `name`, which stays length-prefixed.
 //
 // Parameters after the nested-name (or bare name) encode argument types.
 // "v" means void (no parameters).

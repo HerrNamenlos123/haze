@@ -2,6 +2,7 @@ import {
   HAZE_STDLIB_NAME,
   type ModuleCompiler,
 } from "../ModuleCompiler/ModuleCompiler";
+import { getModuleNamespaceMangledSegment } from "../shared/Config";
 import {
   Collect,
   type CollectionContext,
@@ -455,6 +456,7 @@ export namespace Semantic {
     concrete: boolean; // For consistency, always true
     isModuleNamespace: boolean;
     moduleName: string;
+    moduleId: string;
     moduleVersion: string; // "major.minor.patch"
   };
 
@@ -1949,6 +1951,7 @@ export namespace Semantic {
           isExported: false,
           isModuleNamespace: false,
           moduleName: "",
+          moduleId: "",
           moduleVersion: "",
         },
       ];
@@ -1959,17 +1962,16 @@ export namespace Semantic {
       type.variant === Semantic.ENode.NamespaceDatatype &&
       type.isModuleNamespace
     ) {
-      // Encode module namespace as HM<nameLen><name>_<major>_<minor>_<patch>_
-      // Each version part is separated by '_'; a trailing '_' terminates the
-      // patch field so the next segment's leading digit doesn't merge into it.
-      // Normal segments always start with a decimal digit, never '_', so the
-      // trailing underscore is unambiguous. "HM" prefix vs digit makes the
-      // two segment kinds unambiguous at parse time.
-      const [major, minor, patch] = type.moduleVersion.split(".");
-      const mj = major ?? "0";
-      const mn = minor ?? "0";
-      const pt = patch ?? "0";
-      mangledSegment = `HM${type.moduleName.length}${type.moduleName}_${mj}_${mn}_${pt}_`;
+      // Was a hand-rebuilt duplicate of getModuleNamespaceMangledSegment
+      // (Config.ts) that had already drifted (missing the "-"->"_"
+      // sanitization the shared function does) -- now just calls it, so
+      // there's exactly one place that knows this encoding, and it
+      // automatically includes the module id.
+      mangledSegment = getModuleNamespaceMangledSegment(
+        type.moduleName,
+        type.moduleVersion,
+        type.moduleId
+      );
     }
     const isModNs =
       type.variant === Semantic.ENode.NamespaceDatatype &&
@@ -1984,6 +1986,9 @@ export namespace Semantic {
       isModuleNamespace: isModNs,
       moduleName: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleName
+        : "",
+      moduleId: isModNs
+        ? (type as Semantic.NamespaceDatatypeDef).moduleId
         : "",
       moduleVersion: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleVersion
@@ -2058,6 +2063,7 @@ export namespace Semantic {
         symbol.variant !== Semantic.ENode.FunctionSignature && symbol.export,
       isModuleNamespace: false,
       moduleName: "",
+      moduleId: "",
       moduleVersion: "",
     };
     if (

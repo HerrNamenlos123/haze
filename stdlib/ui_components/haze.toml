@@ -1,4 +1,5 @@
 name = "ui_components"
+id = "4tPjuk9s"
 version = "0.0.1"
 description = "Reactive component system: hooks (div/text/canvas), element tree management, runtime data"
 license = "MIT"

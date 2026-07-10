@@ -47,7 +47,7 @@ static bool cur_read_len_prefixed(cursor_t *c, hzstd_str_t *out) {
 
 /* Parse one segment from the cursor.
    Segment is either:
-     HM <n><moduleName> <n><major> <n><minor> <n><patch>
+     HM <id8> _ <n><moduleName> _ <n><major> _ <n><minor> _ <n><patch> _
      <n><name>
    Returns false when the cursor is at 'E' or end. */
 static bool parse_segment(cursor_t *c, hzstd_demangle_segment_t *seg) {
@@ -56,13 +56,26 @@ static bool parse_segment(cursor_t *c, hzstd_demangle_segment_t *seg) {
   if (c->p >= c->end || c->p[0] == 'E') return false;
 
   /* Module namespace: "HM" prefix.
-     Format: HM<nameLen><name>_<major>_<minor>_<patch>_
-     Example: "test" v0.1.0  →  HM4test_0_1_0_
+     Format: HM<id><nameLen><name>_<major>_<minor>_<patch>_
+     `id` is always exactly 8 raw characters -- fixed width by construction
+     (see ConfigParser.MODULE_ID_PATTERN), so no length prefix is needed,
+     unlike `name` (user-chosen, variable-length). A single '_' separates
+     the fixed-width id from the length-prefixed name that follows, since
+     nothing else marks where the 8 raw id bytes end.
+     Example: id "AbC12xY9", "test" v0.1.0  →  HMAbC12xY9_4test_0_1_0_
      The trailing '_' terminates the patch field so the next segment's leading
      digit cannot merge with patch digits during parsing. Normal segments always
      start with a decimal digit, so '_' is unambiguous as a terminator. */
   if (cur_starts_with(c, "HM", 2)) {
     cur_advance(c, 2);
+
+    hzstd_str_t mid;
+    if ((size_t)(c->end - c->p) < 8) return false;
+    mid.data = c->p;
+    mid.length = 8;
+    cur_advance(c, 8);
+    if (c->p >= c->end || c->p[0] != '_') return false;
+    cur_advance(c, 1);
 
     hzstd_str_t mname;
     if (!cur_read_len_prefixed(c, &mname)) return false;
@@ -92,6 +105,7 @@ static bool parse_segment(cursor_t *c, hzstd_demangle_segment_t *seg) {
 
     seg->isModule    = true;
     seg->name        = mname;
+    seg->moduleId    = mid;
     seg->moduleName  = mname;
     seg->moduleMajor = major;
     seg->moduleMinor = minor;
@@ -148,6 +162,7 @@ hzstd_demangle_result_t hzstd_demangle(hzstd_allocator_t allocator,
   /* Extract module namespace from first segment if present */
   if (r.segmentCount > 0 && r.segments[0].isModule) {
     r.hasModule  = true;
+    r.moduleId   = r.segments[0].moduleId;
     r.moduleName = r.segments[0].moduleName;
 
     /* Build "major.minor.patch" version string */

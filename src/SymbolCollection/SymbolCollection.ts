@@ -463,6 +463,7 @@ export namespace Collect {
     namespaceScope: Collect.ScopeId;
     isModuleNamespace: boolean;
     moduleName: string;
+    moduleId: string;
     moduleVersion: string; // "major.minor.patch"
   };
 
@@ -1231,6 +1232,7 @@ function collectTypeDef(
           sourceloc: item.sourceloc,
           isModuleNamespace: false,
           moduleName: "",
+          moduleId: "",
           moduleVersion: "",
         });
         namespaceSymbolId = Collect.makeSymbol(cc, {
@@ -1526,7 +1528,8 @@ function collectTypeDef(
     case "ModuleNamespaceDefinition": {
       const canonicalName = getModuleGlobalNamespaceName(
         item.moduleName,
-        item.moduleVersion
+        item.moduleVersion,
+        item.moduleId
       );
       const symId = collectTypeDef(
         cc,
@@ -1545,6 +1548,7 @@ function collectTypeDef(
       assert(td.variant === Collect.ENode.NamespaceTypeDef);
       td.isModuleNamespace = true;
       td.moduleName = item.moduleName;
+      td.moduleId = item.moduleId;
       td.moduleVersion = item.moduleVersion;
       return symId;
     }
@@ -1803,7 +1807,8 @@ function collectSymbol(
       // Synthesize a NamespaceDefinition using the canonical name, then mark it as a module namespace
       const canonicalName = getModuleGlobalNamespaceName(
         item.moduleName,
-        item.moduleVersion
+        item.moduleVersion,
+        item.moduleId
       );
       const symId = collectTypeDef(
         cc,
@@ -1823,6 +1828,7 @@ function collectSymbol(
       assert(td.variant === Collect.ENode.NamespaceTypeDef);
       td.isModuleNamespace = true;
       td.moduleName = item.moduleName;
+      td.moduleId = item.moduleId;
       td.moduleVersion = item.moduleVersion;
       return symId;
     }
@@ -2066,7 +2072,8 @@ function collectGlobalDirective(
       const metadata: ModuleConfig = JSON.parse(filecontent);
       const importedNamespace = getModuleGlobalNamespaceName(
         metadata.name,
-        metadata.version
+        metadata.version,
+        metadata.id
       );
       const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
         variant: Collect.ENode.TypeAliasDef,
@@ -3411,6 +3418,7 @@ export function CollectFile(
   filepath: string,
   moduleName: string,
   moduleVersion: string,
+  moduleId: string,
   wrapInModuleNamespace: ECollectionMode
 ) {
   const parent = cc.scopeNodes.get(parentScope);
@@ -3464,7 +3472,7 @@ export function CollectFile(
           variant: "NamespaceDefinition",
           declarations: namespacedDeclarations,
           export: true,
-          name: getModuleGlobalNamespaceName(moduleName, moduleVersion),
+          name: getModuleGlobalNamespaceName(moduleName, moduleVersion, moduleId),
           sourceloc: null,
         },
         {
@@ -3478,6 +3486,7 @@ export function CollectFile(
       assert(globalNsTd.variant === Collect.ENode.NamespaceTypeDef);
       globalNsTd.isModuleNamespace = true;
       globalNsTd.moduleName = moduleName;
+      globalNsTd.moduleId = moduleId;
       globalNsTd.moduleVersion = moduleVersion;
       fileScope.symbols.add(globalNamespaceSymId);
 

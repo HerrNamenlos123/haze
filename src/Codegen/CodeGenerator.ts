@@ -106,7 +106,7 @@ class CodeGenerator {
   constructor(
     public config: ModuleConfig,
     public moduleDir: string,
-    public allModules: [string, string][],
+    public allModules: [string, string, string][],
     public lr: Lowered.Module
   ) {
     if (this.config.hzstdLocation) {
@@ -136,7 +136,11 @@ class CodeGenerator {
 
       const have = new Set<string>();
       for (const module of this.allModules) {
-        const name = getModuleGlobalNamespaceName(module[0], module[1]);
+        const name = getModuleGlobalNamespaceName(
+          module[0],
+          module[1],
+          module[2]
+        );
         if (have.has(name)) {
           continue;
         }
@@ -165,7 +169,8 @@ class CodeGenerator {
       // );
       const nsSeg = getModuleNamespaceMangledSegment(
         config.name,
-        config.version
+        config.version,
+        config.id
       );
       this.out.function_definitions
         .writeLine(`return _HN${nsSeg}4mainEv();`)
@@ -209,7 +214,8 @@ class CodeGenerator {
   modulePrefix() {
     const modulePrefix = getModuleGlobalNamespaceName(
       this.config.name,
-      this.config.version
+      this.config.version,
+      this.config.id
     );
     return modulePrefix;
   }
@@ -2445,7 +2451,8 @@ class CodeGenerator {
           assert(expr.literal.id !== null);
           const ns = getModuleGlobalNamespaceName(
             this.config.name,
-            this.config.version
+            this.config.version,
+            this.config.id
           );
           outWriter.write(
             `(hzstd_regex_t){ .blob = &__hz_${ns}_regex_table[${expr.literal.id}] }`
@@ -2715,7 +2722,7 @@ export function emitIntCompare(
 export function generateCode(
   config: ModuleConfig,
   moduleDir: string,
-  allModules: [string, string][],
+  allModules: [string, string, string][],
   lr: Lowered.Module
 ): string {
   const gen = new CodeGenerator(config, moduleDir, allModules, lr);

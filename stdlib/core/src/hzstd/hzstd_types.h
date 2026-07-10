@@ -440,6 +440,7 @@ typedef enum {
 typedef struct {
   hzstd_str_t name;        /* segment name, view into the original symbol */
   bool        isModule;    /* true for HM-encoded module namespace segment */
+  hzstd_str_t moduleId;    /* only valid when isModule -- always exactly 8 chars */
   hzstd_str_t moduleName;  /* only valid when isModule */
   hzstd_str_t moduleMajor;
   hzstd_str_t moduleMinor;
@@ -451,6 +452,7 @@ typedef struct {
 
   /* Module namespace info (absent when !hasModule) */
   bool        hasModule;
+  hzstd_str_t moduleId; /* always exactly 8 chars */
   hzstd_str_t moduleName;
   hzstd_str_t moduleVersion; /* "major.minor.patch", allocated */
 

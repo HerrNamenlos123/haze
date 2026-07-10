@@ -42,9 +42,10 @@ function nsOpenLine(ns: {
   isModuleNamespace: boolean;
   moduleName: string;
   moduleVersion: string;
+  moduleId: string;
 }): string {
   if (ns.isModuleNamespace) {
-    return `module_namespace ${ns.moduleName} "${ns.moduleVersion}" {`;
+    return `module_namespace ${ns.moduleName} "${ns.moduleVersion}" "${ns.moduleId}" {`;
   }
   return `namespace ${ns.pretty} {`;
 }
@@ -69,7 +70,8 @@ export function ExportCollectedTypeDefAlias(
   if (sr.cc.config.name !== "haze-stdlib") {
     const moduleName = getModuleGlobalNamespaceName(
       sr.cc.config.name,
-      sr.cc.config.version
+      sr.cc.config.version,
+      sr.cc.config.id
     );
     // alias.writeLine(`namespace ${moduleName} {`).pushIndent();
     // console.log("1", moduleName);
@@ -102,7 +104,11 @@ export function ExportCollectedTypeDefAlias(
       typeDef.moduleName !== sr.cc.config.name
     ) {
       const shortName = typeDef.moduleName;
-      const versionedName = getModuleGlobalNamespaceName(typeDef.moduleName, typeDef.moduleVersion);
+      const versionedName = getModuleGlobalNamespaceName(
+        typeDef.moduleName,
+        typeDef.moduleVersion,
+        typeDef.moduleId
+      );
       aliasBody = aliasBody.replaceAll(shortName + ".", versionedName + ".");
     }
   }
