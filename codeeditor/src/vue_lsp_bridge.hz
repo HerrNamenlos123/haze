@@ -1,13 +1,71 @@
 
 import language_server_protocol
 
-// `@vue/language-server` only runs in "hybrid mode": for every document feature (hover,
-// completion, diagnostics, ...) it defers to a TypeScript `tsserver` process that has
-// `@vue/typescript-plugin` loaded, by emitting a "tsserver/request" notification
-// ([requestId, command, args]) and waiting for a matching "tsserver/response". This is
-// Vue/TypeScript-specific glue, so it lives here rather than in the general-purpose
-// language_server_protocol module -- it's wired up via that module's generic
-// `onNotification` extension point.
+__c__("#include <unistd.h>");
+
+// --- Architecture ------------------------------------------------------
+//
+// `@vue/language-server` runs in "hybrid mode": it has no semantic
+// TypeScript language service of its own (see its own bundled plugin list
+// -- template, directives, component props, syntactic-only TS stuff, but
+// no semantic TS plugin at all). Real TypeScript understanding -- hover,
+// definitions, anything requiring an actual type checker -- has to come
+// from a real `tsserver` process with `@vue/typescript-plugin` loaded,
+// which the *client* (us) is responsible for spawning and owning. That
+// gives this module three genuinely separate channels to juggle, not one:
+//
+//   1. The LSP connection to vue-language-server itself (`_lsp`). Answers
+//      template/HTML/SFC-structural hover and diagnostics directly, no
+//      tsserver involved.
+//
+//   2. A `tsserver/request` / `tsserver/response` notification relay:
+//      vue-language-server can't itself hold a real, project-aware
+//      tsserver in hybrid mode, so for its own Vue-specific queries
+//      (`_vue:projectInfo`, `_vue:getComponentProps`, ...) it asks *us* to
+//      run them against our tsserver and hand the result back. See
+//      handleNotification/_emitTsServerResponse.
+//
+//   3. Requests *we* issue directly against our own tsserver (currently
+//      just `quickinfo`). `@vue/typescript-plugin` registers with tsserver
+//      as a standard TS Language Service Plugin (see its index.js:
+//      `createLanguageServicePlugin` from `@volar/typescript`, which wraps
+//      the project's `languageService` in a proxy understanding `.vue`
+//      files) -- so tsserver's own plain commands already understand
+//      `.vue` positions once the plugin's loaded and a project is open.
+//      This is the actual source of real hover for anything inside
+//      `<script setup>`, and it never touches vue-language-server's LSP
+//      connection at all. See sendQuickInfoRequest/hover.
+//
+// Channels 2 and 3 both require tsserver to already have a project loaded
+// for the file (i.e. `open` to have completed) -- `@vue/typescript-plugin`
+// only registers its patches once tsserver creates a project. A request
+// that races ahead of `open` gets "Unrecognized JSON command" (channel 2)
+// or just answers as a plain, Vue-less TypeScript file (channel 3).
+// openDocument()/hover() below enforce that ordering internally so callers
+// don't have to think about it.
+
+// Duplicates a C string into an owned, GC'd Haze str -- needed because
+// SDL's SDL_TextInputEvent.text (unrelated file, same trick) and here
+// getcwd()'s buffer are both short-lived/reused; see the extern
+// declaration at its call site for the actual C signature this binds to.
+fn getCwdAbsolute(): str :: final {
+    do unsafe {
+        let result: str = uninitialized;
+        __c__("char __hz_cwd_buf[4096]; getcwd(__hz_cwd_buf, sizeof(__hz_cwd_buf)); result = hzstd_cstr_dup(__hz_cwd_buf);");
+        return result;
+    };
+}
+
+// vue-language-server dynamically `require()`s `typescript.tsdk` and each
+// plugin's `location` from its own installed location deep inside its own
+// node_modules, not from our cwd -- relative paths silently resolve to
+// nothing there, degrading hybrid mode without any error. codeeditor is
+// always launched from the haze2 repo root (same assumption every other
+// "codeeditor/..." relative resource path in this codebase already makes),
+// so cwd + a repo-relative path is exactly the absolute path needed.
+fn toAbsolutePath(relativePath: str): str {
+    return getCwdAbsolute() + "/" + relativePath;
+}
 
 export struct VueInitializationOptions {
     struct Plugin {
@@ -40,16 +98,55 @@ struct TsServerResponseMessage {
     message?: str;
 }
 
+struct QuickInfoArgs {
+    file: str;
+    line: int;    // 1-based, per TS Server Protocol (unlike LSP's 0-based)
+    offset: int;  // 1-based
+}
+
+// Subset of tsserver's QuickInfoResponseBody we actually use.
+struct QuickInfoBody {
+    displayString?: str;
+    documentation?: str;
+}
+
 struct OpenArgs {
     file: str;
     fileContent: str;
+    // Without this, tsserver opens the file as a lone "inferred project"
+    // member. `<script setup>` hover needs the *configured* project (real
+    // tsconfig.json) resolved: defineProps/defineEmits macro typing, and any
+    // hover on an imported binding, both need module resolution and
+    // cross-file type info that an inferred, tsconfig-less project can't
+    // provide.
+    projectRootPath: str;
 }
 
-export struct VueLspBridge {
+export inline struct VueLspBridgeArgs {
+    // All three paths are relative to the repo root (same convention as
+    // every other "codeeditor/..." resource path in this codebase) --
+    // resolved to absolute internally, see toAbsolutePath().
+    vueLanguageServerPath: str;
+    tsdk: str;
+    nodeModulesDir: str;
+    // The project being *edited* (unrelated to our own repo root) --
+    // absolute, since it names an arbitrary location on disk.
+    projectRoot: str;
+    projectName: str;
+}
+
+// The one thing application code needs for Vue/TypeScript language
+// support: construct with VueLspBridgeArgs, call openDocument() once a
+// file's content is known, call hover() for hover text, call loop() once a
+// frame. Everything else in this file (the LSP connection, the tsserver
+// process, the two different tsserver request channels, the open/ready
+// sequencing) is this struct's own implementation detail.
+export opaque struct VueLspBridge {
+    _lsp: language_server_protocol.Context<VueInitializationOptions>;
     _tsserverProcess: process.Process;
     _tsserverInputBuffer: str = "";
     _tsserverNextSeq: int = 0;
-    _logAllRequests: bool = true;
+    _logAllRequests: bool = false;
 
     struct PendingTsRequest {
         seq: int;
@@ -57,49 +154,195 @@ export struct VueLspBridge {
     }
     _tsserverPendingRequests: []PendingTsRequest = [];
 
-    // Spawns tsserver with the Vue plugin loaded globally, so it understands `.vue` files
-    // for any project it ends up servicing. `tsdk` is the directory containing
-    // `tsserver.js` (typescript's own `lib/`); `nodeModulesDir` is the `node_modules`
-    // directory that contains `@vue/typescript-plugin` (tsserver's default plugin search
-    // path already includes the node_modules three levels up from tsserver.js, so this is
-    // mostly belt-and-braces via `--pluginProbeLocations`).
-    fn constructor(tsdk: str, nodeModulesDir: str): Result<VueLspBridge, language_server_protocol.Error> {
+    // Requests *we* initiated directly against tsserver (as opposed to
+    // PendingTsRequest above, which are relayed on vue-language-server's
+    // behalf) -- currently just quickinfo, see sendQuickInfoRequest below.
+    struct PendingQuickInfoRequest {
+        seq: int;
+        callback: (body: QuickInfoBody | none) => none;
+    }
+    _quickInfoPendingRequests: []PendingQuickInfoRequest = [];
+
+    // Open-document lifecycle: openDocument() may be called before the LSP
+    // handshake finishes (application code shouldn't have to care), so a
+    // premature call is stashed here and actually performed by loop() once
+    // isReady() goes true. _documentReady is the public-facing signal
+    // hover() gates on -- reactive, so hover() called from inside an
+    // rx.computed() automatically re-fires the moment it flips, with no
+    // extra bookkeeping required from the caller.
+    _opened: bool = false;
+    _filepath: str = "";
+    _projectRootPath: str = "";
+    _documentReady: rx.Reactive<bool>;
+    _pendingOpenContent: str | null = null;
+    _pendingOpenLanguageId: str = "";
+    _pendingOpenVersion: int = 0;
+
+    // Spawns both vue-language-server (over LSP) and tsserver (with
+    // `@vue/typescript-plugin` loaded globally, so it understands `.vue`
+    // files for any project it ends up servicing).
+    fn constructor(args: VueLspBridgeArgs): Result<VueLspBridge, language_server_protocol.Error> {
+        let tsdk = toAbsolutePath(args.tsdk);
+        let nodeModulesDir = toAbsolutePath(args.nodeModulesDir);
+
+        let lsp = language_server_protocol.Context<VueInitializationOptions>({
+            exe: "node",
+            // --tsdk=, not initializationOptions.typescript.tsdk, is what
+            // vue-language-server's own entrypoint actually reads to pick
+            // the `ts` instance it uses in-process to compile each .vue
+            // SFC into its virtual embedded-TS document (see its index.js:
+            // it scans process.argv for "--tsdk=", falling back to a bare
+            // `require("typescript")` if absent). initializationOptions.
+            // typescript.tsdk below isn't read by this code path at all,
+            // but is sent anyway in case some other server version does.
+            args: [toAbsolutePath(args.vueLanguageServerPath), "--stdio", f"--tsdk={tsdk}"],
+        }, {
+            rootUri: f"file://{args.projectRoot}",
+            workspaceFolders: [{ uri: f"file://{args.projectRoot}", name: args.projectName }],
+            initializationOptions: VueInitializationOptions {
+                plugins: [
+                    {
+                        name: "@vue/typescript-plugin",
+                        location: f"{nodeModulesDir}/@vue/typescript-plugin",
+                        languages: ["vue"],
+                    }
+                ],
+                typescript: { tsdk: tsdk },
+            },
+        });
+        if !lsp {
+            return language_server_protocol.Error { message: f"vue-language-server failed to launch: {lsp.message}" };
+        }
+
         let tsserverProcess = process.spawn("node", [
             f"{tsdk}/tsserver.js",
             "--globalPlugins", "@vue/typescript-plugin",
             "--pluginProbeLocations", nodeModulesDir,
         ]);
         if !tsserverProcess {
-            return language_server_protocol.Error {
-                message: f"tsserver failed to launch: Exit code {tsserverProcess}",
-            };
+            return language_server_protocol.Error { message: f"tsserver failed to launch: Exit code {tsserverProcess}" };
         }
 
-        return VueLspBridge {
+        let bridge = VueLspBridge {
+            _lsp: lsp,
             _tsserverProcess: tsserverProcess,
+            _projectRootPath: args.projectRoot,
+            _documentReady: rx.reactive<bool>(false),
         };
+
+        lsp.onNotification = (method: str, params: json.Node) => {
+            bridge._handleNotification(method, params);
+        };
+
+        return bridge;
     }
 
-    // Mirrors a textDocument/didOpen into tsserver's own `open` command, so the
-    // plugin-patched project service knows about the file before the vue-language-server
-    // asks tsserver anything about it (e.g. "_vue:projectInfo"). Mirroring didChange /
-    // didClose into tsserver's `change` / `close` commands isn't needed for initial-load +
-    // hover and is left for later.
-    fn openDocument(lsp: language_server_protocol.Context<VueInitializationOptions>, filepath: str, languageId: str, version: int, fileContent: str) {
-        lsp.sendDocumentOpenNotification(filepath, languageId, version, fileContent);
+    // Whether the LSP handshake with vue-language-server has completed.
+    fn isReady(): bool {
+        return this._lsp.initResponse is not none;
+    }
 
-        let argsNode = json.encodeToJsonNode<OpenArgs>({ file: filepath, fileContent: fileContent });
+    // Queues `filepath` to be opened with both vue-language-server and our
+    // tsserver process. Safe to call every frame with the same arguments
+    // (e.g. from a reactive computed with no readiness guard of its own)
+    // -- actually opens exactly once, deferring automatically until
+    // isReady() if called before the LSP handshake finishes.
+    fn openDocument(filepath: str, languageId: str, version: int, fileContent: str) {
+        if this._opened {
+            return;
+        }
+        this._opened = true;
+        this._filepath = filepath;
+        if !this.isReady() {
+            this._pendingOpenContent = fileContent;
+            this._pendingOpenLanguageId = languageId;
+            this._pendingOpenVersion = version;
+            return;
+        }
+        this._doOpenDocument(filepath, languageId, version, fileContent);
+    }
+
+    fn _doOpenDocument(filepath: str, languageId: str, version: int, fileContent: str) {
+        this._lsp.sendDocumentOpenNotification(filepath, languageId, version, fileContent);
+
+        let argsNode = json.encodeToJsonNode<OpenArgs>({ file: filepath, fileContent: fileContent, projectRootPath: this._projectRootPath });
         if !argsNode {
             sys.panic("vue_lsp_bridge: failed to encode tsserver 'open' arguments");
         }
         this._tsserverNextSeq = this._tsserverNextSeq + 1;
         this._sendTsServerCommand(this._tsserverNextSeq, "open", argsNode);
+
+        this._documentReady := true;
     }
 
-    // Called once, registered as `lsp.onNotification`, for any "tsserver/request" the
-    // vue-language-server sends us. `params` arrives as `[[requestId, command, args]]` --
-    // vscode-jsonrpc wraps a single positional array argument in another array.
-    fn handleNotification(method: str, params: json.Node) {
+    // The one thing hover UI needs: position in, best-available hover text
+    // (or null if there's genuinely nothing) out. Merges two independent,
+    // complementary sources (see the module doc comment at the top of this
+    // file for why both are needed): vue-language-server's own LSP hover
+    // (template/HTML/SFC-structure) and a direct tsserver quickinfo query
+    // (real TypeScript semantics -- required for anything inside
+    // <script setup>). Never calls back until the document has actually
+    // been opened -- reactive, so calling this from inside an
+    // rx.computed() naturally re-fires once that happens even without the
+    // position changing again.
+    fn hover(line: int, character: int, callback: (text: str | null) => none) {
+        if !rx.get(this._documentReady) {
+            return;
+        }
+
+        let quickInfoText: str | null = null;
+        let lspHoverText: str | null = null;
+        let quickInfoDone = false;
+        let lspHoverDone = false;
+
+        let tryEmit = (): void => {
+            if !quickInfoDone || !lspHoverDone {
+                return;
+            }
+            callback(quickInfoText ? quickInfoText : lspHoverText);
+        };
+
+        this._sendQuickInfoRequest(line, character, (body: QuickInfoBody | none) => {
+            if body && body.displayString {
+                quickInfoText = body.displayString;
+            }
+            quickInfoDone = true;
+            tryEmit();
+        });
+
+        this._lsp.sendDocumentHoverRequest(this._filepath, line, character, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
+            if response {
+                let hover = response;
+                if hover {
+                    lspHoverText = hover.contents.value;
+                }
+            }
+            lspHoverDone = true;
+            tryEmit();
+        });
+    }
+
+    // Asks tsserver directly for hover info at a position, bypassing
+    // vue-language-server entirely -- see the module doc comment (channel
+    // 3) for why this works. Not the same thing as the "tsserver/request"
+    // relay below (channel 2), which is for vue-language-server's own
+    // Vue-specific queries.
+    fn _sendQuickInfoRequest(line: int, character: int, callback: (body: QuickInfoBody | none) => none) {
+        let argsNode = json.encodeToJsonNode<QuickInfoArgs>({ file: this._filepath, line: line + 1, offset: character + 1 });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'quickinfo' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._quickInfoPendingRequests.push({ seq: seq, callback: callback });
+        this._sendTsServerCommand(seq, "quickinfo", argsNode);
+    }
+
+    // Registered as `lsp.onNotification` in the constructor, for any
+    // "tsserver/request" vue-language-server sends us (channel 2). `params`
+    // arrives as `[[requestId, command, args]]` -- vscode-jsonrpc wraps a
+    // single positional array argument in another array.
+    fn _handleNotification(method: str, params: json.Node) {
         if method != "tsserver/request" {
             fmt.println(f"vue_lsp_bridge: unsupported notification '{method}'");
             return;
@@ -133,9 +376,20 @@ export struct VueLspBridge {
         this._sendTsServerCommand(seq, command, args);
     }
 
-    // Drains tsserver's output and relays any completed response back to the
-    // vue-language-server as "tsserver/response". Called every frame, alongside `lsp.loop()`.
-    fn loop(lsp: language_server_protocol.Context<VueInitializationOptions>) {
+    // Drains the LSP connection and tsserver's output, and performs any
+    // openDocument() call that had to be deferred until isReady(). The one
+    // thing callers need to call once per frame.
+    fn loop() {
+        this._lsp.loop();
+
+        if this._pendingOpenContent is not null && this.isReady() {
+            let content = this._pendingOpenContent;
+            let languageId = this._pendingOpenLanguageId;
+            let version = this._pendingOpenVersion;
+            this._pendingOpenContent = null;
+            this._doOpenDocument(this._filepath, languageId, version, content);
+        }
+
         let stderr = this._tsserverProcess.readStderr();
         if stderr.length > 0 {
             fmt.println("tsserver stderr: ", stderr);
@@ -153,7 +407,7 @@ export struct VueLspBridge {
                 return;
             }
             this._tsserverInputBuffer = framed.remaining;
-            this._handleTsServerMessage(lsp, framed.message);
+            this._handleTsServerMessage(framed.message);
         }
     }
 
@@ -170,7 +424,7 @@ export struct VueLspBridge {
         this._tsserverProcess.writeStdin(message + "\n");
     }
 
-    fn _handleTsServerMessage(lsp: language_server_protocol.Context<VueInitializationOptions>, message: str) {
+    fn _handleTsServerMessage(message: str) {
         if this._logAllRequests {
             fmt.println(f"ts<- {message}");
         }
@@ -184,10 +438,51 @@ export struct VueLspBridge {
             // Events (e.g. "requestCompleted", telemetry) aren't relevant to the bridge.
             return;
         }
+        // A failed command (e.g. quickinfo on a position tsserver's project
+        // service can't actually resolve) still relays through as a
+        // "response" with an empty body -- which callers below would
+        // otherwise see as a bare null, indistinguishable from "there's
+        // genuinely nothing to show here". Surfacing the failure explicitly
+        // keeps that distinction visible in the logs.
+        if result.success is not none && !result.success {
+            fmt.println(f"vue_lsp_bridge: tsserver command '{result.command}' failed (seq {result.request_seq}): {result.message}");
+        }
         let requestSeq = result.request_seq;
         if !requestSeq {
             return;
         }
+
+        // quickinfo requests we sent directly (_sendQuickInfoRequest) --
+        // distinct from the vue-language-server relay below, matched first
+        // since seq is a single shared counter so a given requestSeq can
+        // only ever belong to one or the other.
+        let matchedQuickInfoCallback: ((body: QuickInfoBody | none) => none) | none = none;
+        let remainingQuickInfo: []PendingQuickInfoRequest = [];
+        for entry in this._quickInfoPendingRequests {
+            if entry.seq == requestSeq {
+                matchedQuickInfoCallback = entry.callback;
+            }
+            else {
+                remainingQuickInfo.push(entry);
+            }
+        }
+        this._quickInfoPendingRequests = remainingQuickInfo;
+        if matchedQuickInfoCallback is not none {
+            if result.body is not none {
+                let body = json.parse<QuickInfoBody>(result.body);
+                if body {
+                    matchedQuickInfoCallback(body);
+                }
+                else {
+                    matchedQuickInfoCallback(none);
+                }
+            }
+            else {
+                matchedQuickInfoCallback(none);
+            }
+            return;
+        }
+
         let matchedVueRequestId: int | none = none;
         let remaining: []PendingTsRequest = [];
         for entry in this._tsserverPendingRequests {
@@ -204,13 +499,13 @@ export struct VueLspBridge {
             return;
         }
 
-        this._emitTsServerResponse(lsp, matchedVueRequestId, result.body);
+        this._emitTsServerResponse(matchedVueRequestId, result.body);
     }
 
     // Sends "tsserver/response" with params `[[vueRequestId, body]]`, mirroring the exact
     // wrapping vscode-jsonrpc applies on the sending side (confirmed empirically: a single
     // positional array argument gets wrapped in another array on the wire).
-    fn _emitTsServerResponse(lsp: language_server_protocol.Context<VueInitializationOptions>, vueRequestId: int, body: json.Node | none) {
+    fn _emitTsServerResponse(vueRequestId: int, body: json.Node | none) {
         let idNode = json.encodeToJsonNode<int>(vueRequestId);
         if !idNode {
             sys.panic("vue_lsp_bridge: failed to encode tsserver/response id");
@@ -231,6 +526,6 @@ export struct VueLspBridge {
         }
 
         let outer: []json.Node = [pairNode];
-        lsp.sendNotification<[]json.Node>("tsserver/response", outer);
+        this._lsp.sendNotification<[]json.Node>("tsserver/response", outer);
     }
 }
