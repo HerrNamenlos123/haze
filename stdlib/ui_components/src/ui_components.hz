@@ -476,10 +476,24 @@ export struct InstanceData<TProps> {
 
 // Optional pointer-button callbacks bundled as a struct. Using a struct avoids
 // the (() => bool) | none union that Haze cannot implicitly coerce a lambda into.
+//
+// *Held is the continuous level state (used for the PointerEvent.buttons
+// bitmask and for Move's drag pressure). *Pressed/*Released are this-frame's
+// latched edges, reported independently of the level -- see UIContext.process()
+// for why: diffing *Held frame-to-frame misses a down+up that both land
+// within the same frame (e.g. a quick click, or any frame slow enough that
+// two SDL events land in one poll), since the level ends the frame right
+// back where it started and no transition is ever observed.
 export struct PointerHeldCallbacks {
     leftHeld: () => bool;
     middleHeld: () => bool;
     rightHeld: () => bool;
+    leftPressed: () => bool;
+    middlePressed: () => bool;
+    rightPressed: () => bool;
+    leftReleased: () => bool;
+    middleReleased: () => bool;
+    rightReleased: () => bool;
 }
 
 // Optional wheel/modifier poll callbacks, bundled for the same reason as
@@ -508,9 +522,6 @@ export opaque struct UIContext {
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
 
-    _prevLeftHeld: bool = false;
-    _prevMiddleHeld: bool = false;
-    _prevRightHeld: bool = false;
     _leftHeld: bool = false;
     _middleHeld: bool = false;
     _rightHeld: bool = false;
@@ -906,37 +917,54 @@ export opaque struct UIContext {
             y: this.mousePos.y - this.pmousePos.y,
         };
 
-        // Read pointer button state and detect edge transitions
-        this._prevLeftHeld = this._leftHeld;
-        this._prevMiddleHeld = this._middleHeld;
-        this._prevRightHeld = this._rightHeld;
+        // Read pointer button level state (for the buttons bitmask/drag
+        // pressure) and this-frame's latched press/release edges (for
+        // Down/Up events). Edges are read separately from -- not derived by
+        // diffing -- the level: a down+up that both land within this same
+        // frame (a quick click, or any frame slow enough for two SDL events
+        // to land in one poll) would leave the level exactly where it
+        // started, so a frame-to-frame level diff can never see it. The
+        // level alone is still fine for the buttons bitmask, since that only
+        // needs to reflect "what's held right now".
         this._leftHeld = this._pointerButtons ? this._pointerButtons.leftHeld() : false;
         this._middleHeld = this._pointerButtons ? this._pointerButtons.middleHeld() : false;
         this._rightHeld = this._pointerButtons ? this._pointerButtons.rightHeld() : false;
 
-        let buttons: PointerButtons = PointerButtons.None;
-        if this._leftHeld { buttons = buttons | PointerButtons.Left; }
-        if this._rightHeld { buttons = buttons | PointerButtons.Right; }
-        if this._middleHeld { buttons = buttons | PointerButtons.Middle; }
+        let leftPressed = this._pointerButtons ? this._pointerButtons.leftPressed() : false;
+        let middlePressed = this._pointerButtons ? this._pointerButtons.middlePressed() : false;
+        let rightPressed = this._pointerButtons ? this._pointerButtons.rightPressed() : false;
+        let leftReleased = this._pointerButtons ? this._pointerButtons.leftReleased() : false;
+        let middleReleased = this._pointerButtons ? this._pointerButtons.middleReleased() : false;
+        let rightReleased = this._pointerButtons ? this._pointerButtons.rightReleased() : false;
+
+        let makeButtons = (left: bool, middle: bool, right: bool): PointerButtons => {
+            let b: PointerButtons = PointerButtons.None;
+            if left { b = b | PointerButtons.Left; }
+            if middle { b = b | PointerButtons.Middle; }
+            if right { b = b | PointerButtons.Right; }
+            return b;
+        };
+
+        let buttons = makeButtons(this._leftHeld, this._middleHeld, this._rightHeld);
 
         let pendingEvents: []PendingPointerEvent = [];
-        if !this._prevLeftHeld && this._leftHeld {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Left, buttons: buttons, pos: this.mousePos });
+        if leftPressed {
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Left, buttons: makeButtons(true, this._middleHeld, this._rightHeld), pos: this.mousePos });
         }
-        if !this._prevMiddleHeld && this._middleHeld {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Middle, buttons: buttons, pos: this.mousePos });
+        if middlePressed {
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Middle, buttons: makeButtons(this._leftHeld, true, this._rightHeld), pos: this.mousePos });
         }
-        if !this._prevRightHeld && this._rightHeld {
-            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Right, buttons: buttons, pos: this.mousePos });
+        if rightPressed {
+            pendingEvents.push({ kind: PointerEventKind.Down, button: PointerButton.Right, buttons: makeButtons(this._leftHeld, this._middleHeld, true), pos: this.mousePos });
         }
-        if this._prevLeftHeld && !this._leftHeld {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Left, buttons: buttons, pos: this.mousePos });
+        if leftReleased {
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Left, buttons: makeButtons(false, this._middleHeld, this._rightHeld), pos: this.mousePos });
         }
-        if this._prevMiddleHeld && !this._middleHeld {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Middle, buttons: buttons, pos: this.mousePos });
+        if middleReleased {
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Middle, buttons: makeButtons(this._leftHeld, false, this._rightHeld), pos: this.mousePos });
         }
-        if this._prevRightHeld && !this._rightHeld {
-            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Right, buttons: buttons, pos: this.mousePos });
+        if rightReleased {
+            pendingEvents.push({ kind: PointerEventKind.Up, button: PointerButton.Right, buttons: makeButtons(this._leftHeld, this._middleHeld, false), pos: this.mousePos });
         }
         if this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0 {
             pendingEvents.push({ kind: PointerEventKind.Move, button: PointerButton.None, buttons: buttons, pos: this.mousePos });
