@@ -526,6 +526,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     }
 
                     let l: [][]HighlightToken = highlightedLines;
+                    let total = 0;
                     for tokens, i in l {
                         ui.div({
                             id: i,
@@ -533,13 +534,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             if tokens.length > 0 {
                                 for t, i in tokens {
                                     ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
+                                    total++;
                                 }
                             }
                             else {
                                 ui.text({ id: 0, text: "" });
+                                total++;
                             }
                         });
                     }
+                    fmt.println(f"{total} text elements on screen");
 
                     let cursorPos = Vec2(
                         texteditBehavior.cursorPosition.x as real * characterSize.x,

@@ -8,7 +8,7 @@ struct Cache {
     file: str | null = null;
 }
 
-const comptime profile = true;
+const comptime profile = false;
 
 // Translates app's platform-level pointer edge queue into ui_components'
 // own PointerEdge type -- kept as a small glue function here (rather than
