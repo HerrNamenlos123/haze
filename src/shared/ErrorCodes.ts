@@ -37,6 +37,7 @@ export enum HazeErrorCode {
   FunctionDatatypesCannotHaveParameterPacks2 = 2013, // Function datatypes cannot have parameter packs
   FunctionDatatypesCannotDefineDefaultParameterValues2 = 2014, // Function datatypes cannot define default parameter values
   NodiscardCanOnlyBeAppliedTaggedUnions = 2015, // nodiscard can only be applied to tagged unions
+  ParameterTypeInferenceOnlySupportedForClosures = 2016, // Parameter type inference is only supported for closures ('=>'), not for non-capturing function literals ('->')
   ThisExpressionNotSuitableAsGenericTypeArgument = 3001, // This expression is not suitable as a generic type argument or literal value
   SymbolWasNotDeclaredThisScope = 3002, // Symbol '' was not declared in this scope
   MainFunctionDefinedButNotAllowedBecauseModule = 3003, // main function is defined, but not allowed because module is built as library
@@ -231,6 +232,7 @@ export enum HazeErrorCode {
   ExpressionTypeCannotBeSubscripted3 = 7167, // Expression of type '' cannot be subscripted
   ThisExpressionNotSuitableAsGenericTypeArgument2 = 7168, // This expression is not suitable as a generic type argument or literal value
   CouldNotInferGenericParameterFunctionPleaseSpecify = 7169, // Could not infer generic parameter '' for function ''. Please specify it explicitly.
+  CannotInferClosureParameterType = 7170, // Cannot infer the type of closure parameter ''. Please add an explicit type annotation.
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

@@ -235,14 +235,14 @@ namespace testsuite {
                 return CaseResult {
                     name: tc.name,
                     passed: false,
-                    detail: f"expected this to compile, but it failed:\n{r.stderr}",
+                    detail: f"expected this to compile, but it failed:\n{r.stderrResult}",
                 };
             }
 
             // Errors go to stderr, warnings go to stdout — a successful
             // build's diagnostics (if any) are always warnings, but check
             // both streams so this doesn't depend on that staying true.
-            let problems = evaluateChecks(r.stdout + r.stderr, tc.diagnosticChecks);
+            let problems = evaluateChecks(r.stdoutResult + r.stderrResult, tc.diagnosticChecks);
             if problems.length > 0 {
                 return CaseResult { name: tc.name, passed: false, detail: problems };
             }
@@ -254,11 +254,11 @@ namespace testsuite {
                 return CaseResult {
                     name: tc.name,
                     passed: false,
-                    detail: f"expected exit code {tc.expectedExitCode}, got {r.exitCode}\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}",
+                    detail: f"expected exit code {tc.expectedExitCode}, got {r.exitCode}\nstdout:\n{r.stdoutResult}\nstderr:\n{r.stderrResult}",
                 };
             }
             if tc.checkStdout {
-                let actual = r.stdout.trim();
+                let actual = r.stdoutResult.trim();
                 let expected = tc.expectedStdout.trim();
                 if actual != expected {
                     return CaseResult {
@@ -281,7 +281,7 @@ namespace testsuite {
                 };
             }
 
-            let problems = evaluateChecks(r.stdout + r.stderr, tc.diagnosticChecks);
+            let problems = evaluateChecks(r.stdoutResult + r.stderrResult, tc.diagnosticChecks);
             if problems.length > 0 {
                 return CaseResult { name: tc.name, passed: false, detail: problems };
             }

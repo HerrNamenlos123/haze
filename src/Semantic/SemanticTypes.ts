@@ -195,7 +195,11 @@ export namespace Semantic {
       | {
           kind: "normal";
           name: string;
-          type: TypeUseId;
+          // null only while a closure parameter's type is still being inferred from
+          // context; resolved to a concrete type (or a CompilerError) before the
+          // signature is used to elaborate the function body. See Elaborate.ts
+          // callableExpr().
+          type: TypeUseId | null;
         }
       | {
           kind: "param-pack";
@@ -948,6 +952,11 @@ export namespace Semantic {
         gonnaCallFunctionWithParameterValues?: {
           index: number;
           exprId: Semantic.ExprId | null;
+          // The original, unelaborated call argument. Always present, even when
+          // exprId is null (the argument was deferred), so a deferred closure
+          // argument's own explicit parameter types can still seed generic
+          // deduction. See Elaborate.ts inferGenericArgumentsFromCallSite().
+          collectExprId: Collect.ExprId;
         }[];
         gonnaInstantiateStructWithType?: Semantic.TypeUseId;
         unsafe?: boolean;

@@ -300,7 +300,9 @@ export namespace Collect {
     | {
         kind: "normal";
         name: string;
-        type: Collect.ExprId;
+        // null only for a closure (=>) parameter with no explicit type annotation,
+        // to be inferred from context during elaboration; see Elaborate.ts callableExpr().
+        type: Collect.ExprId | null;
         optional: boolean;
         defaultParameterValue: Collect.ExprId | null;
         sourceloc: SourceLoc;
@@ -1647,6 +1649,9 @@ function collectSymbol(
             sourceloc: p.sourceloc,
           } satisfies Collect.ParameterValue;
         } else {
+          // Grammar-enforced: only closure (=>) lambda parameters may omit their
+          // type; a regular `fn` parameter always has one.
+          assert(p.datatype !== null);
           let datatype = p.datatype;
           if (p.optional) {
             datatype = wrapASTTypeInNoneUnion(datatype);
@@ -2715,7 +2720,9 @@ function collectExpr(
               ? collectExpr(cc, p.defaultValue, args)
               : null,
             sourceloc: p.sourceloc,
-            type: collectExpr(cc, p.datatype, args),
+            // null means the type is inferred from context; only valid for
+            // kind === "closure" lambdas, enforced just below.
+            type: p.datatype ? collectExpr(cc, p.datatype, args) : null,
           };
         }),
         hasParamPack: false,
@@ -2808,6 +2815,13 @@ function collectExpr(
         });
 
         for (const p of functionSymbol.parameters) {
+          if (p.kind === "normal" && p.type === null) {
+            throw new CompilerError(
+              "Parameter type inference is only supported for closures ('=>'), not for non-capturing function literals ('->'). Please add an explicit type annotation, or use '=>' instead.",
+              p.sourceloc,
+              HazeErrorCode.ParameterTypeInferenceOnlySupportedForClosures
+            );
+          }
           const varsymId = defineVariableSymbol(
             cc,
             {
@@ -3170,6 +3184,9 @@ function collectExpr(
           );
         }
 
+        // Grammar-enforced: this is a type-level `(T) => T` annotation, not a
+        // closure literal, so every parameter always has an explicit type.
+        assert(p.datatype !== null);
         let datatype = p.datatype;
         if (p.optional) {
           datatype = wrapASTTypeInNoneUnion(datatype);
@@ -3226,6 +3243,9 @@ function collectExpr(
           );
         }
 
+        // Grammar-enforced: this is a type-level `(T) => T` annotation, not a
+        // closure literal, so every parameter always has an explicit type.
+        assert(p.datatype !== null);
         let datatype = p.datatype;
         if (p.optional) {
           datatype = wrapASTTypeInNoneUnion(datatype);

@@ -1360,17 +1360,20 @@ export class SemanticElaborator {
     const decisiveArguments = [] as {
       index: number;
       exprId: Semantic.ExprId | null;
+      collectExprId: Collect.ExprId;
     }[];
     callExpr.arguments.forEach((p, i) => {
       if (IsExprDecisiveForOverloadResolution(this.sr, p)) {
         decisiveArguments.push({
           index: i,
           exprId: this.sr.e.expr(p, inference)[1],
+          collectExprId: p,
         });
       } else {
         decisiveArguments.push({
           index: i,
           exprId: null,
+          collectExprId: p,
         });
       }
     });
@@ -1419,6 +1422,7 @@ export class SemanticElaborator {
         decisiveArguments[i] = {
           index: i,
           exprId: this.sr.e.expr(p, inference)[1],
+          collectExprId: p,
         };
         promotedAny = true;
       });
@@ -4234,22 +4238,29 @@ export class SemanticElaborator {
 
     if (symbol.variableContext === EVariableContext.FunctionParameter) {
       variableContext = EVariableContext.FunctionParameter;
-      if (!symbol.type) {
-        throw new InternalError("Parameter needs datatype");
+      if (typeOverride) {
+        // A closure parameter with no explicit annotation has no Collect.ExprId
+        // to elaborate here -- its type was already resolved from context and
+        // stashed by callableExpr() via elaborationTypeOverride.
+        type = typeOverride;
+      } else {
+        if (!symbol.type) {
+          throw new InternalError("Parameter needs datatype");
+        }
+        type = this.withContext(
+          {
+            context: Semantic.isolateElaborationContext(this.currentContext, {
+              genericsScope: symbol.inScope,
+              currentScope: symbol.inScope,
+              constraints: this.currentContext.constraints,
+              instanceDeps: this.currentContext.instanceDeps,
+            }),
+            inFunction: this.inFunction,
+            inAttemptExpr: this.inAttemptExpr,
+          },
+          () => this.elaborateDatatype(symbol.type!)
+        );
       }
-      type = this.withContext(
-        {
-          context: Semantic.isolateElaborationContext(this.currentContext, {
-            genericsScope: symbol.inScope,
-            currentScope: symbol.inScope,
-            constraints: this.currentContext.constraints,
-            instanceDeps: this.currentContext.instanceDeps,
-          }),
-          inFunction: this.inFunction,
-          inAttemptExpr: this.inAttemptExpr,
-        },
-        () => this.elaborateDatatype(symbol.type!)
-      );
     } else if (symbol.variableContext === EVariableContext.ThisReference) {
       if (this.currentContext.elaboratedVariables.has(variableSymbolId)) {
         return;
@@ -4442,6 +4453,11 @@ export class SemanticElaborator {
             // reason = `Parameter #${i + 1} does not have a concrete type`;
             return;
           }
+          // Only closure (lambda) signatures ever have a null parameter type (while
+          // inference is still pending), and closures are never part of a named
+          // overload group -- this function only ever matches overloads of named
+          // `fn` declarations, which always have concrete parameter types.
+          assert(signatureParam.type !== null);
 
           const actuallyGivenexpression = this.sr.exprNodes.get(passed.exprId);
           const aUse = this.sr.typeUseNodes.get(
@@ -4629,6 +4645,9 @@ export class SemanticElaborator {
             if (!passed?.exprId || signatureParam.kind === "param-pack") {
               continue;
             }
+            // Only closure signatures ever have a null parameter type, and closures
+            // are never part of a named overload group.
+            assert(signatureParam.type !== null);
             const conversion = Conversion.CanImplicitlyConvert(
               this.sr,
               passed.exprId,
@@ -5104,6 +5123,78 @@ export class SemanticElaborator {
     );
   }
 
+  // A deferred call argument (not yet elaborated, so its overall type is unknown)
+  // may still be a closure literal with some of its own parameters explicitly
+  // typed. Those annotations alone can seed generic deduction even though the
+  // closure as a whole can't be elaborated yet -- e.g. `foo((a: string, b) =>
+  // ...)` passed to `fn foo<T>(cb: (a: T, b: T) => void)`, where T is only ever
+  // recoverable from `a`'s own annotation. Once T is deduced this way and
+  // substituted into the callee's signature, the normal callableExpr() injection
+  // path (run once the argument is actually elaborated, later) fills in `b` from
+  // the now-concrete expected type.
+  private collectGenericDeductionsFromDeferredClosureParams(
+    param: Semantic.FunctionSignature["parameters"][number],
+    collectExprId: Collect.ExprId,
+    paramIndex: number,
+    out: Map<
+      Collect.SymbolId,
+      { typeUseId: Semantic.TypeUseId; depth: number; paramIndex: number }[]
+    >
+  ): void {
+    if (param.kind !== "normal" || param.type === null) {
+      return;
+    }
+
+    let expr = this.sr.cc.exprNodes.get(collectExprId);
+    while (expr.variant === Collect.ENode.ParenthesisExpr) {
+      expr = this.sr.cc.exprNodes.get(expr.expr);
+    }
+    if (expr.variant !== Collect.ENode.CallableExpr) {
+      return;
+    }
+    const funcSym = this.sr.cc.symbolNodes.get(expr.functionSymbol);
+    if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
+      return;
+    }
+
+    const patternTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(param.type)
+    );
+    const patternTypeDef = this.sr.typeDefNodes.get(patternTypeUse.type);
+    if (patternTypeDef.variant !== Semantic.ENode.CallableDatatype) {
+      return;
+    }
+    const patternFuncTypeDef = this.sr.typeDefNodes.get(
+      patternTypeDef.functionType
+    );
+    if (patternFuncTypeDef.variant !== Semantic.ENode.FunctionDatatype) {
+      return;
+    }
+
+    funcSym.parameters.forEach((p, j) => {
+      if (p.kind !== "normal" || p.type === null) {
+        return;
+      }
+      const patternParam = patternFuncTypeDef.parameters[j];
+      if (!patternParam) {
+        return;
+      }
+      const elaboratedType = this.elaborateDatatype(p.type, {
+        noSubstituteGenerics: true,
+      });
+      const patternParamTypeUse = this.sr.typeUseNodes.get(
+        this.sr.e.resolveAlias(patternParam.type)
+      );
+      this.collectGenericDeductions(
+        patternParamTypeUse.type,
+        elaboratedType,
+        1,
+        paramIndex,
+        out
+      );
+    });
+  }
+
   inferGenericArgumentsFromCallSite(
     functionSignatureId: Semantic.SymbolId,
     collectedFunctionSymbolId: Collect.SymbolId,
@@ -5138,7 +5229,22 @@ export class SemanticElaborator {
       const actualArg = inference.gonnaCallFunctionWithParameterValues.find(
         (arg) => arg.index === i
       );
-      if (!actualArg || actualArg.exprId === null) {
+      if (!actualArg) {
+        continue;
+      }
+
+      if (actualArg.exprId === null) {
+        // The argument is deferred (not yet elaborated), so its overall type
+        // isn't known -- but if it's a closure with some of its own parameters
+        // explicitly typed, those annotations alone can still seed a deduction
+        // (e.g. `foo((a: string, b) => ...)` where the callee's generic is only
+        // ever recoverable from `a`'s own annotation, nowhere else in the call).
+        this.collectGenericDeductionsFromDeferredClosureParams(
+          param,
+          actualArg.collectExprId,
+          i,
+          allDeductions
+        );
         continue;
       }
 
@@ -5150,6 +5256,11 @@ export class SemanticElaborator {
         argTypeUseId = actualExpr.type;
       }
 
+      // `param` is the callee's own declared parameter type, which as a type
+      // annotation (not a closure literal) is never inferred -- only a lambda's
+      // own signature can have a null parameter type, and this signature always
+      // belongs to the named function being called, never to a lambda argument.
+      assert(param.type !== null);
       const paramTypeUse = this.sr.typeUseNodes.get(
         this.sr.e.resolveAlias(param.type)
       );
@@ -5514,6 +5625,18 @@ export class SemanticElaborator {
                   false,
                   func.sourceloc
                 )[1],
+              };
+            }
+            if (p.type === null) {
+              // Closure parameter with no explicit annotation -- its type was
+              // already resolved from context and validated non-null by
+              // callableExpr(), which built `functionSignature` before this
+              // function was called.
+              const sigParam = functionSignature.parameters[i];
+              assert(sigParam.kind === "normal" && sigParam.type !== null);
+              return {
+                optional: p.optional,
+                type: sigParam.type,
               };
             }
             return {
@@ -7683,6 +7806,15 @@ export class SemanticElaborator {
         return {
           kind: "param-pack",
         };
+      } else if (p.type === null) {
+        // Closure parameter with no explicit type annotation -- left unresolved
+        // here; callableExpr() fills it in from context before the signature is
+        // used any further, or throws a CompilerError if it can't be inferred.
+        return {
+          kind: "normal",
+          name: p.name,
+          type: null,
+        };
       } else {
         const isolatedContext = Semantic.isolateElaborationContext(
           this.currentContext,
@@ -7704,13 +7836,15 @@ export class SemanticElaborator {
         for (const gId of functionSymbol.generics) {
           isolatedContext.substitute.delete(gId);
         }
+        const paramType = p.type;
         const type = this.withContext(
           {
             context: isolatedContext,
             inAttemptExpr: null,
             inFunction: null,
           },
-          () => this.elaborateDatatype(p.type, { noSubstituteGenerics: true })
+          () =>
+            this.elaborateDatatype(paramType, { noSubstituteGenerics: true })
         );
         return {
           kind: "normal",
@@ -7755,6 +7889,8 @@ export class SemanticElaborator {
         .map((p) => {
           if (p.kind === "param-pack") {
             return "...";
+          } else if (p.type === null) {
+            return "<inferred>";
           } else {
             return Semantic.serializeTypeUse(this.sr, p.type);
           }
@@ -14125,12 +14261,24 @@ export class SemanticElaborator {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
 
-    // If the call site tells us what callable type is expected and the lambda has
-    // no explicit return-type annotation, inject the expected return type into the
-    // signature so that struct-literal inference works inside the body.
+    const collectedFuncSym = this.sr.cc.symbolNodes.get(
+      callable.functionSymbol
+    );
+    assert(collectedFuncSym.variant === Collect.ENode.FunctionSymbol);
+
+    const hasInferredParams = functionSignature.parameters.some(
+      (p) => p.kind === "normal" && p.type === null
+    );
+
+    // If the call site tells us what callable type is expected, and the lambda has
+    // no explicit return-type annotation and/or has parameters with no explicit
+    // type, inject the missing types from the expected callable type so that
+    // struct-literal inference and parameter-type inference work inside the body.
+    // Explicit annotations are never overwritten -- we only ever assign into a
+    // parameter slot that is still null.
     if (
       inference?.gonnaInstantiateStructWithType &&
-      functionSignature.returnType === null
+      (functionSignature.returnType === null || hasInferredParams)
     ) {
       const expectedTypeUse = this.sr.typeUseNodes.get(
         this.sr.e.resolveAlias(inference.gonnaInstantiateStructWithType)
@@ -14141,9 +14289,67 @@ export class SemanticElaborator {
           expectedTypeDef.functionType
         );
         if (funcTypeDef.variant === Semantic.ENode.FunctionDatatype) {
-          functionSignature.returnType = funcTypeDef.returnType;
+          if (functionSignature.returnType === null) {
+            functionSignature.returnType = funcTypeDef.returnType;
+          }
+          functionSignature.parameters.forEach((p, i) => {
+            if (p.kind !== "normal" || p.type !== null) {
+              return;
+            }
+            const expectedParam = funcTypeDef.parameters[i];
+            if (expectedParam) {
+              p.type = expectedParam.type;
+            }
+          });
         }
       }
+    }
+
+    // Any parameter whose type is still unknown could not be inferred from
+    // context (and wasn't given explicitly) -- this is the only case in which
+    // closure parameter inference is a user-facing error.
+    const stillMissing = functionSignature.parameters.find(
+      (p) => p.kind === "normal" && p.type === null
+    );
+    if (stillMissing) {
+      assert(stillMissing.kind === "normal");
+      throw new CompilerError(
+        `Cannot infer the type of closure parameter '${stillMissing.name}'. Please add an explicit type annotation.`,
+        callable.sourceloc,
+        HazeErrorCode.CannotInferClosureParameterType
+      );
+    }
+
+    // Thread the resolved types into the parameter variables used inside the
+    // closure body. A closure parameter with no explicit annotation has no
+    // Collect.ExprId to elaborate from, so elaborateVariableSymbolInScope()
+    // can't derive its type the normal way -- give it the type resolved above
+    // via elaborationTypeOverride instead (the same mechanism already used for
+    // attempt/else/recover error-binding types).
+    if (hasInferredParams) {
+      assert(collectedFuncSym.functionScope !== null);
+      const functionScope = this.sr.cc.scopeNodes.get(
+        collectedFuncSym.functionScope
+      );
+      assert(functionScope.variant === Collect.ENode.FunctionScope);
+      collectedFuncSym.parameters.forEach((p, i) => {
+        if (p.kind !== "normal" || p.type !== null) {
+          return;
+        }
+        const sigParam = functionSignature.parameters[i];
+        assert(sigParam.kind === "normal" && sigParam.type !== null);
+        const varSymId = [...functionScope.symbols].find((sId) => {
+          const s = this.sr.cc.symbolNodes.get(sId);
+          return (
+            s.variant === Collect.ENode.VariableSymbol && s.name === p.name
+          );
+        });
+        assert(varSymId !== undefined);
+        this.currentContext.elaborationTypeOverride.set(
+          varSymId,
+          sigParam.type
+        );
+      });
     }
 
     const envType: Semantic.EnvBlockType = {
@@ -15431,20 +15637,23 @@ export function IsExprDecisiveForOverloadResolution(
       return IsExprDecisiveForOverloadResolution(sr, expr.expr);
     }
 
-    // A callable with no explicit return type annotation is NOT decisive:
-    // its return type may need to be inferred from the expected parameter
-    // type (e.g. a callable-typed parameter or generic argument), so it must
-    // be elaborated after the overload is resolved and that type is known.
-    // If the expected type turns out to depend on this very closure (e.g. a
-    // generic parameter that can only be deduced from it), callExpr() will
-    // catch the resulting GenericDeductionIncompleteError and promote it to
-    // decisive on retry — see isDeferredClosureArgument below.
+    // A callable with no explicit return type annotation, or with any parameter
+    // left for inference, is NOT decisive: the missing type(s) may need to be
+    // inferred from the expected parameter type (e.g. a callable-typed parameter
+    // or generic argument), so it must be elaborated after the overload is
+    // resolved and that type is known. If the expected type turns out to depend
+    // on this very closure (e.g. a generic parameter that can only be deduced
+    // from it), callExpr() will catch the resulting GenericDeductionIncompleteError
+    // and promote it to decisive on retry — see isDeferredClosureArgument below.
     case Collect.ENode.CallableExpr: {
       const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
       if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
         return true;
       }
-      return funcSym.returnType !== null;
+      const allParamsExplicit = funcSym.parameters.every(
+        (p) => p.kind !== "normal" || p.type !== null
+      );
+      return funcSym.returnType !== null && allParamsExplicit;
     }
 
     default:
@@ -15453,9 +15662,10 @@ export function IsExprDecisiveForOverloadResolution(
 }
 
 // Identifies arguments that IsExprDecisiveForOverloadResolution deferred specifically because
-// they are closures without an explicit return type (as opposed to e.g. untyped anonymous
-// struct literals, which are also deferred but have no body-inference fallback and must never
-// be promoted). Used by callExpr()'s promote-and-retry logic after a failed generic deduction.
+// they are closures with a missing return type and/or a missing parameter type (as opposed to
+// e.g. untyped anonymous struct literals, which are also deferred but have no body-inference
+// fallback and must never be promoted). Used by callExpr()'s promote-and-retry logic after a
+// failed generic deduction.
 function isDeferredClosureArgument(
   sr: Semantic.Context,
   exprId: Collect.ExprId
@@ -15471,5 +15681,8 @@ function isDeferredClosureArgument(
   if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
     return false;
   }
-  return funcSym.returnType === null;
+  const hasInferredParam = funcSym.parameters.some(
+    (p) => p.kind === "normal" && p.type === null
+  );
+  return funcSym.returnType === null || hasInferredParam;
 }

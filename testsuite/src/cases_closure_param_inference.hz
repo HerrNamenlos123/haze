@@ -1,0 +1,213 @@
+
+// ============================================================================
+// REGRESSION TEST — closure parameter type inference.
+//
+// Closure (=>) literals may now omit a parameter's type annotation and have
+// it inferred from context, TypeScript-style: from an expected callable type
+// at the use site (a typed `let`, a plain function's parameter type, a
+// generic parameter resolved from a sibling argument), or -- when nothing
+// else reveals a generic -- from an explicit type written on one of the
+// closure's own OTHER parameters. Explicit annotations are never overridden.
+// Named `fn` declarations and non-capturing (->) function literals are
+// unaffected and still require every parameter to be explicitly typed.
+//
+// See src/Semantic/Elaborate.ts callableExpr(), IsExprDecisiveForOverloadResolution,
+// isDeferredClosureArgument, and inferGenericArgumentsFromCallSite /
+// collectGenericDeductionsFromDeferredClosureParams.
+//
+// Per the note in framework.hz: every runtime-observable scenario below is
+// bundled into a single compile + run, since compiling is the slow part of
+// this harness. Only genuinely distinct compileFails cases (which by
+// definition can't share a compilation with code that must succeed) get
+// their own case.
+// ============================================================================
+
+namespace cases_closure_param_inference {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "closure parameter inference: all positive/runtime scenarios",
+            """
+fn apply(f: (x: int) => int, x: int): int {
+    return f(x);
+}
+
+// T only ever appears via the closure parameter -- there is no other
+// argument anywhere in the call that could reveal it. T must be deduced
+// purely from `cb`'s own explicit `a: int` annotation, then fed back to
+// resolve `cb`'s other, uninferred parameter `b`.
+fn onlyFromClosure<T>(cb: (a: T, b: T) => T): (a: T, b: T) => T {
+    return cb;
+}
+
+fn apply2<T>(f: (a: T, b: T) => T, a: T, b: T): T {
+    return f(a, b);
+}
+
+fn main(): int {
+    // Bare closure, no explicit parameter type at all, resolved purely from
+    // the `let`'s callable type annotation. Composes with return-type
+    // inference too, since the closure has no `: T` return annotation either.
+    let inc: (x: int) => int = (x) => x + 1;
+    fmt.println(f"{inc(41)}");
+
+    // Closure passed directly as a call argument to a plain (non-generic)
+    // function; the expected parameter type comes from the callee's own
+    // declared signature, not from a `let` annotation.
+    fmt.println(f"{apply((x) => x * 2, 10)}");
+
+    // Mixed: first parameter explicit, second inferred.
+    let f2: (a: int, b: int) => int = (a: int, b) => a + b;
+    fmt.println(f"{f2(3, 4)}");
+
+    // Mixed the other way: first parameter inferred, second explicit --
+    // confirms inference is truly per-parameter/positional, not "only the
+    // first parameter can be inferred".
+    let f3: (a: int, b: int) => int = (a, b: int) => a - b;
+    fmt.println(f"{f3(10, 3)}");
+
+    // Generic resolved from sibling arguments; both closure parameters fully
+    // inferred from the resolved generic. Uses variables rather than raw
+    // integer literals for the sibling arguments to avoid an unrelated,
+    // pre-existing generic-deduction quirk (two distinct integer literals
+    // passed to the same generic parameter are, today, incorrectly treated
+    // as conflicting deductions even with no closures involved at all).
+    let five: int = 5;
+    let six: int = 6;
+    fmt.println(f"{apply2((a, b) => a + b, five, six)}");
+
+    // Self-seeded generics: T is recoverable ONLY from the closure's own
+    // explicit `a: int` annotation, nowhere else in the call.
+    let g = onlyFromClosure((a: int, b) => a + b);
+    fmt.println(f"{g(3, 4)}");
+
+    return 0;
+}
+""",
+            """
+42
+20
+7
+7
+11
+7
+"""
+        );
+
+        // A bare closure with no surrounding context at all (no expected
+        // type, not a call argument to anything with a known parameter type)
+        // cannot infer its parameter's type from anywhere.
+        s.compileFails(
+            "closure with no context and no explicit type fails to infer",
+            """
+fn main(): int {
+    let f = (x) => x + 1;
+    fmt.println(f"{f(41)}");
+    return 0;
+}
+""",
+            [
+                testsuite.mustHave(errorcodes.Code.CannotInferClosureParameterType),
+                testsuite.mustNotHave(errorcodes.Code.SyntaxError),
+            ]
+        );
+
+        // Non-capturing function literals (->) are a distinct kind from
+        // closures (=>) and do not support parameter inference -- they
+        // behave like named `fn` declarations in this respect.
+        s.compileFails(
+            "non-capturing '->' function literal rejects inferred parameters",
+            """
+fn main(): int {
+    let f = (x) -> x + 1;
+    fmt.println(f"{f(41)}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ParameterTypeInferenceOnlySupportedForClosures)]
+        );
+
+        // An explicit parameter type is never overridden by context, even
+        // when it conflicts with what the surrounding context expects --
+        // this must surface as an ordinary type mismatch, not be silently
+        // coerced away.
+        s.compileFails(
+            "explicit parameter type always wins over context, even when incompatible",
+            """
+fn main(): int {
+    let f: (x: int) => int = (x: i64) => x;
+    fmt.println(f"{f(3)}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]
+        );
+
+        // A closure with an inferred parameter used where the expected type
+        // isn't a callable at all has no source of type information to draw
+        // from.
+        s.compileFails(
+            "closure with inferred parameter assigned to a non-callable type",
+            """
+fn main(): int {
+    let x: int = (a) => a;
+    fmt.println(f"{x}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.CannotInferClosureParameterType)]
+        );
+
+        // A closure's parameter count must match the callable type expected
+        // at its use site.
+        s.compileFails(
+            "closure parameter count must match the expected callable type",
+            """
+fn main(): int {
+    let f: (x: int, y: int) => int = (x) => x;
+    fmt.println(f"{f(3, 4)}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]
+        );
+
+        // A genuine generic-deduction conflict (two sibling arguments of
+        // different concrete types passed to the same generic parameter)
+        // must still be rejected -- inference doesn't paper over real
+        // ambiguity.
+        s.compileFails(
+            "conflicting generic deduction from differently-typed sibling arguments",
+            """
+fn apply2<T>(f: (a: T, b: T) => T, a: T, b: T): T {
+    return f(a, b);
+}
+
+fn main(): int {
+    let x: int = 5;
+    let y: i64 = 6;
+    fmt.println(f"{apply2((a, b) => a, x, y)}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ConflictingDeductionsGenericParameterFunctionPleaseSpecifyIt)]
+        );
+
+        // Named `fn` declarations are unaffected by this feature: every
+        // parameter is still required to have an explicit type at the
+        // grammar level, exactly as before.
+        s.compileFails(
+            "named fn declarations still require explicit parameter types",
+            """
+fn foo(x) {
+}
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]
+        );
+    }
+}

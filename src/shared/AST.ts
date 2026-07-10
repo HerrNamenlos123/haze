@@ -251,7 +251,10 @@ export type ASTParam =
   | {
       kind: "normal";
       name: string;
-      datatype: ASTExpr;
+      // null only for a closure (=>) parameter with no explicit type annotation;
+      // regular `fn` parameters and non-capturing (->) function literals always
+      // have a datatype, enforced by the grammar / SymbolCollection respectively.
+      datatype: ASTExpr | null;
       optional: boolean;
       defaultValue: ASTExpr | null;
       sourceloc: SourceLoc;

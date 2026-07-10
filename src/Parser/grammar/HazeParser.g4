@@ -73,9 +73,13 @@ cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 externLanguage: id;
 
 functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? FN comptime=COMPTIME? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
-lambda: LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW | SINGLEARROW) funcbody;
+lambda: LB lambdaParams RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW | SINGLEARROW) funcbody;
 param: id QUESTIONMARK? COLON (typeExpr | ellipsis) (EQUALS expr)?;
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
+// Like param/params, but the type annotation is optional: closure parameters may be
+// inferred from context (see Elaborate.ts callableExpr()).
+lambdaParam: id QUESTIONMARK? (COLON (typeExpr | ellipsis))? (EQUALS expr)?;
+lambdaParams: (lambdaParam (COMMA lambdaParam)* (COMMA ellipsis)? COMMA?)? | ellipsis;
 ellipsis: ELLIPSIS;
 
 funcbody: (rawScope | exprAsFuncbody);

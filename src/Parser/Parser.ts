@@ -135,6 +135,8 @@ import {
   type IntegerLiteralContext,
   type IntegerUnitLiteralContext,
   type LambdaContext,
+  type LambdaParamContext,
+  type LambdaParamsContext,
   type LogicalContext,
   type MetaAnnotationContext,
   type MetaAnnotationItemContext,
@@ -1145,6 +1147,64 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     // produced = array of ASTParam (one per param child)
+
+    this.stack.push({
+      params: produced as ASTParam[],
+      ellipsis: Boolean(ctx.ellipsis()),
+    });
+  };
+
+  // Like exitParam, but the type annotation is optional: a closure parameter with
+  // no explicit type is inferred from context during elaboration.
+  exitLambdaParam = (p: LambdaParamContext) => {
+    const start = this.getMark(p);
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+
+    assert(!(p.typeExpr() && p.ellipsis()));
+
+    let datatype: ASTExpr | "param-pack" | null;
+    if (p.ellipsis()) {
+      datatype = "param-pack";
+    } else if (p.typeExpr()) {
+      datatype = produced[i++] as ASTExpr;
+    } else {
+      datatype = null;
+    }
+
+    let defaultValue: ASTExpr | null = null;
+    if (p.expr()) {
+      defaultValue = produced[i++] as ASTExpr;
+    }
+
+    if (i !== produced.length) {
+      throw new InternalError("lambdaParam stack mismatch");
+    }
+
+    if (datatype === "param-pack") {
+      this.stack.push({
+        kind: "param-pack",
+        name: p.id().getText(),
+        sourceloc: this.loc(p),
+      } satisfies ASTParam);
+    } else {
+      this.stack.push({
+        kind: "normal",
+        datatype: datatype,
+        name: p.id().getText(),
+        optional: Boolean(p.QUESTIONMARK()),
+        defaultValue: defaultValue,
+        sourceloc: this.loc(p),
+      } satisfies ASTParam);
+    }
+  };
+
+  exitLambdaParams = (ctx: LambdaParamsContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    // produced = array of ASTParam (one per lambdaParam child)
 
     this.stack.push({
       params: produced as ASTParam[],

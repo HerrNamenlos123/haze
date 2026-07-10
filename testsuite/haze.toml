@@ -1,5 +1,6 @@
 
 name = "testsuite"
+id = "yOB7GB71"
 version = "0.1.0"
 description = "Compiler test suite for the Haze compiler itself"
 license = "MIT"
