@@ -340,7 +340,7 @@ export opaque inline struct Bytes {
 export opaque inline struct TypeErasedBox {
     _handle: cptr;
     _prettyTypeName: str;
-    _mangledTypeName: str;
+    _fingerprint: int;
 
     fn constructor<T>(value: T) {
         do unsafe {
@@ -350,7 +350,7 @@ export opaque inline struct TypeErasedBox {
             return TypeErasedBox {
                 _handle: handle,
                 _prettyTypeName: T.prettyName,
-                _mangledTypeName: T.mangledName,
+                _fingerprint: T.fingerprint,
             };
         };
     }
@@ -363,17 +363,18 @@ export opaque inline struct TypeErasedBox {
             typedBox.value = value;
         };
         this._prettyTypeName = T.prettyName;
-        this._mangledTypeName = T.mangledName;
+        this._fingerprint = T.fingerprint;
     }
 
     fn get<T>() {
-        // TODO: This is not actually a true, exhaustive safety check and it is still possible to gamble the system
-        // by using different modules. This will only be truly safe once we implement actual module identity,
-        // where the compiler makes sure each module has a unique id, and the id is part of every mangled type's name.
-        // WARNING: This MUST also support fingerprinting.
-        // If the same type remains, but the fingerprint changes because a member was changed, it is
-        // binary-incompatible and we MUST not load the data and instead recreate it.
-        if (this._mangledTypeName != T.mangledName) {
+        // A fingerprint already implies identity: a type's own fully
+        // qualified (mangled) name is a direct input to its fingerprint, so
+        // an equal fingerprint (collisions aside -- see Fingerprint.ts,
+        // never an issue unless it also coincides with an actual runtime
+        // type violation) guarantees both same identity and same binary
+        // layout in one check. `_prettyTypeName` is kept only for the panic
+        // message below, not for the safety check itself.
+        if (this._fingerprint != T.fingerprint) {
             sys.panic(f"Invalid Type Erased Box access. Value was stored as \"{this._prettyTypeName}\", but it is tried to be accessed as \"{T.prettyName}\"");
         }
         do unsafe {

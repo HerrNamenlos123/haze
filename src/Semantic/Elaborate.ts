@@ -45,6 +45,7 @@ import {
   ConstraintSet,
 } from "./Constraint";
 import { Conversion } from "./Conversion";
+import { computeTypeUseFingerprint, fingerprintToHazeInt } from "./Fingerprint";
 import {
   ctValueToExpr,
   EvalCTFE,
@@ -8412,6 +8413,17 @@ export class SemanticElaborator {
         const name = Semantic.mangleTypeUse(this.sr, expr.type);
         return this.sr.b.literal(
           name.wasMangled ? "_H" + name.name : name.name,
+          sourceloc
+        );
+      }
+      if (name === "fingerprint") {
+        const fingerprint = computeTypeUseFingerprint(this.sr, expr.type);
+        return this.sr.b.literalValue(
+          {
+            type: EPrimitive.int,
+            unit: null,
+            value: fingerprintToHazeInt(fingerprint),
+          },
           sourceloc
         );
       }

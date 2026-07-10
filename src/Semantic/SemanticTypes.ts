@@ -1057,6 +1057,13 @@ export namespace Semantic {
     dynamicArrayTypeCache: Semantic.TypeDefId[];
     typeInstanceCache: Semantic.TypeUseId[];
 
+    // Structural fingerprints (see Fingerprint.ts for the full invariants
+    // this depends on). Computed once, permanently memoized, never
+    // recomputed or invalidated within a compilation.
+    typeDefFingerprints: Map<Semantic.TypeDefId, bigint>;
+    typeUseFingerprints: Map<Semantic.TypeUseId, bigint>;
+    typeDefFingerprintInProgress: Set<Semantic.TypeDefId>;
+
     syntheticFunctions: Map<string, Semantic.SymbolId>;
 
     syntheticScopeToVariableMap: Map<
@@ -1704,6 +1711,10 @@ export namespace Semantic {
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
       typeInstanceCache: [],
+
+      typeDefFingerprints: new Map(),
+      typeUseFingerprints: new Map(),
+      typeDefFingerprintInProgress: new Set(),
 
       syntheticFunctions: new Map(),
 

@@ -145,6 +145,60 @@ a fingerprint which also includes the fingerprints of all participating
 types in the signature, which is the only possibility not to break
 binary layout.
 
+## Fingerprint Algorithm
+
+**Implemented** (`src/Semantic/Fingerprint.ts`, exposed as the `T.fingerprint`
+compile-time reflection property, wired into `TypeErasedBox`
+— `stdlib/core/src/memory.hz`). A 64-bit FNV-1a hash of a type's complete
+binary shape. Every input is length-prefixed before folding in, so
+`("ab","c")` can never hash the same as `("a","bc")`.
+
+- **A type's own fully-qualified mangled name is always a direct hash
+  input** for nominal types (struct, enum) — reused as-is from
+  `Semantic.mangleTypeDef`/`mangleTypeUse`, not a separate construction, so
+  it automatically incorporates module id once that lands (see `Hot Reload
+  & Module Identity.md`). Structural types (unions, function types) compose
+  purely from their parts, no "own name" component, matching how they're
+  mangled today.
+- **Fingerprint equality alone implies identity** — since the name is a
+  direct input, two types can't share a fingerprint without sharing a
+  name (collisions aside, see below). This is why `TypeErasedBox` checks
+  only the fingerprint, not fingerprint plus mangled name separately.
+- **A struct member is `(name, type)`, nothing more — it has no fingerprint
+  of its own.** Only the type half is fingerprintable; the name half is a
+  plain string hashed alongside it: `hash(own name, member_count,
+  [field_name, fingerprint(field_type)]...)`. There's no equivalent of
+  C++'s `Foo::name` for members here, and none is needed.
+- **`TypeUse` folds its own mangled name too, not raw modifier flags.**
+  `mangleTypeUse` already bakes `const`/`mut` and pointer/inline into its
+  string (the `c`/`m`/`p`/`i` prefix scheme), so
+  `fingerprint(TypeUse) = hash(mangleTypeUse-string, fingerprint(TypeDef))`
+  — no separate re-hashing of the mutability enum.
+- **Cycle handling**: before recursing into a type's members, mark it
+  in-progress. On re-entry, substitute *that specific type's own mangled
+  name* (hashed), never a generic/content-free marker — proven necessary,
+  not just tidier: `A{f:B},B{f:A}` (mutual recursion) and `A{f:B},B{f:B}`
+  (B self-referencing) collide under a generic marker and don't under a
+  name-specific one, because a generic marker can't distinguish which type
+  the cycle closed back on.
+- **Compute once, permanently memoized, never recomputed** within a
+  compilation — what makes the cycle substitution above safe (no "later,
+  more complete" recomputation to be inconsistent with).
+- **Primitives are a hardcoded, permanently-stable seed**
+  (`hash(primitive's canonical name)`), not derived from anything — this
+  table is a cross-compiler-version compatibility promise, since virtually
+  every fingerprint transitively touches a primitive.
+- **Collisions are accepted, not defended against.** Only matters if a
+  collision also coincides with an actual runtime type violation — both at
+  once, by accident, is treated as never.
+- **One real landmine found during implementation**: `CallableDatatype`'s
+  own mangled name is backed by `CallableManglingHashStore`, an arbitrary
+  per-compilation-session counter keyed by object reference — non-
+  deterministic across separate builds. Its fingerprint must delegate
+  straight to the wrapped function type instead of ever touching its own
+  name, or fingerprints would differ on every compile for no structural
+  reason.
+
 ## Import Table
 
 Every module's compiled metadata includes an import table: for every
