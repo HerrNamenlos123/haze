@@ -105,6 +105,7 @@ import {
   type AggregateLiteralElementContext,
   type ArrayExprContext,
   type AssignmentContext,
+  type AttemptStatementContext,
   type BooleanConstantContext,
   type BraceExprContext,
   type CInjectDirectiveContext,
@@ -112,6 +113,7 @@ import {
   type ComparisonContext,
   type ComptimeIfStatementContext,
   type DoScopeContext,
+  type DoStatementContext,
   type EnumContentContext,
   type EnumDefinitionContext,
   type EqualityContext,
@@ -2499,6 +2501,77 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "ExprStatement",
       expr: expr,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTExprStatement);
+  };
+
+  // `do { ... }` used bare as a statement, with the trailing semicolon optional
+  // (unlike ExprStatement, which requires one). See the grammar comment on
+  // DoStatement/AttemptStatement for why these need their own alternatives.
+  exitDoStatement = (ctx: DoStatementContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    if (produced.length !== 1) {
+      throw new InternalError("DoStatement stack mismatch");
+    }
+
+    const expr = produced[0] as ASTExpr;
+
+    this.stack.push({
+      variant: "ExprStatement",
+      expr: expr,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTExprStatement);
+  };
+
+  // `attempt { ... } (else|recover)? { ... }` used bare as a statement, with the
+  // trailing semicolon optional. Builds the same ASTAttemptExpr as the
+  // expression form (see exitTernary's ATTEMPT branch), just reached via a
+  // dedicated statement alternative so it doesn't require a semicolon.
+  exitAttemptStatement = (ctx: AttemptStatementContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+
+    const attemptBodies = ctx.attemptBody();
+    if (produced.length !== 1 + attemptBodies.length) {
+      throw new InternalError("AttemptStatement stack mismatch");
+    }
+
+    let elseScope: ASTScope | null = null;
+    let elseVar: string | null = null;
+    let recoverScope: ASTScope | null = null;
+    let recoverVar: string | null = null;
+
+    for (let i = 0; i < attemptBodies.length; i++) {
+      const body = attemptBodies[i];
+      const scope = produced[i + 1] as ASTScope;
+      if (body.ELSE()) {
+        if (elseScope !== null) {
+          throw new InternalError("Duplicate else in attempt");
+        }
+        elseScope = scope;
+        elseVar = body.id() ? body.id()!.getText() : null;
+      } else if (body.RECOVER()) {
+        if (recoverScope !== null) {
+          throw new InternalError("Duplicate recover in attempt");
+        }
+        recoverScope = scope;
+        recoverVar = body.id() ? body.id()!.getText() : null;
+      }
+    }
+
+    this.stack.push({
+      variant: "ExprStatement",
+      expr: {
+        variant: "AttemptExpr",
+        attemptScope: produced[0] as ASTScope,
+        elseScope: elseScope,
+        elseVar: elseVar,
+        recoverScope: recoverScope,
+        recoverVar: recoverVar,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTAttemptExpr,
       sourceloc: this.loc(ctx),
     } satisfies ASTExprStatement);
   };

@@ -374,6 +374,18 @@ ifStatementConditionImpl
 statement
     : INLINEC LB expr RB SEMI?                                                      #CInlineStatement
     | typeDef SEMI                                                                  #TypeAliasStatement
+    // These two must come before ExprStatement: `do { ... }` and `attempt { ... }`
+    // are also reachable as plain expressions (primaryExpr / ternary), so without
+    // a dedicated statement form, using either bare as a statement falls through
+    // to `expr SEMI` and forces a trailing semicolon after the closing '}' -- and
+    // if that semicolon is missing, the parser fails to recover cleanly (it can
+    // misinterpret the block as an anonymous struct literal and report a
+    // confusing, disconnected error far from the real problem). Making the
+    // semicolon explicitly optional here, and listing these before ExprStatement
+    // so ties resolve in their favor, fixes both: the semicolon is no longer
+    // required, and a missing one no longer derails the parser.
+    | doScope SEMI?                                                                 #DoStatement
+    | ATTEMPT rawScope attemptBody* SEMI?                                          #AttemptStatement
     | expr SEMI                                                                     #ExprStatement
     | RETURN expr? SEMI                                                             #ReturnStatement
     | RAISE expr? SEMI                                                              #RaiseStatement
