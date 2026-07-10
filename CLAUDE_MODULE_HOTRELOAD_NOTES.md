@@ -11,8 +11,19 @@ Completed: hzstd split into types/include/src (Part 1), and the per-module
 metadata symbol + function tables + trampolines (Part 2, first slice —
 collection pass and codegen; no refcount hooks yet). Single haze program +
 full 19-module project both build and run clean with both pieces in place.
-Not started: refcount hooks inside the trampolines, leases, real module IDs.
-See "Next steps" at the bottom.
+
+Part 3 (linking modes, module registry, cross-module calls, reload
+eligibility, migration, memory-model safety argument) is now a
+**consistent, mostly-settled design** — reload eligibility, the two-phase
+rebuild/adopt split, the import-table requirement, and the no-raw-pointers
+memory-safety argument all converged this session. Only a handful of
+specific items remain genuinely open (see Part 3's own "Open questions" —
+migration hook granularity, what disqualifies a module beyond stdlib,
+multi-level dependency graph init ordering). **None of Part 3 is
+implemented yet** — it's design only, but it's implementation-ready design
+now, not open-ended discussion. Not started at all: refcount hooks inside
+the trampolines, leases, real module IDs (Part 2 leftovers), and all of
+Part 3. See "Next steps" at the bottom.
 
 ## Part 1 — hzstd restructuring (done, working)
 
@@ -383,7 +394,305 @@ Resolved as follows -- **not actually a conflict**, for a specific reason:
    this one coarse registry slot, swapped once per reload, read only at
    lease boundaries.
 
+## Part 3 — Linking modes, module registry, cross-module calls, reload eligibility
+
+**Status: design discussion only. Nothing here is implemented, and most of
+it isn't even fully decided yet -- captured as-is so the next session can
+pick up the open questions instead of re-deriving them.** This is the layer
+above Part 2: Part 2 built the per-module metadata symbol + tables +
+trampolines; Part 3 is about how those get *used* across a whole running
+process with multiple modules, some static, some dynamically loaded.
+
+### Three linking modes -- probably only supporting two of them
+
+1. **Fully static** (everything linked into one binary). The module-info
+   table from Part 2 is "nice to have" here but not load-bearing -- calls
+   should still go **direct** (mangled name to mangled name), not through
+   the table or a trampoline, specifically so the C linker/optimizer can
+   inline and optimize across the call like normal. The table exists mainly
+   for introspection/uniformity, not because anything needs it to dispatch
+   a call in this mode.
+2. **Dynamically linked at build time** (traditional `.so`/`.dll`, resolved
+   by the platform linker at link time -- the classic shared-library model).
+   Strong standing opinion against this mode: "shared libraries linked at
+   link time... should never have existed and create atrocious deployment
+   and in most cases no meaningful memory save." Leaning toward **not
+   supporting this mode at all** -- not fully final, but the default
+   assumption going forward is that Haze skips it.
+3. **Dynamic library loaded at runtime** (the actual hot-reload mechanism).
+   Distinct from mode 2 in a specific way: the module is still compiled as
+   part of the normal app build (using Haze's own build pipeline, producing
+   a loadable artifact), but the **host executable never links against it at
+   link time at all** -- nothing about it is resolved by the C/platform
+   linker. Instead, the Haze *runtime* loads it at process runtime (the
+   moral equivalent of `dlopen`), and everything about calling into it goes
+   through the Part 2 metadata table, not real OS-level symbol resolution
+   for individual functions.
+
+Working assumption: Haze ends up supporting modes 1 and 3 only, treating
+mode 2 as something to actively avoid rather than a checkbox to fill in.
+
+### Global module registry
+
+The host executable maintains **one global, process-wide list of every
+registered module** -- both statically compiled ones and dynamically loaded
+ones, in the same list. Requirements stated so far:
+- Global and shared across **all threads** (contrast with the per-thread
+  function-pointer globals below -- this registry is not per-thread).
+- At least one concrete reason to exist: reject a dynamically-loaded module
+  at runtime if its module id conflicts with one already registered.
+- **Append-only.** Modules are only ever *added*, never removed from the
+  registry, even across reload/"unload" -- consistent with Part 2's
+  per-generation refcount design (a generation's bookkeeping needs to
+  persist even after a newer generation has taken over new calls).
+- Every module conceptually exists **exactly once** in a given host process.
+  Concretely: every dynamic module depends on stdlib at minimum, and stdlib
+  is always already registered (loaded once, by the host, first) -- a
+  dynamic module being loaded does not get its own private copy of stdlib,
+  it resolves its stdlib dependency against the one already in the
+  registry. This is presumably the general rule for any shared dependency,
+  not just stdlib, though that's not spelled out yet -- see open questions.
+
+### Cross-module calls: per-function thread-local globals, only for dynamic importers
+
+When module A imports functions from module B, and **A is itself a
+dynamically-loaded module**, A's codegen must create one global
+function-pointer variable per imported function, named to shadow the real
+function's name (this mirrors the mechanism already sketched in Part 1's
+`include/` directory notes: "a global function-pointer variable shadowing
+that name when in a dynamic plugin"). Every call site inside A then just
+calls through that variable instead of the real symbol.
+
+These per-function pointer globals **must be `_Thread_local`** -- each
+thread has its own lease/refcount tracking (per Part 2's multithreading
+section) and so may have a different function pointer loaded (trampoline
+vs. raw) per thread. Accepted cost, not a bug: a TLS load is roughly 3
+instructions on a typical target, worse than a direct call but still much
+cheaper than a struct/table lookup per call. This is *the* performance
+constraint that actually matters here -- steady-state call overhead, not
+how reload itself is scheduled (see the reload-mechanics section below,
+which explicitly does not need to be fast).
+
+Note this mechanism is specifically for **dynamic importers only** --
+matches mode 1 above where statically-linked modules keep calling directly,
+with no per-function global/indirection at all.
+
+### Module init / bootstrap
+
+Every dynamically-loaded module has an **init function**. The host
+executable calls it once, passing it a reference to the module-info struct
+of every module it depends on (stdlib's, plus whatever else it imports).
+These init calls can happen **sequentially** -- no need for a parallel
+bootstrap scheme. On init, the dynamic module uses those references to set
+up its own per-thread function-pointer globals (previous section) --
+**defaulting to the trampoline table**, the safe default from Part 2.
+
+### Reload eligibility: no graph-position rule, purely fingerprint-cascade-driven
+
+Earlier drafts of this doc floated a rule like "only leaf modules can
+reload, or their dependents too if they reload together" -- **superseded.**
+There is no separate graph-position rule at all. Reload eligibility falls
+entirely out of one mechanism:
+
+> A reload of module X is requested manually (never automatic/implicit --
+> see "the polling model" below). The runtime determines the *required
+> cascade set*: every currently-loaded module that uses one of X's exported
+> types **by value** (i.e. actually depends on that type's binary layout,
+> not just an opaque handle to it). X can reload alone if that set is empty.
+> If it isn't empty, every module in the set must *also* successfully
+> recompile and pass its own fingerprint checks, atomically, or the whole
+> reload is rejected and nothing changes.
+
+"Leaf" modules (nothing depends on them) are simply the case where the
+cascade set happens to be empty -- not a special rule, a corollary of this
+one. A non-hotreloadable module (stdlib, or anything else disqualified --
+see below) appearing anywhere in a *required* cascade set is an automatic,
+unconditional rejection, for the same reason the executable itself being in
+the set is a rejection today (can't recompile/reload the host process
+itself; that's what "the app struct changed, restart" already means).
+
+**Function signature changes are already safe for free, without needing a
+fingerprint at all.** Part 2's function-table entries are keyed by the full
+mangled name, which already encodes parameter/return types (the Itanium-ish
+scheme). If B changes a function's signature, its old mangled name simply
+no longer exists in B's new table -- a caller resolving that name fails
+immediately and loudly. Fingerprinting only needs to cover **struct/type
+layout**, because a struct field reference doesn't encode the full member
+layout the way a call site's mangled name encodes full parameter types.
+This narrows what the still-unimplemented fingerprint subsystem actually
+has to compute.
+
+### The import table (new -- Part 2 only built the export side)
+
+Every module needs to remember, for everything it imports and *actually
+uses*, the fingerprint it was compiled against -- symmetric to Part 2's
+export table, but for the consumer side. Confirmed requirement (not yet
+implemented): a module's compiled metadata needs an **import table** listing
+`{name, expected fingerprint}` for every type/function it pulled in from
+elsewhere and actually referenced.
+
+This is static-per-generation but dynamic-across-generations: within one
+compiled generation of module A, its import table is fixed data (baked in
+at compile time, same as the export table). But every time A itself gets
+recompiled (whether because A's own source changed, or because A is being
+dragged into someone else's reload cascade), the import table gets
+regenerated from scratch against whatever B currently is -- so across A's
+lifetime (many generations over a long run), the *values* in that table
+change generation to generation. No separate runtime-mutation path is
+needed for this -- recompiling A against current-B is what "updates" it.
+
+The reload check, precisely: for a required cascade set, every member
+module's *import table* entries for the changed type(s) must, after
+recompilation, match the changed type's *new* fingerprint in the exporting
+module's *export table*. That's the whole check.
+
+### Reload mechanics: two phases, only one of them is thread-local
+
+**Phase 1 -- rebuild (process-wide, not thread-local).** Scanning for
+changed source and recompiling is one operation shared by the whole
+process, guarded by a single global mutex. Whichever thread's poll call
+gets there first does the actual scan+compile+relink; this can simply
+**block/freeze all threads** for the duration -- explicitly acceptable,
+since a reload is a rare, deliberate, developer-triggered event, not a hot
+path, and correctness/simplicity matters far more here than avoiding a
+brief freeze. A non-blocking variant (kick off compilation in the
+background, only actually swap in the result on a *later* poll once
+compilation has finished, so the app keeps running meanwhile) is a valid
+future improvement but **explicitly not needed right now**. Same for
+throttling the filesystem scan itself (e.g. once/sec) and round-robining
+which hotreloadable module gets scanned per frame instead of scanning all
+of them every call -- both flagged as future perf work, not needed now.
+
+**Phase 2 -- adopt (thread-local, per Part 2's original design).** Once a
+new generation exists, each thread only sees it once *that thread* calls
+the poll/reload function (or, per Part 2, at its next lease-acquire
+refresh check). A thread that never polls keeps running old code
+indefinitely -- **by design, not a bug.** If a main-loop thread polls every
+frame and a background thread never does, the background thread is
+expected to stay on the old generation until it does; that's an accepted
+consequence of "everything is thread-local," not something the runtime
+tries to paper over.
+
+**Compile failure.** If recompiling a module in the required cascade set
+fails, the poll function simply reports that failure (an error the caller
+is expected to check and act on) and does *nothing else* -- there is
+nothing to roll back, because nothing was ever applied; the swap-in step
+only happens after the *entire* cascade set has compiled and fingerprint-
+checked successfully. The failure is remembered (e.g. keyed on the failing
+source's mtime/hash) so a per-frame poll doesn't retry the same broken
+compile every single call -- only retries once something on disk actually
+changes again.
+
+### Module opt-in
+
+A module must be explicitly marked hotreloadable in its `haze.toml` --
+opt-in, not opt-out. stdlib can never be hotreloadable (see the memory-model
+section below for *why*, not just that it's a rule); more disqualifying
+conditions may exist in the future, not enumerated yet.
+
+### State migration hook (well-known function, like `main`)
+
+For state that must survive a reload where its type's fingerprint actually
+changed (the "app struct changed" case), there's a lifecycle hook function
+-- analogous to `main` in that the runtime calls it by a well-known name,
+rather than the programmer calling it directly. Rough shape (specifics
+still open, see below): a **serialize** hook runs against the *old*
+generation's code (producing some generation-independent carrier, e.g. a
+plain string) and a **deserialize** hook runs against the *new* generation's
+code (consuming that carrier to build a fresh instance in the new layout).
+A string is deliberately generation-independent -- unlike the struct itself,
+`str`'s shape never changes, so it's a safe carrier across a fingerprint
+boundary that nothing else is.
+
+Placement in the two-phase model above: this belongs to **phase 1
+(rebuild)**, not phase 2 (adopt) -- the state being migrated is one shared
+instance, not per-thread data, so serialize-then-deserialize can only
+happen once per actual reload event (run by whichever thread's poll call
+won the phase-1 mutex), never once per adopting thread. Sequencing: new
+generation loads and passes fingerprint checks -> serialize runs on old ->
+deserialize runs on new -> the runtime installs the result into whatever
+global slot held the old instance -> *then* the old generation becomes
+eligible for the normal refcount-drain-and-unload path, same as always.
+
+**Still open, not decided:**
+- Granularity -- one hook per mutable global that can change shape, or one
+  hook per module that migrates all of a module's state as a bundle?
+- Mandatory or optional-with-fallback -- if a state-holding global's type
+  changed and no hook is defined, does the reload get rejected outright, or
+  does it fall back to fresh-recreate via the module's normal init path
+  (the "state gets lost and recreated" case)? Optional-with-fallback fits
+  the stated philosophy better ("the system's only job is to reject what's
+  unsafe, not to be maximally helpful"), but not confirmed.
+
+### The memory-model keystone: why none of this can dangle
+
+This is the part that makes the whole design airtight rather than
+best-effort, and it's worth stating explicitly rather than leaving it
+implicit: **Haze has no raw C/Rust-style pointers.** The only two ways to
+reference/alias something across a module boundary are:
+- **By value** -- a real struct type, which is exactly what the fingerprint
+  mechanism above already covers.
+- **`TypeErasedBox`** -- a type-erased container that remembers both the
+  mangled type name *and* the fingerprint (via compile-time reflection) at
+  the point a value is stored into it, and checks both at the point a value
+  is retrieved. A mismatch panics rather than handing back reinterpreted
+  bytes. This closes the "smuggle a value out through a generic box in a
+  module that doesn't statically know the type" loophole -- the box itself
+  still catches it at the boundary.
+
+Separately: **every allocation goes through one host-owned GC/allocator**
+(the executable's own stdlib instance). A dynamically-loaded module never
+brings its own allocator/heap -- per the module-registry section above, it
+receives a *reference* to the host's already-existing stdlib at init, the
+same as any other imported module. Consequence: allocated **data** is never
+owned by any particular module generation's lifetime -- only a module's
+**code** (its functions, trampolines, and the Part 2 metadata table) is
+subject to load/unload. Unloading an old generation therefore can never
+dangle a reference to data, because the data was never tied to that
+generation's memory in the first place; the GC's own liveness tracing
+(which follows through `TypeErasedBox` contents too) keeps anything still
+referenced alive, completely independent of which module generations happen
+to be currently loaded.
+
+This is also the real reason stdlib specifically must be the one permanent,
+non-hotreloadable module -- not merely "everything depends on it" as a
+practical inconvenience, but because it's the thing that *owns the GC*, and
+this entire safety argument is load-bearing on that GC never itself being
+subject to a fingerprint-driven reload mid-process. And it's the reason the
+classic Unix shared-library model was rejected as a foundation back in the
+three-linking-modes section: that model has no equivalent single-owner GC
+story, which is exactly the class of problem ("two heaps, cross-module free
+is UB") this design sidesteps entirely by construction.
+
+### Open questions (still genuinely unresolved)
+
+- Migration hook granularity and mandatory-vs-optional-fallback (above).
+- What, beyond "not stdlib," disqualifies a module from being marked
+  hotreloadable -- acknowledged there will likely be more reasons, not
+  enumerated yet. Deliberately not guessing at this list.
+- How setup/ordering works for a **complex, multi-level dependency graph**
+  (not just one level of imports) during module init is still undefined in
+  detail, though the general shape (host passes each dynamic module
+  references to everything it depends on, sequentially, at init) is settled.
+  Related: whether/how per-thread function-pointer setup needs to repeat for
+  threads spawned *after* a module's initial init call.
+- **Circular module dependencies are always disallowed** -- firm, decided
+  rule, not open, restated here since it's load-bearing for the cascade
+  logic above (a cycle would make "required cascade set" ill-defined).
+- The non-blocking reload variant and filesystem-scan throttling/round-robin
+  (mentioned above) are explicitly deferred, not designed yet.
+
 ## Next steps (not started)
+
+**Priority for next session: Part 3's design is now implementation-ready
+(only a few small items remain open, listed in Part 3's own "Open
+questions" section) -- next session can start turning it into code,
+starting with whichever of Part 2's remaining items Part 3 now gives enough
+shape to: the refcount hooks and lease codegen were blocked on the
+per-thread cross-module-call plumbing, which Part 3 now specifies. Probably
+still worth resolving migration-hook granularity and the
+module-disqualification list before touching those specifically, since both
+feed directly into the metadata struct's shape.**
 
 Done this session (see Part 2 above for the detail): the collection pass
 (`Lowered.FunctionSymbol.exported`, sourced correctly from `symbol.export`),
