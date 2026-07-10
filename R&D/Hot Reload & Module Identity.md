@@ -10,6 +10,24 @@
   - Same `id`, same `name` → same module (possibly a new build/version).
   - Different `id`, same `name` → allowed (e.g. different vendors).
   - Same `id`, different `name` → hard error: modules are declared fundamentally incompatible (likely copy-paste), one must change its id. Checked at build, link, and runtime load.
+- **stdlib is the one module with no `id`, and this is not a gap.** Confirmed
+  from actual generated output: every regular module's mangled symbols carry
+  a module-namespace segment (`HM<len><name>_<major>_<minor>_<patch>_`,
+  `Config.ts:getModuleNamespaceMangledSegment`); stdlib's do not — its
+  symbols mangle straight from the namespace/type chain with no module
+  segment at all. `id` exists to answer exactly one question: is this a
+  reload of the same module, or an unrelated module that happens to collide
+  in name. That question cannot be asked of stdlib — it is never
+  dynamically loaded, never reloadable, and exactly one instance exists per
+  process by construction (every module receives a reference to the host's
+  one stdlib, never a private copy — see `Module Memory Model & Reload
+  Mechanics.md`). Nothing to disambiguate, nothing needed to disambiguate it
+  with; stdlib's identity is definitionally singular ("the stdlib"), not
+  something an `id` needs to prove.
+  - **Follow-up, not yet enforced:** the reserved stdlib module name must be
+    forbidden in user `haze.toml` files once `id` generation is implemented,
+    otherwise a user module could collide with the one namespace that isn't
+    id-qualified.
 
 ## Type Identity vs. Compatibility
 
