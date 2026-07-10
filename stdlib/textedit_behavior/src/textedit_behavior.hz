@@ -11,6 +11,29 @@ export inline struct ContextArgs {
     getLine: (lineIndex: int) => str;
     getLineCount: () => int;
     getTimeInSeconds: () => real;
+
+    // The single mutation primitive the engine uses to edit the document.
+    // Replaces everything between `start` and `end` (a normalized,
+    // start-before-end position pair, as produced by every editing method
+    // below) with `text`. Insertion is `start == end`; deletion is
+    // `text == ""`; a plain typed character is a 1-char replace of a
+    // collapsed range. `text` may contain "\n" (paste of multiple lines).
+    //
+    // Must apply synchronously: immediately after this call returns, the
+    // engine calls `getLine`/`getLineLength`/`getLineCount` again and
+    // expects them to reflect the edit. The host owns how (or whether) it
+    // schedules any reactive re-render around that -- the engine only
+    // needs the *data* to be current.
+    replaceRange: (start: Vec2i, end: Vec2i, text: str) => void;
+}
+
+// A half-open column range on a single line, as selected. Returned by
+// Context.selectionRangeForLine() so a host can render one highlight rect
+// per visual line without having to re-derive the per-line clamping of a
+// possibly multi-line selection itself.
+export struct LineSelectionRange {
+    startCol: int;
+    endCol: int;
 }
 
 export struct Context {
@@ -35,12 +58,29 @@ export struct Context {
     _desiredCursorPosition: Vec2i = {};
     cursorPosition: rx.Reactive<Vec2i>;
 
+    // none => no selection, cursorPosition is just a caret.
+    // Otherwise the selection spans from this anchor to the (active)
+    // cursorPosition, in whichever order the user dragged/shift-moved it.
+    selectionAnchor: rx.Reactive<Vec2i | none>;
+    hasSelection: rx.Computed<bool>;
+    selectionStart: rx.Computed<Vec2i>;
+    selectionEnd: rx.Computed<Vec2i>;
+
+    // Internal yank/paste register. Not wired to the OS clipboard -- that's
+    // a host-level concern (platform clipboard API), this is just enough
+    // for copy/cut/paste to work within the app.
+    _clipboardRegister: str = "";
+
     fn constructor(args: ContextArgs) {
         let context = Context {
             args: args,
             cursorVisible: rx.computed(() => false),
             _cursorLastMovedAt: args.getTimeInSeconds(),
             cursorPosition: rx.reactive(Vec2i(0, 0)),
+            selectionAnchor: rx.reactive<Vec2i | none>(none),
+            hasSelection: rx.computed(() => false),
+            selectionStart: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
+            selectionEnd: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
         };
 
         context.cursorVisible = rx.computed(() => {
@@ -50,53 +90,350 @@ export struct Context {
             return math.modulo(elapsed, blinkInterval) <= blinkInterval / 2.0;
         });
 
+        context.hasSelection = rx.computed(() => {
+            let anchor = rx.get(context.selectionAnchor);
+            if !anchor {
+                return false;
+            }
+            return anchor.x != context.cursorPosition.x || anchor.y != context.cursorPosition.y;
+        });
+
+        context.selectionStart = rx.computed((): Vec2i => {
+            let anchor = rx.get(context.selectionAnchor);
+            let cx = context.cursorPosition.x;
+            let cy = context.cursorPosition.y;
+            if !anchor {
+                return { x: cx, y: cy };
+            }
+            if anchor.y < cy || (anchor.y == cy && anchor.x < cx) {
+                return { x: anchor.x, y: anchor.y };
+            }
+            return { x: cx, y: cy };
+        });
+
+        context.selectionEnd = rx.computed((): Vec2i => {
+            let anchor = rx.get(context.selectionAnchor);
+            let cx = context.cursorPosition.x;
+            let cy = context.cursorPosition.y;
+            if !anchor {
+                return { x: cx, y: cy };
+            }
+            if anchor.y < cy || (anchor.y == cy && anchor.x < cx) {
+                return { x: cx, y: cy };
+            }
+            return { x: anchor.x, y: anchor.y };
+        });
+
         return context;
     }
 
-    fn moveCursorRight() {
-        let pos = this.cursorPosition;
-        let lineLength = this.args.getLineLength(pos.y);
-        if pos.x < lineLength {
-            this._setCursorPosition({ x: pos.x + 1, y: pos.y }, true);
-        }
-        else if pos.y < this.args.getLineCount() - 1 {
-            this._setCursorPosition({ x: 0, y: pos.y + 1 }, true);
-        }
+    // === Movement ================================================
+    //
+    // Every move function is a thin wrapper around a pure "_target*"
+    // function (computes where the motion goes, without side effects) and
+    // _moveTo (applies it: clamps, updates the sticky column, and grows or
+    // collapses the selection). Keeping the target computation pure means
+    // the same motion can be reused to move the caret, to extend a
+    // selection (`extend: true`, i.e. Shift held), and later to compute the
+    // range an operator (Vim's d/y/c) or a click-drag should act on --
+    // without three divergent copies of word/line-boundary logic.
+
+    fn moveCursorRight(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetRight(pos), true, extend);
     }
 
-    fn moveCursorLeft() {
-        let pos = this.cursorPosition;
-        if pos.x > 0 {
-            this._setCursorPosition({ x: pos.x - 1, y: pos.y }, true);
-        }
-        else if pos.y > 0 {
-            this._setCursorPosition({ x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 }, true);
-        }
+    fn moveCursorLeft(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetLeft(pos), true, extend);
     }
 
-    fn moveCursorUp() {
-        let pos = this.cursorPosition;
-        if pos.y > 0 {
-            this._setCursorPosition({ x: this._desiredCursorPosition.x, y: pos.y - 1 }, false);
-        }
+    fn moveCursorUp(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetUp(pos), false, extend);
     }
 
-    fn moveCursorDown() {
-        let pos = this.cursorPosition;
-        if pos.y < this.args.getLineCount() - 1 {
-            this._setCursorPosition({ x: this._desiredCursorPosition.x, y: pos.y + 1 }, false);
-        }
+    fn moveCursorDown(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetDown(pos), false, extend);
     }
 
     // Ctrl+Left in every mainstream editor: jump to the start of the previous
     // word, crossing to the end of the previous line if already at column 0.
-    fn moveCursorWordLeft() {
+    fn moveCursorWordLeft(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetWordLeft(pos), true, extend);
+    }
+
+    // Ctrl+Right: jump to the start of the next word, crossing to the start
+    // of the next line if already at the end of the current one.
+    fn moveCursorWordRight(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetWordRight(pos), true, extend);
+    }
+
+    // Home / End: start / end of the current line.
+    fn moveCursorHome(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetHome(pos), true, extend);
+    }
+
+    fn moveCursorEnd(extend: bool = false) {
+        let pos = this._cursorPos();
+        this._moveTo(this._targetEnd(pos), true, extend);
+    }
+
+    // Ctrl+Home / Ctrl+End: start / end of the whole document.
+    fn moveCursorDocumentStart(extend: bool = false) {
+        this._moveTo(this._targetDocumentStart(), true, extend);
+    }
+
+    fn moveCursorDocumentEnd(extend: bool = false) {
+        this._moveTo(this._targetDocumentEnd(), true, extend);
+    }
+
+    // Ctrl+A.
+    fn selectAll() {
+        this.selectionAnchor := this._targetDocumentStart();
+        this._moveTo(this._targetDocumentEnd(), true, true);
+    }
+
+    // === Editing ==================================================
+
+    // Anything that produces committed text: regular typing (one
+    // TextInputEvent chunk at a time), and paste. If there's a selection it
+    // is replaced; otherwise `text` is inserted at the caret. The caret ends
+    // up right after the inserted text either way.
+    fn insertText(text: str) {
+        let insertAt: Vec2i = this._cursorPos();
+        if this.hasSelection {
+            let start = this._selStart();
+            let end = this._selEnd();
+            insertAt = start;
+            this.args.replaceRange(start, end, "");
+            this.selectionAnchor := none;
+        }
+        this.args.replaceRange(insertAt, insertAt, text);
+
+        let parts = text.split("\n");
+        let target: Vec2i = {};
+        if parts.length <= 1 {
+            target = { x: insertAt.x + text.length, y: insertAt.y };
+        } else {
+            target = { x: parts[parts.length - 1].length, y: insertAt.y + parts.length - 1 };
+        }
+        this._moveTo(target, true, false);
+    }
+
+    // Enter/Return.
+    fn insertNewline() {
+        this.insertText("\n");
+    }
+
+    // Backspace. `wholeWord: true` (Ctrl+Backspace) deletes back to the
+    // start of the previous word instead of a single character -- but only
+    // when there's no selection, matching Chrome/VS Code: with a selection,
+    // plain Backspace already deletes exactly the selection regardless of
+    // modifiers.
+    fn deleteBackward(wholeWord: bool = false) {
+        if this.hasSelection {
+            this._deleteSelection();
+            return;
+        }
+        let pos = this._cursorPos();
+        if pos.x == 0 && pos.y == 0 {
+            return;
+        }
+        let deleteFrom = wholeWord ? this._targetWordLeft(pos) : this._targetLeft(pos);
+        this.args.replaceRange(deleteFrom, pos, "");
+        this._moveTo(deleteFrom, true, false);
+    }
+
+    // Delete. `wholeWord: true` (Ctrl+Delete) deletes forward to the start
+    // of the next word; same selection caveat as deleteBackward.
+    fn deleteForward(wholeWord: bool = false) {
+        if this.hasSelection {
+            this._deleteSelection();
+            return;
+        }
+        let pos = this._cursorPos();
+        let lastLine = this.args.getLineCount() - 1;
+        if pos.x == this.args.getLineLength(pos.y) && pos.y == lastLine {
+            return;
+        }
+        let deleteTo = wholeWord ? this._targetWordRight(pos) : this._targetRight(pos);
+        this.args.replaceRange(pos, deleteTo, "");
+        this._moveTo(pos, true, false);
+    }
+
+    // === Clipboard (internal register -- see _clipboardRegister) =======
+
+    fn copy() {
+        if !this.hasSelection {
+            return;
+        }
+        this._clipboardRegister = this._getTextInRange(this._selStart(), this._selEnd());
+    }
+
+    fn cut() {
+        if !this.hasSelection {
+            return;
+        }
+        this._clipboardRegister = this._getTextInRange(this._selStart(), this._selEnd());
+        this._deleteSelection();
+    }
+
+    fn paste() {
+        if this._clipboardRegister.length == 0 {
+            return;
+        }
+        this.insertText(this._clipboardRegister);
+    }
+
+    // === Selection queries, for rendering =========================
+
+    // The selected column range on a given line, or none if that line
+    // isn't touched by the selection at all. For lines strictly inside a
+    // multi-line selection this spans the whole line; the first/last line
+    // are clamped to where the selection actually starts/ends.
+    fn selectionRangeForLine(lineIndex: int): LineSelectionRange | none {
+        if !this.hasSelection {
+            return none;
+        }
+        let start = this._selStart();
+        let end = this._selEnd();
+        if lineIndex < start.y || lineIndex > end.y {
+            return none;
+        }
+        let startCol = lineIndex == start.y ? start.x : 0;
+        let endCol = lineIndex == end.y ? end.x : this.args.getLineLength(lineIndex);
+        let result: LineSelectionRange = { startCol: startCol, endCol: endCol };
+        return result;
+    }
+
+    // === Internals =================================================
+
+    // Vec2i field reads coming straight off `cursorPosition`/`selectionStart`/
+    // `selectionEnd` are reactive-wrapped per-field, not plain Vec2i values --
+    // fine for reading `.x`/`.y` off directly, but not for passing on as a
+    // `Vec2i` argument or return value. These three rebuild a genuine plain
+    // Vec2i so the rest of the engine (_target*, replaceRange, ...) can stay
+    // written in terms of ordinary Vec2i values.
+    fn _cursorPos(): Vec2i {
         let pos = this.cursorPosition;
+        return { x: pos.x, y: pos.y };
+    }
+
+    fn _selStart(): Vec2i {
+        let s = this.selectionStart;
+        return { x: s.x, y: s.y };
+    }
+
+    fn _selEnd(): Vec2i {
+        let e = this.selectionEnd;
+        return { x: e.x, y: e.y };
+    }
+
+    fn _deleteSelection() {
+        let start = this._selStart();
+        let end = this._selEnd();
+        this.args.replaceRange(start, end, "");
+        this.selectionAnchor := none;
+        this._moveTo(start, true, false);
+    }
+
+    fn _getTextInRange(start: Vec2i, end: Vec2i): str {
+        if start.y == end.y {
+            return this.args.getLine(start.y).slice(start.x, end.x);
+        }
+        let firstLine = this.args.getLine(start.y);
+        let result = firstLine.slice(start.x, this.args.getLineLength(start.y));
+        for (let y = start.y + 1; y < end.y; y++) {
+            result = f"{result}\n{this.args.getLine(y)}";
+        }
+        let lastLine = this.args.getLine(end.y);
+        result = f"{result}\n{lastLine.slice(0, end.x)}";
+        return result;
+    }
+
+    // Single point of truth for placing the cursor: clamps to valid
+    // document/line bounds, decides whether this move updates the sticky
+    // column, and decides whether it grows/shrinks a selection (Shift held)
+    // or collapses to a plain caret. Every move/edit function above -- and
+    // any future one (click-to-place, drag, Vim visual mode, ...) -- should
+    // go through this rather than writing cursorPosition/selectionAnchor
+    // directly.
+    fn _moveTo(target: Vec2i, updateDesiredX: bool, extend: bool) {
+        this._cursorLastMovedAt = this.args.getTimeInSeconds();
+
+        let lineCount = this.args.getLineCount();
+        let y = clamp<int>(target.y, 0, lineCount - 1);
+        let x = clamp<int>(target.x, 0, this.args.getLineLength(y));
+
+        if extend {
+            if !this.selectionAnchor {
+                this.selectionAnchor := this._cursorPos();
+            }
+        } else if this.selectionAnchor {
+            this.selectionAnchor := none;
+        }
+
+        if this.cursorPosition.x != x {
+            this.cursorPosition.x := x;
+        }
+        if this.cursorPosition.y != y {
+            this.cursorPosition.y := y;
+        }
+
+        this._desiredCursorPosition.y = y;
+        if updateDesiredX {
+            this._desiredCursorPosition.x = x;
+        }
+    }
+
+    // --- Pure motions: (position) => target position. No side effects. ---
+
+    fn _targetRight(pos: Vec2i): Vec2i {
+        let lineLength = this.args.getLineLength(pos.y);
+        if pos.x < lineLength {
+            return { x: pos.x + 1, y: pos.y };
+        }
+        if pos.y < this.args.getLineCount() - 1 {
+            return { x: 0, y: pos.y + 1 };
+        }
+        return pos;
+    }
+
+    fn _targetLeft(pos: Vec2i): Vec2i {
+        if pos.x > 0 {
+            return { x: pos.x - 1, y: pos.y };
+        }
+        if pos.y > 0 {
+            return { x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 };
+        }
+        return pos;
+    }
+
+    fn _targetUp(pos: Vec2i): Vec2i {
+        if pos.y > 0 {
+            return { x: this._desiredCursorPosition.x, y: pos.y - 1 };
+        }
+        return pos;
+    }
+
+    fn _targetDown(pos: Vec2i): Vec2i {
+        if pos.y < this.args.getLineCount() - 1 {
+            return { x: this._desiredCursorPosition.x, y: pos.y + 1 };
+        }
+        return pos;
+    }
+
+    fn _targetWordLeft(pos: Vec2i): Vec2i {
         if pos.x == 0 {
             if pos.y > 0 {
-                this._setCursorPosition({ x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 }, true);
+                return { x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 };
             }
-            return;
+            return pos;
         }
 
         let line = this.args.getLine(pos.y);
@@ -115,19 +452,16 @@ export struct Context {
             }
         }
 
-        this._setCursorPosition({ x: x, y: pos.y }, true);
+        return { x: x, y: pos.y };
     }
 
-    // Ctrl+Right: jump to the start of the next word, crossing to the start
-    // of the next line if already at the end of the current one.
-    fn moveCursorWordRight() {
-        let pos = this.cursorPosition;
+    fn _targetWordRight(pos: Vec2i): Vec2i {
         let lineLength = this.args.getLineLength(pos.y);
         if pos.x >= lineLength {
             if pos.y < this.args.getLineCount() - 1 {
-                this._setCursorPosition({ x: 0, y: pos.y + 1 }, true);
+                return { x: 0, y: pos.y + 1 };
             }
-            return;
+            return pos;
         }
 
         let line = this.args.getLine(pos.y);
@@ -145,52 +479,24 @@ export struct Context {
             x++;
         }
 
-        this._setCursorPosition({ x: x, y: pos.y }, true);
+        return { x: x, y: pos.y };
     }
 
-    // Home / End: start / end of the current line.
-    fn moveCursorHome() {
-        this._setCursorPosition({ x: 0, y: this.cursorPosition.y }, true);
+    fn _targetHome(pos: Vec2i): Vec2i {
+        return { x: 0, y: pos.y };
     }
 
-    fn moveCursorEnd() {
-        let pos = this.cursorPosition;
-        this._setCursorPosition({ x: this.args.getLineLength(pos.y), y: pos.y }, true);
+    fn _targetEnd(pos: Vec2i): Vec2i {
+        return { x: this.args.getLineLength(pos.y), y: pos.y };
     }
 
-    // Ctrl+Home / Ctrl+End: start / end of the whole document.
-    fn moveCursorDocumentStart() {
-        this._setCursorPosition({ x: 0, y: 0 }, true);
+    fn _targetDocumentStart(): Vec2i {
+        return { x: 0, y: 0 };
     }
 
-    fn moveCursorDocumentEnd() {
+    fn _targetDocumentEnd(): Vec2i {
         let lastLine = this.args.getLineCount() - 1;
-        this._setCursorPosition({ x: this.args.getLineLength(lastLine), y: lastLine }, true);
-    }
-
-    // Single point of truth for placing the cursor: clamps to valid
-    // document/line bounds and decides whether this move updates the sticky
-    // column. Every move function above -- and any future one (selection
-    // extend, click-to-place, etc.) -- should go through this rather than
-    // writing cursorPosition/_desiredCursorPosition directly.
-    fn _setCursorPosition(pos: Vec2i, updateDesiredX: bool) {
-        this._cursorLastMovedAt = this.args.getTimeInSeconds();
-
-        let lineCount = this.args.getLineCount();
-        let y = clamp<int>(pos.y, 0, lineCount - 1);
-        let x = clamp<int>(pos.x, 0, this.args.getLineLength(y));
-
-        if this.cursorPosition.x != x {
-            this.cursorPosition.x := x;
-        }
-        if this.cursorPosition.y != y {
-            this.cursorPosition.y := y;
-        }
-
-        this._desiredCursorPosition.y = y;
-        if updateDesiredX {
-            this._desiredCursorPosition.x = x;
-        }
+        return { x: this.args.getLineLength(lastLine), y: lastLine };
     }
 
     fn _charClassAt(line: str, index: int): int {

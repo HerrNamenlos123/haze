@@ -73,7 +73,59 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        let doc = rx.reactive<str | none>(none);
+        // The real, mutable text buffer: one string per line. This is the
+        // throwaway part of codeui -- a proper editor wouldn't rebuild a
+        // fresh []str (and fresh line strings, since Haze strings aren't
+        // mutable in place) on every keystroke, but it's enough to drive
+        // textedit_behavior's editing engine honestly for now. `doc` below
+        // is the joined full text, derived FROM docLines (rather than the
+        // other way around, like before this buffer existed), kept around
+        // because the LSP bridge and the highlighter both want one string.
+        let docLines = rx.reactive<[]str>([""]);
+
+        // rx.reactive<[]str> wraps each element individually (an array of
+        // per-line reactive cells, so a single line's edit doesn't have to
+        // touch the whole array's identity) -- so a plain []str for a
+        // whole-array read has to be rebuilt by unwrapping every element.
+        // getLine() below skips that for the (very hot -- called by the
+        // engine multiple times per keystroke) single-line case.
+        let getPlainLines = (): []str => {
+            let result: []str = [];
+            for (let i = 0; i < docLines.length; i++) {
+                result.push(docLines[i]);
+            }
+            return result;
+        };
+
+        let getLine = (index: int): str => {
+            return docLines[index];
+        };
+
+        // Reactive arrays don't accept a plain []str via `:=` (each element
+        // is its own reactive cell, not a swappable-whole-array value) --
+        // pop everything and push the replacement through the array's own
+        // mutation methods instead.
+        let replaceAllLines = (newLines: []str) => {
+            while docLines.length > 0 {
+                docLines.pop();
+            }
+            for line in newLines {
+                docLines.push(line);
+            }
+        };
+
+        let joinLines = (ls: []str): str => {
+            let result = "";
+            for line, i in ls {
+                if i > 0 {
+                    result = f"{result}\n";
+                }
+                result = f"{result}{line}";
+            }
+            return result;
+        };
+
+        let doc = rx.computed(() => joinLines(getPlainLines()));
 
         let theme = rx.reactive<VscodeTheme | none>(none);
 
@@ -81,12 +133,43 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if cache.data.file {
                 let file = fs.readText(cache.data.file as str);
                 if file {
-                    doc := file;
+                    replaceAllLines(file.split("\n"));
                 }
                 else {
                     fmt.println("Failed loading file");
                 }
             }
+        };
+
+        // The single mutation primitive textedit_behavior needs: rebuild the
+        // line array with [start, end) replaced by `text`. No splice/insert
+        // in stdlib arrays, so this is a full rebuild -- see the docLines
+        // comment above.
+        let applyReplaceRange = (start: Vec2i, end: Vec2i, text: str): void => {
+            let oldLines = getPlainLines();
+            let before = oldLines[start.y].slice(0, start.x);
+            let afterLine = oldLines[end.y];
+            let after = afterLine.slice(end.x, afterLine.length);
+            let insertedLines = text.split("\n");
+
+            let newLines: []str = [];
+            for (let i = 0; i < start.y; i++) {
+                newLines.push(oldLines[i]);
+            }
+            if insertedLines.length == 1 {
+                newLines.push(f"{before}{insertedLines[0]}{after}");
+            } else {
+                newLines.push(f"{before}{insertedLines[0]}");
+                for (let i = 1; i < insertedLines.length - 1; i++) {
+                    newLines.push(insertedLines[i]);
+                }
+                newLines.push(f"{insertedLines[insertedLines.length - 1]}{after}");
+            }
+            for (let i = end.y + 1; i < oldLines.length; i++) {
+                newLines.push(oldLines[i]);
+            }
+
+            replaceAllLines(newLines);
         };
 
         // The project currently being edited. Vue's language server doesn't actually need
@@ -109,15 +192,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         }
 
         let hoverResult = rx.reactive<str | null>(null);
-
-        let docLines = rx.computed<[]str>(() => {
-            if !doc {
-                fmt.println("doc failed");
-                return [];
-            }
-            let lines = doc.split("\n");
-            return lines;
-        });
 
         let highlights = rx.computed(() => {
             let state = getState();
@@ -208,11 +282,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return defaultTextColor();
         }
 
-        let getLine = (index: int) => {
-            let lines: []str = rx.get(docLines);
-            return lines[index];
-        }
-
         let texteditBehavior = textedit_behavior.Context({
             getLineLength: (lineIndex: int) => {
                 return getLine(lineIndex).length;
@@ -221,18 +290,17 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 return getLine(lineIndex);
             },
             getLineCount: () => {
-                let lines: []str = rx.get(docLines);
-                return lines.length;
+                return docLines.length;
             },
             getTimeInSeconds: () => {
                 return ui.now();
             },
+            replaceRange: applyReplaceRange,
         });
 
         let state = getState();
-        let content = rx.get(doc);
-        if content {
-            state.highlightEngine.sendHighlightRequest(content);
+        if cache.data.file {
+            state.highlightEngine.sendHighlightRequest(rx.get(doc));
         }
 
         let cursorChanged = rx.computed(() => {
@@ -245,8 +313,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let runLspLoop = rx.computed(() => {
             ui.now();
-            if vueBridge && cache.data.file && doc {
-                vueBridge.openDocument(cache.data.file, "vue", 1, doc);
+            if vueBridge && cache.data.file {
+                vueBridge.openDocument(cache.data.file, "vue", 1, rx.get(doc));
                 rx.get(cursorChanged);
                 vueBridge.loop();
             }
@@ -289,7 +357,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let highlightedLines = rx.computed(() => {
             let resultTokens: [][]HighlightToken = [];
-            let s: []str = docLines;
+            let s: []str = getPlainLines();
             for line, lineIndex in s {
                 let currentIndex = 0;
                 let reconstructedLine = "";
@@ -356,49 +424,88 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // presets.p(8),
                     ],
                     focusable: true,
-                    onKeyDown: (event: ui_components.KeyboardEvent) => {
-                        if (hasModifier(event.modifiers, KeyModifiers.Ctrl)) {
-                            if (event.key == ui_components.Key.Up) {
-                                texteditBehavior.moveCursorUp();
-                            }
-                            if (event.key == ui_components.Key.Down) {
-                                texteditBehavior.moveCursorDown();
-                            }
-                            if (event.key == ui_components.Key.Left) {
-                                texteditBehavior.moveCursorWordLeft();
-                            }
-                            if (event.key == ui_components.Key.Right) {
-                                texteditBehavior.moveCursorWordRight();
-                            }
-                        }
-                        else {
-                            if (event.key == ui_components.Key.Up) {
-                                texteditBehavior.moveCursorUp();
-                            }
-                            if (event.key == ui_components.Key.Down) {
-                                texteditBehavior.moveCursorDown();
-                            }
-                            if (event.key == ui_components.Key.Left) {
-                                texteditBehavior.moveCursorLeft();
-                            }
-                            if (event.key == ui_components.Key.Right) {
-                                texteditBehavior.moveCursorRight();
-                            }
-                        }
+                    onTextInput: (event: ui_components.TextInputEvent) => {
+                        texteditBehavior.insertText(event.text);
                         hoverResult := null;
                     },
-                    onClick: (event: ui_components.PointerEvent) => {
-                        let state = getState();
-                        let content = rx.get(doc);
-                        if content {
-                            // state.highlightEngine.sendHighlightRequest(content);
+                    onKeyDown: (event: ui_components.KeyboardEvent) => {
+                        let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
+                        let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+
+                        if event.key == ui_components.Key.Left {
+                            if ctrl { texteditBehavior.moveCursorWordLeft(shift); }
+                            else { texteditBehavior.moveCursorLeft(shift); }
                         }
-                    }
+                        else if event.key == ui_components.Key.Right {
+                            if ctrl { texteditBehavior.moveCursorWordRight(shift); }
+                            else { texteditBehavior.moveCursorRight(shift); }
+                        }
+                        else if event.key == ui_components.Key.Up {
+                            texteditBehavior.moveCursorUp(shift);
+                        }
+                        else if event.key == ui_components.Key.Down {
+                            texteditBehavior.moveCursorDown(shift);
+                        }
+                        else if event.key == ui_components.Key.Home {
+                            if ctrl { texteditBehavior.moveCursorDocumentStart(shift); }
+                            else { texteditBehavior.moveCursorHome(shift); }
+                        }
+                        else if event.key == ui_components.Key.End {
+                            if ctrl { texteditBehavior.moveCursorDocumentEnd(shift); }
+                            else { texteditBehavior.moveCursorEnd(shift); }
+                        }
+                        else if event.key == ui_components.Key.Return {
+                            texteditBehavior.insertNewline();
+                        }
+                        else if event.key == ui_components.Key.Backspace {
+                            texteditBehavior.deleteBackward(ctrl);
+                        }
+                        else if event.key == ui_components.Key.Delete {
+                            texteditBehavior.deleteForward(ctrl);
+                        }
+                        else if ctrl && event.key == ui_components.Key.A {
+                            texteditBehavior.selectAll();
+                        }
+                        else if ctrl && event.key == ui_components.Key.C {
+                            texteditBehavior.copy();
+                        }
+                        else if ctrl && event.key == ui_components.Key.X {
+                            texteditBehavior.cut();
+                        }
+                        else if ctrl && event.key == ui_components.Key.V {
+                            texteditBehavior.paste();
+                        }
+
+                        hoverResult := null;
+                    },
                 }, () => {
-                    let lines: []str = rx.get(docLines);
+                    let lines: []str = getPlainLines();
                     let id = 1;
 
                     let characterSize = ui.measureText("X");
+
+                    // Selection highlight, rendered before the line text so
+                    // it sits behind it. One div per touched line, driven by
+                    // the engine's reactive selection state -- see
+                    // selectionRangeForLine's doc comment.
+                    for line, i in lines {
+                        let sel = texteditBehavior.selectionRangeForLine(i);
+                        if sel {
+                            ui.div({
+                                id: lines.length + 3 + i,
+                                style: {
+                                    width: (sel.endCol - sel.startCol) as real * characterSize.x,
+                                    height: characterSize.y,
+                                },
+                                presets: [
+                                    presets.absolute(),
+                                    presets.top(i as real * characterSize.y),
+                                    presets.left(sel.startCol as real * characterSize.x),
+                                    presets.bg("#3391FF55"),
+                                ]
+                            }, () => {});
+                        }
+                    }
 
                     let l: [][]HighlightToken = highlightedLines;
                     for tokens, i in l {
