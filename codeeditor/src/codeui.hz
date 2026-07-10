@@ -3,7 +3,6 @@ import renderer
 import ui_styling
 import headwind
 import textedit_behavior
-import language_server_protocol
 type presets = headwind.presets;
 
 type SizeMode = ui_components.SizeMode;
@@ -94,41 +93,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // this to be precise (tsserver does its own tsconfig discovery once a file is
         // `open`ed), it's only used for the LSP-level workspace/rootUri bookkeeping.
         let projectRoot = "/home/fzachs/Projects/technicalsketcher.web";
-        let tsdk = "codeeditor/syntax-engine/node_modules/typescript/lib";
-        let nodeModulesDir = "codeeditor/syntax-engine/node_modules";
 
-        let lsp = language_server_protocol.Context<VueInitializationOptions>({
-            exe: "node",
-            args: ["./codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js", "--stdio"]
-        }, {
-            rootUri: f"file://{projectRoot}",
-            workspaceFolders: [{ uri: f"file://{projectRoot}", name: "technicalsketcher.web" }],
-            initializationOptions: VueInitializationOptions {
-                plugins: [
-                    {
-                        name: "@vue/typescript-plugin",
-                        location: f"{nodeModulesDir}/@vue/typescript-plugin",
-                        languages: ["vue"],
-                    }
-                ],
-                typescript: { tsdk: tsdk },
-            },
+        // Owns the entire Vue/TypeScript language support lifecycle (LSP
+        // connection, tsserver process, hybrid-mode plumbing) -- see
+        // vue_lsp_bridge.hz's module doc comment for the architecture.
+        let vueBridge = VueLspBridge({
+            vueLanguageServerPath: "codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js",
+            tsdk: "codeeditor/syntax-engine/node_modules/typescript/lib",
+            nodeModulesDir: "codeeditor/syntax-engine/node_modules",
+            projectRoot: projectRoot,
+            projectName: "technicalsketcher.web",
         });
-        if !lsp {
-            fmt.println("LANGUAGE SERVER FAILED", lsp.message);
-        }
-
-        // @vue/language-server only runs in "hybrid mode": it can't answer hover/completion/
-        // diagnostics itself, it proxies to a tsserver process we have to run ourselves. See
-        // vue_lsp_bridge.hz for why this lives outside the general-purpose LSP module.
-        let vueBridge = VueLspBridge(tsdk, nodeModulesDir);
         if !vueBridge {
-            fmt.println("VUE TSSERVER BRIDGE FAILED", vueBridge.message);
-        }
-        if lsp && vueBridge {
-            lsp.onNotification = (method: str, params: json.Node) => {
-                vueBridge.handleNotification(method, params);
-            };
+            fmt.println("Vue language server failed to start: ", vueBridge.message);
         }
 
         let hoverResult = rx.reactive<str | null>(null);
@@ -259,38 +236,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         }
 
         let cursorChanged = rx.computed(() => {
-            if lsp && cache.data.file {
-                lsp.sendDocumentHoverRequest(cache.data.file, texteditBehavior.cursorPosition.y, texteditBehavior.cursorPosition.x, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
-                    if response {
-                        let hover = response;
-                        if hover {
-                            hoverResult := hover.contents.value;
-                        }
-                        else {
-                            hoverResult := "(no hover info at this position)";
-                        }
-                    }
-                    else {
-                        hoverResult := f"hover error: {response.message}";
-                    }
+            if vueBridge && cache.data.file {
+                vueBridge.hover(texteditBehavior.cursorPosition.y, texteditBehavior.cursorPosition.x, (text: str | null) => {
+                    hoverResult := text ? text : "(no hover info at this position)";
                 });
             }
         });
 
-        let opened = false;
         let runLspLoop = rx.computed(() => {
             ui.now();
-            rx.get(cursorChanged);
-            if lsp && vueBridge && cache.data.file {
-
-                if !opened && lsp.initResponse {
-                    opened = true;
-                    assert(doc);
-                    vueBridge.openDocument(lsp, cache.data.file, "vue", 1, doc);
-                }
-
-                lsp.loop();
-                vueBridge.loop(lsp);
+            if vueBridge && cache.data.file && doc {
+                vueBridge.openDocument(cache.data.file, "vue", 1, doc);
+                rx.get(cursorChanged);
+                vueBridge.loop();
             }
         });
 
@@ -350,13 +308,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         });
 
         let lspMessage = rx.computed(() => {
-            if !lsp {
-                return "LSP Failed";
-            }
             if !vueBridge {
-                return "Vue tsserver bridge failed";
+                return "Vue language server failed to start";
             }
-            if !lsp.initResponse {
+            if !vueBridge.isReady() {
                 return "LSP Loading...";
             }
             if hoverResult {
