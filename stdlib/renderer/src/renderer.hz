@@ -1161,17 +1161,33 @@ export opaque struct Canvas {
         }
     }
 
-    fn currentView(): mut wgpu.TextureView | none {
+    fn currentView(): Result<mut wgpu.TextureView, str> {
         if this.surface {
             let surfaceTexture = this.surface.getCurrentTexture();
+
+            if surfaceTexture.status != wgpu.SurfaceGetCurrentTextureStatus.SuccessOptimal &&
+                surfaceTexture.status != wgpu.SurfaceGetCurrentTextureStatus.SuccessSuboptimal
+            {
+                let code = 0;
+                __c__("code = (int)surfaceTexture->status;");
+                return f"wgpu.SurfaceGetCurrentTextureStatus ({code})";
+            }
+
             if !surfaceTexture.texture {
-                return none;
+                return "No Texture received";
             }
-            if let view = surfaceTexture.texture.createView() {
-                return view;
+
+            let view = surfaceTexture.texture.createView();
+            if !view {
+                return "Texture View cannot be found";
             }
-            return none;
+            return view;
         }
+
+        if !this.offscreenView {
+            return "Offscreen View missing";
+        }
+
         return this.offscreenView;
     }
 
@@ -1697,7 +1713,7 @@ export opaque struct Renderer {
 
         let targetView = canvas.currentView();
         if !targetView {
-            fmt.println("gfx: failed to acquire target view for canvas");
+            fmt.println(f"gfx: failed to acquire target view for canvas: {targetView}");
             return;
         }
 
