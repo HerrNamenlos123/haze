@@ -597,6 +597,7 @@ export class ProjectCompiler {
         musl: HAZE_CACHE + "/musl",
         winSDK: HAZE_CACHE + "/win-sdk",
         winNinja: HAZE_CACHE + "/win-ninja",
+        systemPackagesInstall: HAZE_CACHE + "/system-packages-install",
         linuxNinja: HAZE_CACHE + "/linux-ninja",
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
@@ -613,6 +614,18 @@ export class ProjectCompiler {
         );
         this.markStepDone(MARKERS.download);
         console.info("Downloading LLVM toolchain... Done");
+      }
+
+      if (!this.isStepDone(MARKERS.systemPackagesInstall)) {
+        console.info("Installing required system packages...");
+        const packageManager = await detectPackageManager();
+        if (packageManager === "debian") {
+          exec(
+            `sudo apt install autoconf libtool-bin cmake libdwarf-dev`
+          );
+        }
+        this.markStepDone(MARKERS.systemPackagesInstall);
+        console.info("Installing required system packages... Done");
       }
 
       if (!this.isStepDone(MARKERS.extract)) {
