@@ -38,6 +38,7 @@ target_link_libraries(haze-regex-compile PRIVATE
 
 set_target_properties(haze-regex-compile PROPERTIES
     OUTPUT_NAME "haze-regex-compile"
+    RUNTIME_OUTPUT_DIRECTORY   "${HAZE_GLOBAL_DIR}/regex-compiler"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${HAZE_GLOBAL_DIR}/regex-compiler"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${HAZE_GLOBAL_DIR}/regex-compiler"
 )
