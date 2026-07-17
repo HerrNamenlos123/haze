@@ -1822,7 +1822,13 @@ export class ModuleCompiler {
     // reading .debug_line directly, in-process, instead of shelling out to addr2line.
     includeDirs.addLinux("/usr/include/libdwarf");
     includeDirs.addLinux("/usr/include/libdwarf-0");
+
+    // Prefer the static version of libdwarf, because libdwarf.a and libdwarf.so are both available
+    linkerFlags.addLinux("-Wl,-Bstatic");
     linkerFlags.addLinux("-ldwarf");
+    linkerFlags.addLinux("-lz");
+    linkerFlags.addLinux("-lzstd");
+    linkerFlags.addLinux("-Wl,-Bdynamic");
 
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);
