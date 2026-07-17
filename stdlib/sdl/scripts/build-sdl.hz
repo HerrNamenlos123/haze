@@ -22,7 +22,22 @@ fn main(): int {
             cwd: repoPath,
         })?!;
 
+        // This is for building with Wayland support on a fresh non-desktop linux:
+        // sudo apt install \
+        //     libwayland-dev \
+        //     wayland-protocols \
+        //     libxkbcommon-dev \
+        //     libegl1-mesa-dev \
+        //     libgles2-mesa-dev
+
         if sys.isLinux() {
+            let pkg = process.run(
+                "pkg-config",
+                { "--version" },
+            );
+            if !pkg {
+                raise f"pkg-config is not installed";
+            }
             let requiredPackages: []str = [
                 "libdecor-0",
             ];
