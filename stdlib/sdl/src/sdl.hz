@@ -20,6 +20,7 @@ namespace ffi {
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
 	extern C noemit fn SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
+	extern C noemit fn SDL_GetError(): ccstr :: final;
 
 	// Event trampoline registration (private to ffi namespace — SDL headers not available outside)
 	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
@@ -55,21 +56,22 @@ namespace ffi {
 	// threaded through every trampoline signature.
 	extern C noemit fn haze_sdl_get_modifiers(): i32 :: final;
 
-	export fn init(): bool {
+	export fn init(): Result<none, str> {
 		let result = haze_sdl_init();
-		if result {
-			haze_sdl_register_trampolines({
-				keyDown: hazeKeyDownDispatch,
-				keyUp: hazeKeyUpDispatch,
-				resize: hazeResizeDispatch,
-				mouseMove: hazeMouseMoveDispatch,
-				mouseDown: hazeMouseDownDispatch,
-				mouseUp: hazeMouseUpDispatch,
-				mouseWheel: hazeMouseWheelDispatch,
-				textInput: hazeTextInputDispatch,
-			} as inline haze_sdl_trampolines_t);
+		if !result {
+			return getError();
 		}
-		return result;
+		haze_sdl_register_trampolines({
+			keyDown: hazeKeyDownDispatch,
+			keyUp: hazeKeyUpDispatch,
+			resize: hazeResizeDispatch,
+			mouseMove: hazeMouseMoveDispatch,
+			mouseDown: hazeMouseDownDispatch,
+			mouseUp: hazeMouseUpDispatch,
+			mouseWheel: hazeMouseWheelDispatch,
+			textInput: hazeTextInputDispatch,
+		});
+		return none;
 	}
 
 	export fn terminate(): void {
@@ -114,6 +116,10 @@ namespace ffi {
 
 	export fn getTime(): f64 {
 		return haze_sdl_getTime();
+	}
+
+	export fn getError(): str {
+		return hzstd_str_from_ccstr_ref(SDL_GetError());
 	}
 
 	export fn consumeWindowSizeChanged(window: SDL_Window): bool {
@@ -686,7 +692,7 @@ export struct WindowConfig {
 	noApi: bool = false;
 }
 
-export fn init(): bool {
+export fn init() {
 	return ffi.init();
 }
 
@@ -694,12 +700,12 @@ export fn terminate() {
 	ffi.terminate();
 }
 
-export fn createWindow(config: WindowConfig): Result<mut Window, none> {
+export fn createWindow(config: WindowConfig): Result<mut Window, str> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
 	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi);
 	if !handle {
-		return Result<mut Window, none>.Err(none);
+		return Result<mut Window, str>.Err(ffi.getError());
 	}
 
 	let window = Window { handle: handle };
@@ -707,7 +713,7 @@ export fn createWindow(config: WindowConfig): Result<mut Window, none> {
 	__c__("windowPtr = window;");
 	ffi.haze_sdl_set_window_event_userdata(handle, windowPtr);
 
-	return Result<mut Window, none>.Ok(window);
+	return Result<mut Window, str>.Ok(window);
 }
 
 export fn pollEvents() {

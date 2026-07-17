@@ -104,13 +104,14 @@ export opaque struct App {
     wheelModifiersThisFrame: KeyModifiers = KeyModifiers.None;
 
     fn constructor(options: AppOptions): Result<App, str> {
-        if !sdl.init() { return "SDL init failed"; }
+        let initResult = sdl.init();
+        if !initResult { return f"SDL init failed: {initResult}"; }
 
         let window = sdl.createWindow({
             title: options.title,
             noApi: true,
         });
-        if !window { return "Window creation failed"; }
+        if !window { return f"Window creation failed: {window}"; }
 
         let instance = wgpu.createInstance();
         if !instance { return "WGPU instance creation failed"; }

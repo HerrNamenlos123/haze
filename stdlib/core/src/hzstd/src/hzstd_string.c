@@ -27,6 +27,13 @@ hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data) {
   };
 }
 
+hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data) {
+  return (hzstd_str_t){
+      .data = data,
+      .length = strlen(data),
+  };
+}
+
 hzstd_str_t hzstd_str_dup(hzstd_str_t data) {
   char *buffer = hzstd_heap_allocate_atomic(data.length);
   memcpy(buffer, data.data, data.length);

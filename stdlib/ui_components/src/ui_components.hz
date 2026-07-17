@@ -507,7 +507,7 @@ fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int, parentPath: str):
     return { element: newElement, path: path };
 }
 
-fn getOrCreateText(parent: mut ui_elements.DivElement, id: int, parentPath: str): TextLookup {
+fn getOrCreateText(parent: ui_elements.DivElement, id: int, parentPath: str): TextLookup {
     let parentData = runtimeDataOf(parent);
     for n in parentData.childElements {
         if n.id == id {
@@ -638,7 +638,7 @@ export struct ComponentInstance {
     childComponents: []inline ComponentCache = [];
     newChildComponents: []inline ComponentCache = [];
 
-    rootElement: ui_elements.DivElement;
+    rootElement: mut ui_elements.DivElement;
 
     onMounted?: () => none;
     onUnmount?: () => none;
@@ -677,7 +677,7 @@ export struct ComponentInstance {
 
 export struct RenderContext {
     currentComponent: ComponentInstance;
-    currentParent: ui_elements.DivElement;
+    currentParent: mut ui_elements.DivElement;
     // currentParent's own full slash-separated id path from the component
     // root (e.g. "0/3"), mirroring the idPath convention ui_layout.hz uses
     // for the same tree. Carried down purely so a *newly created* child can
