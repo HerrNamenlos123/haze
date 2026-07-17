@@ -60,16 +60,19 @@ import {
   GeneralError,
   ImpossibleSituation,
   InternalError,
+  SilentError,
   SyntaxError,
   UnreachableCode,
 } from "../shared/Errors";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
+import { Mutex } from "../utils";
 import {
   type CLIPrinter,
   EModulePrintCompilerPhase,
   type ModuleHandle,
   printLine,
   printLineWarning,
+  withCapturedOutput,
 } from "./CLIPrinter";
 
 /**
@@ -264,6 +267,8 @@ export async function catchErrors(fn: () => Promise<void>) {
     } else if (e instanceof SyntaxError) {
       msg = e.message;
     } else if (e instanceof CmdFailed) {
+      return false;
+    } else if (e instanceof SilentError) {
       return false;
     } else {
       msg = String(e);
@@ -848,6 +853,12 @@ export function execInherit(str: string, dir?: string) {
     throw new CmdFailed();
   }
 }
+
+// process.stdout.write and the active CLIPrinter (see withCapturedOutput) are global
+// state, shared by every ModuleCompiler instance. Generator builds run concurrently
+// (see runAllGenerators's Promise.all), so the capture section in executeGenerator must
+// be serialized process-wide or one generator's capture can clobber another's.
+const generatorOutputMutex = new Mutex();
 
 export class ModuleCompiler {
   cc: CollectionContext;
@@ -1558,81 +1569,121 @@ export class ModuleCompiler {
     const genHandle = this.printer?.beginGenerator(this.config.name, gen.name);
     const logChunks: string[] = [];
     const project = new ProjectCompiler(false, true, false, false, true);
-    let buildOk = false;
-    let runResult: { exitCode: number; output: string } | null = null;
-
-    // Capture generator build output to a buffer so it stays off the terminal.
-    // The captured log is written to disk and shown only on failure.
-    const origWrite = process.stdout.write.bind(process.stdout);
-    (process.stdout as any).write = (
-      chunk: Buffer | string,
-      _encodingOrCb?: unknown,
-      _cb?: unknown
-    ): boolean => {
-      logChunks.push(
-        Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
-      );
-      return true;
-    };
+    const moduleRootDir = this.currentModuleRootDir;
+    const printer = this.printer;
+    let failed = false;
 
     try {
-      buildOk = await project.build(
-        this.resolveExec(gen.exec),
-        undefined,
-        sourceloc,
-        false
-      );
+      // Capture generator build output to a buffer so it stays off the terminal.
+      // The captured log is written to disk and shown only on failure. This has
+      // to intercept both process.stdout.write AND printLine (via
+      // withCapturedOutput) -- a failing command deep inside the nested build
+      // (e.g. a linker error) reports through printLine straight to the live
+      // CLIPrinter, which would otherwise stop its bars mid-build for
+      // unrelated, still-running modules and never make it into logChunks.
+      //
+      // The failure report itself (dumping the log + the summary message) is
+      // also produced *inside* this same mutex-held section, immediately and
+      // synchronously once the outcome is known -- not via the normal
+      // GeneralError-thrown-and-caught-elsewhere path. That path unwinds
+      // through Promise.all and an unrelated catchErrors() several stack
+      // frames up, crossing enough await boundaries for another queued
+      // generator to acquire the capture in between, which would attribute
+      // this report to the wrong generator's log. Reporting inline instead,
+      // then throwing a SilentError so nothing re-prints it, keeps the whole
+      // "capture output -> decide -> report" sequence atomic under the mutex.
+      failed = await generatorOutputMutex.run(async () => {
+        const capture = (chunk: Buffer | string) => {
+          logChunks.push(
+            Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+          );
+        };
+        const origWrite = process.stdout.write.bind(process.stdout);
+        (process.stdout as any).write = (
+          chunk: Buffer | string,
+          _encodingOrCb?: unknown,
+          _cb?: unknown
+        ): boolean => {
+          capture(chunk);
+          return true;
+        };
 
-      if (buildOk) {
-        runResult = await withEnv(
-          {
-            HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
-            HAZE_MODULE_SOURCE_DIR: this.currentModuleRootDir,
-            HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
-            HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
-            HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
-            HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-            HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
-            HAZE_C_COMPILER: HAZE_C_COMPILER,
-            HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
-          },
-          () =>
-            project.runCaptured(
+        let failureMessage: string | null = null;
+        try {
+          await withCapturedOutput(capture, async () => {
+            const built = await project.build(
               this.resolveExec(gen.exec),
               undefined,
               sourceloc,
-              []
-            )
-        );
-        logChunks.push(runResult.output);
-      }
+              false
+            );
+
+            if (!built) {
+              failureMessage = `Generator "${gen.name}" failed to build — see ${logPath}`;
+              return;
+            }
+
+            const ran = await withEnv(
+              {
+                HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
+                HAZE_MODULE_SOURCE_DIR: moduleRootDir,
+                HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+                HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+                HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+                HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+                HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
+                HAZE_C_COMPILER: HAZE_C_COMPILER,
+                HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
+              },
+              () =>
+                project.runCaptured(
+                  this.resolveExec(gen.exec),
+                  undefined,
+                  sourceloc,
+                  []
+                )
+            );
+            logChunks.push(ran.output);
+
+            if (ran.exitCode !== 0) {
+              failureMessage = `Generator "${gen.name}" failed with exit code ${ran.exitCode} — see ${logPath}`;
+            }
+          });
+        } finally {
+          (process.stdout as any).write = origWrite;
+        }
+
+        // Strip ANSI escape codes before writing to the log file so it is
+        // readable in any text editor.
+        const rawLog = logChunks.join("");
+        const ESC = String.fromCharCode(27);
+        const ansiPattern = new RegExp(ESC + "[[0-9;]*[mGKJHF]", "g");
+        const cleanLog = rawLog.replace(ansiPattern, "");
+        writeFileSync(logPath, cleanLog, "utf8");
+
+        if (failureMessage) {
+          // Insert via the printer (rather than a raw stdout write) so it
+          // doesn't get clobbered by the next redraw of the still-live bars.
+          if (cleanLog) {
+            if (printer) {
+              printer.logInfo(cleanLog);
+            } else {
+              process.stdout.write(cleanLog);
+            }
+          }
+          printLine(failureMessage);
+          return true;
+        }
+        return false;
+      });
     } finally {
-      (process.stdout as any).write = origWrite;
       if (genHandle) {
         this.printer?.endGenerator(genHandle);
       }
     }
 
-    // Strip ANSI escape codes before writing to the log file so it is
-    // readable in any text editor.
-    const rawLog = logChunks.join("");
-    const ESC = String.fromCharCode(27);
-    const ansiPattern = new RegExp(ESC + "[[0-9;]*[mGKJHF]", "g");
-    const cleanLog = rawLog.replace(ansiPattern, "");
-    writeFileSync(logPath, cleanLog, "utf8");
-
-    if (!buildOk) {
-      process.stdout.write(cleanLog);
-      throw new GeneralError(
-        `Generator "${gen.name}" failed to build — see ${logPath}`
-      );
-    }
-
-    if (runResult && runResult.exitCode !== 0) {
-      process.stdout.write(cleanLog);
-      throw new GeneralError(
-        `Generator "${gen.name}" failed with exit code ${runResult.exitCode} — see ${logPath}`
-      );
+    if (failed) {
+      throw new SilentError();
     }
 
     for (const file of gen.outputs) {
@@ -1641,7 +1692,6 @@ export class ModuleCompiler {
       }
       const resolvedPath = this.resolveGeneratorFile(file);
       if (!existsSync(resolvedPath)) {
-        process.stdout.write(cleanLog);
         throw new GeneralError(
           `Generator "${gen.name}" did not produce expected file "${resolvedPath}" — see ${logPath}`
         );

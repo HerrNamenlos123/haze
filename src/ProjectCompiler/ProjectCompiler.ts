@@ -621,7 +621,7 @@ export class ProjectCompiler {
         const packageManager = await detectPackageManager();
         if (packageManager === "debian") {
           exec(
-            `sudo apt install autoconf libtool-bin cmake libdwarf-dev`
+            `sudo apt install autoconf libtool-bin cmake libdwarf-dev liblzma-dev`
           );
         }
         this.markStepDone(MARKERS.systemPackagesInstall);

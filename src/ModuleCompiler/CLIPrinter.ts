@@ -67,7 +67,13 @@ export type GeneratorHandle = GeneratorState;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const TICK_MS = 80;
 
-let _activePrinter: CLIPrinter | null = null;
+/** Anything that can receive printLine/printLineWarning output — a live CLIPrinter or a capture sink. */
+interface ActivePrinter {
+  log(message: string): void;
+  bufferWarning(message: string): void;
+}
+
+let _activePrinter: ActivePrinter | null = null;
 
 /** Print an error line: stops the active bars and marks the current module failed. */
 export function printLine(message: string) {
@@ -84,6 +90,31 @@ export function printLineWarning(message: string) {
     _activePrinter.bufferWarning(message);
   } else {
     process.stdout.write(message + "\n");
+  }
+}
+
+/**
+ * Redirects printLine/printLineWarning to a buffer instead of the live printer for the
+ * duration of fn(). Used while building a generator's own executable: failures from
+ * commands run deep inside that nested build (e.g. a linker error) would otherwise call
+ * straight into the outer CLIPrinter and stop its bars mid-build for unrelated, still-running
+ * modules -- and since that output goes straight to the terminal, it never reaches the
+ * generator's own log file. Caller is responsible for serializing concurrent uses (this
+ * swaps the same module-level singleton printLine reads from).
+ */
+export async function withCapturedOutput<T>(
+  sink: (message: string) => void,
+  fn: () => Promise<T>
+): Promise<T> {
+  const previous = _activePrinter;
+  _activePrinter = {
+    log: sink,
+    bufferWarning: sink,
+  };
+  try {
+    return await fn();
+  } finally {
+    _activePrinter = previous;
   }
 }
 
