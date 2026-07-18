@@ -708,6 +708,11 @@ export struct RenderContext {
     // the bare per-level id against currentParent's own child cache (see
     // ComponentElementRuntimeData.childElements), never against this path.
     idPath: str;
+    // How many of currentParent.children have been (re-)declared so far in
+    // this build pass -- see attachChild()/truncateChildrenToCursor(). Starts
+    // at 0 for free every time a fresh RenderContext is pushed; nothing needs
+    // to reset it explicitly.
+    childIndex: int = 0;
 }
 
 export struct InstanceData<TProps> {
@@ -1576,6 +1581,54 @@ export opaque struct UIContext {
         this.renderStack.pop();
     }
 
+    // Places `element` as the next child of whatever's currently being built
+    // (the top of renderStack), overwriting the slot already there in place
+    // when one exists instead of unconditionally pushing -- so re-declaring
+    // the same stable child list, frame after frame, costs zero allocations
+    // (no reset, no growth, just overwriting already-allocated slots with the
+    // same values). Used by div()/text()/canvas() to attach themselves to
+    // their parent, and by defineComponentImpl() to attach a component's
+    // root wrapper the same way. Anything left over from a previous, longer
+    // list is trimmed by truncateChildrenToCursor() below, once the caller's
+    // own children are done.
+    fn attachChild(element: mut ui_elements.Element): void {
+        assert(this.renderStack.length > 0);
+        let ctx = this.renderStack[this.renderStack.length - 1];
+        if ctx.childIndex < ctx.currentParent.children.length {
+            ctx.currentParent.children[ctx.childIndex] = element;
+        } else {
+            ctx.currentParent.children.push(element);
+        }
+        ctx.childIndex = ctx.childIndex + 1;
+    }
+
+    // Counterpart to attachChild() above: once a parent's children are done
+    // being (re-)declared for this build pass, drops whatever's left past
+    // `cursor` -- i.e. children a previous, longer render left behind that
+    // didn't get re-declared this time (e.g. a conditional that's now
+    // false). A no-op, no-allocation call when nothing was actually removed.
+    fn truncateChildrenToCursor(parent: mut ui_elements.DivElement, cursor: int): void {
+        while parent.children.length > cursor {
+            parent.children.pop();
+        }
+    }
+
+    // Used by defineComponentImpl's crash-recovery paths, which set the
+    // error text as rootElement's one and only child directly (outside the
+    // normal attachChild()/RenderContext cursor flow, since there's no
+    // nested div()/text() call tracking a cursor there) -- same in-place-
+    // overwrite-then-trim shape as attachChild()/truncateChildrenToCursor(),
+    // so a component stuck crashed across many frames in a row doesn't
+    // reallocate or accumulate children each time either.
+    fn setSingleChild(parent: mut ui_elements.DivElement, child: mut ui_elements.Element): void {
+        if parent.children.length > 0 {
+            parent.children[0] = child;
+        } else {
+            parent.children.push(child);
+        }
+        this.truncateChildrenToCursor(parent, 1);
+    }
+
     fn makeCurrentComponentAvailable(id: int) {
         let instance = null as ComponentInstance | null;
 
@@ -1696,13 +1749,12 @@ export opaque struct UIContext {
                 rx.get(instance.propsVersion);
 
                 instance.newChildComponents = [];
-                instance.rootElement.children = [];
 
                 if instance.crashed && instance.crashInfo {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
-                    instance.rootElement.children.push(errEl);
+                    this.setSingleChild(instance.rootElement, errEl);
                     return none;
                 }
 
@@ -1728,7 +1780,7 @@ export opaque struct UIContext {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
-                    instance.rootElement.children.push(errEl);
+                    this.setSingleChild(instance.rootElement, errEl);
                     return none;
                 };
 
@@ -1757,7 +1809,12 @@ export opaque struct UIContext {
                     }
                 }
 
+                // Trim anything left over from a previous, longer render of
+                // this component's children -- see truncateChildrenToCursor()'s
+                // own comment.
+                let childCount = this.renderStack[this.renderStack.length - 1].childIndex;
                 this.popRenderContext();
+                this.truncateChildrenToCursor(instance.rootElement, childCount);
 
                 return none;
             });
@@ -1774,7 +1831,7 @@ export opaque struct UIContext {
 
         // attach root element into current parent if there is one
         if this.renderStack.length > 0 {
-            this.renderStack[this.renderStack.length - 1].currentParent.children.push(instance.rootElement);
+            this.attachChild(instance.rootElement);
         }
     }
 
@@ -1909,10 +1966,7 @@ export opaque struct UIContext {
         data.onTextInputCapture = props.onTextInputCapture;
 
         // attach into current parent
-        parent.children.push(element);
-
-        // clear children for reconciliation
-        element.children = [];
+        this.attachChild(element);
 
         // descend into element
         this.pushRenderContext({
@@ -1923,7 +1977,11 @@ export opaque struct UIContext {
 
         childrenFn();
 
+        // Trim anything left over from a previous, longer render of this
+        // element's children -- see truncateChildrenToCursor()'s own comment.
+        let childCount = this.renderStack[this.renderStack.length - 1].childIndex;
         this.popRenderContext();
+        this.truncateChildrenToCursor(element, childCount);
 
         if props.ref is not none {
             if props.ref is null || props.ref.raw.id != element.id {
@@ -1944,7 +2002,7 @@ export opaque struct UIContext {
         element.style := ui_styling.computeTextStyle(rawTextStyle, props.presets);
 
         // attach into current parent
-        parent.children.push(element);
+        this.attachChild(element);
 
         if props.ref is not none {
             if props.ref is null || props.ref.raw.id != element.id {
@@ -1975,7 +2033,7 @@ export opaque struct UIContext {
         element.style := ui_styling.computeDivStyle(rawCanvasStyle, props.presets);
 
         // attach into current parent
-        parent.children.push(element);
+        this.attachChild(element);
 
         let data = runtimeDataOf(element);
         if drawFn is not none {
