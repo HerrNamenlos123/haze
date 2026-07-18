@@ -39,7 +39,7 @@ export opaque struct String {
     // Therefore, all high level functions should actually take a String rather than a 'str', because that means
     // both types of strings can be accepted.
 
-    _data: ByteBuffer | str;
+    _data: mut ByteBuffer | str;
 
     // We do not actually use the byte buffer as a frozen string. We track commitment ourselves
     // and when we do commit the buffer, we use the buffer's capabilities to get access to the string slice,
@@ -64,14 +64,23 @@ export opaque struct String {
         };
     }
 
-    fn constructor(buffer: ByteBuffer) {
+    fn constructor(buffer: mut ByteBuffer) {
         return String {
             _data: buffer,
         };
     }
 
+    fn length() {
+        if this._data is mut ByteBuffer {
+            return this._data.length();
+        }
+        else {
+            return this._data.length;
+        }
+    }
+
     fn cloneString(): str {
-        if this._data is ByteBuffer {
+        if this._data is mut ByteBuffer {
             return this._data.cloneString();
         }
         else {
@@ -80,7 +89,7 @@ export opaque struct String {
     }
 
     fn string(): str {
-        if this._data is ByteBuffer {
+        if this._data is mut ByteBuffer {
             sys.panic("String.string() was called but the String is still mutable. We must not create a string slice from a mutable buffer. To get a slice from this String, either use String.cloneString() or call String.commit() before, to make the String permanently immutable.");
         }
         else {
@@ -89,50 +98,49 @@ export opaque struct String {
     }
 
     fn commit() {
-        if this._data is ByteBuffer {
+        if this._data is mut ByteBuffer {
             this._data.commit();
             this._committed = true;
             this._data = this._data.string();
         }
     }
 
-    fn append(string: String) {
+    mut fn append(string: String) {
         let buffer = this._getBuffer();
         buffer.push(string.bytes());
         return this;
     }
 
-    fn append(string: str) {
+    mut fn append(string: str) {
         let buffer = this._getBuffer();
         buffer.push(string);
         return this;
     }
 
-    fn setAt(index: int, value: u8) {
+    mut fn setAt(index: int, value: u8) {
         let buffer = this._getBuffer();
-        buffer.writeAt(index, value);
+        buffer.writeAt(index, Bytes(value));
         return this;
     }
 
-    fn getAt(index: int): u8 {
+    mut fn getAt(index: int): u8 {
         let buffer = this._getBuffer();
         return buffer.getAt(index);
     }
 
-    fn insert(index: int, value: str) {
+    mut fn insert(index: int, value: str) {
         let buffer = this._getBuffer();
         buffer.insert(index, value);
         return this;
     }
 
-    fn remove(index: int, count: int) {
+    mut fn remove(index: int, count: int) {
         let buffer = this._getBuffer();
         buffer.remove(index, count);
         return this;
     }
 
-
-    fn operator[](index: int) {
+    mut fn operator[](index: int) {
         return StringByteRef {
             string: this,
             index: index,
@@ -141,8 +149,8 @@ export opaque struct String {
 
     // Here we cannot actually return Bytes, because there is no immutable buffer we can point to. Instead we have to
     // return a ByteBuffer
-    fn bytes() {
-        if this._data is ByteBuffer {
+    fn bytes(): ByteBuffer {
+        if this._data is mut ByteBuffer {
             return this._data;
         }
         else {
@@ -150,27 +158,36 @@ export opaque struct String {
         }
     }
 
-    fn _getBuffer(): ByteBuffer {
+    mut fn _getBuffer(): mut ByteBuffer {
         assert(!this._committed, "Tried to mutate a String which was already committed and made immutable");
-        if this._data is ByteBuffer {
+        if this._data is mut ByteBuffer {
             return this._data;
         }
         else {
-            this._data = ByteBuffer(this._data);
-            return this._data;
+            let buffer = ByteBuffer(this._data);
+            this._data = buffer;
+            return buffer;
         }
     }
 }
 
 export struct StringByteRef {
-    string: String;
+    string: mut String;
     index: int;
 
     fn get(): u8 {
-        return this.buffer.getAt(this.index);
+        return this.string.getAt(this.index);
     }
 
     fn operator:=(value: u8) {
-        this.buffer.setAt(this.index, value);
+        this.string.setAt(this.index, value);
+    }
+}
+
+namespace fmt {
+    export fn format_to(writer: mut StringWriter, value: String, args: FormatArgs) {
+        let bytes = value.bytes();
+        bytes.commit();
+        format_to(writer, bytes.string(), args);
     }
 }

@@ -451,7 +451,7 @@ export opaque inline struct Bytes {
             singleByte: none,
         };
         do unsafe {
-            __c__("bytes.basePtr = value.data;");
+            __c__("bytes.basePtr = (void*)value.data;");
         }
         return bytes;
     }

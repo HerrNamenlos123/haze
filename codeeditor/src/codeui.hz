@@ -73,13 +73,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        let lines = rx.reactive<[]String>([]);
+        let lines = rx.shallowReactive<[]String>([]);
 
-        let replaceAllLines = (newLines: []str) => {
-            docLines := newLines;
+        let replaceAllLines = (newLines: []String) => {
+            lines := newLines;
         };
 
-        let joinLines = (ls: []str): str => {
+        let joinLines = (ls: []String): str => {
             let result = "";
             for line, i in ls {
                 if i > 0 {
@@ -90,7 +90,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return result;
         };
 
-        let doc = rx.computed(() => joinLines(getPlainLines()));
+        let doc = rx.computed(() => joinLines(lines));
 
         let theme = rx.reactive<VscodeTheme | none>(none);
 
@@ -98,7 +98,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if cache.data.file {
                 let file = fs.readText(cache.data.file as str);
                 if file {
-                    replaceAllLines(file.split("\n"));
+                    lines := [] as []String;
+                    for line in file.split("\n") {
+                        lines.push(String(line));
+                    }
                 }
                 else {
                     fmt.println("Failed loading file");
@@ -110,16 +113,15 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // line array with [start, end) replaced by `text`. No splice/insert
         // in stdlib arrays, so this is a full rebuild -- see the docLines
         // comment above.
-        let applyReplaceRange = (start: Vec2i, end: Vec2i, text: str): void => {
-            let oldLines = getPlainLines();
-            let before = oldLines[start.y].slice(0, start.x);
-            let afterLine = oldLines[end.y];
+        let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
+            let before = lines[start.y].cloneString().slice(0, start.x);
+            let afterLine = lines[end.y].cloneString();
             let after = afterLine.slice(end.x, afterLine.length);
-            let insertedLines = text.split("\n");
+            let insertedLines = text.cloneString().split("\n");
 
-            let newLines: []str = [];
+            let newLines: []String = [];
             for (let i = 0; i < start.y; i++) {
-                newLines.push(oldLines[i]);
+                newLines.push(lines[i]);
             }
             if insertedLines.length == 1 {
                 newLines.push(f"{before}{insertedLines[0]}{after}");
@@ -130,12 +132,45 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 }
                 newLines.push(f"{insertedLines[insertedLines.length - 1]}{after}");
             }
-            for (let i = end.y + 1; i < oldLines.length; i++) {
-                newLines.push(oldLines[i]);
+            for (let i = end.y + 1; i < lines.length; i++) {
+                newLines.push(lines[i]);
             }
 
-            replaceAllLines(newLines);
+            lines := newLines;
         };
+        // let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
+        //     let before = lines[start.y].slice(0, start.x);
+        //     let after = lines[end.y].slice(end.x, lines[end.y].length);
+
+        //     let inserted = text.split("\n");
+
+        //     let replacement: []String = [];
+
+        //     if inserted.length == 1 {
+        //         replacement.push(f"{before}{inserted[0]}{after}");
+        //     } else {
+        //         replacement.push(f"{before}{inserted[0]}");
+
+        //         for (let i = 1; i < inserted.length - 1; i++) {
+        //             replacement.push(inserted[i]);
+        //         }
+
+        //         replacement.push(f"{inserted[inserted.length - 1]}{after}");
+        //     }
+
+        //     // Replace only the affected lines.
+        //     lines.splice(
+        //         start.y,
+        //         end.y - start.y + 1,
+        //         ...replacement,
+        //     );
+
+        //     notifyLinesChanged(
+        //         start.y,
+        //         replacement.length,
+        //         end.y - start.y + 1,
+        //     );
+        // };
 
         // The project currently being edited. Vue's language server doesn't actually need
         // this to be precise (tsserver does its own tsconfig discovery once a file is
@@ -249,7 +284,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let texteditBehavior = textedit_behavior.Context({
             getLineLength: (lineIndex: int) => {
-                return lines[lineIndex].length;
+                return lines[lineIndex].length();
             },
             getLine: (lineIndex: int) => {
                 return lines[lineIndex];
@@ -314,7 +349,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         });
 
-        let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
+        let splitByTokens = (lineIndex: int, string: String, tokens: []Token): []HighlightToken => {
             let parts: []HighlightToken = [];
             let position = 0;
 
@@ -323,14 +358,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // Text before the token
                     if (position < token.startIndex) {
                         parts.push({
-                            text: string.slice(position, token.startIndex),
+                            text: string.cloneString().slice(position, token.startIndex),
                             color: defaultTextColor(),
                         });
                     }
 
                     // The token itself
                     parts.push({
-                        text: string.slice(token.startIndex, token.endIndex),
+                        text: string.cloneString().slice(token.startIndex, token.endIndex),
                         color: getFirstScopeColor(token.scopes),
                     });
 
@@ -339,9 +374,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
 
             // Remaining text
-            if (position < string.length) {
+            if (position < string.length()) {
                 parts.push({
-                    text: string.slice(position, string.length),
+                    text: string.cloneString().slice(position, string.length()),
                     color: defaultTextColor(),
                 });
             }
@@ -351,7 +386,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let highlightedLines = rx.computed(() => {
             let resultTokens: [][]HighlightToken = [];
-            let s: []str = getPlainLines();
+            let s: []String = lines;
             for line, lineIndex in s {
                 let currentIndex = 0;
                 let reconstructedLine = "";
@@ -462,7 +497,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         hoverResult := null;
                     },
                 }, () => {
-                    let lines: []str = getPlainLines();
+                    let llines: []String = lines;
                     let id = 1;
 
                     let characterSize = ui.measureText("X");
@@ -471,11 +506,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // it sits behind it. One div per touched line, driven by
                     // the engine's reactive selection state -- see
                     // selectionRangeForLine's doc comment.
-                    for line, i in lines {
+                    for line, i in llines {
                         let sel = texteditBehavior.selectionRangeForLine(i);
                         if sel {
                             ui.div({
-                                id: lines.length + 3 + i,
+                                id: llines.length + 3 + i,
                                 style: {
                                     width: (sel.endCol - sel.startCol) as real * characterSize.x,
                                     height: characterSize.y,

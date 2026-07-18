@@ -177,8 +177,10 @@ export namespace fs {
         
         let buffer = ByteBuffer();
         buffer.resize(stat.size);
+        assert(buffer.data);
         const ptr = none as cptr;
-        __c__("ptr = hzstd_dynamic_array_raw_buffer(buffer->data);");
+        let data = buffer.data;
+        __c__("ptr = hzstd_dynamic_array_raw_buffer(data);");
         let result = ffi.hzstd_read_file_binary(allocator, path, ptr, buffer.length());
         if result.code == ffi.hzstd_fs_error_code_none {
             buffer.commit();

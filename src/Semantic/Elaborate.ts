@@ -13693,6 +13693,116 @@ export class SemanticElaborator {
     );
   }
 
+  // Operator overloads (e.g. `operator[]`) are only added to a struct's elaborated
+  // `.methods` list as a side effect of `elaborateFunctionSymbol` actually running for
+  // them. Named member/method access (`resolveMemberAccessInStruct`) looks candidates up
+  // by name in the struct's *collected* (pre-semantic) scope and force-elaborates them on
+  // demand, so it never misses one. Operator-overload resolution (below, for `x[i]`)
+  // instead just scans whatever already happens to be in the elaborated `.methods` list --
+  // which silently omits any overload nothing has ever triggered the elaboration of yet,
+  // making resolution depend on incidental elaboration order rather than what's declared.
+  // Call this first to force every overload of the given kind into existence (matching
+  // the on-demand-elaboration behavior named access already has) before scanning.
+  private ensureOperatorOverloadsElaborated(
+    exprTypeUseId: Semantic.TypeUseId,
+    overloadGroupName: string,
+    sourceloc: SourceLoc
+  ) {
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(exprTypeUseId)
+    );
+    const exprType = this.sr.typeDefNodes.get(resolvedTypeUse.type);
+    if (exprType.variant !== Semantic.ENode.StructDatatype) {
+      return;
+    }
+    if (exprType.originalCollectedDefinition === (-1 as Collect.TypeDefId)) {
+      return;
+    }
+    const collectedStruct = this.sr.cc.typeDefNodes.get(
+      exprType.originalCollectedDefinition
+    );
+    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(structScope.variant === Collect.ENode.StructLexicalScope);
+    const overloadGroupId = [...structScope.symbols].find((mId) => {
+      const m = this.sr.cc.symbolNodes.get(mId);
+      return (
+        m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+        m.name === overloadGroupName
+      );
+    });
+    if (!overloadGroupId) {
+      return;
+    }
+    const overloadGroup = this.sr.cc.symbolNodes.get(overloadGroupId);
+    assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroupSymbol);
+
+    let elaboratedStructCache: Semantic.StructDef | null = null;
+    for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+      for (const entry of cache) {
+        if (entry.result === resolvedTypeUse.type) {
+          elaboratedStructCache = entry;
+        }
+      }
+    }
+    assert(elaboratedStructCache);
+
+    for (const overloadId of overloadGroup.overloads) {
+      const func = this.sr.cc.symbolNodes.get(overloadId);
+      assert(func.variant === Collect.ENode.FunctionSymbol);
+      if (
+        func.generics.length !== 0 ||
+        funcSymHasParameterPack(this.sr.cc, overloadId)
+      ) {
+        // Matches functionOverloadGroup()'s own restriction: generics/param-packs
+        // need call-site argument types to instantiate and can't be blindly forced.
+        continue;
+      }
+
+      this.withContext(
+        {
+          context: Semantic.mergeSubstitutionContext(
+            elaboratedStructCache.substitutionContext,
+            this.currentContext,
+            {
+              currentScope: this.currentContext.currentScope,
+              genericsScope: this.currentContext.currentScope,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }
+          ),
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => {
+          const functionSignatureId = this.elaborateFunctionSignature(overloadId);
+          const methodEnv: Semantic.EnvBlockType = func.staticMethod
+            ? null
+            : {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  resolvedTypeUse.type,
+                  EDatatypeMutability.Mut,
+                  "force-no-inline",
+                  sourceloc
+                )[1],
+              };
+          this.elaborateFunctionSymbolWithGenerics(
+            functionSignatureId,
+            [],
+            sourceloc,
+            [],
+            methodEnv
+          );
+        }
+      );
+    }
+  }
+
   arraySubscript(arraySubscript: Collect.ArraySubscriptExpr) {
     if (arraySubscript.indices.length > 1) {
       throw new CompilerError(
@@ -13943,6 +14053,12 @@ export class SemanticElaborator {
       });
     }
     if (exprType.variant === Semantic.ENode.StructDatatype) {
+      this.ensureOperatorOverloadsElaborated(
+        value.type,
+        "__operator_subscript",
+        arraySubscript.sourceloc
+      );
+
       const overloads = new Set<Semantic.SymbolId>();
 
       for (const mId of exprType.methods) {
