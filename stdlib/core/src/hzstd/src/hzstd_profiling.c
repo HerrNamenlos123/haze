@@ -16,6 +16,7 @@
 #include <linux/perf_event.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -1324,8 +1325,48 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   ioctl(context->perf_fd, PERF_EVENT_IOC_RESET, 0);
   ioctl(context->perf_fd, PERF_EVENT_IOC_ENABLE, 0);
 
-  int result = pthread_create(&context->reader_thread, NULL,
+  // The kernel marks the perf fd readable essentially immediately after each
+  // sample (attr.wakeup_events=1), but that's no help if this thread doesn't
+  // get *scheduled* to actually call poll() again promptly -- on a real
+  // interactive/graphics app, the render thread (and often GPU driver
+  // threads) may well be running at an elevated real-time scheduling
+  // priority to protect their own frame timing, which left this reader at
+  // normal priority would starve it: poll() would keep correctly reporting
+  // real waiting data (not timeouts) each time this thread finally gets a
+  // turn, while the kernel's ring buffer overflows in the stretches between
+  // turns. Requesting the same real-time class here is what keeps this
+  // thread from being outrun by exactly the workload it's trying to sample.
+  // Best-effort: SCHED_RR normally needs CAP_SYS_NICE or an elevated
+  // RLIMIT_RTPRIO, so this falls back to ordinary scheduling (still correct,
+  // just possibly less prompt under contention) rather than treating a
+  // permissions failure as fatal.
+  pthread_attr_t readerAttr;
+  pthread_attr_init(&readerAttr);
+  bool useRealtimeSched =
+      pthread_attr_setinheritsched(&readerAttr, PTHREAD_EXPLICIT_SCHED) == 0 &&
+      pthread_attr_setschedpolicy(&readerAttr, SCHED_RR) == 0;
+  if (useRealtimeSched) {
+    struct sched_param param = {0};
+    int minPrio = sched_get_priority_min(SCHED_RR);
+    int maxPrio = sched_get_priority_max(SCHED_RR);
+    // A modest boost -- enough to avoid being starved by a similarly-elevated
+    // render thread, not the max (which would risk this thread itself
+    // starving other, more important work on the system).
+    param.sched_priority = minPrio + (maxPrio - minPrio) / 4;
+    useRealtimeSched =
+        pthread_attr_setschedparam(&readerAttr, &param) == 0;
+  }
+
+  int result = pthread_create(&context->reader_thread,
+                              useRealtimeSched ? &readerAttr : NULL,
                               hzstd_profiling_reader_thread, context);
+  if (result != 0 && useRealtimeSched) {
+    // Most likely EPERM (no CAP_SYS_NICE/RLIMIT_RTPRIO) -- retry with
+    // ordinary scheduling instead of failing outright.
+    result = pthread_create(&context->reader_thread, NULL,
+                            hzstd_profiling_reader_thread, context);
+  }
+  pthread_attr_destroy(&readerAttr);
   if (result != 0) {
     hzstd_panic("Failed to create profiling reader thread");
   }
