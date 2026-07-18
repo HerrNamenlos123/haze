@@ -427,9 +427,22 @@ static uint64_t hzstd_perf_regs_mask(void) {
 
 // Bytes of the profiled thread's user stack (starting at its RSP at the
 // sampled instant) copied into every sample. Deep call stacks beyond this many
-// bytes simply can't be unwound past that point -- the same limitation
-// `perf record --call-graph dwarf` has, and this is its own default too.
-#define HZSTD_PROFILING_PERF_STACK_SIZE 8192
+// bytes simply can't be unwound past that point -- reported honestly via
+// hzstd_profiling_sample_t::truncated (see hzstd_perf_access_mem) rather than
+// silently producing a shallower-looking call tree than reality.
+//
+// 65528 rather than perf's own smaller 8192 default: a real UI app's call
+// tree routinely stacks several architectural layers at once by the time a
+// sample lands deep in it -- application-level tree recursion, a renderer
+// layer, wgpu-native's (Rust) surface/texture acquisition path, the GC
+// allocator, libc -- and a debug build with preserved frame pointers and no
+// aggressive inlining spends noticeably more stack per frame than an
+// optimized one, so 8192 bytes turned out to only fit ~10-20 frames in
+// practice. 65528 is the practical ceiling real tools converge on for this
+// same kernel facility (e.g. `perf record --call-graph dwarf,65528`).
+// Comfortably larger, but not unbounded -- pathologically deep recursion can
+// still exceed it, which is exactly what the truncated flag is for.
+#define HZSTD_PROFILING_PERF_STACK_SIZE 65528
 
 // One parsed PERF_RECORD_SAMPLE, kept around only for the duration of one
 // hzstd_perf_access_mem/access_reg-driven unwind (see
