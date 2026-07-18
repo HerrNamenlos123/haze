@@ -543,8 +543,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             }
                         });
                     }
-                    fmt.println(f"{total} text elements on screen");
+                    // fmt.println(f"{total} text elements on screen");
 
+                    // Cursor
                     let cursorPos = Vec2(
                         texteditBehavior.cursorPosition.x as real * characterSize.x,
                         texteditBehavior.cursorPosition.y as real * characterSize.y,
