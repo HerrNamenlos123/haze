@@ -27,6 +27,23 @@ typedef struct {
   hzstd_real_t bottom;
 } hzui_border_widths_t;
 
+// Discriminates the `elementPtr` handed to Clay's applyBoundingBox callback
+// (renderer.c) -- since that one callback fires uniformly for
+// RECTANGLE/TEXT/CUSTOM render commands, the C dispatch loop already knows
+// which one from `rcmd->commandType` and passes it straight through instead
+// of making the Haze side re-derive it. elementPtr itself is the raw pointer
+// to the already-heap-allocated Div/Text/CanvasElement (no separate boxing:
+// that object is already kept alive for the tree's whole lifetime by its
+// parent's own child-element cache, so there's nothing extra to keep alive
+// here). Must be kept numerically in sync with ui_layout.hz's
+// applyBoundingBoxTrampoline, which switches on these same values -- Haze
+// can't include this enum directly.
+typedef enum {
+  hzui_element_kind_div = 0,
+  hzui_element_kind_text = 1,
+  hzui_element_kind_canvas = 2,
+} hzui_element_kind_t;
+
 // How an element is sized along one axis. Mirrors ui_styling.SizeMode/Size on
 // the Haze side (Fit/Grow/a fixed value) -- `value` only matters when
 // `type == hzui_sizing_fixed`.

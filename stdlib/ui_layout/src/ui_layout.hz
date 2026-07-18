@@ -32,6 +32,17 @@ namespace ffi {
     extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
 
     extern C noemit struct Clay_RenderCommandArray {};
+
+    // See hzui_element_kind_t's own comment in hzui_public.h -- renderer.c
+    // already knows this from the Clay render command type it's dispatching
+    // on, and passes it straight through instead of making the Haze side
+    // re-derive it (or encoding it into elementPtr itself).
+    extern C noemit enum hzui_element_kind_t {
+        hzui_element_kind_div,
+        hzui_element_kind_text,
+        hzui_element_kind_canvas,
+    }
+
     extern C noemit inline struct ClayCallbacks {
         renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
         renderFilledRectUserdata: cptr;
@@ -39,7 +50,7 @@ namespace ffi {
         renderTextUserdata: cptr;
         renderCustom: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
         renderCustomUserdata: cptr;
-        applyBoundingBox: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        applyBoundingBox: (userdata: cptr, elementKind: hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
         applyBoundingBoxUserdata: cptr;
         renderBorder: (userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: hzui_border_widths_t) -> void;
         renderBorderUserdata: cptr;
@@ -482,7 +493,6 @@ export opaque struct Context {
         fontWeightStack: []real = [];
         lineHeightStack: []ui_styling.LineHeight = [];
         textColorStack: []Color = [];
-        elementBoxes: []Box<ui_elements.Element> = [];
         // Stack of Clay ids for enclosing Relative/Absolute/Fixed/anchored
         // ancestors, nearest last -- see resolveFloating's doc comment.
         positioningContext: []str = [];
@@ -611,10 +621,14 @@ export opaque struct Context {
     fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
         if element is ui_elements.DivElement {
             this.withCascadingStackApplied(ctx, element, () => {
-                let elementBox = Box<ui_elements.Element>(element);
+                // The raw pointer to this already-heap-allocated element --
+                // no boxing needed (see applyBoundingBoxTrampoline's own
+                // comment): it's already kept alive for the tree's whole
+                // lifetime by its parent's own child-element cache, so
+                // there's nothing extra to allocate or keep alive here.
+                let divElement: ui_elements.DivElement = element;
                 let elementPtr = none as cptr;
-                __c__("elementPtr = elementBox;");
-                ctx.elementBoxes.push(elementBox);
+                __c__("elementPtr = divElement;");
 
                 // Assigned once, by ui_components, the moment this element
                 // was created (see DivElement.globalId's own comment) --
@@ -684,10 +698,10 @@ export opaque struct Context {
         }
         else if element is ui_elements.TextElement {
             this.withCascadingStackApplied(ctx, element, () => {
-                let elementBox = Box<ui_elements.Element>(element);
+                // No boxing needed -- see the DivElement branch above.
+                let textElement: ui_elements.TextElement = element;
                 let elementPtr = none as cptr;
-                __c__("elementPtr = elementBox;");
-                ctx.elementBoxes.push(elementBox);
+                __c__("elementPtr = textElement;");
 
                 let fontSize = this.getCurrentFontSize(ctx);
 
@@ -719,10 +733,10 @@ export opaque struct Context {
             // No cascading font/text-color stack: a canvas has no children
             // and renders no Clay-managed text, so none of that state is
             // relevant to it.
-            let elementBox = Box<ui_elements.Element>(element);
+            // No boxing needed -- see the DivElement branch above.
+            let canvasElement: ui_elements.CanvasElement = element;
             let elementPtr = none as cptr;
-            __c__("elementPtr = elementBox;");
-            ctx.elementBoxes.push(elementBox);
+            __c__("elementPtr = canvasElement;");
 
             // Assigned once, by ui_components, the moment this element was
             // created -- see DivElement.globalId's own comment.
@@ -932,17 +946,18 @@ fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_
     };
 }
 
+// Only ever invoked for CUSTOM commands, which only a CanvasElement's
+// definition ever emits (see hzui_clay_define_canvas_element's `.custom`
+// config) -- so elementPtr is always already a CanvasElement's own pointer,
+// no union/tag needed to tell it apart from Div/Text.
 fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
         let callable: Box<RenderCanvasCB> = uninitialized;
         __c__("callable = userdata;");
 
-        let box: Box<ui_elements.Element> = uninitialized;
-        __c__("box = elementPtr;");
-        let element = box.value;
-        if element is ui_elements.CanvasElement {
-            callable.value(element);
-        }
+        let canvasElement: ui_elements.CanvasElement = uninitialized;
+        __c__("canvasElement = elementPtr;");
+        callable.value(canvasElement);
     };
 }
 
@@ -951,14 +966,33 @@ fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w:
 // `Element` union directly. What happens with the position/size (storing it
 // as reactive render feedback, etc.) is entirely up to whoever supplied
 // `onBoundingBox`; this module has no opinion and keeps no state about it.
-fn applyBoundingBoxTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+//
+// elementPtr is the raw pointer to the already-heap-allocated Div/Text/
+// CanvasElement itself -- see the DivElement branch of processTreeElement's
+// own comment for why no extra boxing/allocation is needed to hand it across
+// this FFI boundary. The one thing a bare pointer alone can't carry is which
+// of the three concrete types it points at, since Clay's callback ABI has
+// room for exactly one void*; elementKind supplies that (renderer.c already
+// knows it for free, from the Clay render command type it's dispatching on),
+// so this can safely reinterpret elementPtr as the right concrete type and
+// let Haze's own upcast turn that into the `Element` union `callable` wants.
+fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
         let callable: Box<BoundingBoxCB> = uninitialized;
         __c__("callable = userdata;");
 
-        let box: Box<ui_elements.Element> = uninitialized;
-        __c__("box = elementPtr;");
-
-        callable.value(box.value, Vec2(x, y), Vec2(w, h));
+        if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_div {
+            let divElement: ui_elements.DivElement = uninitialized;
+            __c__("divElement = elementPtr;");
+            callable.value(divElement, Vec2(x, y), Vec2(w, h));
+        } else if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_text {
+            let textElement: ui_elements.TextElement = uninitialized;
+            __c__("textElement = elementPtr;");
+            callable.value(textElement, Vec2(x, y), Vec2(w, h));
+        } else {
+            let canvasElement: ui_elements.CanvasElement = uninitialized;
+            __c__("canvasElement = elementPtr;");
+            callable.value(canvasElement, Vec2(x, y), Vec2(w, h));
+        }
     };
 }
