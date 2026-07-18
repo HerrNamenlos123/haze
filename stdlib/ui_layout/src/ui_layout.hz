@@ -436,9 +436,9 @@ export inline struct ContextOpts {
     measureText: (fontId: int, fontSize: real, text: str) => Vec2;
 }
 
-// Exported (unlike RenderCanvasCB/BoundingBoxCB below) because it's used as
-// a field type on the exported Context struct (measureTextBox), not just
-// inside a function body -- the cross-module shim generator needs to see it.
+// Exported (unlike BoundingBoxCB below) because it's used as a field type on
+// the exported Context struct (measureTextBox), not just inside a function
+// body -- the cross-module shim generator needs to see it.
 export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 
 // Pure layout engine: takes an element tree (ui_elements.Element), runs Clay
@@ -806,33 +806,31 @@ export opaque struct Context {
         assert(clayRenderCommandsPtr);
 
         do unsafe {
-            let renderFilledRect = Box<RenderFilledRectCB>(callbacks.renderFilledRectangle);
-            let renderFilledRectUserdata = none as cptr;
-            __c__("renderFilledRectUserdata = renderFilledRect;");
-            let renderText = Box<RenderTextCB>(callbacks.renderText);
-            let renderTextUserdata = none as cptr;
-            __c__("renderTextUserdata = renderText;");
-            let renderCanvas = Box<RenderCanvasCB>(callbacks.renderCanvas);
-            let renderCustomUserdata = none as cptr;
-            __c__("renderCustomUserdata = renderCanvas;");
-            let onBoundingBox = Box<BoundingBoxCB>(callbacks.onBoundingBox);
-            let applyBoundingBoxUserdata = none as cptr;
-            __c__("applyBoundingBoxUserdata = onBoundingBox;");
-            let renderBorder = Box<RenderBorderCB>(callbacks.renderBorder);
-            let renderBorderUserdata = none as cptr;
-            __c__("renderBorderUserdata = renderBorder;");
+            // `callbacks` is already a single heap pointer -- RenderCallbacks
+            // is a plain (non-inline) struct, so the parameter itself is a
+            // reference, not a value copy. No need to box each of its five
+            // closure fields separately just to get something cptr-sized to
+            // hand to Clay: the same one pointer, reinterpreted by each
+            // trampoline (see renderFilledRectTrampoline etc.) back into
+            // RenderCallbacks and read straight off the matching field,
+            // covers all five registrations below. Safe for the GC too --
+            // `callbacks` stays reachable via this local for exactly as long
+            // as Clay_RenderClayCommands (below) can still call back into it,
+            // since it's all one synchronous call stack.
+            let callbacksPtr = none as cptr;
+            __c__("callbacksPtr = callbacks;");
 
             ffi.Clay_RenderClayCommands({
                 renderFilledRect: renderFilledRectTrampoline,
-                renderFilledRectUserdata: renderFilledRectUserdata,
+                renderFilledRectUserdata: callbacksPtr,
                 renderText: renderTextTrampoline,
-                renderTextUserdata: renderTextUserdata,
+                renderTextUserdata: callbacksPtr,
                 renderCustom: renderCustomTrampoline,
-                renderCustomUserdata: renderCustomUserdata,
+                renderCustomUserdata: callbacksPtr,
                 applyBoundingBox: applyBoundingBoxTrampoline,
-                applyBoundingBoxUserdata: applyBoundingBoxUserdata,
+                applyBoundingBoxUserdata: callbacksPtr,
                 renderBorder: renderBorderTrampoline,
-                renderBorderUserdata: renderBorderUserdata,
+                renderBorderUserdata: callbacksPtr,
             }, clayRenderCommandsPtr);
         };
 
@@ -848,17 +846,16 @@ export opaque struct Context {
 export type RenderFilledRectCB = (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t) => void;
 export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
 export type RenderBorderCB = (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t, borderWidth: ffi.hzui_border_widths_t) => void;
-// Not exported: these two reference a cross-module qualified type
-// (ui_elements.X) in their body. The compiler's cross-module shim generator
-// mangles qualified types correctly for struct fields, but has a codegen bug
-// for top-level exported `type X = (...) => Y;` aliases that reference a
-// qualified cross-module type -- it leaves the module prefix unmangled,
-// which then fails to resolve when a consumer project imports this module.
-// Keeping these as plain (unexported) aliases for internal Box<T> use, and
-// inlining the equivalent function type directly on the RenderCallbacks
-// fields below (which export fine, since struct field types go through the
-// correctly-mangling code path), avoids the bug entirely.
-type RenderCanvasCB = (element: ui_elements.CanvasElement) => void;
+// Not exported: it references a cross-module qualified type (ui_elements.X)
+// in its body. The compiler's cross-module shim generator mangles qualified
+// types correctly for struct fields, but has a codegen bug for top-level
+// exported `type X = (...) => Y;` aliases that reference a qualified
+// cross-module type -- it leaves the module prefix unmangled, which then
+// fails to resolve when a consumer project imports this module. Kept as a
+// plain (unexported) alias for applyBoundingBoxesRecursive's own callback
+// parameter below, and inlined directly (same shape) on
+// RenderCallbacks.onBoundingBox, which exports fine since struct field types
+// go through the correctly-mangling code path.
 type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
 
 // Supplementary to the render-command-driven onBoundingBox calls inside
@@ -912,25 +909,28 @@ export struct RenderCallbacks {
 
 fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
-        let callable: Box<RenderFilledRectCB> = uninitialized;
-        __c__("callable = userdata;");
-        callable.value(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+        // userdata is the RenderCallbacks struct itself (already a single
+        // heap pointer -- see render()'s own comment), not a box -- no
+        // separate allocation needed to reinterpret it back.
+        let callbacks: RenderCallbacks = uninitialized;
+        __c__("callbacks = userdata;");
+        callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
     };
 }
 
 fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
     do unsafe {
-        let callable: Box<RenderBorderCB> = uninitialized;
-        __c__("callable = userdata;");
-        callable.value(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
+        let callbacks: RenderCallbacks = uninitialized;
+        __c__("callbacks = userdata;");
+        callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
     };
 }
 
 fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
     do unsafe {
-        let callable: Box<RenderTextCB> = uninitialized;
-        __c__("callable = userdata;");
-        callable.value(element);
+        let callbacks: RenderCallbacks = uninitialized;
+        __c__("callbacks = userdata;");
+        callbacks.renderText(element);
     };
 }
 
@@ -952,12 +952,12 @@ fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_
 // no union/tag needed to tell it apart from Div/Text.
 fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let callable: Box<RenderCanvasCB> = uninitialized;
-        __c__("callable = userdata;");
+        let callbacks: RenderCallbacks = uninitialized;
+        __c__("callbacks = userdata;");
 
         let canvasElement: ui_elements.CanvasElement = uninitialized;
         __c__("canvasElement = elementPtr;");
-        callable.value(canvasElement);
+        callbacks.renderCanvas(canvasElement);
     };
 }
 
@@ -978,21 +978,21 @@ fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w:
 // let Haze's own upcast turn that into the `Element` union `callable` wants.
 fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let callable: Box<BoundingBoxCB> = uninitialized;
-        __c__("callable = userdata;");
+        let callbacks: RenderCallbacks = uninitialized;
+        __c__("callbacks = userdata;");
 
         if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_div {
             let divElement: ui_elements.DivElement = uninitialized;
             __c__("divElement = elementPtr;");
-            callable.value(divElement, Vec2(x, y), Vec2(w, h));
+            callbacks.onBoundingBox(divElement, Vec2(x, y), Vec2(w, h));
         } else if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_text {
             let textElement: ui_elements.TextElement = uninitialized;
             __c__("textElement = elementPtr;");
-            callable.value(textElement, Vec2(x, y), Vec2(w, h));
+            callbacks.onBoundingBox(textElement, Vec2(x, y), Vec2(w, h));
         } else {
             let canvasElement: ui_elements.CanvasElement = uninitialized;
             __c__("canvasElement = elementPtr;");
-            callable.value(canvasElement, Vec2(x, y), Vec2(w, h));
+            callbacks.onBoundingBox(canvasElement, Vec2(x, y), Vec2(w, h));
         }
     };
 }
