@@ -9772,6 +9772,79 @@ export class SemanticElaborator {
           sourceloc
         );
       }
+      if (name === "clear") {
+        const funcname = `__hz_dynamic_array_clear_${
+          Semantic.mangleTypeUse(this.sr, exprType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [],
+            returnType: this.sr.b.voidType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("hzstd_dynamic_array_clear(this);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: [],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                exprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                sourceloc
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              exprTypeUse.type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              sourceloc
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: exprId,
+          },
+          sourceloc
+        );
+      }
       throw new CompilerError(
         `Datatype '${Semantic.serializeTypeUse(
           this.sr,
