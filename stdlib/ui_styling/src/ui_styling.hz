@@ -339,7 +339,7 @@ export inline struct TextStyle {
 //     ancestor's resolved value), which a single element's props can't see
 //     in isolation -- that's the layout engine's job, same as today.
 
-export struct ComputedDivStyle {
+export inline struct ComputedDivStyle {
     width: Size = SizeMode.Fit;
     height: Size = SizeMode.Fit;
     padding: Padding = {};
@@ -390,7 +390,7 @@ export struct ComputedDivStyle {
     }
 }
 
-export struct ComputedTextStyle {
+export inline struct ComputedTextStyle {
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;

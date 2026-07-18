@@ -507,7 +507,7 @@ export opaque struct Context {
         }
     }
 
-    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: ui_elements.DivElement | ui_elements.TextElement, func: () => none) {
+    fn pushCascadingStack(ctx: TreeTraverseContext, element: ui_elements.DivElement | ui_elements.TextElement) {
         let fontFamily = element is ui_elements.DivElement ? element.style.fontFamily : element.style.fontFamily;
         let fontSize = element is ui_elements.DivElement ? element.style.fontSize : element.style.fontSize;
         let fontWeight = element is ui_elements.DivElement ? element.style.fontWeight : element.style.fontWeight;
@@ -529,8 +529,14 @@ export opaque struct Context {
         if textColor {
             ctx.textColorStack.push(textColor);
         }
+    }
 
-        func();
+    fn popCascadingStack(ctx: TreeTraverseContext, element: ui_elements.DivElement | ui_elements.TextElement) {
+        let fontFamily = element is ui_elements.DivElement ? element.style.fontFamily : element.style.fontFamily;
+        let fontSize = element is ui_elements.DivElement ? element.style.fontSize : element.style.fontSize;
+        let fontWeight = element is ui_elements.DivElement ? element.style.fontWeight : element.style.fontWeight;
+        let lineHeight = element is ui_elements.DivElement ? element.style.lineHeight : element.style.lineHeight;
+        let textColor = element is ui_elements.DivElement ? element.style.textColor : element.style.textColor;
 
         if fontFamily {
             ctx.fontFamilyStack.pop();
@@ -547,6 +553,15 @@ export opaque struct Context {
         if textColor {
             ctx.textColorStack.pop();
         }
+    }
+
+    // Warning: This function was extracted because it requires a closure, and if used incorrectly 
+    // creates a new closure every frame, which heap allocates in order to hoist captured variables.
+    // Use carefully. This is designed for performance.
+    fn withCascadingStackApplied(ctx: TreeTraverseContext, element: ui_elements.DivElement | ui_elements.TextElement, func: () => none) {
+        this.pushCascadingStack(ctx, element);
+        func();
+        this.popCascadingStack(ctx, element);
     }
 
     fn getFont(name: str) {
@@ -620,114 +635,114 @@ export opaque struct Context {
     // stretch to fill the parent's cross-extent -- see effectiveSize().
     fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
         if element is ui_elements.DivElement {
-            this.withCascadingStackApplied(ctx, element, () => {
-                // The raw pointer to this already-heap-allocated element --
-                // no boxing needed (see applyBoundingBoxTrampoline's own
-                // comment): it's already kept alive for the tree's whole
-                // lifetime by its parent's own child-element cache, so
-                // there's nothing extra to allocate or keep alive here.
-                let divElement: ui_elements.DivElement = element;
-                let elementPtr = none as cptr;
-                __c__("elementPtr = divElement;");
+            this.pushCascadingStack(ctx, element);
+            // The raw pointer to this already-heap-allocated element --
+            // no boxing needed (see applyBoundingBoxTrampoline's own
+            // comment): it's already kept alive for the tree's whole
+            // lifetime by its parent's own child-element cache, so
+            // there's nothing extra to allocate or keep alive here.
+            let divElement: ui_elements.DivElement = element;
+            let elementPtr = none as cptr;
+            __c__("elementPtr = divElement;");
 
-                // Assigned once, by ui_components, the moment this element
-                // was created (see DivElement.globalId's own comment) --
-                // nothing left to compute or cache here, just read it back.
-                let elementId = element.globalId;
+            // Assigned once, by ui_components, the moment this element
+            // was created (see DivElement.globalId's own comment) --
+            // nothing left to compute or cache here, just read it back.
+            let elementId = element.globalId;
 
-                let style = element.style;
+            let style = element.style;
 
-                // Resolved once here so both the recursive walk (below) and
-                // the FFI call use the exact same values.
-                let childForceGrowWidth = crossAxisForcesWidthGrow(style.direction, style.crossAlign);
-                let childForceGrowHeight = crossAxisForcesHeightGrow(style.direction, style.crossAlign);
-                let spaceBetween = style.packing == ui_styling.Packing.SpaceBetween && element.children.length > 1;
-                let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
-                let lastIndex = element.children.length - 1;
+            // Resolved once here so both the recursive walk (below) and
+            // the FFI call use the exact same values.
+            let childForceGrowWidth = crossAxisForcesWidthGrow(style.direction, style.crossAlign);
+            let childForceGrowHeight = crossAxisForcesHeightGrow(style.direction, style.crossAlign);
+            let spaceBetween = style.packing == ui_styling.Packing.SpaceBetween && element.children.length > 1;
+            let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
+            let lastIndex = element.children.length - 1;
 
-                let renderChildren = () => {
-                    let i = 0;
-                    for child in element.children {
-                        this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
-                        if spaceBetween && i < lastIndex {
-                            defineSpacer(elementId + "/__spacer_" + f"{i}", mainAxisIsWidth);
-                        }
-                        i = i + 1;
+            let renderChildren = () => {
+                let i = 0;
+                for child in element.children {
+                    this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
+                    if spaceBetween && i < lastIndex {
+                        defineSpacer(elementId + "/__spacer_" + f"{i}", mainAxisIsWidth);
                     }
-                };
-                let func = none as cptr;
-                let env = none as cptr;
-                __c__("func = (void*)renderChildren.fn;");
-                __c__("env = (void*)renderChildren.env;");
-
-                // Resolved against positioningContext's state *before* this
-                // element pushes itself below -- an element's own placement
-                // is always relative to whatever ancestor context already
-                // existed, never to itself.
-                let floating = resolveFloating(ctx.positioningContext, style);
-                let pushesPositioningContext = style.position == ui_styling.Position.Relative
-                    || floating.attachTo != ffi.hzui_attach_to_t.hzui_attach_to_none;
-                if pushesPositioningContext {
-                    ctx.positioningContext.push(elementId);
+                    i = i + 1;
                 }
+            };
+            let func = none as cptr;
+            let env = none as cptr;
+            __c__("func = (void*)renderChildren.fn;");
+            __c__("env = (void*)renderChildren.env;");
 
-                ffi.hzui_clay_define_div_element(
-                    func, env,
-                    {
-                        id: elementId,
-                        backgroundColor: style.backgroundColor,
-                        padding: { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
-                        cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
-                        downInsteadOfRight: style.direction == ui_styling.Direction.Column,
-                        gap: style.gap,
-                        width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
-                        height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
-                        mainAxisAlign: packingToClayAlign(style.packing),
-                        crossAxisAlign: crossAlignToClayAlign(style.crossAlign),
-                        floating: floating,
-                        borderColor: style.borderColor,
-                        borderWidth: { left: style.borderWidth.left, right: style.borderWidth.right, top: style.borderWidth.top, bottom: style.borderWidth.bottom },
-                        elementPtr: elementPtr,
-                    }
-                );
+            // Resolved against positioningContext's state *before* this
+            // element pushes itself below -- an element's own placement
+            // is always relative to whatever ancestor context already
+            // existed, never to itself.
+            let floating = resolveFloating(ctx.positioningContext, style);
+            let pushesPositioningContext = style.position == ui_styling.Position.Relative
+                || floating.attachTo != ffi.hzui_attach_to_t.hzui_attach_to_none;
+            if pushesPositioningContext {
+                ctx.positioningContext.push(elementId);
+            }
 
-                if pushesPositioningContext {
-                    ctx.positioningContext.pop();
+            ffi.hzui_clay_define_div_element(
+                func, env,
+                {
+                    id: elementId,
+                    backgroundColor: style.backgroundColor,
+                    padding: { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
+                    cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },
+                    downInsteadOfRight: style.direction == ui_styling.Direction.Column,
+                    gap: style.gap,
+                    width: toSizingAxis(effectiveSize(style.width, forceGrowWidth)),
+                    height: toSizingAxis(effectiveSize(style.height, forceGrowHeight)),
+                    mainAxisAlign: packingToClayAlign(style.packing),
+                    crossAxisAlign: crossAlignToClayAlign(style.crossAlign),
+                    floating: floating,
+                    borderColor: style.borderColor,
+                    borderWidth: { left: style.borderWidth.left, right: style.borderWidth.right, top: style.borderWidth.top, bottom: style.borderWidth.bottom },
+                    elementPtr: elementPtr,
                 }
-            });
+            );
+
+            if pushesPositioningContext {
+                ctx.positioningContext.pop();
+            }
+            this.popCascadingStack(ctx, element);
         }
         else if element is ui_elements.TextElement {
-            this.withCascadingStackApplied(ctx, element, () => {
-                // No boxing needed -- see the DivElement branch above.
-                let textElement: ui_elements.TextElement = element;
-                let elementPtr = none as cptr;
-                __c__("elementPtr = textElement;");
+            this.pushCascadingStack(ctx, element);
+            // No boxing needed -- see the DivElement branch above.
+            let textElement: ui_elements.TextElement = element;
+            let elementPtr = none as cptr;
+            __c__("elementPtr = textElement;");
 
-                let fontSize = this.getCurrentFontSize(ctx);
+            let fontSize = this.getCurrentFontSize(ctx);
 
-                let fontId = this.getCurrentFont(ctx);
-                let lineHeightPx = this.getFontLineHeight(fontId, fontSize);
-                let lineHeightMode = this.getCurrentLineHeight(ctx);
-                if lineHeightMode.mode == ui_styling.LineHeightMode.Relative {
-                    lineHeightPx *= lineHeightMode.value;
+            let fontId = this.getCurrentFont(ctx);
+            let lineHeightPx = this.getFontLineHeight(fontId, fontSize);
+            let lineHeightMode = this.getCurrentLineHeight(ctx);
+            if lineHeightMode.mode == ui_styling.LineHeightMode.Relative {
+                lineHeightPx *= lineHeightMode.value;
+            }
+            else if lineHeightMode.mode == ui_styling.LineHeightMode.Pixels {
+                lineHeightPx = lineHeightMode.value;
+            }
+
+            ffi.hzui_clay_define_text_element(
+                {
+                    text: element.text,
+                    color: this.getCurrentTextColor(ctx),
+                    fontId: fontId,
+                    fontSize: fontSize,
+                    lineHeight: lineHeightPx,
+                    wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words,
+                    alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
+                    elementPtr: elementPtr,
                 }
-                else if lineHeightMode.mode == ui_styling.LineHeightMode.Pixels {
-                    lineHeightPx = lineHeightMode.value;
-                }
-
-                ffi.hzui_clay_define_text_element(
-                    {
-                        text: element.text,
-                        color: this.getCurrentTextColor(ctx),
-                        fontId: fontId,
-                        fontSize: fontSize,
-                        lineHeight: lineHeightPx,
-                        wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words,
-                        alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
-                        elementPtr: elementPtr,
-                    }
-                );
-            });
+            );
+            this.popCascadingStack(ctx, element);
         }
         else if element is ui_elements.CanvasElement {
             // No cascading font/text-color stack: a canvas has no children
