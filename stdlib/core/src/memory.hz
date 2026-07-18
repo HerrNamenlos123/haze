@@ -15,32 +15,50 @@ export namespace Alloc {
     }
 }
 
+// This is one of the most important invariants in Haze:
+// 'str' is a string slice and what it points to, must always and forever be deeply immutable, must never move,
+// change length or be mutated in-place.
+// 'str' are fixed by definition.
+// Making a binary buffer, making a 'str' that points into the buffer, and mutating the buffer afterwards
+// is strictly forbidden. This deeply breaks low level compatibility of the slice.
+// In order to keep the language 100% memory safe by design, we must not allow this.
+// We may only create a 'str' into a buffer if we can guarantee, that this buffer is 100% frozen and will never ever
+// be mutated or worse, change its length. The easiest way is to just clone the string.
+// But that is expensive and we don't want that for string formatting.
+// This container exists for this purpose: To dynamically create a buffer, then commit it, and then
+// interpret it as a byte slice or utf-8 'str'.
+// Any attempt to create a 'str' that does not clone a buffer or ensures the buffer cannot be altered by anyone,
+// is strictly forbidden in Haze.
 export opaque struct ByteBuffer {
-    committed: bool;
-    data: []u8;
+    committed: bool = false;
 
-    frozenPtr: cptr;
-    frozenLen: int;
+    // If the array is empty, it can also be absent, to optimize a redundant heap allocation
+    data?: []u8;
+
+    frozenPtr: cptr = none;
+    frozenLen: int = 0;
 
     fn constructor() {
-        return ByteBuffer(0);
+        return ByteBuffer {};
     }
 
     fn constructor(reserve: int) {
-        let arr: []u8 = [];
-        if reserve > 0 {
-            arr.reserve(reserve);
-        }
-
+        let buffer = ByteBuffer {};
         // The frozen buffer is GC managed. Nothing ever needs to be freed. 
-        // There is no point in resizing a buffer within an arena.
+        buffer.reserve(reserve);
+        return buffer;
+    }
 
-        return ByteBuffer {
-            committed: false,
-            data: arr,
-            frozenPtr: none,
-            frozenLen: 0,
-        };
+    fn constructor(value: str) {
+        let buffer = ByteBuffer(value.length);
+        buffer.push(value);
+        return buffer;
+    }
+
+    fn constructor(value: Bytes) {
+        let buffer = ByteBuffer(value.length);
+        buffer.push(value);
+        return buffer;
     }
 
     fn operator[](index: int): ByteBufferRef {
@@ -53,12 +71,26 @@ export opaque struct ByteBuffer {
         return { buffer: this, index: index };
     }
 
+    fn reserve(size: int) {
+        this._getData().reserve(size);
+    }
+
+    fn _getData() {
+        this.assertNotCommitted();
+        if !this.data {
+            this.data = [];
+        }
+        // TODO: Remove this assertion when compiler bug is fixed
+        assert(this.data);
+        return this.data;
+    }
+
     fn getAt(index: int): u8 {
         if !this.committed {
-            if index < 0 || index >= this.data.length {
+            if index < 0 || index >= this._getData().length {
                 sys.panic("Out of bounds access in ByteBuffer");
             }
-            return this.data[index];
+            return this._getData()[index];
         }
         else {
             if index < 0 || index >= this.frozenLen {
@@ -74,43 +106,43 @@ export opaque struct ByteBuffer {
     fn commit() {
         if this.committed { return; }
 
-        let len = this.data.length;
+        let len = this._getData().length;
 
         do unsafe {
             let ptr: cptr = none as cptr;
+            let data = this._getData();
 
             if len > 0 {
                 __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), len);");
-                __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(this->data), len);");
+                __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(data), len);");
             }
 
             this.frozenPtr = ptr;
             this.frozenLen = len;
         };
 
-        this.data = [];        // release dynamic array
+        this.data = none;        // release dynamic array for the GC, we don't need it anymore
         this.committed = true;
     }
 
     fn reserve(newCapacity: int) {
-        this.assertNotCommitted();
-        this.data.reserve(newCapacity);
+        this._getData().reserve(newCapacity);
     }
 
     fn resize(newSize: int) {    
-        this.assertNotCommitted();
+        let data = _getData();
         // Do the dumb, obvious thing now, optimize later
-        while this.data.length < newSize {
-            this.data.push(0);
+        while data.length < newSize {
+            data.push(0);
         }
-        while this.data.length > newSize {
-            this.data.pop();
+        while data.length > newSize {
+            data.pop();
         }
     }
 
     fn length() {
         if this.committed { return this.frozenLen; }
-        return this.data.length;
+        return this._getData().length;
     }
 
     fn assertNotCommitted() {
@@ -120,77 +152,122 @@ export opaque struct ByteBuffer {
     }
 
     fn setAt(index: int, value: u8) {
-        this.assertNotCommitted();
-        if (index < 0 || index >= this.data.length) {
+        let data = this._getData();
+        if (index < 0 || index >= data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
-        this.data[index] = value;
+        data[index] = value;
     }
 
-    mut fn push(data: str) {
-        this.assertNotCommitted();
-        let pLength = this.data.length;
-
-        // Always resize to this size, it will strictly grow the buffer
-        this.resize(pLength + data.length);
-        this.writeAt(pLength, data);
+    mut fn push(value: str) {
+        this.push(Bytes(value));
     }
 
     mut fn push(data: Bytes) {
-        this.assertNotCommitted();
-        let pLength = this.data.length;
-
+        let data = this._getData();
         // Always resize to this size, it will strictly grow the buffer
-        this.resize(pLength + data.length);
-        this.writeAt(pLength, data);
+        this.resize(data.length + value.length);
+        this.writeAt(data.length, value);
     }
 
-    mut fn writeAt(startIndex: int, data: str) {
-        if (startIndex < 0 || startIndex + data.length > this.data.length) {
+    mut fn writeAt(startIndex: int, value: str) {
+        this.writeAt(startIndex, Bytes(value));
+    }
+
+    mut fn writeAt(startIndex: int, value: Bytes) {
+        let data = this._getData();
+        if (startIndex < 0 || startIndex + value.length > data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
-        this.assertNotCommitted();
         // Do the dumb, trivial loop, we can optimize bounds checking away later
-        for (let i = 0; i < data.length; i++) {
-            this.data[startIndex + i] = data[i];
-        }
-    }
-
-    mut fn writeAt(startIndex: int, data: Bytes) {
-        if (startIndex < 0 || startIndex + data.length > this.data.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-
-        this.assertNotCommitted();
-        // Do the dumb, trivial loop, we can optimize bounds checking away later
-        for (let i = 0; i < data.length; i++) {
-            this.data[startIndex + i] = data[i];
+        for (let i = 0; i < value.length; i++) {
+            data[startIndex + i] = value[i];
         }
     }
 
     mut fn writeZero(startIndex: int, length: int) {
-        if (startIndex < 0 || startIndex + length > this.data.length) {
+        let data = this._getData();
+        if (startIndex < 0 || startIndex + length > data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
-        this.assertNotCommitted();
         // Do the dumb, trivial loop, we can optimize bounds checking away later
         for (let i = 0; i < length; i++) {
-            this.data[startIndex + i] = 0;
+            data[startIndex + i] = 0;
         }
     }
 
+    mut fn insert(index: int, byte: u8) {
+        this.insert(index, Bytes(byte));
+    }
+
+    mut fn insert(index: int, string: str) {
+        this.insert(index, Bytes(string));
+    }
+
+    mut fn insert(index: int, bytes: Bytes) {
+        let data = this._getData();
+
+        if index < 0 || index > data.length {
+            sys.panic("Out of bounds access in ByteBuffer");
+        }
+
+        if bytes.length == 0 {
+            return;
+        }
+
+        let oldLength = data.length;
+        let insertLength = bytes.length;
+
+        this.resize(oldLength + insertLength);
+
+        // Move existing bytes backwards.
+        for (let i = oldLength - 1; i >= index; i--) {
+            data[i + insertLength] = data[i];
+        }
+
+        // Write inserted bytes.
+        for (let i = 0; i < insertLength; i++) {
+            data[index + i] = bytes[i];
+        }
+    }
+
+    mut fn remove(index: int, count: int) {
+        let data = this._getData();
+
+        if index < 0 || count < 0 || index + count > data.length {
+            sys.panic("Out of bounds access in ByteBuffer");
+        }
+
+        if count == 0 {
+            return;
+        }
+
+        let oldLength = data.length;
+
+        // Move remaining bytes forwards.
+        for (let i = index + count; i < oldLength; i++) {
+            data[i - count] = data[i];
+        }
+
+        this.resize(oldLength - count);
+    }
+
+    // Todo: Clone Buffer
+
+    // This function is critical for language semantics as it must only be allowed when we can guarantee
+    // the buffer is frozen and cannot ever change again.
     fn bytes(): Bytes {
         if !this.committed {
             sys.panic("Attempted to call .bytes() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable byte slices");
         }
 
         do unsafe {
-            let bytes: Bytes = uninitialized; // We cannot use a conventional struct literal because Bytes is OPAQUE!!!
-            __c__("bytes.basePtr = NULL;");
-            __c__("bytes.offset = 0;");
-            __c__("bytes.length = 0;");
+            // We cannot use a conventional struct literal because Bytes is OPAQUE!!!
+            // And we cannot make it non-opaque because that would mean people can create Bytes objects themselves,
+            // inject raw C pointers, and cause random memory corruption.
+            let bytes = Bytes(); 
             if (this.frozenLen > 0) {
                 // This is ONLY safe because we make sure the array cannot be mutated anymore
                 __c__("bytes.basePtr = this->frozenPtr;");
@@ -201,6 +278,25 @@ export opaque struct ByteBuffer {
         };
     }
 
+    fn cloneString(): str {
+        if !this.committed {
+            let data = this._getData();
+            let result = "";
+            if (data.length > 0) {
+                // This does create a hzstd_str_t, but it points into the raw dynamic array, which means it is unsafe
+                // and by definition violates one of the core Haze invariants. We must make sure
+                // it is immediately cloned and then thrown away and does not escape this function.
+                __c__("result = hzstd_str_dup(HZSTD_STRING((const char*)hzstd_dynamic_array_raw_buffer(data), hzstd_dynamic_array_size(data)));");
+            }
+            return result;
+        }
+        else {
+            return this.string();
+        }
+    }
+
+    // This function is critical for language semantics as it must only be allowed when we can guarantee
+    // the buffer is frozen and cannot ever change again.
     fn string(): str {
         if !this.committed {
             sys.panic("Attempted to call .string() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
@@ -243,16 +339,41 @@ export opaque inline struct Bytes {
     offset: int;
     length: int;
 
+    singleByte: u8 | none;
+
     fn constructor() {
         return Bytes {
             basePtr: none,
             offset: 0,
             length: 0,
+            singleByte: none,
         };
     }
 
     fn constructor(buffer: ByteBuffer) {
         return buffer.bytes();
+    }
+
+    fn constructor(value: u8) {
+        return Bytes {
+            basePtr: none,
+            offset: 0,
+            length: 1,
+            singleByte: value,
+        };
+    }
+
+    fn constructor(value: str) {
+        let bytes = Bytes {
+            basePtr: none,
+            offset: 0,
+            length: value.length,
+            singleByte: none,
+        };
+        do unsafe {
+            __c__("bytes.basePtr = value.data;");
+        }
+        return bytes;
     }
 
     fn operator[](index: int): u8 {
@@ -264,9 +385,14 @@ export opaque inline struct Bytes {
             sys.panic("Out of bounds access in Bytes slice");
         }
 
-        let result: u8 = 0;
-        __c__("result = ((hzstd_u8_t*)this->basePtr + this->offset)[index];");
-        return result;
+        if this.singleByte {
+            return this.singleByte;
+        }
+        else {
+            let result: u8 = 0;
+            __c__("result = ((hzstd_u8_t*)this->basePtr + this->offset)[index];");
+            return result;
+        }
     }
 
     fn slice(start?: int, end?: int): Bytes {
@@ -297,34 +423,64 @@ export opaque inline struct Bytes {
         if e < 0 { e = 0; }
         if e > len { e = len; }
 
-        // --- empty if reversed ---
-        if e <= s {
+        if this.singleByte {
+            if e <= s {
+                return Bytes();
+            }
+
+            // Only possible non-empty slice is [0,1)
+            return Bytes(this.singleByte);
+        }
+        else {
+            // --- empty if reversed ---
+            if e <= s {
+                return Bytes {
+                    basePtr: this.basePtr,
+                    offset: this.offset,
+                    length: 0,
+                    singleByte: none,
+                };
+            }
+
             return Bytes {
                 basePtr: this.basePtr,
-                offset: this.offset,
-                length: 0,
+                offset: this.offset + s,
+                length: e - s,
+                singleByte: none,
             };
         }
-
-        return Bytes {
-            basePtr: this.basePtr,
-            offset: this.offset + s,
-            length: e - s,
-        };
     }
 
     fn string(): str {
-        // TODO: Perform utf-8 validation once we have actual unicode support
-        let result = "";
-        if (this.length > 0) {
-            __c__("result = HZSTD_STRING((const char*)(this->basePtr + this->offset), this->length);");
+        if !this.singleByte {
+            // TODO: Perform utf-8 validation once we have actual unicode support
+            let result = "";
+            if (this.length > 0) {
+                __c__("result = HZSTD_STRING((const char*)(this->basePtr + this->offset), this->length);");
+            }
+            return result;
         }
-        return result;
+        else {
+            // TODO: Perform utf-8 validation once we have actual unicode support
+            let result = "";
+            let byte = this.singleByte;
+            __c__("result = hzstd_str_dup(HZSTD_STRING((const char*)&byte, 1));");
+            return result;
+        }
     }
 
     fn operator==(other: Bytes) {
         if this.length != other.length {
             return false;
+        }
+
+        if this.singleByte || other.singleByte {
+            for (let i = 0; i < this.length; i++) {
+                if this[i] != other[i] {
+                    return false;
+                }
+            }
+            return true;
         }
 
         let equal = false;
