@@ -95,14 +95,6 @@ extern int _Ux86_64_set_caching_policy(unw_addr_space_t, unw_caching_policy_t);
 // instead of the custom libunwind+libdwarf path used on Linux.
 #endif
 
-#ifdef HAZE_PLATFORM_LINUX
-// Forward-declared here (full definition further down, after
-// hzstd_perf_sample_regs_t) purely so hzstd_profiling_context_t below can
-// hold a pointer to it -- only the pointer size is needed at that point, not
-// the full layout.
-typedef struct hzstd_perf_pending_chunk_t hzstd_perf_pending_chunk_t;
-#endif
-
 // Raw, per-sample data: just addresses + timings, no symbol resolution or
 // allocation. On Linux this is built by unwinding a perf_event_open-captured
 // register/stack snapshot on the reader thread (see
@@ -231,25 +223,38 @@ struct hzstd_profiling_context_t {
   // in hzstd_profiling_start had to shrink it far below the ideal target.
   size_t perf_actual_ring_bytes;
 
-  // ── Deferred unwinding pipeline ──────────────────────────────────────────
-  //
   // The reader thread above only ever does a cheap raw copy out of the
-  // kernel's ring buffer -- no unwinding -- so it can keep up with the
-  // kernel regardless of per-sample unwind cost or how promptly the OS
-  // schedules it, exactly like perf record's own reader (which just writes
-  // raw bytes to a file; all the DWARF/symbol work happens afterward, via
-  // perf script). The actual unwinding happens on a *separate*
-  // unwind_worker_thread, continuously draining pending_head in the
-  // background while the reader keeps running -- not batched up until the
-  // session ends, which would let memory grow for as long as profiling
-  // runs. pending_mutex guards only the list pointers (a cheap
-  // pointer-swap "steal the whole backlog" operation on both sides), never
-  // held during the expensive unwind itself.
-  pthread_t unwind_worker_thread;
-  atomic_bool stop_unwind_worker;
-  pthread_mutex_t pending_mutex;
-  hzstd_perf_pending_chunk_t *pending_head;
-  hzstd_perf_pending_chunk_t *pending_tail;
+  // kernel's ring buffer straight into this temp file (see
+  // hzstd_profiling_write_raw_capture) -- no unwinding, no in-memory queue,
+  // no allocation at all -- so it can keep up with the kernel regardless of
+  // per-sample unwind cost or how promptly the OS schedules anything else.
+  // An earlier version of this deferred unwinding to a separate background
+  // thread instead, reading captures out of an in-memory queue; that queue
+  // turned out to grow completely unboundedly whenever unwinding fell behind
+  // the kernel's real capture rate (observed: several GB of RSS within
+  // seconds under heavy load), which is exactly the unbounded-memory-growth
+  // failure this file is meant to avoid. Writing straight to disk instead --
+  // the same "capture fast now, do the expensive interpretation from a file
+  // afterward" split perf record itself uses between perf.data and perf
+  // script -- removes the possibility of that backlog entirely: unwinding
+  // (see hzstd_profiling_end) only ever happens once, sequentially, after
+  // sampling has fully stopped and every capture is already safely on disk.
+  // Deliberately unnamed and self-deleting (removed the moment it's closed,
+  // or automatically by the OS if the process dies first), so there's no
+  // path to manage or clean up -- see hzstd_profiling_create_raw_samples_file
+  // for *where* this actually lands, which matters more than it sounds like
+  // it should (plain tmpfile() is not a reliable way to guarantee this is
+  // really backed by disk).
+  FILE *raw_samples_file;
+  // Set by the reader thread the first time a write to raw_samples_file
+  // fails (see hzstd_profiling_write_raw_capture) -- disk is far larger and
+  // more elastic than RAM, but still finite, and a truly extreme capture
+  // rate sustained long enough can fill it. Once set, the reader stops
+  // writing further captures for the rest of the session (counting them
+  // here instead) rather than risk leaving a truncated, unreadable record
+  // in the middle of the file.
+  bool raw_samples_write_failed;
+  uint64_t raw_samples_dropped_count;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -540,10 +545,13 @@ static uint64_t hzstd_perf_regs_mask(void) {
 
 // One parsed PERF_RECORD_SAMPLE's registers/stack, passed to
 // hzstd_perf_access_mem/access_reg during one unwind (see
-// g_hzstd_perf_current_sample below). `stack` either points at the reader
-// thread's short-lived scratch buffer (valid only until the next ring read)
-// or, once queued for deferred unwinding (see hzstd_perf_pending_capture_t
-// below), at its own small, persistent, exact-sized copy.
+// g_hzstd_perf_current_sample below). `stack` points at a short-lived
+// scratch buffer -- the reader thread's while capturing (valid only until
+// the next ring read), or postprocessing's own while unwinding (valid only
+// until the next capture is read back from raw_samples_file) -- never at a
+// persistent allocation; nothing needs one now that captures go straight to
+// disk instead of an in-memory queue (see the big comment on
+// hzstd_profiling_context_t::raw_samples_file).
 typedef struct {
   uint64_t regs[HZSTD_PERF_REG_X86_64_COUNT_SLOTS];
   bool regs_valid; // false if the kernel reported PERF_SAMPLE_REGS_ABI_NONE
@@ -551,34 +559,6 @@ typedef struct {
   uint64_t stack_base; // address the first byte of `stack` corresponds to (RSP at sample time)
   uint64_t stack_size; // valid bytes in `stack` (dyn_size; may be less than requested)
 } hzstd_perf_sample_regs_t;
-
-// One captured-but-not-yet-unwound sample, queued by the reader thread for
-// the separate unwind worker thread to process (see the big comment on
-// hzstd_profiling_context_t's pending_head). regs.stack here always points
-// to its own small allocation (typically a few KB -- real dyn_size, not the
-// much larger requested capture cap; see hzstd_profiling_drain_perf_ring),
-// not the reader's shared scratch buffer, since it has to outlive this one
-// drain call.
-typedef struct {
-  uint64_t timeNs; // raw kernel clock reading, not yet converted to seconds
-  uint64_t lost_before;
-  hzstd_perf_sample_regs_t regs;
-} hzstd_perf_pending_capture_t;
-
-// Fixed-size, append-only chunk of pending captures -- same rationale as
-// hzstd_profiling_sample_chunk_t above (avoid ever recopying old entries as
-// the list grows), except this chunk's `entries` array is a normal, *scanned*
-// allocation rather than an atomic one: unlike raw pcs[] values, each
-// entry's regs.stack is a real allocation this code owns, and the GC must
-// see and follow that pointer to keep it alive until the unwind worker
-// consumes it.
-#define HZSTD_PROFILING_PENDING_CHUNK_CAPACITY 64
-
-struct hzstd_perf_pending_chunk_t {
-  hzstd_perf_pending_chunk_t *next;
-  size_t count;
-  hzstd_perf_pending_capture_t *entries;
-};
 
 // Only ever read/written by the single reader thread, strictly one sample at a
 // time (never concurrently, never reentrantly) -- see
@@ -838,94 +818,155 @@ static void hzstd_profiling_perf_ring_read(const uint8_t *data,
   *cursor += len;
 }
 
-// Appends one capture to the pending queue's tail chunk (allocating a new one
-// whenever the current tail is full), under pending_mutex. Cheap: a struct
-// copy plus, on average once every HZSTD_PROFILING_PENDING_CHUNK_CAPACITY
-// captures, one small allocation -- this is what lets the reader thread keep
-// up with the kernel regardless of how expensive unwinding is or how
-// promptly the OS schedules the (separate) unwind worker thread.
+// Writes one captured-but-not-yet-unwound sample straight to
+// context->raw_samples_file: timeNs(u64), lost_before(u64), regs_valid(u8),
+// regs[HZSTD_PERF_REG_X86_64_COUNT_SLOTS](u64 each), stack_base(u64),
+// stack_size(u64), then stack_size raw stack bytes. This -- not an in-memory
+// queue -- is what decouples the reader thread from unwinding cost: a
+// previous version of this code queued captures in RAM for a separate
+// "unwind worker" thread to drain, on the theory that a short-lived backlog
+// is harmless as long as it doesn't grow without bound. In practice, under a
+// heavy enough sampling load, per-sample unwind cost (confirmed: can run
+// well over 100us, occasionally into the hundreds of milliseconds for a
+// single sample -- see the timing this file already tracks) can fall behind
+// the kernel's actual capture rate indefinitely, and that queue then grows
+// completely unbounded (observed: multiple GB of RSS within seconds under a
+// heavy synthetic load) -- the exact same failure this whole raw_samples_file
+// mechanism already exists to prevent for post-unwind data. Writing the raw
+// capture straight to disk immediately, with zero unwinding on this thread,
+// removes the possibility of that backlog entirely: this is a cheap, fixed-
+// cost-per-sample copy no matter how expensive unwinding turns out to be,
+// exactly matching perf record's own reader (raw bytes to perf.data; all
+// DWARF/symbol work happens later, via perf script) -- see
+// hzstd_profiling_end, which now does the actual unwinding once sampling has
+// fully stopped.
+// Returns false if any part of the write failed (almost always ENOSPC --
+// disk full -- since every other error mode here would mean something far
+// more seriously wrong). The caller (hzstd_profiling_drain_perf_ring) stops
+// capturing further samples for the rest of the session once this happens:
+// disk is a far larger, more elastic resource than RAM, but it's still
+// finite, and silently ignoring a failed write here would leave a
+// truncated, unrecoverably corrupt record in the middle of the file --
+// confirmed by reproducing exactly that under an extreme synthetic load
+// (a panic reading it back in hzstd_profiling_end, well after the session
+// that actually caused it had already ended).
+static bool
+hzstd_profiling_write_raw_capture(FILE *f, uint64_t timeNs,
+                                  uint64_t lost_before,
+                                  const hzstd_perf_sample_regs_t *regs) {
+  fwrite(&timeNs, sizeof(timeNs), 1, f);
+  fwrite(&lost_before, sizeof(lost_before), 1, f);
+  uint8_t regsValidByte = regs->regs_valid ? 1 : 0;
+  fwrite(&regsValidByte, sizeof(regsValidByte), 1, f);
+  fwrite(regs->regs, sizeof(regs->regs), 1, f);
+  fwrite(&regs->stack_base, sizeof(regs->stack_base), 1, f);
+  fwrite(&regs->stack_size, sizeof(regs->stack_size), 1, f);
+  if (regs->stack_size > 0) {
+    fwrite(regs->stack, 1, (size_t)regs->stack_size, f);
+  }
+  return ferror(f) == 0;
+}
+
+// Reads one record written by hzstd_profiling_write_raw_capture back out.
+// `stackBuf` is a caller-owned scratch buffer of at least
+// HZSTD_PROFILING_PERF_STACK_SIZE bytes -- `out->stack` is pointed at it
+// rather than a fresh allocation, the same "short-lived scratch, valid only
+// until the next read" contract hzstd_profiling_drain_perf_ring's own
+// stack_scratch already has, since postprocessing (the only caller) is
+// single-threaded and processes exactly one capture at a time. Returns false
+// at a clean EOF; panics on a short read partway through a record (this
+// process is the only writer, and the writer thread is long joined by the
+// time this is ever called -- see hzstd_profiling_end).
+static bool hzstd_profiling_read_raw_capture(FILE *f, uint64_t *timeNs,
+                                             uint64_t *lost_before,
+                                             hzstd_perf_sample_regs_t *out,
+                                             uint8_t *stackBuf) {
+  *out = (hzstd_perf_sample_regs_t){0};
+  if (fread(timeNs, sizeof(*timeNs), 1, f) != 1) {
+    return false;
+  }
+  uint8_t regsValidByte = 0;
+  if (fread(lost_before, sizeof(*lost_before), 1, f) != 1 ||
+      fread(&regsValidByte, sizeof(regsValidByte), 1, f) != 1 ||
+      fread(out->regs, sizeof(out->regs), 1, f) != 1 ||
+      fread(&out->stack_base, sizeof(out->stack_base), 1, f) != 1 ||
+      fread(&out->stack_size, sizeof(out->stack_size), 1, f) != 1) {
+    hzstd_panic("Corrupt profiling raw-capture file (truncated header)");
+  }
+  out->regs_valid = regsValidByte != 0;
+  if (out->stack_size > 0) {
+    if (fread(stackBuf, 1, (size_t)out->stack_size, f) !=
+        (size_t)out->stack_size) {
+      hzstd_panic("Corrupt profiling raw-capture file (truncated stack)");
+    }
+    out->stack = stackBuf;
+  }
+  return true;
+}
+
+// Writes one unwound sample to context->raw_samples_file as a compact,
+// variable-length record -- only `depth` PCs, not the fixed
+// HZSTD_MAX_FRAMES-sized array `hzstd_profiling_raw_sample_t` holds in
+// memory -- so this is both smaller on disk and, more importantly, doesn't
+// need to stay resident in RAM once written. Layout: depth(u16),
+// pcs[depth](u64 each), timestamp(f64), sampling_duration(f64),
+// truncated(u8), lost_before(u64). Only ever called from the single unwind
+// worker thread, so the file's current position is never contended.
 static void
-hzstd_perf_pending_append(hzstd_profiling_context_t *context,
-                          hzstd_perf_pending_capture_t capture) {
-  pthread_mutex_lock(&context->pending_mutex);
-  if (!context->pending_tail ||
-      context->pending_tail->count == HZSTD_PROFILING_PENDING_CHUNK_CAPACITY) {
-    hzstd_perf_pending_chunk_t *chunk =
-        hzstd_heap_allocate(sizeof(hzstd_perf_pending_chunk_t));
-    chunk->next = NULL;
-    chunk->count = 0;
-    // A normal (scanned) allocation, deliberately -- see the big comment on
-    // hzstd_perf_pending_chunk_t: entries[].regs.stack is a real pointer the
-    // GC needs to see.
-    chunk->entries = hzstd_heap_allocate(
-        HZSTD_PROFILING_PENDING_CHUNK_CAPACITY *
-        sizeof(hzstd_perf_pending_capture_t));
-    if (context->pending_tail) {
-      context->pending_tail->next = chunk;
-    } else {
-      context->pending_head = chunk;
-    }
-    context->pending_tail = chunk;
+hzstd_profiling_write_raw_sample(FILE *f,
+                                 const hzstd_profiling_raw_sample_t *sample) {
+  fwrite(&sample->depth, sizeof(sample->depth), 1, f);
+  for (uint16_t i = 0; i < sample->depth; i++) {
+    uint64_t pc = (uint64_t)(uintptr_t)sample->pcs[i];
+    fwrite(&pc, sizeof(pc), 1, f);
   }
-  context->pending_tail->entries[context->pending_tail->count++] = capture;
-  pthread_mutex_unlock(&context->pending_mutex);
+  fwrite(&sample->timestamp, sizeof(sample->timestamp), 1, f);
+  fwrite(&sample->sampling_duration, sizeof(sample->sampling_duration), 1, f);
+  uint8_t truncatedByte = sample->truncated ? 1 : 0;
+  fwrite(&truncatedByte, sizeof(truncatedByte), 1, f);
+  fwrite(&sample->lost_before, sizeof(sample->lost_before), 1, f);
 }
 
-// Detaches the *entire* current pending list in one short, cheap lock
-// (leaving a fresh, empty list for the reader thread to keep appending to
-// concurrently) and returns its head, so the caller can process it at
-// leisure without ever holding pending_mutex during the expensive part.
-static hzstd_perf_pending_chunk_t *
-hzstd_perf_pending_steal_all(hzstd_profiling_context_t *context) {
-  pthread_mutex_lock(&context->pending_mutex);
-  hzstd_perf_pending_chunk_t *head = context->pending_head;
-  context->pending_head = NULL;
-  context->pending_tail = NULL;
-  pthread_mutex_unlock(&context->pending_mutex);
-  return head;
-}
-
-// Unwinds every capture currently in the pending queue (see
-// hzstd_perf_pending_steal_all) and appends each result directly to the
-// session's sample history -- safe to allocate freely here (unlike the old
-// SIGUSR1-signal-handler design this replaced): this is a plain background
-// thread, never one the profiled thread is suspended inside of, so nothing
-// is ever waiting on it to avoid touching the GC heap. Once stolen, a
-// chunk's captures (and their regs.stack allocations) become unreachable and
-// thus collectible as soon as this loop stops referencing them -- that's
-// what keeps the pending queue's *live* memory bounded to roughly one
-// backlog's worth rather than the whole session's.
-static void hzstd_profiling_unwind_pending(hzstd_profiling_context_t *context) {
-  hzstd_perf_pending_chunk_t *chunk = hzstd_perf_pending_steal_all(context);
-  for (; chunk != NULL; chunk = chunk->next) {
-    for (size_t i = 0; i < chunk->count; i++) {
-      hzstd_perf_pending_capture_t *capture = &chunk->entries[i];
-
-      hzstd_profiling_raw_sample_t rawSample;
-      double unwindStartedAt = hzstd_time_now();
-      hzstd_profiling_unwind_perf_sample(context, &capture->regs, &rawSample);
-      double unwindNs = (hzstd_time_now() - unwindStartedAt) * 1e9;
-      context->perf_unwind_time_total_ns += unwindNs;
-      if (unwindNs > context->perf_unwind_time_max_ns) {
-        context->perf_unwind_time_max_ns = unwindNs;
-      }
-      context->perf_unwind_count++;
-
-      rawSample.timestamp =
-          (double)((int64_t)capture->timeNs - (int64_t)context->perf_time_ref_ns) /
-          1e9;
-      rawSample.lost_before = capture->lost_before;
-      hzstd_profiling_samples_append(context, rawSample);
+// Reads one record written by hzstd_profiling_write_raw_sample back out,
+// advancing the file's read position. Returns false at a clean EOF (no more
+// samples); panics on a short read partway through a record, since that only
+// happens if the file itself is corrupt (this process is the only writer,
+// and by the time this is ever called for reading, the unwind worker thread
+// that did the writing has already been joined -- see hzstd_profiling_end).
+static bool
+hzstd_profiling_read_raw_sample(FILE *f, hzstd_profiling_raw_sample_t *out) {
+  *out = (hzstd_profiling_raw_sample_t){0};
+  if (fread(&out->depth, sizeof(out->depth), 1, f) != 1) {
+    return false;
+  }
+  for (uint16_t i = 0; i < out->depth; i++) {
+    uint64_t pc = 0;
+    if (fread(&pc, sizeof(pc), 1, f) != 1) {
+      hzstd_panic("Corrupt profiling raw-sample file (truncated pc)");
+    }
+    if (i < HZSTD_MAX_FRAMES) {
+      out->pcs[i] = (void *)(uintptr_t)pc;
     }
   }
+  if (fread(&out->timestamp, sizeof(out->timestamp), 1, f) != 1 ||
+      fread(&out->sampling_duration, sizeof(out->sampling_duration), 1, f) !=
+          1) {
+    hzstd_panic("Corrupt profiling raw-sample file (truncated timing)");
+  }
+  uint8_t truncatedByte = 0;
+  if (fread(&truncatedByte, sizeof(truncatedByte), 1, f) != 1 ||
+      fread(&out->lost_before, sizeof(out->lost_before), 1, f) != 1) {
+    hzstd_panic("Corrupt profiling raw-sample file (truncated flags)");
+  }
+  out->truncated = truncatedByte != 0;
+  return true;
 }
 
 // Drains every PERF_RECORD_SAMPLE (and skips any other record type, e.g.
 // PERF_RECORD_LOST) the kernel has written since the last drain. Deliberately
 // does *no* unwinding here -- see the big comment on
-// hzstd_profiling_context_t's pending_head -- just a cheap copy of the raw
-// registers/stack into their own small, persistent allocation, queued for the
-// separate unwind worker thread.
+// hzstd_profiling_context_t::raw_samples_file -- just a cheap copy of the raw
+// registers/stack straight to disk.
 static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
                                             uint8_t *stack_scratch) {
   struct perf_event_mmap_page *meta = context->perf_mmap_base;
@@ -989,31 +1030,45 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
         sample.stack_size = dynSize;
       }
 
-      // No unwinding here -- see the big comment above this function. Just a
-      // cheap copy of the stack bytes into their own small, exact-sized,
-      // persistent allocation (dyn_size is the *real* captured extent,
-      // typically a few KB -- see hzstd_profiling_drain_perf_ring's own
-      // history -- not the much larger requested cap that determines ring
-      // bandwidth), so this survives past stack_scratch being overwritten by
-      // the next ring read.
-      hzstd_perf_pending_capture_t capture = {0};
-      capture.timeNs = timeNs;
+      // No unwinding here, and no allocation either -- see the big comment on
+      // hzstd_profiling_context_t::raw_samples_file. `sample.stack` still
+      // points at stack_scratch, which is only valid until the next ring
+      // read, but that's fine: hzstd_profiling_write_raw_capture copies it
+      // straight into the file's write buffer synchronously, before this
+      // function ever touches stack_scratch again.
+      //
       // This sample survived, so it's the one that gets to report whatever
       // loss happened right before it -- see hzstd_profiling_raw_sample_t
       // ::lost_before and profiling.hz's buildCpuProfile, which uses this to
       // show an honest "(samples lost)" gap instead of attributing that time
       // to whichever real function happens to be sampled next.
-      capture.lost_before = context->perf_pending_lost;
+      uint64_t lostBefore = context->perf_pending_lost;
       context->perf_pending_lost = 0;
-      capture.regs = sample; // copies regs[]/regs_valid/stack_base/stack_size;
-                             // .stack still points at stack_scratch here
-      if (sample.stack_size > 0) {
-        uint8_t *persistentStack =
-            hzstd_heap_allocate_atomic((size_t)sample.stack_size);
-        memcpy(persistentStack, sample.stack, (size_t)sample.stack_size);
-        capture.regs.stack = persistentStack;
+      // Once a write has failed (almost certainly the disk filling up --
+      // see hzstd_profiling_write_raw_capture), stop attempting further
+      // ones for the rest of the session: retrying every sample against a
+      // full disk is pure wasted work, and the file is still perfectly
+      // readable up to this point, so there's no reason to risk corrupting
+      // it further.
+      if (!context->raw_samples_write_failed) {
+        bool ok = hzstd_profiling_write_raw_capture(context->raw_samples_file,
+                                                     timeNs, lostBefore,
+                                                     &sample);
+        if (ok) {
+          // Bumped here, at capture time, not once this sample is
+          // eventually unwound -- every capture written here is guaranteed
+          // to survive to postprocessing now (it's already durably on
+          // disk), so this accurately reflects real kernel-delivered
+          // throughput instead of lagging behind however fast unwinding
+          // happens to keep up.
+          context->sample_count++;
+        } else {
+          context->raw_samples_write_failed = true;
+          context->raw_samples_dropped_count++;
+        }
+      } else {
+        context->raw_samples_dropped_count++;
       }
-      hzstd_perf_pending_append(context, capture);
       samplesThisDrain++;
     }
     else if (header.type == PERF_RECORD_LOST) {
@@ -1077,35 +1132,6 @@ void *hzstd_profiling_reader_thread(void *_context) {
   hzstd_profiling_drain_perf_ring(context, stackScratch);
 
   free(stackScratch);
-  return NULL;
-}
-
-// Continuously drains the pending queue in the background, unwinding each
-// capture and appending the result directly to the session's sample history
-// (hzstd_profiling_samples_append) -- see the big comment on
-// hzstd_profiling_context_t's pending_head for why this is a *separate*
-// thread from the reader above rather than done inline there. There's no
-// promptness requirement on this thread at all (nothing it does can make the
-// kernel drop samples), so it just sleeps briefly between passes rather than
-// reacting to a wakeup signal -- a short, bounded, self-correcting lag here
-// is completely fine as long as it doesn't grow without bound, which the
-// "steal the whole backlog, then process without holding the lock" pattern
-// in hzstd_perf_pending_steal_all/this loop guarantees: the backlog can only
-// ever be as large as what accumulated since the *previous* pass.
-void *hzstd_profiling_unwind_worker_thread(void *_context) {
-  hzstd_profiling_context_t *context = _context;
-  hzstd_setup_panic_handler();
-
-  while (!atomic_load(&context->stop_unwind_worker)) {
-    os_sleep_ns(5000000ull); // 5ms
-    hzstd_profiling_unwind_pending(context);
-  }
-  // Pick up whatever the reader queued right up to (and possibly slightly
-  // after) stop_reader being set in hzstd_profiling_end -- the reader is
-  // joined (see hzstd_profiling_end) before this thread is stopped, so
-  // nothing more can be appended to the pending queue past this point.
-  hzstd_profiling_unwind_pending(context);
-
   return NULL;
 }
 
@@ -1310,6 +1336,39 @@ static int hzstd_profiling_query_max_sample_rate(void) {
 #define HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ 100
 #endif
 
+#ifdef HAZE_PLATFORM_LINUX
+// Plain tmpfile() honors $TMPDIR, or falls back to P_tmpdir (/tmp on
+// glibc) -- and on a great many modern Linux systems (this one included;
+// systemd's tmp.mount unit makes it the default), /tmp is itself tmpfs:
+// RAM-backed, not disk. A raw_samples_file created there would silently
+// defeat the entire reason it exists (see the big comment on
+// hzstd_profiling_context_t::raw_samples_file) -- confirmed by reproducing
+// exactly that: a heavy synthetic session streaming to a tmpfs-backed
+// "disk" file grew large enough to get the whole process OOM-killed, the
+// same unbounded-memory failure one layer further down. /var/tmp is the
+// traditional, still-honored location for temp files actually meant to
+// survive on real storage (unlike /tmp, historically meant to be cleared
+// and, increasingly, tmpfs), so it's tried first; falls back to ordinary
+// tmpfile() if /var/tmp isn't writable for some reason (e.g. a sandboxed
+// environment without it) -- better than refusing to profile at all.
+static FILE *hzstd_profiling_create_raw_samples_file(void) {
+  const char *dir = "/var/tmp";
+  if (access(dir, W_OK) == 0) {
+    char path[] = "/var/tmp/haze-profiling-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd >= 0) {
+      unlink(path); // self-deleting, same contract as tmpfile()
+      FILE *f = fdopen(fd, "w+b");
+      if (f) {
+        return f;
+      }
+      close(fd);
+    }
+  }
+  return tmpfile();
+}
+#endif
+
 hzstd_profiling_context_t *hzstd_profiling_start(void) {
   // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
   // on the first sample drained, by hzstd_profiling_samples_append.
@@ -1498,21 +1557,18 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   // keeps up with the kernel regardless of scheduling latency, not thread
   // priority. Every other profiler manages this at ordinary priority; so
   // does this one now.
-  pthread_mutex_init(&context->pending_mutex, NULL);
+
+  // Unnamed and self-deleting -- see the big comment on raw_samples_file for
+  // why every capture is written straight here instead of into RAM.
+  context->raw_samples_file = hzstd_profiling_create_raw_samples_file();
+  if (!context->raw_samples_file) {
+    hzstd_panic("Failed to create temp file for profiling raw samples");
+  }
 
   int result = pthread_create(&context->reader_thread, NULL,
                               hzstd_profiling_reader_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling reader thread");
-  }
-
-  // Separate from the reader thread on purpose -- see the big comment on
-  // pending_head. This one does the expensive unwinding, continuously, in
-  // the background, with no promptness requirement of its own.
-  result = pthread_create(&context->unwind_worker_thread, NULL,
-                          hzstd_profiling_unwind_worker_thread, context);
-  if (result != 0) {
-    hzstd_panic("Failed to create profiling unwind worker thread");
   }
 
   g_profiling_context = context;
@@ -1930,30 +1986,78 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
 
 #endif
 
+// `frames` (the deduplicated table of every unique call site seen this
+// session) is built incrementally while interning, one newly-seen address at
+// a time, the exact same shape of problem `samples` already had: a real
+// session can intern many thousands of distinct addresses, and a doubling,
+// copy-on-grow hzstd_dynamic_array_t would recopy its entire accumulated
+// table on every regrowth -- exactly the "Repeated allocation of very large
+// block" GC warning that pattern trips (confirmed: this array, starting at
+// capacity 64 and doubling from there, was the actual source of that warning
+// in real sessions). Same fix as hzstd_profiling_sample_chunk_t: a
+// fixed-size, append-only chunk list, converted into one exactly-sized
+// contiguous array only once, at the very end, when the final count is
+// finally known (see the end of hzstd_profiling_end). Unlike
+// hzstd_profiling_sample_chunk_t::entries, `entries` here is a plain inline
+// array in a normally-scanned allocation, not a separate atomic one -- each
+// hzstd_profiling_frame_t holds real, followable GC pointers (name,
+// sourceloc's filename) that the collector must be able to see.
+#define HZSTD_PROFILING_FRAME_CHUNK_CAPACITY 256
+
+typedef struct hzstd_profiling_frame_chunk_t {
+  struct hzstd_profiling_frame_chunk_t *next;
+  size_t count;
+  hzstd_profiling_frame_t entries[HZSTD_PROFILING_FRAME_CHUNK_CAPACITY];
+} hzstd_profiling_frame_chunk_t;
+
+typedef struct {
+  hzstd_profiling_frame_chunk_t *head;
+  hzstd_profiling_frame_chunk_t *tail;
+  size_t count; // total entries across every chunk
+} hzstd_profiling_frame_table_t;
+
 // Intern `address` into `frames`, deduplicating by instruction pointer (the
 // same function hit by many samples must only be resolved/stored once), and
 // return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
-static size_t hzstd_profiling_intern_frame(hzstd_dynamic_array_t *frames,
+static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames,
                                            void *address, bool isLeaf) {
-  for (size_t i = 0; i < hzstd_dynamic_array_size(frames); i++) {
-    hzstd_profiling_frame_t existing =
-        HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, i);
-    if (existing.address == address) {
-      return i;
+  size_t index = 0;
+  for (hzstd_profiling_frame_chunk_t *chunk = frames->head; chunk != NULL;
+       chunk = chunk->next) {
+    for (size_t i = 0; i < chunk->count; i++) {
+      if (chunk->entries[i].address == address) {
+        return index;
+      }
+      index++;
     }
+  }
+
+  if (!frames->tail ||
+      frames->tail->count == HZSTD_PROFILING_FRAME_CHUNK_CAPACITY) {
+    hzstd_profiling_frame_chunk_t *chunk =
+        hzstd_heap_allocate(sizeof(hzstd_profiling_frame_chunk_t));
+    chunk->next = NULL;
+    chunk->count = 0;
+    if (frames->tail) {
+      frames->tail->next = chunk;
+    } else {
+      frames->head = chunk;
+    }
+    frames->tail = chunk;
   }
 
   hzstd_profiling_frame_t frame =
       hzstd_profiling_resolve_frame(address, isLeaf);
-  HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
-  return hzstd_dynamic_array_size(frames) - 1;
+  frames->tail->entries[frames->tail->count++] = frame;
+  frames->count++;
+  return index;
 }
 
 // Turn one raw sample (bare addresses) into a postprocessed sample (interned
 // frame indices into `resultFrames`, innermost first, same order libunwind
 // walked them in).
 static hzstd_profiling_sample_t
-hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
+hzstd_profiling_build_sample(hzstd_profiling_frame_table_t *resultFrames,
                              hzstd_profiling_raw_sample_t raw) {
   hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(
       hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
@@ -1983,29 +2087,17 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   // Stop the kernel from recording any more samples, then stop and join the
   // reader thread -- it does one final drain of whatever's left in the ring
   // (see hzstd_profiling_reader_thread) before exiting. No more captures can
-  // be queued once this returns.
+  // be written to raw_samples_file once this returns; perf_addr_space/
+  // perf_upt/the crash guard are still needed further down though, since
+  // unwinding every capture now happens as part of postprocessing below, not
+  // on a background thread -- see the big comment on
+  // hzstd_profiling_context_t::raw_samples_file.
   ioctl(context->perf_fd, PERF_EVENT_IOC_DISABLE, 0);
   atomic_store(&context->stop_reader, true);
   pthread_join(context->reader_thread, NULL);
 
-  // Only *now* stop and join the unwind worker -- it's still using
-  // perf_addr_space/perf_upt (see hzstd_profiling_unwind_pending) to drain
-  // whatever's left in the pending queue, so those can't be torn down until
-  // this thread is confirmed done with them too.
-  atomic_store(&context->stop_unwind_worker, true);
-  pthread_join(context->unwind_worker_thread, NULL);
-  pthread_mutex_destroy(&context->pending_mutex);
-
   munmap(context->perf_mmap_base, context->perf_mmap_len);
   close(context->perf_fd);
-  _Ux86_64_destroy_addr_space(context->perf_addr_space);
-  _UPT_destroy(context->perf_upt);
-  // Both worker threads are joined, so nothing can land in
-  // hzstd_perf_unwind_crash_handler on its behalf anymore -- safe to hand
-  // SIGSEGV/SIGBUS back to whatever was installed before this session (see
-  // hzstd_profiling_start), normally hzstd_panic_handler.
-  sigaction(SIGSEGV, &g_hzstd_perf_prev_segv_action, NULL);
-  sigaction(SIGBUS, &g_hzstd_perf_prev_bus_action, NULL);
 #elif defined(HAZE_PLATFORM_WIN32)
   if (atomic_load(&context->stop_scheduler) ||
       atomic_load(&context->stop_stackwalker)) {
@@ -2025,13 +2117,25 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   CloseHandle(context->profiled_thread_handle);
 #endif
 
-  // Both worker threads are joined, so there is no producer left and this final
-  // drain is not racing anything: pick up whatever the stackwalker wrote but
-  // never got a chance to hand to `samples` before the loop exited. On Linux
-  // this ring (ring_buffer/ring_push, distinct from the pending queue above)
-  // is unused now -- hzstd_profiling_unwind_pending appends straight to
-  // samples_head instead -- so this is a harmless no-op there; still load-
-  // bearing for Windows, which never adopted the pending-queue design.
+  // Taken right here, not after the postprocessing below -- sampling has
+  // truly stopped by this point (the reader thread, and on Windows the
+  // scheduler/stackwalker threads, are joined), but unwinding and symbol/
+  // line resolution over every captured sample can itself take a
+  // non-trivial amount of wall time on a large session -- on Linux in
+  // particular, *all* of that work now happens below, not on a background
+  // thread during the session (see the big comment on
+  // hzstd_profiling_context_t::raw_samples_file). Measuring the session's
+  // duration after that work instead of before it would fold postprocessing
+  // time into "session duration", silently deflating the achieved-rate
+  // calculation below.
+  double stopTime = hzstd_time_now();
+
+  // No producer is left, so this final drain is not racing anything: pick up
+  // whatever the stackwalker wrote but never got a chance to hand to
+  // `samples` before the loop exited. On Linux this ring (ring_buffer/
+  // ring_push) is unused -- captures go straight to raw_samples_file instead
+  // -- so this is a harmless no-op there; still load-bearing for Windows,
+  // which captures samples differently (see hzstd_profiling_drain_ring).
   hzstd_profiling_drain_ring(context);
   if (context->ring_dropped_count > 0) {
     fprintf(stderr,
@@ -2061,54 +2165,36 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             (unsigned long long)context->perf_throttle_count,
             (unsigned long long)context->perf_unthrottle_count);
   }
-  // Direct measurement of where reader-thread time actually went, to tell
-  // "unwinding itself is slow" (high avg/max here) apart from "the reader
-  // isn't waking up promptly enough" (low avg/max, but
-  // perf_max_samples_per_drain is high -- samples piling up between drains
-  // rather than being processed slowly one at a time).
-  if (context->perf_unwind_count > 0) {
+  if (context->raw_samples_write_failed) {
     fprintf(stderr,
-            "Profiling reader stats: %llu sample(s) unwound in %.2f ms total "
-            "(avg %.1f us/sample, max %.1f us/sample) across %llu drain "
-            "call(s), largest single drain processed %llu sample(s).\n",
-            (unsigned long long)context->perf_unwind_count,
-            context->perf_unwind_time_total_ns / 1e6,
-            (context->perf_unwind_time_total_ns / 1e3) /
-                (double)context->perf_unwind_count,
-            context->perf_unwind_time_max_ns / 1e3,
-            (unsigned long long)context->perf_drain_call_count,
-            (unsigned long long)context->perf_max_samples_per_drain);
+            "Warning: profiling dropped %llu sample(s) because writing to "
+            "its temp file on disk failed (most likely the disk filling up "
+            "-- see hzstd_profiling_create_raw_samples_file) -- results "
+            "below only cover the portion captured before that point.\n",
+            (unsigned long long)context->raw_samples_dropped_count);
+  }
+  // Diagnostics for the reader thread's own promptness -- purely about
+  // keeping up with the kernel's ring buffer (a cheap raw-bytes copy per
+  // sample, see hzstd_profiling_drain_perf_ring), not unwinding: that now
+  // happens entirely during postprocessing below, and is reported there
+  // instead once it's actually known.
+  if (context->perf_drain_call_count > 0) {
     fprintf(stderr,
             "Profiling reader wakeups: %llu real event(s), %llu 100ms "
             "timeout(s) (a high timeout count means wakeup_events isn't "
             "triggering promptly on this system -- draining is really only "
-            "happening on that ~100ms cadence). Ring buffer: %zu bytes.\n",
+            "happening on that ~100ms cadence). %llu drain call(s), largest "
+            "single drain processed %llu sample(s). Ring buffer: %zu "
+            "bytes.\n",
             (unsigned long long)context->perf_poll_event_count,
             (unsigned long long)context->perf_poll_timeout_count,
+            (unsigned long long)context->perf_drain_call_count,
+            (unsigned long long)context->perf_max_samples_per_drain,
             context->perf_actual_ring_bytes);
   }
 #endif
   free(context->ring_buffer);
   context->ring_buffer = NULL;
-
-  // Heavy lifting happens here, now that sampling is fully stopped: intern
-  // every unique instruction pointer into a resolved frame table, and turn each
-  // raw sample into a list of indices into that table.
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-
-  hzstd_dynamic_array_t *frames =
-      HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, 64);
-  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
-      allocator, hzstd_profiling_sample_t, context->sample_count);
-
-  for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head;
-       chunk != NULL; chunk = chunk->next) {
-    for (size_t i = 0; i < chunk->count; i++) {
-      hzstd_profiling_sample_t sample =
-          hzstd_profiling_build_sample(frames, chunk->entries[i]);
-      HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
-    }
-  }
 
   // Report what actually happened, not what was nominally requested: on
   // Linux in particular, context->sampling_rate_hz is deliberately far higher
@@ -2119,12 +2205,156 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   // between real samples" apart from "the thread wasn't running"; reporting
   // the nominal request instead would badly miscalibrate that threshold
   // whenever the two diverge.
-  double sessionDurationSeconds = hzstd_time_now() - context->session_start_time;
+  double sessionDurationSeconds = stopTime - context->session_start_time;
   int achievedRateHz = context->sampling_rate_hz;
   if (context->sample_count > 0 && sessionDurationSeconds > 0.0) {
     achievedRateHz =
         (int)(((double)context->sample_count / sessionDurationSeconds) + 0.5);
   }
+
+  // Heavy lifting happens here, now that sampling is fully stopped: intern
+  // every unique instruction pointer into a resolved frame table, and turn
+  // each raw sample into a list of indices into that table. Symbol/line
+  // resolution only happens once per *unique* address, but on a large,
+  // complex session that can still take real, visible time -- and until now,
+  // nothing about this ever reached the terminal before the whole call
+  // returned (Haze's fmt.print/println, like the plain fwrite(stdout) they
+  // compile down to, never flushed -- see hzstd_print_str_stdout -- so a
+  // fully-buffered stdout, e.g. anything other than a raw TTY, would just
+  // silently sit on "Profiling stopped ... postprocessing..." until this
+  // function finally returned). Printed with explicit fflush calls below so
+  // progress is visible as it happens instead of arriving all at once.
+  fprintf(stdout,
+          "Postprocessing %zu sample(s) (%llu lost, %llu throttle event(s), "
+          "~%d Hz achieved)...\n",
+          context->sample_count, (unsigned long long)context->perf_lost_count,
+          (unsigned long long)context->perf_throttle_count, achievedRateHz);
+  fflush(stdout);
+
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+
+  hzstd_profiling_frame_table_t frameTable = {0};
+  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_profiling_sample_t, context->sample_count);
+
+  size_t processedCount = 0;
+  double lastProgressPrintTime = 0.0;
+
+  // Re-renders the "N / total" counter, but throttled to a fixed cadence
+  // rather than every single sample -- otherwise the progress reporting
+  // itself would add a fflush-per-sample cost on a session with tens of
+  // thousands of samples, exactly the kind of self-inflicted slowdown this
+  // whole rewrite is trying to get away from. force=true always prints
+  // (used for the final, 100% line), regardless of cadence.
+#define HZSTD_PROFILING_REPORT_PROGRESS(force)                                \
+  do {                                                                        \
+    double __hz_now = hzstd_time_now();                                       \
+    if ((force) || __hz_now - lastProgressPrintTime >= 0.05) {                \
+      fprintf(stdout, "\r  unwinding sample %zu / %zu (%zu unique frame(s))", \
+              processedCount, context->sample_count, frameTable.count);       \
+      fflush(stdout);                                                        \
+      lastProgressPrintTime = __hz_now;                                      \
+    }                                                                         \
+  } while (0)
+
+#ifdef HAZE_PLATFORM_LINUX
+  // Sequentially read back every capture this session wrote to disk (see the
+  // big comment on raw_samples_file) and unwind + resolve it right here --
+  // this is the same "capture fast now, interpret from a file afterward"
+  // split perf record/perf script use, just with the interpretation step
+  // done inline instead of via a separate `perf script` invocation.
+  // stackScratch mirrors the reader thread's own scratch buffer: reused
+  // across every capture, valid only for the duration of one unwind.
+  uint8_t *stackScratch = malloc(context->perf_stack_size);
+  if (!stackScratch) {
+    hzstd_panic("Failed to allocate profiling stack-snapshot scratch buffer");
+  }
+  fseek(context->raw_samples_file, 0, SEEK_SET);
+  uint64_t timeNs = 0, lostBefore = 0;
+  hzstd_perf_sample_regs_t regs;
+  while (hzstd_profiling_read_raw_capture(context->raw_samples_file, &timeNs,
+                                          &lostBefore, &regs, stackScratch)) {
+    hzstd_profiling_raw_sample_t raw;
+    double unwindStartedAt = hzstd_time_now();
+    hzstd_profiling_unwind_perf_sample(context, &regs, &raw);
+    double unwindNs = (hzstd_time_now() - unwindStartedAt) * 1e9;
+    context->perf_unwind_time_total_ns += unwindNs;
+    if (unwindNs > context->perf_unwind_time_max_ns) {
+      context->perf_unwind_time_max_ns = unwindNs;
+    }
+    context->perf_unwind_count++;
+
+    raw.timestamp =
+        (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) / 1e9;
+    raw.lost_before = lostBefore;
+
+    hzstd_profiling_sample_t sample =
+        hzstd_profiling_build_sample(&frameTable, raw);
+    HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
+    processedCount++;
+    HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
+  }
+  free(stackScratch);
+  fclose(context->raw_samples_file);
+  context->raw_samples_file = NULL;
+
+  // Every capture is unwound now -- safe to tear down the remote-unwind
+  // machinery and hand SIGSEGV/SIGBUS back to whatever was installed before
+  // this session (see hzstd_profiling_start), normally hzstd_panic_handler.
+  _Ux86_64_destroy_addr_space(context->perf_addr_space);
+  _UPT_destroy(context->perf_upt);
+  sigaction(SIGSEGV, &g_hzstd_perf_prev_segv_action, NULL);
+  sigaction(SIGBUS, &g_hzstd_perf_prev_bus_action, NULL);
+#elif defined(HAZE_PLATFORM_WIN32)
+  for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head;
+       chunk != NULL; chunk = chunk->next) {
+    for (size_t i = 0; i < chunk->count; i++) {
+      hzstd_profiling_sample_t sample =
+          hzstd_profiling_build_sample(&frameTable, chunk->entries[i]);
+      HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
+      processedCount++;
+      HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
+    }
+  }
+#endif
+#undef HZSTD_PROFILING_REPORT_PROGRESS
+  if (context->sample_count > 0) {
+    fprintf(stdout, "\n");
+  }
+
+  // Convert the frame chunk-list into one exactly-sized contiguous array --
+  // see the big comment on hzstd_profiling_frame_chunk_t for why this avoids
+  // the doubling-growth GC warning a plain dynamic array would trip here.
+  hzstd_dynamic_array_t *frames = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_profiling_frame_t, frameTable.count);
+  for (hzstd_profiling_frame_chunk_t *chunk = frameTable.head; chunk != NULL;
+       chunk = chunk->next) {
+    for (size_t i = 0; i < chunk->count; i++) {
+      HZSTD_DYNAMIC_ARRAY_PUSH(frames, chunk->entries[i]);
+    }
+  }
+
+#ifdef HAZE_PLATFORM_LINUX
+  if (context->perf_unwind_count > 0) {
+    fprintf(stdout,
+            "Postprocessing done: %zu sample(s), %zu unique frame(s) in "
+            "%.2f ms total (avg %.1f us/sample unwind, max %.1f "
+            "us/sample).\n",
+            context->sample_count, frameTable.count,
+            (hzstd_time_now() - stopTime) * 1000.0,
+            (context->perf_unwind_time_total_ns / 1e3) /
+                (double)context->perf_unwind_count,
+            context->perf_unwind_time_max_ns / 1e3);
+  } else
+#endif
+  {
+    fprintf(stdout,
+            "Postprocessing done: %zu sample(s), %zu unique frame(s) in "
+            "%.2f ms.\n",
+            context->sample_count, frameTable.count,
+            (hzstd_time_now() - stopTime) * 1000.0);
+  }
+  fflush(stdout);
 
   return (hzstd_profiling_result_t){
       .frames = frames,
