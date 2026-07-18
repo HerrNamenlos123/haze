@@ -61,7 +61,7 @@ fn main(): int {
     attempt {
         let a = app.App({
             title: "Haze CodeEditor",
-            presentMode: vsync ? wgpu.PresentMode.Fifo : wgpu.PresentMode.Immediate,
+            presentMode: vsync ? wgpu.PresentMode.Fifo : wgpu.PresentMode.Mailbox,
         })?!;
 
         let font = a.gfx.fontRenderer.fs.addFont(
