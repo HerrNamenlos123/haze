@@ -76,6 +76,7 @@ namespace profiling {
     // result.frames), so these can't collide with any of them.
     const rootFrameIndex = -1;
     const truncatedFrameIndex = -2;
+    const offCpuFrameIndex = -3;
 
     // Finds (or creates) a child of nodes[parent] identified by frameIndex, returning its index
     // into `nodes`. Shared by both real captured frames and the synthetic "(truncated)" marker
@@ -130,6 +131,22 @@ namespace profiling {
         let startTimeUs = 0.0;
         let lastTimeUs = 0.0;
 
+        // Sampling is driven by PERF_COUNT_SW_CPU_CLOCK (see hzstd_profiling.c), which only
+        // ticks while the profiled thread is actually consuming CPU time -- correct for a CPU
+        // profiler, but it means a gap between two consecutive samples' wall-clock timestamps far
+        // larger than one sampling interval doesn't mean "this code ran for that whole gap"; it
+        // means the thread wasn't running at all for most of it (blocked on the GPU/compositor, a
+        // mutex, any syscall -- or just descheduled). Left alone, that whole gap would get charged
+        // to whatever function the earlier sample happened to land in, making an ordinary call
+        // look like it took hundreds of milliseconds when the thread was simply off-CPU right
+        // after it. A generous multiple of the nominal interval is enough to tell "normal
+        // scheduling jitter between two real samples" apart from "the thread clearly wasn't
+        // running for a while" -- false positives here just produce small, honestly-labeled
+        // off-cpu slivers, which is cheap; false negatives would let real stalls hide as fake slow
+        // functions again, which is the actual bug being fixed.
+        let nominalIntervalUs = 1000000.0 / (result.sampling_rate_hz as real);
+        let offCpuThresholdUs = nominalIntervalUs * 4.0;
+
         for (let s = 0; s < result.samples.length; s++) {
             let sample = result.samples[s];
             let timeUs = sample.timestamp * 1000000.0;
@@ -138,7 +155,30 @@ namespace profiling {
                 timeDeltas.push(0);
             }
             else {
-                timeDeltas.push((timeUs - lastTimeUs) as int);
+                let delta = timeUs - lastTimeUs;
+                if delta > offCpuThresholdUs {
+                    // samples[i] and timeDeltas[i] are matched by array position, so the *push
+                    // order* here is what decides which node gets charged which duration: the
+                    // off-cpu node's (samples, timeDelta) pair must go in together, before the
+                    // real sample's own pair below, with the off-cpu node getting the excess (the
+                    // genuine off-cpu duration) and the real sample getting only one nominal
+                    // interval -- not the other way around.
+                    let offCpuNode = findOrCreateChild(nodes, nodeFrameIndex, 0, offCpuFrameIndex, CpuProfileCallFrame {
+                        functionName: "(off-cpu -- thread was blocked or descheduled, not executing)",
+                        scriptId: "0",
+                        url: "",
+                        lineNumber: -1,
+                        columnNumber: -1,
+                    });
+                    nodes[offCpuNode].hitCount += 1;
+                    samples.push(nodes[offCpuNode].id);
+                    timeDeltas.push((delta - nominalIntervalUs) as int);
+
+                    timeDeltas.push(nominalIntervalUs as int);
+                }
+                else {
+                    timeDeltas.push(delta as int);
+                }
             }
             lastTimeUs = timeUs;
 
