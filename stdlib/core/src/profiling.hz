@@ -15,6 +15,7 @@ namespace ffi {
         sampling_duration: real;
         frames: []int;
         truncated: bool;
+        lost_before: int;
     };
 
     export extern C noemit opaque inline struct hzstd_profiling_result_t {
@@ -77,6 +78,7 @@ namespace profiling {
     const rootFrameIndex = -1;
     const truncatedFrameIndex = -2;
     const offCpuFrameIndex = -3;
+    const samplesLostFrameIndex = -4;
 
     // Finds (or creates) a child of nodes[parent] identified by frameIndex, returning its index
     // into `nodes`. Shared by both real captured frames and the synthetic "(truncated)" marker
@@ -156,13 +158,32 @@ namespace profiling {
             }
             else {
                 let delta = timeUs - lastTimeUs;
-                if delta > offCpuThresholdUs {
-                    // samples[i] and timeDeltas[i] are matched by array position, so the *push
-                    // order* here is what decides which node gets charged which duration: the
-                    // off-cpu node's (samples, timeDelta) pair must go in together, before the
-                    // real sample's own pair below, with the off-cpu node getting the excess (the
-                    // genuine off-cpu duration) and the real sample getting only one nominal
-                    // interval -- not the other way around.
+                // samples[i] and timeDeltas[i] are matched by array position, so the *push order*
+                // in both branches below is what decides which node gets charged which duration:
+                // the marker node's (samples, timeDelta) pair goes in first, getting the excess --
+                // the genuine gap this sample can't take credit for -- and the real sample below
+                // gets only one nominal interval, not the other way around.
+                if sample.lost_before > 0 {
+                    // Hard fact from the kernel (PERF_RECORD_LOST), not an inference from timing:
+                    // real code definitely ran here, we just have no record of what it was. This
+                    // takes priority over the off-cpu heuristic below -- a lost-samples gap is
+                    // known, not guessed, and finding out real samples existed here means the
+                    // thread almost certainly *was* running, the opposite conclusion the off-cpu
+                    // heuristic would otherwise draw from the same large gap.
+                    let lostNode = findOrCreateChild(nodes, nodeFrameIndex, 0, samplesLostFrameIndex, CpuProfileCallFrame {
+                        functionName: "(samples lost -- kernel ring buffer overflow, real code ran here but wasn't captured)",
+                        scriptId: "0",
+                        url: "",
+                        lineNumber: -1,
+                        columnNumber: -1,
+                    });
+                    nodes[lostNode].hitCount += 1;
+                    samples.push(nodes[lostNode].id);
+                    timeDeltas.push((delta - nominalIntervalUs) as int);
+
+                    timeDeltas.push(nominalIntervalUs as int);
+                }
+                else if delta > offCpuThresholdUs {
                     let offCpuNode = findOrCreateChild(nodes, nodeFrameIndex, 0, offCpuFrameIndex, CpuProfileCallFrame {
                         functionName: "(off-cpu -- thread was blocked or descheduled, not executing)",
                         scriptId: "0",

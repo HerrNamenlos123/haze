@@ -115,6 +115,10 @@ typedef struct {
                   // captured stack snapshot (see HZSTD_PROFILING_PERF_STACK_SIZE)
                   // before reaching a natural end -- `pcs`/`depth` hold only
                   // the innermost frames that fit, real but incomplete.
+  uint64_t lost_before; // Linux only: how many samples the kernel reports it
+                        // lost (PERF_RECORD_LOST) immediately before this one
+                        // -- 0 if none. Unlike `truncated`, this is a hard
+                        // fact from the kernel, not an inference from timing.
 } hzstd_profiling_raw_sample_t;
 
 // Fixed capacity of the allocation-free handoff ring described below. Sized to
@@ -188,6 +192,12 @@ struct hzstd_profiling_context_t {
   uint64_t perf_lost_count;
   uint64_t perf_throttle_count;
   uint64_t perf_unthrottle_count;
+  // Lost samples accumulated since the last real PERF_RECORD_SAMPLE was
+  // processed, not yet attached to one -- see hzstd_profiling_drain_perf_ring.
+  // Reset to 0 every time a sample picks it up (hzstd_profiling_raw_sample_t
+  // ::lost_before), so each surviving sample carries exactly how many samples
+  // the kernel reports were lost immediately before it.
+  uint64_t perf_pending_lost;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -773,6 +783,13 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
       rawSample.timestamp =
           (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) /
           1e9;
+      // This sample survived, so it's the one that gets to report whatever
+      // loss happened right before it -- see hzstd_profiling_raw_sample_t
+      // ::lost_before and profiling.hz's buildCpuProfile, which uses this to
+      // show an honest "(samples lost)" gap instead of attributing that time
+      // to whichever real function happens to be sampled next.
+      rawSample.lost_before = context->perf_pending_lost;
+      context->perf_pending_lost = 0;
       hzstd_profiling_ring_push(context, rawSample);
     }
     else if (header.type == PERF_RECORD_LOST) {
@@ -781,6 +798,7 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
       hzstd_profiling_perf_ring_read(data, data_size, &tail, &lost,
                                      sizeof(lost));
       context->perf_lost_count += lost;
+      context->perf_pending_lost += lost;
     }
     else if (header.type == PERF_RECORD_THROTTLE) {
       context->perf_throttle_count++;
@@ -1656,6 +1674,7 @@ hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
       .sampling_duration = raw.sampling_duration,
       .frames = frameIndices,
       .truncated = raw.truncated,
+      .lost_before = (hzstd_int_t)raw.lost_before,
   };
 }
 
