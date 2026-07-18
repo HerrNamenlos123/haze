@@ -833,7 +833,7 @@ export opaque struct Context {
         // divs/wrappers the render-command pass above never reaches), by
         // querying Clay directly by ID instead of depending on which
         // elements happened to emit a visible render command.
-        applyBoundingBoxesRecursive("", element, callbacks.onBoundingBox);
+        applyBoundingBoxesRecursive(element, callbacks.onBoundingBox);
     }
 }
 
@@ -875,25 +875,21 @@ type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) 
 // the skipped elements), but only pays for the by-ID Clay hash lookup
 // (hzui_clay_get_element_bounding_box, wrapping Clay_GetElementData) on the
 // subset that's actually missing it -- typically a small minority of a
-// UI tree. Uses the same idPath convention processTreeElement uses to
-// register elements with Clay in the first place, so the IDs queried here
-// are guaranteed to match what Clay actually has (same tree, same
-// algorithm) -- and since Clay's own hover/scroll/animation state already
-// depends on those same IDs being unique per sibling, this introduces no
-// new uniqueness requirement beyond what the framework already relies on.
-fn applyBoundingBoxesRecursive(idPath: str, element: ui_elements.Element, callback: BoundingBoxCB): void :: final {
+// UI tree. Reads element._resolvedClayId, which processTreeElement (above)
+// already set for every div earlier this same render() call when it
+// registered elements with Clay, so the IDs queried here are guaranteed to
+// match what Clay actually has without re-deriving or re-allocating them.
+fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingBoxCB): void :: final {
     if element is ui_elements.DivElement {
-        let elementId = idPath == "" ? f"{element.id}" : idPath + "/" + f"{element.id}";
-
-        if element.style.backgroundColor.a == 0.0 {
-            let result = ffi.hzui_clay_get_element_bounding_box(elementId);
+        if element.style.backgroundColor.a == 0.0 && element._resolvedClayId is not none {
+            let result = ffi.hzui_clay_get_element_bounding_box(element._resolvedClayId);
             if result.found {
                 callback(element, result.bounding_box.position, result.bounding_box.size);
             }
         }
 
         for child in element.children {
-            applyBoundingBoxesRecursive(elementId, child, callback);
+            applyBoundingBoxesRecursive(child, callback);
         }
     }
 }
