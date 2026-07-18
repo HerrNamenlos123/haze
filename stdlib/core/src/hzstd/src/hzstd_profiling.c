@@ -1363,6 +1363,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   if (result != 0 && useRealtimeSched) {
     // Most likely EPERM (no CAP_SYS_NICE/RLIMIT_RTPRIO) -- retry with
     // ordinary scheduling instead of failing outright.
+    useRealtimeSched = false;
     result = pthread_create(&context->reader_thread, NULL,
                             hzstd_profiling_reader_thread, context);
   }
@@ -1370,6 +1371,12 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   if (result != 0) {
     hzstd_panic("Failed to create profiling reader thread");
   }
+  fprintf(stderr,
+          "Profiling reader thread scheduling: %s.\n",
+          useRealtimeSched
+              ? "SCHED_RR (real-time) -- confirmed applied"
+              : "ordinary (real-time request failed or was refused, likely "
+                "missing CAP_SYS_NICE/RLIMIT_RTPRIO -- falling back)");
 
   g_profiling_context = context;
 #elif defined(HAZE_PLATFORM_WIN32)
