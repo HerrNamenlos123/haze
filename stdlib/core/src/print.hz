@@ -21,7 +21,7 @@ namespace fmt {
             };
         }
 
-        mut fn write(value: str) {
+        mut fn write(value: str) :: final {
             if this.buffer {
                 this.buffer.push(value);
                 this.written += value.length;

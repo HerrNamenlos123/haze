@@ -1567,6 +1567,20 @@ export class SemanticElaborator {
     }
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
+      // The callee's underlying function type can still be a placeholder here: a bound
+      // method value (e.g. `this.foo`, wrapped in CallableDatatype) can reference a
+      // function whose body -- and therefore whose inferred return type -- is still being
+      // elaborated further up the call stack (a genuine, if sometimes indirect, mutual
+      // recursion). The plain (unbound) function-call path below already reports this
+      // clearly instead of crashing; give bound method calls the same treatment rather
+      // than asserting on a reachable condition.
+      if (ftype.variant === Semantic.ENode.DeferredFunctionDatatype) {
+        throw new CompilerError(
+          `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+          callExpr.sourceloc,
+          HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart
+        );
+      }
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
       const params = ftype.parameters;
       const hasParameterPack = params.some((p) =>

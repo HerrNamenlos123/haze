@@ -1,0 +1,92 @@
+
+// ============================================================================
+// REGRESSION TEST
+//
+// Bug: calling a struct method through a bound method value (`this.foo()`)
+// as part of a genuine (if indirect) mutual-recursion cycle crashed the
+// entire compiler process with an internal assertion failure, instead of
+// reporting the same clean diagnostic the compiler already gives for the
+// equivalent situation with plain (unbound) functions.
+//
+// Root cause (src/Semantic/Elaborate.ts, callExpr()): when the callee's type
+// is a CallableDatatype (produced for a bound method access such as
+// `this.foo`), the code unconditionally asserted that the datatype it wraps
+// (`calledExprType.functionType`) is a fully resolved FunctionDatatype:
+//
+//   const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
+//   assert(ftype.variant === Semantic.ENode.FunctionDatatype);
+//
+// But a method's return type is only inferred once its body has been fully
+// elaborated. If that method is still being elaborated further up the call
+// stack (a real mutual-recursion cycle -- see variation B below, and the
+// naturally-occurring case this was found from: ByteBuffer's internal
+// `assert()` calls transitively reaching back into fmt.StringWriter.write,
+// which itself calls into ByteBuffer), `calledExprType.functionType` still
+// points at a placeholder DeferredFunctionDatatype, and the assert crashes
+// the whole process. The sibling code path for *unbound* function calls
+// (`calledExprType.variant === DeferredFunctionDatatype`, a few lines below)
+// already had the correct handling: throw a clean, actionable CompilerError
+// telling the user to add `:: final` (+ explicit return type) to break the
+// cycle. The fix mirrors that same handling into the CallableDatatype path.
+//
+// Variation A is a non-recursive forward reference between two sibling
+// methods -- this must keep compiling fine (it never was broken; on-demand
+// elaboration resolves it), guarding against a fix that's too aggressive.
+// Variation B is the genuine cycle that must produce H7023 without crashing.
+// ============================================================================
+
+namespace cases_deferred_method_crash {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.compileOk(
+            "non-cyclic sibling method call through 'this' still compiles fine",
+            """
+struct Foo {
+    fn a() {
+        return this.b();
+    }
+    fn b() {
+        return 5;
+    }
+}
+
+fn main(): int {
+    let f = Foo {};
+    return f.a();
+}
+"""
+        );
+
+        // Genuine mutual recursion through bound method calls. Before the
+        // fix, this crashed the compiler process with an internal assertion
+        // failure (no H-code emitted at all) instead of failing to compile
+        // cleanly. It must fail to compile with exactly the documented,
+        // actionable diagnostic.
+        s.compileFails(
+            "mutual recursion through bound 'this' method calls reports cleanly instead of crashing the compiler",
+            """
+struct Foo {
+    fn a() {
+        if false {
+            return this.b();
+        }
+        return 1;
+    }
+    fn b() {
+        return this.a();
+    }
+}
+
+fn main(): int {
+    let f = Foo {};
+    return f.a();
+}
+""",
+            [
+                testsuite.mustHave(errorcodes.Code.FunctionNotFullyElaboratedYetIfItPart),
+                testsuite.totalErrors(1),
+            ]
+        );
+    }
+}

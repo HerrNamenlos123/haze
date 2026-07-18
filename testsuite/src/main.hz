@@ -37,6 +37,7 @@ fn main(): int {
     cases_examples.register(suite);
     cases_narrowing_bug.register(suite);
     cases_closure_param_inference.register(suite);
+    cases_deferred_method_crash.register(suite);
 
     return testsuite.runAll(config, suite);
 }
