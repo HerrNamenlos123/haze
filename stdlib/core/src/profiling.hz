@@ -158,11 +158,19 @@ namespace profiling {
             }
             else {
                 let delta = timeUs - lastTimeUs;
-                // samples[i] and timeDeltas[i] are matched by array position, so the *push order*
-                // in both branches below is what decides which node gets charged which duration:
-                // the marker node's (samples, timeDelta) pair goes in first, getting the excess --
-                // the genuine gap this sample can't take credit for -- and the real sample below
-                // gets only one nominal interval, not the other way around.
+                // A chrome cpuprofile's timeline is reconstructed as
+                // timestamp[i] = timestamp[i-1] + timeDeltas[i], and each sample's *visual*
+                // duration in any real timeline/flamechart view is timestamp[i+1] - timestamp[i]
+                // -- i.e. timeDeltas[i+1], the *next* entry, not timeDeltas[i] itself. That means
+                // the push order below controls which node's duration each value becomes: pushing
+                // the small nominal interval *first* closes out the duration of whatever sample is
+                // already last in the array (the real one right before this gap), and pushing the
+                // marker node's own (samples, timeDelta) pair *afterward* means the big excess
+                // closes out *its* duration instead. Doing this the other way around (as an
+                // earlier version of this code did, validated against the wrong same-index
+                // pairing model) makes the real function right before a gap look like it took the
+                // entire gap, with the marker showing a constant, tiny, meaningless duration --
+                // exactly the bug this fixes.
                 if sample.lost_before > 0 {
                     // Hard fact from the kernel (PERF_RECORD_LOST), not an inference from timing:
                     // real code definitely ran here, we just have no record of what it was. This
@@ -170,6 +178,8 @@ namespace profiling {
                     // known, not guessed, and finding out real samples existed here means the
                     // thread almost certainly *was* running, the opposite conclusion the off-cpu
                     // heuristic would otherwise draw from the same large gap.
+                    timeDeltas.push(nominalIntervalUs as int);
+
                     let lostNode = findOrCreateChild(nodes, nodeFrameIndex, 0, samplesLostFrameIndex, CpuProfileCallFrame {
                         functionName: "(samples lost -- kernel ring buffer overflow, real code ran here but wasn't captured)",
                         scriptId: "0",
@@ -180,10 +190,10 @@ namespace profiling {
                     nodes[lostNode].hitCount += 1;
                     samples.push(nodes[lostNode].id);
                     timeDeltas.push((delta - nominalIntervalUs) as int);
-
-                    timeDeltas.push(nominalIntervalUs as int);
                 }
                 else if delta > offCpuThresholdUs {
+                    timeDeltas.push(nominalIntervalUs as int);
+
                     let offCpuNode = findOrCreateChild(nodes, nodeFrameIndex, 0, offCpuFrameIndex, CpuProfileCallFrame {
                         functionName: "(off-cpu -- thread was blocked or descheduled, not executing)",
                         scriptId: "0",
@@ -194,8 +204,6 @@ namespace profiling {
                     nodes[offCpuNode].hitCount += 1;
                     samples.push(nodes[offCpuNode].id);
                     timeDeltas.push((delta - nominalIntervalUs) as int);
-
-                    timeDeltas.push(nominalIntervalUs as int);
                 }
                 else {
                     timeDeltas.push(delta as int);
