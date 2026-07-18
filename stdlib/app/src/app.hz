@@ -17,6 +17,17 @@ fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
     return caps.formats[0];
 }
 
+// Falls back to Fifo (the only present mode WebGPU guarantees every backend
+// supports) when the requested mode isn't in this surface's capabilities --
+// requesting an unsupported mode is a hard validation-error panic in wgpu,
+// not a recoverable Result, so this has to be checked before configure().
+fn pickPresentMode(caps: wgpu.SurfaceCapabilities, requested: wgpu.PresentMode): wgpu.PresentMode {
+    for mode in caps.presentModes {
+        if mode == requested { return requested; }
+    }
+    return wgpu.PresentMode.Fifo;
+}
+
 fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
     let logicalSize = window.getLogicalSize();
     let framebufferSize = window.getFramebufferSize();
@@ -127,6 +138,7 @@ export opaque struct App {
 
         let surfaceFormat = pickSurfaceFormat(caps);
         let windowState = getWindowState(window);
+        let presentMode = pickPresentMode(caps, options.presentMode);
 
         surface.configure({
             device: device,
@@ -134,7 +146,7 @@ export opaque struct App {
             usage: wgpu.TextureUsage.RenderAttachment,
             width: windowState.framebufferSize.x,
             height: windowState.framebufferSize.y,
-            presentMode: options.presentMode,
+            presentMode: presentMode,
             alphaMode: caps.alphaModes[0],
         });
 
@@ -156,7 +168,7 @@ export opaque struct App {
             surface: surface,
             surfaceFormat: surfaceFormat,
             caps: caps,
-            presentMode: options.presentMode,
+            presentMode: presentMode,
             gfx: gfx,
             canvas: canvas,
             windowState: windowState,
