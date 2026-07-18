@@ -464,43 +464,49 @@ export type DivStyleOp =
 // winning over a preset op for the same field (presets only fill gaps),
 // then resolves the result into a ComputedDivStyle. One flat exhaustive
 // match, plain data in and out -- no function pointers, fully inlinable.
-export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
+// `ops` is optional (rather than requiring an empty array when a caller has
+// no presets) purely so callers like ui_components.div() can pass their own
+// already-optional `props.presets` straight through, with nothing to
+// allocate at all in the common no-presets case.
+export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivStyle {
     let working: inline DivStyle = raw;
 
-    for op in ops {
-        if op is BackgroundColorOp { if !working.backgroundColor { working.backgroundColor = op.color; } }
-        else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
-        else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
-        else if op is GapOp { if !working.gap { working.gap = op.value; } }
-        else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
-        else if op is PackingOp { if !working.packing { working.packing = op.value; } }
-        else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
-        else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
-        else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
-        else if op is HeightOp { if isUnset(working.height) { working.height = op.value; } }
-        else if op is PositionOp { if !working.position { working.position = op.value; } }
-        else if op is TopOp { if !working.positionValues.top { working.positionValues.top = op.value; } }
-        else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
-        else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
-        else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
-        else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
-        else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
-        else if op is BorderWidthOp {
-            if !working.borderWidth.top { working.borderWidth.top = op.value; }
-            if !working.borderWidth.right { working.borderWidth.right = op.value; }
-            if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; }
-            if !working.borderWidth.left { working.borderWidth.left = op.value; }
+    if ops is not none {
+        for op in ops {
+            if op is BackgroundColorOp { if !working.backgroundColor { working.backgroundColor = op.color; } }
+            else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+            else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
+            else if op is GapOp { if !working.gap { working.gap = op.value; } }
+            else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
+            else if op is PackingOp { if !working.packing { working.packing = op.value; } }
+            else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
+            else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
+            else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
+            else if op is HeightOp { if isUnset(working.height) { working.height = op.value; } }
+            else if op is PositionOp { if !working.position { working.position = op.value; } }
+            else if op is TopOp { if !working.positionValues.top { working.positionValues.top = op.value; } }
+            else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
+            else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
+            else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
+            else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
+            else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
+            else if op is BorderWidthOp {
+                if !working.borderWidth.top { working.borderWidth.top = op.value; }
+                if !working.borderWidth.right { working.borderWidth.right = op.value; }
+                if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; }
+                if !working.borderWidth.left { working.borderWidth.left = op.value; }
+            }
+            else if op is BorderTopWidthOp { if !working.borderWidth.top { working.borderWidth.top = op.value; } }
+            else if op is BorderRightWidthOp { if !working.borderWidth.right { working.borderWidth.right = op.value; } }
+            else if op is BorderBottomWidthOp { if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; } }
+            else if op is BorderLeftWidthOp { if !working.borderWidth.left { working.borderWidth.left = op.value; } }
+            else if op is BorderColorOp { if !working.borderColor { working.borderColor = op.color; } }
+            else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+            else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+            else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+            else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+            else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
         }
-        else if op is BorderTopWidthOp { if !working.borderWidth.top { working.borderWidth.top = op.value; } }
-        else if op is BorderRightWidthOp { if !working.borderWidth.right { working.borderWidth.right = op.value; } }
-        else if op is BorderBottomWidthOp { if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; } }
-        else if op is BorderLeftWidthOp { if !working.borderWidth.left { working.borderWidth.left = op.value; } }
-        else if op is BorderColorOp { if !working.borderColor { working.borderColor = op.color; } }
-        else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
-        else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
-        else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
-        else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
-        else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
     }
 
     let result = ComputedDivStyle {
@@ -529,16 +535,19 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp): ComputedDivStyle {
     return result;
 }
 
-export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp): ComputedTextStyle {
+// ops is optional -- see computeDivStyle's own comment.
+export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedTextStyle {
     let working: inline TextStyle = raw;
 
-    for op in ops {
-        if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
-        else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
-        else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
-        else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
-        else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
-        else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+    if ops is not none {
+        for op in ops {
+            if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+            else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+            else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+            else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+            else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+            else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+        }
     }
 
     return ComputedTextStyle {

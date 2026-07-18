@@ -1701,7 +1701,7 @@ export opaque struct UIContext {
                 if instance.crashed && instance.crashInfo {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {instance.crashInfo.message}";
-                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     instance.rootElement.children.push(errEl);
                     return none;
                 }
@@ -1727,7 +1727,7 @@ export opaque struct UIContext {
                     }
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {e.message}";
-                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, []);
+                    errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     instance.rootElement.children.push(errEl);
                     return none;
                 };
@@ -1880,9 +1880,7 @@ export opaque struct UIContext {
 
         let rawStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawStyle := props.style; }
-        let opsList: []ui_styling.DivStyleOp = [];
-        if props.presets is not none { opsList = props.presets; }
-        element.style := ui_styling.computeDivStyle(rawStyle, opsList);
+        element.style := ui_styling.computeDivStyle(rawStyle, props.presets);
 
         // Store event callbacks into runtime data so the event system can read them.
         let data = runtimeDataOf(element);
@@ -1943,9 +1941,7 @@ export opaque struct UIContext {
         element.text := props.text;
         let rawTextStyle: ui_styling.TextStyle = {};
         if props.style is not none { rawTextStyle := props.style; }
-        let textOpsList: []ui_styling.TextStyleOp = [];
-        if props.presets is not none { textOpsList = props.presets; }
-        element.style := ui_styling.computeTextStyle(rawTextStyle, textOpsList);
+        element.style := ui_styling.computeTextStyle(rawTextStyle, props.presets);
 
         // attach into current parent
         parent.children.push(element);
@@ -1976,9 +1972,7 @@ export opaque struct UIContext {
 
         let rawCanvasStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawCanvasStyle := props.style; }
-        let canvasOpsList: []ui_styling.DivStyleOp = [];
-        if props.presets is not none { canvasOpsList = props.presets; }
-        element.style := ui_styling.computeDivStyle(rawCanvasStyle, canvasOpsList);
+        element.style := ui_styling.computeDivStyle(rawCanvasStyle, props.presets);
 
         // attach into current parent
         parent.children.push(element);
