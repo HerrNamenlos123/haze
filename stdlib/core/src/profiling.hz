@@ -1,5 +1,5 @@
 namespace ffi {
-    extern C noemit fn hzstd_profiling_start(samplingRateHz: int): hzstd_profiling_context_t :: final;
+    extern C noemit fn hzstd_profiling_start(): hzstd_profiling_context_t :: final;
     extern C noemit fn hzstd_profiling_end(context: hzstd_profiling_context_t): hzstd_profiling_result_t :: final;
 
     export extern C noemit struct hzstd_profiling_context_t {};
@@ -227,16 +227,19 @@ namespace profiling {
     }
 }
 
-export struct ProfilerConfig {
-    samplingRateHz: int = 100;
-}
-
+// There's no sampling rate to configure: on Linux, the kernel's own
+// perf_cpu_time_max_percent throttle continuously adapts the real rate to
+// whatever the actual per-sample cost allows, far better than any fixed
+// number picked up front (see hzstd_profiling_start); on Windows it's a
+// fixed, conservative internal default, since no equivalent safety net
+// exists there. Either way, the *achieved* rate -- not a requested one --
+// shows up in ProfilingResult.sampling_rate_hz once a session ends.
 export struct Profiler {
     context: ffi.hzstd_profiling_context_t;
 
-    fn constructor(config: ProfilerConfig = {}) {
-        fmt.println(f"Profiling was started at {config.samplingRateHz} Hz");
-        let context = ffi.hzstd_profiling_start(config.samplingRateHz);
+    fn constructor() {
+        fmt.println("Profiling started");
+        let context = ffi.hzstd_profiling_start();
         return Profiler {
             context: context,
         };
@@ -244,8 +247,9 @@ export struct Profiler {
 
     // TODO: This profiler must turn into a resource so it's panic recovery safe
     fn stop(): profiling.ProfilingResult {
-        fmt.println("Profiling stopped, postprocessing...");
-        return ffi.hzstd_profiling_end(this.context);
+        let result = ffi.hzstd_profiling_end(this.context);
+        fmt.println(f"Profiling stopped (achieved ~{result.sampling_rate_hz} Hz), postprocessing...");
+        return result;
     }
 
     fn stopAndSave(path: str = "out.cpuprofile") {

@@ -175,7 +175,16 @@ struct hzstd_profiling_context_t {
 #endif
   atomic_bool stop_stackwalker;
   atomic_bool stop_scheduler;
-  int sampling_rate_hz;
+  int sampling_rate_hz; // the *nominal* rate driving this session -- see
+                        // hzstd_profiling_end, which reports the actual
+                        // achieved rate (sample_count / real elapsed time)
+                        // instead of echoing this back, since the two can
+                        // differ (Linux in particular deliberately requests
+                        // far more than the kernel will actually deliver --
+                        // see hzstd_profiling_start).
+  double session_start_time; // hzstd_time_now() snapshot taken at the very
+                             // start of hzstd_profiling_start, used to derive
+                             // the achieved rate above.
   atomic_int sample_in_progress;
   double sample_started_at; // hzstd_time_now() snapshot taken when the sample
                             // was captured
@@ -958,10 +967,41 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
 
 static hzstd_profiling_context_t *g_profiling_context = NULL;
 
-hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
+#ifdef HAZE_PLATFORM_LINUX
+// There's no meaningful "requested rate" to expose to callers on Linux: the
+// kernel's own kernel.perf_cpu_time_max_percent throttle (see
+// hzstd_profiling_end's achieved-rate comment) already decides the real rate
+// dynamically based on actual per-sample cost, continuously, far better than
+// any fixed number we could pick or ask the caller to guess. So instead of a
+// user-facing knob, this asks the kernel what ITS OWN ceiling is
+// (perf_event_max_sample_rate) and requests exactly that -- never more than
+// the system itself considers sane, while still leaning entirely on the
+// separate CPU-time throttle to do the actual, adaptive limiting.
+#define HZSTD_PROFILING_FALLBACK_RATE_HZ 100000
+
+static int hzstd_profiling_query_max_sample_rate(void) {
+  FILE *f = fopen("/proc/sys/kernel/perf_event_max_sample_rate", "r");
+  if (!f) {
+    return HZSTD_PROFILING_FALLBACK_RATE_HZ;
+  }
+  int rate = 0;
+  int scanned = fscanf(f, "%d", &rate);
+  fclose(f);
+  return (scanned == 1 && rate > 0) ? rate : HZSTD_PROFILING_FALLBACK_RATE_HZ;
+}
+#elif defined(HAZE_PLATFORM_WIN32)
+// Unlike Linux, nothing here auto-throttles based on real overhead -- the
+// SuspendThread-based trigger's cost scales directly with how often we ask
+// for a sample, with no equivalent safety net. So this stays a fixed,
+// deliberately conservative constant rather than "as high as possible".
+#define HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ 100
+#endif
+
+hzstd_profiling_context_t *hzstd_profiling_start(void) {
   // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
   // on the first sample drained, by hzstd_profiling_samples_append.
   hzstd_profiling_context_t newContext = {0};
+  newContext.session_start_time = hzstd_time_now();
 #ifdef HAZE_PLATFORM_LINUX
   newContext.tid = hzstd_profiling_get_current_thread_id();
   newContext.pid = hzstd_profiling_get_current_process_id();
@@ -970,9 +1010,12 @@ hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
   hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
       hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
-#ifdef HAZE_PLATFORM_WIN32
+#ifdef HAZE_PLATFORM_LINUX
+  int samplingRateHz = hzstd_profiling_query_max_sample_rate();
+#elif defined(HAZE_PLATFORM_WIN32)
   context->stackwalker_trigger_semaphore = hzstd_create_semaphore();
   context->stackwalker_done_semaphore = hzstd_create_semaphore();
+  int samplingRateHz = HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ;
 #endif
   context->sampling_rate_hz = samplingRateHz;
 
@@ -1648,10 +1691,26 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
     }
   }
 
+  // Report what actually happened, not what was nominally requested: on
+  // Linux in particular, context->sampling_rate_hz is deliberately far higher
+  // than what ever gets delivered (see hzstd_profiling_start) -- the kernel's
+  // own CPU-time throttle decides the real rate continuously based on actual
+  // per-sample cost. profiling.hz's off-cpu-gap detection (buildCpuProfile)
+  // depends on this being the *achieved* rate to correctly tell "normal gap
+  // between real samples" apart from "the thread wasn't running"; reporting
+  // the nominal request instead would badly miscalibrate that threshold
+  // whenever the two diverge.
+  double sessionDurationSeconds = hzstd_time_now() - context->session_start_time;
+  int achievedRateHz = context->sampling_rate_hz;
+  if (context->sample_count > 0 && sessionDurationSeconds > 0.0) {
+    achievedRateHz =
+        (int)(((double)context->sample_count / sessionDurationSeconds) + 0.5);
+  }
+
   return (hzstd_profiling_result_t){
       .frames = frames,
       .samples = samples,
-      .sampling_rate_hz = context->sampling_rate_hz,
+      .sampling_rate_hz = achievedRateHz,
   };
 }
 

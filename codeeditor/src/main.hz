@@ -125,9 +125,7 @@ fn main(): int {
         //     return 0;
         // }
 
-        let profiler = profile ? Profiler({
-            samplingRateHz: 1000,
-        }) : null;
+        let profiler = profile ? Profiler() : null;
 
         while let frame = a.nextFrame() {
             if a.resized {
