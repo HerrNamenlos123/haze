@@ -14,3 +14,160 @@ namespace ffi {
 // Workaround because of ffi namespace bug
 export extern C fn hzstd_str_from_cstr_ref(data: cstr): str :: final;
 export extern C fn hzstd_str_from_ccstr_ref(data: ccstr): str :: final;
+
+// This is a dynamic String object. In Haze, 'str' is a string slice, which consists of pointer + length.
+// It has the invariant that whatever it points to, MUST NEVER EVER CHANGE, neither in length, nor location or content.
+// But this makes dynamic string handling hard and we need constant reallocation even when changing a single character.
+// However, this does not mean every string has to be this way. This is actually a low-level invariant that must
+// hold true to make the runtime possible, to make GC possible, to make string slices possible, and to make
+// the entire language 100% memory safe. It is not an abstract requirement that this must hold true for all types of
+// strings. It must only hold true for 'str' because of low-level memory constraints.
+// This means: we can and must build another string container, which also represents the concept of an array of
+// characters, but if it doesn't have the same low-level constraints as 'str', it also doesn't have to be immutable.
+// This means: We can absolutely make a dynamic string class, without requiring ByteBuffer's commit logic.
+// It just means, since the string may always change, we can never turn 'String' into 'str' unless we also
+// inherit ByteBuffer's commit logic. We must pass the String around everywhere.
+// But if every function can take either 'String' or 'str', then both of these string representations can work.
+export opaque struct String {
+    // SO: This is the main string container in Haze. 'str' is the lowest-level string primitive which is a slice.
+    // String is a dynamic container. However, since we can never automatically turn String into str, we don't want
+    // to always have to define every function twice. And a str function can never take String, unless we commit it.
+    // But we can turn it around: We can actually add an optimization, we can make sure a String can optionally
+    // be initialized with a 'str', where it does not actually use a dynamic buffer and instead keeps the 'str' for
+    // as long as it can, and only when something is changed, allocates a dynamic buffer. If nothing is changed, a
+    // String constructed from 'str' will actually remain just a 'str' wrapper with no allocation.
+    // Therefore, all high level functions should actually take a String rather than a 'str', because that means
+    // both types of strings can be accepted.
+
+    _data: ByteBuffer | str;
+
+    // We do not actually use the byte buffer as a frozen string. We track commitment ourselves
+    // and when we do commit the buffer, we use the buffer's capabilities to get access to the string slice,
+    // but then replace the buffer here with the slice it produced. We do not want to distinguish between
+    // a slice we received and a buffer that later turned into a slice.
+
+    // We track the committed state separately. In theory we could commit a string, replace the buffer with its
+    // slice, and then mutate it and clone the slice back into a buffer, but this would be weird and unintuitive.
+    // Therefore to make it more intuitive, we say once a string is committed, you actually cannot change it.
+
+    _committed: bool = false;
+
+    fn constructor() {
+        return String {
+            _data: "",
+        };
+    }
+
+    fn constructor(literal: str) {
+        return String {
+            _data: literal,
+        };
+    }
+
+    fn constructor(buffer: ByteBuffer) {
+        return String {
+            _data: buffer,
+        };
+    }
+
+    fn clone(): str {
+        if this._data is ByteBuffer {
+            return this._data.cloneString();
+        }
+        else {
+            return this._data;
+        }
+    }
+
+    fn string(): str {
+        if this._data is ByteBuffer {
+            sys.panic("String.string() was called but the String is still mutable. We must not create a string slice from a mutable buffer. To get a slice from this String, either use String.cloneString() or call String.commit() before, to make the String permanently immutable.");
+        }
+        else {
+            return this._data;
+        }
+    }
+
+    fn commit() {
+        if this._data is ByteBuffer {
+            this._data.commit();
+            this._committed = true;
+            this._data = this._data.string();
+        }
+    }
+
+    fn append(string: String) {
+        let buffer = this._getBuffer();
+        buffer.push(string.bytes());
+        return this;
+    }
+
+    fn append(string: str) {
+        let buffer = this._getBuffer();
+        buffer.push(string);
+        return this;
+    }
+
+    fn setAt(index: int, value: u8) {
+        let buffer = this._getBuffer();
+        buffer.writeAt(index, value);
+        return this;
+    }
+
+    fn getAt(index: int): u8 {
+        let buffer = this._getBuffer();
+        return buffer.getAt(index);
+    }
+
+    fn insert(index: int, value: str) {
+        let buffer = this._getBuffer();
+        buffer.insert(index, value);
+        return this;
+    }
+
+    fn remove(index: int, count: int) {
+        let buffer = this._getBuffer();
+        buffer.remove(index, count);
+        return this;
+    }
+
+
+    fn operator[](index: int) {
+        return StringByteRef {
+            string: this,
+            index: index,
+        };
+    }
+
+    // Here we cannot actually return Bytes, because there is no immutable buffer we can point to. Instead we have to
+    // return a ByteBuffer
+    fn bytes() {
+        if this._data is ByteBuffer {
+            return this._data.bytes();
+        }
+    }
+
+    fn _getBuffer(): ByteBuffer {
+        assert(!this._committed, "Tried to mutate a String which was already committed and made immutable");
+        if this._data is ByteBuffer {
+            return this._data;
+        }
+        else {
+            this._data = ByteBuffer(this._data);
+            return this._data;
+        }
+    }
+}
+
+export struct StringByteRef {
+    string: String;
+    index: int;
+
+    fn get(): u8 {
+        return this.buffer.getAt(this.index);
+    }
+
+    fn operator:=(value: u8) {
+        this.buffer.setAt(this.index, value);
+    }
+}
