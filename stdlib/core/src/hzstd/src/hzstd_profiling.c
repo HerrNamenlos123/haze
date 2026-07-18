@@ -211,6 +211,17 @@ struct hzstd_profiling_context_t {
   uint64_t perf_unwind_count;
   uint64_t perf_drain_call_count;
   uint64_t perf_max_samples_per_drain;
+  // Distinguishes "poll() returned because the perf fd actually became
+  // readable" (attr.wakeup_events=1 doing its job -- prompt draining) from
+  // "poll() just hit its 100ms safety-net timeout with nothing marked ready"
+  // (wakeup_events isn't triggering promptly for some reason, and draining
+  // is really happening on a ~100ms cadence regardless of how many samples
+  // piled up in between) -- see hzstd_profiling_reader_thread.
+  uint64_t perf_poll_event_count;
+  uint64_t perf_poll_timeout_count;
+  // The ring buffer's actual final size, in case the mlock-limited backoff
+  // in hzstd_profiling_start had to shrink it far below the ideal target.
+  size_t perf_actual_ring_bytes;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -899,10 +910,21 @@ void *hzstd_profiling_reader_thread(void *_context) {
 
   struct pollfd pfd = {.fd = context->perf_fd, .events = POLLIN};
   while (!atomic_load(&context->stop_reader)) {
-    // The timeout here is only a safety net (in case a wakeup is ever missed
-    // for some reason) -- wakeup_events=1 on the perf event means poll()
-    // ordinarily returns promptly after every single sample.
-    poll(&pfd, 1, 100);
+    // The timeout here is only meant as a safety net (in case a wakeup is
+    // ever missed for some reason) -- wakeup_events=1 on the perf event
+    // should mean poll() ordinarily returns promptly after every single
+    // sample. perf_poll_event_count/perf_poll_timeout_count (reported at the
+    // end of the session) confirm whether that's actually happening: if
+    // most returns are timeouts rather than events, wakeup_events isn't
+    // triggering promptly on this system, and draining is really only
+    // happening on this timeout's cadence regardless of how many samples
+    // piled up in between.
+    int pollResult = poll(&pfd, 1, 100);
+    if (pollResult > 0) {
+      context->perf_poll_event_count++;
+    } else if (pollResult == 0) {
+      context->perf_poll_timeout_count++;
+    }
     hzstd_profiling_drain_perf_ring(context, stackScratch);
     // Move whatever hzstd_profiling_drain_perf_ring just pushed out of the
     // small, fixed-capacity ring (HZSTD_PROFILING_RING_CAPACITY) into the
@@ -1292,6 +1314,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
         "(errno=%d): check kernel.perf_event_mlock_kb",
         errno);
   }
+  context->perf_actual_ring_bytes = context->perf_mmap_len;
 
   struct timespec ref;
   clock_gettime(CLOCK_MONOTONIC, &ref);
@@ -1857,6 +1880,14 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             context->perf_unwind_time_max_ns / 1e3,
             (unsigned long long)context->perf_drain_call_count,
             (unsigned long long)context->perf_max_samples_per_drain);
+    fprintf(stderr,
+            "Profiling reader wakeups: %llu real event(s), %llu 100ms "
+            "timeout(s) (a high timeout count means wakeup_events isn't "
+            "triggering promptly on this system -- draining is really only "
+            "happening on that ~100ms cadence). Ring buffer: %zu bytes.\n",
+            (unsigned long long)context->perf_poll_event_count,
+            (unsigned long long)context->perf_poll_timeout_count,
+            context->perf_actual_ring_bytes);
   }
 #endif
   free(context->ring_buffer);
