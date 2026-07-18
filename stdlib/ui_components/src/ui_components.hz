@@ -1591,7 +1591,7 @@ export opaque struct UIContext {
     // root wrapper the same way. Anything left over from a previous, longer
     // list is trimmed by truncateChildrenToCursor() below, once the caller's
     // own children are done.
-    fn attachChild(element: mut ui_elements.Element): void {
+    fn attachChild(element: ui_elements.Element): void {
         assert(this.renderStack.length > 0);
         let ctx = this.renderStack[this.renderStack.length - 1];
         if ctx.childIndex < ctx.currentParent.children.length {
@@ -1620,7 +1620,7 @@ export opaque struct UIContext {
     // overwrite-then-trim shape as attachChild()/truncateChildrenToCursor(),
     // so a component stuck crashed across many frames in a row doesn't
     // reallocate or accumulate children each time either.
-    fn setSingleChild(parent: mut ui_elements.DivElement, child: mut ui_elements.Element): void {
+    fn setSingleChild(parent: mut ui_elements.DivElement, child: ui_elements.Element): void {
         if parent.children.length > 0 {
             parent.children[0] = child;
         } else {
