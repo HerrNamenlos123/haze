@@ -623,6 +623,8 @@ export class ProjectCompiler {
           exec(
             `sudo apt install autoconf libtool-bin cmake libdwarf-dev liblzma-dev`
           );
+        } else if (packageManager === "fedora") {
+          exec(`sudo apt install libdwarf-static zlib-static libzstd-static`);
         }
         this.markStepDone(MARKERS.systemPackagesInstall);
         console.info("Installing required system packages... Done");
