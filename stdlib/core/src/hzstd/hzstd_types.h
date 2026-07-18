@@ -577,10 +577,15 @@ typedef struct {
 //                        i.e. how much this single sample perturbed the profiled program.
 //   frames:             hzstd_int_t[], indices into the owning hzstd_profiling_result_t.frames
 //                        table, innermost frame first.
+//   truncated:          true if the real call stack was deeper than what could be captured (see
+//                        HZSTD_PROFILING_PERF_STACK_SIZE on Linux) -- `frames` holds only the
+//                        innermost frames that fit; everything above them is real but missing,
+//                        not fabricated. Always false on Windows (no such cap there).
 typedef struct {
   hzstd_real_t timestamp;
   hzstd_real_t sampling_duration;
   hzstd_dynamic_array_t* frames;
+  bool truncated;
 } hzstd_profiling_sample_t;
 
 // This struct is the final result of profiling after postprocessing,

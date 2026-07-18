@@ -102,6 +102,10 @@ typedef struct {
                             // perf_event_open never runs anything on the
                             // profiled thread's behalf; still meaningful on
                             // Windows (handler + stackwalker time).
+  bool truncated; // Linux only: true if the unwind ran past the edge of the
+                  // captured stack snapshot (see HZSTD_PROFILING_PERF_STACK_SIZE)
+                  // before reaching a natural end -- `pcs`/`depth` hold only
+                  // the innermost frames that fit, real but incomplete.
 } hzstd_profiling_raw_sample_t;
 
 // Fixed capacity of the allocation-free handoff ring described below. Sized to
@@ -458,6 +462,14 @@ static __thread hzstd_perf_sample_regs_t *g_hzstd_perf_current_sample = NULL;
 static uint64_t g_hzstd_perf_stack_low = 0;
 static uint64_t g_hzstd_perf_stack_high = 0;
 
+// Set by hzstd_perf_access_mem whenever it refuses a read specifically
+// because the address was more of the profiled thread's stack than this
+// sample captured (see above) -- as opposed to reaching a natural end of
+// unwinding (no more CFI info -- e.g. _start) or a crash-recovered address.
+// Reset before, and read right after, each single-threaded call to
+// hzstd_profiling_unwind_perf_sample; never touched concurrently.
+static __thread bool g_hzstd_perf_current_sample_truncated = false;
+
 // Maps a libunwind UNW_X86_64_* register number to where that register lives
 // in hzstd_perf_sample_regs_t::regs, or -1 if we don't capture it (there's no
 // legitimate reason CFI would need anything outside the general-purpose set
@@ -518,7 +530,10 @@ static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr,
     // capture -- not safe to read live (see the comment on
     // g_hzstd_perf_stack_low/high above). Reporting it as unavailable simply
     // truncates this sample's walk at this frame, the same graceful
-    // truncation as running past the edge of a fully-captured stack.
+    // truncation as running past the edge of a fully-captured stack -- but
+    // unlike that natural-end case, this one specifically means "there were
+    // real frames above this that we don't have," so flag it as such.
+    g_hzstd_perf_current_sample_truncated = true;
     return -UNW_EINVAL;
   }
   *valp = *(unw_word_t *)addr;
@@ -579,6 +594,9 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
   sigaction(SIGSEGV, &newAction, &oldSegvAction);
   sigaction(SIGBUS, &newAction, &oldBusAction);
 
+  g_hzstd_perf_current_sample_truncated = false;
+  bool crashed = false;
+
   if (sigsetjmp(g_hzstd_perf_unwind_recovery, 1) == 0) {
     g_hzstd_perf_current_sample = sample;
 
@@ -597,15 +615,24 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
         // hzstd_perf_access_mem above -- stack reads only ever reach as far
         // as this sample's captured snapshot; once a step needs a stack
         // address outside it (deeper than HZSTD_PROFILING_PERF_STACK_SIZE
-        // captured this sample), access_mem returns an error and unw_step
-        // stops, same as hitting the end of the stack. That's an expected,
-        // graceful truncation for calls deeper than the snapshot -- not a
-        // bug.
+        // captured this sample), access_mem returns an error, sets
+        // g_hzstd_perf_current_sample_truncated, and unw_step stops -- same
+        // as hitting the end of the stack, except we know there was real,
+        // uncaptured stack above this point (see hzstd_perf_access_mem).
       } while (_Ux86_64_step(&cursor) > 0);
     }
+  } else {
+    // Landed here via siglongjmp -- some address the unwinder computed
+    // (almost always outside the stack: bad/missing CFI data for some
+    // module) was entirely unmapped. Whatever depth we'd reached is real and
+    // kept, but definitely doesn't reach a natural end, so this counts as
+    // truncated too.
+    crashed = true;
   }
-  // A crash lands here via siglongjmp with whatever `out->depth` had already
-  // reached -- a partial, but still valid and useful, set of frames.
+  // Note the deliberate order here: g_hzstd_perf_current_sample_truncated is
+  // read *after* the sigsetjmp block above, not before -- it may have been
+  // set from inside that block.
+  out->truncated = crashed || g_hzstd_perf_current_sample_truncated;
 
   g_hzstd_perf_current_sample = NULL;
   sigaction(SIGSEGV, &oldSegvAction, NULL);
@@ -1534,6 +1561,7 @@ hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
       .timestamp = raw.timestamp,
       .sampling_duration = raw.sampling_duration,
       .frames = frameIndices,
+      .truncated = raw.truncated,
   };
 }
 

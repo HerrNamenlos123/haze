@@ -14,6 +14,7 @@ namespace ffi {
         timestamp: real;
         sampling_duration: real;
         frames: []int;
+        truncated: bool;
     };
 
     export extern C noemit opaque inline struct hzstd_profiling_result_t {
@@ -71,13 +72,50 @@ namespace profiling {
         };
     }
 
+    // Sentinel nodeFrameIndex values: real frames are always >= 0 (indices into
+    // result.frames), so these can't collide with any of them.
+    const rootFrameIndex = -1;
+    const truncatedFrameIndex = -2;
+
+    // Finds (or creates) a child of nodes[parent] identified by frameIndex, returning its index
+    // into `nodes`. Shared by both real captured frames and the synthetic "(truncated)" marker
+    // below -- same "collapsed call tree" node-sharing either way, just parameterized over what
+    // identifies the frame and how to build its CpuProfileCallFrame the first time it's seen.
+    fn findOrCreateChild(nodes: []CpuProfileNode, nodeFrameIndex: []int, parent: int, frameIndex: int, callFrame: CpuProfileCallFrame): int {
+        // Haze has no `break`, so this scans every child rather than stopping at the
+        // first match; only the first match found is ever kept.
+        let childNode = -1;
+        let children = nodes[parent].children;
+        for (let c = 0; c < children.length; c++) {
+            let candidate = children[c] - 1; // node id -> array index
+            if childNode == -1 && nodeFrameIndex[candidate] == frameIndex {
+                childNode = candidate;
+            }
+        }
+
+        if childNode == -1 {
+            let newId = nodes.length + 1;
+            nodes.push(CpuProfileNode {
+                id: newId,
+                callFrame: callFrame,
+                hitCount: 0,
+                children: [],
+            });
+            nodeFrameIndex.push(frameIndex);
+            nodes[parent].children.push(newId);
+            childNode = newId - 1;
+        }
+
+        return childNode;
+    }
+
     // Build the call tree by walking every sample from its outermost frame down to its
     // innermost, sharing nodes across samples that share a call-path prefix (the standard
     // "collapsed call tree" construction every sampling profiler UI expects). `result.frames` is
     // already deduplicated by address, so frame identity is just an index comparison.
     export fn buildCpuProfile(result: profiling.ProfilingResult): CpuProfile {
         let nodes: []CpuProfileNode = [];
-        let nodeFrameIndex: []int = []; // parallel to `nodes`; -1 for the synthetic root
+        let nodeFrameIndex: []int = []; // parallel to `nodes`
 
         nodes.push(CpuProfileNode {
             id: 1,
@@ -85,7 +123,7 @@ namespace profiling {
             hitCount: 0,
             children: [],
         });
-        nodeFrameIndex.push(-1);
+        nodeFrameIndex.push(rootFrameIndex);
 
         let samples: []int = [];
         let timeDeltas: []int = [];
@@ -104,36 +142,27 @@ namespace profiling {
             }
             lastTimeUs = timeUs;
 
-            // sample.frames is innermost-first; the call tree is built outermost-first.
             let currentNode = 0; // index into `nodes`; 0 is the root
+
+            if sample.truncated {
+                // The real call chain continued above this point but wasn't captured (see
+                // HZSTD_PROFILING_PERF_STACK_SIZE) -- inserted as an extra ancestor above
+                // whatever real, known frames follow below, so a flamegraph reads this as
+                // "execution really did continue further here, we just don't know what it was"
+                // instead of silently looking like a shallower call than it actually was.
+                currentNode = findOrCreateChild(nodes, nodeFrameIndex, currentNode, truncatedFrameIndex, CpuProfileCallFrame {
+                    functionName: "(truncated -- call stack exceeded capture size)",
+                    scriptId: "0",
+                    url: "",
+                    lineNumber: -1,
+                    columnNumber: -1,
+                });
+            }
+
+            // sample.frames is innermost-first; the call tree is built outermost-first.
             for (let depth = sample.frames.length - 1; depth >= 0; depth--) {
                 let frameIndex = sample.frames[depth];
-
-                // Haze has no `break`, so this scans every child rather than stopping at the
-                // first match; only the first match found is ever kept.
-                let childNode = -1;
-                let children = nodes[currentNode].children;
-                for (let c = 0; c < children.length; c++) {
-                    let candidate = children[c] - 1; // node id -> array index
-                    if childNode == -1 && nodeFrameIndex[candidate] == frameIndex {
-                        childNode = candidate;
-                    }
-                }
-
-                if childNode == -1 {
-                    let newId = nodes.length + 1;
-                    nodes.push(CpuProfileNode {
-                        id: newId,
-                        callFrame: callFrameForFrame(result.frames[frameIndex]),
-                        hitCount: 0,
-                        children: [],
-                    });
-                    nodeFrameIndex.push(frameIndex);
-                    nodes[currentNode].children.push(newId);
-                    childNode = newId - 1;
-                }
-
-                currentNode = childNode;
+                currentNode = findOrCreateChild(nodes, nodeFrameIndex, currentNode, frameIndex, callFrameForFrame(result.frames[frameIndex]));
             }
 
             nodes[currentNode].hitCount += 1;
