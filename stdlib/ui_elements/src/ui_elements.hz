@@ -10,25 +10,30 @@ import ui_styling;
 
 export struct DivElementArgs {
     id: int;
+    // This element's own globally-unique id across the whole tree (its
+    // parent's own globalId, slash-joined with `id` above) -- computed once
+    // by whoever creates the element (see ui_components.getOrCreateDiv) and
+    // handed in here, since it's known at construction time and never
+    // changes afterward. Read back by ui_layout (to register this element
+    // with Clay every frame without reformatting the same string again) and
+    // by resolveFloating() (when another element's explicit anchorTo()
+    // targets this one).
+    globalId: str;
     children: []Element = [];
     style: ui_styling.ComputedDivStyle = {};
 }
 
 export struct DivElement {
     id: int;
+    globalId: str;
     children: []Element = [];
     style: ui_styling.ComputedDivStyle = {};
     _runtimeData?: TypeErasedBox;
-    // The Clay id string ui_layout resolved for this element the last time
-    // its tree walk visited it -- set by ui_layout, read by ui_layout when
-    // resolving another element's explicit anchorTo() target. Not touched by
-    // this module or ui_components; see ui_styling.AnchorTarget's own
-    // comment for why it can't just be a path precomputed at declare time.
-    _resolvedClayId?: str;
 
     fn constructor(args: DivElementArgs) {
         return DivElement {
             id: args.id,
+            globalId: args.globalId,
             children: args.children,
             style: args.style,
         };
@@ -37,12 +42,15 @@ export struct DivElement {
 
 export struct TextElementArgs {
     id: int;
+    // Same as DivElementArgs.globalId -- see its comment.
+    globalId: str;
     text: str;
     style: ui_styling.ComputedTextStyle = {};
 }
 
 export struct TextElement {
     id: int;
+    globalId: str;
     text: str;
     style: ui_styling.ComputedTextStyle = {};
     _runtimeData?: TypeErasedBox;
@@ -50,6 +58,7 @@ export struct TextElement {
     fn constructor(args: TextElementArgs) {
         return TextElement {
             id: args.id,
+            globalId: args.globalId,
             text: args.text,
             style: args.style,
         };
@@ -58,6 +67,8 @@ export struct TextElement {
 
 export struct CanvasElementArgs {
     id: int;
+    // Same as DivElementArgs.globalId -- see its comment.
+    globalId: str;
     style: ui_styling.ComputedDivStyle = {};
 }
 
@@ -67,12 +78,14 @@ export struct CanvasElementArgs {
 // owned by whoever created it -- this module doesn't know any of that exists.
 export struct CanvasElement {
     id: int;
+    globalId: str;
     style: ui_styling.ComputedDivStyle = {};
     _runtimeData?: TypeErasedBox;
 
     fn constructor(args: CanvasElementArgs) {
         return CanvasElement {
             id: args.id,
+            globalId: args.globalId,
             style: args.style,
         };
     }
