@@ -73,42 +73,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        // The real, mutable text buffer: one string per line. This is the
-        // throwaway part of codeui -- a proper editor wouldn't rebuild a
-        // fresh []str (and fresh line strings, since Haze strings aren't
-        // mutable in place) on every keystroke, but it's enough to drive
-        // textedit_behavior's editing engine honestly for now. `doc` below
-        // is the joined full text, derived FROM docLines (rather than the
-        // other way around, like before this buffer existed), kept around
-        // because the LSP bridge and the highlighter both want one string.
-        // rx.reactive<[]str> (no union) wraps each element individually --
-        // an array of per-line reactive cells, meant for surgical
-        // single-line edits via push/pop. This buffer instead replaces the
-        // whole array on every edit (see the comment above), which through
-        // that path meant popping and re-pushing every line -- i.e. one
-        // heap alloc/free per line, per keystroke -- and was the actual
-        // source of the per-keystroke freeze. Wrapping the array type in
-        // `| none` routes it through the plain/shallow reactive path
-        // instead (same mechanism selectionAnchor: Vec2i | none uses in the
-        // engine): a single opaque cell holding one []str value, swappable
-        // in one `:=` with no per-element bookkeeping. It's never actually
-        // none; that's just how to opt out of the per-element wrapping.
-        let docLines = rx.reactive<[]str | none>([""]);
-
-        let getPlainLines = (): []str => {
-            let ls = rx.get(docLines);
-            if ls {
-                return ls;
-            }
-            return [];
-        };
-
-        // Very hot -- called by the engine multiple times per keystroke --
-        // but there's no cheaper single-line path left now that a whole-
-        // array read is just one unwrap; keep it as a thin convenience.
-        let getLine = (index: int): str => {
-            return getPlainLines()[index];
-        };
+        let lines = rx.reactive<[]String>([]);
 
         let replaceAllLines = (newLines: []str) => {
             docLines := newLines;
@@ -284,13 +249,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let texteditBehavior = textedit_behavior.Context({
             getLineLength: (lineIndex: int) => {
-                return getLine(lineIndex).length;
+                return lines[lineIndex].length;
             },
             getLine: (lineIndex: int) => {
-                return getLine(lineIndex);
+                return lines[lineIndex];
             },
             getLineCount: () => {
-                return getPlainLines().length;
+                return lines.length;
             },
             getTimeInSeconds: () => {
                 return ui.now();
