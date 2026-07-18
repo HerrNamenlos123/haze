@@ -21,6 +21,7 @@ ui_runtime = { path = "../stdlib/ui_runtime" }
 headwind = { path = "../stdlib/headwind" }
 renderer = { path = "../stdlib/renderer" }
 app = { path = "../stdlib/app" }
+wgpu = { path = "../stdlib/wgpu" }
 
 # Actual application and business logic
 filedialog = { path = "../stdlib/filedialog" }

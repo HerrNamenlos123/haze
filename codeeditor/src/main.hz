@@ -3,12 +3,14 @@ import app
 import ui_runtime
 import ui_components
 import filedialog
+import wgpu
 
 struct Cache {
     file: str | null = null;
 }
 
 const comptime profile = false;
+const comptime vsync = true;
 
 // Translates app's platform-level pointer edge queue into ui_components'
 // own PointerEdge type -- kept as a small glue function here (rather than
@@ -59,6 +61,7 @@ fn main(): int {
     attempt {
         let a = app.App({
             title: "Haze CodeEditor",
+            presentMode: vsync ? wgpu.PresentMode.Fifo : wgpu.PresentMode.Immediate,
         })?!;
 
         let font = a.gfx.fontRenderer.fs.addFont(
