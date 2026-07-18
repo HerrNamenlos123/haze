@@ -198,6 +198,19 @@ struct hzstd_profiling_context_t {
   // ::lost_before), so each surviving sample carries exactly how many samples
   // the kernel reports were lost immediately before it.
   uint64_t perf_pending_lost;
+  // Direct timing diagnostics -- see hzstd_profiling_drain_perf_ring and
+  // hzstd_profiling_reader_thread. These answer "where is the time actually
+  // going" concretely instead of inferring it from the achieved rate: a slow
+  // per-sample unwind looks different (high perf_unwind_time_total_ns
+  // relative to session length) from a reader that isn't waking up promptly
+  // enough (low unwind time, but perf_max_samples_per_drain is large --
+  // meaning samples are piling up between drains rather than being
+  // processed slowly one at a time). Only ever written by the reader thread.
+  double perf_unwind_time_total_ns;
+  double perf_unwind_time_max_ns;
+  uint64_t perf_unwind_count;
+  uint64_t perf_drain_call_count;
+  uint64_t perf_max_samples_per_drain;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -780,6 +793,9 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
                                        memory_order_acquire);
   uint64_t tail = meta->data_tail;
 
+  context->perf_drain_call_count++;
+  uint64_t samplesThisDrain = 0;
+
   while (tail < head) {
     struct perf_event_header header;
     uint64_t recordStart = tail;
@@ -823,7 +839,15 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
       }
 
       hzstd_profiling_raw_sample_t rawSample;
+      double unwindStartedAt = hzstd_time_now();
       hzstd_profiling_unwind_perf_sample(context, &sample, &rawSample);
+      double unwindNs = (hzstd_time_now() - unwindStartedAt) * 1e9;
+      context->perf_unwind_time_total_ns += unwindNs;
+      if (unwindNs > context->perf_unwind_time_max_ns) {
+        context->perf_unwind_time_max_ns = unwindNs;
+      }
+      context->perf_unwind_count++;
+      samplesThisDrain++;
       rawSample.timestamp =
           (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) /
           1e9;
@@ -854,6 +878,10 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
     // Any other record type has already been consumed via the header read
     // above; just skip its body by resuming from where this record ends.
     tail = recordStart + header.size;
+  }
+
+  if (samplesThisDrain > context->perf_max_samples_per_drain) {
+    context->perf_max_samples_per_drain = samplesThisDrain;
   }
 
   atomic_store_explicit((_Atomic uint64_t *)&meta->data_tail, tail,
@@ -1811,6 +1839,24 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             (unsigned long long)context->perf_lost_count,
             (unsigned long long)context->perf_throttle_count,
             (unsigned long long)context->perf_unthrottle_count);
+  }
+  // Direct measurement of where reader-thread time actually went, to tell
+  // "unwinding itself is slow" (high avg/max here) apart from "the reader
+  // isn't waking up promptly enough" (low avg/max, but
+  // perf_max_samples_per_drain is high -- samples piling up between drains
+  // rather than being processed slowly one at a time).
+  if (context->perf_unwind_count > 0) {
+    fprintf(stderr,
+            "Profiling reader stats: %llu sample(s) unwound in %.2f ms total "
+            "(avg %.1f us/sample, max %.1f us/sample) across %llu drain "
+            "call(s), largest single drain processed %llu sample(s).\n",
+            (unsigned long long)context->perf_unwind_count,
+            context->perf_unwind_time_total_ns / 1e6,
+            (context->perf_unwind_time_total_ns / 1e3) /
+                (double)context->perf_unwind_count,
+            context->perf_unwind_time_max_ns / 1e3,
+            (unsigned long long)context->perf_drain_call_count,
+            (unsigned long long)context->perf_max_samples_per_drain);
   }
 #endif
   free(context->ring_buffer);
