@@ -64,6 +64,15 @@ extern void _Ux86_64_destroy_addr_space(unw_addr_space_t);
 extern int _Ux86_64_init_remote(unw_cursor_t *, unw_addr_space_t, void *);
 extern int _Ux86_64_step(unw_cursor_t *);
 extern int _Ux86_64_get_reg(unw_cursor_t *, unw_regnum_t, unw_word_t *);
+// A freshly created address space defaults to UNW_CACHE_NONE (see
+// Gcreate_addr_space.c: it's just a memset(0), and UNW_CACHE_NONE == 0) --
+// meaning every unw_step() on every frame of every sample would otherwise
+// redo full CFI/module resolution (find_proc_info, which walks
+// dl_iterate_phdr) completely from scratch, with nothing carried over even
+// between samples that hit the exact same hot function repeatedly, which a
+// tight render loop does constantly. Enabling the global cache below is what
+// makes repeated unwinding of the same code cheap.
+extern int _Ux86_64_set_caching_policy(unw_addr_space_t, unw_caching_policy_t);
 
 // Source-location (file/line) resolution for arbitrary instruction pointers.
 // libunwind only knows unwind/CFI tables, not DWARF line tables, so this reads
@@ -165,6 +174,20 @@ struct hzstd_profiling_context_t {
   unw_addr_space_t perf_addr_space; // custom remote address space, see hzstd_perf_access_mem
   void *perf_upt; // struct UPT_info*, from _UPT_create -- kept as void* to match its own signature
   atomic_bool stop_reader;
+  // Diagnostics for "why is the achieved rate so much lower than expected":
+  // PERF_RECORD_LOST is the kernel's own count of samples it couldn't fit in
+  // the ring buffer at all (distinct from ring_dropped_count below, which is
+  // *our* allocation-free handoff ring overflowing *after* a sample was
+  // already captured and unwound) -- a high count here means the reader
+  // thread isn't draining/unwinding fast enough to keep up with what the
+  // kernel is actually delivering. perf_throttle_count/perf_unthrottle_count
+  // track PERF_RECORD_THROTTLE/UNTHROTTLE, which fire when
+  // kernel.perf_cpu_time_max_percent's adaptive limiter is actively reducing
+  // the real rate below what was requested. Only ever written by the single
+  // reader thread; read back once, after it's joined, in hzstd_profiling_end.
+  uint64_t perf_lost_count;
+  uint64_t perf_throttle_count;
+  uint64_t perf_unthrottle_count;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -752,10 +775,22 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
           1e9;
       hzstd_profiling_ring_push(context, rawSample);
     }
+    else if (header.type == PERF_RECORD_LOST) {
+      uint64_t id = 0, lost = 0;
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &id, sizeof(id));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &lost,
+                                     sizeof(lost));
+      context->perf_lost_count += lost;
+    }
+    else if (header.type == PERF_RECORD_THROTTLE) {
+      context->perf_throttle_count++;
+    }
+    else if (header.type == PERF_RECORD_UNTHROTTLE) {
+      context->perf_unthrottle_count++;
+    }
 
-    // Any other record type (PERF_RECORD_LOST, ...) has already been consumed
-    // via the header read above; just skip its body by resuming from where
-    // this record ends.
+    // Any other record type has already been consumed via the header read
+    // above; just skip its body by resuming from where this record ends.
     tail = recordStart + header.size;
   }
 
@@ -1069,6 +1104,9 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   if (!context->perf_addr_space) {
     hzstd_panic("Failed to create profiling remote unwind address space");
   }
+  // See the comment above _Ux86_64_set_caching_policy's declaration -- this
+  // is the single most important thing keeping per-sample unwind cost down.
+  _Ux86_64_set_caching_policy(context->perf_addr_space, UNW_CACHE_GLOBAL);
 
   context->perf_stack_size = HZSTD_PROFILING_PERF_STACK_SIZE;
 
@@ -1669,6 +1707,28 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             "faster than it could be drained\n",
             context->ring_dropped_count);
   }
+#ifdef HAZE_PLATFORM_LINUX
+  // See the big comment on perf_lost_count: a nonzero count here means the
+  // *kernel's* own ring buffer overflowed because the reader thread wasn't
+  // draining/unwinding fast enough to keep up with what was actually being
+  // captured -- a real bottleneck in our own processing, not the profiled
+  // program running slowly, and not the same thing as ring_dropped_count
+  // above (that ring only ever holds already-unwound samples). A nonzero
+  // throttle count means the kernel's own CPU-time safety net
+  // (kernel.perf_cpu_time_max_percent) was actively cutting the rate down
+  // below whatever was requested.
+  if (context->perf_lost_count > 0 || context->perf_throttle_count > 0) {
+    fprintf(stderr,
+            "Warning: profiling lost %llu sample(s) to kernel ring buffer "
+            "overflow (reader thread couldn't keep up) and was throttled %llu "
+            "time(s) by kernel.perf_cpu_time_max_percent (%llu unthrottle "
+            "event(s)) -- the achieved rate below may be far lower than what "
+            "the kernel actually tried to deliver.\n",
+            (unsigned long long)context->perf_lost_count,
+            (unsigned long long)context->perf_throttle_count,
+            (unsigned long long)context->perf_unthrottle_count);
+  }
+#endif
   free(context->ring_buffer);
   context->ring_buffer = NULL;
 
