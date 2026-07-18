@@ -624,9 +624,52 @@ static int hzstd_perf_access_reg(unw_addr_space_t as, unw_regnum_t regnum,
 // stack, and just keeps whatever frames were already collected.
 static sigjmp_buf g_hzstd_perf_unwind_recovery;
 
-static void hzstd_perf_unwind_crash_handler(int sig) {
-  (void)sig;
-  siglongjmp(g_hzstd_perf_unwind_recovery, 1);
+// Only true while hzstd_profiling_unwind_perf_sample is actually inside its
+// unw_step loop for *this* thread -- lets the process-wide handler installed
+// once below (see hzstd_profiling_start) tell "a crash happened during our
+// own unwind" apart from "a real, unrelated crash happened somewhere else in
+// the program while profiling happens to be running". Thread-local because
+// only the reader thread ever sets it, but a signal can in principle land on
+// any thread.
+static __thread bool g_hzstd_perf_unwinding_active = false;
+
+// The action that was installed before ours -- queried once, in
+// hzstd_profiling_start, before installing our own. Signal disposition is
+// process-wide (there's no such thing as a per-thread handler), and by the
+// time that query runs, every thread in this runtime has already called
+// hzstd_setup_panic_handler(), so this is normally hzstd_panic_handler
+// itself: chaining to it here is what keeps a genuine, unrelated crash on
+// any thread reported exactly as it would be without profiling running at
+// all, instead of being swallowed by this handler.
+static struct sigaction g_hzstd_perf_prev_segv_action;
+static struct sigaction g_hzstd_perf_prev_bus_action;
+
+static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info,
+                                            void *ucontext) {
+  if (g_hzstd_perf_unwinding_active) {
+    siglongjmp(g_hzstd_perf_unwind_recovery, 1);
+  }
+
+  // Not our crash -- chain to whatever was previously installed, the
+  // standard technique for a signal handler that doesn't own every possible
+  // cause of the signal it's registered for.
+  struct sigaction *prev =
+      (sig == SIGBUS) ? &g_hzstd_perf_prev_bus_action : &g_hzstd_perf_prev_segv_action;
+  if (prev->sa_flags & SA_SIGINFO) {
+    if (prev->sa_sigaction) {
+      prev->sa_sigaction(sig, info, ucontext);
+    }
+  } else if (prev->sa_handler == SIG_DFL) {
+    // No custom handler was installed before ours (shouldn't normally happen
+    // here, since hzstd_setup_panic_handler always runs first, but this is
+    // the correct fallback if it somehow wasn't): restore default disposition
+    // and re-raise so the OS's own default action (core dump + terminate)
+    // still happens, rather than silently dropping the signal.
+    signal(sig, SIG_DFL);
+    raise(sig);
+  } else if (prev->sa_handler != SIG_IGN && prev->sa_handler != NULL) {
+    prev->sa_handler(sig);
+  }
 }
 
 // Walks one captured sample into `out` (innermost frame first), the same
@@ -642,18 +685,20 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
     return;
   }
 
-  struct sigaction newAction, oldSegvAction, oldBusAction;
-  memset(&newAction, 0, sizeof(newAction));
-  newAction.sa_handler = hzstd_perf_unwind_crash_handler;
-  sigemptyset(&newAction.sa_mask);
-  sigaction(SIGSEGV, &newAction, &oldSegvAction);
-  sigaction(SIGBUS, &newAction, &oldBusAction);
-
+  // SIGSEGV/SIGBUS are installed once for the whole session (see
+  // hzstd_profiling_start) rather than around every single sample --
+  // sigaction() is a real syscall, and doing it 4 times per sample (install
+  // x2, restore x2) at tens of thousands of samples/sec was measurable,
+  // avoidable overhead. g_hzstd_perf_unwinding_active is what lets the
+  // shared, always-installed handler know whether *this* particular crash
+  // happened during our own unwind (siglongjmp) or is a real, unrelated
+  // crash elsewhere in the program (chain to whatever was installed before).
   g_hzstd_perf_current_sample_truncated = false;
   bool crashed = false;
 
   if (sigsetjmp(g_hzstd_perf_unwind_recovery, 1) == 0) {
     g_hzstd_perf_current_sample = sample;
+    g_hzstd_perf_unwinding_active = true;
 
     unw_cursor_t cursor;
     if (_Ux86_64_init_remote(&cursor, context->perf_addr_space,
@@ -690,8 +735,7 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
   out->truncated = crashed || g_hzstd_perf_current_sample_truncated;
 
   g_hzstd_perf_current_sample = NULL;
-  sigaction(SIGSEGV, &oldSegvAction, NULL);
-  sigaction(SIGBUS, &oldBusAction, NULL);
+  g_hzstd_perf_unwinding_active = false;
 }
 
 // Copies `len` bytes out of the ring buffer's data area starting at `*cursor`
@@ -1125,6 +1169,21 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   // See the comment above _Ux86_64_set_caching_policy's declaration -- this
   // is the single most important thing keeping per-sample unwind cost down.
   _Ux86_64_set_caching_policy(context->perf_addr_space, UNW_CACHE_GLOBAL);
+
+  // Installed once for the whole session -- see the comment on
+  // hzstd_perf_unwind_crash_handler for why this replaced installing/
+  // restoring it around every single sample. hzstd_main.c calls
+  // hzstd_setup_panic_handler() on the main thread before any user code runs
+  // (signal disposition is process-wide, not per-thread), so what gets saved
+  // here as "previous" is always hzstd_panic_handler itself by the time any
+  // profiling session can start.
+  struct sigaction crashGuardAction;
+  memset(&crashGuardAction, 0, sizeof(crashGuardAction));
+  crashGuardAction.sa_sigaction = hzstd_perf_unwind_crash_handler;
+  crashGuardAction.sa_flags = SA_SIGINFO;
+  sigemptyset(&crashGuardAction.sa_mask);
+  sigaction(SIGSEGV, &crashGuardAction, &g_hzstd_perf_prev_segv_action);
+  sigaction(SIGBUS, &crashGuardAction, &g_hzstd_perf_prev_bus_action);
 
   context->perf_stack_size = HZSTD_PROFILING_PERF_STACK_SIZE;
 
@@ -1696,6 +1755,12 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   close(context->perf_fd);
   _Ux86_64_destroy_addr_space(context->perf_addr_space);
   _UPT_destroy(context->perf_upt);
+  // The reader thread is joined, so nothing can land in
+  // hzstd_perf_unwind_crash_handler on its behalf anymore -- safe to hand
+  // SIGSEGV/SIGBUS back to whatever was installed before this session (see
+  // hzstd_profiling_start), normally hzstd_panic_handler.
+  sigaction(SIGSEGV, &g_hzstd_perf_prev_segv_action, NULL);
+  sigaction(SIGBUS, &g_hzstd_perf_prev_bus_action, NULL);
 #elif defined(HAZE_PLATFORM_WIN32)
   if (atomic_load(&context->stop_scheduler) ||
       atomic_load(&context->stop_stackwalker)) {

@@ -733,8 +733,30 @@ export class ProjectCompiler {
           `git clone https://github.com/libunwind/libunwind.git ${builddir} && cd ${builddir} && git checkout ${commitHash}`
         );
         execInherit(`cd ${builddir} && autoreconf -i`);
+        // DWARF_DEFAULT_LOG_UNW_CACHE_SIZE overrides libunwind's own default
+        // per-instruction-pointer unwind-rule cache size (128 entries by
+        // default -- 1 << 7). That's a plain fixed-size array baked into
+        // dwarf_rs_cache at compile time (no allocation logic changes), so
+        // this is exactly libunwind's own intended tuning knob -- normally
+        // exposed via unw_set_cache_size(), which is unconditionally broken
+        // on any platform with __thread TLS support (i.e. virtually all of
+        // them), hence overriding the compile-time default here instead. 15
+        // (32768 entries, ~6.5 MB) is libunwind's own supported maximum --
+        // see unw_set_cache_size's `if (log_size >= 15) break;` -- and keeps
+        // real applications' actual hot-address working sets from evicting
+        // each other and forcing constant, expensive re-resolution
+        // (dl_iterate_phdr + CFI table parsing) on every sample.
+        // Kept as its own CPPFLAGS assignment (a single token, no embedded
+        // space) rather than appended into the CFLAGS="..." string below:
+        // execInherit wraps this whole command in an extra, unescaped layer
+        // of double quotes, and a value containing a space inside one of the
+        // already-quoted CFLAGS/CXXFLAGS assignments collides with that outer
+        // layer's own quote parsing and silently mangles the whole command
+        // (verified: it makes `./configure` receive garbled arguments and
+        // produce no Makefile, while `execInherit` still sees exit code 0).
+        // A second single-token assignment doesn't have this problem.
         execInherit(
-          `cd ${builddir} && CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
+          `cd ${builddir} && CFLAGS="-fPIC" CPPFLAGS="-DDWARF_DEFAULT_LOG_UNW_CACHE_SIZE=15" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
         );
         execInherit(`cd ${builddir} && make -j`);
         execInherit(`cd ${builddir} && make install`);
