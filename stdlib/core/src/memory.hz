@@ -35,6 +35,13 @@ export opaque struct ByteBuffer {
     // If the array is empty, it can also be absent, to optimize a redundant heap allocation
     data?: []u8;
 
+    // Set when this buffer was constructed from a 'str' or 'Bytes' and hasn't been mutated since.
+    // While set, reads (getAt/length/cloneString) and even commit() can be served directly from it
+    // with zero allocation, because Bytes always points into memory that is already permanently
+    // immutable (a 'str', or another committed ByteBuffer's frozen bytes). The moment a mutation is
+    // attempted, _getMutableData() clones it into 'data' and clears this field -- the copy-on-write.
+    borrowed?: Bytes;
+
     frozenPtr: cptr = none;
     frozenLen: int = 0;
 
@@ -44,21 +51,17 @@ export opaque struct ByteBuffer {
 
     fn constructor(reserve: int) {
         let buffer = ByteBuffer {};
-        // The frozen buffer is GC managed. Nothing ever needs to be freed. 
+        // The frozen buffer is GC managed. Nothing ever needs to be freed.
         buffer.reserve(reserve);
         return buffer;
     }
 
     fn constructor(value: str) {
-        let buffer = ByteBuffer(value.length);
-        buffer.push(value);
-        return buffer;
+        return ByteBuffer { borrowed: Bytes(value) };
     }
 
     fn constructor(value: Bytes) {
-        let buffer = ByteBuffer(value.length);
-        buffer.push(value);
-        return buffer;
+        return ByteBuffer { borrowed: value };
     }
 
     fn operator[](index: int): ByteBufferRef {
@@ -71,11 +74,13 @@ export opaque struct ByteBuffer {
         return { buffer: this, index: index };
     }
 
-    fn reserve(size: int) {
-        this._getData().reserve(size);
+    fn reserve(newCapacity: int) {
+        this._getMutableData().reserve(newCapacity);
     }
 
-    fn _getData() {
+    // Read-only access to the plain backing array (does not resolve 'borrowed' -- callers must
+    // check that first). Auto-vivifies an empty array so callers never have to juggle the optional.
+    fn _getData(): []u8 :: final {
         this.assertNotCommitted();
         if !this.data {
             this.data = [];
@@ -85,14 +90,25 @@ export opaque struct ByteBuffer {
         return this.data;
     }
 
-    fn getAt(index: int): u8 {
-        if !this.committed {
-            if index < 0 || index >= this._getData().length {
-                sys.panic("Out of bounds access in ByteBuffer");
+    // Mutating access: this is the copy-on-write trigger. If we're still just borrowing a str/Bytes,
+    // clone it into a real owned array now, then hand that back for the caller to mutate.
+    fn _getMutableData(): []u8 :: final {
+        this.assertNotCommitted();
+        if this.borrowed {
+            let source = this.borrowed;
+            let cloned: []u8 = [];
+            cloned.reserve(source.length);
+            for (let i = 0; i < source.length; i++) {
+                cloned.push(source.getAt(i));
             }
-            return this._getData()[index];
+            this.data = cloned;
+            this.borrowed = none;
         }
-        else {
+        return this._getData();
+    }
+
+    fn getAt(index: int): u8 {
+        if this.committed {
             if index < 0 || index >= this.frozenLen {
                 sys.panic("Out of bounds access in ByteBuffer");
             }
@@ -101,10 +117,53 @@ export opaque struct ByteBuffer {
             __c__("result = ((hzstd_u8_t*)this->frozenPtr)[index];");
             return result;
         }
+        else if this.borrowed {
+            if index < 0 || index >= this.borrowed.length {
+                sys.panic("Out of bounds access in ByteBuffer");
+            }
+            return this.borrowed.getAt(index);
+        }
+        else {
+            if index < 0 || index >= this._getData().length {
+                sys.panic("Out of bounds access in ByteBuffer");
+            }
+            return this._getData()[index];
+        }
     }
 
     fn commit() {
         if this.committed { return; }
+
+        if this.borrowed {
+            let source = this.borrowed;
+            if source.singleByte {
+                // A bare byte value has no addressable pointer to borrow -- one tiny allocation
+                // is unavoidable here.
+                do unsafe {
+                    let ptr: cptr = none as cptr;
+                    let byte = source.singleByte;
+                    __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), 1);");
+                    __c__("((hzstd_u8_t*)ptr)[0] = byte;");
+                    this.frozenPtr = ptr;
+                };
+                this.frozenLen = 1;
+            }
+            else {
+                // Zero-copy: adopt the borrowed pointer directly instead of cloning. Safe because
+                // 'borrowed' only ever points into memory that is already permanently immutable.
+                do unsafe {
+                    let ptr: cptr = none as cptr;
+                    if source.length > 0 {
+                        __c__("ptr = (hzstd_u8_t*)source.basePtr + source.offset;");
+                    }
+                    this.frozenPtr = ptr;
+                };
+                this.frozenLen = source.length;
+            }
+            this.borrowed = none;
+            this.committed = true;
+            return;
+        }
 
         let len = this._getData().length;
 
@@ -125,12 +184,8 @@ export opaque struct ByteBuffer {
         this.committed = true;
     }
 
-    fn reserve(newCapacity: int) {
-        this._getData().reserve(newCapacity);
-    }
-
-    fn resize(newSize: int) {    
-        let data = _getData();
+    fn resize(newSize: int) {
+        let data = this._getMutableData();
         // Do the dumb, obvious thing now, optimize later
         while data.length < newSize {
             data.push(0);
@@ -140,8 +195,9 @@ export opaque struct ByteBuffer {
         }
     }
 
-    fn length() {
+    fn length(): int :: final {
         if this.committed { return this.frozenLen; }
+        if this.borrowed { return this.borrowed.length; }
         return this._getData().length;
     }
 
@@ -152,7 +208,7 @@ export opaque struct ByteBuffer {
     }
 
     fn setAt(index: int, value: u8) {
-        let data = this._getData();
+        let data = this._getMutableData();
         if (index < 0 || index >= data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -163,11 +219,18 @@ export opaque struct ByteBuffer {
         this.push(Bytes(value));
     }
 
-    mut fn push(data: Bytes) {
-        let data = this._getData();
+    mut fn push(value: Bytes) {
+        let len = this.length();
         // Always resize to this size, it will strictly grow the buffer
-        this.resize(data.length + value.length);
-        this.writeAt(data.length, value);
+        this.resize(len + value.length);
+        this.writeAt(len, value);
+    }
+
+    mut fn push(value: ByteBuffer) {
+        let len = this.length();
+        // Always resize to this size, it will strictly grow the buffer
+        this.resize(len + value.length());
+        this.writeAt(len, value);
     }
 
     mut fn writeAt(startIndex: int, value: str) {
@@ -175,7 +238,7 @@ export opaque struct ByteBuffer {
     }
 
     mut fn writeAt(startIndex: int, value: Bytes) {
-        let data = this._getData();
+        let data = this._getMutableData();
         if (startIndex < 0 || startIndex + value.length > data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -186,8 +249,20 @@ export opaque struct ByteBuffer {
         }
     }
 
+    mut fn writeAt(startIndex: int, value: ByteBuffer) {
+        let data = this._getMutableData();
+        if (startIndex < 0 || startIndex + value.length() > data.length) {
+            sys.panic("Out of bounds access in ByteBuffer");
+        }
+
+        // Do the dumb, trivial loop, we can optimize bounds checking away later
+        for (let i = 0; i < value.length(); i++) {
+            data[startIndex + i] = value.getAt(i);
+        }
+    }
+
     mut fn writeZero(startIndex: int, length: int) {
-        let data = this._getData();
+        let data = this._getMutableData();
         if (startIndex < 0 || startIndex + length > data.length) {
             sys.panic("Out of bounds access in ByteBuffer");
         }
@@ -207,7 +282,7 @@ export opaque struct ByteBuffer {
     }
 
     mut fn insert(index: int, bytes: Bytes) {
-        let data = this._getData();
+        let data = this._getMutableData();
 
         if index < 0 || index > data.length {
             sys.panic("Out of bounds access in ByteBuffer");
@@ -234,7 +309,7 @@ export opaque struct ByteBuffer {
     }
 
     mut fn remove(index: int, count: int) {
-        let data = this._getData();
+        let data = this._getMutableData();
 
         if index < 0 || count < 0 || index + count > data.length {
             sys.panic("Out of bounds access in ByteBuffer");
@@ -279,7 +354,15 @@ export opaque struct ByteBuffer {
     }
 
     fn cloneString(): str {
-        if !this.committed {
+        if this.committed {
+            return this.string();
+        }
+        else if this.borrowed {
+            // 'borrowed' always points into memory that is already permanently immutable, so this
+            // can safely be a zero-copy slice instead of an actual clone.
+            return this.borrowed.string();
+        }
+        else {
             let data = this._getData();
             let result = "";
             if (data.length > 0) {
@@ -289,9 +372,6 @@ export opaque struct ByteBuffer {
                 __c__("result = hzstd_str_dup(HZSTD_STRING((const char*)hzstd_dynamic_array_raw_buffer(data), hzstd_dynamic_array_size(data)));");
             }
             return result;
-        }
-        else {
-            return this.string();
         }
     }
 
