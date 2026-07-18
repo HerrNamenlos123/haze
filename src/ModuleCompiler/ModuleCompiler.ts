@@ -1815,6 +1815,14 @@ export class ModuleCompiler {
     linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib64"`);
 
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}`);
+    // libunwind-ptrace supplies _UPT_accessors/_UPT_create/_UPT_destroy, used by the profiler to
+    // build a custom remote-unwind address space over a captured (non-live) register/stack
+    // snapshot -- see the big comment on hzstd_profiling_remote_access_mem in hzstd_profiling.c.
+    linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind-ptrace.a"`);
+    // libunwind-ptrace's _UPT_find_proc_info calls straight into the
+    // arch-specific dwarf unwind-table search (_Ux86_64_dwarf_search_unwind_table
+    // et al.), which lives here rather than in the generic libunwind.a below.
+    linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind-x86_64.a"`);
     linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
     linkerFlags.addLinux("-llzma");
 

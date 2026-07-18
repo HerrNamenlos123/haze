@@ -11,16 +11,59 @@
 
 
 #ifdef HAZE_PLATFORM_LINUX
+#include <errno.h>
 #include <link.h>
+#include <linux/perf_event.h>
+#include <poll.h>
 #include <pthread.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 // Critically make sure the libunwind header we manually built is used and not
 // the system header or LLVM header
 #define UNW_LOCAL_ONLY
 #include "haze-libunwind/include/libunwind.h"
+
+// _UPT_accessors/_UPT_create/_UPT_destroy -- reused (with access_mem/access_reg
+// overridden) to build a custom unw_addr_space_t for remote-unwinding a
+// perf_event_open-captured register/stack snapshot. See the big comment above
+// hzstd_perf_access_mem for why this needs its own address space instead of
+// unw_local_addr_space. Hand-declared instead of #include
+// "haze-libunwind/include/libunwind-ptrace.h": that header does its own
+// unqualified `#include <libunwind.h>`, which on this toolchain resolves to
+// LLVM's bundled (and completely incompatible) libunwind.h rather than the
+// vendored GNU libunwind just included above, redefining everything with
+// conflicting types. These three symbols (from libunwind-ptrace.a, already
+// linked -- see ModuleCompiler.ts's phaseCCompile) are all that's actually
+// needed from it.
+extern void *_UPT_create(pid_t);
+extern void _UPT_destroy(void *);
+extern unw_accessors_t _UPT_accessors;
+
+// This whole runtime is a single, unity-style C build (see hzstd_main.c,
+// which #includes every hzstd/src/*.c file into one translation unit), and
+// this file's `#define UNW_LOCAL_ONLY` above -- needed for the *existing*
+// deferred symbol-resolution code below, which legitimately wants the fast
+// local-address-space path -- poisons unw_create_addr_space/unw_init_remote/
+// unw_step/unw_get_reg/unw_destroy_addr_space for the *entire* rest of this
+// translation unit: those macros expand to the `_UL*`-prefixed symbols
+// (UNW_PREFIX becomes _UL$(arch) under UNW_LOCAL_ONLY), and libunwind's own
+// local-only build of unw_create_addr_space (Lcreate_addr_space.c, which is
+// just Gcreate_addr_space.c recompiled with UNW_LOCAL_ONLY set) is
+// unconditionally a `return NULL;` stub -- local-only mode has no concept of
+// an alternate address space at all. The perf-sampling remote unwind below
+// needs the real, generic implementation, so it calls the underlying
+// `_Ux86_64_*` symbols directly (present in libunwind-x86_64.a regardless of
+// how *this* file was compiled), bypassing the poisoned macros entirely.
+extern unw_addr_space_t _Ux86_64_create_addr_space(unw_accessors_t *, int);
+extern void _Ux86_64_destroy_addr_space(unw_addr_space_t);
+extern int _Ux86_64_init_remote(unw_cursor_t *, unw_addr_space_t, void *);
+extern int _Ux86_64_step(unw_cursor_t *);
+extern int _Ux86_64_get_reg(unw_cursor_t *, unw_regnum_t, unw_word_t *);
 
 // Source-location (file/line) resolution for arbitrary instruction pointers.
 // libunwind only knows unwind/CFI tables, not DWARF line tables, so this reads
@@ -43,19 +86,22 @@
 // instead of the custom libunwind+libdwarf path used on Linux.
 #endif
 
-// Raw, per-sample data captured by the signal handler + stackwalker thread
-// while profiling is in progress. This is intentionally minimal (just addresses
-// + timings) since it is captured from a signal handler context: no symbol
-// resolution or allocation happens here. The dirty array of these is turned
-// into the high-level, resolved hzstd_profiling_result_t by
-// hzstd_profiling_end().
+// Raw, per-sample data: just addresses + timings, no symbol resolution or
+// allocation. On Linux this is built by unwinding a perf_event_open-captured
+// register/stack snapshot on the reader thread (see
+// hzstd_profiling_unwind_perf_sample); on Windows it's still captured by the
+// signal-equivalent suspend + stackwalker-thread handoff below. The dirty
+// array of these is turned into the high-level, resolved
+// hzstd_profiling_result_t by hzstd_profiling_end().
 typedef struct {
   uint16_t depth;
   void *pcs[HZSTD_MAX_FRAMES];
-  double timestamp; // hzstd_time_now(), taken at the very start of the signal
-                    // handler
-  double sampling_duration; // wall time spent capturing this sample (handler +
-                            // stackwalker)
+  double timestamp; // seconds, same reference point as hzstd_time_now()
+  double sampling_duration; // wall time this sample cost the profiled thread
+                            // to capture -- always 0 on Linux, since
+                            // perf_event_open never runs anything on the
+                            // profiled thread's behalf; still meaningful on
+                            // Windows (handler + stackwalker time).
 } hzstd_profiling_raw_sample_t;
 
 // Fixed capacity of the allocation-free handoff ring described below. Sized to
@@ -64,11 +110,12 @@ typedef struct {
 // ever needs to hold a small handful of entries.
 #define HZSTD_PROFILING_RING_CAPACITY 1024
 
-// Upper bound on how long the profiled thread will ever wait for one sample to
-// be captured (see the big comment on profiling_handler /
-// hzstd_profiling_invoke_sampling for why this exists). Generous relative to a
-// normal capture (which takes microseconds), but small enough that even hitting
-// it repeatedly is just a minor, bounded hitch instead of a frozen process.
+// Windows-only: upper bound on how long the profiled thread stays suspended
+// waiting for one sample to be captured (see hzstd_profiling_invoke_sampling).
+// Generous relative to a normal capture (which takes microseconds), but small
+// enough that even hitting it repeatedly is just a minor, bounded hitch
+// instead of a frozen process. Linux has no equivalent wait -- see the
+// perf_event_open section below for why it doesn't need one.
 #define HZSTD_PROFILING_SAMPLE_TIMEOUT_NS (50ull * 1000 * 1000)
 
 // `samples` (the accumulated history of every captured sample for the whole
@@ -101,9 +148,19 @@ struct hzstd_profiling_context_t {
 #ifdef HAZE_PLATFORM_LINUX
   hzstd_process_id_t pid;
   hzstd_thread_id_t tid;
-  pthread_t stackwalker_thread;
-  pthread_t scheduler_thread;
-  unw_context_t unwind_context;
+  pthread_t reader_thread;
+  int perf_fd;
+  void *perf_mmap_base; // metadata page + data pages, see hzstd_profiling_start
+  size_t perf_mmap_len;
+  size_t perf_stack_size; // bytes of user stack requested per sample (sample_stack_user)
+  // CLOCK_MONOTONIC reading taken once at profiling start; every sample's
+  // kernel-reported timestamp is stored relative to this, the same
+  // "seconds since a fixed reference point" shape hzstd_time_now() itself
+  // returns (just anchored to profiling-start instead of program-start).
+  uint64_t perf_time_ref_ns;
+  unw_addr_space_t perf_addr_space; // custom remote address space, see hzstd_perf_access_mem
+  void *perf_upt; // struct UPT_info*, from _UPT_create -- kept as void* to match its own signature
+  atomic_bool stop_reader;
 #elif defined(HAZE_PLATFORM_WIN32)
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
@@ -276,80 +333,417 @@ static hzstd_process_id_t hzstd_profiling_get_current_process_id(void) {
 
 #ifdef HAZE_PLATFORM_LINUX
 
-void *hzstd_profiling_stackwalker_thread(void *_context) {
-  hzstd_profiling_context_t *context = _context;
-  hzstd_setup_panic_handler();
+// ── perf_event_open-based sampling ───────────────────────────────────────────
+// (see "R&D/Profiling Backend - perf_event_open Migration.md" for the full
+// rationale this replaces)
+//
+// Every previous design here (tgkill(SIGUSR1) + signal handler + a dedicated
+// stackwalker thread woken via semaphore) shares one unavoidable property: it
+// runs code *on the profiled thread itself*, hijacked mid-instruction. At high
+// sampling rates that reliably corrupts unrelated code we don't own -- POSIX
+// only guarantees SA_RESTART restarts a syscall if *zero* bytes were
+// transferred before the interrupt, so a signal landing mid multi-byte read()
+// (e.g. libxkbcommon/GDK's Wayland keymap exchange) can hand the caller a
+// short read with no indication anything unusual happened, and code that
+// doesn't defensively loop on short reads (not our bug to fix -- it's not our
+// code) breaks. Higher Hz just means more chances to land in that window.
+//
+// perf_event_open sidesteps this category of bug entirely: the kernel samples
+// the profiled thread from interrupt/NMI context on timer overflow and writes
+// straight into an mmap'd ring buffer -- no userspace signal is ever delivered
+// to the profiled thread, at any rate. Nothing about its in-flight syscalls is
+// ever touched. The tradeoff is that unwinding (previously done synchronously
+// by the stackwalker thread, using libunwind's *local*, live-process API) has
+// to walk a *captured snapshot* of registers + a chunk of stack memory instead
+// of the live thread's current state -- by the time this reader thread gets to
+// a sample, the profiled thread has likely moved on, and its real stack memory
+// at those same addresses no longer reflects what was running at the sampled
+// instant. hzstd_perf_access_mem/hzstd_perf_access_reg below exist to serve
+// reads from that captured blob instead of dereferencing live memory, while
+// still reusing libunwind-ptrace's _UPT_accessors for the parts that only
+// ever need to read our *own* stable, non-racy ELF/CFI data (find_proc_info et
+// al.) -- those keep working unmodified, since dl_iterate_phdr always
+// enumerates the calling process's own modules regardless of which "target"
+// UPT thinks it's attached to, and no actual ptrace() call is ever made here
+// because access_mem is overridden below.
 
-  while (!atomic_load(&context->stop_stackwalker)) {
-    hzstd_wait_for_semaphore(context->stackwalker_trigger_semaphore);
-    if (atomic_load(&context->stop_stackwalker)) {
-      hzstd_trigger_semaphore(context->stackwalker_done_semaphore);
-      break;
-    }
+// Stable, ABI-fixed register indices for PERF_SAMPLE_REGS_USER on x86_64 (see
+// arch/x86/include/uapi/asm/perf_regs.h in the kernel source). Hand-written
+// rather than included from <linux/perf_regs.h>: that header isn't reliably
+// present in every distro's minimal kernel-headers package, and hand-writing
+// FFI-adjacent definitions instead of depending on a header that may not exist
+// everywhere is this codebase's existing convention (see e.g. hzstd_profiling.h).
+enum {
+  HZSTD_PERF_REG_X86_64_AX = 0,
+  HZSTD_PERF_REG_X86_64_BX = 1,
+  HZSTD_PERF_REG_X86_64_CX = 2,
+  HZSTD_PERF_REG_X86_64_DX = 3,
+  HZSTD_PERF_REG_X86_64_SI = 4,
+  HZSTD_PERF_REG_X86_64_DI = 5,
+  HZSTD_PERF_REG_X86_64_BP = 6,
+  HZSTD_PERF_REG_X86_64_SP = 7,
+  HZSTD_PERF_REG_X86_64_IP = 8,
+  HZSTD_PERF_REG_X86_64_R8 = 16,
+  HZSTD_PERF_REG_X86_64_R9 = 17,
+  HZSTD_PERF_REG_X86_64_R10 = 18,
+  HZSTD_PERF_REG_X86_64_R11 = 19,
+  HZSTD_PERF_REG_X86_64_R12 = 20,
+  HZSTD_PERF_REG_X86_64_R13 = 21,
+  HZSTD_PERF_REG_X86_64_R14 = 22,
+  HZSTD_PERF_REG_X86_64_R15 = 23,
+  HZSTD_PERF_REG_X86_64_COUNT_SLOTS = 24, // one past the highest index used above
+};
+
+// The general-purpose registers DWARF CFI actually needs to step a frame,
+// listed in ascending bit-index order -- that's the order the kernel writes
+// matching values in PERF_SAMPLE_REGS_USER's regs[] array (one value per *set*
+// bit of sample_regs_user, low bit first), so HZSTD_PERF_REG_ORDER[i] says
+// which register the i-th value on the wire belongs to.
+static const int HZSTD_PERF_REG_ORDER[] = {
+    HZSTD_PERF_REG_X86_64_AX, HZSTD_PERF_REG_X86_64_BX,
+    HZSTD_PERF_REG_X86_64_CX, HZSTD_PERF_REG_X86_64_DX,
+    HZSTD_PERF_REG_X86_64_SI, HZSTD_PERF_REG_X86_64_DI,
+    HZSTD_PERF_REG_X86_64_BP, HZSTD_PERF_REG_X86_64_SP,
+    HZSTD_PERF_REG_X86_64_IP, HZSTD_PERF_REG_X86_64_R8,
+    HZSTD_PERF_REG_X86_64_R9, HZSTD_PERF_REG_X86_64_R10,
+    HZSTD_PERF_REG_X86_64_R11, HZSTD_PERF_REG_X86_64_R12,
+    HZSTD_PERF_REG_X86_64_R13, HZSTD_PERF_REG_X86_64_R14,
+    HZSTD_PERF_REG_X86_64_R15,
+};
+#define HZSTD_PERF_REG_COUNT \
+  (sizeof(HZSTD_PERF_REG_ORDER) / sizeof(HZSTD_PERF_REG_ORDER[0]))
+
+static uint64_t hzstd_perf_regs_mask(void) {
+  uint64_t mask = 0;
+  for (size_t i = 0; i < HZSTD_PERF_REG_COUNT; i++) {
+    mask |= (1ull << HZSTD_PERF_REG_ORDER[i]);
+  }
+  return mask;
+}
+
+// Bytes of the profiled thread's user stack (starting at its RSP at the
+// sampled instant) copied into every sample. Deep call stacks beyond this many
+// bytes simply can't be unwound past that point -- the same limitation
+// `perf record --call-graph dwarf` has, and this is its own default too.
+#define HZSTD_PROFILING_PERF_STACK_SIZE 8192
+
+// One parsed PERF_RECORD_SAMPLE, kept around only for the duration of one
+// hzstd_perf_access_mem/access_reg-driven unwind (see
+// g_hzstd_perf_current_sample below).
+typedef struct {
+  uint64_t regs[HZSTD_PERF_REG_X86_64_COUNT_SLOTS];
+  bool regs_valid; // false if the kernel reported PERF_SAMPLE_REGS_ABI_NONE
+  const uint8_t *stack; // scratch buffer, valid only for this one sample
+  uint64_t stack_base; // address the first byte of `stack` corresponds to (RSP at sample time)
+  uint64_t stack_size; // valid bytes in `stack` (dyn_size; may be less than requested)
+} hzstd_perf_sample_regs_t;
+
+// Only ever read/written by the single reader thread, strictly one sample at a
+// time (never concurrently, never reentrantly) -- see
+// hzstd_profiling_unwind_perf_sample.
+static __thread hzstd_perf_sample_regs_t *g_hzstd_perf_current_sample = NULL;
+
+// The profiled thread's overall stack region ([low, high)), queried once in
+// hzstd_profiling_start via pthread_getattr_np. See hzstd_perf_access_mem for
+// why this matters: an address can be outside *this sample's* captured
+// snapshot for two very different reasons -- it's genuinely not stack memory
+// at all (CFI tables, globals: stable, safe to read live), or it *is* more of
+// the profiled thread's stack that simply wasn't captured (deep native call
+// chains, e.g. through the GC or a libc syscall wrapper, can easily exceed
+// HZSTD_PROFILING_PERF_STACK_SIZE). Reading the latter case live is wrong even
+// when it doesn't crash outright: that memory keeps changing after the
+// sample, so it no longer reflects what was actually running at the sampled
+// instant. Knowing the real bounds is what lets access_mem tell those two
+// cases apart instead of guessing.
+static uint64_t g_hzstd_perf_stack_low = 0;
+static uint64_t g_hzstd_perf_stack_high = 0;
+
+// Maps a libunwind UNW_X86_64_* register number to where that register lives
+// in hzstd_perf_sample_regs_t::regs, or -1 if we don't capture it (there's no
+// legitimate reason CFI would need anything outside the general-purpose set
+// captured above, on this target).
+static int hzstd_perf_unw_reg_to_slot(unw_regnum_t regnum) {
+  switch (regnum) {
+    case UNW_X86_64_RAX: return HZSTD_PERF_REG_X86_64_AX;
+    case UNW_X86_64_RBX: return HZSTD_PERF_REG_X86_64_BX;
+    case UNW_X86_64_RCX: return HZSTD_PERF_REG_X86_64_CX;
+    case UNW_X86_64_RDX: return HZSTD_PERF_REG_X86_64_DX;
+    case UNW_X86_64_RSI: return HZSTD_PERF_REG_X86_64_SI;
+    case UNW_X86_64_RDI: return HZSTD_PERF_REG_X86_64_DI;
+    case UNW_X86_64_RBP: return HZSTD_PERF_REG_X86_64_BP;
+    case UNW_X86_64_RSP: return HZSTD_PERF_REG_X86_64_SP;
+    case UNW_X86_64_RIP: return HZSTD_PERF_REG_X86_64_IP;
+    case UNW_X86_64_R8: return HZSTD_PERF_REG_X86_64_R8;
+    case UNW_X86_64_R9: return HZSTD_PERF_REG_X86_64_R9;
+    case UNW_X86_64_R10: return HZSTD_PERF_REG_X86_64_R10;
+    case UNW_X86_64_R11: return HZSTD_PERF_REG_X86_64_R11;
+    case UNW_X86_64_R12: return HZSTD_PERF_REG_X86_64_R12;
+    case UNW_X86_64_R13: return HZSTD_PERF_REG_X86_64_R13;
+    case UNW_X86_64_R14: return HZSTD_PERF_REG_X86_64_R14;
+    case UNW_X86_64_R15: return HZSTD_PERF_REG_X86_64_R15;
+    default: return -1;
+  }
+}
+
+// Serves memory reads for the remote unwind cursor. Two cases:
+//   - Inside the captured stack snapshot: the profiled thread's real stack at
+//     this address may have already changed by the time we get here (it kept
+//     running after the sample), so this must come from the snapshot, not
+//     live memory.
+//   - Everywhere else (CFI tables, globals, the GOT, ...): this data belongs
+//     to the binary/its loaded modules, not the profiled thread's stack, so
+//     it's stable, and reading it live is both safe and correct -- and is
+//     exactly what lets the delegated find_proc_info (see
+//     hzstd_profiling_start) work unmodified, since it reads
+//     .eh_frame/.eh_frame_hdr bytes through this same callback.
+static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr,
+                                 unw_word_t *valp, int write, void *arg) {
+  (void)as;
+  (void)arg;
+  if (write) {
+    return -UNW_EINVAL; // never used to write back during profiling
+  }
+  hzstd_perf_sample_regs_t *sample = g_hzstd_perf_current_sample;
+  if (sample && addr >= sample->stack_base &&
+      addr + sizeof(*valp) <= sample->stack_base + sample->stack_size) {
+    memcpy(valp, sample->stack + (addr - sample->stack_base), sizeof(*valp));
+    return 0;
+  }
+  if (addr == 0) {
+    return -UNW_EINVAL;
+  }
+  if (g_hzstd_perf_stack_low != g_hzstd_perf_stack_high &&
+      addr >= g_hzstd_perf_stack_low && addr < g_hzstd_perf_stack_high) {
+    // More of the profiled thread's stack than this sample happened to
+    // capture -- not safe to read live (see the comment on
+    // g_hzstd_perf_stack_low/high above). Reporting it as unavailable simply
+    // truncates this sample's walk at this frame, the same graceful
+    // truncation as running past the edge of a fully-captured stack.
+    return -UNW_EINVAL;
+  }
+  *valp = *(unw_word_t *)addr;
+  return 0;
+}
+
+static int hzstd_perf_access_reg(unw_addr_space_t as, unw_regnum_t regnum,
+                                 unw_word_t *valp, int write, void *arg) {
+  (void)as;
+  (void)arg;
+  if (write) {
+    return -UNW_EINVAL;
+  }
+  hzstd_perf_sample_regs_t *sample = g_hzstd_perf_current_sample;
+  int slot = hzstd_perf_unw_reg_to_slot(regnum);
+  if (!sample || !sample->regs_valid || slot < 0) {
+    return -UNW_EBADREG;
+  }
+  *valp = sample->regs[slot];
+  return 0;
+}
+
+// hzstd_perf_access_mem's stack-bounds check (see g_hzstd_perf_stack_low/high)
+// covers the common case of a computed address legitimately being more stack
+// than this sample captured. It can't cover every case, though -- CFI data
+// for hand-written asm, PLT stubs, or an unusual module can still be
+// incomplete or wrong in ways that make the unwinder compute a bogus,
+// entirely unmapped address for what it *thinks* is non-stack memory (module
+// data/CFI tables). Exactly like hzstd_profiling_safe_get_proc_name_by_ip
+// below (same justification, different call), a single bad address here must
+// not be allowed to take down the whole reader thread -- this treats a crash
+// during one sample's unwind the same as reaching the natural end of the
+// stack, and just keeps whatever frames were already collected.
+static sigjmp_buf g_hzstd_perf_unwind_recovery;
+
+static void hzstd_perf_unwind_crash_handler(int sig) {
+  (void)sig;
+  siglongjmp(g_hzstd_perf_unwind_recovery, 1);
+}
+
+// Walks one captured sample into `out` (innermost frame first), the same
+// shape the old signal-based stackwalker thread used to produce. Assumes
+// context->perf_addr_space/perf_upt are already set up (see
+// hzstd_profiling_start).
+static void
+hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
+                                   hzstd_perf_sample_regs_t *sample,
+                                   hzstd_profiling_raw_sample_t *out) {
+  *out = (hzstd_profiling_raw_sample_t){0};
+  if (!sample->regs_valid) {
+    return;
+  }
+
+  struct sigaction newAction, oldSegvAction, oldBusAction;
+  memset(&newAction, 0, sizeof(newAction));
+  newAction.sa_handler = hzstd_perf_unwind_crash_handler;
+  sigemptyset(&newAction.sa_mask);
+  sigaction(SIGSEGV, &newAction, &oldSegvAction);
+  sigaction(SIGBUS, &newAction, &oldBusAction);
+
+  if (sigsetjmp(g_hzstd_perf_unwind_recovery, 1) == 0) {
+    g_hzstd_perf_current_sample = sample;
 
     unw_cursor_t cursor;
-    unw_init_local2(&cursor, &context->unwind_context, UNW_INIT_SIGNAL_FRAME);
-    hzstd_profiling_raw_sample_t sample = {0};
-    sample.timestamp = context->sample_started_at;
-    do {
-      unw_word_t pc;
-      unw_get_reg(&cursor, UNW_REG_IP, &pc);
+    if (_Ux86_64_init_remote(&cursor, context->perf_addr_space,
+                            context->perf_upt) == 0) {
+      do {
+        unw_word_t pc;
+        if (_Ux86_64_get_reg(&cursor, UNW_REG_IP, &pc) < 0) {
+          break;
+        }
+        if (out->depth < HZSTD_MAX_FRAMES) {
+          out->pcs[out->depth++] = (void *)pc;
+        }
+        // unw_step reads CFI bytes and stack memory through
+        // hzstd_perf_access_mem above -- stack reads only ever reach as far
+        // as this sample's captured snapshot; once a step needs a stack
+        // address outside it (deeper than HZSTD_PROFILING_PERF_STACK_SIZE
+        // captured this sample), access_mem returns an error and unw_step
+        // stops, same as hitting the end of the stack. That's an expected,
+        // graceful truncation for calls deeper than the snapshot -- not a
+        // bug.
+      } while (_Ux86_64_step(&cursor) > 0);
+    }
+  }
+  // A crash lands here via siglongjmp with whatever `out->depth` had already
+  // reached -- a partial, but still valid and useful, set of frames.
 
-      if (sample.depth < HZSTD_MAX_FRAMES) {
-        sample.pcs[sample.depth++] = (void *)pc;
+  g_hzstd_perf_current_sample = NULL;
+  sigaction(SIGSEGV, &oldSegvAction, NULL);
+  sigaction(SIGBUS, &oldBusAction, NULL);
+}
+
+// Copies `len` bytes out of the ring buffer's data area starting at `*cursor`
+// (a monotonically increasing logical offset, not yet reduced mod data_size),
+// handling the wraparound a record can straddle. Advances `*cursor` by `len`.
+static void hzstd_profiling_perf_ring_read(const uint8_t *data,
+                                           size_t data_size, uint64_t *cursor,
+                                           void *dst, size_t len) {
+  size_t offset = (size_t)(*cursor % data_size);
+  size_t first = data_size - offset;
+  if (first >= len) {
+    memcpy(dst, data + offset, len);
+  } else {
+    memcpy(dst, data + offset, first);
+    memcpy((uint8_t *)dst + first, data, len - first);
+  }
+  *cursor += len;
+}
+
+// Drains every PERF_RECORD_SAMPLE (and skips any other record type, e.g.
+// PERF_RECORD_LOST) the kernel has written since the last drain, unwinding
+// each sample (see hzstd_profiling_unwind_perf_sample) and handing the result
+// to the existing allocation-free ring (hzstd_profiling_ring_push) -- from
+// here on this rejoins the exact same pipeline the old stackwalker thread fed
+// (hzstd_profiling_drain_ring / hzstd_profiling_samples_append /
+// hzstd_profiling_end's deferred symbol resolution), unchanged.
+static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
+                                            uint8_t *stack_scratch) {
+  struct perf_event_mmap_page *meta = context->perf_mmap_base;
+  size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+  uint8_t *data = (uint8_t *)context->perf_mmap_base +
+                  (meta->data_offset ? meta->data_offset : page_size);
+  size_t data_size = meta->data_size
+                         ? (size_t)meta->data_size
+                         : (context->perf_mmap_len - page_size);
+
+  // The kernel documents that data_head must be read with an acquire-style
+  // barrier before touching any of the data it describes; the matching
+  // release store to data_tail below is how we tell it how much of the ring
+  // we've finished consuming.
+  uint64_t head = atomic_load_explicit((_Atomic uint64_t *)&meta->data_head,
+                                       memory_order_acquire);
+  uint64_t tail = meta->data_tail;
+
+  while (tail < head) {
+    struct perf_event_header header;
+    uint64_t recordStart = tail;
+    hzstd_profiling_perf_ring_read(data, data_size, &tail, &header,
+                                   sizeof(header));
+
+    if (header.type == PERF_RECORD_SAMPLE) {
+      uint64_t timeNs = 0;
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &timeNs,
+                                     sizeof(timeNs));
+
+      hzstd_perf_sample_regs_t sample = {0};
+      uint64_t abi = 0;
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &abi,
+                                     sizeof(abi));
+      uint64_t rawRegs[HZSTD_PERF_REG_COUNT];
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, rawRegs,
+                                     sizeof(rawRegs));
+      if (abi != PERF_SAMPLE_REGS_ABI_NONE) {
+        for (size_t i = 0; i < HZSTD_PERF_REG_COUNT; i++) {
+          sample.regs[HZSTD_PERF_REG_ORDER[i]] = rawRegs[i];
+        }
+        sample.regs_valid = true;
       }
-      // unw_step resolves which loaded module `pc` belongs to via
-      // dl_iterate_phdr whenever it hasn't seen that code range before, which
-      // briefly takes glibc's process-wide loader lock. If the profiled thread
-      // itself happens to be parked here holding that very lock (e.g. it was
-      // interrupted mid-dlopen/dlsym -- routine for GPU drivers lazily loading
-      // shader-cache or driver modules), this call blocks until it's released.
-      // profiling_handler's bounded wait (see
-      // HZSTD_PROFILING_SAMPLE_TIMEOUT_NS) is what keeps that from wedging the
-      // process: it gives up and lets the profiled thread resume (and thus
-      // release the lock) instead of waiting on this thread forever.
-    } while (unw_step(&cursor) > 0);
 
-    // Hand the finished sample to the ring buffer (no allocation) before
-    // signaling done, so by the time the signal handler wakes up from the done
-    // semaphore it can safely read context->last_ring_slot to patch the
-    // sampling duration onto the sample we just added.
-    hzstd_profiling_ring_push(context, sample);
+      uint64_t stackSize = 0;
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &stackSize,
+                                     sizeof(stackSize));
+      if (stackSize > 0) {
+        hzstd_profiling_perf_ring_read(data, data_size, &tail, stack_scratch,
+                                       (size_t)stackSize);
+        uint64_t dynSize = 0;
+        hzstd_profiling_perf_ring_read(data, data_size, &tail, &dynSize,
+                                       sizeof(dynSize));
+        sample.stack = stack_scratch;
+        // The stack snapshot always starts at RSP as of the sampled instant,
+        // regardless of how much of it the kernel actually managed to copy.
+        sample.stack_base =
+            sample.regs_valid ? sample.regs[HZSTD_PERF_REG_X86_64_SP] : 0;
+        sample.stack_size = dynSize;
+      }
 
-    hzstd_trigger_semaphore(context->stackwalker_done_semaphore);
-    // This thread is the only one that ever knows for certain a round is truly
-    // finished -- the waiter in profiling_handler may have already given up on
-    // it via the timeout above. Clearing this here (and only here, always
-    // *after* the done-trigger above so a new round's CAS below can never
-    // succeed before this round's trigger is visible to it) is what lets
-    // profiling self-recover once whatever this round was stuck on resolves,
-    // instead of permanently wedging after the first slow sample.
-    atomic_store(&context->sample_in_progress, 0);
+      hzstd_profiling_raw_sample_t rawSample;
+      hzstd_profiling_unwind_perf_sample(context, &sample, &rawSample);
+      rawSample.timestamp =
+          (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) /
+          1e9;
+      hzstd_profiling_ring_push(context, rawSample);
+    }
+
+    // Any other record type (PERF_RECORD_LOST, ...) has already been consumed
+    // via the header read above; just skip its body by resuming from where
+    // this record ends.
+    tail = recordStart + header.size;
   }
 
-  return NULL;
+  atomic_store_explicit((_Atomic uint64_t *)&meta->data_tail, tail,
+                        memory_order_release);
 }
 
-static void
-hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
-  tgkill(context->pid, context->tid, SIGUSR1);
-}
-
-void *hzstd_profiling_scheduler_thread(void *_context) {
+void *hzstd_profiling_reader_thread(void *_context) {
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
-  while (!atomic_load(&context->stop_scheduler)) {
-    uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
-    os_sleep_ns(interval_ns);
-    // Drain whatever finished since the last tick before asking for another
-    // sample. This thread is never the one targeted by the profiling signal, so
-    // growing `samples` here is always safe.
-    hzstd_profiling_drain_ring(context);
-    hzstd_profiling_invoke_sampling(context);
+
+  uint8_t *stackScratch = malloc(context->perf_stack_size);
+  if (!stackScratch) {
+    hzstd_panic("Failed to allocate profiling stack-snapshot scratch buffer");
   }
-  // Pick up the very last sample, which may have finished after the loop
-  // condition flipped.
+
+  struct pollfd pfd = {.fd = context->perf_fd, .events = POLLIN};
+  while (!atomic_load(&context->stop_reader)) {
+    // The timeout here is only a safety net (in case a wakeup is ever missed
+    // for some reason) -- wakeup_events=1 on the perf event means poll()
+    // ordinarily returns promptly after every single sample.
+    poll(&pfd, 1, 100);
+    hzstd_profiling_drain_perf_ring(context, stackScratch);
+    // Move whatever hzstd_profiling_drain_perf_ring just pushed out of the
+    // small, fixed-capacity ring (HZSTD_PROFILING_RING_CAPACITY) into the
+    // unbounded chunked storage -- this thread is never the one being
+    // profiled/interrupted, so growing `samples` here is always safe. Without
+    // this, a session running longer than ~1024 samples' worth (about a tenth
+    // of a second at 10 kHz) would start dropping samples.
+    hzstd_profiling_drain_ring(context);
+  }
+  // Pick up whatever was recorded right up to (and possibly slightly after)
+  // PERF_EVENT_IOC_DISABLE in hzstd_profiling_end.
+  hzstd_profiling_drain_perf_ring(context, stackScratch);
   hzstd_profiling_drain_ring(context);
+
+  free(stackScratch);
   return NULL;
 }
 
@@ -433,12 +827,11 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
 }
 
 // Suspends the profiled thread, captures its CONTEXT, hands it off to the
-// stackwalker thread, then resumes once the stackwalker is done. This is the
-// direct Windows analogue of the Linux SIGUSR1 signal handler: there, the
-// signal forcibly interrupts the profiled thread and runs profiling_handler
-// on top of its own stack; here, the scheduler thread does the equivalent by
-// suspending it from the outside, since Windows threads cannot be interrupted
-// with arbitrary user signals.
+// stackwalker thread, then resumes once the stackwalker is done. Windows
+// threads can't be interrupted with an arbitrary user signal the way Linux's
+// old SIGUSR1-based trigger did (see the perf_event_open section in this
+// file for why Linux moved off that approach entirely), so this suspends the
+// thread from the outside instead.
 static void
 hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   int expected = 0;
@@ -525,11 +918,6 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
 
 static hzstd_profiling_context_t *g_profiling_context = NULL;
 
-#ifdef HAZE_PLATFORM_LINUX
-static void install_profiler_handler(void);
-static void hzstd_profiling_prewarm_unwind_cache(void);
-#endif
-
 hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
   // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
   // on the first sample drained, by hzstd_profiling_samples_append.
@@ -542,8 +930,10 @@ hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
   hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
       hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
+#ifdef HAZE_PLATFORM_WIN32
   context->stackwalker_trigger_semaphore = hzstd_create_semaphore();
   context->stackwalker_done_semaphore = hzstd_create_semaphore();
+#endif
   context->sampling_rate_hz = samplingRateHz;
 
   // Plain calloc, deliberately outside the GC heap: this is the buffer the
@@ -562,24 +952,136 @@ hzstd_profiling_context_t *hzstd_profiling_start(int samplingRateHz) {
   context->last_ring_slot = SIZE_MAX;
 
 #ifdef HAZE_PLATFORM_LINUX
-  int result = pthread_create(&context->stackwalker_thread, NULL,
-                              hzstd_profiling_stackwalker_thread, context);
-  if (result != 0) {
-    hzstd_panic("Failed to create profiling stackwalker thread");
+  // hzstd_profiling_start runs on the thread that's about to be profiled
+  // (context->tid == the caller), so this queries that thread's own stack
+  // bounds -- see g_hzstd_perf_stack_low/high and hzstd_perf_access_mem for
+  // why access_mem needs them. Left at 0/0 (disabling that check, but
+  // otherwise harmless) if this ever fails.
+  pthread_attr_t selfAttr;
+  if (pthread_getattr_np(pthread_self(), &selfAttr) == 0) {
+    void *stackAddr = NULL;
+    size_t stackSize = 0;
+    if (pthread_attr_getstack(&selfAttr, &stackAddr, &stackSize) == 0) {
+      g_hzstd_perf_stack_low = (uint64_t)(uintptr_t)stackAddr;
+      g_hzstd_perf_stack_high = g_hzstd_perf_stack_low + (uint64_t)stackSize;
+    }
+    pthread_attr_destroy(&selfAttr);
   }
 
-  result = pthread_create(&context->scheduler_thread, NULL,
-                          hzstd_profiling_scheduler_thread, context);
+  // _UPT_create/_UPT_accessors give us the "find which loaded module/CFI
+  // table a given address belongs to" logic for free (it works correctly for
+  // same-process introspection regardless of what pid it thinks it's
+  // attached to, since dl_iterate_phdr always enumerates the calling
+  // process's own modules) -- only access_mem/access_reg are overridden, to
+  // serve reads from a captured per-sample snapshot instead of via ptrace.
+  // See the big comment above hzstd_perf_access_mem.
+  context->perf_upt = _UPT_create((pid_t)context->pid);
+  if (!context->perf_upt) {
+    hzstd_panic("Failed to create profiling unwind target");
+  }
+  unw_accessors_t accessors = _UPT_accessors;
+  accessors.access_mem = hzstd_perf_access_mem;
+  accessors.access_reg = hzstd_perf_access_reg;
+  context->perf_addr_space = _Ux86_64_create_addr_space(&accessors, 0);
+  if (!context->perf_addr_space) {
+    hzstd_panic("Failed to create profiling remote unwind address space");
+  }
+
+  context->perf_stack_size = HZSTD_PROFILING_PERF_STACK_SIZE;
+
+  struct perf_event_attr attr = {0};
+  attr.type = PERF_TYPE_SOFTWARE;
+  attr.config = PERF_COUNT_SW_CPU_CLOCK;
+  attr.size = sizeof(attr);
+  // A CPU-clock software event's period is in nanoseconds of wall time, the
+  // closest match to the old handler's SIGUSR1-every-1/rate-seconds cadence.
+  attr.sample_period = 1000000000ull / (uint64_t)samplingRateHz;
+  attr.sample_type =
+      PERF_SAMPLE_TIME | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER;
+  attr.sample_regs_user = hzstd_perf_regs_mask();
+  attr.sample_stack_user = (uint32_t)context->perf_stack_size;
+  attr.disabled = 1;
+  attr.exclude_kernel = 1;
+  attr.exclude_hv = 1;
+  attr.exclude_idle = 1;
+  // Matches hzstd_time_now()'s own clock, so this session's sample
+  // timestamps (see hzstd_profiling_drain_perf_ring) sit on the same
+  // monotonic timeline, just anchored to profiling-start instead of
+  // program-start.
+  attr.use_clockid = 1;
+  attr.clockid = CLOCK_MONOTONIC;
+  // Every single sample makes the fd immediately pollable -- see
+  // hzstd_profiling_reader_thread.
+  attr.wakeup_events = 1;
+
+  long fd = syscall(SYS_perf_event_open, &attr, (pid_t)context->tid, -1, -1,
+                    PERF_FLAG_FD_CLOEXEC);
+  if (fd < 0) {
+    hzstd_panic_fmt(
+        "perf_event_open failed (errno=%d): the sampling profiler needs "
+        "perf_event access for its own threads. If this is a container or "
+        "sandbox, check that it grants CAP_PERFMON (or CAP_SYS_ADMIN) and "
+        "that /proc/sys/kernel/perf_event_paranoid allows self-profiling.",
+        errno);
+  }
+  context->perf_fd = (int)fd;
+
+  // Ring buffer must be (1 + 2^n) pages; size it so it can ideally absorb
+  // roughly a quarter-second of samples at the configured rate/stack size
+  // before the reader thread has to drain it, tolerating normal scheduling
+  // jitter without the kernel dropping samples (PERF_RECORD_LOST). That ideal
+  // size can easily exceed the mmap'd-and-locked memory an unprivileged
+  // process is allowed for perf ring buffers (kernel.perf_event_mlock_kb,
+  // 512 KiB by default, shared across every perf event the *user* has open)
+  // -- mmap fails with EPERM past that, not a graceful "give me less"
+  // response. So this starts from the ideal size and just keeps halving
+  // until mmap actually succeeds; a smaller ring only means samples can be
+  // dropped under heavier scheduling jitter, which is a fine degradation
+  // compared to refusing to profile at all.
+  size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
+  size_t bytesPerSample = sizeof(struct perf_event_header) +
+      sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ +
+      HZSTD_PERF_REG_COUNT * sizeof(uint64_t) +
+      sizeof(uint64_t) /* stack size */ + context->perf_stack_size +
+      sizeof(uint64_t) /* dyn_size */;
+  size_t targetBytes = (bytesPerSample * (size_t)samplingRateHz) / 4;
+  size_t dataPages = 8;
+  while (dataPages * pageSize < targetBytes && dataPages < (1u << 20)) {
+    dataPages <<= 1;
+  }
+  context->perf_mmap_base = MAP_FAILED;
+  while (true) {
+    context->perf_mmap_len = (1 + dataPages) * pageSize;
+    context->perf_mmap_base =
+        mmap(NULL, context->perf_mmap_len, PROT_READ | PROT_WRITE, MAP_SHARED,
+            context->perf_fd, 0);
+    if (context->perf_mmap_base != MAP_FAILED || dataPages <= 1) {
+      break;
+    }
+    dataPages >>= 1;
+  }
+  if (context->perf_mmap_base == MAP_FAILED) {
+    hzstd_panic_fmt(
+        "Failed to mmap profiling ring buffer even at the minimum size "
+        "(errno=%d): check kernel.perf_event_mlock_kb",
+        errno);
+  }
+
+  struct timespec ref;
+  clock_gettime(CLOCK_MONOTONIC, &ref);
+  context->perf_time_ref_ns =
+      (uint64_t)ref.tv_sec * 1000000000ull + (uint64_t)ref.tv_nsec;
+
+  ioctl(context->perf_fd, PERF_EVENT_IOC_RESET, 0);
+  ioctl(context->perf_fd, PERF_EVENT_IOC_ENABLE, 0);
+
+  int result = pthread_create(&context->reader_thread, NULL,
+                              hzstd_profiling_reader_thread, context);
   if (result != 0) {
-    hzstd_panic("Failed to create profiling scheduler thread");
+    hzstd_panic("Failed to create profiling reader thread");
   }
 
   g_profiling_context = context;
-  // Touches every currently-loaded module's unwind tables once, synchronously,
-  // before the signal handler can ever run -- see
-  // hzstd_profiling_prewarm_unwind_cache for why.
-  hzstd_profiling_prewarm_unwind_cache();
-  install_profiler_handler();
 #elif defined(HAZE_PLATFORM_WIN32)
   // GetCurrentThread() only returns a pseudo-handle valid within the calling
   // thread; duplicate it into a real handle so the scheduler thread can
@@ -1037,6 +1539,23 @@ hzstd_profiling_build_sample(hzstd_dynamic_array_t *resultFrames,
 
 hzstd_profiling_result_t
 hzstd_profiling_end(hzstd_profiling_context_t *context) {
+#ifdef HAZE_PLATFORM_LINUX
+  if (atomic_load(&context->stop_reader)) {
+    hzstd_panic_fmt("Profiling was already stopped");
+  }
+
+  // Stop the kernel from recording any more samples, then stop and join the
+  // reader thread -- it does one final drain of whatever's left in the ring
+  // (see hzstd_profiling_reader_thread) before exiting.
+  ioctl(context->perf_fd, PERF_EVENT_IOC_DISABLE, 0);
+  atomic_store(&context->stop_reader, true);
+  pthread_join(context->reader_thread, NULL);
+
+  munmap(context->perf_mmap_base, context->perf_mmap_len);
+  close(context->perf_fd);
+  _Ux86_64_destroy_addr_space(context->perf_addr_space);
+  _UPT_destroy(context->perf_upt);
+#elif defined(HAZE_PLATFORM_WIN32)
   if (atomic_load(&context->stop_scheduler) ||
       atomic_load(&context->stop_stackwalker)) {
     hzstd_panic_fmt("Profiling was already stopped");
@@ -1044,19 +1563,12 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
 
   // First stop the scheduler and wait for it.
   atomic_store(&context->stop_scheduler, true);
-#ifdef HAZE_PLATFORM_LINUX
-  pthread_join(context->scheduler_thread, NULL);
-#elif defined(HAZE_PLATFORM_WIN32)
   WaitForSingleObject(context->scheduler_thread, INFINITE);
   CloseHandle(context->scheduler_thread);
-#endif
 
   // Now that no more samples are scheduled, stop and join the stackwalker
   atomic_store(&context->stop_stackwalker, true);
   hzstd_trigger_semaphore(context->stackwalker_trigger_semaphore);
-#ifdef HAZE_PLATFORM_LINUX
-  pthread_join(context->stackwalker_thread, NULL);
-#elif defined(HAZE_PLATFORM_WIN32)
   WaitForSingleObject(context->stackwalker_thread, INFINITE);
   CloseHandle(context->stackwalker_thread);
   CloseHandle(context->profiled_thread_handle);
@@ -1102,131 +1614,3 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   };
 }
 
-#ifdef HAZE_PLATFORM_LINUX
-
-static void profiling_handler(int sig, siginfo_t *info, void *ucontext) {
-  (void)sig;
-  (void)info;
-
-  hzstd_profiling_context_t *context = g_profiling_context;
-
-  int expected = 0;
-  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
-                                      1)) {
-    // A sample is already ongoing -- either a normal overlap (shouldn't really
-    // happen given the scheduler's cadence), or the previous round's wait below
-    // timed out and the stackwalker is still working through it. Either way,
-    // ignore this tick; the stackwalker thread clears sample_in_progress once
-    // the in-flight round actually finishes.
-    return;
-  }
-
-  // Discard any leftover "done" signal from a previous round whose wait below
-  // timed out, before arming this round's wait. Without this, a stale signal
-  // from that abandoned round could be mistaken for this round's completion the
-  // moment we trigger the stackwalker below.
-  while (
-      hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) {
-  }
-
-  // Taken as close to the suspension point as possible, before anything else in
-  // the handler runs.
-  double startedAt = hzstd_time_now();
-  context->sample_started_at = startedAt;
-
-  memcpy(&context->unwind_context, ucontext, sizeof(unw_context_t));
-
-  // Hand off to stackwalker.
-  hzstd_trigger_semaphore(context->stackwalker_trigger_semaphore);
-
-  // Wait for the worker to finish building the stacktrace -- but only up to a
-  // bound. The stackwalker can rarely block for a while on a process-wide lock
-  // it doesn't control (see the comment in hzstd_profiling_stackwalker_thread,
-  // e.g. glibc's loader lock via dl_iterate_phdr). If this thread is the one
-  // holding that lock when it got signaled, waiting unboundedly would deadlock
-  // the whole process: this thread can't proceed until the stackwalker
-  // finishes, and the stackwalker can't finish until this thread (the lock
-  // holder) proceeds. Bounding the wait breaks that cycle -- on timeout we just
-  // give up on this one sample and let this thread carry on, which lets it
-  // release whatever lock it might be holding and in turn unblocks the
-  // stackwalker. sample_in_progress is deliberately left set in that case; see
-  // hzstd_profiling_stackwalker_thread for why it alone clears it.
-  if (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore,
-                                     HZSTD_PROFILING_SAMPLE_TIMEOUT_NS)) {
-    // The stackwalker has just pushed the new sample into the ring buffer
-    // (synchronised by the done semaphore above), so it is safe to reach into
-    // the slot it recorded and patch in the total time this sample cost the
-    // profiled thread, measured as close to resuming it as possible.
-    double samplingDuration = hzstd_time_now() - startedAt;
-    if (context->last_ring_slot != SIZE_MAX) {
-      context->ring_buffer[context->last_ring_slot].sampling_duration =
-          samplingDuration;
-    }
-  }
-}
-
-// Walking the current thread's own stack once, synchronously, before the signal
-// handler is ever installed, forces libunwind to populate its internal
-// per-module unwind-info caches (built lazily -- via plain malloc, independent
-// of the GC -- the first time each loaded module's CFI table is actually
-// touched) for every module mapped right now. Without this, the very first
-// sample that happens to step through a not-yet-cached module would have the
-// stackwalker thread call malloc while the profiled thread might be parked
-// holding some unrelated lock: the same hazard the ring buffer exists to avoid,
-// just one level deeper inside libunwind itself.
-//
-// This only covers modules mapped at profiling-start time; a dlopen()
-// afterwards introduces a fresh, unprewarmed module and reintroduces a (much
-// rarer) version of the same risk. Not handled here -- would need hooking
-// dlopen to re-prewarm on demand.
-static void hzstd_profiling_prewarm_unwind_cache(void) {
-  unw_context_t ctx;
-  unw_getcontext(&ctx);
-  unw_cursor_t cursor;
-  unw_init_local2(&cursor, &ctx, 0);
-  do {
-    // Just walking is enough to populate the caches; nothing to extract from
-    // the frames here.
-  } while (unw_step(&cursor) > 0);
-}
-
-static void install_profiler_handler(void) {
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-
-  sa.sa_sigaction = profiling_handler;
-  // Deliberately *not* SA_ONSTACK, unlike the panic handler: this handler has
-  // no risk of running out of stack (a handful of locals, no recursion), so it
-  // has no need for the small thread_local sigaltstack
-  // hzstd_setup_panic_handler sets up for crash recovery. Running there anyway
-  // was actively harmful: while this handler (or anything it calls, e.g. the
-  // bounded wait below) is on that altstack, its stack pointer sits inside an 8
-  // KiB buffer with no relation to the thread's real stack. Boehm GC's
-  // stop-the-world signal doesn't use SA_ONSTACK, so if it lands on this thread
-  // during that window, it captures that altstack-resident pointer as the
-  // thread's "current" one -- and a later mark phase combining that with the
-  // thread's registered (real) stack bounds computes a scan range that belongs
-  // to neither, walking off into unmapped memory. Staying on the normal stack,
-  // which is what's actually registered with the GC for this thread, avoids the
-  // mismatch entirely.
-  //
-  // SA_RESTART matters a lot here too: without it, every SIGUSR1 tick can
-  // interrupt *any* blocking syscall anywhere in the process -- not just our
-  // own waits (which already retry on EINTR manually, since
-  // sem_wait/sem_timedwait are specifically documented to never auto-restart
-  // regardless of this flag, so this changes nothing for them) -- including
-  // code in other libraries that was never written to expect a "foreign" signal
-  // and never retries itself. At high sampling rates that's frequent enough to
-  // truncate things like a read() of a Wayland keymap string mid-transfer,
-  // which is exactly what a "malformed number literal" parse error immediately
-  // afterwards looks like. SA_RESTART asks the kernel to transparently resume
-  // most interrupted blocking syscalls instead of returning EINTR, so code with
-  // no SIGUSR1-awareness of its own never notices it was interrupted at all.
-  sa.sa_flags = SA_SIGINFO | SA_RESTART;
-
-  sigemptyset(&sa.sa_mask);
-
-  sigaction(SIGUSR1, &sa, NULL);
-}
-
-#endif
