@@ -275,10 +275,13 @@ export struct Profiler {
     }
 
     // TODO: This profiler must turn into a resource so it's panic recovery safe
+    //
+    // hzstd_profiling_end itself prints postprocessing progress (sample counts,
+    // lost/throttled counts, a live "unwinding sample N / total" counter) straight
+    // to stdout as it happens, since that work can take real, visible time on a
+    // large session -- nothing needs to be printed here beforehand or afterward.
     fn stop(): profiling.ProfilingResult {
-        let result = ffi.hzstd_profiling_end(this.context);
-        fmt.println(f"Profiling stopped (achieved ~{result.sampling_rate_hz} Hz), postprocessing...");
-        return result;
+        return ffi.hzstd_profiling_end(this.context);
     }
 
     fn stopAndSave(path: str = "out.cpuprofile") {

@@ -69,7 +69,16 @@ int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...) {
 }
 
 void hzstd_print_str_stdout(hzstd_str_t str) {
+  // Explicit flush: stdout is only line-buffered when it's a real TTY --
+  // redirected to a file or pipe (a build tool wrapping the process, `... |
+  // less`, output redirection, etc.) makes libc fully-buffer it instead, so
+  // without this, prints can sit invisible in the buffer for an arbitrarily
+  // long time (observed: profiling's "postprocessing" messages not
+  // appearing until the whole process was already done). print/println are
+  // not hot-loop primitives, so the extra syscall per call is not a
+  // meaningful cost here.
   fwrite(str.data, 1, str.length, stdout);
+  fflush(stdout);
 }
 
 hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b) {
