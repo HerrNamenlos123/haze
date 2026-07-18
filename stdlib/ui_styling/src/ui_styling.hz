@@ -118,13 +118,17 @@ export inline struct PositionValues {
 // registers *itself* (via TypeErasedBox, type-erased here the same way
 // ui_elements' own `_runtimeData` is, since this module can't name
 // ui_elements.DivElement without an import cycle) the moment it's declared.
-// ui_layout resolves it to an actual Clay id lazily, off the element's own
-// `_resolvedClayId` -- not a path string precomputed here -- because the
-// component system's own idPath convention (scoped per component, reset at
-// each component boundary) and ui_layout's structural tree-walk idPath
-// (which counts every node, including a component's own wrapper root) are
-// two independently-computed, *not* interchangeable strings; only
-// ui_layout's own walk ever produces the one Clay actually uses.
+// ui_layout resolves it to an actual Clay id off the element's own
+// `globalId` field -- not this module's own path string (there isn't one to
+// precompute here), and not the component system's own idPath convention
+// (scoped per component, reset at each component boundary) either, since
+// that one is a differently-scoped string ui_components keeps purely for
+// its own diagnostics. `globalId` is the one both sides actually agree on:
+// ui_components computes it once, at construction, by extending the
+// parent's own globalId (see ui_components.childGlobalId()) -- a
+// convention that, unlike the component-local idPath, does count every
+// node including a component's own wrapper root, so it's the one Clay
+// actually uses.
 export type AnchorTarget = rx.ShallowReactive<TypeErasedBox | null>;
 
 export enum LineHeightMode { Auto, Relative, Pixels }

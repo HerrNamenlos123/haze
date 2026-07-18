@@ -470,6 +470,21 @@ fn childIdPath(parentPath: str, id: int): str {
     return parentPath == "" ? f"{id}" : parentPath + "/" + f"{id}";
 }
 
+// A new element's own globally-unique id across the whole tree: its
+// parent's own globalId (see DivElement.globalId's own comment) extended
+// with its local `id`. Distinct from childIdPath() above -- that one is a
+// different, component-scoped convention this module only uses for its own
+// diagnostics; this is the one ui_layout actually registers elements with
+// Clay under, and the one AnchorTarget resolves anchorTo() targets through.
+// Only ever called once per element, right here at creation, with an
+// already-constructed `parent`, whose own globalId is therefore always
+// already known (all the way up to the tree root -- see
+// makeCurrentComponentAvailable, the only place that ever mints one from
+// scratch instead of extending a parent's).
+fn childGlobalId(parent: ui_elements.DivElement, id: int): str {
+    return parent.globalId + "/" + f"{id}";
+}
+
 struct DivLookup {
     element: mut ui_elements.DivElement;
     path: str;
@@ -502,7 +517,7 @@ fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int, parentPath: str):
         }
     }
     let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.DivElement({ id: id, style: {} });
+    let newElement = ui_elements.DivElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -516,7 +531,7 @@ fn getOrCreateText(parent: ui_elements.DivElement, id: int, parentPath: str): Te
         }
     }
     let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.TextElement({ id: id, text: "", style: {} });
+    let newElement = ui_elements.TextElement({ id: id, globalId: childGlobalId(parent, id), text: "", style: {} });
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -530,7 +545,7 @@ fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int, parentPath: st
         }
     }
     let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.CanvasElement({ id: id, style: {} });
+    let newElement = ui_elements.CanvasElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -656,20 +671,27 @@ export struct ComponentInstance {
         return null;
     }
 
-    fn createChild(id: int): ComponentInstance {
+    // `parentElement` is the real DivElement this component is being
+    // instantiated under -- always available, since this is only ever
+    // called from makeCurrentComponentAvailable's renderStack-non-empty
+    // branch -- used to resolve this component's own wrapper root's
+    // permanent global id (see childGlobalId()) the one time it's created.
+    fn createChild(id: int, parentElement: ui_elements.DivElement): ComponentInstance {
+        // This wrapper is pure internal plumbing -- never touched by
+        // div()/computeDivStyle(), so it never picks up a user style.
+        // Explicit Grow keeps it a transparent pass-through (fill
+        // whatever space the parent gives) rather than defaulting to
+        // ComputedDivStyle's own default (Fit), which would make every
+        // component boundary silently shrink-wrap and block Grow from
+        // propagating from an ancestor down to a descendant that wants it.
+        let rootElement = ui_elements.DivElement({
+            id: id,
+            globalId: childGlobalId(parentElement, id),
+            style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
+        });
         return ComponentInstance {
             id: id,
-            // This wrapper is pure internal plumbing -- never touched by
-            // div()/computeDivStyle(), so it never picks up a user style.
-            // Explicit Grow keeps it a transparent pass-through (fill
-            // whatever space the parent gives) rather than defaulting to
-            // ComputedDivStyle's own default (Fit), which would make every
-            // component boundary silently shrink-wrap and block Grow from
-            // propagating from an ancestor down to a descendant that wants it.
-            rootElement: ui_elements.DivElement({
-                id: id,
-                style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
-            }),
+            rootElement: rootElement,
             propsVersion: rx.reactive<int>(0),
         };
     }
@@ -1576,7 +1598,7 @@ export opaque struct UIContext {
             }
 
             if child is null {
-                child = parent.createChild(id);
+                child = parent.createChild(id, this.getCurrentParent());
             }
             assert(child);
 
@@ -1593,12 +1615,16 @@ export opaque struct UIContext {
                 // Same reasoning as createChild()'s wrapper above: explicit
                 // Grow so the very top of the tree fills the window instead
                 // of shrink-wrapping to ComputedDivStyle's default (Fit).
+                let rootElement = ui_elements.DivElement({
+                    id: id,
+                    // The one true root -- no parent to extend a global id
+                    // from, so its own local id is the whole global id.
+                    globalId: f"{id}",
+                    style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
+                });
                 this.rootComponent = ComponentInstance {
                     id: id,
-                    rootElement: ui_elements.DivElement({
-                        id: id,
-                        style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
-                    }),
+                    rootElement: rootElement,
                     propsVersion: rx.reactive<int>(0),
                 };
             }

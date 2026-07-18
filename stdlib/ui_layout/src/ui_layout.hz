@@ -320,9 +320,7 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
         let resolved = rx.get(style.anchorTarget);
         if resolved is TypeErasedBox {
             let targetDiv = resolved.get<ui_elements.DivElement>();
-            if targetDiv._resolvedClayId is not none {
-                explicitAnchor = targetDiv._resolvedClayId;
-            }
+            explicitAnchor = targetDiv.globalId;
         }
     }
 
@@ -485,7 +483,6 @@ export opaque struct Context {
         lineHeightStack: []ui_styling.LineHeight = [];
         textColorStack: []Color = [];
         elementBoxes: []Box<ui_elements.Element> = [];
-        idPath: str;
         // Stack of Clay ids for enclosing Relative/Absolute/Fixed/anchored
         // ancestors, nearest last -- see resolveFloating's doc comment.
         positioningContext: []str = [];
@@ -619,13 +616,10 @@ export opaque struct Context {
                 __c__("elementPtr = elementBox;");
                 ctx.elementBoxes.push(elementBox);
 
-                let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
-                let savedIdPath = ctx.idPath;
-                ctx.idPath = elementId;
-                // Read back by resolveFloating() when some other element's
-                // anchorTo() targets this one -- see AnchorTarget's comment
-                // for why this can't just be precomputed at declare time.
-                element._resolvedClayId = elementId;
+                // Assigned once, by ui_components, the moment this element
+                // was created (see DivElement.globalId's own comment) --
+                // nothing left to compute or cache here, just read it back.
+                let elementId = element.globalId;
 
                 let style = element.style;
 
@@ -686,8 +680,6 @@ export opaque struct Context {
                 if pushesPositioningContext {
                     ctx.positioningContext.pop();
                 }
-
-                ctx.idPath = savedIdPath;
             });
         }
         else if element is ui_elements.TextElement {
@@ -726,13 +718,15 @@ export opaque struct Context {
         else if element is ui_elements.CanvasElement {
             // No cascading font/text-color stack: a canvas has no children
             // and renders no Clay-managed text, so none of that state is
-            // relevant to it. No idPath descent either, for the same reason.
+            // relevant to it.
             let elementBox = Box<ui_elements.Element>(element);
             let elementPtr = none as cptr;
             __c__("elementPtr = elementBox;");
             ctx.elementBoxes.push(elementBox);
 
-            let elementId = ctx.idPath == "" ? f"{element.id}" : ctx.idPath + "/" + f"{element.id}";
+            // Assigned once, by ui_components, the moment this element was
+            // created -- see DivElement.globalId's own comment.
+            let elementId = element.globalId;
 
             let style = element.style;
 
@@ -766,7 +760,7 @@ export opaque struct Context {
         ffi.hzui_clay_activate_context(this.clayContextPtr);
         ffi.Clay_BeginLayout();
 
-        let ctx = TreeTraverseContext { idPath: "" };
+        let ctx = TreeTraverseContext {};
 
         const DEFAULT_FONT_SIZE = 16.0;
         const DEFAULT_FONT_WEIGHT = 400.0;
@@ -875,14 +869,14 @@ type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) 
 // the skipped elements), but only pays for the by-ID Clay hash lookup
 // (hzui_clay_get_element_bounding_box, wrapping Clay_GetElementData) on the
 // subset that's actually missing it -- typically a small minority of a
-// UI tree. Reads element._resolvedClayId, which processTreeElement (above)
-// already set for every div earlier this same render() call when it
-// registered elements with Clay, so the IDs queried here are guaranteed to
-// match what Clay actually has without re-deriving or re-allocating them.
+// UI tree. Reads element.globalId, set once by ui_components at element
+// creation time (see DivElement.globalId's own comment), so the IDs
+// queried here are guaranteed to match what Clay actually has without
+// re-deriving or re-allocating them.
 fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingBoxCB): void :: final {
     if element is ui_elements.DivElement {
-        if element.style.backgroundColor.a == 0.0 && element._resolvedClayId is not none {
-            let result = ffi.hzui_clay_get_element_bounding_box(element._resolvedClayId);
+        if element.style.backgroundColor.a == 0.0 {
+            let result = ffi.hzui_clay_get_element_bounding_box(element.globalId);
             if result.found {
                 callback(element, result.bounding_box.position, result.bounding_box.size);
             }
