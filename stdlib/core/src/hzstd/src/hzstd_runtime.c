@@ -631,9 +631,24 @@ hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
 
 // ── Panic recovery frame stack
 // ────────────────────────────────────────────────
-
-static hzstd_dynamic_array_t *panic_recovery_frames = NULL;
-static bool panic_recovery_frames_initialized = false;
+//
+// _Thread_local, deliberately: a HAZE_ATTEMPT block's try/recover nesting is
+// inherently per-thread (thread A entering one must never be visible to, or
+// interleave with, thread B's), but this used to be a single plain `static`
+// -- one recovery-frame stack shared, unsynchronized, across every thread in
+// the process. In a multi-threaded app (render thread, disk I/O threads,
+// GC markers, ...) any two threads pushing/popping HAZE_ATTEMPT frames
+// concurrently raced on the same unprotected hzstd_dynamic_array_t: lost
+// updates, corruption across a concurrent grow/realloc, or one thread
+// reading a frame pointer that belongs to (and may already have been popped
+// by) a completely different thread. That's what was actually behind a
+// string of hard-to-reproduce crashes-during-cleanup that looked like
+// memory corruption (garbage hzstd_dynamic_array_t* / closure-environment
+// pointers) -- confirmed via a live repro: hzstd_panic_recovery_frame_t
+// pointers being read back with clearly-garbage fields under real
+// concurrent UI load.
+static _Thread_local hzstd_dynamic_array_t *panic_recovery_frames = NULL;
+static _Thread_local bool panic_recovery_frames_initialized = false;
 
 static void hzstd_init_panic_recovery_frames(void) {
   if (!panic_recovery_frames_initialized) {
