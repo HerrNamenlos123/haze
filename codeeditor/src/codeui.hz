@@ -53,20 +53,25 @@ struct HighlightToken {
     color: Color;
 }
 
-struct VscodeTheme {
-  struct TokenColor {
+struct TokenColorSettings {
+    foreground?: str;
+    fontStyle?: str;
+};
+
+struct TokenColor {
     name?: str;
     scope: str | []str;
-    settings: Settings;
+    settings: TokenColorSettings;
+};
 
-    struct Settings {
-      foreground?: str;
-      fontStyle?: str;
-    };
-  };
-
+struct VscodeTheme {
   tokenColors: []TokenColor = [];
 };
+
+struct CompiledTokenColor {
+    selectors: []str;
+    settings: TokenColorSettings;
+}
 
 export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
@@ -91,8 +96,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         };
 
         let doc = rx.computed(() => joinLines(lines));
-
-        let theme = rx.reactive<VscodeTheme | none>(none);
 
         let load = () => {
             if cache.data.file {
@@ -201,6 +204,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return results;
         });
 
+        let theme = rx.reactive<VscodeTheme | none>(none);
         let loadTheme = () => {
             let file = fs.readText("codeeditor/resources/obsidian-radiance-dark.json");
             // let file = fs.readText("codeeditor/resources/catppuccin-mocha.json");
@@ -217,53 +221,57 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
             theme := result;
         };
+        let compiledTokenColors = rx.computed<[]CompiledTokenColor>(() => {
+            if !theme {
+                return [];
+            }
+
+            let result: []CompiledTokenColor = [];
+
+            for tokenColor in theme.tokenColors {
+                let selectors: []str = [];
+
+                if tokenColor.scope is str {
+                    for part in tokenColor.scope.split(",") {
+                        selectors.push(part.trim());
+                    }
+                } else {
+                    selectors = tokenColor.scope;
+                }
+
+                result.push({
+                    selectors: selectors,
+                    settings: tokenColor.settings,
+                });
+            }
+
+            return result;
+        });
+        let getScopeColor = (scope: str): Color | none => {
+            let bestForeground: str | none = none;
+            let bestLength = -1;
+
+            for tokenColor in compiledTokenColors {
+                for selector in tokenColor.selectors {
+                    if selector.length >= bestLength &&
+                    scopeSelectorMatches(selector, scope) &&
+                    tokenColor.settings.foreground {
+
+                        bestForeground = tokenColor.settings.foreground;
+                        bestLength = selector.length;
+                    }
+                }
+            }
+
+            return bestForeground ? Color(bestForeground) : none;
+        };
+
 
         // ui.onMounted(() => {
         //     load();
         // });
         load();
         loadTheme();
-
-        let getScopeColor = (scope: str): Color | none => {
-            if !theme {
-                return none;
-            }
-
-            let bestForeground: str | none = none;
-            let bestLength: int = -1;
-
-            for tokenColor in theme.tokenColors {
-                let scopeField = tokenColor.scope;
-                let selectors: []str = [];
-                if scopeField is str {
-                    for part in scopeField.split(",") {
-                        selectors.push(part.trim());
-                    }
-                } else {
-                    selectors = scopeField;
-                }
-
-                for selector in selectors {
-                    // >= (not >): themes commonly repeat the same scope with
-                    // a later, more specific rule meant to override an
-                    // earlier default (e.g. a generic "string" rule, then a
-                    // later "string" rule paired with other selectors). Real
-                    // TextMate/VS Code matching lets the later entry in
-                    // tokenColors win on a specificity tie, like a cascade.
-                    if selector.length >= bestLength && scopeSelectorMatches(selector, scope) {
-                        if tokenColor.settings.foreground {
-                            bestForeground = tokenColor.settings.foreground;
-                            bestLength = selector.length;
-                        }
-                    }
-                }
-            }
-
-            if bestForeground {
-                return Color(bestForeground);
-            }
-            return none;
-        };
 
         let defaultTextColor = (): Color => "#FFF";
 
@@ -412,6 +420,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 let reconstructedLine = "";
 
                 let tokens: []Token = [];
+                // TODO: Fix this and implement subscripting reactive values
                 let hh: []HighlightResult = rx.get(highlights);
                 if hh.length > 0 {
                     let hhh = hh[hh.length - 1];
