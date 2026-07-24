@@ -2161,20 +2161,124 @@ typedef struct {
   size_t count; // total entries across every chunk
 } hzstd_profiling_frame_table_t;
 
+// Accelerates hzstd_profiling_intern_frame's address -> index lookup. Without
+// this, interning is a linear scan over every already-interned frame, and
+// since every single (sample, stack-position) pair in the whole session does
+// one such lookup -- up to HZSTD_MAX_FRAMES times per sample, hundreds of
+// thousands of samples per session -- against a table that itself grows into
+// the tens of thousands of unique frames, that scan dominates postprocessing
+// time completely (confirmed: the O(n) scan, not unwinding itself, was the
+// actual bottleneck behind multi-minute postprocessing on a real session).
+// A plain open-addressing hash table (linear probing) turns that into O(1)
+// amortized. Deliberately malloc'd, not GC-heap: keys are raw code addresses
+// and values are plain indices, so the collector never needs to trace
+// anything in here, and it's discarded the moment postprocessing finishes.
+typedef struct {
+  void **keys; // NULL = empty slot; a real captured PC is never address 0
+  size_t *values; // index into the parallel hzstd_profiling_frame_table_t
+  size_t capacity; // always a power of two
+  size_t count;
+} hzstd_profiling_frame_index_t;
+
+// Bit-mixing finalizer (the MurmurHash3 64-bit finalizer) -- cheap and gives
+// good avalanche behavior for pointer-shaped keys, which tend to share long
+// common prefixes/alignment-driven low bits that a naive `addr & mask` hash
+// would collide on constantly.
+static uint64_t hzstd_profiling_hash_ptr(void *p) {
+  uint64_t h = (uint64_t)(uintptr_t)p;
+  h ^= h >> 33;
+  h *= 0xff51afd7ed558ccdULL;
+  h ^= h >> 33;
+  h *= 0xc4ceb9fe1a85ec53ULL;
+  h ^= h >> 33;
+  return h;
+}
+
+static void hzstd_profiling_frame_index_init(hzstd_profiling_frame_index_t *index,
+                                              size_t minCapacity) {
+  index->capacity = 64;
+  while (index->capacity < minCapacity) {
+    index->capacity <<= 1;
+  }
+  index->keys = calloc(index->capacity, sizeof(void *));
+  index->values = malloc(index->capacity * sizeof(size_t));
+  index->count = 0;
+  if (!index->keys || !index->values) {
+    hzstd_panic("Failed to allocate profiling frame index");
+  }
+}
+
+static void hzstd_profiling_frame_index_free(hzstd_profiling_frame_index_t *index) {
+  free(index->keys);
+  free(index->values);
+  index->keys = NULL;
+  index->values = NULL;
+}
+
+// Inserts a key known not to already be present, without checking the load
+// factor -- used both for real inserts (which check the load factor first,
+// see hzstd_profiling_frame_index_insert) and for rehashing into a freshly
+// grown table (where every key is by definition not yet present in the new
+// table).
+static void
+hzstd_profiling_frame_index_insert_unchecked(hzstd_profiling_frame_index_t *index,
+                                              void *key, size_t value) {
+  size_t mask = index->capacity - 1;
+  size_t slot = (size_t)(hzstd_profiling_hash_ptr(key) & mask);
+  while (index->keys[slot] != NULL) {
+    slot = (slot + 1) & mask;
+  }
+  index->keys[slot] = key;
+  index->values[slot] = value;
+  index->count++;
+}
+
+static void hzstd_profiling_frame_index_grow(hzstd_profiling_frame_index_t *index) {
+  hzstd_profiling_frame_index_t grown;
+  hzstd_profiling_frame_index_init(&grown, index->capacity * 2);
+  for (size_t i = 0; i < index->capacity; i++) {
+    if (index->keys[i] != NULL) {
+      hzstd_profiling_frame_index_insert_unchecked(&grown, index->keys[i],
+                                                    index->values[i]);
+    }
+  }
+  hzstd_profiling_frame_index_free(index);
+  *index = grown;
+}
+
+// Returns true and writes *outValue if `key` is already present.
+static bool hzstd_profiling_frame_index_find(hzstd_profiling_frame_index_t *index,
+                                              void *key, size_t *outValue) {
+  size_t mask = index->capacity - 1;
+  size_t slot = (size_t)(hzstd_profiling_hash_ptr(key) & mask);
+  while (index->keys[slot] != NULL) {
+    if (index->keys[slot] == key) {
+      *outValue = index->values[slot];
+      return true;
+    }
+    slot = (slot + 1) & mask;
+  }
+  return false;
+}
+
+static void hzstd_profiling_frame_index_insert(hzstd_profiling_frame_index_t *index,
+                                                void *key, size_t value) {
+  // Keep the load factor under 70% for short probe sequences.
+  if ((index->count + 1) * 10 >= index->capacity * 7) {
+    hzstd_profiling_frame_index_grow(index);
+  }
+  hzstd_profiling_frame_index_insert_unchecked(index, key, value);
+}
+
 // Intern `address` into `frames`, deduplicating by instruction pointer (the
 // same function hit by many samples must only be resolved/stored once), and
 // return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
 static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames,
+                                           hzstd_profiling_frame_index_t *frameIndex,
                                            void *address, bool isLeaf) {
-  size_t index = 0;
-  for (hzstd_profiling_frame_chunk_t *chunk = frames->head; chunk != NULL;
-       chunk = chunk->next) {
-    for (size_t i = 0; i < chunk->count; i++) {
-      if (chunk->entries[i].address == address) {
-        return index;
-      }
-      index++;
-    }
+  size_t existingIndex;
+  if (hzstd_profiling_frame_index_find(frameIndex, address, &existingIndex)) {
+    return existingIndex;
   }
 
   if (!frames->tail ||
@@ -2191,11 +2295,13 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
     frames->tail = chunk;
   }
 
+  size_t newIndex = frames->count;
   hzstd_profiling_frame_t frame =
       hzstd_profiling_resolve_frame(address, isLeaf);
   frames->tail->entries[frames->tail->count++] = frame;
   frames->count++;
-  return index;
+  hzstd_profiling_frame_index_insert(frameIndex, address, newIndex);
+  return newIndex;
 }
 
 // Turn one raw sample (bare addresses) into a postprocessed sample (interned
@@ -2203,13 +2309,14 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
 // walked them in).
 static hzstd_profiling_sample_t
 hzstd_profiling_build_sample(hzstd_profiling_frame_table_t *resultFrames,
+                             hzstd_profiling_frame_index_t *frameIndex,
                              hzstd_profiling_raw_sample_t raw) {
   hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(
       hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
     hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(
-        resultFrames, raw.pcs[i], i == 0);
+        resultFrames, frameIndex, raw.pcs[i], i == 0);
     HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, index);
   }
 
@@ -2379,6 +2486,8 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
   hzstd_profiling_frame_table_t frameTable = {0};
+  hzstd_profiling_frame_index_t frameIndex;
+  hzstd_profiling_frame_index_init(&frameIndex, 64);
   hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
       allocator, hzstd_profiling_sample_t, context->sample_count);
 
@@ -2434,7 +2543,7 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
     raw.lost_before = lostBefore;
 
     hzstd_profiling_sample_t sample =
-        hzstd_profiling_build_sample(&frameTable, raw);
+        hzstd_profiling_build_sample(&frameTable, &frameIndex, raw);
     HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
     processedCount++;
     HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -2455,7 +2564,7 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
        chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
       hzstd_profiling_sample_t sample =
-          hzstd_profiling_build_sample(&frameTable, chunk->entries[i]);
+          hzstd_profiling_build_sample(&frameTable, &frameIndex, chunk->entries[i]);
       HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
       processedCount++;
       HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -2463,6 +2572,7 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   }
 #endif
 #undef HZSTD_PROFILING_REPORT_PROGRESS
+  hzstd_profiling_frame_index_free(&frameIndex);
   if (context->sample_count > 0) {
     fprintf(stdout, "\n");
   }

@@ -145,6 +145,25 @@ _Noreturn void hzstd_block_thread_forever(void)
 //
 // The longjmp MUST happen on the panicking thread (not the worker) so that the
 // stack unwind reaches the setjmp point.
+//
+// INVARIANT: panic_in_progress must stay held for the *entire* round trip --
+// not just while the shared globals above are being written, but until the
+// original requester has finished reading whatever it needs back out of them
+// (panic_recovery_target, panic_built_stacktrace, panic_info_storage, ...).
+// That's why it's the three producers below (hzstd_panic_handler,
+// hzstd_panic_with_stacktrace, hzstd_build_stacktrace) that reset it, each
+// only after copying its result into a local -- never the worker. Releasing
+// it any earlier (as soon as the worker finishes *writing* the result,
+// which is what this used to do) reopens the gate while the original
+// requester still has an unconsumed read pending against these globals; a
+// second, unrelated request racing in through that window -- most commonly a
+// *nested* panic, e.g. a crash inside a recovery frame's own cleanup handler
+// (hzstd_panic_recovery_frame_run_cleanup), or any concurrent
+// hzstd_build_stacktrace() call from another thread -- can then overwrite
+// panic_recovery_target/panic_context/etc. before the first requester reads
+// them, corrupting its result or leaving it permanently parked on
+// panic_response waiting for a wakeup that was already delivered to (or
+// stolen by) someone else.
 
 typedef enum {
   PANIC_MODE_CRASH = 0, /* print & exit if no recovery frame */
@@ -341,7 +360,9 @@ static void* hzstd_panic_handler_thread(void* _)
       // Caller just wants frames — no message or type needed.
       panic_built_stacktrace.frames = frameArray;
       panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
-      atomic_store(&panic_in_progress, 0);
+      // panic_in_progress is deliberately NOT reset here -- see the
+      // INVARIANT comment above this function. hzstd_build_stacktrace
+      // releases it itself, once it's copied panic_built_stacktrace out.
       hzstd_trigger_semaphore(panic_response);
     }
     else {
@@ -358,10 +379,15 @@ static void* hzstd_panic_handler_thread(void* _)
 
       if (has_recovery) {
         panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
-        atomic_store(&panic_in_progress, 0);
+        // panic_in_progress is deliberately NOT reset here -- see the
+        // INVARIANT comment above this function. The panicking thread
+        // (hzstd_panic_handler / hzstd_panic_with_stacktrace) releases it
+        // itself, once it's copied panic_recovery_target's result out.
         hzstd_trigger_semaphore(panic_response);
       }
       else {
+        // Terminal path -- the process is exiting, so there's no requester
+        // left to release panic_in_progress, and none is needed.
         hzstd_print_panic_report(&panic_info_storage);
         fflush(stdout);
         fflush(stderr);
@@ -457,12 +483,21 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   panic_skip_n_frames = 0;
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
+  // Captured locally right away, not re-read from the global later -- see
+  // the INVARIANT comment above hzstd_panic_handler_thread. Harmless
+  // belt-and-suspenders here since panic_in_progress is now held until this
+  // function releases it below, but this is what makes that invariant
+  // actually load-bearing rather than merely documented.
+  hzstd_panic_recovery_frame_t* localRecoveryTarget = panic_recovery_target;
 
   // Hand off to worker.
   hzstd_trigger_semaphore(panic_trigger);
 
-  if (panic_recovery_target == NULL) {
-    // Worker will print & _exit; park this thread.
+  if (localRecoveryTarget == NULL) {
+    // Worker will print & _exit; park this thread. panic_in_progress is
+    // deliberately never released in this branch -- the process is
+    // terminating, and releasing it would only let some other thread start
+    // a new, doomed request.
     hzstd_block_thread_forever();
   }
 
@@ -477,9 +512,17 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   sigprocmask(SIG_UNBLOCK, &unblock, NULL);
 
   // Set the TLS variable so the recover: label can read it.
-  _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
+  _hz_panic_stacktrace = localRecoveryTarget->_hz_panic_stacktrace;
 
-  HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
+  // Only now -- after every shared global this thread needed has been fully
+  // consumed -- release the gate. See the INVARIANT comment above
+  // hzstd_panic_handler_thread: this is what closes the nested-panic race
+  // (e.g. a crash inside a recovery frame's own cleanup handler) that used
+  // to be possible when the worker released this instead, before this
+  // thread had actually finished reading panic_recovery_target.
+  atomic_store(&panic_in_progress, 0);
+
+  HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   // Unreachable — longjmp never returns.
   __builtin_unreachable();
 }
@@ -506,17 +549,21 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   panic_type = hzstd_panic_type_user;
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
+  // See hzstd_panic_handler's matching local -- captured now, read back
+  // below, only released after that read (not by the worker).
+  hzstd_panic_recovery_frame_t* localRecoveryTarget = panic_recovery_target;
 
   hzstd_trigger_semaphore(panic_trigger);
 
-  if (panic_recovery_target == NULL) {
+  if (localRecoveryTarget == NULL) {
     hzstd_block_thread_forever();
   }
 
   hzstd_wait_for_semaphore(panic_response);
 
-  _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
-  HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
+  _hz_panic_stacktrace = localRecoveryTarget->_hz_panic_stacktrace;
+  atomic_store(&panic_in_progress, 0);
+  HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __builtin_unreachable();
 }
 
@@ -543,7 +590,12 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   hzstd_trigger_semaphore(panic_trigger);
   hzstd_wait_for_semaphore(panic_response);
 
-  return panic_built_stacktrace;
+  // Copy out before releasing the gate -- not "return panic_built_stacktrace"
+  // directly, which would read the global after giving up exclusive access
+  // to it. See the INVARIANT comment above hzstd_panic_handler_thread.
+  hzstd_stacktrace_t result = panic_built_stacktrace;
+  atomic_store(&panic_in_progress, 0);
+  return result;
 }
 
 // Walking the current thread's own stack once, synchronously, before the
