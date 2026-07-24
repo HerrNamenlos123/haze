@@ -654,14 +654,39 @@ void hzstd_setup_panic_handler(void)
   // it is dead anyways, so that when the GC hits it, it has enough stack space.
   static thread_local char altstack_buf[65536];
 
-  panic_trigger = hzstd_create_semaphore();
-  panic_response = hzstd_create_semaphore();
-  assert(panic_trigger && panic_response);
+  // panic_trigger/panic_response and the single dedicated worker thread that
+  // services them are process-wide singleton state (see the big DESIGN
+  // comment above panic_reason_buf) -- exactly one of each must ever exist,
+  // not one per thread. But hzstd_setup_panic_handler() itself is called by
+  // *every* thread in this runtime at startup (see the comment on
+  // hzstd_panic_prewarm_unwind_cache just above), and until this guard
+  // existed, every single call unconditionally created a fresh semaphore
+  // pair and spawned a fresh worker thread -- silently orphaning whatever
+  // pair/worker the previous call had already set up. Any crash still
+  // in-flight against that older, now-abandoned pair (already posted
+  // panic_trigger, now waiting on panic_response) would then hang forever:
+  // the worker still alive and looping is watching a *different*, newer
+  // semaphore object, and nothing will ever post to the one it's actually
+  // waiting on. Confirmed by reproduction: a live hung process with two
+  // separate hzstd_panic_handler_thread instances, each blocked on a
+  // different, already-orphaned panic_trigger. Guarding this exactly like
+  // g_panic_unwind_prewarmed above fixes it -- everything below this (the
+  // altstack, its GC registration, and the SIGSEGV/SIGFPE sigaction calls)
+  // remains per-thread/idempotent and still runs on every call.
+  static atomic_int g_panic_handler_worker_started = 0;
+  int expected = 0;
+  if (atomic_compare_exchange_strong(&g_panic_handler_worker_started,
+                                     &expected, 1)) {
+    panic_trigger = hzstd_create_semaphore();
+    panic_response = hzstd_create_semaphore();
+    assert(panic_trigger && panic_response);
 
-  pthread_t worker;
-  int result = pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);
-  if (result != 0) {
-    hzstd_panic("Failed to create panic handler thread");
+    pthread_t worker;
+    int result =
+        pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);
+    if (result != 0) {
+      hzstd_panic("Failed to create panic handler thread");
+    }
   }
 
   stack_t ss;

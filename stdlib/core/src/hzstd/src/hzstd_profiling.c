@@ -11,6 +11,7 @@
 
 
 #ifdef HAZE_PLATFORM_LINUX
+#include <elf.h>
 #include <errno.h>
 #include <link.h>
 #include <linux/perf_event.h>
@@ -2031,6 +2032,212 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf,
   return result;
 }
 
+// ── Fast function-name resolution (own ELF .symtab, parsed once) ───────────
+//
+// unw_get_proc_name_by_ip above resolves a bare PC completely "from scratch"
+// on every single call: it re-reads /proc/self/maps, mmaps whatever file
+// backs that address's mapping, and walks that image's ELF symbol tables
+// linearly -- no caching at all. Measured on a real session: ~2ms/call,
+// which at several thousand unique frames became the single largest cost in
+// all of postprocessing (76% of total time on one session -- far more than
+// unwinding itself). This mirrors the exact fix already applied to source
+// locations below (hzstd_profiling_dwarf_build_line_table): parse our own
+// executable's symbol table once into a flat array sorted by address, then
+// binary search it afterward -- O(symtab size) once instead of O(symtab
+// size) on every single unique frame. Only covers the main executable's own
+// module (same restriction hzstd_profiling_resolve_sourceloc already
+// applies, and for the same reason: a naive nearest-symbol-below search
+// would otherwise silently misattribute shared-library addresses to
+// whatever unrelated main-executable symbol happens to sort before them) --
+// hzstd_profiling_safe_get_proc_name_by_ip above remains as the fallback for
+// those.
+typedef struct {
+  Elf64_Addr address; // link-time address (relative to this module's load bias)
+  Elf64_Xword size; // symbol size in bytes; 0 if the ELF entry didn't record one
+  // Raw mangled name, demangled later same as the slow path -- deliberately a
+  // plain NUL-terminated `char*` (not hzstd_str_t, whose
+  // hzstd_str_from_cstr_dup does *not* NUL-terminate its buffer) since
+  // hzstd_demangle requires a real C string.
+  const char *name;
+} hzstd_profiling_elf_symbol_t;
+
+static bool g_elf_symtab_init_done = false;
+static hzstd_profiling_elf_symbol_t *g_elf_symtab = NULL;
+static size_t g_elf_symtab_count = 0;
+
+static int hzstd_profiling_elf_symbol_compare(const void *a, const void *b) {
+  const hzstd_profiling_elf_symbol_t *sa = a;
+  const hzstd_profiling_elf_symbol_t *sb = b;
+  if (sa->address < sb->address) {
+    return -1;
+  }
+  if (sa->address > sb->address) {
+    return 1;
+  }
+  return 0;
+}
+
+static void hzstd_profiling_build_elf_symtab(void) {
+  g_elf_symtab_init_done = true; // only ever try once, even on failure
+
+  // Also populates g_dwarf_module_base/extent if the DWARF line table hasn't
+  // been built yet -- harmless and idempotent to call twice (see
+  // hzstd_profiling_find_main_module), and this function needs that base
+  // address just as much as the line table does, regardless of init order.
+  dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
+
+  char exePath[4096];
+  ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+  if (pathLen <= 0) {
+    return;
+  }
+  exePath[pathLen] = '\0';
+
+  FILE *f = fopen(exePath, "rb");
+  if (!f) {
+    return;
+  }
+
+  Elf64_Ehdr ehdr;
+  if (fread(&ehdr, sizeof(ehdr), 1, f) != 1 ||
+      memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
+      ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
+    fclose(f);
+    return;
+  }
+
+  Elf64_Shdr *shdrs = malloc((size_t)ehdr.e_shnum * sizeof(Elf64_Shdr));
+  if (!shdrs) {
+    fclose(f);
+    return;
+  }
+  if (fseek(f, (long)ehdr.e_shoff, SEEK_SET) != 0 ||
+      fread(shdrs, sizeof(Elf64_Shdr), ehdr.e_shnum, f) !=
+          (size_t)ehdr.e_shnum) {
+    free(shdrs);
+    fclose(f);
+    return;
+  }
+
+  // .symtab (full symbol table -- present as long as the binary isn't
+  // stripped, which this build never does by default) has its matching
+  // string table's section index in sh_link.
+  Elf64_Shdr *symtabShdr = NULL;
+  for (int i = 0; i < ehdr.e_shnum; i++) {
+    if (shdrs[i].sh_type == SHT_SYMTAB) {
+      symtabShdr = &shdrs[i];
+      break;
+    }
+  }
+  if (!symtabShdr || symtabShdr->sh_link >= (Elf64_Word)ehdr.e_shnum) {
+    free(shdrs);
+    fclose(f);
+    return;
+  }
+  Elf64_Shdr *strtabShdr = &shdrs[symtabShdr->sh_link];
+
+  size_t symCount = symtabShdr->sh_size / sizeof(Elf64_Sym);
+  Elf64_Sym *syms = malloc(symCount * sizeof(Elf64_Sym));
+  char *strtab = malloc(strtabShdr->sh_size);
+  if (!syms || !strtab) {
+    free(shdrs);
+    free(syms);
+    free(strtab);
+    fclose(f);
+    return;
+  }
+  bool ok = fseek(f, (long)symtabShdr->sh_offset, SEEK_SET) == 0 &&
+            fread(syms, sizeof(Elf64_Sym), symCount, f) == symCount &&
+            fseek(f, (long)strtabShdr->sh_offset, SEEK_SET) == 0 &&
+            fread(strtab, 1, strtabShdr->sh_size, f) == strtabShdr->sh_size;
+  fclose(f);
+  free(shdrs);
+  if (!ok) {
+    free(syms);
+    free(strtab);
+    return;
+  }
+
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  hzstd_profiling_elf_symbol_t *table = hzstd_allocate(
+      allocator, symCount * sizeof(hzstd_profiling_elf_symbol_t));
+  size_t count = 0;
+  for (size_t i = 0; i < symCount; i++) {
+    // STT_FUNC only -- data symbols, section symbols, etc. aren't call sites
+    // and would only pollute the nearest-address-below search below.
+    if (ELF64_ST_TYPE(syms[i].st_info) != STT_FUNC) {
+      continue;
+    }
+    if (syms[i].st_value == 0) {
+      continue;
+    }
+    if (syms[i].st_name == 0 || syms[i].st_name >= strtabShdr->sh_size) {
+      continue;
+    }
+    table[count].address = syms[i].st_value;
+    table[count].size = syms[i].st_size;
+    // Each ELF string table entry is itself NUL-terminated (that's the
+    // format), so this copies exactly the bytes needed -- including the NUL
+    // -- into a buffer that outlives `strtab` (freed right after this loop).
+    const char *rawName = strtab + syms[i].st_name;
+    size_t nameLen = strlen(rawName);
+    char *nameBuf = hzstd_allocate(allocator, nameLen + 1);
+    memcpy(nameBuf, rawName, nameLen + 1);
+    table[count].name = nameBuf;
+    count++;
+  }
+  free(syms);
+  free(strtab);
+
+  qsort(table, count, sizeof(hzstd_profiling_elf_symbol_t),
+        hzstd_profiling_elf_symbol_compare);
+
+  g_elf_symtab = table;
+  g_elf_symtab_count = count;
+}
+
+// Binary search for the nearest function symbol at-or-below `address`.
+// Returns NULL if none matches -- either because `address` falls outside the
+// main executable's own mapped module entirely (shared libraries; same
+// restriction and same reasoning as hzstd_profiling_resolve_sourceloc, which
+// this mirrors exactly: without it, an out-of-module address could
+// spuriously "match" whichever real symbol happens to sort nearest to it,
+// especially one with an unknown/zero size -- see below), or because
+// `address` falls past the end of the nearest real symbol below it (a
+// genuine gap, e.g. padding).
+static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
+  if (!g_elf_symtab_init_done) {
+    hzstd_profiling_build_elf_symtab(); // also sets g_dwarf_module_base/extent
+  }
+  if (g_elf_symtab_count == 0) {
+    return NULL;
+  }
+  if ((uintptr_t)address < g_dwarf_module_base ||
+      (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
+    return NULL;
+  }
+
+  Elf64_Addr target = (Elf64_Addr)((uintptr_t)address - g_dwarf_module_base);
+  size_t lo = 0, hi = g_elf_symtab_count;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (g_elf_symtab[mid].address <= target) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo == 0) {
+    return NULL;
+  }
+
+  hzstd_profiling_elf_symbol_t *match = &g_elf_symtab[lo - 1];
+  if (match->size > 0 && target >= match->address + match->size) {
+    return NULL;
+  }
+  return match->name;
+}
+
 // Resolve the function name belonging to `address` via libunwind's
 // address-space API (works on a raw saved PC, no live unwind cursor needed) and
 // demangle it into a clean display name.
@@ -2049,13 +2256,30 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
 
-  char rawName[4096];
-  unw_word_t offset;
-  if (hzstd_profiling_safe_get_proc_name_by_ip(
-          (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) == 0) {
-    hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
-    name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
-                             : hzstd_str_from_cstr_dup(allocator, rawName);
+  // Fast path: our own pre-sorted ELF .symtab table -- see the big comment
+  // above hzstd_profiling_lookup_elf_symbol for why this exists (measured:
+  // the slow path below was 76% of total postprocessing time on a real
+  // session). Falls through to that slow, libunwind-based path only when
+  // this misses (address outside the main module, or genuinely not in
+  // .symtab), so resolution quality for those cases is unchanged from
+  // before -- this only removes the ~2ms/call cost for the common case.
+  const char *fastRawName = hzstd_profiling_lookup_elf_symbol(lookupAddress);
+  if (fastRawName != NULL) {
+    hzstd_demangle_result_t demangled = hzstd_demangle(allocator, fastRawName);
+    name = demangled.success
+               ? hzstd_demangle_display(allocator, &demangled)
+               : hzstd_str_from_cstr_dup(allocator, (char *)fastRawName);
+  } else {
+    char rawName[4096];
+    unw_word_t offset;
+    if (hzstd_profiling_safe_get_proc_name_by_ip(
+            (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) ==
+        0) {
+      hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
+      name = demangled.success
+                 ? hzstd_demangle_display(allocator, &demangled)
+                 : hzstd_str_from_cstr_dup(allocator, rawName);
+    }
   }
 
   return (hzstd_profiling_frame_t){
@@ -2270,6 +2494,17 @@ static void hzstd_profiling_frame_index_insert(hzstd_profiling_frame_index_t *in
   hzstd_profiling_frame_index_insert_unchecked(index, key, value);
 }
 
+// Diagnostics for hzstd_profiling_end's postprocessing loop -- answers
+// "where did postprocessing time actually go" the same way the existing
+// perf_* fields on hzstd_profiling_context_t answer that for the *capture*
+// phase. File-scope rather than threaded through every function signature
+// down here since postprocessing is always single-threaded and sequential;
+// reset at the start of each hzstd_profiling_end call, read back and
+// printed at the end.
+static double g_postprocess_read_time_total_ns = 0;
+static double g_postprocess_resolve_frame_time_total_ns = 0;
+static uint64_t g_postprocess_resolve_frame_count = 0;
+
 // Intern `address` into `frames`, deduplicating by instruction pointer (the
 // same function hit by many samples must only be resolved/stored once), and
 // return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
@@ -2296,8 +2531,12 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
   }
 
   size_t newIndex = frames->count;
+  double resolveStartedAt = hzstd_time_now();
   hzstd_profiling_frame_t frame =
       hzstd_profiling_resolve_frame(address, isLeaf);
+  g_postprocess_resolve_frame_time_total_ns +=
+      (hzstd_time_now() - resolveStartedAt) * 1e9;
+  g_postprocess_resolve_frame_count++;
   frames->tail->entries[frames->tail->count++] = frame;
   frames->count++;
   hzstd_profiling_frame_index_insert(frameIndex, address, newIndex);
@@ -2483,6 +2722,10 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
           (unsigned long long)context->perf_throttle_count, achievedRateHz);
   fflush(stdout);
 
+  g_postprocess_read_time_total_ns = 0;
+  g_postprocess_resolve_frame_time_total_ns = 0;
+  g_postprocess_resolve_frame_count = 0;
+
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
   hzstd_profiling_frame_table_t frameTable = {0};
@@ -2526,8 +2769,14 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   fseek(context->raw_samples_file, 0, SEEK_SET);
   uint64_t timeNs = 0, lostBefore = 0;
   hzstd_perf_sample_regs_t regs;
-  while (hzstd_profiling_read_raw_capture(context->raw_samples_file, &timeNs,
-                                          &lostBefore, &regs, stackScratch)) {
+  for (;;) {
+    double readStartedAt = hzstd_time_now();
+    bool gotCapture = hzstd_profiling_read_raw_capture(
+        context->raw_samples_file, &timeNs, &lostBefore, &regs, stackScratch);
+    g_postprocess_read_time_total_ns += (hzstd_time_now() - readStartedAt) * 1e9;
+    if (!gotCapture) {
+      break;
+    }
     hzstd_profiling_raw_sample_t raw;
     double unwindStartedAt = hzstd_time_now();
     hzstd_profiling_unwind_perf_sample(context, &regs, &raw);
@@ -2594,12 +2843,23 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
     fprintf(stdout,
             "Postprocessing done: %zu sample(s), %zu unique frame(s) in "
             "%.2f ms total (avg %.1f us/sample unwind, max %.1f "
-            "us/sample).\n",
+            "us/sample).\n"
+            "  Breakdown: %.2f ms disk read, %.2f ms unwind, %.2f ms symbol "
+            "resolution (%llu unique frame(s) actually resolved, avg %.1f "
+            "us/frame).\n",
             context->sample_count, frameTable.count,
             (hzstd_time_now() - stopTime) * 1000.0,
             (context->perf_unwind_time_total_ns / 1e3) /
                 (double)context->perf_unwind_count,
-            context->perf_unwind_time_max_ns / 1e3);
+            context->perf_unwind_time_max_ns / 1e3,
+            g_postprocess_read_time_total_ns / 1e6,
+            context->perf_unwind_time_total_ns / 1e6,
+            g_postprocess_resolve_frame_time_total_ns / 1e6,
+            (unsigned long long)g_postprocess_resolve_frame_count,
+            g_postprocess_resolve_frame_count > 0
+                ? (g_postprocess_resolve_frame_time_total_ns / 1e3) /
+                      (double)g_postprocess_resolve_frame_count
+                : 0.0);
   } else
 #endif
   {
