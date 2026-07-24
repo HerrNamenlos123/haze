@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <semaphore.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -938,10 +939,8 @@ static inline char* process_read_available_gc(int fd)
   return buf;
 }
 
-hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
-                        hzstd_dynamic_array_t* argv,
-                        hzstd_dynamic_array_t* envp,
-                        hzstd_str_t cwd)
+hzstd_process_spawn_result_t
+hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_array_t* envp, hzstd_str_t cwd)
 {
   hzstd_process_spawn_result_t result = { .handle = NULL, .error_code = 0, .error_message = NULL };
 
@@ -953,9 +952,15 @@ hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
     result.error_code = errno;
     result.error_message = process_build_error_message_gc(errno);
     for (int i = 0; i < 2; ++i) {
-      if (stdin_pipe[i] >= 0) close(stdin_pipe[i]);
-      if (stdout_pipe[i] >= 0) close(stdout_pipe[i]);
-      if (stderr_pipe[i] >= 0) close(stderr_pipe[i]);
+      if (stdin_pipe[i] >= 0) {
+        close(stdin_pipe[i]);
+      }
+      if (stdout_pipe[i] >= 0) {
+        close(stdout_pipe[i]);
+      }
+      if (stderr_pipe[i] >= 0) {
+        close(stderr_pipe[i]);
+      }
     }
     return result;
   }
@@ -1135,8 +1140,68 @@ void hzstd_process_release(void* proc_)
   if (!proc) {
     return;
   }
-  if (proc->stdin_fd >= 0) close(proc->stdin_fd);
-  if (proc->stdout_fd >= 0) close(proc->stdout_fd);
-  if (proc->stderr_fd >= 0) close(proc->stderr_fd);
+  if (proc->stdin_fd >= 0) {
+    close(proc->stdin_fd);
+  }
+  if (proc->stdout_fd >= 0) {
+    close(proc->stdout_fd);
+  }
+  if (proc->stderr_fd >= 0) {
+    close(proc->stderr_fd);
+  }
   free(proc);
+}
+
+bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out)
+{
+  if (!proc_ || !out) {
+    return false;
+  }
+
+  hzstd_process_t* proc = proc_;
+
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/status", proc->pid);
+
+  FILE* f = fopen(path, "r");
+  if (!f) {
+    return false;
+  }
+
+  out->resident = INT64_MAX;
+  out->peak_resident = INT64_MAX;
+  out->committed = INT64_MAX;
+
+  int64_t resident = -1;
+  int64_t swap = -1;
+  bool got_peak = false;
+
+  char line[256];
+
+  while (fgets(line, sizeof(line), f)) {
+
+    if (resident < 0 && strncmp(line, "VmRSS:", 6) == 0) {
+      resident = strtoll(line + 6, NULL, 10) * 1024LL;
+      out->resident = resident;
+    }
+    else if (swap < 0 && strncmp(line, "VmSwap:", 7) == 0) {
+      swap = strtoll(line + 7, NULL, 10) * 1024LL;
+    }
+    else if (!got_peak && strncmp(line, "VmHWM:", 6) == 0) {
+      out->peak_resident = strtoll(line + 6, NULL, 10) * 1024LL;
+      got_peak = true;
+    }
+
+    if (resident >= 0 && swap >= 0 && got_peak) {
+      break;
+    }
+  }
+
+  fclose(f);
+
+  if (resident >= 0 && swap >= 0) {
+    out->committed = resident + swap;
+  }
+
+  return true;
 }

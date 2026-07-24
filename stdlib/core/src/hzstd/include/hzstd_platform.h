@@ -59,10 +59,11 @@ int hzstd_spawn_process(hzstd_str_t exe,
 // background. stdin/stdout/stderr are always piped so the caller can interact
 // with the child; use hzstd_process_release once the process is no longer needed.
 
-hzstd_process_spawn_result_t hzstd_process_spawn(hzstd_str_t exe,
-                        hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
-                        hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
-                        hzstd_str_t cwd); /* empty → use current working directory */
+hzstd_process_spawn_result_t
+hzstd_process_spawn(hzstd_str_t exe,
+                    hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
+                    hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
+                    hzstd_str_t cwd); /* empty → use current working directory */
 
 /* Returns whatever output is currently buffered; "" if none is available yet. */
 char* hzstd_process_read_stdout(void* proc);
@@ -83,5 +84,13 @@ void hzstd_process_release(void* proc);
 
 void os_sleep_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
+
+typedef struct {
+  hzstd_int_t resident;
+  hzstd_int_t peak_resident;
+  hzstd_int_t committed;
+} hzstd_process_memory_info_t;
+
+bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out);
 
 #endif // HZSTD_PLATFORM_H

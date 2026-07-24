@@ -386,8 +386,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let highlightedLines = rx.computed(() => {
             let resultTokens: [][]HighlightToken = [];
-            let s: []String = lines;
-            for line, lineIndex in s {
+            for line, lineIndex in lines {
                 let currentIndex = 0;
                 let reconstructedLine = "";
 
@@ -497,7 +496,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         hoverResult := null;
                     },
                 }, () => {
-                    let llines: []String = lines;
                     let id = 1;
 
                     let characterSize = ui.measureText("X");
@@ -506,11 +504,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // it sits behind it. One div per touched line, driven by
                     // the engine's reactive selection state -- see
                     // selectionRangeForLine's doc comment.
-                    for line, i in llines {
+                    for line, i in lines {
                         let sel = texteditBehavior.selectionRangeForLine(i);
                         if sel {
                             ui.div({
-                                id: llines.length + 3 + i,
+                                id: lines.length + 3 + i,
                                 style: {
                                     width: (sel.endCol - sel.startCol) as real * characterSize.x,
                                     height: characterSize.y,
@@ -525,12 +523,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
                     }
 
-                    let l: [][]HighlightToken = highlightedLines;
                     let total = 0;
-                    for tokens, i in l {
+                    for tokens, i in highlightedLines {
                         ui.div({
                             id: i,
-                        }, (): void => {
+                        }, () => {
                             if tokens.length > 0 {
                                 for t, i in tokens {
                                     ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
