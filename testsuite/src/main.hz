@@ -39,6 +39,7 @@ fn main(): int {
     cases_closure_param_inference.register(suite);
     cases_deferred_method_crash.register(suite);
     cases_reactive.register(suite);
+    cases_foreach_reactive.register(suite);
 
     return testsuite.runAll(config, suite);
 }

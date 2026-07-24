@@ -12386,9 +12386,18 @@ export class SemanticElaborator {
         // Runtime for-each loop: for element in array {}
         // Elaborate to semantic ForEachStatement, let lowering handle conversion to for-loop
 
-        // Step 1: Elaborate the array expression
-        const [arrayExpr, arrayExprId] = this.expr(s.value, undefined);
-        const arrayTypeUse = this.sr.typeUseNodes.get(arrayExpr.type);
+        // Step 1: Elaborate the array expression. Transparently unwrap any
+        // number of Reactive/ShallowReactive/Computed layers around the
+        // iterable itself, so `for x in someReactiveArray` works directly
+        // without requiring the caller to unwrap/cast it first -- exactly
+        // the same unwrap every other usage site (binary ops, member
+        // access, function arguments, ...) already gets for free.
+        let [arrayExpr, arrayExprId] = this.expr(s.value, undefined);
+        arrayExprId = this.unwrapReactiveOrComputedIfPossible(arrayExprId);
+        arrayExpr = this.sr.exprNodes.get(arrayExprId);
+        const arrayTypeUse = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(arrayExpr.type)
+        );
         const arrayType = this.sr.typeDefNodes.get(arrayTypeUse.type);
 
         // Step 2: Validate it's an array and extract element type
@@ -12403,7 +12412,33 @@ export class SemanticElaborator {
           );
         }
 
-        const elementTypeUse = arrayType.datatype;
+        // A deep reactive array (rx.reactive<[]T>()) promotes its element
+        // type to Reactive<T> so subscript reads/writes stay individually
+        // trackable (see makeReactiveDatatypeAvailable) -- but the loop body
+        // should see a plain, already-read T, matching every other
+        // reactive-unwrap usage site. Peel any Reactive/ShallowReactive/
+        // Computed layers off the element type here for the loop variable's
+        // declared type; Lower.ts's ForEachStatement handling mirrors this
+        // exact peel to emit the matching read(s) for the per-iteration value.
+        let elementTypeUse = arrayType.datatype;
+        {
+          let elementTypeDef = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(this.sr.e.resolveAlias(elementTypeUse))
+              .type
+          );
+          while (
+            elementTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+            elementTypeDef.variant ===
+              Semantic.ENode.ShallowReactiveDatatype ||
+            elementTypeDef.variant === Semantic.ENode.ComputedDatatype
+          ) {
+            elementTypeUse = elementTypeDef.wrappedType;
+            elementTypeDef = this.sr.typeDefNodes.get(
+              this.sr.typeUseNodes.get(this.sr.e.resolveAlias(elementTypeUse))
+                .type
+            );
+          }
+        }
 
         // Step 3: Create loop variable (element) with the array's element type
         const [_, loopVariableId] = this.sr.b.addSymbol(this.sr, {
