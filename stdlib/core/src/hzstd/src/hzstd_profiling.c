@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <time.h>
@@ -112,7 +113,8 @@ typedef struct {
                             // profiled thread's behalf; still meaningful on
                             // Windows (handler + stackwalker time).
   bool truncated; // Linux only: true if the unwind ran past the edge of the
-                  // captured stack snapshot (see HZSTD_PROFILING_PERF_STACK_SIZE)
+                  // captured stack snapshot (see context->perf_stack_size,
+                  // chosen per-session by hzstd_profiling_choose_stack_size)
                   // before reaching a natural end -- `pcs`/`depth` hold only
                   // the innermost frames that fit, real but incomplete.
   uint64_t lost_before; // Linux only: how many samples the kernel reports it
@@ -535,18 +537,30 @@ static uint64_t hzstd_perf_regs_mask(void) {
 // hzstd_profiling_sample_t::truncated (see hzstd_perf_access_mem) rather than
 // silently producing a shallower-looking call tree than reality.
 //
-// 65528 rather than perf's own smaller 8192 default: a real UI app's call
-// tree routinely stacks several architectural layers at once by the time a
-// sample lands deep in it -- application-level tree recursion, a renderer
-// layer, wgpu-native's (Rust) surface/texture acquisition path, the GC
-// allocator, libc -- and a debug build with preserved frame pointers and no
-// aggressive inlining spends noticeably more stack per frame than an
-// optimized one, so 8192 bytes turned out to only fit ~10-20 frames in
-// practice. 65528 is the practical ceiling real tools converge on for this
-// same kernel facility (e.g. `perf record --call-graph dwarf,65528`).
-// Comfortably larger, but not unbounded -- pathologically deep recursion can
-// still exceed it, which is exactly what the truncated flag is for.
-#define HZSTD_PROFILING_PERF_STACK_SIZE 65528
+// This is a ceiling, not a fixed request -- see
+// hzstd_profiling_choose_stack_size, which picks the actual per-session value
+// (context->perf_stack_size) up to this bound. 65528 rather than perf's own
+// smaller 8192 default: a real UI app's call tree routinely stacks several
+// architectural layers at once by the time a sample lands deep in it --
+// application-level tree recursion, a renderer layer, wgpu-native's (Rust)
+// surface/texture acquisition path, the GC allocator, libc -- and a debug
+// build with preserved frame pointers and no aggressive inlining spends
+// noticeably more stack per frame than an optimized one, so 8192 bytes turned
+// out to only fit ~10-20 frames in practice. 65528 is the practical ceiling
+// real tools converge on for this same kernel facility (e.g.
+// `perf record --call-graph dwarf,65528`). Comfortably larger, but not
+// unbounded -- pathologically deep recursion can still exceed it, which is
+// exactly what the truncated flag is for.
+#define HZSTD_PROFILING_PERF_STACK_SIZE_MAX 65528
+
+// Floor for the adaptive choice below: the exact size that earlier
+// measurements (see HZSTD_PROFILING_PERF_STACK_SIZE_MAX's comment) already
+// showed still captures *something* real, just shallow (~10-20 frames)
+// instead of a full tree. Never go below this even under the tightest
+// mlock budget -- a shallow-but-present sample is still far more useful than
+// no sample at all (PERF_RECORD_LOST), but going shallower than this was
+// never actually measured to still be worthwhile.
+#define HZSTD_PROFILING_PERF_STACK_SIZE_MIN 8192
 
 // One parsed PERF_RECORD_SAMPLE's registers/stack, passed to
 // hzstd_perf_access_mem/access_reg during one unwind (see
@@ -577,7 +591,7 @@ static __thread hzstd_perf_sample_regs_t *g_hzstd_perf_current_sample = NULL;
 // at all (CFI tables, globals: stable, safe to read live), or it *is* more of
 // the profiled thread's stack that simply wasn't captured (deep native call
 // chains, e.g. through the GC or a libc syscall wrapper, can easily exceed
-// HZSTD_PROFILING_PERF_STACK_SIZE). Reading the latter case live is wrong even
+// context->perf_stack_size). Reading the latter case live is wrong even
 // when it doesn't crash outright: that memory keeps changing after the
 // sample, so it no longer reflects what was actually running at the sampled
 // instant. Knowing the real bounds is what lets access_mem tell those two
@@ -782,8 +796,8 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
         // unw_step reads CFI bytes and stack memory through
         // hzstd_perf_access_mem above -- stack reads only ever reach as far
         // as this sample's captured snapshot; once a step needs a stack
-        // address outside it (deeper than HZSTD_PROFILING_PERF_STACK_SIZE
-        // captured this sample), access_mem returns an error, sets
+        // address outside it (deeper than what was actually captured this
+        // sample -- see context->perf_stack_size), access_mem returns an error, sets
         // g_hzstd_perf_current_sample_truncated, and unw_step stops -- same
         // as hitting the end of the stack, except we know there was real,
         // uncaptured stack above this point (see hzstd_perf_access_mem).
@@ -874,7 +888,8 @@ hzstd_profiling_write_raw_capture(FILE *f, uint64_t timeNs,
 
 // Reads one record written by hzstd_profiling_write_raw_capture back out.
 // `stackBuf` is a caller-owned scratch buffer of at least
-// HZSTD_PROFILING_PERF_STACK_SIZE bytes -- `out->stack` is pointed at it
+// context->perf_stack_size bytes (itself bounded by
+// HZSTD_PROFILING_PERF_STACK_SIZE_MAX) -- `out->stack` is pointed at it
 // rather than a fresh allocation, the same "short-lived scratch, valid only
 // until the next read" contract hzstd_profiling_drain_perf_ring's own
 // stack_scratch already has, since postprocessing (the only caller) is
@@ -1333,6 +1348,92 @@ static int hzstd_profiling_query_max_sample_rate(void) {
   fclose(f);
   return (scanned == 1 && rate > 0) ? rate : HZSTD_PROFILING_FALLBACK_RATE_HZ;
 }
+
+// The mmap sizing loop further down (see its own big comment) wants roughly a
+// quarter-second cushion of *samples* in the ring before the reader thread
+// has to drain it, so ordinary scheduling jitter doesn't turn into
+// PERF_RECORD_LOST. But that loop can only ever get as much locked ring
+// memory as this process's own RLIMIT_MEMLOCK allows, and unlike
+// kernel.perf_event_mlock_kb (a system-wide sysctl), raising RLIMIT_MEMLOCK's
+// *hard* limit needs CAP_SYS_RESOURCE (same privilege tier as root) -- not
+// something a profiler should ever ask for or assume it has. So rather than
+// always requesting HZSTD_PROFILING_PERF_STACK_SIZE_MAX bytes of stack per
+// sample and hoping the ring still ends up with a usable cushion after
+// whatever mlock-driven backoff that forces, this picks the per-sample stack
+// size *first*, sized to fit the actual quarter-second cushion inside
+// whatever budget this process genuinely has -- trading captured call-stack
+// depth for headroom against total sample loss, which is the trade real
+// profiling data benefits from (a shallower-than-ideal sample beats no
+// sample at all). On a box with a generous RLIMIT_MEMLOCK this still
+// converges on the full MAX; on a tightly constrained one (a container, a
+// dev sandbox, ...) it automatically asks for less depth instead of quietly
+// ending up with a ring too thin to survive ordinary scheduling jitter.
+static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz) {
+  struct rlimit memlockLimit;
+  if (getrlimit(RLIMIT_MEMLOCK, &memlockLimit) != 0) {
+    return HZSTD_PROFILING_PERF_STACK_SIZE_MAX;
+  }
+
+  // Raising the *soft* limit up to the already-granted hard limit needs no
+  // special privilege -- any process may always do this for itself (only
+  // raising the hard limit itself is privileged). Some environments default
+  // the soft limit conservatively low while leaving real headroom in the
+  // hard limit; this claims it if it's there. Best-effort: on failure, sizing
+  // below just proceeds with whatever the original soft limit already was.
+  if (memlockLimit.rlim_cur != RLIM_INFINITY &&
+      (memlockLimit.rlim_max == RLIM_INFINITY ||
+       memlockLimit.rlim_max > memlockLimit.rlim_cur)) {
+    struct rlimit raised = {.rlim_cur = memlockLimit.rlim_max,
+                            .rlim_max = memlockLimit.rlim_max};
+    if (setrlimit(RLIMIT_MEMLOCK, &raised) == 0) {
+      memlockLimit = raised;
+    }
+  }
+
+  if (memlockLimit.rlim_cur == RLIM_INFINITY) {
+    return HZSTD_PROFILING_PERF_STACK_SIZE_MAX;
+  }
+
+  size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
+  // One page always goes to the mmap's metadata header, never sample data --
+  // matches the "(1 + dataPages) * pageSize" shape of the mmap length below.
+  size_t budgetBytes = (size_t)memlockLimit.rlim_cur > pageSize
+                            ? (size_t)memlockLimit.rlim_cur - pageSize
+                            : 0;
+
+  // Every sample reserves this many bytes in the ring besides its stack dump,
+  // no matter how deep that dump actually is -- must stay in sync with
+  // `bytesPerSample` in hzstd_profiling_start.
+  size_t fixedOverhead = sizeof(struct perf_event_header) +
+      sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ +
+      HZSTD_PERF_REG_COUNT * sizeof(uint64_t) +
+      sizeof(uint64_t) /* stack size */ + sizeof(uint64_t) /* dyn_size */;
+
+  // Same quarter-second target as the ring-page sizing loop -- this is
+  // choosing the other half of that same budget equation (bytes per sample)
+  // before that loop picks a page count, so the two stay consistent.
+  size_t cushionSamples = (size_t)effectiveRateHz / 4;
+  if (cushionSamples == 0) {
+    cushionSamples = 1;
+  }
+
+  if (budgetBytes / cushionSamples <= fixedOverhead) {
+    return HZSTD_PROFILING_PERF_STACK_SIZE_MIN;
+  }
+  size_t affordableStack = budgetBytes / cushionSamples - fixedOverhead;
+
+  if (affordableStack < HZSTD_PROFILING_PERF_STACK_SIZE_MIN) {
+    return HZSTD_PROFILING_PERF_STACK_SIZE_MIN;
+  }
+  if (affordableStack > HZSTD_PROFILING_PERF_STACK_SIZE_MAX) {
+    return HZSTD_PROFILING_PERF_STACK_SIZE_MAX;
+  }
+  // The kernel requires sample_stack_user to be a multiple of 8 (it's what
+  // HZSTD_PROFILING_PERF_STACK_SIZE_MAX == 65528 == 8192*8 - 8 already
+  // respects); round down rather than up so this never exceeds the budget
+  // just computed.
+  return affordableStack & ~(size_t)7;
+}
 #elif defined(HAZE_PLATFORM_WIN32)
 // Unlike Linux, nothing here auto-throttles based on real overhead -- the
 // SuspendThread-based trigger's cost scales directly with how often we ask
@@ -1487,7 +1588,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   sigaction(SIGSEGV, &crashGuardAction, &g_hzstd_perf_prev_segv_action);
   sigaction(SIGBUS, &crashGuardAction, &g_hzstd_perf_prev_bus_action);
 
-  context->perf_stack_size = HZSTD_PROFILING_PERF_STACK_SIZE;
+  context->perf_stack_size = hzstd_profiling_choose_stack_size(effectiveRateHz);
 
   struct perf_event_attr attr = {0};
   attr.type = PERF_TYPE_SOFTWARE;
@@ -1529,15 +1630,19 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // Ring buffer must be (1 + 2^n) pages; size it so it can ideally absorb
   // roughly a quarter-second of samples at the configured rate/stack size
   // before the reader thread has to drain it, tolerating normal scheduling
-  // jitter without the kernel dropping samples (PERF_RECORD_LOST). That ideal
-  // size can easily exceed the mmap'd-and-locked memory an unprivileged
-  // process is allowed for perf ring buffers (kernel.perf_event_mlock_kb,
-  // 512 KiB by default, shared across every perf event the *user* has open)
-  // -- mmap fails with EPERM past that, not a graceful "give me less"
-  // response. So this starts from the ideal size and just keeps halving
-  // until mmap actually succeeds; a smaller ring only means samples can be
-  // dropped under heavier scheduling jitter, which is a fine degradation
-  // compared to refusing to profile at all.
+  // jitter without the kernel dropping samples (PERF_RECORD_LOST).
+  // context->perf_stack_size was already chosen by
+  // hzstd_profiling_choose_stack_size to make that same quarter-second
+  // target actually fit inside this process's real RLIMIT_MEMLOCK budget, so
+  // this loop should normally succeed on (close to) its first try. It can
+  // still fall short in principle -- RLIMIT_MEMLOCK can change between that
+  // call and this one, or other perf events/mlocked allocations in this
+  // process can be sharing the same budget -- so this keeps the halving
+  // fallback as a last resort: mmap fails with EPERM past the budget, not a
+  // graceful "give me less" response, so this starts from the target size and
+  // halves until mmap actually succeeds. A smaller ring at that point only
+  // means samples can be dropped under heavier scheduling jitter, which is a
+  // fine degradation compared to refusing to profile at all.
   size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
   size_t bytesPerSample = sizeof(struct perf_event_header) +
       sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ +
@@ -1563,7 +1668,8 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   if (context->perf_mmap_base == MAP_FAILED) {
     hzstd_panic_fmt(
         "Failed to mmap profiling ring buffer even at the minimum size "
-        "(errno=%d): check kernel.perf_event_mlock_kb",
+        "(errno=%d): check this process's RLIMIT_MEMLOCK and "
+        "kernel.perf_event_mlock_kb",
         errno);
   }
   context->perf_actual_ring_bytes = context->perf_mmap_len;
@@ -1591,6 +1697,18 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   if (!context->raw_samples_file) {
     hzstd_panic("Failed to create temp file for profiling raw samples");
   }
+  // glibc's default stdio buffer (a few KB) is smaller than most stack
+  // captures, so without this almost every hzstd_profiling_write_raw_capture
+  // call forces a real write() syscall -- on the same reader thread that must
+  // keep re-entering poll()/drain to stay ahead of the kernel ring before it
+  // wraps (see hzstd_profiling_choose_stack_size for just how little slack
+  // that ring actually has). A large stdio buffer lets many samples' worth of
+  // writes coalesce into far fewer, larger syscalls instead, so an
+  // occasional slow write() has far less chance of stalling that thread long
+  // enough to lose samples. Passing NULL for the buffer itself lets glibc
+  // allocate and own it, freed automatically at fclose. Best-effort: on
+  // failure this just keeps the (smaller, syscall-heavier) default.
+  setvbuf(context->raw_samples_file, NULL, _IOFBF, 4 * 1024 * 1024);
 
   int result = pthread_create(&context->reader_thread, NULL,
                               hzstd_profiling_reader_thread, context);
