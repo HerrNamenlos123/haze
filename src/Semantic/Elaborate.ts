@@ -9135,17 +9135,22 @@ export class SemanticElaborator {
       );
     }
 
-    // Reactive<DynamicArray<T>> member access must be intercepted BEFORE the generic
-    // reactive unwrap, because these members operate on the reactive array struct itself.
+    // Deep Reactive<DynamicArray<T>> member access must be intercepted BEFORE the
+    // generic reactive unwrap, because these members (push/pop/length/reserve)
+    // operate on the hzstd_reactive_array_t wrapper itself, not on a plain array.
+    //
+    // ShallowReactive<DynamicArray<T>> is deliberately NOT intercepted here: a
+    // shallow-reactive array has no hzstd_reactive_array_t wrapper at all (see
+    // rx.shallowReactive in reactive.hz) -- it's a plain hzstd_reactive_cell_t
+    // like every other shallow-reactive value. So it falls through to the
+    // generic reactive unwrap just below, which converts it to a plain
+    // DynamicArrayDatatype, and member access resolves against that normally
+    // (giving .push/.pop/.length/indexing as plain, untracked array ops).
     {
       const preUnwrapResolvedTypeDef = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
       );
-      if (
-        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
-        preUnwrapResolvedTypeDef.variant ===
-          Semantic.ENode.ShallowReactiveDatatype
-      ) {
+      if (preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(preUnwrapResolvedTypeDef.wrappedType)
@@ -9919,31 +9924,27 @@ export class SemanticElaborator {
     );
   }
 
+  // Only ever reached for the DEEP case (rx.reactive<[]T>()) -- see the call
+  // site's comment. ShallowReactive<[]T> has no hzstd_reactive_array_t
+  // wrapper to operate on and never reaches this function.
   private resolveMemberAccessOnReactiveArray(
     exprId: Semantic.ExprId,
     name: string,
-    preUnwrapTypeDef:
-      | Semantic.ReactiveDatatypeDef
-      | Semantic.ShallowReactiveDatatypeDef,
+    preUnwrapTypeDef: Semantic.ReactiveDatatypeDef,
     innerArrayType: Semantic.DynamicArrayDatatypeDef,
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
-    const isDeepReactive =
-      preUnwrapTypeDef.variant === Semantic.ENode.ReactiveDatatype;
+    assert(preUnwrapTypeDef.variant === Semantic.ENode.ReactiveDatatype);
 
     // After type promotion, deep-reactive inner array elements are Reactive<T>.
-    // Shallow-reactive inner array elements are T directly.
     const promotedElemTypeId = innerArrayType.datatype;
     const promotedElemTypeDef = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(promotedElemTypeId).type
     );
+    assert(promotedElemTypeDef.variant === Semantic.ENode.ReactiveDatatype);
     // User-facing element type (T, not Reactive<T>)
-    const userElemTypeId =
-      isDeepReactive &&
-      promotedElemTypeDef.variant === Semantic.ENode.ReactiveDatatype
-        ? promotedElemTypeDef.wrappedType
-        : promotedElemTypeId;
+    const userElemTypeId = promotedElemTypeDef.wrappedType;
 
     const cName = (typeId: Semantic.TypeUseId): string => {
       const m = Semantic.mangleTypeUse(this.sr, typeId);
@@ -10014,10 +10015,8 @@ export class SemanticElaborator {
 
     if (name === "push") {
       const suffix = Semantic.mangleTypeUse(this.sr, userElemTypeId).name;
-      const funcname = `__hz_reactive_array_push_${suffix}_${isDeepReactive ? "d" : "s"}`;
-      const body = isDeepReactive
-        ? `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CREATE(${promotedElemCName}, ${userElemCName}, element));");`
-        : `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${userElemCName}, element);");`;
+      const funcname = `__hz_reactive_array_push_${suffix}`;
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
       return makeCallable(
         ensureSyntheticMethod(
           funcname,
@@ -13811,7 +13810,7 @@ export class SemanticElaborator {
         HazeErrorCode.MultidimensionalArraySubscriptingNotImplementedYet
       );
     }
-    const [value, valueId] = this.expr(arraySubscript.expr, undefined);
+    let [value, valueId] = this.expr(arraySubscript.expr, undefined);
 
     const rawIndex = arraySubscript.indices[0];
     if (rawIndex.type === "slice") {
@@ -13958,21 +13957,45 @@ export class SemanticElaborator {
       this.sr.typeUseNodes.get(index.type).type
     );
 
+    // ShallowReactive<DynamicArray<T>> has no hzstd_reactive_array_t wrapper
+    // (see reactive.hz) -- unwrap it to the plain array here so the generic
+    // subscript logic below applies, giving a plain, untracked element read.
+    // This must happen BEFORE exprType/valueType are captured, since those
+    // are used by the plain-array path just below.
+    {
+      const preUnwrapTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
+      );
+      if (
+        preUnwrapTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+      ) {
+        const innerTypeDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(preUnwrapTypeDef.wrappedType)
+          ).type
+        );
+        if (innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          valueId = this.unwrapReactiveOrComputedIfPossible(valueId);
+          value = this.sr.exprNodes.get(valueId);
+        }
+      }
+    }
+
     const exprTypeUse = this.sr.typeUseNodes.get(value.type);
     const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
     const valueType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(value.type).type
     );
 
-    // Intercept Reactive<DynamicArray<T>> subscript before plain array handling
+    // Intercept deep Reactive<DynamicArray<T>> subscript before plain array
+    // handling -- indexing it needs to go through the hzstd_reactive_array_t
+    // wrapper for per-element tracking, which elaborateReactiveArraySubscript
+    // sets up. (Shallow was already unwrapped above.)
     {
       const resolvedExprType = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
       );
-      if (
-        resolvedExprType.variant === Semantic.ENode.ReactiveDatatype ||
-        resolvedExprType.variant === Semantic.ENode.ShallowReactiveDatatype
-      ) {
+      if (resolvedExprType.variant === Semantic.ENode.ReactiveDatatype) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(resolvedExprType.wrappedType)
@@ -14159,6 +14182,9 @@ export class SemanticElaborator {
     );
   }
 
+  // Only ever reached for the DEEP case (rx.reactive<[]T>()) -- see the call
+  // site's comment. ShallowReactive<[]T> is unwrapped to a plain array
+  // before subscripting and never reaches this function.
   private elaborateReactiveArraySubscript(
     exprId: Semantic.ExprId,
     innerArrayType: Semantic.DynamicArrayDatatypeDef,
@@ -14166,7 +14192,7 @@ export class SemanticElaborator {
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
-    // innerArrayType.datatype is Reactive<T> for deep-reactive, T for shallow
+    // innerArrayType.datatype is Reactive<T> (deep-reactive promotion).
     const promotedElemTypeId = innerArrayType.datatype;
     const promotedElemMangle = Semantic.mangleTypeUse(
       this.sr,

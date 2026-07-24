@@ -658,6 +658,12 @@ export namespace Lowered {
   export type ReactiveDatatype = {
     variant: ENode.ReactiveDatatype;
     datatype: TypeUseId;
+    // true for rx.shallowReactive<T>(), false for rx.reactive<T>() (deep).
+    // Both collapse to this single Lowered node, but the C representation
+    // differs when `datatype` is a DynamicArrayDatatype: shallow is a plain
+    // hzstd_reactive_cell_t*, deep is a hzstd_reactive_array_t*. See the
+    // shallow-array design note atop hzstd_reactive_array.h.
+    shallow: boolean;
     name: NameSet;
   };
 
@@ -867,6 +873,28 @@ function makeIntrinsicCall(
     takesReturnArena: false,
     type: returnType,
   });
+}
+
+// True iff `reactiveTypeUseId` is a deep `rx.reactive<[]T>()` (never a
+// ShallowReactive) whose wrapped type is a dynamic array. Those are backed
+// by hzstd_reactive_array_t, not hzstd_reactive_cell_t, so a whole-value
+// `:=` or read has to go through hzstd_reactive_array_write/_read instead of
+// the generic HZSTD_REACTIVE_CELL_WRITE/_READ macros -- see the design note
+// atop hzstd_reactive_array.h.
+function isDeepReactiveArray(
+  lr: Lowered.Module,
+  reactiveTypeUseId: Semantic.TypeUseId
+): boolean {
+  const typeDef = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(reactiveTypeUseId)).type
+  );
+  if (typeDef.variant !== Semantic.ENode.ReactiveDatatype) {
+    return false;
+  }
+  const innerTypeDef = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(typeDef.wrappedType)).type
+  );
+  return innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype;
 }
 
 const shouldBeOptimizedToNullptr = (
@@ -2082,9 +2110,25 @@ export function lowerExpr(
       const valueExprTypeId = lowerTypeUse(lr, valueExpr.type);
       const valueExprType = lr.typeUseNodes.get(valueExprTypeId);
 
+      if (isDeepReactiveArray(lr, expr.type)) {
+        // expr.value was already converted (in Elaborate.ts) to this
+        // reactive type's wrappedType, which for a deep array is the
+        // promoted `[]Reactive<T>` -- exactly what hzstd_reactive_array_t's
+        // `data` field holds. No per-element repacking needed, just swap it in.
+        return makeIntrinsicCall(
+          lr,
+          "hzstd_reactive_array_write",
+          [
+            lowerExpr(lr, expr.target, statements, instanceInfo)[1],
+            lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+          ],
+          reactiveTypeId
+        );
+      }
+
       return makeIntrinsicCall(
         lr,
-        "HZSTD_REACTIVE_WRITE",
+        "HZSTD_REACTIVE_CELL_WRITE",
         [
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
@@ -2159,9 +2203,21 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       const valueTypeId = lowerTypeUse(lr, expr.type);
       const valueType = lr.typeUseNodes.get(valueTypeId);
 
+      if (isDeepReactiveArray(lr, lr.sr.exprNodes.get(expr.value).type)) {
+        // Hand back the backing array of per-element Reactive<T> cells
+        // directly -- that already IS this reactive type's promoted
+        // `[]Reactive<T>` wrapped value, see hzstd_reactive_array_read.
+        return makeIntrinsicCall(
+          lr,
+          "hzstd_reactive_array_read",
+          [lowerExpr(lr, expr.value, statements, instanceInfo)[1]],
+          valueTypeId
+        );
+      }
+
       return makeIntrinsicCall(
         lr,
-        "HZSTD_REACTIVE_READ",
+        "HZSTD_REACTIVE_CELL_READ",
         [
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
@@ -3195,13 +3251,15 @@ export function lowerTypeDef(
       return lr.loweredTypeDefs.get(typeId)!;
     }
     const wrapped = lowerTypeUse(lr, type.wrappedType);
+    const shallow = type.variant === Semantic.ENode.ShallowReactiveDatatype;
 
     // Do another cache lookup for deduplication (should not be needed ?!?)
     for (const [_, reactiveId] of lr.loweredTypeDefs) {
       const reactive = lr.typeDefNodes.get(reactiveId);
       if (
         reactive.variant === Lowered.ENode.ReactiveDatatype &&
-        reactive.datatype === wrapped
+        reactive.datatype === wrapped &&
+        reactive.shallow === shallow
       ) {
         return reactiveId;
       }
@@ -3210,6 +3268,7 @@ export function lowerTypeDef(
     const [_, pId] = Lowered.addTypeDef<Lowered.ReactiveDatatype>(lr, {
       variant: Lowered.ENode.ReactiveDatatype,
       datatype: wrapped,
+      shallow: shallow,
       name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
     });
     lr.loweredTypeDefs.set(typeId, pId);

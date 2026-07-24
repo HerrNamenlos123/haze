@@ -689,7 +689,15 @@ class CodeGenerator {
           const wrappedTypeDef = this.lr.typeDefNodes.get(
             this.lr.typeUseNodes.get(symbol.datatype).type
           );
-          if (wrappedTypeDef.variant === Lowered.ENode.DynamicArrayDatatype) {
+          // Only a deep rx.reactive<[]T>() uses the hzstd_reactive_array_t
+          // representation (per-element cells + a version counter).
+          // rx.shallowReactive<[]T>() is a plain hzstd_reactive_cell_t like
+          // every other shallow-reactive value -- see the design note atop
+          // hzstd_reactive_array.h.
+          if (
+            !symbol.shallow &&
+            wrappedTypeDef.variant === Lowered.ENode.DynamicArrayDatatype
+          ) {
             this.out.type_declarations.writeLine(
               `typedef hzstd_reactive_array_t* ${this.mangleTypeDef(symbol)};`
             );
