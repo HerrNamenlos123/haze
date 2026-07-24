@@ -1,0 +1,178 @@
+
+// Regression coverage for `for x in <reactive array>` working directly,
+// without requiring the caller to unwrap/cast the array first.
+//
+// Context: for-each elaboration checked the iterable's raw type variant
+// against FixedArrayDatatype/DynamicArrayDatatype with no reactive unwrap
+// at all, so `for x in someReactiveArray` always failed with
+// "For-each loop requires an array type, but got 'rx.ShallowReactive<...>'"
+// (H7144) -- even though every other usage site (binary ops, member
+// access, function arguments, ...) already unwraps Reactive/ShallowReactive/
+// Computed transparently. On top of that, a DEEP reactive array's element
+// type is itself promoted to Reactive<T> (see makeReactiveDatatypeAvailable
+// in Elaborate.ts), so unwrapping the array alone isn't enough -- each
+// per-iteration element also needs its own read.
+//
+// The fix unwraps the iterable itself (any number of Reactive/
+// ShallowReactive/Computed layers) before validating it's an array, and
+// separately peels the same layers off the *element* type for the loop
+// variable, with Lower.ts emitting a real read call per layer (not just
+// relabeling the type) so dependency tracking still works correctly inside
+// a for-each running in a computed.
+
+namespace cases_foreach_reactive {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "for-each unwraps shallow/deep/computed reactive arrays directly, with or without an index variable, nested in a struct field, and for plain/fixed/manually-reactive-element arrays (regression)",
+            """
+struct Doc {
+    items: []int;
+    fn operator!=(other: Doc) { return true; }
+}
+
+fn caseShallowDirect() {
+    let arr = rx.shallowReactive<[]str>(["a", "b", "c"]);
+    let seen = "";
+    for s in arr {
+        seen = f"{seen}{s}";
+    }
+    assert(seen == "abc", "for-each over a shallow reactive array directly");
+}
+
+fn caseDeepDirect() {
+    let arr = rx.reactive<[]int>([1, 2, 3]);
+    let total = 0;
+    for s in arr {
+        total = total + s;
+    }
+    assert(total == 6, "for-each over a deep reactive array directly, elements read down to plain int");
+}
+
+fn caseDeepWithIndex() {
+    let arr = rx.reactive<[]int>([10, 20, 30]);
+    let total = 0;
+    for s, i in arr {
+        total = total + s + i;
+    }
+    assert(total == 63, "for-each with an index variable over a deep reactive array");
+}
+
+fn caseComputedDirect() {
+    let arr = rx.shallowReactive<[]int>([1, 2, 3]);
+    let c = rx.computed(() => arr);
+    let total = 0;
+    for s in c {
+        total = total + s;
+    }
+    assert(total == 6, "for-each over a computed array directly");
+}
+
+fn caseNestedDeepArrayField() {
+    let doc = rx.reactive<Doc>(Doc { items: [1, 2, 3] });
+    let total = 0;
+    for s in doc.items {
+        total = total + s;
+    }
+    assert(total == 6, "for-each over a deep-reactive struct's array field directly");
+}
+
+fn caseRegressionPlainFixedAndManualReactiveElements() {
+    let normal: []int = [1, 2, 3];
+    let normalTotal = 0;
+    for x in normal {
+        normalTotal = normalTotal + x;
+    }
+    assert(normalTotal == 6, "for-each over a plain (non-reactive) array is unaffected");
+
+    let fixed: [3]int = [4, 5, 6];
+    let fixedTotal = 0;
+    for x in fixed {
+        fixedTotal = fixedTotal + x;
+    }
+    assert(fixedTotal == 15, "for-each over a fixed-size array is unaffected");
+
+    let elems: []rx.Reactive<int> = [rx.reactive<int>(7), rx.reactive<int>(8)];
+    let elemsTotal = 0;
+    for x in elems {
+        elemsTotal = elemsTotal + x;
+    }
+    assert(elemsTotal == 15, "for-each over a manually-built []Reactive<int> (no reactive array container at all) still reads each element down to plain int");
+}
+
+fn main(): int {
+    caseShallowDirect();
+    caseDeepDirect();
+    caseDeepWithIndex();
+    caseComputedDirect();
+    caseNestedDeepArrayField();
+    caseRegressionPlainFixedAndManualReactiveElements();
+    fmt.println("OK");
+    return 0;
+}
+""",
+            "OK"
+        );
+
+        s.run(
+            "for-each over a reactive array inside rx.computed performs a real per-element read (not a type relabel): dependency tracking and shallow-vs-deep semantics both still hold",
+            """
+fn caseDeepArrayForEachInsideComputedTracksDependency() {
+    let runs = 0;
+    let arr = rx.reactive<[]int>([1, 2, 3]);
+    let sum = rx.computed(() => {
+        runs = runs + 1;
+        let total = 0;
+        for s in arr {
+            total = total + s;
+        }
+        return total;
+    });
+    assert(sum == 6, "initial sum");
+    assert(runs == 1, "one compute so far");
+    assert(sum == 6, "cached read");
+    assert(runs == 1, "cached read must not recompute");
+
+    arr.push(4);
+    assert(sum == 10, "sum picks up the pushed element");
+    assert(runs == 2, "exactly one recompute after push");
+}
+
+fn caseShallowArrayForEachInsideComputedStillUntrackedOnPush() {
+    let runs = 0;
+    let arr = rx.shallowReactive<[]int>([1, 2, 3]);
+    let sum = rx.computed(() => {
+        runs = runs + 1;
+        let total = 0;
+        for s in arr {
+            total = total + s;
+        }
+        return total;
+    });
+    assert(sum == 6, "initial sum");
+    assert(runs == 1, "one compute so far");
+
+    // A shallow array is still a dumb shell (see cases_reactive.hz) -- being
+    // iterable now doesn't change that push() is untracked. Only a
+    // whole-value `:=` should notify.
+    arr.push(4);
+    assert(sum == 6, "push into a shallow array must NOT notify, even though it's now iterable directly");
+    assert(runs == 1, "no recompute from push");
+
+    arr := arr;
+    assert(sum == 10, ":= re-observes current contents, including the earlier push");
+    assert(runs == 2, "exactly one recompute after :=");
+}
+
+fn main(): int {
+    caseDeepArrayForEachInsideComputedTracksDependency();
+    caseShallowArrayForEachInsideComputedStillUntrackedOnPush();
+    fmt.println("OK");
+    return 0;
+}
+""",
+            "OK"
+        );
+    }
+}

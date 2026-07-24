@@ -658,6 +658,12 @@ export namespace Lowered {
   export type ReactiveDatatype = {
     variant: ENode.ReactiveDatatype;
     datatype: TypeUseId;
+    // true for rx.shallowReactive<T>(), false for rx.reactive<T>() (deep).
+    // Both collapse to this single Lowered node, but the C representation
+    // differs when `datatype` is a DynamicArrayDatatype: shallow is a plain
+    // hzstd_reactive_cell_t*, deep is a hzstd_reactive_array_t*. See the
+    // shallow-array design note atop hzstd_reactive_array.h.
+    shallow: boolean;
     name: NameSet;
   };
 
@@ -867,6 +873,145 @@ function makeIntrinsicCall(
     takesReturnArena: false,
     type: returnType,
   });
+}
+
+// True iff `reactiveTypeUseId` is a deep `rx.reactive<[]T>()` (never a
+// ShallowReactive) whose wrapped type is a dynamic array. Those are backed
+// by hzstd_reactive_array_t, not hzstd_reactive_cell_t, so a whole-value
+// `:=` or read has to go through hzstd_reactive_array_write/_read instead of
+// the generic HZSTD_REACTIVE_CELL_WRITE/_READ macros -- see the design note
+// atop hzstd_reactive_array.h.
+function isDeepReactiveArray(
+  lr: Lowered.Module,
+  reactiveTypeUseId: Semantic.TypeUseId
+): boolean {
+  const typeDef = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(reactiveTypeUseId)).type
+  );
+  if (typeDef.variant !== Semantic.ENode.ReactiveDatatype) {
+    return false;
+  }
+  const innerTypeDef = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(typeDef.wrappedType)).type
+  );
+  return innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype;
+}
+
+// Reads through one Reactive<T>/ShallowReactive<T> cell. Mirrors the
+// non-array branch of the ReactiveReadExpr case below -- factored out so
+// ForEachStatement lowering can apply the same read per array element
+// (deep reactive arrays store each element as its own plain
+// hzstd_reactive_cell_t, never as a nested hzstd_reactive_array_t, so this
+// is always the right read regardless of nesting depth -- see the
+// create-from-plain helper in hzstd_reactive_array.h).
+function lowerReactiveCellRead(
+  lr: Lowered.Module,
+  rawExprId: Lowered.ExprId,
+  targetTypeUseId: Lowered.TypeUseId
+): Lowered.ExprId {
+  const targetType = lr.typeUseNodes.get(targetTypeUseId);
+  return makeIntrinsicCall(
+    lr,
+    "HZSTD_REACTIVE_CELL_READ",
+    [
+      Lowered.addExpr(lr, {
+        variant: Lowered.ENode.SymbolValueExpr,
+        name: targetType.name,
+        type: targetTypeUseId,
+      })[1],
+      rawExprId,
+    ],
+    targetTypeUseId
+  )[1];
+}
+
+// Reads through one Computed<T>. Mirrors the ComputedReadExpr case below --
+// factored out so ForEachStatement lowering can apply the same read per
+// array element.
+function lowerComputedCellRead(
+  lr: Lowered.Module,
+  rawExprId: Lowered.ExprId,
+  rawTypeUseId: Lowered.TypeUseId,
+  targetTypeUseId: Lowered.TypeUseId,
+  sourceloc: SourceLoc
+): Lowered.ExprId {
+  const statements: Lowered.StatementId[] = [];
+  storeInTempVarAndGet(
+    lr,
+    rawTypeUseId,
+    rawExprId,
+    sourceloc,
+    statements,
+    "__tmp_computed"
+  );
+  const result = storeInTempVarAndGet(
+    lr,
+    targetTypeUseId,
+    null,
+    sourceloc,
+    statements,
+    "__tmp_result"
+  )[1];
+  statements.push(
+    Lowered.addStatement(lr, {
+      variant: Lowered.ENode.InlineCStatement,
+      value: `void* __slot = hzstd_computed_read(__tmp_computed);
+hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
+      sourceloc: sourceloc,
+    })[1]
+  );
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.BlockScopeExpr,
+    block: Lowered.addBlockScope(lr, {
+      definesVariables: true,
+      emittedExpr: result,
+      statements: statements,
+    })[1],
+    type: targetTypeUseId,
+    sourceloc: sourceloc,
+  })[1];
+}
+
+// Peels every Reactive/ShallowReactive/Computed layer off a per-iteration
+// array element value, mirroring the same peel Elaborate.ts already applied
+// to compute the ForEachStatement loop variable's (fully unwrapped) type.
+// `rawSemTypeUseId` is the array's *un-peeled* Semantic element type
+// (DynamicArrayDatatype.datatype); the returned expr's type matches the
+// loop variable's declared (peeled) type exactly.
+function lowerForEachElementRead(
+  lr: Lowered.Module,
+  rawExprId: Lowered.ExprId,
+  rawSemTypeUseId: Semantic.TypeUseId,
+  sourceloc: SourceLoc
+): Lowered.ExprId {
+  let value = rawExprId;
+  let semTypeUseId = rawSemTypeUseId;
+  let semTypeDef = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(semTypeUseId)).type
+  );
+  while (
+    semTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+    semTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
+    semTypeDef.variant === Semantic.ENode.ComputedDatatype
+  ) {
+    const nextSemTypeUseId = semTypeDef.wrappedType;
+    const nextTypeUseId = lowerTypeUse(lr, nextSemTypeUseId);
+    value =
+      semTypeDef.variant === Semantic.ENode.ComputedDatatype
+        ? lowerComputedCellRead(
+            lr,
+            value,
+            lowerTypeUse(lr, semTypeUseId),
+            nextTypeUseId,
+            sourceloc
+          )
+        : lowerReactiveCellRead(lr, value, nextTypeUseId);
+    semTypeUseId = nextSemTypeUseId;
+    semTypeDef = lr.sr.typeDefNodes.get(
+      lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(semTypeUseId)).type
+    );
+  }
+  return value;
 }
 
 const shouldBeOptimizedToNullptr = (
@@ -2082,9 +2227,25 @@ export function lowerExpr(
       const valueExprTypeId = lowerTypeUse(lr, valueExpr.type);
       const valueExprType = lr.typeUseNodes.get(valueExprTypeId);
 
+      if (isDeepReactiveArray(lr, expr.type)) {
+        // expr.value was already converted (in Elaborate.ts) to this
+        // reactive type's wrappedType, which for a deep array is the
+        // promoted `[]Reactive<T>` -- exactly what hzstd_reactive_array_t's
+        // `data` field holds. No per-element repacking needed, just swap it in.
+        return makeIntrinsicCall(
+          lr,
+          "hzstd_reactive_array_write",
+          [
+            lowerExpr(lr, expr.target, statements, instanceInfo)[1],
+            lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+          ],
+          reactiveTypeId
+        );
+      }
+
       return makeIntrinsicCall(
         lr,
-        "HZSTD_REACTIVE_WRITE",
+        "HZSTD_REACTIVE_CELL_WRITE",
         [
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
@@ -2159,9 +2320,21 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       const valueTypeId = lowerTypeUse(lr, expr.type);
       const valueType = lr.typeUseNodes.get(valueTypeId);
 
+      if (isDeepReactiveArray(lr, lr.sr.exprNodes.get(expr.value).type)) {
+        // Hand back the backing array of per-element Reactive<T> cells
+        // directly -- that already IS this reactive type's promoted
+        // `[]Reactive<T>` wrapped value, see hzstd_reactive_array_read.
+        return makeIntrinsicCall(
+          lr,
+          "hzstd_reactive_array_read",
+          [lowerExpr(lr, expr.value, statements, instanceInfo)[1]],
+          valueTypeId
+        );
+      }
+
       return makeIntrinsicCall(
         lr,
-        "HZSTD_REACTIVE_READ",
+        "HZSTD_REACTIVE_CELL_READ",
         [
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
@@ -3195,13 +3368,15 @@ export function lowerTypeDef(
       return lr.loweredTypeDefs.get(typeId)!;
     }
     const wrapped = lowerTypeUse(lr, type.wrappedType);
+    const shallow = type.variant === Semantic.ENode.ShallowReactiveDatatype;
 
     // Do another cache lookup for deduplication (should not be needed ?!?)
     for (const [_, reactiveId] of lr.loweredTypeDefs) {
       const reactive = lr.typeDefNodes.get(reactiveId);
       if (
         reactive.variant === Lowered.ENode.ReactiveDatatype &&
-        reactive.datatype === wrapped
+        reactive.datatype === wrapped &&
+        reactive.shallow === shallow
       ) {
         return reactiveId;
       }
@@ -3210,6 +3385,7 @@ export function lowerTypeDef(
     const [_, pId] = Lowered.addTypeDef<Lowered.ReactiveDatatype>(lr, {
       variant: Lowered.ENode.ReactiveDatatype,
       datatype: wrapped,
+      shallow: shallow,
       name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
     });
     lr.loweredTypeDefs.set(typeId, pId);
@@ -3561,6 +3737,16 @@ function lowerStatement(
         index: indexSymbolExpr,
         type: loopVarType,
       })[1];
+      // A deep reactive array's elements are Reactive<T> cells (see
+      // Elaborate.ts's matching peel of the loop variable's declared type)
+      // -- read through however many layers deep that goes so the body sees
+      // a plain, already-read value.
+      loopVariableValue = lowerForEachElementRead(
+        lr,
+        loopVariableValue,
+        arrayType.datatype,
+        semanticForeachStmt.sourceloc
+      );
       if (loopVariable.requiresHoisting) {
         const original = storeInTempVarAndGet(
           lr,

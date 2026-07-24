@@ -1567,6 +1567,20 @@ export class SemanticElaborator {
     }
     if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
       const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
+      // The callee's underlying function type can still be a placeholder here: a bound
+      // method value (e.g. `this.foo`, wrapped in CallableDatatype) can reference a
+      // function whose body -- and therefore whose inferred return type -- is still being
+      // elaborated further up the call stack (a genuine, if sometimes indirect, mutual
+      // recursion). The plain (unbound) function-call path below already reports this
+      // clearly instead of crashing; give bound method calls the same treatment rather
+      // than asserting on a reachable condition.
+      if (ftype.variant === Semantic.ENode.DeferredFunctionDatatype) {
+        throw new CompilerError(
+          `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+          callExpr.sourceloc,
+          HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart
+        );
+      }
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
       const params = ftype.parameters;
       const hasParameterPack = params.some((p) =>
@@ -9121,17 +9135,22 @@ export class SemanticElaborator {
       );
     }
 
-    // Reactive<DynamicArray<T>> member access must be intercepted BEFORE the generic
-    // reactive unwrap, because these members operate on the reactive array struct itself.
+    // Deep Reactive<DynamicArray<T>> member access must be intercepted BEFORE the
+    // generic reactive unwrap, because these members (push/pop/length/reserve)
+    // operate on the hzstd_reactive_array_t wrapper itself, not on a plain array.
+    //
+    // ShallowReactive<DynamicArray<T>> is deliberately NOT intercepted here: a
+    // shallow-reactive array has no hzstd_reactive_array_t wrapper at all (see
+    // rx.shallowReactive in reactive.hz) -- it's a plain hzstd_reactive_cell_t
+    // like every other shallow-reactive value. So it falls through to the
+    // generic reactive unwrap just below, which converts it to a plain
+    // DynamicArrayDatatype, and member access resolves against that normally
+    // (giving .push/.pop/.length/indexing as plain, untracked array ops).
     {
       const preUnwrapResolvedTypeDef = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
       );
-      if (
-        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
-        preUnwrapResolvedTypeDef.variant ===
-          Semantic.ENode.ShallowReactiveDatatype
-      ) {
+      if (preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(preUnwrapResolvedTypeDef.wrappedType)
@@ -9772,6 +9791,79 @@ export class SemanticElaborator {
           sourceloc
         );
       }
+      if (name === "clear") {
+        const funcname = `__hz_dynamic_array_clear_${
+          Semantic.mangleTypeUse(this.sr, exprType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [],
+            returnType: this.sr.b.voidType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: sourceloc,
+            vararg: false,
+          });
+
+          const code = `__c__("hzstd_dynamic_array_clear(this);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: [],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                exprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                sourceloc
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              exprTypeUse.type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              sourceloc
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: exprId,
+          },
+          sourceloc
+        );
+      }
       throw new CompilerError(
         `Datatype '${Semantic.serializeTypeUse(
           this.sr,
@@ -9832,31 +9924,27 @@ export class SemanticElaborator {
     );
   }
 
+  // Only ever reached for the DEEP case (rx.reactive<[]T>()) -- see the call
+  // site's comment. ShallowReactive<[]T> has no hzstd_reactive_array_t
+  // wrapper to operate on and never reaches this function.
   private resolveMemberAccessOnReactiveArray(
     exprId: Semantic.ExprId,
     name: string,
-    preUnwrapTypeDef:
-      | Semantic.ReactiveDatatypeDef
-      | Semantic.ShallowReactiveDatatypeDef,
+    preUnwrapTypeDef: Semantic.ReactiveDatatypeDef,
     innerArrayType: Semantic.DynamicArrayDatatypeDef,
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
-    const isDeepReactive =
-      preUnwrapTypeDef.variant === Semantic.ENode.ReactiveDatatype;
+    assert(preUnwrapTypeDef.variant === Semantic.ENode.ReactiveDatatype);
 
     // After type promotion, deep-reactive inner array elements are Reactive<T>.
-    // Shallow-reactive inner array elements are T directly.
     const promotedElemTypeId = innerArrayType.datatype;
     const promotedElemTypeDef = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(promotedElemTypeId).type
     );
+    assert(promotedElemTypeDef.variant === Semantic.ENode.ReactiveDatatype);
     // User-facing element type (T, not Reactive<T>)
-    const userElemTypeId =
-      isDeepReactive &&
-      promotedElemTypeDef.variant === Semantic.ENode.ReactiveDatatype
-        ? promotedElemTypeDef.wrappedType
-        : promotedElemTypeId;
+    const userElemTypeId = promotedElemTypeDef.wrappedType;
 
     const cName = (typeId: Semantic.TypeUseId): string => {
       const m = Semantic.mangleTypeUse(this.sr, typeId);
@@ -9927,10 +10015,8 @@ export class SemanticElaborator {
 
     if (name === "push") {
       const suffix = Semantic.mangleTypeUse(this.sr, userElemTypeId).name;
-      const funcname = `__hz_reactive_array_push_${suffix}_${isDeepReactive ? "d" : "s"}`;
-      const body = isDeepReactive
-        ? `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CREATE(${promotedElemCName}, ${userElemCName}, element));");`
-        : `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${userElemCName}, element);");`;
+      const funcname = `__hz_reactive_array_push_${suffix}`;
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
       return makeCallable(
         ensureSyntheticMethod(
           funcname,
@@ -12300,9 +12386,18 @@ export class SemanticElaborator {
         // Runtime for-each loop: for element in array {}
         // Elaborate to semantic ForEachStatement, let lowering handle conversion to for-loop
 
-        // Step 1: Elaborate the array expression
-        const [arrayExpr, arrayExprId] = this.expr(s.value, undefined);
-        const arrayTypeUse = this.sr.typeUseNodes.get(arrayExpr.type);
+        // Step 1: Elaborate the array expression. Transparently unwrap any
+        // number of Reactive/ShallowReactive/Computed layers around the
+        // iterable itself, so `for x in someReactiveArray` works directly
+        // without requiring the caller to unwrap/cast it first -- exactly
+        // the same unwrap every other usage site (binary ops, member
+        // access, function arguments, ...) already gets for free.
+        let [arrayExpr, arrayExprId] = this.expr(s.value, undefined);
+        arrayExprId = this.unwrapReactiveOrComputedIfPossible(arrayExprId);
+        arrayExpr = this.sr.exprNodes.get(arrayExprId);
+        const arrayTypeUse = this.sr.typeUseNodes.get(
+          this.sr.e.resolveAlias(arrayExpr.type)
+        );
         const arrayType = this.sr.typeDefNodes.get(arrayTypeUse.type);
 
         // Step 2: Validate it's an array and extract element type
@@ -12317,7 +12412,33 @@ export class SemanticElaborator {
           );
         }
 
-        const elementTypeUse = arrayType.datatype;
+        // A deep reactive array (rx.reactive<[]T>()) promotes its element
+        // type to Reactive<T> so subscript reads/writes stay individually
+        // trackable (see makeReactiveDatatypeAvailable) -- but the loop body
+        // should see a plain, already-read T, matching every other
+        // reactive-unwrap usage site. Peel any Reactive/ShallowReactive/
+        // Computed layers off the element type here for the loop variable's
+        // declared type; Lower.ts's ForEachStatement handling mirrors this
+        // exact peel to emit the matching read(s) for the per-iteration value.
+        let elementTypeUse = arrayType.datatype;
+        {
+          let elementTypeDef = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(this.sr.e.resolveAlias(elementTypeUse))
+              .type
+          );
+          while (
+            elementTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+            elementTypeDef.variant ===
+              Semantic.ENode.ShallowReactiveDatatype ||
+            elementTypeDef.variant === Semantic.ENode.ComputedDatatype
+          ) {
+            elementTypeUse = elementTypeDef.wrappedType;
+            elementTypeDef = this.sr.typeDefNodes.get(
+              this.sr.typeUseNodes.get(this.sr.e.resolveAlias(elementTypeUse))
+                .type
+            );
+          }
+        }
 
         // Step 3: Create loop variable (element) with the array's element type
         const [_, loopVariableId] = this.sr.b.addSymbol(this.sr, {
@@ -13606,6 +13727,116 @@ export class SemanticElaborator {
     );
   }
 
+  // Operator overloads (e.g. `operator[]`) are only added to a struct's elaborated
+  // `.methods` list as a side effect of `elaborateFunctionSymbol` actually running for
+  // them. Named member/method access (`resolveMemberAccessInStruct`) looks candidates up
+  // by name in the struct's *collected* (pre-semantic) scope and force-elaborates them on
+  // demand, so it never misses one. Operator-overload resolution (below, for `x[i]`)
+  // instead just scans whatever already happens to be in the elaborated `.methods` list --
+  // which silently omits any overload nothing has ever triggered the elaboration of yet,
+  // making resolution depend on incidental elaboration order rather than what's declared.
+  // Call this first to force every overload of the given kind into existence (matching
+  // the on-demand-elaboration behavior named access already has) before scanning.
+  private ensureOperatorOverloadsElaborated(
+    exprTypeUseId: Semantic.TypeUseId,
+    overloadGroupName: string,
+    sourceloc: SourceLoc
+  ) {
+    const resolvedTypeUse = this.sr.typeUseNodes.get(
+      this.sr.e.resolveAlias(exprTypeUseId)
+    );
+    const exprType = this.sr.typeDefNodes.get(resolvedTypeUse.type);
+    if (exprType.variant !== Semantic.ENode.StructDatatype) {
+      return;
+    }
+    if (exprType.originalCollectedDefinition === (-1 as Collect.TypeDefId)) {
+      return;
+    }
+    const collectedStruct = this.sr.cc.typeDefNodes.get(
+      exprType.originalCollectedDefinition
+    );
+    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+    const structScope = this.sr.cc.scopeNodes.get(collectedStruct.lexicalScope);
+    assert(structScope.variant === Collect.ENode.StructLexicalScope);
+    const overloadGroupId = [...structScope.symbols].find((mId) => {
+      const m = this.sr.cc.symbolNodes.get(mId);
+      return (
+        m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+        m.name === overloadGroupName
+      );
+    });
+    if (!overloadGroupId) {
+      return;
+    }
+    const overloadGroup = this.sr.cc.symbolNodes.get(overloadGroupId);
+    assert(overloadGroup.variant === Collect.ENode.FunctionOverloadGroupSymbol);
+
+    let elaboratedStructCache: Semantic.StructDef | null = null;
+    for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+      for (const entry of cache) {
+        if (entry.result === resolvedTypeUse.type) {
+          elaboratedStructCache = entry;
+        }
+      }
+    }
+    assert(elaboratedStructCache);
+
+    for (const overloadId of overloadGroup.overloads) {
+      const func = this.sr.cc.symbolNodes.get(overloadId);
+      assert(func.variant === Collect.ENode.FunctionSymbol);
+      if (
+        func.generics.length !== 0 ||
+        funcSymHasParameterPack(this.sr.cc, overloadId)
+      ) {
+        // Matches functionOverloadGroup()'s own restriction: generics/param-packs
+        // need call-site argument types to instantiate and can't be blindly forced.
+        continue;
+      }
+
+      this.withContext(
+        {
+          context: Semantic.mergeSubstitutionContext(
+            elaboratedStructCache.substitutionContext,
+            this.currentContext,
+            {
+              currentScope: this.currentContext.currentScope,
+              genericsScope: this.currentContext.currentScope,
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }
+          ),
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => {
+          const functionSignatureId = this.elaborateFunctionSignature(overloadId);
+          const methodEnv: Semantic.EnvBlockType = func.staticMethod
+            ? null
+            : {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  resolvedTypeUse.type,
+                  EDatatypeMutability.Mut,
+                  "force-no-inline",
+                  sourceloc
+                )[1],
+              };
+          this.elaborateFunctionSymbolWithGenerics(
+            functionSignatureId,
+            [],
+            sourceloc,
+            [],
+            methodEnv
+          );
+        }
+      );
+    }
+  }
+
   arraySubscript(arraySubscript: Collect.ArraySubscriptExpr) {
     if (arraySubscript.indices.length > 1) {
       throw new CompilerError(
@@ -13614,7 +13845,7 @@ export class SemanticElaborator {
         HazeErrorCode.MultidimensionalArraySubscriptingNotImplementedYet
       );
     }
-    const [value, valueId] = this.expr(arraySubscript.expr, undefined);
+    let [value, valueId] = this.expr(arraySubscript.expr, undefined);
 
     const rawIndex = arraySubscript.indices[0];
     if (rawIndex.type === "slice") {
@@ -13761,21 +13992,45 @@ export class SemanticElaborator {
       this.sr.typeUseNodes.get(index.type).type
     );
 
+    // ShallowReactive<DynamicArray<T>> has no hzstd_reactive_array_t wrapper
+    // (see reactive.hz) -- unwrap it to the plain array here so the generic
+    // subscript logic below applies, giving a plain, untracked element read.
+    // This must happen BEFORE exprType/valueType are captured, since those
+    // are used by the plain-array path just below.
+    {
+      const preUnwrapTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
+      );
+      if (
+        preUnwrapTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+      ) {
+        const innerTypeDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(
+            this.sr.e.resolveAlias(preUnwrapTypeDef.wrappedType)
+          ).type
+        );
+        if (innerTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
+          valueId = this.unwrapReactiveOrComputedIfPossible(valueId);
+          value = this.sr.exprNodes.get(valueId);
+        }
+      }
+    }
+
     const exprTypeUse = this.sr.typeUseNodes.get(value.type);
     const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
     const valueType = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(value.type).type
     );
 
-    // Intercept Reactive<DynamicArray<T>> subscript before plain array handling
+    // Intercept deep Reactive<DynamicArray<T>> subscript before plain array
+    // handling -- indexing it needs to go through the hzstd_reactive_array_t
+    // wrapper for per-element tracking, which elaborateReactiveArraySubscript
+    // sets up. (Shallow was already unwrapped above.)
     {
       const resolvedExprType = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
       );
-      if (
-        resolvedExprType.variant === Semantic.ENode.ReactiveDatatype ||
-        resolvedExprType.variant === Semantic.ENode.ShallowReactiveDatatype
-      ) {
+      if (resolvedExprType.variant === Semantic.ENode.ReactiveDatatype) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(resolvedExprType.wrappedType)
@@ -13856,6 +14111,12 @@ export class SemanticElaborator {
       });
     }
     if (exprType.variant === Semantic.ENode.StructDatatype) {
+      this.ensureOperatorOverloadsElaborated(
+        value.type,
+        "__operator_subscript",
+        arraySubscript.sourceloc
+      );
+
       const overloads = new Set<Semantic.SymbolId>();
 
       for (const mId of exprType.methods) {
@@ -13956,6 +14217,9 @@ export class SemanticElaborator {
     );
   }
 
+  // Only ever reached for the DEEP case (rx.reactive<[]T>()) -- see the call
+  // site's comment. ShallowReactive<[]T> is unwrapped to a plain array
+  // before subscripting and never reaches this function.
   private elaborateReactiveArraySubscript(
     exprId: Semantic.ExprId,
     innerArrayType: Semantic.DynamicArrayDatatypeDef,
@@ -13963,7 +14227,7 @@ export class SemanticElaborator {
     sourceloc: SourceLoc
   ): [Semantic.Expression, Semantic.ExprId] {
     const expr = this.sr.exprNodes.get(exprId);
-    // innerArrayType.datatype is Reactive<T> for deep-reactive, T for shallow
+    // innerArrayType.datatype is Reactive<T> (deep-reactive promotion).
     const promotedElemTypeId = innerArrayType.datatype;
     const promotedElemMangle = Semantic.mangleTypeUse(
       this.sr,

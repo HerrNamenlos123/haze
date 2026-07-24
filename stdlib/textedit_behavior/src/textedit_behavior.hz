@@ -8,7 +8,7 @@ export inline struct ContextArgs {
     cursorBlinkFrequency: real = 1;
 
     getLineLength: (lineIndex: int) => int;
-    getLine: (lineIndex: int) => str;
+    getLine: (lineIndex: int) => String;
     getLineCount: () => int;
     getTimeInSeconds: () => real;
 
@@ -24,7 +24,7 @@ export inline struct ContextArgs {
     // expects them to reflect the edit. The host owns how (or whether) it
     // schedules any reactive re-render around that -- the engine only
     // needs the *data* to be current.
-    replaceRange: (start: Vec2i, end: Vec2i, text: str) => void;
+    replaceRange: (start: Vec2i, end: Vec2i, text: String) => void;
 }
 
 // A half-open column range on a single line, as selected. Returned by
@@ -69,7 +69,7 @@ export struct Context {
     // Internal yank/paste register. Not wired to the OS clipboard -- that's
     // a host-level concern (platform clipboard API), this is just enough
     // for copy/cut/paste to work within the app.
-    _clipboardRegister: str = "";
+    _clipboardRegister: String;
 
     fn constructor(args: ContextArgs) {
         let context = Context {
@@ -81,6 +81,7 @@ export struct Context {
             hasSelection: rx.computed(() => false),
             selectionStart: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
             selectionEnd: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
+            _clipboardRegister: String(""),
         };
 
         context.cursorVisible = rx.computed(() => {
@@ -204,7 +205,7 @@ export struct Context {
     // TextInputEvent chunk at a time), and paste. If there's a selection it
     // is replaced; otherwise `text` is inserted at the caret. The caret ends
     // up right after the inserted text either way.
-    fn insertText(text: str) {
+    fn insertText(text: String) {
         let insertAt: Vec2i = this._cursorPos();
         if this.hasSelection {
             let start = this._selStart();
@@ -215,10 +216,10 @@ export struct Context {
         }
         this.args.replaceRange(insertAt, insertAt, text);
 
-        let parts = text.split("\n");
+        let parts = text.cloneString().split("\n");
         let target: Vec2i = {};
         if parts.length <= 1 {
-            target = { x: insertAt.x + text.length, y: insertAt.y };
+            target = { x: insertAt.x + text.length(), y: insertAt.y };
         } else {
             target = { x: parts[parts.length - 1].length, y: insertAt.y + parts.length - 1 };
         }
@@ -284,7 +285,7 @@ export struct Context {
     }
 
     fn paste() {
-        if this._clipboardRegister.length == 0 {
+        if this._clipboardRegister.length() == 0 {
             return;
         }
         this.insertText(this._clipboardRegister);
@@ -342,17 +343,18 @@ export struct Context {
         this._moveTo(start, true, false);
     }
 
-    fn _getTextInRange(start: Vec2i, end: Vec2i): str {
+    fn _getTextInRange(start: Vec2i, end: Vec2i): String {
         if start.y == end.y {
-            return this.args.getLine(start.y).slice(start.x, end.x);
+            // TODO: Improve this cloneString() situation
+            return this.args.getLine(start.y).cloneString().slice(start.x, end.x);
         }
         let firstLine = this.args.getLine(start.y);
-        let result = firstLine.slice(start.x, this.args.getLineLength(start.y));
+        let result = firstLine.cloneString().slice(start.x, this.args.getLineLength(start.y));
         for (let y = start.y + 1; y < end.y; y++) {
             result = f"{result}\n{this.args.getLine(y)}";
         }
         let lastLine = this.args.getLine(end.y);
-        result = f"{result}\n{lastLine.slice(0, end.x)}";
+        result = f"{result}\n{lastLine.cloneString().slice(0, end.x)}";
         return result;
     }
 
@@ -440,7 +442,7 @@ export struct Context {
         let x = pos.x;
 
         // Skip whitespace directly to the left of the cursor
-        while x > 0 && ascii.isWhitespace(line[x - 1]) {
+        while x > 0 && ascii.isWhitespace(line[x - 1].get()) {
             x--;
         }
 
@@ -474,7 +476,7 @@ export struct Context {
         // the end of the next run instead. So whitespace is only ever
         // consumed as a leading skip, never trailing.
         // TODO: line[x] is a compiler bug when x is reactive
-        while x < lineLength && ascii.isWhitespace(line[rx.get(x)]) {
+        while x < lineLength && ascii.isWhitespace(line[rx.get(x)].get()) {
             x++;
         }
 
@@ -506,12 +508,12 @@ export struct Context {
         return { x: this.args.getLineLength(lastLine), y: lastLine };
     }
 
-    fn _charClassAt(line: str, index: int): int {
+    fn _charClassAt(line: String, index: int): int {
         let b = line[index];
-        if ascii.isWhitespace(b) {
+        if ascii.isWhitespace(b.get()) {
             return 0;
         }
-        if ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_" {
+        if ascii.isAlpha(b.get()) || ascii.isDigit(b.get()) || b.get() == b"_" {
             return 1;
         }
         return 2;

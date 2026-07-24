@@ -1496,8 +1496,12 @@ export opaque struct Renderer {
     fn drawText(opts: TextOpts) {
         let tr = this.canvas.gfx.fontRenderer;
 
-        // TODO: Add ability to reset/clear an array in-place instead of replacing it, for better memory efficiency
-        tr.glyphBuffer = [];
+        // Keeps the buffer's already-.reserve()'d capacity (see TextRenderer's
+        // own constructor) instead of dropping it for a fresh 0-capacity
+        // array every call -- layoutText's pushes below then need zero heap
+        // traffic unless a text run grows past whatever capacity is already
+        // there.
+        tr.glyphBuffer.clear();
 
         let metrics = tr.fs.getMetrics(opts.font, opts.size as f32);
         let baseline = opts.position.y as real + metrics.ascender;

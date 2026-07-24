@@ -73,48 +73,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        // The real, mutable text buffer: one string per line. This is the
-        // throwaway part of codeui -- a proper editor wouldn't rebuild a
-        // fresh []str (and fresh line strings, since Haze strings aren't
-        // mutable in place) on every keystroke, but it's enough to drive
-        // textedit_behavior's editing engine honestly for now. `doc` below
-        // is the joined full text, derived FROM docLines (rather than the
-        // other way around, like before this buffer existed), kept around
-        // because the LSP bridge and the highlighter both want one string.
-        // rx.reactive<[]str> (no union) wraps each element individually --
-        // an array of per-line reactive cells, meant for surgical
-        // single-line edits via push/pop. This buffer instead replaces the
-        // whole array on every edit (see the comment above), which through
-        // that path meant popping and re-pushing every line -- i.e. one
-        // heap alloc/free per line, per keystroke -- and was the actual
-        // source of the per-keystroke freeze. Wrapping the array type in
-        // `| none` routes it through the plain/shallow reactive path
-        // instead (same mechanism selectionAnchor: Vec2i | none uses in the
-        // engine): a single opaque cell holding one []str value, swappable
-        // in one `:=` with no per-element bookkeeping. It's never actually
-        // none; that's just how to opt out of the per-element wrapping.
-        let docLines = rx.reactive<[]str | none>([""]);
+        let lines = rx.shallowReactive<[]String>([]);
 
-        let getPlainLines = (): []str => {
-            let ls = rx.get(docLines);
-            if ls {
-                return ls;
-            }
-            return [];
+        let replaceAllLines = (newLines: []String) => {
+            lines := newLines;
         };
 
-        // Very hot -- called by the engine multiple times per keystroke --
-        // but there's no cheaper single-line path left now that a whole-
-        // array read is just one unwrap; keep it as a thin convenience.
-        let getLine = (index: int): str => {
-            return getPlainLines()[index];
-        };
-
-        let replaceAllLines = (newLines: []str) => {
-            docLines := newLines;
-        };
-
-        let joinLines = (ls: []str): str => {
+        let joinLines = (ls: []String): str => {
             let result = "";
             for line, i in ls {
                 if i > 0 {
@@ -125,7 +90,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return result;
         };
 
-        let doc = rx.computed(() => joinLines(getPlainLines()));
+        let doc = rx.computed(() => joinLines(lines));
 
         let theme = rx.reactive<VscodeTheme | none>(none);
 
@@ -133,7 +98,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if cache.data.file {
                 let file = fs.readText(cache.data.file as str);
                 if file {
-                    replaceAllLines(file.split("\n"));
+                    lines := [] as []String;
+                    for line in file.split("\n") {
+                        lines.push(String(line));
+                    }
                 }
                 else {
                     fmt.println("Failed loading file");
@@ -145,16 +113,15 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // line array with [start, end) replaced by `text`. No splice/insert
         // in stdlib arrays, so this is a full rebuild -- see the docLines
         // comment above.
-        let applyReplaceRange = (start: Vec2i, end: Vec2i, text: str): void => {
-            let oldLines = getPlainLines();
-            let before = oldLines[start.y].slice(0, start.x);
-            let afterLine = oldLines[end.y];
+        let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
+            let before = lines[start.y].cloneString().slice(0, start.x);
+            let afterLine = lines[end.y].cloneString();
             let after = afterLine.slice(end.x, afterLine.length);
-            let insertedLines = text.split("\n");
+            let insertedLines = text.cloneString().split("\n");
 
-            let newLines: []str = [];
+            let newLines: []String = [];
             for (let i = 0; i < start.y; i++) {
-                newLines.push(oldLines[i]);
+                newLines.push(lines[i]);
             }
             if insertedLines.length == 1 {
                 newLines.push(f"{before}{insertedLines[0]}{after}");
@@ -165,12 +132,45 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 }
                 newLines.push(f"{insertedLines[insertedLines.length - 1]}{after}");
             }
-            for (let i = end.y + 1; i < oldLines.length; i++) {
-                newLines.push(oldLines[i]);
+            for (let i = end.y + 1; i < lines.length; i++) {
+                newLines.push(lines[i]);
             }
 
-            replaceAllLines(newLines);
+            lines := newLines;
         };
+        // let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
+        //     let before = lines[start.y].slice(0, start.x);
+        //     let after = lines[end.y].slice(end.x, lines[end.y].length);
+
+        //     let inserted = text.split("\n");
+
+        //     let replacement: []String = [];
+
+        //     if inserted.length == 1 {
+        //         replacement.push(f"{before}{inserted[0]}{after}");
+        //     } else {
+        //         replacement.push(f"{before}{inserted[0]}");
+
+        //         for (let i = 1; i < inserted.length - 1; i++) {
+        //             replacement.push(inserted[i]);
+        //         }
+
+        //         replacement.push(f"{inserted[inserted.length - 1]}{after}");
+        //     }
+
+        //     // Replace only the affected lines.
+        //     lines.splice(
+        //         start.y,
+        //         end.y - start.y + 1,
+        //         ...replacement,
+        //     );
+
+        //     notifyLinesChanged(
+        //         start.y,
+        //         replacement.length,
+        //         end.y - start.y + 1,
+        //     );
+        // };
 
         // The project currently being edited. Vue's language server doesn't actually need
         // this to be precise (tsserver does its own tsconfig discovery once a file is
@@ -284,13 +284,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let texteditBehavior = textedit_behavior.Context({
             getLineLength: (lineIndex: int) => {
-                return getLine(lineIndex).length;
+                return lines[lineIndex].length();
             },
             getLine: (lineIndex: int) => {
-                return getLine(lineIndex);
+                return lines[lineIndex];
             },
             getLineCount: () => {
-                return getPlainLines().length;
+                return lines.length;
             },
             getTimeInSeconds: () => {
                 return ui.now();
@@ -320,6 +320,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let fps = rx.reactive<real>(0.0);
         let fpsText = rx.computed(() => f"{fps as int} FPS");
 
+        let prevUpdate = ui.now();
+
+        let lspMemStat = rx.reactive<str | none>(none);
+
+        let updateStats = () => {
+            if !vueBridge {
+                return;
+            }
+            let memory = vueBridge.getSystemMemoryUtilization();
+
+            let vue = memory.vue ? memory.vue / 1024 / 1024 : "?";
+            let ts = memory.ts ? memory.ts / 1024 / 1024 : "?";
+
+            lspMemStat := f"Vue LSP Memory: {vue} MiB | TypeScript LSP Memory: {ts} MiB";
+        };
+
         let runLspLoop = rx.computed(() => {
             let now = ui.now();
 
@@ -327,6 +343,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             lastFrameAt := now;
             if dt > 0.0 {
                 fps := fps * 0.9 + (1.0 / dt) * 0.1;
+            }
+
+            if now - prevUpdate > 0.5 {
+                updateStats();
+                prevUpdate = now;
             }
 
             if vueBridge && cache.data.file {
@@ -349,7 +370,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         });
 
-        let splitByTokens = (lineIndex: int, string: str, tokens: []Token): []HighlightToken => {
+        let splitByTokens = (lineIndex: int, string: String, tokens: []Token): []HighlightToken => {
             let parts: []HighlightToken = [];
             let position = 0;
 
@@ -358,14 +379,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // Text before the token
                     if (position < token.startIndex) {
                         parts.push({
-                            text: string.slice(position, token.startIndex),
+                            text: string.cloneString().slice(position, token.startIndex),
                             color: defaultTextColor(),
                         });
                     }
 
                     // The token itself
                     parts.push({
-                        text: string.slice(token.startIndex, token.endIndex),
+                        text: string.cloneString().slice(token.startIndex, token.endIndex),
                         color: getFirstScopeColor(token.scopes),
                     });
 
@@ -374,9 +395,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
 
             // Remaining text
-            if (position < string.length) {
+            if (position < string.length()) {
                 parts.push({
-                    text: string.slice(position, string.length),
+                    text: string.cloneString().slice(position, string.length()),
                     color: defaultTextColor(),
                 });
             }
@@ -386,8 +407,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let highlightedLines = rx.computed(() => {
             let resultTokens: [][]HighlightToken = [];
-            let s: []str = getPlainLines();
-            for line, lineIndex in s {
+            for line, lineIndex in lines {
                 let currentIndex = 0;
                 let reconstructedLine = "";
 
@@ -416,9 +436,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.gap(2),
                 ]
             }, () => {
-                ui.text({
+                ui.div({
                     id: 0,
-                    text: fpsText,
+                    presets: [
+                        presets.row(),
+                        presets.gap(8),
+                    ]
+                }, () => {
+                    ui.text({
+                        id: 0,
+                        text: fpsText,
+                    });
+
+                    if lspMemStat {
+                        ui.text({
+                            id: 1,
+                            text: lspMemStat,
+                        });
+                    }
                 });
 
                 rx.get(runLspLoop);
@@ -497,7 +532,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         hoverResult := null;
                     },
                 }, () => {
-                    let lines: []str = getPlainLines();
                     let id = 1;
 
                     let characterSize = ui.measureText("X");
@@ -525,12 +559,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
                     }
 
-                    let l: [][]HighlightToken = highlightedLines;
                     let total = 0;
-                    for tokens, i in l {
+                    for tokens, i in highlightedLines {
                         ui.div({
                             id: i,
-                        }, (): void => {
+                        }, () => {
                             if tokens.length > 0 {
                                 for t, i in tokens {
                                     ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
@@ -543,8 +576,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             }
                         });
                     }
-                    fmt.println(f"{total} text elements on screen");
+                    // fmt.println(f"{total} text elements on screen");
 
+                    // Cursor
                     let cursorPos = Vec2(
                         texteditBehavior.cursorPosition.x as real * characterSize.x,
                         texteditBehavior.cursorPosition.y as real * characterSize.y,

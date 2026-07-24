@@ -2,6 +2,20 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Build Code Editor",
+      "type": "shell",
+      "command": "bun",
+      // "command": "~/.bun/bin/bun",
+      // "command": "%USERPROFILE%/.bun/bin/bun",
+      // "args": ["run", "dev", "build"],
+      "args": ["run", "dev", "build", "--no-sourceloc", "--dir=codeeditor"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
       "label": "Build test program",
       "type": "shell",
       "command": "bun",

@@ -149,6 +149,21 @@ namespace process {
       hzstd_process_release(this.handle);
       return code;
     }
+
+    fn memoryInfo() {
+      assert(!this.released, "process.Process used after join() released it");
+      let info = hzstd_process_memory_info_t {};
+      let success = hzstd_process_get_memory_info(this.handle, info);
+      if !success {
+        return MemoryInfo {};
+      }
+
+      return MemoryInfo {
+        resident: info.resident != int.max ? info.resident : none,
+        peakResident: info.peak_resident != int.max ? info.peak_resident : none,
+        committed: info.committed != int.max ? info.committed : none,
+      };
+    }
   }
 
   export fn spawn(exe: str, args: []str, options: SpawnOptions = {}): Result<Process, int> {
@@ -166,5 +181,30 @@ namespace process {
 
     return Result<Process, int>.Ok(Process { handle: result.handle });
   }
+
+  extern C noemit struct hzstd_process_memory_info_t {
+    // See struct MemoryInfo
+    resident: int = 0;
+    peak_resident: int = 0;
+    committed: int = 0;
+  }
+
+  export struct MemoryInfo {
+    // Resident Set Size: Amount of this process's memory currently resident in physical RAM,
+    // excluding swapped-out pages. Shared Memory shared across multiple processes will report the same amount of
+    // RSS in all of them. Sum of all process'es RSS != total system utilization.
+    // On Linux, this maps to RSS, on Windows this maps to "WorkingSize".
+    resident?: int;
+    // The peak amount of resident memory this process has ever utilized throughout its lifetime.
+    peakResident?: int;
+    // Total amount of memory this process currently requires the operating system
+    // to back. Intended for task-manager style reporting.
+    //
+    // Linux: resident + swapped memory.
+    // Windows: committed private memory (PrivateUsage).
+    committed?: int;
+  }
+
+  extern C fn hzstd_process_get_memory_info(proc_: cptr, out: hzstd_process_memory_info_t): bool :: final;
 
 }

@@ -1,0 +1,281 @@
+
+// Regression coverage for the rx.reactive<T>()/rx.shallowReactive<T>() family.
+//
+// Context: rx.shallowReactive<[]T>() used to be backed by the SAME
+// hzstd_reactive_array_t representation as rx.reactive<[]T>() (deep), even
+// though a shallow reactive is supposed to be a dumb value-swap shell with
+// no fine-grained tracking of what's inside it. The generic `:=`/read
+// codegen (HZSTD_REACTIVE_WRITE/READ) always assumed the OTHER
+// representation (hzstd_reactive_cell_t), so writing to a shallow reactive
+// array reinterpreted an hzstd_reactive_array_t's bytes as an
+// hzstd_reactive_cell_t and walked garbage as a dependency-edge linked
+// list -- a SIGSEGV deep in has_dependency/mark_dirty.
+//
+// The fix: shallowReactive<[]T> is now a plain hzstd_reactive_cell_t like
+// every other shallow-reactive value (no special array wrapper at all), and
+// only rx.reactive<[]T> (deep) uses hzstd_reactive_array_t. These cases
+// pin down the resulting invariants across scalars, structs, arrays, and
+// arrays nested in structs, for both shallow and deep, using rx.computed
+// side effects (a plain counter bumped from inside the computed body) to
+// assert exactly when a recompute does and does not happen.
+
+namespace cases_reactive {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "shallowReactive is a dumb shell: scalar, struct, and array all notify on whole-value `:=` only",
+            """
+struct Point {
+    x: int;
+    y: int;
+    fn operator!=(other: Point) { return true; }
+}
+
+fn caseShallowScalar() {
+    let runs = 0;
+    let n = rx.shallowReactive<int>(1);
+    let c = rx.computed(() => {
+        runs = runs + 1;
+        return n;
+    });
+    assert(c == 1, "initial compute");
+    assert(c == 1, "cached read must not recompute");
+    assert(runs == 1, "one compute so far");
+    n := 2;
+    assert(c == 2, "picks up new value after :=");
+    assert(runs == 2, "exactly one recompute after :=");
+}
+
+fn caseShallowStruct() {
+    let runs = 0;
+    let p = rx.shallowReactive<Point>(Point { x: 1, y: 2 });
+    let c = rx.computed(() => {
+        runs = runs + 1;
+        return p.x;
+    });
+    assert(c == 1, "initial compute");
+    assert(runs == 1, "one compute so far");
+    // A shallow struct is swapped wholesale -- there is no field-level
+    // tracking, only whole-value `:=`.
+    p := Point { x: 5, y: 2 };
+    assert(c == 5, "picks up new value after :=");
+    assert(runs == 2, "exactly one recompute after :=");
+}
+
+fn caseShallowArray() {
+    let runs = 0;
+    let arr = rx.shallowReactive<[]int>([]);
+    let c = rx.computed(() => {
+        runs = runs + 1;
+        return arr.length;
+    });
+    assert(c == 0, "initial compute sees empty array");
+    assert(runs == 1, "one compute so far");
+
+    // This exact statement used to segfault: writing a whole new array into
+    // a shallow-reactive array slot.
+    arr := [1, 2, 3] as []int;
+    assert(c == 3, "picks up new array after :=");
+    assert(runs == 2, "exactly one recompute after :=");
+
+    // .push()/.pop()/indexing on a shallow array are plain, untracked
+    // mutations of the array underneath the shell -- it has no per-element
+    // or per-mutation reactivity of its own, exactly like a shallow struct
+    // has no per-field reactivity.
+    arr.push(4);
+    assert(c == 3, "push must NOT notify a shallow array's dependents");
+    assert(runs == 2, "no recompute from push");
+    assert(arr.length == 4, "but the underlying array really did grow");
+    assert(arr[3] == 4, "and the pushed element is really there");
+
+    // A whole-value `:=` (even to the same reference) is what makes the
+    // shell's current contents observable again.
+    arr := arr;
+    assert(c == 4, ":= re-observes current contents, including the earlier push");
+    assert(runs == 3, "exactly one recompute after the second :=");
+}
+
+fn main(): int {
+    caseShallowScalar();
+    caseShallowStruct();
+    caseShallowArray();
+    fmt.println("OK");
+    return 0;
+}
+""",
+            "OK"
+        );
+
+        s.run(
+            "deep reactive: struct fields, arrays, and nested arrays-in-structs track independently; diamond dependencies recompute minimally",
+            """
+type RInt = rx.Reactive<int>;
+
+struct Pair {
+    a: int;
+    b: int;
+    fn operator!=(other: Pair) { return true; }
+}
+
+fn caseDeepStructFieldsIndependent() {
+    let aRuns = 0;
+    let bRuns = 0;
+    let p = rx.reactive<Pair>(Pair { a: 1, b: 10 });
+    let cA = rx.computed(() => { aRuns = aRuns + 1; return p.a; });
+    let cB = rx.computed(() => { bRuns = bRuns + 1; return p.b; });
+    assert(cA == 1, "initial a");
+    assert(cB == 10, "initial b");
+    assert(aRuns == 1, "one compute for a");
+    assert(bRuns == 1, "one compute for b");
+
+    p.a := 2;
+    assert(cA == 2, "a picks up new value");
+    assert(aRuns == 2, "a recomputes");
+    assert(cB == 10, "b is unaffected by a's write");
+    assert(bRuns == 1, "b must NOT recompute when only a changes");
+
+    p.b := 20;
+    assert(cB == 20, "b picks up new value");
+    assert(bRuns == 2, "b recomputes");
+    assert(aRuns == 2, "a must NOT recompute when only b changes");
+}
+
+fn caseDeepArrayPushPopAndWholeValue() {
+    let runs = 0;
+    let arr = rx.reactive<[]int>([1, 2, 3]);
+    let c = rx.computed(() => { runs = runs + 1; return arr.length; });
+    assert(c == 3, "initial length");
+    assert(runs == 1, "one compute so far");
+
+    arr.push(4);
+    assert(c == 4, "push notifies dependents (deep array)");
+    assert(runs == 2, "one recompute after push");
+
+    arr.pop();
+    assert(c == 3, "pop notifies dependents (deep array)");
+    assert(runs == 3, "one recompute after pop");
+
+    assert(arr[0] == 1, "subscript reads current element");
+
+    // Whole-array read: yields the backing []Reactive<int> directly -- that
+    // already IS the promoted wrapped type for a deep reactive array.
+    let snapshot: []RInt = arr;
+    assert(snapshot.length == 3, "snapshot has current length");
+    assert(snapshot[0] == 1, "snapshot has current values");
+
+    // Whole-array write: this exact statement used to segfault the same way
+    // the shallow-array `:=` did (same underlying representation-confusion
+    // bug, reached from the write side instead of via .push/.pop).
+    let elemRuns = 0;
+    let c0 = rx.computed(() => { elemRuns = elemRuns + 1; return arr[0]; });
+    assert(c0 == 1, "element 0 before whole-array write");
+    arr := [rx.reactive<int>(100), rx.reactive<int>(200)] as []RInt;
+    assert(arr.length == 2, "whole-array write replaces contents");
+    assert(arr[0] == 100, "new element 0");
+    assert(c == 2, "length-computed notices the whole-array write");
+    assert(c0 == 100, "element-0-computed notices the whole-array write");
+}
+
+struct DeepDoc {
+    items: []int;
+    fn operator!=(other: DeepDoc) { return true; }
+}
+
+fn caseNestedDeepArrayInStruct() {
+    let runs = 0;
+    let doc = rx.reactive<DeepDoc>(DeepDoc { items: [1, 2] });
+    let c = rx.computed(() => { runs = runs + 1; return doc.items.length; });
+    assert(c == 2, "initial length");
+    assert(runs == 1, "one compute so far");
+    doc.items.push(99);
+    assert(c == 3, "push into a deep nested array field notifies");
+    assert(runs == 2, "one recompute after nested push");
+}
+
+struct ShallowDoc {
+    items: []int;
+    fn operator!=(other: ShallowDoc) { return true; }
+}
+
+fn caseNestedShallowArrayInStruct() {
+    let runs = 0;
+    let doc = rx.shallowReactive<ShallowDoc>(ShallowDoc { items: [1, 2] });
+    let c = rx.computed(() => { runs = runs + 1; return doc.items.length; });
+    assert(c == 2, "initial length");
+    assert(runs == 1, "one compute so far");
+    // The whole ShallowDoc is one shallow shell -- a nested field mutation
+    // is untracked, same as caseShallowArray's top-level case.
+    doc.items.push(99);
+    assert(c == 2, "push into a shallow container's nested array must NOT notify");
+    assert(runs == 1, "no recompute from the nested push");
+    doc := doc;
+    assert(c == 3, "whole-container := re-observes current contents");
+    assert(runs == 2, "exactly one recompute after the whole-container :=");
+}
+
+fn caseDiamondDependencyMinimalRecompute() {
+    let sumRuns = 0;
+    let a = rx.reactive<int>(1);
+    let b = rx.shallowReactive<int>(2);
+    let sum = rx.computed(() => {
+        sumRuns = sumRuns + 1;
+        return a + b;
+    });
+    assert(sum == 3, "initial sum");
+    assert(sumRuns == 1, "one compute so far");
+    assert(sum == 3, "cached read");
+    assert(sumRuns == 1, "cached read must not recompute");
+
+    a := 10;
+    assert(sum == 12, "sum picks up a's new value");
+    assert(sumRuns == 2, "one recompute after a changes");
+
+    b := 20;
+    assert(sum == 30, "sum picks up b's new value");
+    assert(sumRuns == 3, "one recompute after b changes");
+
+    // Two writes to the same dependency between reads must still cost only
+    // one recompute on the next read (dirty is a flag, not a queue).
+    a := 11;
+    a := 12;
+    assert(sum == 32, "sum picks up the latest value");
+    assert(sumRuns == 4, "exactly one recompute for two writes before a read");
+}
+
+fn main(): int {
+    caseDeepStructFieldsIndependent();
+    caseDeepArrayPushPopAndWholeValue();
+    caseNestedDeepArrayInStruct();
+    caseNestedShallowArrayInStruct();
+    caseDiamondDependencyMinimalRecompute();
+    fmt.println("OK");
+    return 0;
+}
+""",
+            "OK"
+        );
+
+        // Documents a real, current boundary (not a bug): a deep reactive
+        // array's wrapped value is promoted to []Reactive<T> (each element
+        // independently reactive -- see makeReactiveDatatypeAvailable in
+        // Elaborate.ts), so a whole-array `:=` must be given an already-
+        // wrapped []Reactive<T>, matching what a read of the same reactive
+        // array hands back. A plain []T (e.g. an ordinary array literal) is
+        // rejected rather than silently/expensively auto-wrapped.
+        s.compileFails(
+            "deep reactive array `:=` requires an already-wrapped []Reactive<T>, not a plain []T",
+            """
+fn main(): int {
+    let arr = rx.reactive<[]int>([1, 2]);
+    arr := [3, 4, 5] as []int;
+    return 0;
+}
+""",
+            [
+                testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound),
+                testsuite.totalErrors(1),
+            ]
+        );
+    }
+}

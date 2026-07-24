@@ -101,7 +101,7 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp)
   return comp->cached;
 }
 
-hzstd_reactive_cell_t* hzstd_reactive_create(void* initial)
+hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial)
 {
   hzstd_reactive_cell_t* cell = hzstd_heap_allocate(sizeof(*cell));
 
@@ -127,7 +127,7 @@ static void mark_dirty(hzstd_node_t* node)
   }
 }
 
-void* hzstd_reactive_read(hzstd_reactive_cell_t* cell)
+void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell)
 {
   if (g_current_computed) {
     register_dependency(&cell->base, g_current_computed);
@@ -135,7 +135,7 @@ void* hzstd_reactive_read(hzstd_reactive_cell_t* cell)
   return cell->value;
 }
 
-void hzstd_reactive_write(hzstd_reactive_cell_t* cell, void* value)
+void hzstd_reactive_cell_write(hzstd_reactive_cell_t* cell, void* value)
 {
   cell->value = value;
   mark_dirty(&cell->base);
