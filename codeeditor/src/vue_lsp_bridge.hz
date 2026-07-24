@@ -237,6 +237,18 @@ export opaque struct VueLspBridge {
         return bridge;
     }
 
+    export inline struct MemoryUtilization {
+        vue?: int;
+        ts?: int;
+    }
+
+    fn getSystemMemoryUtilization(): MemoryUtilization {
+        return {
+            vue: this._lsp.getSystemMemoryUtilization(),
+            ts: this._tsserverProcess.memoryInfo().committed,
+        };
+    }
+
     // Whether the LSP handshake with vue-language-server has completed.
     fn isReady(): bool {
         return this._lsp.initResponse is not none;

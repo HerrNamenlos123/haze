@@ -127,6 +127,11 @@ export struct Context<TInitializationOptions> {
         }
     }
 
+    fn getSystemMemoryUtilization() {
+        let info = this._serverProcess.memoryInfo();
+        return info.committed;
+    }
+
     fn sendRequest<TParams, TResponse>(method: str, params: TParams, onReceive: (value: Result<TResponse, LSPError>) => none) {
         assert(this._running);
         let id = this._nextId++;

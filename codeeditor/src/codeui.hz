@@ -320,6 +320,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let fps = rx.reactive<real>(0.0);
         let fpsText = rx.computed(() => f"{fps as int} FPS");
 
+        let prevUpdate = ui.now();
+
+        let lspMemStat = rx.reactive<str | none>(none);
+
+        let updateStats = () => {
+            if !vueBridge {
+                return;
+            }
+            let memory = vueBridge.getSystemMemoryUtilization();
+
+            let vue = memory.vue ? memory.vue / 1024 / 1024 : "?";
+            let ts = memory.ts ? memory.ts / 1024 / 1024 : "?";
+
+            lspMemStat := f"Vue LSP Memory: {vue} MiB | TypeScript LSP Memory: {ts} MiB";
+        };
+
         let runLspLoop = rx.computed(() => {
             let now = ui.now();
 
@@ -327,6 +343,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             lastFrameAt := now;
             if dt > 0.0 {
                 fps := fps * 0.9 + (1.0 / dt) * 0.1;
+            }
+
+            if now - prevUpdate > 0.5 {
+                updateStats();
+                prevUpdate = now;
             }
 
             if vueBridge && cache.data.file {
@@ -415,9 +436,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.gap(2),
                 ]
             }, () => {
-                ui.text({
+                ui.div({
                     id: 0,
-                    text: fpsText,
+                    presets: [
+                        presets.row(),
+                        presets.gap(8),
+                    ]
+                }, () => {
+                    ui.text({
+                        id: 0,
+                        text: fpsText,
+                    });
+
+                    if lspMemStat {
+                        ui.text({
+                            id: 1,
+                            text: lspMemStat,
+                        });
+                    }
                 });
 
                 rx.get(runLspLoop);
