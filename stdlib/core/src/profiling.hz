@@ -1,5 +1,5 @@
 namespace ffi {
-    extern C noemit fn hzstd_profiling_start(): hzstd_profiling_context_t :: final;
+    extern C noemit fn hzstd_profiling_start(sampling_rate_hz: int): hzstd_profiling_context_t :: final;
     extern C noemit fn hzstd_profiling_end(context: hzstd_profiling_context_t): hzstd_profiling_result_t :: final;
 
     export extern C noemit struct hzstd_profiling_context_t {};
@@ -256,19 +256,19 @@ namespace profiling {
     }
 }
 
-// There's no sampling rate to configure: on Linux, the kernel's own
-// perf_cpu_time_max_percent throttle continuously adapts the real rate to
-// whatever the actual per-sample cost allows, far better than any fixed
-// number picked up front (see hzstd_profiling_start); on Windows it's a
-// fixed, conservative internal default, since no equivalent safety net
-// exists there. Either way, the *achieved* rate -- not a requested one --
-// shows up in ProfilingResult.sampling_rate_hz once a session ends.
+// Sampling rate is configurable via the constructor parameter (default 10 kHz):
+// - frequencyHz = 10000 (default): balanced accuracy and manageable postprocessing
+// - frequencyHz = 0: unlimited, use maximum kernel-allowed rate (Linux) or default (Windows)
+// - frequencyHz > 0: use as a ceiling; kernel throttling may reduce actual rate further
+// The *achieved* rate -- actual samples per second -- shows up in ProfilingResult.sampling_rate_hz
+// once a session ends. Only one profiling session can be active at a time; starting a second
+// session while one is already running will panic immediately.
 export struct Profiler {
     context: ffi.hzstd_profiling_context_t;
 
-    fn constructor() {
-        fmt.println("Profiling started");
-        let context = ffi.hzstd_profiling_start();
+    fn constructor(frequencyHz: int = 10000) {
+        fmt.println(f"Profiling started @ {frequencyHz > 0 ? frequencyHz : "any"} Hz");
+        let context = ffi.hzstd_profiling_start(frequencyHz);
         return Profiler {
             context: context,
         };

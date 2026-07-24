@@ -150,6 +150,11 @@ typedef struct {
 // how long the session runs.
 #define HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY 128
 
+// Global guard to prevent concurrent profiling sessions. Only one profiling
+// session can be active at a time; attempting to start profiling while another
+// session is active will panic immediately.
+static atomic_bool g_hzstd_profiling_active = false;
+
 typedef struct hzstd_profiling_sample_chunk_t {
   struct hzstd_profiling_sample_chunk_t
       *next;    // the only field the GC needs to scan in this header
@@ -1369,7 +1374,15 @@ static FILE *hzstd_profiling_create_raw_samples_file(void) {
 }
 #endif
 
-hzstd_profiling_context_t *hzstd_profiling_start(void) {
+hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
+  // Enforce single-session constraint: only one profiling session can be active at a time.
+  bool was_inactive = atomic_compare_exchange_strong(&g_hzstd_profiling_active,
+                                                     &(bool){false}, true);
+  if (!was_inactive) {
+    hzstd_panic("Profiling session already in progress: only one profiling session can be active at a time. "
+                "Call stop() on the existing Profiler before starting a new one.");
+  }
+
   // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
   // on the first sample drained, by hzstd_profiling_samples_append.
   hzstd_profiling_context_t newContext = {0};
@@ -1383,13 +1396,27 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
       hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
 #ifdef HAZE_PLATFORM_LINUX
-  int samplingRateHz = hzstd_profiling_query_max_sample_rate();
+  int effectiveRateHz;
+  if (sampling_rate_hz == 0) {
+    effectiveRateHz = hzstd_profiling_query_max_sample_rate();
+  } else if (sampling_rate_hz > 0) {
+    effectiveRateHz = sampling_rate_hz;
+  } else {
+    hzstd_panic("Invalid sampling frequency: must be 0 (unlimited) or positive");
+  }
 #elif defined(HAZE_PLATFORM_WIN32)
   context->stackwalker_trigger_semaphore = hzstd_create_semaphore();
   context->stackwalker_done_semaphore = hzstd_create_semaphore();
-  int samplingRateHz = HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ;
+  int effectiveRateHz;
+  if (sampling_rate_hz == 0) {
+    effectiveRateHz = HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ;
+  } else if (sampling_rate_hz > 0) {
+    effectiveRateHz = sampling_rate_hz;
+  } else {
+    hzstd_panic("Invalid sampling frequency: must be 0 (unlimited) or positive");
+  }
 #endif
-  context->sampling_rate_hz = samplingRateHz;
+  context->sampling_rate_hz = effectiveRateHz;
 
   // Plain calloc, deliberately outside the GC heap: this is the buffer the
   // stackwalker thread writes into while a sample is in flight, and it must
@@ -1468,7 +1495,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
   attr.size = sizeof(attr);
   // A CPU-clock software event's period is in nanoseconds of wall time, the
   // closest match to the old handler's SIGUSR1-every-1/rate-seconds cadence.
-  attr.sample_period = 1000000000ull / (uint64_t)samplingRateHz;
+  attr.sample_period = 1000000000ull / (uint64_t)effectiveRateHz;
   attr.sample_type =
       PERF_SAMPLE_TIME | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER;
   attr.sample_regs_user = hzstd_perf_regs_mask();
@@ -1517,7 +1544,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(void) {
       HZSTD_PERF_REG_COUNT * sizeof(uint64_t) +
       sizeof(uint64_t) /* stack size */ + context->perf_stack_size +
       sizeof(uint64_t) /* dyn_size */;
-  size_t targetBytes = (bytesPerSample * (size_t)samplingRateHz) / 4;
+  size_t targetBytes = (bytesPerSample * (size_t)effectiveRateHz) / 4;
   size_t dataPages = 8;
   while (dataPages * pageSize < targetBytes && dataPages < (1u << 20)) {
     dataPages <<= 1;
@@ -2355,6 +2382,9 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             (hzstd_time_now() - stopTime) * 1000.0);
   }
   fflush(stdout);
+
+  // Release the profiling session lock so a new session can be started.
+  atomic_store(&g_hzstd_profiling_active, false);
 
   return (hzstd_profiling_result_t){
       .frames = frames,
