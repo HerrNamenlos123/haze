@@ -2052,7 +2052,7 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf,
 // hzstd_profiling_safe_get_proc_name_by_ip above remains as the fallback for
 // those.
 typedef struct {
-  Elf64_Addr address; // link-time address (relative to this module's load bias)
+  Elf64_Addr address; // absolute runtime address (module load bias already added)
   Elf64_Xword size; // symbol size in bytes; 0 if the ELF entry didn't record one
   // Raw mangled name, demangled later same as the slow path -- deliberately a
   // plain NUL-terminated `char*` (not hzstd_str_t, whose
@@ -2064,6 +2064,20 @@ typedef struct {
 static bool g_elf_symtab_init_done = false;
 static hzstd_profiling_elf_symbol_t *g_elf_symtab = NULL;
 static size_t g_elf_symtab_count = 0;
+
+// Diagnostic: how often the fast path (below) actually had an answer versus
+// falling through to the ~2ms/call libunwind path. Printed in the
+// postprocessing summary -- see hzstd_profiling_end.
+static uint64_t g_elf_symtab_fast_hits = 0;
+static uint64_t g_elf_symtab_fast_misses = 0;
+
+// Finer-grained diagnostic than g_postprocess_resolve_frame_time_total_ns:
+// splits that total into name resolution (fast ELF-symtab path or slow
+// libunwind fallback) vs. DWARF source-location resolution, so a flat
+// "still slow" report can actually be narrowed down to which half is at
+// fault instead of guessed at again.
+static double g_postprocess_name_resolve_time_total_ns = 0;
+static double g_postprocess_sourceloc_time_total_ns = 0;
 
 static int hzstd_profiling_elf_symbol_compare(const void *a, const void *b) {
   const hzstd_profiling_elf_symbol_t *sa = a;
@@ -2077,23 +2091,40 @@ static int hzstd_profiling_elf_symbol_compare(const void *a, const void *b) {
   return 0;
 }
 
-static void hzstd_profiling_build_elf_symtab(void) {
-  g_elf_symtab_init_done = true; // only ever try once, even on failure
+// Growable scratch buffer the table is assembled into across every loaded
+// module before the final sort -- plain malloc/realloc (not GC_malloc/the
+// hzstd allocators): this table lives for the rest of the process and is
+// never freed, holds no back-pointers a collector would ever need to trace,
+// and building it is already the hot path we're trying to make faster, so
+// there's no reason to pay for GC bookkeeping on it at all.
+typedef struct {
+  hzstd_profiling_elf_symbol_t *table;
+  size_t count;
+  size_t capacity;
+} hzstd_profiling_elf_symtab_builder_t;
 
-  // Also populates g_dwarf_module_base/extent if the DWARF line table hasn't
-  // been built yet -- harmless and idempotent to call twice (see
-  // hzstd_profiling_find_main_module), and this function needs that base
-  // address just as much as the line table does, regardless of init order.
-  dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
-
-  char exePath[4096];
-  ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-  if (pathLen <= 0) {
+static void
+hzstd_profiling_elf_symtab_builder_reserve(hzstd_profiling_elf_symtab_builder_t *b,
+                                           size_t extra) {
+  if (b->count + extra <= b->capacity) {
     return;
   }
-  exePath[pathLen] = '\0';
+  size_t newCap = b->capacity ? b->capacity * 2 : 256;
+  while (newCap < b->count + extra) {
+    newCap *= 2;
+  }
+  b->table = realloc(b->table, newCap * sizeof(hzstd_profiling_elf_symbol_t));
+  b->capacity = newCap;
+}
 
-  FILE *f = fopen(exePath, "rb");
+// Parses one ELF image's STT_FUNC symbols (from .symtab if present --
+// stripped shared libraries fall back to .dynsym, which only covers
+// exported symbols but is still far better than nothing) and appends them,
+// as absolute runtime addresses, into `builder`.
+static void
+hzstd_profiling_parse_elf_module_symbols(const char *path, uintptr_t base,
+                                         hzstd_profiling_elf_symtab_builder_t *builder) {
+  FILE *f = fopen(path, "rb");
   if (!f) {
     return;
   }
@@ -2119,14 +2150,23 @@ static void hzstd_profiling_build_elf_symtab(void) {
     return;
   }
 
-  // .symtab (full symbol table -- present as long as the binary isn't
-  // stripped, which this build never does by default) has its matching
-  // string table's section index in sh_link.
+  // Prefer .symtab (full symbol table, includes local/static functions);
+  // fall back to .dynsym (exported symbols only) for stripped shared
+  // libraries, which normally keep .dynsym since it's required at runtime
+  // for dynamic linking to work at all.
   Elf64_Shdr *symtabShdr = NULL;
   for (int i = 0; i < ehdr.e_shnum; i++) {
     if (shdrs[i].sh_type == SHT_SYMTAB) {
       symtabShdr = &shdrs[i];
       break;
+    }
+  }
+  if (!symtabShdr) {
+    for (int i = 0; i < ehdr.e_shnum; i++) {
+      if (shdrs[i].sh_type == SHT_DYNSYM) {
+        symtabShdr = &shdrs[i];
+        break;
+      }
     }
   }
   if (!symtabShdr || symtabShdr->sh_link >= (Elf64_Word)ehdr.e_shnum) {
@@ -2158,10 +2198,7 @@ static void hzstd_profiling_build_elf_symtab(void) {
     return;
   }
 
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  hzstd_profiling_elf_symbol_t *table = hzstd_allocate(
-      allocator, symCount * sizeof(hzstd_profiling_elf_symbol_t));
-  size_t count = 0;
+  hzstd_profiling_elf_symtab_builder_reserve(builder, symCount);
   for (size_t i = 0; i < symCount; i++) {
     // STT_FUNC only -- data symbols, section symbols, etc. aren't call sites
     // and would only pollute the nearest-address-below search below.
@@ -2174,50 +2211,94 @@ static void hzstd_profiling_build_elf_symtab(void) {
     if (syms[i].st_name == 0 || syms[i].st_name >= strtabShdr->sh_size) {
       continue;
     }
-    table[count].address = syms[i].st_value;
-    table[count].size = syms[i].st_size;
     // Each ELF string table entry is itself NUL-terminated (that's the
     // format), so this copies exactly the bytes needed -- including the NUL
     // -- into a buffer that outlives `strtab` (freed right after this loop).
     const char *rawName = strtab + syms[i].st_name;
     size_t nameLen = strlen(rawName);
-    char *nameBuf = hzstd_allocate(allocator, nameLen + 1);
+    char *nameBuf = malloc(nameLen + 1);
     memcpy(nameBuf, rawName, nameLen + 1);
-    table[count].name = nameBuf;
-    count++;
+
+    hzstd_profiling_elf_symbol_t *entry = &builder->table[builder->count++];
+    entry->address = base + syms[i].st_value;
+    entry->size = syms[i].st_size;
+    entry->name = nameBuf;
   }
   free(syms);
   free(strtab);
-
-  qsort(table, count, sizeof(hzstd_profiling_elf_symbol_t),
-        hzstd_profiling_elf_symbol_compare);
-
-  g_elf_symtab = table;
-  g_elf_symtab_count = count;
 }
 
-// Binary search for the nearest function symbol at-or-below `address`.
-// Returns NULL if none matches -- either because `address` falls outside the
-// main executable's own mapped module entirely (shared libraries; same
-// restriction and same reasoning as hzstd_profiling_resolve_sourceloc, which
-// this mirrors exactly: without it, an out-of-module address could
-// spuriously "match" whichever real symbol happens to sort nearest to it,
-// especially one with an unknown/zero size -- see below), or because
-// `address` falls past the end of the nearest real symbol below it (a
-// genuine gap, e.g. padding).
+static int hzstd_profiling_collect_module_symbols(struct dl_phdr_info *info,
+                                                   size_t size, void *data) {
+  (void)size;
+  hzstd_profiling_elf_symtab_builder_t *builder = data;
+
+  if (info->dlpi_name == NULL || info->dlpi_name[0] == '\0') {
+    // Main executable: dl_iterate_phdr reports it with an empty name --
+    // /proc/self/exe is the reliable way to get an openable path for it.
+    char exePath[4096];
+    ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    if (pathLen <= 0) {
+      return 0;
+    }
+    exePath[pathLen] = '\0';
+    hzstd_profiling_parse_elf_module_symbols(exePath, (uintptr_t)info->dlpi_addr,
+                                             builder);
+  } else {
+    hzstd_profiling_parse_elf_module_symbols(info->dlpi_name,
+                                             (uintptr_t)info->dlpi_addr, builder);
+  }
+  return 0; // keep going -- every loaded module, not just the main one
+}
+
+static void hzstd_profiling_build_elf_symtab(void) {
+  g_elf_symtab_init_done = true; // only ever try once, even on failure
+
+  // Also populates g_dwarf_module_base/extent if the DWARF line table hasn't
+  // been built yet -- harmless and idempotent to call twice (see
+  // hzstd_profiling_find_main_module), and hzstd_profiling_resolve_sourceloc
+  // needs that base address regardless of init order. Unlike the symbol
+  // table below, source-location lookups stay restricted to the main
+  // executable -- shared libraries essentially never ship DWARF .debug_line
+  // for a naive nearest-address search to use.
+  dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
+
+  // Most samples in a graphics-heavy app land in shared libraries (the
+  // windowing/GPU stack, libc, ...), not the main executable -- restricting
+  // the fast path to the main module (as a first version of this did) meant
+  // it missed for the large majority of unique frames, silently falling back
+  // to the ~2ms/call libunwind path for almost everything and barely moving
+  // the needle on total postprocessing time. Iterating every loaded module
+  // and merging their symbols (as absolute addresses) into one table fixes
+  // that: the fast path can now answer for any address in any loaded image
+  // that still has a symbol table, which is the common case even for
+  // libraries that ship stripped down to .dynsym only.
+  hzstd_profiling_elf_symtab_builder_t builder = {0};
+  dl_iterate_phdr(hzstd_profiling_collect_module_symbols, &builder);
+
+  qsort(builder.table, builder.count, sizeof(hzstd_profiling_elf_symbol_t),
+        hzstd_profiling_elf_symbol_compare);
+
+  g_elf_symtab = builder.table;
+  g_elf_symtab_count = builder.count;
+}
+
+// Binary search for the nearest function symbol at-or-below `address`
+// (`address` is compared directly against the table's absolute runtime
+// addresses -- see hzstd_profiling_build_elf_symtab). Returns NULL if none
+// matches -- either no loaded module's symbol table covers this address at
+// all, or `address` falls past the end of the nearest real symbol below it
+// (a genuine gap, e.g. padding).
 static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
   if (!g_elf_symtab_init_done) {
-    hzstd_profiling_build_elf_symtab(); // also sets g_dwarf_module_base/extent
+    hzstd_profiling_build_elf_symtab();
   }
   if (g_elf_symtab_count == 0) {
-    return NULL;
-  }
-  if ((uintptr_t)address < g_dwarf_module_base ||
-      (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
+    g_elf_symtab_fast_misses++;
     return NULL;
   }
 
-  Elf64_Addr target = (Elf64_Addr)((uintptr_t)address - g_dwarf_module_base);
+  Elf64_Addr target = (Elf64_Addr)(uintptr_t)address;
   size_t lo = 0, hi = g_elf_symtab_count;
   while (lo < hi) {
     size_t mid = lo + (hi - lo) / 2;
@@ -2228,13 +2309,16 @@ static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
     }
   }
   if (lo == 0) {
+    g_elf_symtab_fast_misses++;
     return NULL;
   }
 
   hzstd_profiling_elf_symbol_t *match = &g_elf_symtab[lo - 1];
   if (match->size > 0 && target >= match->address + match->size) {
+    g_elf_symtab_fast_misses++;
     return NULL;
   }
+  g_elf_symtab_fast_hits++;
   return match->name;
 }
 
@@ -2255,6 +2339,8 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
+
+  double nameStartedAt = hzstd_time_now();
 
   // Fast path: our own pre-sorted ELF .symtab table -- see the big comment
   // above hzstd_profiling_lookup_elf_symbol for why this exists (measured:
@@ -2282,10 +2368,19 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
     }
   }
 
+  g_postprocess_name_resolve_time_total_ns +=
+      (hzstd_time_now() - nameStartedAt) * 1e9;
+
+  double sourcelocStartedAt = hzstd_time_now();
+  hzstd_source_location_t sourceloc =
+      hzstd_profiling_resolve_sourceloc(lookupAddress);
+  g_postprocess_sourceloc_time_total_ns +=
+      (hzstd_time_now() - sourcelocStartedAt) * 1e9;
+
   return (hzstd_profiling_frame_t){
       .address = address,
       .name = name,
-      .sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress),
+      .sourceloc = sourceloc,
   };
 }
 
@@ -2725,6 +2820,10 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   g_postprocess_read_time_total_ns = 0;
   g_postprocess_resolve_frame_time_total_ns = 0;
   g_postprocess_resolve_frame_count = 0;
+  g_elf_symtab_fast_hits = 0;
+  g_elf_symtab_fast_misses = 0;
+  g_postprocess_name_resolve_time_total_ns = 0;
+  g_postprocess_sourceloc_time_total_ns = 0;
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
@@ -2846,7 +2945,9 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             "us/sample).\n"
             "  Breakdown: %.2f ms disk read, %.2f ms unwind, %.2f ms symbol "
             "resolution (%llu unique frame(s) actually resolved, avg %.1f "
-            "us/frame).\n",
+            "us/frame; fast ELF-symtab path hit %llu/%llu).\n"
+            "  Symbol resolution split: %.2f ms name resolution, %.2f ms "
+            "source-location resolution.\n",
             context->sample_count, frameTable.count,
             (hzstd_time_now() - stopTime) * 1000.0,
             (context->perf_unwind_time_total_ns / 1e3) /
@@ -2859,7 +2960,11 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             g_postprocess_resolve_frame_count > 0
                 ? (g_postprocess_resolve_frame_time_total_ns / 1e3) /
                       (double)g_postprocess_resolve_frame_count
-                : 0.0);
+                : 0.0,
+            (unsigned long long)g_elf_symtab_fast_hits,
+            (unsigned long long)(g_elf_symtab_fast_hits + g_elf_symtab_fast_misses),
+            g_postprocess_name_resolve_time_total_ns / 1e6,
+            g_postprocess_sourceloc_time_total_ns / 1e6);
   } else
 #endif
   {

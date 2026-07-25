@@ -394,7 +394,15 @@ class CodeGenerator {
     const hPath = path.join(outDir, `__hz_${prefix}_regex_table.h`);
 
     // --- collect regexes
-    let maxId = 0n;
+    // -1n, not 0n: table_count is derived as maxId + 1n below, and IDs start
+    // at 1 (see the generated file's header comment), so a module with zero
+    // regex literals must produce table_count = 0 to match the
+    // zero-length `__hz_..._regex_table[]` array actually emitted below.
+    // Starting at 0n instead produced table_count = 1 for an empty table,
+    // an out-of-bounds read of table[0] on every process startup for any
+    // module without regex literals (caught by AddressSanitizer as a
+    // global-buffer-overflow read right at the empty array's address).
+    let maxId = -1n;
     const entries: { id: bigint }[] = [];
 
     for (const [, regex] of this.lr.sr.elaboratedRegexTable) {
@@ -1814,14 +1822,24 @@ class CodeGenerator {
             outWriter.write(`((${this.mangleTypeUse(expr.type)})(0))`);
           } else {
             outWriter.write(
-              `((${this.mangleTypeUse(expr.type)})(${this.emitExpr(expr.expr).out.get()}))`
+              `((${this.mangleTypeUse(expr.type)})(${exprWriter.out.get()}))`
             );
           }
         } else {
+          // Reuse the exprWriter computed (and whose .temp was already
+          // hoisted) above -- re-invoking this.emitExpr(expr.expr) here
+          // used to silently re-run codegen for the same node a second
+          // time, discarding *that* call's .temp. Usually harmless
+          // (identical output both times), but if the sub-expression's
+          // codegen allocates a fresh unique temp name as a side effect
+          // (makeTempName()'s counter, e.g. the refinement-checked union
+          // unwrap below), the second call mints a *different* name than
+          // the one actually declared via the first call's hoisted .temp,
+          // producing a reference to a never-declared identifier.
           outWriter.write(
             `((${this.mangleTypeUse(expr.type)}) { .tag = ${expr.index}, .as_tag_${
               expr.index
-            } = ${this.emitExpr(expr.expr).out.get()} })`
+            } = ${exprWriter.out.get()} })`
           );
         }
         return { out: outWriter, temp: tempWriter };
@@ -1856,6 +1874,23 @@ class CodeGenerator {
             outWriter.write(`(${this.emitExpr(expr.expr).out.get()})`);
           }
         } else if (expr.needsRefinementAssertion) {
+          // This node now always evaluates to a plain VALUE, not an
+          // addressable lvalue -- see the AddressOfExpr case above for how
+          // callers that need a reference to it (method calls on a stack
+          // value, etc.) get one safely instead. It used to return an
+          // lvalue by declaring `__v` inside this same throwaway `({ ... })`
+          // block and dereferencing a pointer into it from an outer
+          // `*(...)` sitting *outside* that block -- a genuine stack-use-
+          // after-scope (__v's lifetime formally ends at its own block's
+          // closing `}`, before that outer dereference), confirmed by
+          // AddressSanitizer. This compiler doesn't do statement flattening
+          // yet (that's the whole reason GNU statement-expressions are used
+          // so pervasively here), so __v can't simply be hoisted to a real
+          // preceding statement -- it has to stay self-contained. Evaluating
+          // HZ_GET_UNION_TAG as this block's own trailing expression keeps
+          // the dereference inside __v's lifetime, where it belongs; the
+          // block's overall result is an rvalue (GNU statement-expression
+          // results always are), which is fine for a plain value use.
           const inner = this.emitExpr(expr.expr).out.get();
           const type = this.lr.typeUseNodes.get(
             this.lr.exprNodes.get(expr.expr).type
@@ -1863,7 +1898,7 @@ class CodeGenerator {
           const tagNameFn = this.ensureUnionTagNameFunction(typeUse.type);
           const expectedName = this.unionVariantPrettyName(union, expr.index);
           outWriter.write(
-            `*({ ${this.mangleName(type.name)} __v = ${inner}; &HZ_GET_UNION_TAG(__v, ${expr.index}, "${escapeStringForC(expectedName)[0]}", ${tagNameFn}); })`
+            `({ ${this.mangleName(type.name)} __v = ${inner}; HZ_GET_UNION_TAG(__v, ${expr.index}, "${escapeStringForC(expectedName)[0]}", ${tagNameFn}); })`
           );
         } else {
           outWriter.write(
@@ -2225,6 +2260,12 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.AddressOfExpr: {
+        // expr.expr is guaranteed addressable here: Lower.ts's handling of
+        // Semantic.ENode.AddressOfExpr hoists a refinement-checked union
+        // unwrap (which evaluates to a plain value, not an lvalue -- see
+        // that case above) into a real statement-scoped temp var before
+        // ever constructing this node, specifically so plain `&` is always
+        // safe here.
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
         outWriter.write("&" + e.out.get());

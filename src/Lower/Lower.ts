@@ -1325,9 +1325,36 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.AddressOfExpr: {
+      const [loweredOperand, loweredOperandId] = lowerExpr(
+        lr,
+        expr.expr,
+        flattened,
+        instanceInfo
+      );
+      // A refinement-checked union unwrap (e.g. `bytes` in a method call
+      // like `w.lastContent.getAt(i)` where lastContent is a union field
+      // narrowed to its Bytes variant) evaluates to a plain value, not an
+      // addressable lvalue -- see its codegen in CodeGenerator.ts for why
+      // (a real stack-use-after-scope, confirmed by AddressSanitizer, used
+      // to lurk here otherwise). Storing it in a genuine statement-scoped
+      // temp var here, only for this specific "someone actually needs its
+      // address" case, gives AddressOfExpr something safe to point at
+      // without needing general statement flattening (not yet implemented
+      // in this compiler) for the common, address-not-needed case.
+      const addressableOperandId =
+        loweredOperand.variant === Lowered.ENode.UnionToValueCastExpr &&
+        loweredOperand.needsRefinementAssertion
+          ? storeInTempVarAndGetIfRequired(
+              lr,
+              loweredOperand.type,
+              loweredOperandId,
+              null,
+              flattened
+            )[1]
+          : loweredOperandId;
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.AddressOfExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+        expr: addressableOperandId,
         type: lowerTypeUse(lr, expr.type),
       });
     }
@@ -1373,9 +1400,26 @@ export function lowerExpr(
         targetTypeDef.variant === Lowered.ENode.PointerDatatype &&
         loweredExpr.type === targetTypeDef.referee
       ) {
+        // Auto-referencing a struct value to pass it as a pointer receiver
+        // (e.g. a method call on a union-narrowed field). Same concern as
+        // Semantic.ENode.AddressOfExpr above: a refinement-checked union
+        // unwrap evaluates to a plain value, not an addressable lvalue, so
+        // it needs hoisting into a real temp var before its address can be
+        // taken safely -- see that case for the full rationale.
+        const addressableExprId =
+          loweredExpr.variant === Lowered.ENode.UnionToValueCastExpr &&
+          loweredExpr.needsRefinementAssertion
+            ? storeInTempVarAndGetIfRequired(
+                lr,
+                loweredExpr.type,
+                loweredExprId,
+                null,
+                flattened
+              )[1]
+            : loweredExprId;
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.AddressOfExpr,
-          expr: loweredExprId,
+          expr: addressableExprId,
           type: targetTypeId,
         });
       }
@@ -1800,7 +1844,20 @@ export function lowerExpr(
         )[1];
         const structPointerType = lowerTypeUse(lr, thisExpr.type);
         let tempId = loweredThisExpression;
-        if (thisExpr.isTemporary) {
+        // thisExpr.isTemporary reflects the *semantic* analysis, computed
+        // before lowering ever runs -- it doesn't know that a refinement-
+        // checked union unwrap (e.g. calling a method through a union field
+        // narrowed to one variant) now lowers to a plain rvalue (see
+        // UnionToValueCastExpr's codegen), not an addressable lvalue like it
+        // used to. Widening the check here catches that case too, so its
+        // receiver still gets hoisted into a real temp var before
+        // AddressOfExpr takes its address below.
+        const loweredThisNode = lr.exprNodes.get(loweredThisExpression);
+        const thisNeedsHoisting =
+          thisExpr.isTemporary ||
+          (loweredThisNode.variant === Lowered.ENode.UnionToValueCastExpr &&
+            loweredThisNode.needsRefinementAssertion);
+        if (thisNeedsHoisting) {
           tempId = storeInTempVarAndGet(
             lr,
             lowerTypeUse(lr, thisExpr.type),

@@ -680,9 +680,37 @@ static void hzstd_panic_recovery_check_sane(hzstd_dynamic_array_t *da,
   if (da->elem_size != expected_elem_size || da->size > da->capacity) {
     fprintf(stderr,
             "[recovery-frame corruption] %s: elem_size=%zu (expected %zu) "
-            "size=%zu capacity=%zu buffer=%p da=%p\n",
+            "size=%zu capacity=%zu buffer=%p da=%p gc_base(da)=%p\n",
             what, da->elem_size, expected_elem_size, da->size, da->capacity,
-            (void *)da->buffer, (void *)da);
+            (void *)da->buffer, (void *)da, GC_base((void *)da));
+    fflush(stderr);
+    abort();
+  }
+}
+
+// TEMPORARY diagnostic (companion to hzstd_panic_recovery_check_sane): checks
+// `frame` itself, before touching any of its fields. GC_base(p) returns NULL
+// for any pointer that isn't inside a live GC-managed heap block at all (a
+// stack address, uninitialized garbage, a freed/unmapped region, ...) --
+// distinguishing "the frame pointer we were handed is outright bogus" (a
+// stack-corruption/lost-local-variable class of bug) from "the frame pointer
+// is a real heap object but its *contents* are wrong" (a rooting/premature-
+// collection class of bug, what panic_recovery_frames itself turned out to
+// be). Narrows down which of those two very different bugs this is.
+static void hzstd_panic_recovery_check_frame_sane(hzstd_panic_recovery_frame_t *frame,
+                                                   const char *what) {
+  if (!frame) {
+    fprintf(stderr, "[recovery-frame corruption] %s: frame is NULL\n", what);
+    fflush(stderr);
+    abort();
+  }
+  void *base = GC_base((void *)frame);
+  if (!base) {
+    fprintf(stderr,
+            "[recovery-frame corruption] %s: frame=%p is NOT a GC heap "
+            "pointer (GC_base returned NULL) -- this pointer is garbage, "
+            "not a premature-collection victim\n",
+            what, (void *)frame);
     fflush(stderr);
     abort();
   }
@@ -772,6 +800,7 @@ hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void) {
 void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {
   hzstd_panic_recovery_frame_t *frame =
       hzstd_get_current_panic_recovery_frame();
+  hzstd_panic_recovery_check_frame_sane(frame, "frame (push_cleanup)");
   hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
                                   sizeof(hzstd_panic_recovery_cleanup_entry_t),
                                   "frame->cleanup_handlers (push_cleanup)");
@@ -783,6 +812,7 @@ void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {
 void hzstd_panic_recovery_frame_pop_cleanup(void) {
   hzstd_panic_recovery_frame_t *frame =
       hzstd_get_current_panic_recovery_frame();
+  hzstd_panic_recovery_check_frame_sane(frame, "frame (pop_cleanup)");
   hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
                                   sizeof(hzstd_panic_recovery_cleanup_entry_t),
                                   "frame->cleanup_handlers (pop_cleanup)");
@@ -791,6 +821,7 @@ void hzstd_panic_recovery_frame_pop_cleanup(void) {
 
 void hzstd_panic_recovery_frame_run_cleanup(
     hzstd_panic_recovery_frame_t *frame) {
+  hzstd_panic_recovery_check_frame_sane(frame, "frame (run_cleanup)");
   hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
                                   sizeof(hzstd_panic_recovery_cleanup_entry_t),
                                   "frame->cleanup_handlers (run_cleanup)");

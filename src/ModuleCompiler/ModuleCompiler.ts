@@ -155,6 +155,15 @@ const ARCHIVE_TOOL =
 const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
+// Applies -fsanitize=address to every module's C compile+link (all platforms
+// AddressSanitizer supports). On by default: memory-safety bugs in generated
+// C (e.g. stack-use-after-scope from a pointer whose target's lifetime ended
+// at an inner block's `}`, dereferenced by an enclosing expression) have been
+// costly to chase down after the fact, so catching them immediately at the
+// point of the bad access is worth the runtime overhead for now. Flip to
+// false for a release/perf build once ASan-clean.
+const HAZE_ENABLE_ASAN = true;
+
 export async function getFile(url: string, outfile: string) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -1811,6 +1820,10 @@ export class ModuleCompiler {
     includeDirs.addAll(`${this.moduleDir}/bin/include`);
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
     compilerFlags.addAll("-fno-omit-frame-pointer");
+    if (HAZE_ENABLE_ASAN) {
+      compilerFlags.addAll("-fsanitize=address");
+      linkerFlags.addAll("-fsanitize=address");
+    }
     linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib"`);
     linkerFlags.addAll(`-L"${this.moduleDir}/bin/lib64"`);
 
