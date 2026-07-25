@@ -7,6 +7,9 @@
 #include <signal.h>
 #include <time.h>
 
+#define GC_THREADS
+#include <gc/gc.h>
+
 // Critically make sure the libunwind header we manually built is used and not
 // the system header or LLVM header
 #define UNW_LOCAL_ONLY
@@ -653,6 +656,29 @@ void hzstd_setup_panic_handler(void)
   // reset the thread to its own stack, potentially even at the beginning,
   // it is dead anyways, so that when the GC hits it, it has enough stack space.
   static thread_local char altstack_buf[65536];
+
+  // _hz_panic_stacktrace (declared in hzstd_runtime.h, defined below) is
+  // _Thread_local and holds a value-embedded hzstd_panic_info_t -- which in
+  // turn embeds a GC-heap hzstd_dynamic_array_t* (stacktrace.frames) and a
+  // GC-heap string (message.data). Same root-registration fix as
+  // panic_recovery_frames in hzstd_runtime.c and
+  // hzstd_json_current_allocator in hzstd_json.c, and for the same reason:
+  // BDWGC does not scan _Thread_local storage as a GC root on this
+  // platform/config, confirmed via isolated reproduction (see
+  // panic_recovery_frames's comment for the full writeup). This is set by
+  // hzstd_panic_handler/hzstd_panic_with_stacktrace right before longjmp-ing
+  // to the recovery point, then read back from the `recover:` label -- a
+  // window in which other allocations (and therefore a collection) can
+  // legitimately happen before it's read, so it needs to stay reachable
+  // just as reliably as panic_recovery_frames does. hzstd_setup_panic_handler
+  // already runs exactly once per thread, making it the natural place to
+  // register that thread's own copy.
+  static thread_local bool panic_stacktrace_root_registered = false;
+  if (!panic_stacktrace_root_registered) {
+    panic_stacktrace_root_registered = true;
+    GC_add_roots(&_hz_panic_stacktrace,
+                 (char *)&_hz_panic_stacktrace + sizeof(_hz_panic_stacktrace));
+  }
 
   // panic_trigger/panic_response and the single dedicated worker thread that
   // services them are process-wide singleton state (see the big DESIGN

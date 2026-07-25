@@ -4,8 +4,22 @@
 #include "../../include/hzstd_memory.h"
 #include "../../include/hzstd_string.h"
 #include "cJSON.h"
+#include <threads.h>
+
+#define GC_THREADS
+#include <gc/gc.h>
 
 static thread_local hzstd_allocator_t hzstd_json_current_allocator;
+// See the matching fix (and its full rationale) on panic_recovery_frames in
+// hzstd_runtime.c: BDWGC does not scan _Thread_local/`thread_local` storage
+// as a GC root on this platform/config. hzstd_json_current_allocator.ctx is
+// routinely a GC-heap hzstd_arena_t* (every caller here passes an arena
+// allocator, hence "_use_arena") that's live for the full duration of a
+// cJSON parse -- without this, a collection triggered by the parse's own
+// allocations (cJSON builds many small nodes) could reclaim the arena out
+// from under itself mid-parse, corrupting whatever's being built. Guarded
+// the same way: register once per thread, on first use.
+static thread_local bool hzstd_json_allocator_root_registered = false;
 
 static hzstd_cptr_t json_malloc(hzstd_usize_t size) {
   return hzstd_allocate(hzstd_json_current_allocator, size);
@@ -14,6 +28,12 @@ static hzstd_void_t json_free(hzstd_cptr_t ptr) {}
 
 static void hzstd_json_use_arena(hzstd_allocator_t allocator) {
   hzstd_json_current_allocator = allocator;
+  if (!hzstd_json_allocator_root_registered) {
+    hzstd_json_allocator_root_registered = true;
+    GC_add_roots(&hzstd_json_current_allocator,
+                 (char *)&hzstd_json_current_allocator +
+                     sizeof(hzstd_json_current_allocator));
+  }
   cJSON_Hooks hooks = {
       .malloc_fn = json_malloc,
       .free_fn = json_free,

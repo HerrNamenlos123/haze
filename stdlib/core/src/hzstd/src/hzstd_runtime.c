@@ -8,8 +8,12 @@
 #include "../include/hzstd_runtime.h"
 #include "../include/hzstd_string.h"
 
+#define GC_THREADS
+#include <gc/gc.h>
+
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ── Thread-local panic stacktrace ────────────────────────────────────────────
@@ -650,12 +654,77 @@ hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc,
 static _Thread_local hzstd_dynamic_array_t *panic_recovery_frames = NULL;
 static _Thread_local bool panic_recovery_frames_initialized = false;
 
+// TEMPORARY diagnostic: validates that `da` still looks like a real,
+// uncorrupted hzstd_dynamic_array_t (elem_size matches what it was created
+// with, size never exceeds capacity). Added to pin down a still-unexplained
+// corruption of panic_recovery_frames / a frame's cleanup_handlers that has
+// so far only been observed *after the fact* -- once something tries to use
+// the already-corrupted array (e.g. a bogus elem_size turning a routine
+// grow into a multi-petabyte GC_realloc). Checking at every touchpoint here
+// narrows that down to the first call that actually observes it, which is
+// far closer to the real corrupting write than where the process eventually
+// crashes trying to use the bad data.
+//
+// Deliberately bypasses the whole hzstd_panic_*/HAZE_ATTEMPT machinery --
+// fprintf + abort() directly -- these functions are that machinery, so
+// routing a corruption report back through it risks the report itself
+// getting tangled in the same bug.
+static void hzstd_panic_recovery_check_sane(hzstd_dynamic_array_t *da,
+                                            size_t expected_elem_size,
+                                            const char *what) {
+  if (!da) {
+    fprintf(stderr, "[recovery-frame corruption] %s is NULL\n", what);
+    fflush(stderr);
+    abort();
+  }
+  if (da->elem_size != expected_elem_size || da->size > da->capacity) {
+    fprintf(stderr,
+            "[recovery-frame corruption] %s: elem_size=%zu (expected %zu) "
+            "size=%zu capacity=%zu buffer=%p da=%p\n",
+            what, da->elem_size, expected_elem_size, da->size, da->capacity,
+            (void *)da->buffer, (void *)da);
+    fflush(stderr);
+    abort();
+  }
+}
+
 static void hzstd_init_panic_recovery_frames(void) {
   if (!panic_recovery_frames_initialized) {
     panic_recovery_frames_initialized = true;
     panic_recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(
         hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 4);
+
+    // Root-registration fix, found via isolated reproduction: BDWGC does
+    // NOT scan _Thread_local storage as a GC root on this platform/config
+    // (confirmed empirically -- a minimal standalone repro mirroring this
+    // exact shape, a _Thread_local pointer to a GC-heap dynamic array under
+    // real recursive allocation pressure, reliably has its target's memory
+    // silently handed out to a same-size-class GC_malloc elsewhere within a
+    // few frames, corrupting it in place; GC_add_roots on the TLS slot
+    // itself made 500 stress iterations pass cleanly where the unfixed
+    // version failed on the very first one). Ordinary `static` globals don't
+    // need this -- they live in .data/.bss, which BDWGC registers as a root
+    // region unconditionally at GC_INIT time -- but a _Thread_local
+    // variable's storage is a separate, per-thread block the collector has
+    // no reason to know about unless told. Each thread's copy of
+    // panic_recovery_frames lives at its own address, so this must run once
+    // per thread (naturally satisfied here: this whole branch already only
+    // runs once per thread, guarded by panic_recovery_frames_initialized),
+    // registering *this* thread's slot specifically. Never unregistered --
+    // harmless even after a thread exits (GC_add_roots regions are
+    // permanent for the process's life), and correctness here matters far
+    // more than reclaiming a few bytes of address-range bookkeeping.
+    // sizeof(void*), not sizeof(panic_recovery_frames): the latter is a
+    // pointer-typed expression, which trips "suspicious sizeof on pointer"
+    // linting even though the intent here genuinely is the size of the
+    // pointer *slot* itself (the TLS storage holding the pointer value),
+    // not the array it points to.
+    GC_add_roots(&panic_recovery_frames,
+                 (char *)&panic_recovery_frames + sizeof(void *));
   }
+  hzstd_panic_recovery_check_sane(panic_recovery_frames,
+                                  sizeof(hzstd_panic_recovery_frame_t *),
+                                  "panic_recovery_frames");
 }
 
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void) {
@@ -703,6 +772,9 @@ hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void) {
 void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {
   hzstd_panic_recovery_frame_t *frame =
       hzstd_get_current_panic_recovery_frame();
+  hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
+                                  sizeof(hzstd_panic_recovery_cleanup_entry_t),
+                                  "frame->cleanup_handlers (push_cleanup)");
 
   hzstd_panic_recovery_cleanup_entry_t entry = {.fn = fn, .env = env};
   HZSTD_DYNAMIC_ARRAY_PUSH(frame->cleanup_handlers, entry);
@@ -711,11 +783,17 @@ void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env) {
 void hzstd_panic_recovery_frame_pop_cleanup(void) {
   hzstd_panic_recovery_frame_t *frame =
       hzstd_get_current_panic_recovery_frame();
+  hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
+                                  sizeof(hzstd_panic_recovery_cleanup_entry_t),
+                                  "frame->cleanup_handlers (pop_cleanup)");
   hzstd_dynamic_array_pop(frame->cleanup_handlers, NULL);
 }
 
 void hzstd_panic_recovery_frame_run_cleanup(
     hzstd_panic_recovery_frame_t *frame) {
+  hzstd_panic_recovery_check_sane(frame->cleanup_handlers,
+                                  sizeof(hzstd_panic_recovery_cleanup_entry_t),
+                                  "frame->cleanup_handlers (run_cleanup)");
   size_t n = hzstd_dynamic_array_size(frame->cleanup_handlers);
   for (size_t i = 0; i < n; i++) {
     hzstd_panic_recovery_cleanup_entry_t entry = HZSTD_DYNAMIC_ARRAY_GET(
