@@ -1,6 +1,7 @@
 
 
 #include "../include/hzstd_string.h"
+#include "hzstd/hzstd_types.h"
 #define GC_THREADS
 #include <gc/gc.h>
 
@@ -14,60 +15,133 @@
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_runtime.h"
 
-void* hzstd_heap_allocate(size_t size)
+static void (*hz_profiler_intrument_allocation)(hz_profiler_instrument_allocation_type type, void *data) = NULL;
+static void *hz_profiler_intrument_allocation_data = NULL;
+
+hzstd_memory_instrumentation_state_t
+hzstd_push_memory_instrumentation(void (*callback)(hz_profiler_instrument_allocation_type type, void *data), void *data)
 {
-  void* ptr = GC_malloc(size);
+  hzstd_memory_instrumentation_state_t prevState = {
+    .fn = hz_profiler_intrument_allocation,
+    .data = hz_profiler_intrument_allocation_data,
+  };
+  hz_profiler_intrument_allocation = callback;
+  hz_profiler_intrument_allocation_data = data;
+  return prevState;
+}
+
+void hzstd_pop_memory_instrumentation(hzstd_memory_instrumentation_state_t prevState)
+{
+  hz_profiler_intrument_allocation = prevState.fn;
+  hz_profiler_intrument_allocation_data = prevState.data;
+}
+
+hzstd_memory_instrumentation_state_t hzstd_temporarily_disable_memory_instrumentation()
+{
+  hzstd_memory_instrumentation_state_t prevState = {
+    .fn = hz_profiler_intrument_allocation,
+    .data = hz_profiler_intrument_allocation_data,
+  };
+  hz_profiler_intrument_allocation = NULL;
+  hz_profiler_intrument_allocation_data = NULL;
+  return prevState;
+}
+
+void hzstd_temporarily_reenable_memory_instrumentation(hzstd_memory_instrumentation_state_t prev)
+{
+  hz_profiler_intrument_allocation = prev.fn;
+  hz_profiler_intrument_allocation_data = prev.data;
+}
+
+void *hzstd_heap_allocate(size_t size)
+{
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_heap,
+                                     hz_profiler_intrument_allocation_data);
+  }
+
+  void *ptr = GC_malloc(size);
   if (!ptr) {
     hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
   }
   return ptr;
 }
 
-void* hzstd_heap_allocate_atomic(size_t size)
+void *hzstd_heap_allocate_atomic(size_t size)
 {
-  void* ptr = GC_malloc_atomic(size);
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_heap_atomic,
+                                     hz_profiler_intrument_allocation_data);
+  }
+
+  void *ptr = GC_malloc_atomic(size);
   if (!ptr) {
     hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
   }
   return ptr;
 }
 
-void* hzstd_heap_realloc(void* buffer, size_t size)
+void *hzstd_heap_realloc(void *buffer, size_t size)
 {
-  void* ptr = GC_realloc(buffer, size);
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_heap_realloc,
+                                     hz_profiler_intrument_allocation_data);
+  }
+
+  void *ptr = GC_realloc(buffer, size);
   if (!ptr) {
     hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
   }
   return ptr;
 }
 
-void hzstd_memzero(void* target, size_t size) { memset(target, 0, size); }
-
-void hzstd_init_gc() { GC_INIT(); }
-
-hzstd_arena_t* hzstd_arena_create()
+void hzstd_memzero(void *target, size_t size)
 {
-  hzstd_arena_t* arena = (hzstd_arena_t*)hzstd_heap_allocate(sizeof(hzstd_arena_t));
+  memset(target, 0, size);
+}
+
+void hzstd_init_gc()
+{
+  GC_INIT();
+}
+
+hzstd_arena_t *hzstd_arena_create()
+{
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_create,
+                                     hz_profiler_intrument_allocation_data);
+  }
+
+  hzstd_arena_t *arena = (hzstd_arena_t *)hzstd_heap_allocate(sizeof(hzstd_arena_t));
   return arena;
 }
 
-static hzstd_arena_chunk_t* hzstd_arena_create_chunk(size_t chunk_size)
+static hzstd_arena_chunk_t *hzstd_arena_create_chunk(size_t chunk_size)
 {
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_enlarge,
+                                     hz_profiler_intrument_allocation_data);
+  }
   size_t alloc_size = sizeof(hzstd_arena_chunk_t) + chunk_size;
-  hzstd_arena_chunk_t* chunk = (hzstd_arena_chunk_t*)hzstd_heap_allocate(alloc_size);
+  hzstd_arena_chunk_t *chunk = (hzstd_arena_chunk_t *)hzstd_heap_allocate(alloc_size);
   chunk->capacity = chunk_size;
   return chunk;
 }
 
-static hzstd_arena_chunk_t* hzstd_arena_enlarge(hzstd_arena_chunk_t* last_chunk, size_t chunk_size)
+static hzstd_arena_chunk_t *hzstd_arena_enlarge(hzstd_arena_chunk_t *last_chunk, size_t chunk_size)
 {
   last_chunk->next_chunk = hzstd_arena_create_chunk(chunk_size);
   return last_chunk->next_chunk;
 }
 
-void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
+void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
 {
   assert(size != 0);
+
+  if (hz_profiler_intrument_allocation) {
+    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_suballoc,
+                                     hz_profiler_intrument_allocation_data);
+  }
 
   size_t alignment = alignof(max_align_t);
   size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size + alignment);
@@ -77,7 +151,7 @@ void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
     arena->last_chunk = arena->first_chunk;
   }
 
-  hzstd_arena_chunk_t* chunk = arena->last_chunk;
+  hzstd_arena_chunk_t *chunk = arena->last_chunk;
 
   uintptr_t base = (uintptr_t)(chunk + 1);
   uintptr_t current = base + chunk->used;
@@ -94,11 +168,17 @@ void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size)
   }
 
   chunk->used = new_used;
-  return (void*)aligned;
+  return (void *)aligned;
 }
 
-static void* heap_allocator_impl(void* ctx, size_t size) { return hzstd_heap_allocate(size); }
-static void* heap_allocator_atomic_impl(void* ctx, size_t size) { return hzstd_heap_allocate_atomic(size); }
+static void *heap_allocator_impl(void *ctx, size_t size)
+{
+  return hzstd_heap_allocate(size);
+}
+static void *heap_allocator_atomic_impl(void *ctx, size_t size)
+{
+  return hzstd_heap_allocate_atomic(size);
+}
 
 hzstd_allocator_t hzstd_make_heap_allocator()
 {
@@ -109,9 +189,9 @@ hzstd_allocator_t hzstd_make_heap_allocator()
   };
 }
 
-static void* malloc_allocator_impl(void* ctx, size_t size)
+static void *malloc_allocator_impl(void *ctx, size_t size)
 {
-  void* ptr = malloc(size);
+  void *ptr = malloc(size);
   if (!ptr) {
     hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
   }
@@ -129,7 +209,10 @@ hzstd_allocator_t hzstd_make_non_gc_raw_malloc_allocator()
   };
 }
 
-static void* arena_allocator_impl(void* ctx, size_t size) { return hzstd_arena_allocate((hzstd_arena_t*)ctx, size); }
+static void *arena_allocator_impl(void *ctx, size_t size)
+{
+  return hzstd_arena_allocate((hzstd_arena_t *)ctx, size);
+}
 
 hzstd_allocator_t hzstd_make_arena_allocator()
 {
@@ -145,4 +228,7 @@ hzstd_allocator_t hzstd_make_arena_allocator()
   };
 }
 
-void* hzstd_allocate(hzstd_allocator_t allocator, size_t size) { return allocator.allocate(allocator.ctx, size); }
+void *hzstd_allocate(hzstd_allocator_t allocator, size_t size)
+{
+  return allocator.allocate(allocator.ctx, size);
+}

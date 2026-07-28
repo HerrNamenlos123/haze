@@ -72,206 +72,205 @@ typedef struct {
   hzstd_str_t data;
 } hzstd_str_ref_t;
 
-#define HZSTD_STRING(str, len) ((hzstd_str_t){.data = str, .length = len})
+#define HZSTD_STRING(str, len) ((hzstd_str_t) { .data = str, .length = len })
 
-#define HZSTD_STRING_SLICE(string, start, end)                                \
-  ({                                                                          \
-    hzstd_str_t __hz_str = (string);                                           \
-    _HU2_hzstd_int_t_hzstd_none_t __hz_start = (start);                        \
-    _HU2_hzstd_int_t_hzstd_none_t __hz_end = (end);                            \
-                                                                               \
-    hzstd_int_t __start = 0;                                                   \
-    hzstd_int_t __end = __hz_str.length;                                       \
-                                                                               \
-    if (__hz_start.tag == 0)                                                   \
-      __start = __hz_start.as_tag_0;                                           \
-                                                                               \
-    if (__hz_end.tag == 0)                                                     \
-      __end = __hz_end.as_tag_0;                                               \
-                                                                               \
-    if (__start < 0)                                                           \
-      __start += __hz_str.length;                                              \
-    if (__end < 0)                                                             \
-      __end += __hz_str.length;                                                \
-                                                                               \
-    if (__start < 0)                                                           \
-      __start = 0;                                                             \
-    if (__start > __hz_str.length)                                             \
-      __start = __hz_str.length;                                               \
-                                                                               \
-    if (__end < 0)                                                             \
-      __end = 0;                                                               \
-    if (__end > __hz_str.length)                                               \
-      __end = __hz_str.length;                                                 \
-                                                                               \
-    if (__end < __start)                                                       \
-      __end = __start;                                                         \
-                                                                               \
-    HZSTD_STRING(__hz_str.data + __start, __end - __start);                    \
+#define HZSTD_STRING_SLICE(string, start, end)                                                                         \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_start = (start);                                                                \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_end = (end);                                                                    \
+                                                                                                                       \
+    hzstd_int_t __start = 0;                                                                                           \
+    hzstd_int_t __end = __hz_str.length;                                                                               \
+                                                                                                                       \
+    if (__hz_start.tag == 0)                                                                                           \
+      __start = __hz_start.as_tag_0;                                                                                   \
+                                                                                                                       \
+    if (__hz_end.tag == 0)                                                                                             \
+      __end = __hz_end.as_tag_0;                                                                                       \
+                                                                                                                       \
+    if (__start < 0)                                                                                                   \
+      __start += __hz_str.length;                                                                                      \
+    if (__end < 0)                                                                                                     \
+      __end += __hz_str.length;                                                                                        \
+                                                                                                                       \
+    if (__start < 0)                                                                                                   \
+      __start = 0;                                                                                                     \
+    if (__start > __hz_str.length)                                                                                     \
+      __start = __hz_str.length;                                                                                       \
+                                                                                                                       \
+    if (__end < 0)                                                                                                     \
+      __end = 0;                                                                                                       \
+    if (__end > __hz_str.length)                                                                                       \
+      __end = __hz_str.length;                                                                                         \
+                                                                                                                       \
+    if (__end < __start)                                                                                               \
+      __end = __start;                                                                                                 \
+                                                                                                                       \
+    HZSTD_STRING(__hz_str.data + __start, __end - __start);                                                            \
   })
 
-#define HZSTD_STRING_CONTAINS(string, search, startIndex)                      \
-  ({                                                                          \
-    hzstd_str_t __hz_str = (string);                                           \
-    hzstd_str_t __hz_search = (search);                                        \
-    _HU2_hzstd_int_t_hzstd_none_t __hz_start_index = (startIndex);             \
-                                                                               \
-    hzstd_int_t __start = 0;                                                   \
-    if (__hz_start_index.tag == 0) {                                           \
-      __start = __hz_start_index.as_tag_0;                                     \
-    }                                                                          \
-                                                                               \
-    if (__start < 0) {                                                         \
-      __start = 0;                                                             \
-    }                                                                          \
-    if (__start > __hz_str.length) {                                           \
-      __start = __hz_str.length;                                               \
-    }                                                                          \
-                                                                               \
-    bool __result = false;                                                     \
-                                                                               \
-    if (__hz_search.length == 0) {                                             \
-      __result = true;                                                         \
-    } else if (__hz_search.length <= __hz_str.length) {                        \
-      for (; __start <= __hz_str.length - __hz_search.length; __start++) {     \
-        bool __match = true;                                                   \
-                                                                               \
-        for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {           \
-          if (__hz_str.data[__start + __i] != __hz_search.data[__i]) {         \
-            __match = false;                                                   \
-            break;                                                             \
-          }                                                                    \
-        }                                                                      \
-                                                                               \
-        if (__match) {                                                         \
-          __result = true;                                                     \
-          break;                                                               \
-        }                                                                      \
-      }                                                                        \
-    }                                                                          \
-                                                                               \
-    __result;                                                                  \
+#define HZSTD_STRING_CONTAINS(string, search, startIndex)                                                              \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_str_t __hz_search = (search);                                                                                \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_start_index = (startIndex);                                                     \
+                                                                                                                       \
+    hzstd_int_t __start = 0;                                                                                           \
+    if (__hz_start_index.tag == 0) {                                                                                   \
+      __start = __hz_start_index.as_tag_0;                                                                             \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (__start < 0) {                                                                                                 \
+      __start = 0;                                                                                                     \
+    }                                                                                                                  \
+    if (__start > __hz_str.length) {                                                                                   \
+      __start = __hz_str.length;                                                                                       \
+    }                                                                                                                  \
+                                                                                                                       \
+    bool __result = false;                                                                                             \
+                                                                                                                       \
+    if (__hz_search.length == 0) {                                                                                     \
+      __result = true;                                                                                                 \
+    }                                                                                                                  \
+    else if (__hz_search.length <= __hz_str.length) {                                                                  \
+      for (; __start <= __hz_str.length - __hz_search.length; __start++) {                                             \
+        bool __match = true;                                                                                           \
+                                                                                                                       \
+        for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {                                                   \
+          if (__hz_str.data[__start + __i] != __hz_search.data[__i]) {                                                 \
+            __match = false;                                                                                           \
+            break;                                                                                                     \
+          }                                                                                                            \
+        }                                                                                                              \
+                                                                                                                       \
+        if (__match) {                                                                                                 \
+          __result = true;                                                                                             \
+          break;                                                                                                       \
+        }                                                                                                              \
+      }                                                                                                                \
+    }                                                                                                                  \
+                                                                                                                       \
+    __result;                                                                                                          \
   })
 
-#define HZSTD_STRING_STARTS_WITH(string, search, position)                     \
-  ({                                                                          \
-    hzstd_str_t __hz_str = (string);                                           \
-    hzstd_str_t __hz_search = (search);                                        \
-    _HU2_hzstd_int_t_hzstd_none_t __hz_position = (position);                  \
-                                                                               \
-    hzstd_int_t __position = 0;                                                \
-    if (__hz_position.tag == 0) {                                              \
-      __position = __hz_position.as_tag_0;                                     \
-    }                                                                          \
-                                                                               \
-    if (__position < 0)                                                        \
-      __position = 0;                                                          \
-    if (__position > __hz_str.length)                                          \
-      __position = __hz_str.length;                                            \
-                                                                               \
-    bool __result = false;                                                     \
-                                                                               \
-    if (__hz_search.length == 0) {                                             \
-      __result = true;                                                         \
-    } else if (__position + __hz_search.length <= __hz_str.length) {           \
-      __result = true;                                                         \
-                                                                               \
-      for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {             \
-        if (__hz_str.data[__position + __i] != __hz_search.data[__i]) {        \
-          __result = false;                                                    \
-          break;                                                               \
-        }                                                                      \
-      }                                                                        \
-    }                                                                          \
-                                                                               \
-    __result;                                                                  \
+#define HZSTD_STRING_STARTS_WITH(string, search, position)                                                             \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_str_t __hz_search = (search);                                                                                \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_position = (position);                                                          \
+                                                                                                                       \
+    hzstd_int_t __position = 0;                                                                                        \
+    if (__hz_position.tag == 0) {                                                                                      \
+      __position = __hz_position.as_tag_0;                                                                             \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (__position < 0)                                                                                                \
+      __position = 0;                                                                                                  \
+    if (__position > __hz_str.length)                                                                                  \
+      __position = __hz_str.length;                                                                                    \
+                                                                                                                       \
+    bool __result = false;                                                                                             \
+                                                                                                                       \
+    if (__hz_search.length == 0) {                                                                                     \
+      __result = true;                                                                                                 \
+    }                                                                                                                  \
+    else if (__position + __hz_search.length <= __hz_str.length) {                                                     \
+      __result = true;                                                                                                 \
+                                                                                                                       \
+      for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {                                                     \
+        if (__hz_str.data[__position + __i] != __hz_search.data[__i]) {                                                \
+          __result = false;                                                                                            \
+          break;                                                                                                       \
+        }                                                                                                              \
+      }                                                                                                                \
+    }                                                                                                                  \
+                                                                                                                       \
+    __result;                                                                                                          \
   })
 
-#define HZSTD_STRING_ENDS_WITH(string, search, endPosition)                    \
-  ({                                                                          \
-    hzstd_str_t __hz_str = (string);                                           \
-    hzstd_str_t __hz_search = (search);                                        \
-    _HU2_hzstd_int_t_hzstd_none_t __hz_end_position = (endPosition);           \
-                                                                               \
-    hzstd_int_t __end = __hz_str.length;                                       \
-    if (__hz_end_position.tag == 0) {                                          \
-      __end = __hz_end_position.as_tag_0;                                      \
-    }                                                                          \
-                                                                               \
-    if (__end < 0)                                                             \
-      __end = 0;                                                               \
-    if (__end > __hz_str.length)                                               \
-      __end = __hz_str.length;                                                 \
-                                                                               \
-    bool __result = false;                                                     \
-                                                                               \
-    if (__hz_search.length == 0) {                                             \
-      __result = true;                                                         \
-    } else if (__hz_search.length <= __end) {                                  \
-      hzstd_int_t __offset = __end - __hz_search.length;                       \
-      __result = true;                                                         \
-                                                                               \
-      for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {             \
-        if (__hz_str.data[__offset + __i] != __hz_search.data[__i]) {          \
-          __result = false;                                                    \
-          break;                                                               \
-        }                                                                      \
-      }                                                                        \
-    }                                                                          \
-                                                                               \
-    __result;                                                                  \
+#define HZSTD_STRING_ENDS_WITH(string, search, endPosition)                                                            \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_str_t __hz_search = (search);                                                                                \
+    _HU2_hzstd_int_t_hzstd_none_t __hz_end_position = (endPosition);                                                   \
+                                                                                                                       \
+    hzstd_int_t __end = __hz_str.length;                                                                               \
+    if (__hz_end_position.tag == 0) {                                                                                  \
+      __end = __hz_end_position.as_tag_0;                                                                              \
+    }                                                                                                                  \
+                                                                                                                       \
+    if (__end < 0)                                                                                                     \
+      __end = 0;                                                                                                       \
+    if (__end > __hz_str.length)                                                                                       \
+      __end = __hz_str.length;                                                                                         \
+                                                                                                                       \
+    bool __result = false;                                                                                             \
+                                                                                                                       \
+    if (__hz_search.length == 0) {                                                                                     \
+      __result = true;                                                                                                 \
+    }                                                                                                                  \
+    else if (__hz_search.length <= __end) {                                                                            \
+      hzstd_int_t __offset = __end - __hz_search.length;                                                               \
+      __result = true;                                                                                                 \
+                                                                                                                       \
+      for (hzstd_int_t __i = 0; __i < __hz_search.length; __i++) {                                                     \
+        if (__hz_str.data[__offset + __i] != __hz_search.data[__i]) {                                                  \
+          __result = false;                                                                                            \
+          break;                                                                                                       \
+        }                                                                                                              \
+      }                                                                                                                \
+    }                                                                                                                  \
+                                                                                                                       \
+    __result;                                                                                                          \
   })
 
 // ASCII whitespace, matching the byte-oriented scope of the rest of this
 // file (the other string macros operate on raw bytes, not decoded Unicode
 // codepoints).
-static inline bool hzstd_str_is_whitespace_byte(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
-         c == '\f';
+static inline bool hzstd_str_is_whitespace_byte(char c)
+{
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
-#define HZSTD_STRING_TRIM_START(string)                                       \
-  ({                                                                          \
-    hzstd_str_t __hz_str = (string);                                         \
-    hzstd_int_t __hz_start = 0;                                              \
-                                                                              \
-    while (__hz_start < __hz_str.length &&                                   \
-           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {        \
-      __hz_start++;                                                          \
-    }                                                                        \
-                                                                              \
-    HZSTD_STRING(__hz_str.data + __hz_start, __hz_str.length - __hz_start);  \
+#define HZSTD_STRING_TRIM_START(string)                                                                                \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_int_t __hz_start = 0;                                                                                        \
+                                                                                                                       \
+    while (__hz_start < __hz_str.length && hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {                  \
+      __hz_start++;                                                                                                    \
+    }                                                                                                                  \
+                                                                                                                       \
+    HZSTD_STRING(__hz_str.data + __hz_start, __hz_str.length - __hz_start);                                            \
   })
 
-#define HZSTD_STRING_TRIM_END(string)                                        \
-  ({                                                                         \
-    hzstd_str_t __hz_str = (string);                                        \
-    hzstd_int_t __hz_end = __hz_str.length;                                 \
-                                                                              \
-    while (__hz_end > 0 &&                                                  \
-           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {     \
-      __hz_end--;                                                           \
-    }                                                                       \
-                                                                              \
-    HZSTD_STRING(__hz_str.data, __hz_end);                                  \
+#define HZSTD_STRING_TRIM_END(string)                                                                                  \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_int_t __hz_end = __hz_str.length;                                                                            \
+                                                                                                                       \
+    while (__hz_end > 0 && hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {                                \
+      __hz_end--;                                                                                                      \
+    }                                                                                                                  \
+                                                                                                                       \
+    HZSTD_STRING(__hz_str.data, __hz_end);                                                                             \
   })
 
-#define HZSTD_STRING_TRIM(string)                                           \
-  ({                                                                        \
-    hzstd_str_t __hz_str = (string);                                       \
-    hzstd_int_t __hz_start = 0;                                            \
-    hzstd_int_t __hz_end = __hz_str.length;                                \
-                                                                             \
-    while (__hz_start < __hz_end &&                                        \
-           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {      \
-      __hz_start++;                                                        \
-    }                                                                      \
-    while (__hz_end > __hz_start &&                                        \
-           hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {    \
-      __hz_end--;                                                          \
-    }                                                                      \
-                                                                             \
-    HZSTD_STRING(__hz_str.data + __hz_start, __hz_end - __hz_start);       \
+#define HZSTD_STRING_TRIM(string)                                                                                      \
+  ({                                                                                                                   \
+    hzstd_str_t __hz_str = (string);                                                                                   \
+    hzstd_int_t __hz_start = 0;                                                                                        \
+    hzstd_int_t __hz_end = __hz_str.length;                                                                            \
+                                                                                                                       \
+    while (__hz_start < __hz_end && hzstd_str_is_whitespace_byte(__hz_str.data[__hz_start])) {                         \
+      __hz_start++;                                                                                                    \
+    }                                                                                                                  \
+    while (__hz_end > __hz_start && hzstd_str_is_whitespace_byte(__hz_str.data[__hz_end - 1])) {                       \
+      __hz_end--;                                                                                                      \
+    }                                                                                                                  \
+                                                                                                                       \
+    HZSTD_STRING(__hz_str.data + __hz_start, __hz_end - __hz_start);                                                   \
   })
 
 // ── Module metadata ──────────────────────────────────────────────────────────
@@ -294,9 +293,9 @@ typedef struct hzstd_module_function_table_t {
 // same order, pointing at generated wrapper functions instead (used once
 // hot-reload refcounting hooks land).
 typedef struct hzstd_module_metadata_t {
-  hzstd_str_t module_id;   // 8-character mixed-case alphanumeric, from haze.toml
+  hzstd_str_t module_id; // 8-character mixed-case alphanumeric, from haze.toml
   hzstd_str_t module_name; // from haze.toml
-  hzstd_str_t version;     // from haze.toml
+  hzstd_str_t version; // from haze.toml
   hzstd_module_function_table_t functions;
   hzstd_module_function_table_t trampoline_functions;
 } hzstd_module_metadata_t;
@@ -304,13 +303,13 @@ typedef struct hzstd_module_metadata_t {
 // ── Allocator / arena ────────────────────────────────────────────────────────
 
 typedef struct hzstd_allocator_t {
-  void* (*allocate)(void* ctx, size_t size);
-  void* (*allocateAtomic)(void* ctx, size_t size);
-  void* ctx;
+  void *(*allocate)(void *ctx, size_t size);
+  void *(*allocateAtomic)(void *ctx, size_t size);
+  void *ctx;
 } hzstd_allocator_t;
 
 typedef struct hzstd_arena_chunk_t {
-  struct hzstd_arena_chunk_t* next_chunk;
+  struct hzstd_arena_chunk_t *next_chunk;
   size_t capacity;
   size_t used;
   // After here comes the data
@@ -318,8 +317,8 @@ typedef struct hzstd_arena_chunk_t {
 } hzstd_arena_chunk_t;
 
 typedef struct hzstd_arena_t {
-  hzstd_arena_chunk_t* first_chunk;
-  hzstd_arena_chunk_t* last_chunk;
+  hzstd_arena_chunk_t *first_chunk;
+  hzstd_arena_chunk_t *last_chunk;
 } hzstd_arena_t;
 
 // ── Dynamic array ────────────────────────────────────────────────────────────
@@ -354,9 +353,9 @@ typedef enum {
 // ── Source location ──────────────────────────────────────────────────────────
 
 typedef struct {
-    hzstd_str_t _filename;  /* empty string = absent */
-    hzstd_int_t _line;      /* 0 = absent (real lines are 1-indexed) */
-    hzstd_int_t _column;    /* 0 = absent */
+  hzstd_str_t _filename; /* empty string = absent */
+  hzstd_int_t _line; /* 0 = absent (real lines are 1-indexed) */
+  hzstd_int_t _column; /* 0 = absent */
 } hzstd_source_location_t;
 
 // ── Stack frame / panic ──────────────────────────────────────────────────────
@@ -380,9 +379,14 @@ typedef enum {
 // Captured stack frames (value type — no heap allocation for the wrapper).
 // The frames array inside IS heap-allocated; the struct itself is a value.
 typedef struct {
-  hzstd_dynamic_array_t* frames; /* hzstd_stackframe_t[], heap-allocated */
+  hzstd_dynamic_array_t *frames; /* hzstd_stackframe_t[], heap-allocated */
   hzstd_int_t skip_n_frames;
 } hzstd_stacktrace_t;
+
+typedef struct {
+  hzstd_stacktrace_t stacktrace;
+  double timestamp;
+} hzstd_memory_instrumentation_frame_t;
 
 // Full panic context: message, type, and frames (value type).
 typedef struct {
@@ -399,12 +403,12 @@ typedef struct {
 #define HZSTD_LONGJMP(buf, v) longjmp((buf), (v))
 
 typedef struct {
-  void (*fn)(void*);
-  void* env;
+  void (*fn)(void *);
+  void *env;
 } hzstd_panic_recovery_cleanup_entry_t;
 
 typedef struct {
-  hzstd_dynamic_array_t* cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
+  hzstd_dynamic_array_t *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
   HZSTD_JMP_BUF recovery_point;
   hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
 } hzstd_panic_recovery_frame_t;
@@ -438,10 +442,10 @@ typedef enum {
 #define HZSTD_DEMANGLE_MAX_SEGMENTS 32
 
 typedef struct {
-  hzstd_str_t name;        /* segment name, view into the original symbol */
-  bool        isModule;    /* true for HM-encoded module namespace segment */
-  hzstd_str_t moduleId;    /* only valid when isModule -- always exactly 8 chars */
-  hzstd_str_t moduleName;  /* only valid when isModule */
+  hzstd_str_t name; /* segment name, view into the original symbol */
+  bool isModule; /* true for HM-encoded module namespace segment */
+  hzstd_str_t moduleId; /* only valid when isModule -- always exactly 8 chars */
+  hzstd_str_t moduleName; /* only valid when isModule */
   hzstd_str_t moduleMajor;
   hzstd_str_t moduleMinor;
   hzstd_str_t modulePatch;
@@ -451,14 +455,14 @@ typedef struct {
   bool success;
 
   /* Module namespace info (absent when !hasModule) */
-  bool        hasModule;
+  bool hasModule;
   hzstd_str_t moduleId; /* always exactly 8 chars */
   hzstd_str_t moduleName;
   hzstd_str_t moduleVersion; /* "major.minor.patch", allocated */
 
   /* Remaining segments (function / sub-namespace names) */
-  size_t                     segmentCount;
-  hzstd_demangle_segment_t   segments[HZSTD_DEMANGLE_MAX_SEGMENTS];
+  size_t segmentCount;
+  hzstd_demangle_segment_t segments[HZSTD_DEMANGLE_MAX_SEGMENTS];
 
   /* True when the symbol looks like an anonymous callable */
   bool isAnonymous;
@@ -514,7 +518,7 @@ typedef struct {
 } hzstd_file_stat_t;
 
 typedef struct {
-  void* handle; // malloc'd internal struct; freed by hzstd_close_dir
+  void *handle; // malloc'd internal struct; freed by hzstd_close_dir
   hzstd_fs_error_code_t error;
 } hzstd_open_dir_result_t;
 
@@ -545,14 +549,14 @@ typedef enum {
 
 typedef struct {
   int exit_code;
-  char* stdout_data;
-  char* stderr_data;
+  char *stdout_data;
+  char *stderr_data;
 } hzstd_process_result_t;
 
 typedef struct {
-  void* handle; /* opaque hzstd_process_t*, NULL on failure */
+  void *handle; /* opaque hzstd_process_t*, NULL on failure */
   int error_code; /* 0 on success */
-  char* error_message; /* GC string, may be NULL */
+  char *error_message; /* GC string, may be NULL */
 } hzstd_process_spawn_result_t;
 
 // ── Profiling ────────────────────────────────────────────────────────────────
@@ -589,7 +593,7 @@ typedef struct {
 typedef struct {
   hzstd_real_t timestamp;
   hzstd_real_t sampling_duration;
-  hzstd_dynamic_array_t* frames;
+  hzstd_dynamic_array_t *frames;
   bool truncated;
   hzstd_int_t lost_before;
 } hzstd_profiling_sample_t;
@@ -597,14 +601,14 @@ typedef struct {
 // This struct is the final result of profiling after postprocessing,
 // neatly arranged into a format it is useful to work with.
 typedef struct {
-  hzstd_dynamic_array_t* frames; /* hzstd_profiling_frame_t[], interned/deduplicated */
-  hzstd_dynamic_array_t* samples; /* hzstd_profiling_sample_t[] */
+  hzstd_dynamic_array_t *frames; /* hzstd_profiling_frame_t[], interned/deduplicated */
+  hzstd_dynamic_array_t *samples; /* hzstd_profiling_sample_t[] */
   hzstd_int_t sampling_rate_hz;
 } hzstd_profiling_result_t;
 
 // ── Reactive ─────────────────────────────────────────────────────────────────
 
-typedef void* (*hzstd_computed_fn_t)(void* env);
+typedef void *(*hzstd_computed_fn_t)(void *env);
 
 typedef struct hzstd_dep_edge_t hzstd_dep_edge_t;
 typedef struct hzstd_cell_dep_t hzstd_cell_dep_t;
@@ -614,47 +618,47 @@ typedef struct hzstd_computed_node_t hzstd_computed_node_t;
 typedef struct hzstd_node_t hzstd_node_t;
 
 struct hzstd_dep_edge_t {
-  hzstd_node_t* node;
-  hzstd_dep_edge_t* next;
+  hzstd_node_t *node;
+  hzstd_dep_edge_t *next;
 };
 
 struct hzstd_node_t {
-  hzstd_dep_edge_t* dependents;
+  hzstd_dep_edge_t *dependents;
 };
 
 struct hzstd_cell_dep_t {
-  hzstd_node_t* node;
-  struct hzstd_cell_dep_t* next;
+  hzstd_node_t *node;
+  struct hzstd_cell_dep_t *next;
 };
 
 struct hzstd_reactive_cell_t {
   hzstd_node_t base;
-  void* value;
+  void *value;
 };
 
 struct hzstd_computed_node_t {
   hzstd_node_t base;
 
   int dirty;
-  void* cached;
+  void *cached;
 
   hzstd_computed_fn_t fn;
-  void* env;
+  void *env;
 
-  hzstd_cell_dep_t* deps;
+  hzstd_cell_dep_t *deps;
 };
 
 // ── Regex ────────────────────────────────────────────────────────────────────
 
 typedef struct {
-  const uint8_t* data;
+  const uint8_t *data;
   size_t size;
-  void* code; // pcre2_code
+  void *code; // pcre2_code
 } hzstd_regex_blob_t;
 
 // This corresponds to the compiler-builtin primitive 'Regex'
 typedef struct {
-  hzstd_regex_blob_t* blob;
+  hzstd_regex_blob_t *blob;
 } hzstd_regex_t;
 
 typedef struct {

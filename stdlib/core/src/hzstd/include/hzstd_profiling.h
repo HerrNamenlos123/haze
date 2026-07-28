@@ -21,7 +21,8 @@
 //   - negative: panic with error message
 // Only one profiling session can be active at a time; attempting to start while another is
 // active will panic immediately.
-hzstd_profiling_context_t* hzstd_profiling_start(int sampling_rate_hz);
-hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t* context);
+hzstd_profiling_context_t *
+hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool memoryInstrumentationStacktraces);
+hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context);
 
 #endif // HZSTD_PROFILING_H

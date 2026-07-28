@@ -4,46 +4,67 @@
 
 #include "../hzstd_types.h"
 
-void* hzstd_heap_allocate(size_t size);
-void* hzstd_heap_allocate_atomic(size_t size);
-void* hzstd_heap_realloc(void* buffer, size_t size);
-void hzstd_memzero(void* target, size_t size);
+void *hzstd_heap_allocate(size_t size);
+void *hzstd_heap_allocate_atomic(size_t size);
+void *hzstd_heap_realloc(void *buffer, size_t size);
+void hzstd_memzero(void *target, size_t size);
 void hzstd_init_gc();
 
 #define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
 
 #define HZSTD_ALLOC_STRUCT(allocator, struct_t, value)                                                                 \
   ({                                                                                                                   \
-    struct_t* tmp = hzstd_allocate(allocator, sizeof(struct_t));                                                       \
+    struct_t *tmp = hzstd_allocate(allocator, sizeof(struct_t));                                                       \
     *tmp = (struct_t)(value);                                                                                          \
     tmp;                                                                                                               \
   })
 
 #define HZSTD_ENV_BLOCK_FOR_THIS_PTR(value)                                                                            \
   ({                                                                                                                   \
-    void** env = hzstd_heap_allocate(sizeof(void*));                                                                   \
+    void **env = hzstd_heap_allocate(sizeof(void *));                                                                  \
     *env = (value);                                                                                                    \
-    (void*)env;                                                                                                        \
+    (void *)env;                                                                                                       \
   })
 
 // Reads back a 'this' value stored by-address in an env block (see
 // HZSTD_ENV_BLOCK_FOR_THIS_PTR), for 'this' types that are not already
 // pointer-sized in C (e.g. inline structs and struct-backed primitives like
 // hzstd_str_t).
-#define HZSTD_ENV_BLOCK_GET_THIS(struct_t, env) (*(struct_t*)(((void**)(env))[0]))
+#define HZSTD_ENV_BLOCK_GET_THIS(struct_t, env) (*(struct_t *)(((void **)(env))[0]))
 
 #define HZSTD_HOIST(struct_t, value)                                                                                   \
   ({                                                                                                                   \
-    struct_t* ptr = hzstd_heap_allocate(sizeof(struct_t));                                                             \
+    struct_t *ptr = hzstd_heap_allocate(sizeof(struct_t));                                                             \
     *ptr = value;                                                                                                      \
     ptr;                                                                                                               \
   })
 
-hzstd_arena_t* hzstd_arena_create();
+typedef enum {
+  hz_profiler_instrument_allocation_type_heap = 0,
+  hz_profiler_instrument_allocation_type_heap_realloc = 1,
+  hz_profiler_instrument_allocation_type_heap_atomic = 2,
+  hz_profiler_instrument_allocation_type_arena_create = 3,
+  hz_profiler_instrument_allocation_type_arena_suballoc = 4,
+  hz_profiler_instrument_allocation_type_arena_enlarge = 5,
+} hz_profiler_instrument_allocation_type;
 
-void* hzstd_arena_allocate(hzstd_arena_t* arena, size_t size);
+typedef struct {
+  void *fn;
+  void *data;
+} hzstd_memory_instrumentation_state_t;
+hzstd_memory_instrumentation_state_t
+hzstd_push_memory_instrumentation(void (*callback)(hz_profiler_instrument_allocation_type type, void *data),
+                                  void *data);
+void hzstd_pop_memory_instrumentation(hzstd_memory_instrumentation_state_t prevState);
 
-void* hzstd_allocate(hzstd_allocator_t allocator, size_t size);
+hzstd_memory_instrumentation_state_t hzstd_temporarily_disable_memory_instrumentation();
+void hzstd_temporarily_reenable_memory_instrumentation(hzstd_memory_instrumentation_state_t prev);
+
+hzstd_arena_t *hzstd_arena_create();
+
+void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size);
+
+void *hzstd_allocate(hzstd_allocator_t allocator, size_t size);
 
 hzstd_allocator_t hzstd_make_heap_allocator();
 hzstd_allocator_t hzstd_make_arena_allocator();

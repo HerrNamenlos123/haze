@@ -5,10 +5,12 @@
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_platform.h"
 #include "../include/hzstd_runtime.h"
+#include "hzstd/hzstd_types.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <signal.h>
-
+#include <stdio.h>
+#include <stdlib.h>
 
 #ifdef HAZE_PLATFORM_LINUX
 #include <elf.h>
@@ -159,8 +161,7 @@ typedef struct {
 static atomic_bool g_hzstd_profiling_active = false;
 
 typedef struct hzstd_profiling_sample_chunk_t {
-  struct hzstd_profiling_sample_chunk_t
-      *next;    // the only field the GC needs to scan in this header
+  struct hzstd_profiling_sample_chunk_t *next; // the only field the GC needs to scan in this header
   size_t count; // number of valid entries in this chunk (== capacity for every
                 // chunk but the tail)
   // `entries` is its own separate, atomic (unscanned) allocation -- see
@@ -294,8 +295,7 @@ struct hzstd_profiling_context_t {
   // Append-only history of every sample captured this session; see
   // hzstd_profiling_sample_chunk_t above for why this is a chunked list rather
   // than a single growing array.
-  hzstd_profiling_sample_chunk_t
-      *samples_head; // oldest chunk, or NULL if nothing captured yet
+  hzstd_profiling_sample_chunk_t *samples_head; // oldest chunk, or NULL if nothing captured yet
   hzstd_profiling_sample_chunk_t *samples_tail; // chunk currently being filled
   size_t sample_count; // total entries across every chunk
 
@@ -310,13 +310,11 @@ struct hzstd_profiling_context_t {
   // this plain calloc'd, fixed-size, never-reallocated ring buffer; `samples`
   // is grown later, from hzstd_profiling_drain_ring, only at points where no
   // thread is parked.
-  hzstd_profiling_raw_sample_t
-      *ring_buffer; // calloc'd once in hzstd_profiling_start
+  hzstd_profiling_raw_sample_t *ring_buffer; // calloc'd once in hzstd_profiling_start
   size_t ring_capacity;
   atomic_size_t ring_write_count; // advanced only by the stackwalker thread
                                   // (single producer)
-  atomic_size_t
-      ring_read_count; // advanced only by the draining thread (single consumer)
+  atomic_size_t ring_read_count; // advanced only by the draining thread (single consumer)
   size_t ring_dropped_count; // samples lost if the ring ever fills faster than
                              // it drains
   // Slot the most recently captured sample landed in, or SIZE_MAX if it was
@@ -326,18 +324,44 @@ struct hzstd_profiling_context_t {
   // reaches in once woken" pattern this file already used for `samples`
   // directly.
   size_t last_ring_slot;
+
+  // This is used to restore the previous memory instrumentation to what it was before, to
+  // support registering multiple profiler instances above each other
+  hzstd_memory_instrumentation_state_t prevMemoryInstrumentationState;
+  bool memoryInstrumentationRecordStacktraces;
+  // []hzstd_memory_instrumentation_frame_t
+  hzstd_dynamic_array_t *memoryInstrumentationFrames;
 };
+
+static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type, void *data)
+{
+  hzstd_profiling_context_t *context = data;
+
+  hzstd_memory_instrumentation_state_t prevMemoryState = hzstd_temporarily_disable_memory_instrumentation();
+
+  hzstd_memory_instrumentation_frame_t *frame = HZSTD_ALLOC_STRUCT(
+      hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, (hzstd_memory_instrumentation_frame_t) {});
+
+  frame->timestamp = hzstd_time_now();
+
+  if (context->memoryInstrumentationRecordStacktraces) {
+    hzstd_stacktrace_t stacktrace = hzstd_build_stacktrace(2);
+    frame->stacktrace = stacktrace;
+  }
+
+  HZSTD_DYNAMIC_ARRAY_PUSH(context->memoryInstrumentationFrames, frame);
+
+  hzstd_temporarily_reenable_memory_instrumentation(prevMemoryState);
+}
 
 // Writes `sample` into the ring buffer (no allocation, ever) and records where
 // it landed in context->last_ring_slot, or SIZE_MAX if the ring was full and
 // the sample had to be dropped. Called only from the stackwalker thread, which
 // is the sole producer.
-static void hzstd_profiling_ring_push(hzstd_profiling_context_t *context,
-                                      hzstd_profiling_raw_sample_t sample) {
-  size_t writeCount =
-      atomic_load_explicit(&context->ring_write_count, memory_order_relaxed);
-  size_t readCount =
-      atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
+static void hzstd_profiling_ring_push(hzstd_profiling_context_t *context, hzstd_profiling_raw_sample_t sample)
+{
+  size_t writeCount = atomic_load_explicit(&context->ring_write_count, memory_order_relaxed);
+  size_t readCount = atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
   if (writeCount - readCount >= context->ring_capacity) {
     // The consumer has fallen behind faster than the ring (generously sized for
     // normal scheduling jitter) can absorb. Drop rather than overwrite an entry
@@ -351,8 +375,7 @@ static void hzstd_profiling_ring_push(hzstd_profiling_context_t *context,
   // Publish the entry before the count: a consumer that observes the
   // incremented count via the matching acquire load in
   // hzstd_profiling_drain_ring is guaranteed to see this write too.
-  atomic_store_explicit(&context->ring_write_count, writeCount + 1,
-                        memory_order_release);
+  atomic_store_explicit(&context->ring_write_count, writeCount + 1, memory_order_release);
   context->last_ring_slot = slot;
 }
 
@@ -360,11 +383,9 @@ static void hzstd_profiling_ring_push(hzstd_profiling_context_t *context,
 // whenever the current tail is full. Each chunk, once full, is never touched
 // again -- only the small header of the (possibly brand new) tail chunk is ever
 // written here, never the contents of older chunks.
-static void
-hzstd_profiling_samples_append(hzstd_profiling_context_t *context,
-                               hzstd_profiling_raw_sample_t sample) {
-  if (!context->samples_tail ||
-      context->samples_tail->count == HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY) {
+static void hzstd_profiling_samples_append(hzstd_profiling_context_t *context, hzstd_profiling_raw_sample_t sample)
+{
+  if (!context->samples_tail || context->samples_tail->count == HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY) {
     // Each entry carries a `pcs[HZSTD_MAX_FRAMES]` array of raw
     // instruction-pointer values -- real addresses inside the program's own
     // mapped code, but not pointers we ever want the GC to follow (they're just
@@ -382,16 +403,15 @@ hzstd_profiling_samples_append(hzstd_profiling_context_t *context,
     // (never scanned at all) avoids this entirely; only this small header --
     // which has exactly one real pointer, `next` -- needs to stay scanned, so
     // the chain itself remains reachable from context->samples_head.
-    hzstd_profiling_sample_chunk_t *chunk =
-        hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t));
+    hzstd_profiling_sample_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t));
     chunk->next = NULL;
     chunk->count = 0;
-    chunk->entries =
-        hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY *
-                                   sizeof(hzstd_profiling_raw_sample_t));
+    chunk->entries
+        = hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t));
     if (context->samples_tail) {
       context->samples_tail->next = chunk;
-    } else {
+    }
+    else {
       context->samples_head = chunk;
     }
     context->samples_tail = chunk;
@@ -407,26 +427,24 @@ hzstd_profiling_samples_append(hzstd_profiling_context_t *context,
 // already been joined) -- never from inside the signal handler /
 // suspended-thread window that hzstd_profiling_ring_push exists to keep
 // allocation-free.
-static void hzstd_profiling_drain_ring(hzstd_profiling_context_t *context) {
-  size_t writeCount =
-      atomic_load_explicit(&context->ring_write_count, memory_order_acquire);
-  size_t readCount =
-      atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
+static void hzstd_profiling_drain_ring(hzstd_profiling_context_t *context)
+{
+  size_t writeCount = atomic_load_explicit(&context->ring_write_count, memory_order_acquire);
+  size_t readCount = atomic_load_explicit(&context->ring_read_count, memory_order_relaxed);
   while (readCount < writeCount) {
-    hzstd_profiling_raw_sample_t sample =
-        context->ring_buffer[readCount % context->ring_capacity];
+    hzstd_profiling_raw_sample_t sample = context->ring_buffer[readCount % context->ring_capacity];
     hzstd_profiling_samples_append(context, sample);
     readCount++;
   }
-  atomic_store_explicit(&context->ring_read_count, readCount,
-                        memory_order_relaxed);
+  atomic_store_explicit(&context->ring_read_count, readCount, memory_order_relaxed);
 }
 
 #ifdef HAZE_PLATFORM_LINUX
 // TODO: In the future we should have proper thread management in haze, and this
 // should be queried once in the runtime and later only accessed in the thread
 // local datastructure.
-static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void) {
+static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void)
+{
   pid_t tid = gettid();
   assert(sizeof(hzstd_thread_id_t) >= sizeof(tid));
   return (hzstd_thread_id_t)tid;
@@ -435,7 +453,8 @@ static hzstd_thread_id_t hzstd_profiling_get_current_thread_id(void) {
 // TODO: In the future we should have proper process management in haze, and
 // this should be queried once in the runtime and later only accessed in a
 // global datastructure
-static hzstd_process_id_t hzstd_profiling_get_current_process_id(void) {
+static hzstd_process_id_t hzstd_profiling_get_current_process_id(void)
+{
   pid_t pid = getpid();
   assert(sizeof(hzstd_process_id_t) >= sizeof(pid));
   return (hzstd_process_id_t)pid;
@@ -511,20 +530,16 @@ enum {
 // bit of sample_regs_user, low bit first), so HZSTD_PERF_REG_ORDER[i] says
 // which register the i-th value on the wire belongs to.
 static const int HZSTD_PERF_REG_ORDER[] = {
-    HZSTD_PERF_REG_X86_64_AX, HZSTD_PERF_REG_X86_64_BX,
-    HZSTD_PERF_REG_X86_64_CX, HZSTD_PERF_REG_X86_64_DX,
-    HZSTD_PERF_REG_X86_64_SI, HZSTD_PERF_REG_X86_64_DI,
-    HZSTD_PERF_REG_X86_64_BP, HZSTD_PERF_REG_X86_64_SP,
-    HZSTD_PERF_REG_X86_64_IP, HZSTD_PERF_REG_X86_64_R8,
-    HZSTD_PERF_REG_X86_64_R9, HZSTD_PERF_REG_X86_64_R10,
-    HZSTD_PERF_REG_X86_64_R11, HZSTD_PERF_REG_X86_64_R12,
-    HZSTD_PERF_REG_X86_64_R13, HZSTD_PERF_REG_X86_64_R14,
-    HZSTD_PERF_REG_X86_64_R15,
+  HZSTD_PERF_REG_X86_64_AX,  HZSTD_PERF_REG_X86_64_BX,  HZSTD_PERF_REG_X86_64_CX,  HZSTD_PERF_REG_X86_64_DX,
+  HZSTD_PERF_REG_X86_64_SI,  HZSTD_PERF_REG_X86_64_DI,  HZSTD_PERF_REG_X86_64_BP,  HZSTD_PERF_REG_X86_64_SP,
+  HZSTD_PERF_REG_X86_64_IP,  HZSTD_PERF_REG_X86_64_R8,  HZSTD_PERF_REG_X86_64_R9,  HZSTD_PERF_REG_X86_64_R10,
+  HZSTD_PERF_REG_X86_64_R11, HZSTD_PERF_REG_X86_64_R12, HZSTD_PERF_REG_X86_64_R13, HZSTD_PERF_REG_X86_64_R14,
+  HZSTD_PERF_REG_X86_64_R15,
 };
-#define HZSTD_PERF_REG_COUNT \
-  (sizeof(HZSTD_PERF_REG_ORDER) / sizeof(HZSTD_PERF_REG_ORDER[0]))
+#define HZSTD_PERF_REG_COUNT (sizeof(HZSTD_PERF_REG_ORDER) / sizeof(HZSTD_PERF_REG_ORDER[0]))
 
-static uint64_t hzstd_perf_regs_mask(void) {
+static uint64_t hzstd_perf_regs_mask(void)
+{
   uint64_t mask = 0;
   for (size_t i = 0; i < HZSTD_PERF_REG_COUNT; i++) {
     mask |= (1ull << HZSTD_PERF_REG_ORDER[i]);
@@ -612,26 +627,45 @@ static __thread bool g_hzstd_perf_current_sample_truncated = false;
 // in hzstd_perf_sample_regs_t::regs, or -1 if we don't capture it (there's no
 // legitimate reason CFI would need anything outside the general-purpose set
 // captured above, on this target).
-static int hzstd_perf_unw_reg_to_slot(unw_regnum_t regnum) {
+static int hzstd_perf_unw_reg_to_slot(unw_regnum_t regnum)
+{
   switch (regnum) {
-    case UNW_X86_64_RAX: return HZSTD_PERF_REG_X86_64_AX;
-    case UNW_X86_64_RBX: return HZSTD_PERF_REG_X86_64_BX;
-    case UNW_X86_64_RCX: return HZSTD_PERF_REG_X86_64_CX;
-    case UNW_X86_64_RDX: return HZSTD_PERF_REG_X86_64_DX;
-    case UNW_X86_64_RSI: return HZSTD_PERF_REG_X86_64_SI;
-    case UNW_X86_64_RDI: return HZSTD_PERF_REG_X86_64_DI;
-    case UNW_X86_64_RBP: return HZSTD_PERF_REG_X86_64_BP;
-    case UNW_X86_64_RSP: return HZSTD_PERF_REG_X86_64_SP;
-    case UNW_X86_64_RIP: return HZSTD_PERF_REG_X86_64_IP;
-    case UNW_X86_64_R8: return HZSTD_PERF_REG_X86_64_R8;
-    case UNW_X86_64_R9: return HZSTD_PERF_REG_X86_64_R9;
-    case UNW_X86_64_R10: return HZSTD_PERF_REG_X86_64_R10;
-    case UNW_X86_64_R11: return HZSTD_PERF_REG_X86_64_R11;
-    case UNW_X86_64_R12: return HZSTD_PERF_REG_X86_64_R12;
-    case UNW_X86_64_R13: return HZSTD_PERF_REG_X86_64_R13;
-    case UNW_X86_64_R14: return HZSTD_PERF_REG_X86_64_R14;
-    case UNW_X86_64_R15: return HZSTD_PERF_REG_X86_64_R15;
-    default: return -1;
+  case UNW_X86_64_RAX:
+    return HZSTD_PERF_REG_X86_64_AX;
+  case UNW_X86_64_RBX:
+    return HZSTD_PERF_REG_X86_64_BX;
+  case UNW_X86_64_RCX:
+    return HZSTD_PERF_REG_X86_64_CX;
+  case UNW_X86_64_RDX:
+    return HZSTD_PERF_REG_X86_64_DX;
+  case UNW_X86_64_RSI:
+    return HZSTD_PERF_REG_X86_64_SI;
+  case UNW_X86_64_RDI:
+    return HZSTD_PERF_REG_X86_64_DI;
+  case UNW_X86_64_RBP:
+    return HZSTD_PERF_REG_X86_64_BP;
+  case UNW_X86_64_RSP:
+    return HZSTD_PERF_REG_X86_64_SP;
+  case UNW_X86_64_RIP:
+    return HZSTD_PERF_REG_X86_64_IP;
+  case UNW_X86_64_R8:
+    return HZSTD_PERF_REG_X86_64_R8;
+  case UNW_X86_64_R9:
+    return HZSTD_PERF_REG_X86_64_R9;
+  case UNW_X86_64_R10:
+    return HZSTD_PERF_REG_X86_64_R10;
+  case UNW_X86_64_R11:
+    return HZSTD_PERF_REG_X86_64_R11;
+  case UNW_X86_64_R12:
+    return HZSTD_PERF_REG_X86_64_R12;
+  case UNW_X86_64_R13:
+    return HZSTD_PERF_REG_X86_64_R13;
+  case UNW_X86_64_R14:
+    return HZSTD_PERF_REG_X86_64_R14;
+  case UNW_X86_64_R15:
+    return HZSTD_PERF_REG_X86_64_R15;
+  default:
+    return -1;
   }
 }
 
@@ -646,24 +680,23 @@ static int hzstd_perf_unw_reg_to_slot(unw_regnum_t regnum) {
 //     exactly what lets the delegated find_proc_info (see
 //     hzstd_profiling_start) work unmodified, since it reads
 //     .eh_frame/.eh_frame_hdr bytes through this same callback.
-static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr,
-                                 unw_word_t *valp, int write, void *arg) {
+static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *valp, int write, void *arg)
+{
   (void)as;
   (void)arg;
   if (write) {
     return -UNW_EINVAL; // never used to write back during profiling
   }
   hzstd_perf_sample_regs_t *sample = g_hzstd_perf_current_sample;
-  if (sample && addr >= sample->stack_base &&
-      addr + sizeof(*valp) <= sample->stack_base + sample->stack_size) {
+  if (sample && addr >= sample->stack_base && addr + sizeof(*valp) <= sample->stack_base + sample->stack_size) {
     memcpy(valp, sample->stack + (addr - sample->stack_base), sizeof(*valp));
     return 0;
   }
   if (addr == 0) {
     return -UNW_EINVAL;
   }
-  if (g_hzstd_perf_stack_low != g_hzstd_perf_stack_high &&
-      addr >= g_hzstd_perf_stack_low && addr < g_hzstd_perf_stack_high) {
+  if (g_hzstd_perf_stack_low != g_hzstd_perf_stack_high && addr >= g_hzstd_perf_stack_low
+      && addr < g_hzstd_perf_stack_high) {
     // More of the profiled thread's stack than this sample happened to
     // capture -- not safe to read live (see the comment on
     // g_hzstd_perf_stack_low/high above). Reporting it as unavailable simply
@@ -678,8 +711,8 @@ static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr,
   return 0;
 }
 
-static int hzstd_perf_access_reg(unw_addr_space_t as, unw_regnum_t regnum,
-                                 unw_word_t *valp, int write, void *arg) {
+static int hzstd_perf_access_reg(unw_addr_space_t as, unw_regnum_t regnum, unw_word_t *valp, int write, void *arg)
+{
   (void)as;
   (void)arg;
   if (write) {
@@ -727,8 +760,8 @@ static __thread bool g_hzstd_perf_unwinding_active = false;
 static struct sigaction g_hzstd_perf_prev_segv_action;
 static struct sigaction g_hzstd_perf_prev_bus_action;
 
-static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info,
-                                            void *ucontext) {
+static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info, void *ucontext)
+{
   if (g_hzstd_perf_unwinding_active) {
     siglongjmp(g_hzstd_perf_unwind_recovery, 1);
   }
@@ -736,13 +769,13 @@ static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info,
   // Not our crash -- chain to whatever was previously installed, the
   // standard technique for a signal handler that doesn't own every possible
   // cause of the signal it's registered for.
-  struct sigaction *prev =
-      (sig == SIGBUS) ? &g_hzstd_perf_prev_bus_action : &g_hzstd_perf_prev_segv_action;
+  struct sigaction *prev = (sig == SIGBUS) ? &g_hzstd_perf_prev_bus_action : &g_hzstd_perf_prev_segv_action;
   if (prev->sa_flags & SA_SIGINFO) {
     if (prev->sa_sigaction) {
       prev->sa_sigaction(sig, info, ucontext);
     }
-  } else if (prev->sa_handler == SIG_DFL) {
+  }
+  else if (prev->sa_handler == SIG_DFL) {
     // No custom handler was installed before ours (shouldn't normally happen
     // here, since hzstd_setup_panic_handler always runs first, but this is
     // the correct fallback if it somehow wasn't): restore default disposition
@@ -750,7 +783,8 @@ static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info,
     // still happens, rather than silently dropping the signal.
     signal(sig, SIG_DFL);
     raise(sig);
-  } else if (prev->sa_handler != SIG_IGN && prev->sa_handler != NULL) {
+  }
+  else if (prev->sa_handler != SIG_IGN && prev->sa_handler != NULL) {
     prev->sa_handler(sig);
   }
 }
@@ -759,11 +793,11 @@ static void hzstd_perf_unwind_crash_handler(int sig, siginfo_t *info,
 // shape the old signal-based stackwalker thread used to produce. Assumes
 // context->perf_addr_space/perf_upt are already set up (see
 // hzstd_profiling_start).
-static void
-hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
-                                   hzstd_perf_sample_regs_t *sample,
-                                   hzstd_profiling_raw_sample_t *out) {
-  *out = (hzstd_profiling_raw_sample_t){0};
+static void hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
+                                               hzstd_perf_sample_regs_t *sample,
+                                               hzstd_profiling_raw_sample_t *out)
+{
+  *out = (hzstd_profiling_raw_sample_t) { 0 };
   if (!sample->regs_valid) {
     return;
   }
@@ -784,8 +818,7 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
     g_hzstd_perf_unwinding_active = true;
 
     unw_cursor_t cursor;
-    if (_Ux86_64_init_remote(&cursor, context->perf_addr_space,
-                            context->perf_upt) == 0) {
+    if (_Ux86_64_init_remote(&cursor, context->perf_addr_space, context->perf_upt) == 0) {
       do {
         unw_word_t pc;
         if (_Ux86_64_get_reg(&cursor, UNW_REG_IP, &pc) < 0) {
@@ -804,7 +837,8 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
         // uncaptured stack above this point (see hzstd_perf_access_mem).
       } while (_Ux86_64_step(&cursor) > 0);
     }
-  } else {
+  }
+  else {
     // Landed here via siglongjmp -- some address the unwinder computed
     // (almost always outside the stack: bad/missing CFI data for some
     // module) was entirely unmapped. Whatever depth we'd reached is real and
@@ -824,14 +858,15 @@ hzstd_profiling_unwind_perf_sample(hzstd_profiling_context_t *context,
 // Copies `len` bytes out of the ring buffer's data area starting at `*cursor`
 // (a monotonically increasing logical offset, not yet reduced mod data_size),
 // handling the wraparound a record can straddle. Advances `*cursor` by `len`.
-static void hzstd_profiling_perf_ring_read(const uint8_t *data,
-                                           size_t data_size, uint64_t *cursor,
-                                           void *dst, size_t len) {
+static void
+hzstd_profiling_perf_ring_read(const uint8_t *data, size_t data_size, uint64_t *cursor, void *dst, size_t len)
+{
   size_t offset = (size_t)(*cursor % data_size);
   size_t first = data_size - offset;
   if (first >= len) {
     memcpy(dst, data + offset, len);
-  } else {
+  }
+  else {
     memcpy(dst, data + offset, first);
     memcpy((uint8_t *)dst + first, data, len - first);
   }
@@ -871,9 +906,8 @@ static void hzstd_profiling_perf_ring_read(const uint8_t *data,
 // (a panic reading it back in hzstd_profiling_end, well after the session
 // that actually caused it had already ended).
 static bool
-hzstd_profiling_write_raw_capture(FILE *f, uint64_t timeNs,
-                                  uint64_t lost_before,
-                                  const hzstd_perf_sample_regs_t *regs) {
+hzstd_profiling_write_raw_capture(FILE *f, uint64_t timeNs, uint64_t lost_before, const hzstd_perf_sample_regs_t *regs)
+{
   fwrite(&timeNs, sizeof(timeNs), 1, f);
   fwrite(&lost_before, sizeof(lost_before), 1, f);
   uint8_t regsValidByte = regs->regs_valid ? 1 : 0;
@@ -898,26 +932,25 @@ hzstd_profiling_write_raw_capture(FILE *f, uint64_t timeNs,
 // at a clean EOF; panics on a short read partway through a record (this
 // process is the only writer, and the writer thread is long joined by the
 // time this is ever called -- see hzstd_profiling_end).
-static bool hzstd_profiling_read_raw_capture(FILE *f, uint64_t *timeNs,
+static bool hzstd_profiling_read_raw_capture(FILE *f,
+                                             uint64_t *timeNs,
                                              uint64_t *lost_before,
                                              hzstd_perf_sample_regs_t *out,
-                                             uint8_t *stackBuf) {
-  *out = (hzstd_perf_sample_regs_t){0};
+                                             uint8_t *stackBuf)
+{
+  *out = (hzstd_perf_sample_regs_t) { 0 };
   if (fread(timeNs, sizeof(*timeNs), 1, f) != 1) {
     return false;
   }
   uint8_t regsValidByte = 0;
-  if (fread(lost_before, sizeof(*lost_before), 1, f) != 1 ||
-      fread(&regsValidByte, sizeof(regsValidByte), 1, f) != 1 ||
-      fread(out->regs, sizeof(out->regs), 1, f) != 1 ||
-      fread(&out->stack_base, sizeof(out->stack_base), 1, f) != 1 ||
-      fread(&out->stack_size, sizeof(out->stack_size), 1, f) != 1) {
+  if (fread(lost_before, sizeof(*lost_before), 1, f) != 1 || fread(&regsValidByte, sizeof(regsValidByte), 1, f) != 1
+      || fread(out->regs, sizeof(out->regs), 1, f) != 1 || fread(&out->stack_base, sizeof(out->stack_base), 1, f) != 1
+      || fread(&out->stack_size, sizeof(out->stack_size), 1, f) != 1) {
     hzstd_panic("Corrupt profiling raw-capture file (truncated header)");
   }
   out->regs_valid = regsValidByte != 0;
   if (out->stack_size > 0) {
-    if (fread(stackBuf, 1, (size_t)out->stack_size, f) !=
-        (size_t)out->stack_size) {
+    if (fread(stackBuf, 1, (size_t)out->stack_size, f) != (size_t)out->stack_size) {
       hzstd_panic("Corrupt profiling raw-capture file (truncated stack)");
     }
     out->stack = stackBuf;
@@ -933,9 +966,8 @@ static bool hzstd_profiling_read_raw_capture(FILE *f, uint64_t *timeNs,
 // pcs[depth](u64 each), timestamp(f64), sampling_duration(f64),
 // truncated(u8), lost_before(u64). Only ever called from the single unwind
 // worker thread, so the file's current position is never contended.
-static void
-hzstd_profiling_write_raw_sample(FILE *f,
-                                 const hzstd_profiling_raw_sample_t *sample) {
+static void hzstd_profiling_write_raw_sample(FILE *f, const hzstd_profiling_raw_sample_t *sample)
+{
   fwrite(&sample->depth, sizeof(sample->depth), 1, f);
   for (uint16_t i = 0; i < sample->depth; i++) {
     uint64_t pc = (uint64_t)(uintptr_t)sample->pcs[i];
@@ -954,9 +986,9 @@ hzstd_profiling_write_raw_sample(FILE *f,
 // happens if the file itself is corrupt (this process is the only writer,
 // and by the time this is ever called for reading, the unwind worker thread
 // that did the writing has already been joined -- see hzstd_profiling_end).
-static bool
-hzstd_profiling_read_raw_sample(FILE *f, hzstd_profiling_raw_sample_t *out) {
-  *out = (hzstd_profiling_raw_sample_t){0};
+static bool hzstd_profiling_read_raw_sample(FILE *f, hzstd_profiling_raw_sample_t *out)
+{
+  *out = (hzstd_profiling_raw_sample_t) { 0 };
   if (fread(&out->depth, sizeof(out->depth), 1, f) != 1) {
     return false;
   }
@@ -969,14 +1001,13 @@ hzstd_profiling_read_raw_sample(FILE *f, hzstd_profiling_raw_sample_t *out) {
       out->pcs[i] = (void *)(uintptr_t)pc;
     }
   }
-  if (fread(&out->timestamp, sizeof(out->timestamp), 1, f) != 1 ||
-      fread(&out->sampling_duration, sizeof(out->sampling_duration), 1, f) !=
-          1) {
+  if (fread(&out->timestamp, sizeof(out->timestamp), 1, f) != 1
+      || fread(&out->sampling_duration, sizeof(out->sampling_duration), 1, f) != 1) {
     hzstd_panic("Corrupt profiling raw-sample file (truncated timing)");
   }
   uint8_t truncatedByte = 0;
-  if (fread(&truncatedByte, sizeof(truncatedByte), 1, f) != 1 ||
-      fread(&out->lost_before, sizeof(out->lost_before), 1, f) != 1) {
+  if (fread(&truncatedByte, sizeof(truncatedByte), 1, f) != 1
+      || fread(&out->lost_before, sizeof(out->lost_before), 1, f) != 1) {
     hzstd_panic("Corrupt profiling raw-sample file (truncated flags)");
   }
   out->truncated = truncatedByte != 0;
@@ -988,22 +1019,18 @@ hzstd_profiling_read_raw_sample(FILE *f, hzstd_profiling_raw_sample_t *out) {
 // does *no* unwinding here -- see the big comment on
 // hzstd_profiling_context_t::raw_samples_file -- just a cheap copy of the raw
 // registers/stack straight to disk.
-static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
-                                            uint8_t *stack_scratch) {
+static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context, uint8_t *stack_scratch)
+{
   struct perf_event_mmap_page *meta = context->perf_mmap_base;
   size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
-  uint8_t *data = (uint8_t *)context->perf_mmap_base +
-                  (meta->data_offset ? meta->data_offset : page_size);
-  size_t data_size = meta->data_size
-                         ? (size_t)meta->data_size
-                         : (context->perf_mmap_len - page_size);
+  uint8_t *data = (uint8_t *)context->perf_mmap_base + (meta->data_offset ? meta->data_offset : page_size);
+  size_t data_size = meta->data_size ? (size_t)meta->data_size : (context->perf_mmap_len - page_size);
 
   // The kernel documents that data_head must be read with an acquire-style
   // barrier before touching any of the data it describes; the matching
   // release store to data_tail below is how we tell it how much of the ring
   // we've finished consuming.
-  uint64_t head = atomic_load_explicit((_Atomic uint64_t *)&meta->data_head,
-                                       memory_order_acquire);
+  uint64_t head = atomic_load_explicit((_Atomic uint64_t *)&meta->data_head, memory_order_acquire);
   uint64_t tail = meta->data_tail;
 
   context->perf_drain_call_count++;
@@ -1012,21 +1039,17 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
   while (tail < head) {
     struct perf_event_header header;
     uint64_t recordStart = tail;
-    hzstd_profiling_perf_ring_read(data, data_size, &tail, &header,
-                                   sizeof(header));
+    hzstd_profiling_perf_ring_read(data, data_size, &tail, &header, sizeof(header));
 
     if (header.type == PERF_RECORD_SAMPLE) {
       uint64_t timeNs = 0;
-      hzstd_profiling_perf_ring_read(data, data_size, &tail, &timeNs,
-                                     sizeof(timeNs));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &timeNs, sizeof(timeNs));
 
-      hzstd_perf_sample_regs_t sample = {0};
+      hzstd_perf_sample_regs_t sample = { 0 };
       uint64_t abi = 0;
-      hzstd_profiling_perf_ring_read(data, data_size, &tail, &abi,
-                                     sizeof(abi));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &abi, sizeof(abi));
       uint64_t rawRegs[HZSTD_PERF_REG_COUNT];
-      hzstd_profiling_perf_ring_read(data, data_size, &tail, rawRegs,
-                                     sizeof(rawRegs));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, rawRegs, sizeof(rawRegs));
       if (abi != PERF_SAMPLE_REGS_ABI_NONE) {
         for (size_t i = 0; i < HZSTD_PERF_REG_COUNT; i++) {
           sample.regs[HZSTD_PERF_REG_ORDER[i]] = rawRegs[i];
@@ -1035,19 +1058,15 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
       }
 
       uint64_t stackSize = 0;
-      hzstd_profiling_perf_ring_read(data, data_size, &tail, &stackSize,
-                                     sizeof(stackSize));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &stackSize, sizeof(stackSize));
       if (stackSize > 0) {
-        hzstd_profiling_perf_ring_read(data, data_size, &tail, stack_scratch,
-                                       (size_t)stackSize);
+        hzstd_profiling_perf_ring_read(data, data_size, &tail, stack_scratch, (size_t)stackSize);
         uint64_t dynSize = 0;
-        hzstd_profiling_perf_ring_read(data, data_size, &tail, &dynSize,
-                                       sizeof(dynSize));
+        hzstd_profiling_perf_ring_read(data, data_size, &tail, &dynSize, sizeof(dynSize));
         sample.stack = stack_scratch;
         // The stack snapshot always starts at RSP as of the sampled instant,
         // regardless of how much of it the kernel actually managed to copy.
-        sample.stack_base =
-            sample.regs_valid ? sample.regs[HZSTD_PERF_REG_X86_64_SP] : 0;
+        sample.stack_base = sample.regs_valid ? sample.regs[HZSTD_PERF_REG_X86_64_SP] : 0;
         sample.stack_size = dynSize;
       }
 
@@ -1072,9 +1091,7 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
       // readable up to this point, so there's no reason to risk corrupting
       // it further.
       if (!context->raw_samples_write_failed) {
-        bool ok = hzstd_profiling_write_raw_capture(context->raw_samples_file,
-                                                     timeNs, lostBefore,
-                                                     &sample);
+        bool ok = hzstd_profiling_write_raw_capture(context->raw_samples_file, timeNs, lostBefore, &sample);
         if (ok) {
           // Bumped here, at capture time, not once this sample is
           // eventually unwound -- every capture written here is guaranteed
@@ -1083,11 +1100,13 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
           // throughput instead of lagging behind however fast unwinding
           // happens to keep up.
           context->sample_count++;
-        } else {
+        }
+        else {
           context->raw_samples_write_failed = true;
           context->raw_samples_dropped_count++;
         }
-      } else {
+      }
+      else {
         context->raw_samples_dropped_count++;
       }
       samplesThisDrain++;
@@ -1095,8 +1114,7 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
     else if (header.type == PERF_RECORD_LOST) {
       uint64_t id = 0, lost = 0;
       hzstd_profiling_perf_ring_read(data, data_size, &tail, &id, sizeof(id));
-      hzstd_profiling_perf_ring_read(data, data_size, &tail, &lost,
-                                     sizeof(lost));
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &lost, sizeof(lost));
       context->perf_lost_count += lost;
       context->perf_pending_lost += lost;
     }
@@ -1116,11 +1134,11 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context,
     context->perf_max_samples_per_drain = samplesThisDrain;
   }
 
-  atomic_store_explicit((_Atomic uint64_t *)&meta->data_tail, tail,
-                        memory_order_release);
+  atomic_store_explicit((_Atomic uint64_t *)&meta->data_tail, tail, memory_order_release);
 }
 
-void *hzstd_profiling_reader_thread(void *_context) {
+void *hzstd_profiling_reader_thread(void *_context)
+{
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
 
@@ -1129,7 +1147,7 @@ void *hzstd_profiling_reader_thread(void *_context) {
     hzstd_panic("Failed to allocate profiling stack-snapshot scratch buffer");
   }
 
-  struct pollfd pfd = {.fd = context->perf_fd, .events = POLLIN};
+  struct pollfd pfd = { .fd = context->perf_fd, .events = POLLIN };
   while (!atomic_load(&context->stop_reader)) {
     // The timeout here is only meant as a safety net (in case a wakeup is
     // ever missed for some reason) -- wakeup_events=1 on the perf event
@@ -1143,7 +1161,8 @@ void *hzstd_profiling_reader_thread(void *_context) {
     int pollResult = poll(&pfd, 1, 100);
     if (pollResult > 0) {
       context->perf_poll_event_count++;
-    } else if (pollResult == 0) {
+    }
+    else if (pollResult == 0) {
       context->perf_poll_timeout_count++;
     }
     hzstd_profiling_drain_perf_ring(context, stackScratch);
@@ -1163,7 +1182,8 @@ void *hzstd_profiling_reader_thread(void *_context) {
 // captures it directly (see hzstd_profiling_invoke_sampling below) and the
 // stackwalker just walks whatever CONTEXT is currently sitting in
 // context->unwind_context once woken up.
-static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
+static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
+{
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
 
@@ -1193,18 +1213,25 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
 #error Only 64-bit is supported
 #endif
 
-    hzstd_profiling_raw_sample_t sample = {0};
+    hzstd_profiling_raw_sample_t sample = { 0 };
     sample.timestamp = context->sample_started_at;
 
-    while (StackWalk64(machineType, hProcess, context->profiled_thread_handle,
-                       &sf, &ctx, NULL, SymFunctionTableAccess64,
-                       SymGetModuleBase64, NULL)) {
+    while (StackWalk64(machineType,
+                       hProcess,
+                       context->profiled_thread_handle,
+                       &sf,
+                       &ctx,
+                       NULL,
+                       SymFunctionTableAccess64,
+                       SymGetModuleBase64,
+                       NULL)) {
       if (sf.AddrPC.Offset == 0) {
         break;
       }
       if (sample.depth < HZSTD_MAX_FRAMES) {
         sample.pcs[sample.depth++] = (void *)sf.AddrPC.Offset;
-      } else {
+      }
+      else {
         break;
       }
       // StackWalk64/dbghelp can lazily load module symbol info on a
@@ -1241,11 +1268,10 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context) {
 // old SIGUSR1-based trigger did (see the perf_event_open section in this
 // file for why Linux moved off that approach entirely), so this suspends the
 // thread from the outside instead.
-static void
-hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
+static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context)
+{
   int expected = 0;
-  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected,
-                                      1)) {
+  if (!atomic_compare_exchange_strong(&context->sample_in_progress, &expected, 1)) {
     // A sample is already ongoing -- either a normal overlap, or the previous
     // round's wait below timed out and the stackwalker is still working through
     // it. Either way, ignore this tick; the stackwalker thread clears
@@ -1257,9 +1283,7 @@ hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   // timed out, before arming this round's wait. Without this, a stale signal
   // from that abandoned round could be mistaken for this round's completion the
   // moment we trigger the stackwalker below.
-  while (
-      hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) {
-  }
+  while (hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, 0)) { }
 
   if (SuspendThread(context->profiled_thread_handle) == (DWORD)-1) {
     // No round actually started (the stackwalker was never triggered), so it's
@@ -1274,8 +1298,7 @@ hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   context->sample_started_at = startedAt;
 
   context->unwind_context.ContextFlags = CONTEXT_FULL;
-  if (!GetThreadContext(context->profiled_thread_handle,
-                        &context->unwind_context)) {
+  if (!GetThreadContext(context->profiled_thread_handle, &context->unwind_context)) {
     ResumeThread(context->profiled_thread_handle);
     atomic_store(&context->sample_in_progress, 0);
     return;
@@ -1294,21 +1317,21 @@ hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context) {
   // lets it release whatever lock it might be holding and in turn unblocks the
   // stackwalker. sample_in_progress is deliberately left set in that case; see
   // hzstd_profiling_stackwalker_thread for why it alone clears it.
-  bool finished = hzstd_wait_for_semaphore_timed(
-      context->stackwalker_done_semaphore, HZSTD_PROFILING_SAMPLE_TIMEOUT_NS);
+  bool finished
+      = hzstd_wait_for_semaphore_timed(context->stackwalker_done_semaphore, HZSTD_PROFILING_SAMPLE_TIMEOUT_NS);
 
   ResumeThread(context->profiled_thread_handle);
 
   if (finished) {
     double samplingDuration = hzstd_time_now() - startedAt;
     if (context->last_ring_slot != SIZE_MAX) {
-      context->ring_buffer[context->last_ring_slot].sampling_duration =
-          samplingDuration;
+      context->ring_buffer[context->last_ring_slot].sampling_duration = samplingDuration;
     }
   }
 }
 
-static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context) {
+static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
+{
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
   while (!atomic_load(&context->stop_scheduler)) {
@@ -1339,7 +1362,8 @@ static hzstd_profiling_context_t *g_profiling_context = NULL;
 // separate CPU-time throttle to do the actual, adaptive limiting.
 #define HZSTD_PROFILING_FALLBACK_RATE_HZ 100000
 
-static int hzstd_profiling_query_max_sample_rate(void) {
+static int hzstd_profiling_query_max_sample_rate(void)
+{
   FILE *f = fopen("/proc/sys/kernel/perf_event_max_sample_rate", "r");
   if (!f) {
     return HZSTD_PROFILING_FALLBACK_RATE_HZ;
@@ -1369,7 +1393,8 @@ static int hzstd_profiling_query_max_sample_rate(void) {
 // converges on the full MAX; on a tightly constrained one (a container, a
 // dev sandbox, ...) it automatically asks for less depth instead of quietly
 // ending up with a ring too thin to survive ordinary scheduling jitter.
-static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz) {
+static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz)
+{
   struct rlimit memlockLimit;
   if (getrlimit(RLIMIT_MEMLOCK, &memlockLimit) != 0) {
     return HZSTD_PROFILING_PERF_STACK_SIZE_MAX;
@@ -1381,11 +1406,9 @@ static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz) {
   // the soft limit conservatively low while leaving real headroom in the
   // hard limit; this claims it if it's there. Best-effort: on failure, sizing
   // below just proceeds with whatever the original soft limit already was.
-  if (memlockLimit.rlim_cur != RLIM_INFINITY &&
-      (memlockLimit.rlim_max == RLIM_INFINITY ||
-       memlockLimit.rlim_max > memlockLimit.rlim_cur)) {
-    struct rlimit raised = {.rlim_cur = memlockLimit.rlim_max,
-                            .rlim_max = memlockLimit.rlim_max};
+  if (memlockLimit.rlim_cur != RLIM_INFINITY
+      && (memlockLimit.rlim_max == RLIM_INFINITY || memlockLimit.rlim_max > memlockLimit.rlim_cur)) {
+    struct rlimit raised = { .rlim_cur = memlockLimit.rlim_max, .rlim_max = memlockLimit.rlim_max };
     if (setrlimit(RLIMIT_MEMLOCK, &raised) == 0) {
       memlockLimit = raised;
     }
@@ -1398,17 +1421,14 @@ static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz) {
   size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
   // One page always goes to the mmap's metadata header, never sample data --
   // matches the "(1 + dataPages) * pageSize" shape of the mmap length below.
-  size_t budgetBytes = (size_t)memlockLimit.rlim_cur > pageSize
-                            ? (size_t)memlockLimit.rlim_cur - pageSize
-                            : 0;
+  size_t budgetBytes = (size_t)memlockLimit.rlim_cur > pageSize ? (size_t)memlockLimit.rlim_cur - pageSize : 0;
 
   // Every sample reserves this many bytes in the ring besides its stack dump,
   // no matter how deep that dump actually is -- must stay in sync with
   // `bytesPerSample` in hzstd_profiling_start.
-  size_t fixedOverhead = sizeof(struct perf_event_header) +
-      sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ +
-      HZSTD_PERF_REG_COUNT * sizeof(uint64_t) +
-      sizeof(uint64_t) /* stack size */ + sizeof(uint64_t) /* dyn_size */;
+  size_t fixedOverhead = sizeof(struct perf_event_header)
+      + sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ + HZSTD_PERF_REG_COUNT * sizeof(uint64_t)
+      + sizeof(uint64_t) /* stack size */ + sizeof(uint64_t) /* dyn_size */;
 
   // Same quarter-second target as the ring-page sizing loop -- this is
   // choosing the other half of that same budget equation (bytes per sample)
@@ -1458,7 +1478,8 @@ static size_t hzstd_profiling_choose_stack_size(int effectiveRateHz) {
 // and, increasingly, tmpfs), so it's tried first; falls back to ordinary
 // tmpfile() if /var/tmp isn't writable for some reason (e.g. a sandboxed
 // environment without it) -- better than refusing to profile at all.
-static FILE *hzstd_profiling_create_raw_samples_file(void) {
+static FILE *hzstd_profiling_create_raw_samples_file(void)
+{
   const char *dir = "/var/tmp";
   if (access(dir, W_OK) == 0) {
     char path[] = "/var/tmp/haze-profiling-XXXXXX";
@@ -1476,10 +1497,11 @@ static FILE *hzstd_profiling_create_raw_samples_file(void) {
 }
 #endif
 
-hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
+hzstd_profiling_context_t *
+hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool memoryInstrumentationStacktrace)
+{
   // Enforce single-session constraint: only one profiling session can be active at a time.
-  bool was_inactive = atomic_compare_exchange_strong(&g_hzstd_profiling_active,
-                                                     &(bool){false}, true);
+  bool was_inactive = atomic_compare_exchange_strong(&g_hzstd_profiling_active, &(bool) { false }, true);
   if (!was_inactive) {
     hzstd_panic("Profiling session already in progress: only one profiling session can be active at a time. "
                 "Call stop() on the existing Profiler before starting a new one.");
@@ -1487,23 +1509,25 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
 
   // samples_head/samples_tail start NULL: the first chunk is allocated lazily,
   // on the first sample drained, by hzstd_profiling_samples_append.
-  hzstd_profiling_context_t newContext = {0};
+  hzstd_profiling_context_t newContext = { 0 };
   newContext.session_start_time = hzstd_time_now();
 #ifdef HAZE_PLATFORM_LINUX
   newContext.tid = hzstd_profiling_get_current_thread_id();
   newContext.pid = hzstd_profiling_get_current_process_id();
 #endif
 
-  hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
-      hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
+  hzstd_profiling_context_t *context
+      = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext);
   atomic_store(&context->sample_in_progress, 0);
 #ifdef HAZE_PLATFORM_LINUX
   int effectiveRateHz;
   if (sampling_rate_hz == 0) {
     effectiveRateHz = hzstd_profiling_query_max_sample_rate();
-  } else if (sampling_rate_hz > 0) {
+  }
+  else if (sampling_rate_hz > 0) {
     effectiveRateHz = sampling_rate_hz;
-  } else {
+  }
+  else {
     hzstd_panic("Invalid sampling frequency: must be 0 (unlimited) or positive");
   }
 #elif defined(HAZE_PLATFORM_WIN32)
@@ -1512,9 +1536,11 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   int effectiveRateHz;
   if (sampling_rate_hz == 0) {
     effectiveRateHz = HZSTD_PROFILING_WINDOWS_DEFAULT_RATE_HZ;
-  } else if (sampling_rate_hz > 0) {
+  }
+  else if (sampling_rate_hz > 0) {
     effectiveRateHz = sampling_rate_hz;
-  } else {
+  }
+  else {
     hzstd_panic("Invalid sampling frequency: must be 0 (unlimited) or positive");
   }
 #endif
@@ -1525,8 +1551,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // never need to grow (see the big comment on hzstd_profiling_context_t for
   // why).
   context->ring_capacity = HZSTD_PROFILING_RING_CAPACITY;
-  context->ring_buffer =
-      calloc(context->ring_capacity, sizeof(hzstd_profiling_raw_sample_t));
+  context->ring_buffer = calloc(context->ring_capacity, sizeof(hzstd_profiling_raw_sample_t));
   if (!context->ring_buffer) {
     hzstd_panic("Failed to allocate profiling ring buffer");
   }
@@ -1591,15 +1616,14 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
 
   context->perf_stack_size = hzstd_profiling_choose_stack_size(effectiveRateHz);
 
-  struct perf_event_attr attr = {0};
+  struct perf_event_attr attr = { 0 };
   attr.type = PERF_TYPE_SOFTWARE;
   attr.config = PERF_COUNT_SW_CPU_CLOCK;
   attr.size = sizeof(attr);
   // A CPU-clock software event's period is in nanoseconds of wall time, the
   // closest match to the old handler's SIGUSR1-every-1/rate-seconds cadence.
   attr.sample_period = 1000000000ull / (uint64_t)effectiveRateHz;
-  attr.sample_type =
-      PERF_SAMPLE_TIME | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER;
+  attr.sample_type = PERF_SAMPLE_TIME | PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER;
   attr.sample_regs_user = hzstd_perf_regs_mask();
   attr.sample_stack_user = (uint32_t)context->perf_stack_size;
   attr.disabled = 1;
@@ -1616,15 +1640,13 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // hzstd_profiling_reader_thread.
   attr.wakeup_events = 1;
 
-  long fd = syscall(SYS_perf_event_open, &attr, (pid_t)context->tid, -1, -1,
-                    PERF_FLAG_FD_CLOEXEC);
+  long fd = syscall(SYS_perf_event_open, &attr, (pid_t)context->tid, -1, -1, PERF_FLAG_FD_CLOEXEC);
   if (fd < 0) {
-    hzstd_panic_fmt(
-        "perf_event_open failed (errno=%d): the sampling profiler needs "
-        "perf_event access for its own threads. If this is a container or "
-        "sandbox, check that it grants CAP_PERFMON (or CAP_SYS_ADMIN) and "
-        "that /proc/sys/kernel/perf_event_paranoid allows self-profiling.",
-        errno);
+    hzstd_panic_fmt("perf_event_open failed (errno=%d): the sampling profiler needs "
+                    "perf_event access for its own threads. If this is a container or "
+                    "sandbox, check that it grants CAP_PERFMON (or CAP_SYS_ADMIN) and "
+                    "that /proc/sys/kernel/perf_event_paranoid allows self-profiling.",
+                    errno);
   }
   context->perf_fd = (int)fd;
 
@@ -1645,11 +1667,9 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // means samples can be dropped under heavier scheduling jitter, which is a
   // fine degradation compared to refusing to profile at all.
   size_t pageSize = (size_t)sysconf(_SC_PAGESIZE);
-  size_t bytesPerSample = sizeof(struct perf_event_header) +
-      sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ +
-      HZSTD_PERF_REG_COUNT * sizeof(uint64_t) +
-      sizeof(uint64_t) /* stack size */ + context->perf_stack_size +
-      sizeof(uint64_t) /* dyn_size */;
+  size_t bytesPerSample = sizeof(struct perf_event_header)
+      + sizeof(uint64_t) /* time */ + sizeof(uint64_t) /* regs abi */ + HZSTD_PERF_REG_COUNT * sizeof(uint64_t)
+      + sizeof(uint64_t) /* stack size */ + context->perf_stack_size + sizeof(uint64_t) /* dyn_size */;
   size_t targetBytes = (bytesPerSample * (size_t)effectiveRateHz) / 4;
   size_t dataPages = 8;
   while (dataPages * pageSize < targetBytes && dataPages < (1u << 20)) {
@@ -1658,27 +1678,24 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   context->perf_mmap_base = MAP_FAILED;
   while (true) {
     context->perf_mmap_len = (1 + dataPages) * pageSize;
-    context->perf_mmap_base =
-        mmap(NULL, context->perf_mmap_len, PROT_READ | PROT_WRITE, MAP_SHARED,
-            context->perf_fd, 0);
+    context->perf_mmap_base
+        = mmap(NULL, context->perf_mmap_len, PROT_READ | PROT_WRITE, MAP_SHARED, context->perf_fd, 0);
     if (context->perf_mmap_base != MAP_FAILED || dataPages <= 1) {
       break;
     }
     dataPages >>= 1;
   }
   if (context->perf_mmap_base == MAP_FAILED) {
-    hzstd_panic_fmt(
-        "Failed to mmap profiling ring buffer even at the minimum size "
-        "(errno=%d): check this process's RLIMIT_MEMLOCK and "
-        "kernel.perf_event_mlock_kb",
-        errno);
+    hzstd_panic_fmt("Failed to mmap profiling ring buffer even at the minimum size "
+                    "(errno=%d): check this process's RLIMIT_MEMLOCK and "
+                    "kernel.perf_event_mlock_kb",
+                    errno);
   }
   context->perf_actual_ring_bytes = context->perf_mmap_len;
 
   struct timespec ref;
   clock_gettime(CLOCK_MONOTONIC, &ref);
-  context->perf_time_ref_ns =
-      (uint64_t)ref.tv_sec * 1000000000ull + (uint64_t)ref.tv_nsec;
+  context->perf_time_ref_ns = (uint64_t)ref.tv_sec * 1000000000ull + (uint64_t)ref.tv_nsec;
 
   ioctl(context->perf_fd, PERF_EVENT_IOC_RESET, 0);
   ioctl(context->perf_fd, PERF_EVENT_IOC_ENABLE, 0);
@@ -1711,8 +1728,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // failure this just keeps the (smaller, syscall-heavier) default.
   setvbuf(context->raw_samples_file, NULL, _IOFBF, 4 * 1024 * 1024);
 
-  int result = pthread_create(&context->reader_thread, NULL,
-                              hzstd_profiling_reader_thread, context);
+  int result = pthread_create(&context->reader_thread, NULL, hzstd_profiling_reader_thread, context);
   if (result != 0) {
     hzstd_panic("Failed to create profiling reader thread");
   }
@@ -1722,26 +1738,34 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
   // GetCurrentThread() only returns a pseudo-handle valid within the calling
   // thread; duplicate it into a real handle so the scheduler thread can
   // SuspendThread/GetThreadContext/ResumeThread it from the outside.
-  if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
-                       GetCurrentProcess(), &context->profiled_thread_handle, 0,
-                       FALSE, DUPLICATE_SAME_ACCESS)) {
+  if (!DuplicateHandle(GetCurrentProcess(),
+                       GetCurrentThread(),
+                       GetCurrentProcess(),
+                       &context->profiled_thread_handle,
+                       0,
+                       FALSE,
+                       DUPLICATE_SAME_ACCESS)) {
     hzstd_panic("Failed to duplicate the profiled thread handle");
   }
 
-  context->stackwalker_thread = CreateThread(
-      NULL, 0, hzstd_profiling_stackwalker_thread, context, 0, NULL);
+  context->stackwalker_thread = CreateThread(NULL, 0, hzstd_profiling_stackwalker_thread, context, 0, NULL);
   if (context->stackwalker_thread == NULL) {
     hzstd_panic("Failed to create profiling stackwalker thread");
   }
 
-  context->scheduler_thread =
-      CreateThread(NULL, 0, hzstd_profiling_scheduler_thread, context, 0, NULL);
+  context->scheduler_thread = CreateThread(NULL, 0, hzstd_profiling_scheduler_thread, context, 0, NULL);
   if (context->scheduler_thread == NULL) {
     hzstd_panic("Failed to create profiling scheduler thread");
   }
 
   g_profiling_context = context;
 #endif
+
+  context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
+  context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
+
+  context->memoryInstrumentationFrames
+      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, 0);
 
   return context;
 }
@@ -1757,8 +1781,7 @@ hzstd_profiling_context_t *hzstd_profiling_start(int sampling_rate_hz) {
 // this resolves all the way back to original Haze source locations.
 
 typedef struct {
-  Dwarf_Addr
-      address; // link-time address (i.e. relative to this module's load bias)
+  Dwarf_Addr address; // link-time address (i.e. relative to this module's load bias)
   Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs
                            // to (exclusive)
   hzstd_str_t filename;
@@ -1767,8 +1790,7 @@ typedef struct {
 
 static bool g_dwarf_init_done = false;
 static uintptr_t g_dwarf_module_base = 0;
-static uintptr_t g_dwarf_module_extent =
-    0; // size of the main module's mapped image
+static uintptr_t g_dwarf_module_extent = 0; // size of the main module's mapped image
 static hzstd_profiling_dwarf_line_t *g_dwarf_lines = NULL;
 static size_t g_dwarf_line_count = 0;
 
@@ -1776,8 +1798,8 @@ static size_t g_dwarf_line_count = 0;
 // executable's .debug_line, so a naive "nearest address below" search would
 // otherwise silently produce a bogus match for them. Restricting lookups to
 // [base, base + extent) of the main executable's mapped image avoids that.
-static int hzstd_profiling_find_main_module(struct dl_phdr_info *info,
-                                            size_t size, void *data) {
+static int hzstd_profiling_find_main_module(struct dl_phdr_info *info, size_t size, void *data)
+{
   (void)size;
   (void)data;
   // dl_iterate_phdr reports the main executable with an empty name; everything
@@ -1789,8 +1811,7 @@ static int hzstd_profiling_find_main_module(struct dl_phdr_info *info,
       if (info->dlpi_phdr[i].p_type != PT_LOAD) {
         continue;
       }
-      uintptr_t segmentEnd =
-          (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
+      uintptr_t segmentEnd = (uintptr_t)(info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz);
       if (segmentEnd > g_dwarf_module_extent) {
         g_dwarf_module_extent = segmentEnd;
       }
@@ -1800,7 +1821,8 @@ static int hzstd_profiling_find_main_module(struct dl_phdr_info *info,
   return 0;
 }
 
-static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b) {
+static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b)
+{
   const hzstd_profiling_dwarf_line_t *la = a;
   const hzstd_profiling_dwarf_line_t *lb = b;
   if (la->address < lb->address) {
@@ -1812,7 +1834,8 @@ static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b) {
   return 0;
 }
 
-static void hzstd_profiling_dwarf_build_line_table(void) {
+static void hzstd_profiling_dwarf_build_line_table(void)
+{
   g_dwarf_init_done = true; // only ever try once, even if this fails
 
   dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
@@ -1826,26 +1849,33 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
 
   Dwarf_Debug dbg = NULL;
   Dwarf_Error error = NULL;
-  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg,
-                      &error) != DW_DLV_OK) {
+  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg, &error) != DW_DLV_OK) {
     return;
   }
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   size_t capacity = 1024;
   size_t count = 0;
-  hzstd_profiling_dwarf_line_t *lines = hzstd_allocate(
-      allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+  hzstd_profiling_dwarf_line_t *lines = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
 
   Dwarf_Unsigned cuHeaderLength, abbrevOffset, typeOffset, nextCuHeaderOffset;
   Dwarf_Half versionStamp, addressSize, lengthSize, extensionSize, headerCuType;
   Dwarf_Sig8 typeSignature;
 
-  while (dwarf_next_cu_header_d(dbg, true, &cuHeaderLength, &versionStamp,
-                                &abbrevOffset, &addressSize, &lengthSize,
-                                &extensionSize, &typeSignature, &typeOffset,
-                                &nextCuHeaderOffset, &headerCuType,
-                                &error) == DW_DLV_OK) {
+  while (dwarf_next_cu_header_d(dbg,
+                                true,
+                                &cuHeaderLength,
+                                &versionStamp,
+                                &abbrevOffset,
+                                &addressSize,
+                                &lengthSize,
+                                &extensionSize,
+                                &typeSignature,
+                                &typeOffset,
+                                &nextCuHeaderOffset,
+                                &headerCuType,
+                                &error)
+         == DW_DLV_OK) {
     Dwarf_Die cuDie = NULL;
     if (dwarf_siblingof_b(dbg, NULL, true, &cuDie, &error) != DW_DLV_OK) {
       continue;
@@ -1854,12 +1884,10 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
     Dwarf_Unsigned lineVersion;
     Dwarf_Small lineTableCount;
     Dwarf_Line_Context lineContext = NULL;
-    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext,
-                         &error) == DW_DLV_OK) {
+    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext, &error) == DW_DLV_OK) {
       Dwarf_Line *lineBuf = NULL;
       Dwarf_Signed lineCount = 0;
-      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount,
-                                          &error) == DW_DLV_OK) {
+      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount, &error) == DW_DLV_OK) {
         // DWARF line tables are a series of contiguous code ranges
         // ("sequences"), each terminated by a synthetic end_sequence row.
         // Addresses are only meaningfully comparable within the same sequence —
@@ -1878,8 +1906,7 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
           }
 
           Dwarf_Bool isEndSequence = false;
-          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) !=
-              DW_DLV_OK) {
+          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) != DW_DLV_OK) {
             isEndSequence = false;
           }
           if (isEndSequence) {
@@ -1901,15 +1928,14 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
 
           if (count >= capacity) {
             capacity *= 2;
-            hzstd_profiling_dwarf_line_t *grown = hzstd_allocate(
-                allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
+            hzstd_profiling_dwarf_line_t *grown
+                = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t));
             memcpy(grown, lines, count * sizeof(hzstd_profiling_dwarf_line_t));
             lines = grown;
           }
 
           lines[count].address = addr;
-          lines[count].sequence_end =
-              0; // backfilled once this sequence's end_sequence row is seen
+          lines[count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
           lines[count].filename = hzstd_str_from_cstr_dup(allocator, filename);
           lines[count].line = (hzstd_int_t)lineno;
           count++;
@@ -1923,8 +1949,7 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
 
   dwarf_finish(dbg);
 
-  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t),
-        hzstd_profiling_dwarf_line_compare);
+  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t), hzstd_profiling_dwarf_line_compare);
 
   g_dwarf_lines = lines;
   g_dwarf_line_count = count;
@@ -1932,10 +1957,9 @@ static void hzstd_profiling_dwarf_build_line_table(void) {
 
 // Binary search for the nearest line at or below `address` (the standard
 // addr2line algorithm).
-static hzstd_source_location_t
-hzstd_profiling_resolve_sourceloc(void *address) {
-  hzstd_source_location_t absent = {
-      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
+static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void *address)
+{
+  hzstd_source_location_t absent = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
 
   if (!g_dwarf_init_done) {
     hzstd_profiling_dwarf_build_line_table();
@@ -1948,8 +1972,7 @@ hzstd_profiling_resolve_sourceloc(void *address) {
   // code, ...): they are not covered by this DWARF table at all, and a
   // nearest-below search would otherwise pick a bogus match from a completely
   // unrelated function.
-  if ((uintptr_t)address < g_dwarf_module_base ||
-      (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
+  if ((uintptr_t)address < g_dwarf_module_base || (uintptr_t)address >= g_dwarf_module_base + g_dwarf_module_extent) {
     return absent;
   }
 
@@ -1960,7 +1983,8 @@ hzstd_profiling_resolve_sourceloc(void *address) {
     size_t mid = lo + (hi - lo) / 2;
     if (g_dwarf_lines[mid].address <= target) {
       lo = mid + 1;
-    } else {
+    }
+    else {
       hi = mid;
     }
   }
@@ -1979,10 +2003,10 @@ hzstd_profiling_resolve_sourceloc(void *address) {
     return absent;
   }
 
-  return (hzstd_source_location_t){
-      ._filename = match->filename,
-      ._line = match->line,
-      ._column = 0,
+  return (hzstd_source_location_t) {
+    ._filename = match->filename,
+    ._line = match->line,
+    ._column = 0,
   };
 }
 
@@ -2002,14 +2026,14 @@ hzstd_profiling_resolve_sourceloc(void *address) {
 // exactly like a real symbolizer/profiler has to.
 static sigjmp_buf g_profiling_resolve_recovery;
 
-static void hzstd_profiling_resolve_crash_handler(int sig) {
+static void hzstd_profiling_resolve_crash_handler(int sig)
+{
   (void)sig;
   siglongjmp(g_profiling_resolve_recovery, 1);
 }
 
-static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf,
-                                                    size_t buf_len,
-                                                    unw_word_t *offp) {
+static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf, size_t buf_len, unw_word_t *offp)
+{
   struct sigaction newAction, oldSegvAction, oldBusAction;
   memset(&newAction, 0, sizeof(newAction));
   newAction.sa_handler = hzstd_profiling_resolve_crash_handler;
@@ -2020,11 +2044,10 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf,
 
   int result;
   if (sigsetjmp(g_profiling_resolve_recovery, 1) == 0) {
-    result = unw_get_proc_name_by_ip(unw_local_addr_space, ip, buf, buf_len,
-                                     offp, NULL);
-  } else {
-    result =
-        -1; // crashed partway through -- treat like libunwind's own "not found"
+    result = unw_get_proc_name_by_ip(unw_local_addr_space, ip, buf, buf_len, offp, NULL);
+  }
+  else {
+    result = -1; // crashed partway through -- treat like libunwind's own "not found"
   }
 
   sigaction(SIGSEGV, &oldSegvAction, NULL);
@@ -2079,7 +2102,8 @@ static uint64_t g_elf_symtab_fast_misses = 0;
 static double g_postprocess_name_resolve_time_total_ns = 0;
 static double g_postprocess_sourceloc_time_total_ns = 0;
 
-static int hzstd_profiling_elf_symbol_compare(const void *a, const void *b) {
+static int hzstd_profiling_elf_symbol_compare(const void *a, const void *b)
+{
   const hzstd_profiling_elf_symbol_t *sa = a;
   const hzstd_profiling_elf_symbol_t *sb = b;
   if (sa->address < sb->address) {
@@ -2103,9 +2127,8 @@ typedef struct {
   size_t capacity;
 } hzstd_profiling_elf_symtab_builder_t;
 
-static void
-hzstd_profiling_elf_symtab_builder_reserve(hzstd_profiling_elf_symtab_builder_t *b,
-                                           size_t extra) {
+static void hzstd_profiling_elf_symtab_builder_reserve(hzstd_profiling_elf_symtab_builder_t *b, size_t extra)
+{
   if (b->count + extra <= b->capacity) {
     return;
   }
@@ -2121,18 +2144,18 @@ hzstd_profiling_elf_symtab_builder_reserve(hzstd_profiling_elf_symtab_builder_t 
 // stripped shared libraries fall back to .dynsym, which only covers
 // exported symbols but is still far better than nothing) and appends them,
 // as absolute runtime addresses, into `builder`.
-static void
-hzstd_profiling_parse_elf_module_symbols(const char *path, uintptr_t base,
-                                         hzstd_profiling_elf_symtab_builder_t *builder) {
+static void hzstd_profiling_parse_elf_module_symbols(const char *path,
+                                                     uintptr_t base,
+                                                     hzstd_profiling_elf_symtab_builder_t *builder)
+{
   FILE *f = fopen(path, "rb");
   if (!f) {
     return;
   }
 
   Elf64_Ehdr ehdr;
-  if (fread(&ehdr, sizeof(ehdr), 1, f) != 1 ||
-      memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
-      ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
+  if (fread(&ehdr, sizeof(ehdr), 1, f) != 1 || memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0
+      || ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
     fclose(f);
     return;
   }
@@ -2142,9 +2165,8 @@ hzstd_profiling_parse_elf_module_symbols(const char *path, uintptr_t base,
     fclose(f);
     return;
   }
-  if (fseek(f, (long)ehdr.e_shoff, SEEK_SET) != 0 ||
-      fread(shdrs, sizeof(Elf64_Shdr), ehdr.e_shnum, f) !=
-          (size_t)ehdr.e_shnum) {
+  if (fseek(f, (long)ehdr.e_shoff, SEEK_SET) != 0
+      || fread(shdrs, sizeof(Elf64_Shdr), ehdr.e_shnum, f) != (size_t)ehdr.e_shnum) {
     free(shdrs);
     fclose(f);
     return;
@@ -2186,10 +2208,9 @@ hzstd_profiling_parse_elf_module_symbols(const char *path, uintptr_t base,
     fclose(f);
     return;
   }
-  bool ok = fseek(f, (long)symtabShdr->sh_offset, SEEK_SET) == 0 &&
-            fread(syms, sizeof(Elf64_Sym), symCount, f) == symCount &&
-            fseek(f, (long)strtabShdr->sh_offset, SEEK_SET) == 0 &&
-            fread(strtab, 1, strtabShdr->sh_size, f) == strtabShdr->sh_size;
+  bool ok = fseek(f, (long)symtabShdr->sh_offset, SEEK_SET) == 0
+      && fread(syms, sizeof(Elf64_Sym), symCount, f) == symCount && fseek(f, (long)strtabShdr->sh_offset, SEEK_SET) == 0
+      && fread(strtab, 1, strtabShdr->sh_size, f) == strtabShdr->sh_size;
   fclose(f);
   free(shdrs);
   if (!ok) {
@@ -2228,8 +2249,8 @@ hzstd_profiling_parse_elf_module_symbols(const char *path, uintptr_t base,
   free(strtab);
 }
 
-static int hzstd_profiling_collect_module_symbols(struct dl_phdr_info *info,
-                                                   size_t size, void *data) {
+static int hzstd_profiling_collect_module_symbols(struct dl_phdr_info *info, size_t size, void *data)
+{
   (void)size;
   hzstd_profiling_elf_symtab_builder_t *builder = data;
 
@@ -2242,16 +2263,16 @@ static int hzstd_profiling_collect_module_symbols(struct dl_phdr_info *info,
       return 0;
     }
     exePath[pathLen] = '\0';
-    hzstd_profiling_parse_elf_module_symbols(exePath, (uintptr_t)info->dlpi_addr,
-                                             builder);
-  } else {
-    hzstd_profiling_parse_elf_module_symbols(info->dlpi_name,
-                                             (uintptr_t)info->dlpi_addr, builder);
+    hzstd_profiling_parse_elf_module_symbols(exePath, (uintptr_t)info->dlpi_addr, builder);
+  }
+  else {
+    hzstd_profiling_parse_elf_module_symbols(info->dlpi_name, (uintptr_t)info->dlpi_addr, builder);
   }
   return 0; // keep going -- every loaded module, not just the main one
 }
 
-static void hzstd_profiling_build_elf_symtab(void) {
+static void hzstd_profiling_build_elf_symtab(void)
+{
   g_elf_symtab_init_done = true; // only ever try once, even on failure
 
   // Also populates g_dwarf_module_base/extent if the DWARF line table hasn't
@@ -2273,11 +2294,10 @@ static void hzstd_profiling_build_elf_symtab(void) {
   // that: the fast path can now answer for any address in any loaded image
   // that still has a symbol table, which is the common case even for
   // libraries that ship stripped down to .dynsym only.
-  hzstd_profiling_elf_symtab_builder_t builder = {0};
+  hzstd_profiling_elf_symtab_builder_t builder = { 0 };
   dl_iterate_phdr(hzstd_profiling_collect_module_symbols, &builder);
 
-  qsort(builder.table, builder.count, sizeof(hzstd_profiling_elf_symbol_t),
-        hzstd_profiling_elf_symbol_compare);
+  qsort(builder.table, builder.count, sizeof(hzstd_profiling_elf_symbol_t), hzstd_profiling_elf_symbol_compare);
 
   g_elf_symtab = builder.table;
   g_elf_symtab_count = builder.count;
@@ -2289,7 +2309,8 @@ static void hzstd_profiling_build_elf_symtab(void) {
 // matches -- either no loaded module's symbol table covers this address at
 // all, or `address` falls past the end of the nearest real symbol below it
 // (a genuine gap, e.g. padding).
-static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
+static const char *hzstd_profiling_lookup_elf_symbol(void *address)
+{
   if (!g_elf_symtab_init_done) {
     hzstd_profiling_build_elf_symtab();
   }
@@ -2304,7 +2325,8 @@ static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
     size_t mid = lo + (hi - lo) / 2;
     if (g_elf_symtab[mid].address <= target) {
       lo = mid + 1;
-    } else {
+    }
+    else {
       hi = mid;
     }
   }
@@ -2333,8 +2355,8 @@ static const char *hzstd_profiling_lookup_elf_symbol(void *address) {
 // standard fix every unwinder/symbolizer applies is to look up `pc - 1` for
 // those, so the lookup lands on the call instruction itself rather than
 // whatever follows it.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
-                                                             bool isLeaf) {
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool isLeaf)
+{
   void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
@@ -2352,35 +2374,29 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
   const char *fastRawName = hzstd_profiling_lookup_elf_symbol(lookupAddress);
   if (fastRawName != NULL) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, fastRawName);
-    name = demangled.success
-               ? hzstd_demangle_display(allocator, &demangled)
-               : hzstd_str_from_cstr_dup(allocator, (char *)fastRawName);
-  } else {
+    name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
+                             : hzstd_str_from_cstr_dup(allocator, (char *)fastRawName);
+  }
+  else {
     char rawName[4096];
     unw_word_t offset;
-    if (hzstd_profiling_safe_get_proc_name_by_ip(
-            (unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) ==
-        0) {
+    if (hzstd_profiling_safe_get_proc_name_by_ip((unw_word_t)lookupAddress, rawName, sizeof(rawName), &offset) == 0) {
       hzstd_demangle_result_t demangled = hzstd_demangle(allocator, rawName);
-      name = demangled.success
-                 ? hzstd_demangle_display(allocator, &demangled)
-                 : hzstd_str_from_cstr_dup(allocator, rawName);
+      name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
+                               : hzstd_str_from_cstr_dup(allocator, rawName);
     }
   }
 
-  g_postprocess_name_resolve_time_total_ns +=
-      (hzstd_time_now() - nameStartedAt) * 1e9;
+  g_postprocess_name_resolve_time_total_ns += (hzstd_time_now() - nameStartedAt) * 1e9;
 
   double sourcelocStartedAt = hzstd_time_now();
-  hzstd_source_location_t sourceloc =
-      hzstd_profiling_resolve_sourceloc(lookupAddress);
-  g_postprocess_sourceloc_time_total_ns +=
-      (hzstd_time_now() - sourcelocStartedAt) * 1e9;
+  hzstd_source_location_t sourceloc = hzstd_profiling_resolve_sourceloc(lookupAddress);
+  g_postprocess_sourceloc_time_total_ns += (hzstd_time_now() - sourcelocStartedAt) * 1e9;
 
-  return (hzstd_profiling_frame_t){
-      .address = address,
-      .name = name,
-      .sourceloc = sourceloc,
+  return (hzstd_profiling_frame_t) {
+    .address = address,
+    .name = name,
+    .sourceloc = sourceloc,
   };
 }
 
@@ -2394,22 +2410,22 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
 // This mirrors what the panic handler in hzstd_platform_win32.c already does
 // for crash stacktraces.
 
-#define HZSTD_PROFILING_SYM_BUF_SIZE                                           \
-  (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+#define HZSTD_PROFILING_SYM_BUF_SIZE (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
 
 static bool g_profiling_sym_initialized = false;
 
 // See hzstd_profiling_resolve_frame's Linux counterpart above for why `isLeaf`
 // matters: caller frames hold a return address, so the lookup is offset by one
 // byte to land back on the call instruction itself.
-static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
-                                                             bool isLeaf) {
+static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool isLeaf)
+{
   void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   if (!g_profiling_sym_initialized) {
     if (!SymInitialize(GetCurrentProcess(), NULL, TRUE)) {
-      fprintf(stderr, "Warning: SymInitialize failed — profiling symbol "
-                      "names/source locations will be unavailable.\n");
+      fprintf(stderr,
+              "Warning: SymInitialize failed — profiling symbol "
+              "names/source locations will be unavailable.\n");
     }
     g_profiling_sym_initialized = true;
   }
@@ -2423,28 +2439,25 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address,
   pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
   pSym->MaxNameLen = MAX_SYM_NAME;
   DWORD64 displacement = 0;
-  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement,
-                  pSym)) {
+  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement, pSym)) {
     hzstd_demangle_result_t demangled = hzstd_demangle(allocator, pSym->Name);
     name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
                              : hzstd_str_from_cstr_dup(allocator, pSym->Name);
   }
 
-  hzstd_source_location_t sourceloc = {
-      ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0};
+  hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
   IMAGEHLP_LINE64 lineInfo;
   lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
   DWORD lineDisp = 0;
-  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress,
-                           &lineDisp, &lineInfo)) {
+  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress, &lineDisp, &lineInfo)) {
     sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
     sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
   }
 
-  return (hzstd_profiling_frame_t){
-      .address = address,
-      .name = name,
-      .sourceloc = sourceloc,
+  return (hzstd_profiling_frame_t) {
+    .address = address,
+    .name = name,
+    .sourceloc = sourceloc,
   };
 }
 
@@ -2503,7 +2516,8 @@ typedef struct {
 // good avalanche behavior for pointer-shaped keys, which tend to share long
 // common prefixes/alignment-driven low bits that a naive `addr & mask` hash
 // would collide on constantly.
-static uint64_t hzstd_profiling_hash_ptr(void *p) {
+static uint64_t hzstd_profiling_hash_ptr(void *p)
+{
   uint64_t h = (uint64_t)(uintptr_t)p;
   h ^= h >> 33;
   h *= 0xff51afd7ed558ccdULL;
@@ -2513,8 +2527,8 @@ static uint64_t hzstd_profiling_hash_ptr(void *p) {
   return h;
 }
 
-static void hzstd_profiling_frame_index_init(hzstd_profiling_frame_index_t *index,
-                                              size_t minCapacity) {
+static void hzstd_profiling_frame_index_init(hzstd_profiling_frame_index_t *index, size_t minCapacity)
+{
   index->capacity = 64;
   while (index->capacity < minCapacity) {
     index->capacity <<= 1;
@@ -2527,7 +2541,8 @@ static void hzstd_profiling_frame_index_init(hzstd_profiling_frame_index_t *inde
   }
 }
 
-static void hzstd_profiling_frame_index_free(hzstd_profiling_frame_index_t *index) {
+static void hzstd_profiling_frame_index_free(hzstd_profiling_frame_index_t *index)
+{
   free(index->keys);
   free(index->values);
   index->keys = NULL;
@@ -2539,9 +2554,8 @@ static void hzstd_profiling_frame_index_free(hzstd_profiling_frame_index_t *inde
 // see hzstd_profiling_frame_index_insert) and for rehashing into a freshly
 // grown table (where every key is by definition not yet present in the new
 // table).
-static void
-hzstd_profiling_frame_index_insert_unchecked(hzstd_profiling_frame_index_t *index,
-                                              void *key, size_t value) {
+static void hzstd_profiling_frame_index_insert_unchecked(hzstd_profiling_frame_index_t *index, void *key, size_t value)
+{
   size_t mask = index->capacity - 1;
   size_t slot = (size_t)(hzstd_profiling_hash_ptr(key) & mask);
   while (index->keys[slot] != NULL) {
@@ -2552,13 +2566,13 @@ hzstd_profiling_frame_index_insert_unchecked(hzstd_profiling_frame_index_t *inde
   index->count++;
 }
 
-static void hzstd_profiling_frame_index_grow(hzstd_profiling_frame_index_t *index) {
+static void hzstd_profiling_frame_index_grow(hzstd_profiling_frame_index_t *index)
+{
   hzstd_profiling_frame_index_t grown;
   hzstd_profiling_frame_index_init(&grown, index->capacity * 2);
   for (size_t i = 0; i < index->capacity; i++) {
     if (index->keys[i] != NULL) {
-      hzstd_profiling_frame_index_insert_unchecked(&grown, index->keys[i],
-                                                    index->values[i]);
+      hzstd_profiling_frame_index_insert_unchecked(&grown, index->keys[i], index->values[i]);
     }
   }
   hzstd_profiling_frame_index_free(index);
@@ -2566,8 +2580,8 @@ static void hzstd_profiling_frame_index_grow(hzstd_profiling_frame_index_t *inde
 }
 
 // Returns true and writes *outValue if `key` is already present.
-static bool hzstd_profiling_frame_index_find(hzstd_profiling_frame_index_t *index,
-                                              void *key, size_t *outValue) {
+static bool hzstd_profiling_frame_index_find(hzstd_profiling_frame_index_t *index, void *key, size_t *outValue)
+{
   size_t mask = index->capacity - 1;
   size_t slot = (size_t)(hzstd_profiling_hash_ptr(key) & mask);
   while (index->keys[slot] != NULL) {
@@ -2580,8 +2594,8 @@ static bool hzstd_profiling_frame_index_find(hzstd_profiling_frame_index_t *inde
   return false;
 }
 
-static void hzstd_profiling_frame_index_insert(hzstd_profiling_frame_index_t *index,
-                                                void *key, size_t value) {
+static void hzstd_profiling_frame_index_insert(hzstd_profiling_frame_index_t *index, void *key, size_t value)
+{
   // Keep the load factor under 70% for short probe sequences.
   if ((index->count + 1) * 10 >= index->capacity * 7) {
     hzstd_profiling_frame_index_grow(index);
@@ -2605,21 +2619,22 @@ static uint64_t g_postprocess_resolve_frame_count = 0;
 // return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
 static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames,
                                            hzstd_profiling_frame_index_t *frameIndex,
-                                           void *address, bool isLeaf) {
+                                           void *address,
+                                           bool isLeaf)
+{
   size_t existingIndex;
   if (hzstd_profiling_frame_index_find(frameIndex, address, &existingIndex)) {
     return existingIndex;
   }
 
-  if (!frames->tail ||
-      frames->tail->count == HZSTD_PROFILING_FRAME_CHUNK_CAPACITY) {
-    hzstd_profiling_frame_chunk_t *chunk =
-        hzstd_heap_allocate(sizeof(hzstd_profiling_frame_chunk_t));
+  if (!frames->tail || frames->tail->count == HZSTD_PROFILING_FRAME_CHUNK_CAPACITY) {
+    hzstd_profiling_frame_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_frame_chunk_t));
     chunk->next = NULL;
     chunk->count = 0;
     if (frames->tail) {
       frames->tail->next = chunk;
-    } else {
+    }
+    else {
       frames->head = chunk;
     }
     frames->tail = chunk;
@@ -2627,10 +2642,8 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
 
   size_t newIndex = frames->count;
   double resolveStartedAt = hzstd_time_now();
-  hzstd_profiling_frame_t frame =
-      hzstd_profiling_resolve_frame(address, isLeaf);
-  g_postprocess_resolve_frame_time_total_ns +=
-      (hzstd_time_now() - resolveStartedAt) * 1e9;
+  hzstd_profiling_frame_t frame = hzstd_profiling_resolve_frame(address, isLeaf);
+  g_postprocess_resolve_frame_time_total_ns += (hzstd_time_now() - resolveStartedAt) * 1e9;
   g_postprocess_resolve_frame_count++;
   frames->tail->entries[frames->tail->count++] = frame;
   frames->count++;
@@ -2641,30 +2654,28 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
 // Turn one raw sample (bare addresses) into a postprocessed sample (interned
 // frame indices into `resultFrames`, innermost first, same order libunwind
 // walked them in).
-static hzstd_profiling_sample_t
-hzstd_profiling_build_sample(hzstd_profiling_frame_table_t *resultFrames,
-                             hzstd_profiling_frame_index_t *frameIndex,
-                             hzstd_profiling_raw_sample_t raw) {
-  hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(
-      hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
+static hzstd_profiling_sample_t hzstd_profiling_build_sample(hzstd_profiling_frame_table_t *resultFrames,
+                                                             hzstd_profiling_frame_index_t *frameIndex,
+                                                             hzstd_profiling_raw_sample_t raw)
+{
+  hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
-    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(
-        resultFrames, frameIndex, raw.pcs[i], i == 0);
+    hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, frameIndex, raw.pcs[i], i == 0);
     HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, index);
   }
 
-  return (hzstd_profiling_sample_t){
-      .timestamp = raw.timestamp,
-      .sampling_duration = raw.sampling_duration,
-      .frames = frameIndices,
-      .truncated = raw.truncated,
-      .lost_before = (hzstd_int_t)raw.lost_before,
+  return (hzstd_profiling_sample_t) {
+    .timestamp = raw.timestamp,
+    .sampling_duration = raw.sampling_duration,
+    .frames = frameIndices,
+    .truncated = raw.truncated,
+    .lost_before = (hzstd_int_t)raw.lost_before,
   };
 }
 
-hzstd_profiling_result_t
-hzstd_profiling_end(hzstd_profiling_context_t *context) {
+hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
+{
 #ifdef HAZE_PLATFORM_LINUX
   if (atomic_load(&context->stop_reader)) {
     hzstd_panic_fmt("Profiling was already stopped");
@@ -2685,8 +2696,7 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   munmap(context->perf_mmap_base, context->perf_mmap_len);
   close(context->perf_fd);
 #elif defined(HAZE_PLATFORM_WIN32)
-  if (atomic_load(&context->stop_scheduler) ||
-      atomic_load(&context->stop_stackwalker)) {
+  if (atomic_load(&context->stop_scheduler) || atomic_load(&context->stop_stackwalker)) {
     hzstd_panic_fmt("Profiling was already stopped");
   }
 
@@ -2702,6 +2712,8 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   CloseHandle(context->stackwalker_thread);
   CloseHandle(context->profiled_thread_handle);
 #endif
+
+  hzstd_pop_memory_instrumentation(context->prevMemoryInstrumentationState);
 
   // Taken right here, not after the postprocessing below -- sampling has
   // truly stopped by this point (the reader thread, and on Windows the
@@ -2794,8 +2806,7 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   double sessionDurationSeconds = stopTime - context->session_start_time;
   int achievedRateHz = context->sampling_rate_hz;
   if (context->sample_count > 0 && sessionDurationSeconds > 0.0) {
-    achievedRateHz =
-        (int)(((double)context->sample_count / sessionDurationSeconds) + 0.5);
+    achievedRateHz = (int)(((double)context->sample_count / sessionDurationSeconds) + 0.5);
   }
 
   // Heavy lifting happens here, now that sampling is fully stopped: intern
@@ -2813,8 +2824,10 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   fprintf(stdout,
           "Postprocessing %zu sample(s) (%llu lost, %llu throttle event(s), "
           "~%d Hz achieved)...\n",
-          context->sample_count, (unsigned long long)context->perf_lost_count,
-          (unsigned long long)context->perf_throttle_count, achievedRateHz);
+          context->sample_count,
+          (unsigned long long)context->perf_lost_count,
+          (unsigned long long)context->perf_throttle_count,
+          achievedRateHz);
   fflush(stdout);
 
   g_postprocess_read_time_total_ns = 0;
@@ -2827,11 +2840,11 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
-  hzstd_profiling_frame_table_t frameTable = {0};
+  hzstd_profiling_frame_table_t frameTable = { 0 };
   hzstd_profiling_frame_index_t frameIndex;
   hzstd_profiling_frame_index_init(&frameIndex, 64);
-  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
-      allocator, hzstd_profiling_sample_t, context->sample_count);
+  hzstd_dynamic_array_t *samples
+      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_sample_t, context->sample_count);
 
   size_t processedCount = 0;
   double lastProgressPrintTime = 0.0;
@@ -2842,15 +2855,18 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   // thousands of samples, exactly the kind of self-inflicted slowdown this
   // whole rewrite is trying to get away from. force=true always prints
   // (used for the final, 100% line), regardless of cadence.
-#define HZSTD_PROFILING_REPORT_PROGRESS(force)                                \
-  do {                                                                        \
-    double __hz_now = hzstd_time_now();                                       \
-    if ((force) || __hz_now - lastProgressPrintTime >= 0.05) {                \
-      fprintf(stdout, "\r  unwinding sample %zu / %zu (%zu unique frame(s))", \
-              processedCount, context->sample_count, frameTable.count);       \
-      fflush(stdout);                                                        \
-      lastProgressPrintTime = __hz_now;                                      \
-    }                                                                         \
+#define HZSTD_PROFILING_REPORT_PROGRESS(force)                                                                         \
+  do {                                                                                                                 \
+    double __hz_now = hzstd_time_now();                                                                                \
+    if ((force) || __hz_now - lastProgressPrintTime >= 0.05) {                                                         \
+      fprintf(stdout,                                                                                                  \
+              "\r  unwinding sample %zu / %zu (%zu unique frame(s))",                                                  \
+              processedCount,                                                                                          \
+              context->sample_count,                                                                                   \
+              frameTable.count);                                                                                       \
+      fflush(stdout);                                                                                                  \
+      lastProgressPrintTime = __hz_now;                                                                                \
+    }                                                                                                                  \
   } while (0)
 
 #ifdef HAZE_PLATFORM_LINUX
@@ -2870,8 +2886,8 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   hzstd_perf_sample_regs_t regs;
   for (;;) {
     double readStartedAt = hzstd_time_now();
-    bool gotCapture = hzstd_profiling_read_raw_capture(
-        context->raw_samples_file, &timeNs, &lostBefore, &regs, stackScratch);
+    bool gotCapture
+        = hzstd_profiling_read_raw_capture(context->raw_samples_file, &timeNs, &lostBefore, &regs, stackScratch);
     g_postprocess_read_time_total_ns += (hzstd_time_now() - readStartedAt) * 1e9;
     if (!gotCapture) {
       break;
@@ -2886,12 +2902,10 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
     }
     context->perf_unwind_count++;
 
-    raw.timestamp =
-        (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) / 1e9;
+    raw.timestamp = (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) / 1e9;
     raw.lost_before = lostBefore;
 
-    hzstd_profiling_sample_t sample =
-        hzstd_profiling_build_sample(&frameTable, &frameIndex, raw);
+    hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(&frameTable, &frameIndex, raw);
     HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
     processedCount++;
     HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -2908,11 +2922,9 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   sigaction(SIGSEGV, &g_hzstd_perf_prev_segv_action, NULL);
   sigaction(SIGBUS, &g_hzstd_perf_prev_bus_action, NULL);
 #elif defined(HAZE_PLATFORM_WIN32)
-  for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head;
-       chunk != NULL; chunk = chunk->next) {
+  for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head; chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
-      hzstd_profiling_sample_t sample =
-          hzstd_profiling_build_sample(&frameTable, &frameIndex, chunk->entries[i]);
+      hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(&frameTable, &frameIndex, chunk->entries[i]);
       HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
       processedCount++;
       HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -2928,10 +2940,8 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   // Convert the frame chunk-list into one exactly-sized contiguous array --
   // see the big comment on hzstd_profiling_frame_chunk_t for why this avoids
   // the doubling-growth GC warning a plain dynamic array would trip here.
-  hzstd_dynamic_array_t *frames = HZSTD_DYNAMIC_ARRAY_CREATE(
-      allocator, hzstd_profiling_frame_t, frameTable.count);
-  for (hzstd_profiling_frame_chunk_t *chunk = frameTable.head; chunk != NULL;
-       chunk = chunk->next) {
+  hzstd_dynamic_array_t *frames = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, frameTable.count);
+  for (hzstd_profiling_frame_chunk_t *chunk = frameTable.head; chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
       HZSTD_DYNAMIC_ARRAY_PUSH(frames, chunk->entries[i]);
     }
@@ -2948,30 +2958,31 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
             "us/frame; fast ELF-symtab path hit %llu/%llu).\n"
             "  Symbol resolution split: %.2f ms name resolution, %.2f ms "
             "source-location resolution.\n",
-            context->sample_count, frameTable.count,
+            context->sample_count,
+            frameTable.count,
             (hzstd_time_now() - stopTime) * 1000.0,
-            (context->perf_unwind_time_total_ns / 1e3) /
-                (double)context->perf_unwind_count,
+            (context->perf_unwind_time_total_ns / 1e3) / (double)context->perf_unwind_count,
             context->perf_unwind_time_max_ns / 1e3,
             g_postprocess_read_time_total_ns / 1e6,
             context->perf_unwind_time_total_ns / 1e6,
             g_postprocess_resolve_frame_time_total_ns / 1e6,
             (unsigned long long)g_postprocess_resolve_frame_count,
             g_postprocess_resolve_frame_count > 0
-                ? (g_postprocess_resolve_frame_time_total_ns / 1e3) /
-                      (double)g_postprocess_resolve_frame_count
+                ? (g_postprocess_resolve_frame_time_total_ns / 1e3) / (double)g_postprocess_resolve_frame_count
                 : 0.0,
             (unsigned long long)g_elf_symtab_fast_hits,
             (unsigned long long)(g_elf_symtab_fast_hits + g_elf_symtab_fast_misses),
             g_postprocess_name_resolve_time_total_ns / 1e6,
             g_postprocess_sourceloc_time_total_ns / 1e6);
-  } else
+  }
+  else
 #endif
   {
     fprintf(stdout,
             "Postprocessing done: %zu sample(s), %zu unique frame(s) in "
             "%.2f ms.\n",
-            context->sample_count, frameTable.count,
+            context->sample_count,
+            frameTable.count,
             (hzstd_time_now() - stopTime) * 1000.0);
   }
   fflush(stdout);
@@ -2979,10 +2990,9 @@ hzstd_profiling_end(hzstd_profiling_context_t *context) {
   // Release the profiling session lock so a new session can be started.
   atomic_store(&g_hzstd_profiling_active, false);
 
-  return (hzstd_profiling_result_t){
-      .frames = frames,
-      .samples = samples,
-      .sampling_rate_hz = achievedRateHz,
+  return (hzstd_profiling_result_t) {
+    .frames = frames,
+    .samples = samples,
+    .sampling_rate_hz = achievedRateHz,
   };
 }
-
