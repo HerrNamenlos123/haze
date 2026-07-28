@@ -1,0 +1,9 @@
+name: Working Memory
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: Working Memory
+    command: npx
+    args:
+      - tsx
+      - /home/fzachs/Projects/agent/src/index.ts
