@@ -58,6 +58,12 @@ void haze_fontstash_layout_text(void* ctx,
                                 hzstd_str_t text,
                                 hzstd_dynamic_array_t* out)
 {
+  // printf("Layout text: %s ", HZSTD_CSTR(text));
+  // for (size_t i = 0; i < text.length; i++) {
+  //   printf("%02X ", (unsigned char)text.data[i]);
+  // }
+  // printf("\n");
+
   FONScontext* fs = (FONScontext*)ctx;
 
   fonsSetFont(fs, font);
