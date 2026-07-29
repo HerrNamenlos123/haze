@@ -347,7 +347,10 @@ static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
   frame->timestamp = hzstd_time_now();
 
   if (context->memoryInstrumentationRecordStacktraces) {
-    frame->stacktrace = hzstd_build_stacktrace(2);
+    // TODO: This skip_n_frames cannot be hardcoded and should be passed along by the instrumentation because it may
+    // vary
+    frame->stacktrace = hzstd_build_stacktrace(3);
+    hzstd_print_stacktrace(frame->stacktrace);
   }
   else {
     // Allocate an empty array as a fallback. TODO: This is awful because it literally heap allocates

@@ -4,7 +4,7 @@ __c__("#pragma clang diagnostic ignored \"-Wincompatible-pointer-types-discards-
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
-export struct QuerySet {
+export inline struct QuerySet {
     handle: mut ffi.WGPUQuerySetImpl;
 }
 

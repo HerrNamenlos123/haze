@@ -1,5 +1,5 @@
 
-export struct Adapter {
+export inline struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
     fn requestDeviceAsync(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {

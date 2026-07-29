@@ -88,8 +88,8 @@ namespace process {
                         envp: []str, // empty → inherit
                         cwd: str): inline hzstd_process_spawn_result_t :: final; // empty → use current working directory
 
-  extern C noemit fn hzstd_process_read_stdout(handle: cptr): cstr :: final;
-  extern C noemit fn hzstd_process_read_stderr(handle: cptr): cstr :: final;
+  extern C noemit fn hzstd_process_read_stdout(handle: cptr): str :: final;
+  extern C noemit fn hzstd_process_read_stderr(handle: cptr): str :: final;
   extern C noemit fn hzstd_process_write_stdin(handle: cptr, data: str): bool :: final;
   extern C noemit fn hzstd_process_close_stdin(handle: cptr) :: final;
   extern C noemit fn hzstd_process_is_alive(handle: cptr): bool :: final;
@@ -120,13 +120,13 @@ namespace process {
     // Non-blocking. Returns whatever output is currently buffered, or "" if none.
     fn readStdout(): str {
       assert(!this.released, "process.Process used after join() released it");
-      return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stdout(this.handle));
+      return hzstd_process_read_stdout(this.handle);
     }
 
     // Non-blocking. Returns whatever output is currently buffered, or "" if none.
     fn readStderr(): str {
       assert(!this.released, "process.Process used after join() released it");
-      return ffi.hzstd_str_from_cstr_ref(hzstd_process_read_stderr(this.handle));
+      return hzstd_process_read_stderr(this.handle);
     }
 
     // Writes to the child's stdin. Returns false if the pipe is closed or the write failed.

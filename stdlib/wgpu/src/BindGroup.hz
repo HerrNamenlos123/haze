@@ -1,5 +1,5 @@
 
-export struct BindGroup {
+export inline struct BindGroup {
     handle: mut ffi.WGPUBindGroupImpl;
 }
 
@@ -13,7 +13,7 @@ fn toFFI(v: mut BindGroup): mut ffi.WGPUBindGroupImpl :: final {
     return v.handle;
 }
 
-export struct BindGroupLayout {
+export inline struct BindGroupLayout {
     handle: mut ffi.WGPUBindGroupLayoutImpl;
 }
 

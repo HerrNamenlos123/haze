@@ -251,7 +251,7 @@ fn loadTskDocument(path: str): Result<TskDocumentFile, none> {
         return result;
     }
     else {
-      fmt.println("Document failed to load:", result);
+      fmt.println("Document failed to load:", result.error());
     }
     return none;
 }

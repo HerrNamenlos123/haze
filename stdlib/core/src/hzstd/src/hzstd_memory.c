@@ -138,10 +138,13 @@ void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
 {
   hzstd_assert(size != 0);
 
-  if (hz_profiler_intrument_allocation) {
-    hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_suballoc,
-                                     hz_profiler_intrument_allocation_data);
-  }
+  // Suballocation tracking is deactivated since it's way too crazy to track during json parsing,
+  // and arena suballocation is actually already the fast path and if someone knowingly allocates into arenas,
+  // we can actually consider this a good thing since at least they use arenas. Growing is still tracked elsewhere.
+  // if (hz_profiler_intrument_allocation) {
+  //   hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_suballoc,
+  //                                    hz_profiler_intrument_allocation_data);
+  // }
 
   size_t alignment = alignof(max_align_t);
   size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size + alignment);

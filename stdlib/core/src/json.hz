@@ -36,7 +36,7 @@ namespace ffi {
 
 namespace json {
     export struct Error {
-        error: str;
+        error: () => str;
     };
 
     export struct Node {
@@ -200,7 +200,7 @@ namespace json {
                 data: cjson,
             } with allocator);
         }
-        return Result<Node, Error>.Err({ error: error.data });
+        return Result<Node, Error>.Err({ error: () => error.data });
     }
 
     export fn object(): Node {
@@ -217,7 +217,7 @@ namespace json {
 
     export fn parseJsonArray<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_array(node) {
-            return Error { error: "JSON type mismatch: expected array" };
+            return Error { error: () => "JSON type mismatch: expected array" };
         }
         let arr: T = [];
         let count = ffi.hzstd_json_get_array_size(allocator, node);
@@ -233,11 +233,11 @@ namespace json {
 
     export fn parseJsonFixedArray<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_array(node) { 
-            return Error { error: "JSON type mismatch: expected array" };
+            return Error { error: () => "JSON type mismatch: expected array" };
         }
         let actual = ffi.hzstd_json_get_array_size(allocator, node) as usize;
         if actual != T.length as usize { 
-            return Error { error: f"JSON fixed array length mismatch: expected {T.length}, got {actual}" };
+            return Error { error: () => f"JSON fixed array length mismatch: expected {T.length}, got {actual}" };
         }
         do unsafe {
             let arr: T = uninitialized;
@@ -255,7 +255,7 @@ namespace json {
 
     export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
         if !ffi.hzstd_json_is_object(node) { 
-            return Error { error: "JSON type mismatch: expected object" };
+            return Error { error: () => "JSON type mismatch: expected object" };
         }
         do unsafe {
             let result: T = uninitialized;
@@ -285,7 +285,7 @@ namespace json {
 
                 if !skipWithNone {
                     if !child {
-                        return Error { error: f"JSON missing field: {fieldName}" };
+                        return Error { error: () => f"JSON missing field: {fieldName}" };
                     }
                     let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
                     if !r {
@@ -306,7 +306,7 @@ namespace json {
                 if resultValue == T.literalValue {
                     return Result<T, Error>.Ok(T.literalValue);
                 }
-                return Error { error: f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
+                return Error { error: () => f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
             }
             else if comptime T.baseType is int {
                 let resultValue = parseJsonNodeFromFfi<int>(allocator, node);
@@ -314,7 +314,7 @@ namespace json {
                 if resultValue == T.literalValue {
                     return Result<T, Error>.Ok(T.literalValue);
                 }
-                return Error { error: f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
+                return Error { error: () => f"""JSON type mismatch: Expected string literal "{T.literalValue}", but received "{resultValue}" """ };
             }
             else {
                 static_assert(false, f"json.parse() only supports comptime literals that are str or int");
@@ -331,43 +331,43 @@ namespace json {
         }
         else if comptime T is str {
             if !ffi.hzstd_json_is_string(node) { 
-                return Error { error: "JSON type mismatch: expected string" };
+                return Error { error: () => "JSON type mismatch: expected string" };
             }
             let value = ffi.hzstd_json_get_string_value(allocator, node);
             if value { return value.data; }
-            return Error { error: "JSON: failed to read string value" };
+            return Error { error: () => "JSON: failed to read string value" };
         }
         else if comptime T is int {
             if !ffi.hzstd_json_is_number(node) { 
-                return Error { error: "JSON type mismatch: expected number (int)" };
+                return Error { error: () => "JSON type mismatch: expected number (int)" };
             }
             return ffi.hzstd_json_get_number_value(allocator, node) as int;
         }
         else if comptime T is i32 {
             if !ffi.hzstd_json_is_number(node) { 
-                return Error { error: "JSON type mismatch: expected number (i32)" };
+                return Error { error: () => "JSON type mismatch: expected number (i32)" };
             }
             let v = ffi.hzstd_json_get_number_value(allocator, node) as int;
             if v >= i32.min && v <= i32.max {
                 return v as i32;
             }
-            return Error { error: "JSON range error: Expected number of type i32, but received value is out of range" };
+            return Error { error: () => "JSON range error: Expected number of type i32, but received value is out of range" };
         }
         else if comptime T is real {
             if !ffi.hzstd_json_is_number(node) { 
-                return Error { error: "JSON type mismatch: expected number (real)" };
+                return Error { error: () => "JSON type mismatch: expected number (real)" };
             }
             return ffi.hzstd_json_get_number_value(allocator, node);
         }
         else if comptime T is bool {
             if !ffi.hzstd_json_is_bool(node) { 
-                return Error { error: "JSON type mismatch: expected bool" };
+                return Error { error: () => "JSON type mismatch: expected bool" };
             }
             return ffi.hzstd_json_is_true(node);
         }
         else if comptime T is null {
             if !ffi.hzstd_json_is_null(node) { 
-                return Error { error: "JSON type mismatch: expected null" };
+                return Error { error: () => "JSON type mismatch: expected null" };
             }
             return null;
         }
@@ -412,11 +412,11 @@ namespace json {
                 assert(ffi.hzstd_json_is_object(node));
                 let proxy = (Node { allocator: allocator, data: node })[discriminatorField];
                 if !proxy {
-                    return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is missing" };
+                    return Error { error: () => f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is missing" };
                 }
                 let discriminatorValue = proxy.to<typeof(T.variants[0][discriminatorField]).baseType>();
                 if !discriminatorValue {
-                    return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is not a string" };
+                    return Error { error: () => f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator value is not a string" };
                 }
                 for comptime Variant in T.variants {
                     assert(Variant[discriminatorField].category == meta.TypeCategory.Literal);
@@ -430,7 +430,7 @@ namespace json {
                     }
                 }
 
-                return Error { error: f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator matched none of the values" };
+                return Error { error: () => f"JSON type mismatch: Expected discriminated union '{T.prettyName}', but the discriminator matched none of the values" };
             }
             else {
                 // Comptime ambiguity check: int and real both map to JSON number
@@ -451,7 +451,10 @@ namespace json {
                 // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
                 // `none` is excluded here: by the time we have a real node, the value is present, and `none`
                 // (undefined/absent) can only ever come from a missing key, which is handled upstream.
-                let attemptErrors: []str = [];
+                // TODO: This should be a comptime fixed array with length T.variants.length, but
+                // currently we don't have a way to initialize the array at comptime depending on N:
+                const comptime N = T.variants.length;
+                let attemptErrors = createStaticArray<() => str, N>(() => "");
                 for comptime Variant in T.variants {
                     if comptime Variant is not none {
                         // Node is this type, return it
@@ -464,20 +467,31 @@ namespace json {
                             return Result<T, Error>.Ok(attemptResult);
                         }
                         else {
-                            attemptErrors.push(f"{variantName}: {attemptResult.error}");
+                            if !attemptErrors {
+                                attemptErrors = [];
+                            }
+                            assert(attemptErrors);
+                            attemptErrors.push(() => {
+                                return f"{variantName}: {attemptResult.error()}";
+                            });
                         }
                     }
                 }
 
-                let combinedErrors = "";
-                for attemptError, i in attemptErrors {
-                    if i > 0 {
-                        combinedErrors = combinedErrors + "; ";
-                    }
-                    combinedErrors = combinedErrors + attemptError;
-                }
-
-                return Error { error: f"JSON type mismatch: Expected type {T.prettyName}, received no matching value ({combinedErrors})" };
+                return Error { 
+                    error: () => {
+                        let combinedErrors = "";
+                        if attemptErrors {
+                            for attemptError, i in attemptErrors {
+                                if i > 0 {
+                                    combinedErrors = combinedErrors + "; ";
+                                }
+                                combinedErrors = combinedErrors + attemptError;
+                            }
+                        }
+                        return f"JSON type mismatch: Expected type {T.prettyName}, received no matching value ({combinedErrors})";
+                    } 
+                };
             }
         }
         else {
@@ -623,7 +637,7 @@ namespace fmt {
     }
 
     export fn format_to(writer: mut StringWriter, value: json.Error, args: FormatArgs) {
-        format_to(writer, f"json error: {value.error}", args);
+        format_to(writer, f"json error: {value.error()}", args);
     }
 }
 

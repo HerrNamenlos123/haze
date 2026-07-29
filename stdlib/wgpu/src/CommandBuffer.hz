@@ -1,5 +1,5 @@
 
-export struct CommandBuffer {
+export inline struct CommandBuffer {
     handle: mut ffi.WGPUCommandBufferImpl;
 }
 

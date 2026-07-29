@@ -40,6 +40,7 @@ export opaque struct String {
     // both types of strings can be accepted.
 
     _data: mut ByteBuffer | str;
+    _reserve: int = 0;
 
     // We do not actually use the byte buffer as a frozen string. We track commitment ourselves
     // and when we do commit the buffer, we use the buffer's capabilities to get access to the string slice,
@@ -68,6 +69,13 @@ export opaque struct String {
         return String {
             _data: buffer,
         };
+    }
+    
+    fn reserve(reserve: int) {
+        this._reserve = reserve;
+        if this._data is mut ByteBuffer {
+            this._data.reserve(this._reserve);
+        }
     }
 
     fn length() {
@@ -123,9 +131,13 @@ export opaque struct String {
         return this;
     }
 
-    mut fn getAt(index: int): u8 {
-        let buffer = this._getBuffer();
-        return buffer.getAt(index);
+    fn getAt(index: int): u8 {
+        if this._data is mut ByteBuffer {
+            return this._data.getAt(index);
+        }
+        else {
+            return this._data[index];
+        }
     }
 
     mut fn insert(index: int, value: str) {
@@ -147,6 +159,108 @@ export opaque struct String {
         };
     }
 
+    fn startsWith(prefix: str): bool {
+        if prefix.length > this.length() {
+            return false;
+        }
+
+        let bytes = this.bytes();
+
+        for (let i = 0; i < prefix.length; i++) {
+            if bytes.getAt(i) != prefix[i] {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    fn endsWith(suffix: str): bool {
+        let len = this.length();
+
+        if suffix.length > len {
+            return false;
+        }
+
+        let offset = len - suffix.length;
+        let bytes = this.bytes();
+
+        for (let i = 0; i < suffix.length; i++) {
+            if bytes.getAt(offset + i) != suffix[i] {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    fn contains(needle: str): bool {
+        let len = this.length();
+
+        if needle.length == 0 {
+            return true;
+        }
+
+        if needle.length > len {
+            return false;
+        }
+
+        let bytes = this.bytes();
+
+        for (let start = 0; start <= len - needle.length; start++) {
+            let matches = true;
+
+            for (let j = 0; j < needle.length; j++) {
+                if bytes.getAt(start + j) != needle[j] {
+                    matches = false;
+                    // TODO: Support break and enable it here to not waste CPU
+                    // break;
+                }
+            }
+
+            if matches {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn cloneSlice(start: int, end?: int): str {
+        if !end {
+            end = this.length();
+        }
+        assert(end);
+        let len = this.length();
+
+        let s = start;
+        let e = end;
+
+        if s < 0 {
+            s += len;
+        }
+        if e < 0 {
+            e += len;
+        }
+
+        s = clamp<int>(s, 0, len);
+        e = clamp<int>(e, 0, len);
+
+        if e < s {
+            e = s;
+        }
+
+        let bytes = this.bytes();
+        let result = ByteBuffer(e - s);
+
+        for (let i = s; i < e; i++) {
+            result.push(Bytes(bytes.getAt(i)));
+        }
+
+        result.commit();
+        return result.string();
+    }
+
     // Here we cannot actually return Bytes, because there is no immutable buffer we can point to. Instead we have to
     // return a ByteBuffer
     fn bytes(): ByteBuffer {
@@ -165,6 +279,7 @@ export opaque struct String {
         }
         else {
             let buffer = ByteBuffer(this._data);
+            buffer.reserve(this._reserve);
             this._data = buffer;
             return buffer;
         }

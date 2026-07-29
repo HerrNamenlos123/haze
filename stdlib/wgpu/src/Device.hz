@@ -1,5 +1,5 @@
 
-export struct Device {
+export inline struct Device {
     handle: mut ffi.WGPUDeviceImpl;
 
     fn getQueue(): Result<mut Queue, none> {

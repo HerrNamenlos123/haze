@@ -1,4 +1,4 @@
-export struct Instance {
+export inline struct Instance {
     handle: mut ffi.WGPUInstanceImpl;
 
     fn requestAdapterAsync(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {

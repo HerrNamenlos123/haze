@@ -36,7 +36,7 @@
 #define GC_THREADS
 #include <gc/gc.h>
 
-extern char** environ;
+extern char **environ;
 
 // ── Semaphore ────────────────────────────────────────────────────────────────
 //
@@ -48,9 +48,9 @@ struct hzstd_semaphore_t {
   sem_t handle;
 };
 
-hzstd_semaphore_t* hzstd_create_semaphore(void)
+hzstd_semaphore_t *hzstd_create_semaphore(void)
 {
-  hzstd_semaphore_t* semaphore = malloc(sizeof(hzstd_semaphore_t));
+  hzstd_semaphore_t *semaphore = malloc(sizeof(hzstd_semaphore_t));
   if (!semaphore) {
     return NULL;
   }
@@ -61,7 +61,7 @@ hzstd_semaphore_t* hzstd_create_semaphore(void)
   return semaphore;
 }
 
-void hzstd_destroy_semaphore(hzstd_semaphore_t* semaphore)
+void hzstd_destroy_semaphore(hzstd_semaphore_t *semaphore)
 {
   if (!semaphore) {
     return;
@@ -70,7 +70,10 @@ void hzstd_destroy_semaphore(hzstd_semaphore_t* semaphore)
   free(semaphore);
 }
 
-bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&semaphore->handle) == 0; }
+bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore)
+{
+  return sem_post(&semaphore->handle) == 0;
+}
 
 // sem_wait is explicitly documented (see signal(7), "Interruption of system calls") to never be
 // auto-restarted after a signal, regardless of SA_RESTART: it always returns EINTR if *any*
@@ -79,7 +82,7 @@ bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore) { return sem_post(&se
 // the kind of spurious-wakeup bug that turns into hard-to-reproduce races (e.g. the profiler's
 // trigger/done handshake desyncing whenever a GC collection's stop-the-world signal lands on a
 // thread parked in one of these waits).
-void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore)
+void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore)
 {
   while (sem_wait(&semaphore->handle) != 0) {
     if (errno != EINTR) {
@@ -88,7 +91,7 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore)
   }
 }
 
-bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeout_ns)
+bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeout_ns)
 {
   struct timespec deadline;
   clock_gettime(CLOCK_REALTIME, &deadline);
@@ -113,7 +116,7 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeo
 
 // ── Platform init ─────────────────────────────────────────────────────────────
 
-static hzstd_semaphore_t* infinite_block_event;
+static hzstd_semaphore_t *infinite_block_event;
 static struct timespec startup_ts;
 
 void hzstd_initialize_platform(void)
@@ -180,14 +183,14 @@ static hzstd_str_t panic_reason;
 static unw_context_t panic_context;
 static hzstd_int_t panic_skip_n_frames = 0;
 static hzstd_panic_type_t panic_type = hzstd_panic_type_unknown;
-static hzstd_panic_recovery_frame_t* panic_recovery_target = NULL;
+static hzstd_panic_recovery_frame_t *panic_recovery_target = NULL;
 static atomic_int panic_in_progress = 0;
 static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 
 // panic_trigger  : panicking thread → worker (start building)
 // panic_response : worker → panicking thread (done; longjmp or return)
-static hzstd_semaphore_t* panic_trigger;
-static hzstd_semaphore_t* panic_response;
+static hzstd_semaphore_t *panic_trigger;
+static hzstd_semaphore_t *panic_response;
 
 // Set by worker before signaling panic_response.
 static hzstd_stacktrace_t panic_built_stacktrace; /* build-only mode result (value) */
@@ -244,10 +247,10 @@ static void hzstd_panic_unwind_crash_handler(int sig)
 // allocated/reallocated no matter which allocator its control struct was
 // created with, which is precisely the hazard this whole worker thread must
 // avoid (see hzstd_panic_handler_thread below).
-static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t* arr, hzstd_stackframe_t frame)
+static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t *arr, hzstd_stackframe_t frame)
 {
   assert(arr->size < arr->capacity);
-  ((hzstd_stackframe_t*)arr->buffer)[arr->size++] = frame;
+  ((hzstd_stackframe_t *)arr->buffer)[arr->size++] = frame;
 }
 
 // Fills in an already-allocated, HZSTD_PANIC_MAX_FRAMES-capacity frameArray
@@ -256,7 +259,7 @@ static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t* arr, hzstd_stack
 // through -- in which case frameArray already holds every frame captured
 // before that happened, which is exactly what's reported (a truncated real
 // trace beats no trace at all).
-static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_array_t* frameArray)
+static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_array_t *frameArray)
 {
   struct sigaction newAction, oldSegvAction, oldBusAction;
   memset(&newAction, 0, sizeof(newAction));
@@ -291,13 +294,13 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
         int maxNameLen = 4096;
         hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen), 0);
         unw_word_t offset;
-        if (unw_get_proc_name(&cursor, (char*)name.data, maxNameLen, &offset) == 0) {
+        if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLen, &offset) == 0) {
           name.length = strlen(name.data);
         }
 
         hzstd_stackframe_t fr = {
           .id = nextId++,
-          .instructionPointer = (void*)pc,
+          .instructionPointer = (void *)pc,
           .name = name,
           .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
         };
@@ -329,7 +332,7 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
 // path with no output at all. This mirrors the exact hazard documented (and
 // solved with its own non-GC ring buffer) in hzstd_profiling.c.
 
-static void* hzstd_panic_handler_thread(void* _)
+static void *hzstd_panic_handler_thread(void *_)
 {
   (void)_;
 
@@ -348,7 +351,7 @@ static void* hzstd_panic_handler_thread(void* _)
     // (HZSTD_PANIC_MAX_FRAMES) allocated once, up front -- see
     // hzstd_panic_build_frames for why this no longer needs an initial
     // dry-run pass to size it exactly.
-    hzstd_dynamic_array_t* frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t));
+    hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t));
     frameArray->buffer = hzstd_allocate(allocator, HZSTD_PANIC_MAX_FRAMES * sizeof(hzstd_stackframe_t));
     frameArray->elem_size = sizeof(hzstd_stackframe_t);
     frameArray->size = 0;
@@ -371,7 +374,7 @@ static void* hzstd_panic_handler_thread(void* _)
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
-      char* reason_data = (char*)hzstd_allocate(allocator, reason_len + 1);
+      char *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1);
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
@@ -407,7 +410,7 @@ static void* hzstd_panic_handler_thread(void* _)
 // worker and wait.  After the worker finishes (recovery case) we unblock
 // SIGSEGV manually (since we used plain longjmp, not siglongjmp) and jump.
 
-static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
+static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
 {
   (void)sig;
   int expected = 0;
@@ -491,7 +494,7 @@ static void hzstd_panic_handler(int sig, siginfo_t* si, void* ucontext)
   // belt-and-suspenders here since panic_in_progress is now held until this
   // function releases it below, but this is what makes that invariant
   // actually load-bearing rather than merely documented.
-  hzstd_panic_recovery_frame_t* localRecoveryTarget = panic_recovery_target;
+  hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
 
   // Hand off to worker.
   hzstd_trigger_semaphore(panic_trigger);
@@ -554,7 +557,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   panic_mode = PANIC_MODE_CRASH;
   // See hzstd_panic_handler's matching local -- captured now, read back
   // below, only released after that read (not by the worker).
-  hzstd_panic_recovery_frame_t* localRecoveryTarget = panic_recovery_target;
+  hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
 
   hzstd_trigger_semaphore(panic_trigger);
 
@@ -676,8 +679,7 @@ void hzstd_setup_panic_handler(void)
   static thread_local bool panic_stacktrace_root_registered = false;
   if (!panic_stacktrace_root_registered) {
     panic_stacktrace_root_registered = true;
-    GC_add_roots(&_hz_panic_stacktrace,
-                 (char *)&_hz_panic_stacktrace + sizeof(_hz_panic_stacktrace));
+    GC_add_roots(&_hz_panic_stacktrace, (char *)&_hz_panic_stacktrace + sizeof(_hz_panic_stacktrace));
   }
 
   // panic_trigger/panic_response and the single dedicated worker thread that
@@ -701,15 +703,13 @@ void hzstd_setup_panic_handler(void)
   // remains per-thread/idempotent and still runs on every call.
   static atomic_int g_panic_handler_worker_started = 0;
   int expected = 0;
-  if (atomic_compare_exchange_strong(&g_panic_handler_worker_started,
-                                     &expected, 1)) {
+  if (atomic_compare_exchange_strong(&g_panic_handler_worker_started, &expected, 1)) {
     panic_trigger = hzstd_create_semaphore();
     panic_response = hzstd_create_semaphore();
     assert(panic_trigger && panic_response);
 
     pthread_t worker;
-    int result =
-        pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);
+    int result = pthread_create(&worker, NULL, hzstd_panic_handler_thread, NULL);
     if (result != 0) {
       hzstd_panic("Failed to create panic handler thread");
     }
@@ -739,7 +739,7 @@ void hzstd_setup_panic_handler(void)
   // independent crash, it's this same first crash's parked thread being
   // mis-scanned.
   pthread_attr_t threadAttr;
-  void* normalStackBase = NULL;
+  void *normalStackBase = NULL;
   size_t normalStackSize = 0;
   if (pthread_getattr_np(pthread_self(), &threadAttr) == 0) {
     pthread_attr_getstack(&threadAttr, &normalStackBase, &normalStackSize);
@@ -783,15 +783,18 @@ void os_sleep_ns(uint64_t ns)
 
 // ── Working directory ─────────────────────────────────────────────────────────
 
-bool hzstd_get_cwd(char* buf, size_t buf_size) { return getcwd(buf, buf_size) != NULL; }
+bool hzstd_get_cwd(char *buf, size_t buf_size)
+{
+  return getcwd(buf, buf_size) != NULL;
+}
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
 
-static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_dynamic_array_t* arr)
+static inline char **process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_dynamic_array_t *arr)
 {
   size_t count = hzstd_dynamic_array_size(arr);
-  hzstd_str_t* elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(arr);
-  char** out = malloc(sizeof(char*) * (count + 2));
+  hzstd_str_t *elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(arr);
+  char **out = malloc(sizeof(char *) * (count + 2));
   if (!out) {
     return NULL;
   }
@@ -814,18 +817,18 @@ static inline char** process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe,
   return out;
 }
 
-static inline char* read_all_fd_gc(int fd)
+static inline char *read_all_fd_gc(int fd)
 {
   size_t cap = 4096, len = 0;
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char* buf = hzstd_allocate(allocator, cap + 1);
+  char *buf = hzstd_allocate(allocator, cap + 1);
   if (!buf) {
     return NULL;
   }
   for (;;) {
     if (len + 2048 > cap) {
       cap *= 2;
-      char* nb = hzstd_allocate(allocator, cap + 1);
+      char *nb = hzstd_allocate(allocator, cap + 1);
       if (!nb) {
         return NULL;
       }
@@ -845,10 +848,10 @@ static inline char* read_all_fd_gc(int fd)
   return buf;
 }
 
-static inline char* process_build_error_message_gc(int err)
+static inline char *process_build_error_message_gc(int err)
 {
   char buf[256];
-  const char* msg = NULL;
+  const char *msg = NULL;
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
   msg = strerror_r(err, buf, sizeof(buf));
 #else
@@ -863,7 +866,7 @@ static inline char* process_build_error_message_gc(int err)
     return NULL;
   }
   size_t len = strlen(msg);
-  char* gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+  char *gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
   if (gc) {
     memcpy(gc, msg, len);
     gc[len] = '\0';
@@ -871,23 +874,23 @@ static inline char* process_build_error_message_gc(int err)
   return gc;
 }
 
-static inline void process_set_error_message(hzstd_process_result_t* out, int err)
+static inline void process_set_error_message(hzstd_process_result_t *out, int err)
 {
   if (!out) {
     return;
   }
-  char* gc = process_build_error_message_gc(err);
+  char *gc = process_build_error_message_gc(err);
   if (gc) {
     out->stderr_data = gc;
   }
 }
 
 int hzstd_spawn_process(hzstd_str_t exe,
-                        hzstd_dynamic_array_t* argv,
-                        hzstd_dynamic_array_t* envp,
+                        hzstd_dynamic_array_t *argv,
+                        hzstd_dynamic_array_t *envp,
                         hzstd_str_t cwd,
                         bool inherit_stdio,
-                        hzstd_process_result_t* out)
+                        hzstd_process_result_t *out)
 {
   out->exit_code = -1;
   out->stdout_data = NULL;
@@ -918,16 +921,16 @@ int hzstd_spawn_process(hzstd_str_t exe,
     posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
   }
 
-  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
+  char **argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
   if (!argv_c) {
     return ENOMEM;
   }
 
   size_t envc = hzstd_dynamic_array_size(envp);
-  hzstd_str_t* env_elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(envp);
-  char** envp_c = NULL;
+  hzstd_str_t *env_elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(envp);
+  char **envp_c = NULL;
   if (envc > 0) {
-    envp_c = malloc(sizeof(char*) * (envc + 1));
+    envp_c = malloc(sizeof(char *) * (envc + 1));
     if (!envp_c) {
       for (size_t i = 0; argv_c[i]; ++i) {
         free(argv_c[i]);
@@ -941,7 +944,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
     envp_c[envc] = NULL;
   }
 
-  char* cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
+  char *cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
 #ifdef __linux__
   if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
@@ -1011,39 +1014,80 @@ static inline void process_set_nonblocking(int fd)
   }
 }
 
-/* Reads whatever is currently available on a non-blocking fd. Returns "" (never NULL)
- * once EAGAIN/EWOULDBLOCK or EOF is hit. */
-static inline char* process_read_available_gc(int fd)
+static inline hzstd_str_t process_read_available_gc(int fd)
 {
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   if (fd < 0) {
-    char* empty = hzstd_allocate(allocator, 1);
-    empty[0] = '\0';
-    return empty;
+    return HZSTD_STRING(NULL, 0);
   }
 
-  size_t cap = 4096, len = 0;
-  char* buf = hzstd_allocate(allocator, cap + 1);
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+
+  char scratch[4096];
+  char *buf = NULL;
+  size_t cap = 0;
+  size_t len = 0;
+
   for (;;) {
-    if (len + 2048 > cap) {
-      cap *= 2;
-      char* nb = hzstd_allocate(allocator, cap + 1);
-      memcpy(nb, buf, len);
-      buf = nb;
+    char *dst;
+    size_t avail;
+
+    if (buf) {
+      if (len == cap) {
+        cap *= 2;
+        buf = hzstd_heap_realloc(buf, cap);
+        if (!buf) {
+          hzstd_panic_fmt("realloc failed in process.read");
+        }
+      }
+
+      dst = buf + len;
+      avail = cap - len;
     }
-    ssize_t r = read(fd, buf + len, cap - len);
+    else {
+      dst = scratch + len;
+      avail = sizeof(scratch) - len;
+    }
+
+    ssize_t r = read(fd, dst, avail);
+
     if (r > 0) {
       len += (size_t)r;
+
+      // Overflowed the scratch buffer: allocate once and copy.
+      if (!buf && len == sizeof(scratch)) {
+        cap = sizeof(scratch) * 2;
+        buf = hzstd_allocate(allocator, cap);
+        memcpy(buf, scratch, len);
+      }
+
       continue;
     }
-    break; // r == 0 (EOF) or r < 0 (EAGAIN/EWOULDBLOCK/error)
+
+    if (r == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
+      break;
+    }
+
+    if (errno == EINTR) {
+      continue;
+    }
+
+    break;
   }
-  buf[len] = '\0';
-  return buf;
+
+  if (!buf) {
+    if (len == 0) {
+      return HZSTD_STRING(NULL, 0);
+    }
+
+    buf = hzstd_allocate(allocator, len);
+    memcpy(buf, scratch, len);
+  }
+
+  return HZSTD_STRING(buf, len);
 }
 
 hzstd_process_spawn_result_t
-hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_array_t* envp, hzstd_str_t cwd)
+hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t *argv, hzstd_dynamic_array_t *envp, hzstd_str_t cwd)
 {
   hzstd_process_spawn_result_t result = { .handle = NULL, .error_code = 0, .error_message = NULL };
 
@@ -1080,7 +1124,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
   posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
 
-  char** argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
+  char **argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
   if (!argv_c) {
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attrs);
@@ -1096,10 +1140,10 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   }
 
   size_t envc = hzstd_dynamic_array_size(envp);
-  hzstd_str_t* env_elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(envp);
-  char** envp_c = NULL;
+  hzstd_str_t *env_elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(envp);
+  char **envp_c = NULL;
   if (envc > 0) {
-    envp_c = malloc(sizeof(char*) * (envc + 1));
+    envp_c = malloc(sizeof(char *) * (envc + 1));
     if (envp_c) {
       for (size_t i = 0; i < envc; ++i) {
         envp_c[i] = strdup(env_elems[i].data);
@@ -1108,7 +1152,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
     }
   }
 
-  char* cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
+  char *cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
 #ifdef __linux__
   if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
@@ -1149,7 +1193,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   process_set_nonblocking(stdout_pipe[0]);
   process_set_nonblocking(stderr_pipe[0]);
 
-  hzstd_process_t* proc = malloc(sizeof(hzstd_process_t));
+  hzstd_process_t *proc = malloc(sizeof(hzstd_process_t));
   proc->pid = pid;
   proc->stdin_fd = stdin_pipe[1];
   proc->stdout_fd = stdout_pipe[0];
@@ -1161,19 +1205,19 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   return result;
 }
 
-char* hzstd_process_read_stdout(void* proc)
+hzstd_str_t hzstd_process_read_stdout(void *proc)
 {
-  return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stdout_fd : -1);
+  return process_read_available_gc(proc ? ((hzstd_process_t *)proc)->stdout_fd : -1);
 }
 
-char* hzstd_process_read_stderr(void* proc)
+hzstd_str_t hzstd_process_read_stderr(void *proc)
 {
-  return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stderr_fd : -1);
+  return process_read_available_gc(proc ? ((hzstd_process_t *)proc)->stderr_fd : -1);
 }
 
-bool hzstd_process_write_stdin(void* proc_, hzstd_str_t data)
+bool hzstd_process_write_stdin(void *proc_, hzstd_str_t data)
 {
-  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
   if (!proc || proc->stdin_fd < 0) {
     return false;
   }
@@ -1191,9 +1235,9 @@ bool hzstd_process_write_stdin(void* proc_, hzstd_str_t data)
   return true;
 }
 
-void hzstd_process_close_stdin(void* proc_)
+void hzstd_process_close_stdin(void *proc_)
 {
-  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
   if (!proc || proc->stdin_fd < 0) {
     return;
   }
@@ -1201,9 +1245,9 @@ void hzstd_process_close_stdin(void* proc_)
   proc->stdin_fd = -1;
 }
 
-bool hzstd_process_is_alive(void* proc_)
+bool hzstd_process_is_alive(void *proc_)
 {
-  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
   if (!proc) {
     return false;
   }
@@ -1222,9 +1266,9 @@ bool hzstd_process_is_alive(void* proc_)
   return false;
 }
 
-int hzstd_process_join(void* proc_)
+int hzstd_process_join(void *proc_)
 {
-  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
   if (!proc) {
     return -1;
   }
@@ -1237,9 +1281,9 @@ int hzstd_process_join(void* proc_)
   return proc->exit_code;
 }
 
-void hzstd_process_release(void* proc_)
+void hzstd_process_release(void *proc_)
 {
-  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
   if (!proc) {
     return;
   }
@@ -1255,18 +1299,18 @@ void hzstd_process_release(void* proc_)
   free(proc);
 }
 
-bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out)
+bool hzstd_process_get_memory_info(void *proc_, hzstd_process_memory_info_t *out)
 {
   if (!proc_ || !out) {
     return false;
   }
 
-  hzstd_process_t* proc = proc_;
+  hzstd_process_t *proc = proc_;
 
   char path[64];
   snprintf(path, sizeof(path), "/proc/%d/status", proc->pid);
 
-  FILE* f = fopen(path, "r");
+  FILE *f = fopen(path, "r");
   if (!f) {
     return false;
   }

@@ -133,6 +133,6 @@ fn processFile(path: str) {
         // }
     }
     else {
-        fmt.println(f"File {path} failed to parse!", document);
+        fmt.println(f"File {path} failed to parse!", document.error());
     }
 }

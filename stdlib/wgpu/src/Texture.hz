@@ -54,7 +54,7 @@ fn toOptionalFFI(v: TextureViewDescriptor | none): ffi.WGPUTextureViewDescriptor
     return toFFI(v);
 }
 
-export struct Texture {
+export inline struct Texture {
     handle: mut ffi.WGPUTextureImpl;
 
     fn createView(viewDescriptor?: TextureViewDescriptor): Result<mut TextureView, none> {
@@ -76,7 +76,7 @@ fn toFFI(v: Texture): mut ffi.WGPUTextureImpl :: final {
     return v.handle;
 }
 
-export struct TextureView {
+export inline struct TextureView {
     handle: mut ffi.WGPUTextureViewImpl;
 }
 

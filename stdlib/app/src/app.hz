@@ -270,9 +270,9 @@ export opaque struct App {
         // nextFrame() call clears it again.
         this.wheelDeltaThisFrame = Vec2(0.0, 0.0);
         this.wheelModifiersThisFrame = KeyModifiers.None;
-        this._pointerEdgeQueue = [];
-        this._keyEdgeQueue = [];
-        this._textInputQueue = [];
+        this._pointerEdgeQueue.clear();
+        this._keyEdgeQueue.clear();
+        this._textInputQueue.clear();
 
         sdl.pollEvents();
         fs.pollEvents();

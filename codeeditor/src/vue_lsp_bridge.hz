@@ -362,22 +362,22 @@ export opaque struct VueLspBridge {
 
         let outer = json.parse<[]json.Node>(params);
         if !outer {
-            fmt.println(f"vue_lsp_bridge: malformed tsserver/request notification: {outer}");
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request notification: {outer.error()}");
             return;
         }
         let inner = json.parse<[]json.Node>(outer[0]);
         if !inner {
-            fmt.println(f"vue_lsp_bridge: malformed tsserver/request payload: {inner}");
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request payload: {inner.error()}");
             return;
         }
         let requestId = json.parse<int>(inner[0]);
         if !requestId {
-            fmt.println(f"vue_lsp_bridge: malformed tsserver/request id: {requestId}");
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request id: {requestId.error()}");
             return;
         }
         let command = json.parse<str>(inner[1]);
         if !command {
-            fmt.println(f"vue_lsp_bridge: malformed tsserver/request command: {command}");
+            fmt.println(f"vue_lsp_bridge: malformed tsserver/request command: {command.error()}");
             return;
         }
         let args = inner[2];
@@ -443,7 +443,7 @@ export opaque struct VueLspBridge {
 
         let result = json.parse<TsServerResponseMessage>(message);
         if !result {
-            fmt.println(f"vue_lsp_bridge: failed to parse tsserver message: {result}");
+            fmt.println(f"vue_lsp_bridge: failed to parse tsserver message: {result.error()}");
             return;
         }
         if result.type != "response" {

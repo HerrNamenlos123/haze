@@ -1254,10 +1254,10 @@ export opaque struct Canvas {
 // many Renderer(frame, canvas) as needed against any Canvas (offscreen or
 // surface-backed, in any order, sampling each other's output freely), then
 // call frame.present() exactly once at the end.
-export opaque struct Frame {
+export opaque inline struct Frame {
     gfx: mut Context;
     encoder: wgpu.CommandEncoder;
-    pendingPresents: []mut Canvas = [];
+    pendingPresents?: []mut Canvas;
 
     fn constructor(gfx: mut Context) {
         let encoder = gfx.device.createCommandEncoder();
@@ -1275,10 +1275,12 @@ export opaque struct Frame {
             fmt.println("gfx: failed to finish command buffer");
             return;
         }
-        this.gfx.queue.submit({ commandBuffer });
+        this.gfx.queue.submit(commandBuffer);
 
-        for canvas in this.pendingPresents {
-            canvas.present();
+        if this.pendingPresents {
+            for canvas in this.pendingPresents {
+                canvas.present();
+            }
         }
     }
 }
@@ -1937,7 +1939,9 @@ export opaque struct Renderer {
         // frame.present() -- not here. Just register that this canvas needs
         // presenting once that happens.
         if canvas.surface {
-            this.frame.pendingPresents.push(canvas);
+            if this.frame.pendingPresents {
+                this.frame.pendingPresents.push(canvas);
+            }
         }
 
         // TODO: This is supposed to move into an async event queue at some point once we have task switching

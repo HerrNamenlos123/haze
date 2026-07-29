@@ -23,7 +23,7 @@ fn toFFI(v: ShaderModuleDescriptor): ffi.WGPUShaderModuleDescriptor :: final {
     return desc;
 }
 
-export struct ShaderModule {
+export inline struct ShaderModule {
     handle: mut ffi.WGPUShaderModuleImpl;
 }
 

@@ -147,7 +147,7 @@ export struct Context<TInitializationOptions> {
             successCallback: (response: json.Node) => {
                 let result = json.parse<TResponse>(response);
                 if !result {
-                    fmt.println("Invalid LSP response: ", result);
+                    fmt.println("Invalid LSP response: ", result.error());
                     return;
                 }
                 onReceive(Result<TResponse, LSPError>.Ok(result));
@@ -273,7 +273,7 @@ export struct Context<TInitializationOptions> {
     fn _processResponse(response: str) {
         let result = json.parse<LSPResponse>(response);
         if !result {
-            fmt.println(f"Json response failed to parse: {result}");
+            fmt.println(f"Json response failed to parse: {result.error()}");
             return;
         }
         if result.jsonrpc != "2.0" {

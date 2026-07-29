@@ -1,5 +1,5 @@
 
-export struct Surface {
+export inline struct Surface {
     handle: mut ffi.WGPUSurfaceImpl;
 
     fn getCapabilities(adapter: mut Adapter): Result<SurfaceCapabilities, none> {

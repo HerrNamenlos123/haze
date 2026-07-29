@@ -1,5 +1,5 @@
 
-export struct RenderPassEncoder {
+export inline struct RenderPassEncoder {
     handle: mut ffi.WGPURenderPassEncoderImpl;
 
     fn end() {

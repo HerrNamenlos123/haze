@@ -48,7 +48,7 @@ fn toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
     };
 }
 
-export struct Buffer {
+export inline struct Buffer {
     handle: mut ffi.WGPUBufferImpl;
 }
 

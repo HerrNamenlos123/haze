@@ -1,17 +1,29 @@
 
-export struct Queue {
+export inline struct Queue {
     handle: mut ffi.WGPUQueueImpl;
+    rawCommands?: []ffi.WGPUCommandBufferImpl;
 
-    fn submit(commands: []CommandBuffer) {
-        let rawCommands: []ffi.WGPUCommandBufferImpl = [];
-        for (let i = 0; i < commands.length; i++) {
-            rawCommands.push(commands[i].handle);
+    fn submit(commands: []CommandBuffer | CommandBuffer) {
+        if !this.rawCommands {
+            this.rawCommands = [];
+        }
+        assert(this.rawCommands);
+        this.rawCommands.clear();
+
+        if commands is CommandBuffer {
+            this.rawCommands.push(commands.handle);
+        }
+        else {
+            this.rawCommands.reserve(commands.length);
+            for (let i = 0; i < commands.length; i++) {
+                this.rawCommands.push(commands[i].handle);
+            }
         }
 
         let len = 0 as usize;
-        __c__("len = hzstd_dynamic_array_size(rawCommands);");
-
         let rawPtr = none as cptr;
+        let rawCommands = this.rawCommands;
+        __c__("len = hzstd_dynamic_array_size(rawCommands);");
         __c__("rawPtr = hzstd_dynamic_array_raw_buffer(rawCommands);");
 
         ffi.wgpuQueueSubmit(this.handle, len, rawPtr);

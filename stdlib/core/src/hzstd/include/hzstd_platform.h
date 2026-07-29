@@ -30,28 +30,28 @@ static inline hzstd_platform_runtime_t hzstd_platform_runtime(void)
 // kills the process.  _Noreturn: never returns to its caller.
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames);
 
-bool hzstd_get_cwd(char* buf, size_t buf_size);
+bool hzstd_get_cwd(char *buf, size_t buf_size);
 
 // Allocates and constructs a new semaphore, initial count 0. Returns NULL on failure.
-hzstd_semaphore_t* hzstd_create_semaphore(void);
+hzstd_semaphore_t *hzstd_create_semaphore(void);
 // Releases OS resources and frees the handle. Must not be used again afterward.
-void hzstd_destroy_semaphore(hzstd_semaphore_t* semaphore);
-bool hzstd_trigger_semaphore(hzstd_semaphore_t* semaphore);
-void hzstd_wait_for_semaphore(hzstd_semaphore_t* semaphore);
+void hzstd_destroy_semaphore(hzstd_semaphore_t *semaphore);
+bool hzstd_trigger_semaphore(hzstd_semaphore_t *semaphore);
+void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore);
 // Returns true if signaled before the timeout, false if it timed out. A `timeout_ns` of 0 is a
 // non-blocking poll, useful for draining an already-signaled semaphore.
-bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeout_ns);
+bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeout_ns);
 
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);
 
 int hzstd_spawn_process(hzstd_str_t exe,
-                        hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
-                        hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
+                        hzstd_dynamic_array_t *argv, /* hzstd_str_t elements */
+                        hzstd_dynamic_array_t *envp, /* hzstd_str_t elements, empty → inherit */
                         hzstd_str_t cwd, /* empty → use current working directory */
                         bool inherit_stdio,
-                        hzstd_process_result_t* out);
+                        hzstd_process_result_t *out);
 
 // ── Background process handle ────────────────────────────────────────────────
 //
@@ -61,26 +61,26 @@ int hzstd_spawn_process(hzstd_str_t exe,
 
 hzstd_process_spawn_result_t
 hzstd_process_spawn(hzstd_str_t exe,
-                    hzstd_dynamic_array_t* argv, /* hzstd_str_t elements */
-                    hzstd_dynamic_array_t* envp, /* hzstd_str_t elements, empty → inherit */
+                    hzstd_dynamic_array_t *argv, /* hzstd_str_t elements */
+                    hzstd_dynamic_array_t *envp, /* hzstd_str_t elements, empty → inherit */
                     hzstd_str_t cwd); /* empty → use current working directory */
 
 /* Returns whatever output is currently buffered; "" if none is available yet. */
-char* hzstd_process_read_stdout(void* proc);
-char* hzstd_process_read_stderr(void* proc);
+hzstd_str_t hzstd_process_read_stdout(void *proc);
+hzstd_str_t hzstd_process_read_stderr(void *proc);
 
 /* Writes to the child's stdin; returns false if the pipe is closed or the write failed. */
-bool hzstd_process_write_stdin(void* proc, hzstd_str_t data);
-void hzstd_process_close_stdin(void* proc);
+bool hzstd_process_write_stdin(void *proc, hzstd_str_t data);
+void hzstd_process_close_stdin(void *proc);
 
 /* Non-blocking: reaps the child if it has already exited. */
-bool hzstd_process_is_alive(void* proc);
+bool hzstd_process_is_alive(void *proc);
 
 /* Blocks until the child exits and returns its exit code. */
-int hzstd_process_join(void* proc);
+int hzstd_process_join(void *proc);
 
 /* Releases the handle and any remaining OS resources. Call after hzstd_process_join. */
-void hzstd_process_release(void* proc);
+void hzstd_process_release(void *proc);
 
 void os_sleep_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
@@ -91,6 +91,6 @@ typedef struct {
   hzstd_int_t committed;
 } hzstd_process_memory_info_t;
 
-bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out);
+bool hzstd_process_get_memory_info(void *proc_, hzstd_process_memory_info_t *out);
 
 #endif // HZSTD_PLATFORM_H

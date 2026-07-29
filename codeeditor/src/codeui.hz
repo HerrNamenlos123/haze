@@ -215,7 +215,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
             let result = json.parse<VscodeTheme>(file);
             if !result {
-                fmt.println("Failed to parse theme: ", result);
+                fmt.println("Failed to parse theme: ", result.error());
                 return;
             }
 

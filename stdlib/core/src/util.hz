@@ -77,3 +77,14 @@ export fn addressOf<T>(value: T) {
         static_assert(false, f"Type '{T.prettyName}' is not a pointer based structure and therefore not applicable to addressOf()");
     }
 }
+
+export fn createStaticArray<T, N>(defaultValue: T): [N]T {
+    do unsafe {
+        // This is a plain C-style static array.
+        let array: [N]T = uninitialized;
+        for _, i in array {
+            array[i] = defaultValue;
+        }
+        return array;
+    };
+}

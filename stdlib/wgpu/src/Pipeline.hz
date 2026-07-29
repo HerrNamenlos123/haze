@@ -1,5 +1,5 @@
 
-export struct RenderPipeline {
+export inline struct RenderPipeline {
     handle: mut ffi.WGPURenderPipelineImpl;
 }
 
@@ -11,7 +11,7 @@ fn toFFI(v: RenderPipeline): mut ffi.WGPURenderPipelineImpl :: final {
     return v.handle;
 }
 
-export struct PipelineLayout {
+export inline struct PipelineLayout {
     handle: mut ffi.WGPUPipelineLayoutImpl;
 }
 

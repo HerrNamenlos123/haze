@@ -39,7 +39,7 @@ struct HighlightResponse {
 
 struct HighlightEngine {
     highlightProcess: process.Process;
-    inputBuffer: str = "";
+    inputBuffer: mut String;
     nextMessageId: int = 1;
     // Once true, `highlightProcess`'s OS handle has been released (via join())
     // and must never be touched again.
@@ -55,10 +55,17 @@ struct HighlightEngine {
             id: 0,
             method: "initialize",
         });
-        p.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        p.writeStdin("Content-Length: ");
+        p.writeStdin(f"{request.length}");
+        p.writeStdin("\r\n\r\n");
+        p.writeStdin(request);
+
+        let inputBuffer = String();
+        inputBuffer.reserve(8192);
 
         return HighlightEngine {
             highlightProcess: p,
+            inputBuffer: inputBuffer,
         };
     }
 
@@ -98,7 +105,10 @@ struct HighlightEngine {
             fileContent: fileContent,
         });
         // fmt.println(request);
-        this.highlightProcess.writeStdin(f"Content-Length: {request.length}\r\n\r\n{request}");
+        this.highlightProcess.writeStdin("Content-Length: ");
+        this.highlightProcess.writeStdin(f"{request.length}");
+        this.highlightProcess.writeStdin("\r\n\r\n");
+        this.highlightProcess.writeStdin(request);
     }
 
     fn loop(): HighlightResult | none {
@@ -108,10 +118,10 @@ struct HighlightEngine {
         }
 
         let newStdout = this.highlightProcess.readStdout();
-        this.inputBuffer = this.inputBuffer + newStdout;
+        this.inputBuffer.append(newStdout);
 
         let contentLengthText = "Content-Length: ";
-        if this.inputBuffer.length > 0 && !this.inputBuffer.startsWith(contentLengthText) {
+        if this.inputBuffer.length() > 0 && !this.inputBuffer.startsWith(contentLengthText) {
             sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
         }
 
@@ -122,7 +132,7 @@ struct HighlightEngine {
         }
 
         let numberLength = separatorIndex;
-        let numberString = this.inputBuffer.slice(contentLengthText.length, separatorIndex);
+        let numberString = this.inputBuffer.cloneSlice(contentLengthText.length, separatorIndex);
         let contentLength = strToInt(numberString);
         if !contentLength {
             fmt.println("LSP Response: Failed to parse content length");
@@ -131,13 +141,13 @@ struct HighlightEngine {
         let headerLength = separatorIndex + separator.length;
         let totalPacketLength = headerLength + contentLength;
 
-        if this.inputBuffer.length < totalPacketLength {
+        if this.inputBuffer.length() < totalPacketLength {
             return none;
         }
 
         // Extract response and shift remaining packet forward
-        let response = this.inputBuffer.slice(headerLength, headerLength + contentLength);
-        let remainingPacket = this.inputBuffer.slice(totalPacketLength);
+        let response = this.inputBuffer.cloneSlice(headerLength, headerLength + contentLength);
+        let remainingPacket = this.inputBuffer.cloneSlice(totalPacketLength);
         this.inputBuffer = remainingPacket;
 
         return this.processResponse(response);
@@ -146,7 +156,7 @@ struct HighlightEngine {
     fn processResponse(response: str): HighlightResult | none {
         let j = json.parse<HighlightResponse>(response);
         if !j {
-            fmt.println("Failed to parse response: ", j.error);
+            fmt.println("Failed to parse response: ", j.error());
             return none;
         }
         if j.jsonrpc != "2.0" {
@@ -210,17 +220,17 @@ fn strToInt(string: str): int | none {
     return sign * value;
 }
 
-fn find(string: str, search: str): int | none {
+fn find(string: String, search: str): int | none {
   if (search.length == 0) {
     return 0;
   }
 
-  let last = string.length - search.length;
+  let last = string.length() - search.length;
 
   for (let i = 0; i <= last; i++) {
     let j = 0;
 
-    while (j < search.length && string[i + j] == search[j]) {
+    while (j < search.length && string.getAt(i + j) == search[j]) {
       j++;
     }
 

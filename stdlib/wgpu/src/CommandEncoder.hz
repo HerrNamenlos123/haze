@@ -35,7 +35,7 @@ fn toOptionalFFI(c: CommandEncoderDescriptor | none): ffi.WGPUCommandEncoderDesc
     };
 }
 
-export struct CommandEncoder {
+export inline struct CommandEncoder {
     handle: mut ffi.WGPUCommandEncoderImpl;
 
     fn beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
