@@ -233,6 +233,7 @@ export enum HazeErrorCode {
   ThisExpressionNotSuitableAsGenericTypeArgument2 = 7168, // This expression is not suitable as a generic type argument or literal value
   CouldNotInferGenericParameterFunctionPleaseSpecify = 7169, // Could not infer generic parameter '' for function ''. Please specify it explicitly.
   CannotInferClosureParameterType = 7170, // Cannot infer the type of closure parameter ''. Please add an explicit type annotation.
+  ArrayOutOfBoundsInComptimeParameterPack = 7171, // Array out of bounds: Index '' does not name a parameter in parameter pack of length ''.
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

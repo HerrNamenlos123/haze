@@ -53,6 +53,7 @@ import {
   EvalCTFEOrFail,
   evalCT,
   evalCTMemberAccess,
+  EvalCTFENumericValue,
 } from "./CTFE";
 import {
   makeCallableDatatypeAvailable,
@@ -13908,6 +13909,7 @@ export class SemanticElaborator {
       const valueType = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(value.type).type
       );
+
       if (
         valueType.variant !== Semantic.ENode.FixedArrayDatatype &&
         valueType.variant !== Semantic.ENode.DynamicArrayDatatype
@@ -14094,6 +14096,25 @@ export class SemanticElaborator {
         writes: value.writes,
       });
     }
+
+    if (valueType.variant === Semantic.ENode.ParameterPackDatatype) {
+      assert(valueType.parameters);
+      const index = EvalCTFENumericValue(
+        this.sr,
+        indexId,
+        this.sr.exprNodes.get(indexId).sourceloc
+      );
+      if (index < 0 || index >= valueType.parameters.length) {
+        throw new CompilerError(
+          `Array out of bounds: Index ${index} does not name a parameter in parameter pack of length ${valueType.parameters.length}.`,
+          arraySubscript.sourceloc,
+          HazeErrorCode.ArrayOutOfBoundsInComptimeParameterPack
+        );
+      }
+      const param = valueType.parameters[Number(index)];
+      return this.sr.b.symbolValue(param, arraySubscript.sourceloc);
+    }
+
     if (
       exprType.variant === Semantic.ENode.PrimitiveDatatype &&
       // ONLY pure Haze strings are allowed, c strings cannot be indexed directly because the length is not known

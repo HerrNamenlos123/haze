@@ -45,17 +45,24 @@ namespace fmt {
     }
 
     export fn format(values: ...): str :: final {
-        let reader = StringWriter(none);
-        for comptime value, i in values {
-            format_to_proxy(reader, value, {});
+        // Very essential short-circuit because without it, fmt.format(str) always heap-allocates and clones 
+        // the string when it could literally just return it.
+        if comptime values.length == 1 && typeof(values[0]) == str {
+            return values[0];
         }
-        let buffer = ByteBuffer(reader.written);
-        let writer = StringWriter(buffer);
-        for comptime value, i in values {
-            format_to_proxy(writer, value, {});
+        else {
+            let reader = StringWriter(none);
+            for comptime value, i in values {
+                format_to_proxy(reader, value, {});
+            }
+            let buffer = ByteBuffer(reader.written);
+            let writer = StringWriter(buffer);
+            for comptime value, i in values {
+                format_to_proxy(writer, value, {});
+            }
+            writer.commit();
+            return writer.string();
         }
-        writer.commit();
-        return writer.string();
     }
 
     export fn formatWithAllocator(allocator: Allocator, values: ...) {
@@ -72,30 +79,41 @@ namespace fmt {
     }
 
     export fn print(args: ...) {
-        let writer = StringWriter(ByteBuffer());
-        for comptime arg, i in args {
-            writer.write(fmt.format(arg));
-            if comptime i != args.length - 1 {
-                writer.write(" ");
-            }
+        if comptime args.length == 1 && typeof(args[0]) == str {
+            ffi.hzstd_print_str_stdout(args[0]);
         }
-        writer.commit();
-        ffi.hzstd_print_str_stdout(writer.string());
+        else {
+            let writer = StringWriter(ByteBuffer());
+            for comptime arg, i in args {
+                writer.write(fmt.format(arg));
+                if comptime i != args.length - 1 {
+                    writer.write(" ");
+                }
+            }
+            writer.commit();
+            ffi.hzstd_print_str_stdout(writer.string());
+        }
     }
 
     export fn println(args: ...) :: final {
-        // TODO: This should just call print() and append a \n, but for that we must support 
-        // passing parameter packs to other parameter packs, i.e. unwrapping them
-        let writer = StringWriter(ByteBuffer());
-        for comptime arg, i in args {
-            writer.write(fmt.format(arg));
-            if comptime i != args.length - 1 {
-                writer.write(" ");
-            }
+        if comptime args.length == 1 && typeof(args[0]) == str {
+            ffi.hzstd_print_str_stdout(args[0]);
+            ffi.hzstd_print_str_stdout("\n");
         }
-        writer.write("\n");
-        writer.commit();
-        ffi.hzstd_print_str_stdout(writer.string());
+        else {
+            // TODO: This should just call print() and append a \n, but for that we must support 
+            // passing parameter packs to other parameter packs, i.e. unwrapping them
+            let writer = StringWriter(ByteBuffer());
+            for comptime arg, i in args {
+                writer.write(fmt.format(arg));
+                if comptime i != args.length - 1 {
+                    writer.write(" ");
+                }
+            }
+            writer.write("\n");
+            writer.commit();
+            ffi.hzstd_print_str_stdout(writer.string());
+        }
     }
 
     export fn format_to_proxy<T>(writer: mut StringWriter, value: T, args: FormatArgs) :: final {
