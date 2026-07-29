@@ -333,9 +333,11 @@ struct hzstd_profiling_context_t {
   hzstd_dynamic_array_t *memoryInstrumentationFrames;
 };
 
+static int TRACE_COUNT = 0;
 static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type, void *data)
 {
   hzstd_profiling_context_t *context = data;
+  printf("Tracing allocation %d\n", TRACE_COUNT++);
 
   hzstd_memory_instrumentation_state_t prevMemoryState = hzstd_temporarily_disable_memory_instrumentation();
 
@@ -345,8 +347,19 @@ static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
   frame->timestamp = hzstd_time_now();
 
   if (context->memoryInstrumentationRecordStacktraces) {
-    hzstd_stacktrace_t stacktrace = hzstd_build_stacktrace(2);
-    frame->stacktrace = stacktrace;
+    frame->stacktrace = hzstd_build_stacktrace(2);
+  }
+  else {
+    // Allocate an empty array as a fallback. TODO: This is awful because it literally heap allocates
+    // an always-empty array for every sample that does not make a stacktrace.
+    // But currently we can't do it better because we have to satisfy the Haze semantics to keep it safe,
+    // and we don't have enough integration in C yet to use proper enums.
+    // TODO: We should fix this by adding the same union-optimization to optimize "none | []T" into a nullable
+    // dynamic array, but currently the semantics do not allow for arrays to be nullable or anything similar.
+    frame->stacktrace = (hzstd_stacktrace_t) {
+      .frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_stackframe_t, 0),
+      .skip_n_frames = 0,
+    };
   }
 
   HZSTD_DYNAMIC_ARRAY_PUSH(context->memoryInstrumentationFrames, frame);
@@ -1546,6 +1559,11 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
 #endif
   context->sampling_rate_hz = effectiveRateHz;
 
+  context->memoryInstrumentationFrames
+      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, 10000);
+  context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
+  context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
+
   // Plain calloc, deliberately outside the GC heap: this is the buffer the
   // stackwalker thread writes into while a sample is in flight, and it must
   // never need to grow (see the big comment on hzstd_profiling_context_t for
@@ -1760,12 +1778,6 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
 
   g_profiling_context = context;
 #endif
-
-  context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
-  context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
-
-  context->memoryInstrumentationFrames
-      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, 0);
 
   return context;
 }
@@ -2994,5 +3006,6 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     .frames = frames,
     .samples = samples,
     .sampling_rate_hz = achievedRateHz,
+    .memoryInstrumentationFrames = context->memoryInstrumentationFrames,
   };
 }

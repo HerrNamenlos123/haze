@@ -64,6 +64,7 @@ import {
   makeTypeUse,
 } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
+import { findClosestByLevenshtein } from "../utils";
 
 function isPowerOfTwo(x: bigint): boolean {
   // biome-ignore lint/suspicious/noBitwiseOperators: false
@@ -9150,7 +9151,9 @@ export class SemanticElaborator {
       const preUnwrapResolvedTypeDef = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
       );
-      if (preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+      if (
+        preUnwrapResolvedTypeDef.variant === Semantic.ENode.ReactiveDatatype
+      ) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(preUnwrapResolvedTypeDef.wrappedType)
@@ -10391,10 +10394,18 @@ export class SemanticElaborator {
       });
 
       if (!variableId) {
+        const options = struct.members.map((mmId) => {
+          const mm = this.sr.symbolNodes.get(mmId);
+          assert(mm.variant === Semantic.ENode.VariableSymbol);
+          return mm.name;
+        });
+        const closest = findClosestByLevenshtein(m.key, options);
+        const didYouMean =
+          closest !== -1 ? ` Did you mean '${options[closest]}'?` : "";
         throw new CompilerError(
           `${Semantic.serializeTypeDef(this.sr, structUse.type)} does not have a member named '${
             m.key
-          }'`,
+          }'.${didYouMean}`,
           sourceloc,
           HazeErrorCode.DoesNotHaveMemberNamed
         );
@@ -12428,8 +12439,7 @@ export class SemanticElaborator {
           );
           while (
             elementTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
-            elementTypeDef.variant ===
-              Semantic.ENode.ShallowReactiveDatatype ||
+            elementTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype ||
             elementTypeDef.variant === Semantic.ENode.ComputedDatatype
           ) {
             elementTypeUse = elementTypeDef.wrappedType;
@@ -13812,7 +13822,8 @@ export class SemanticElaborator {
           inFunction: null,
         },
         () => {
-          const functionSignatureId = this.elaborateFunctionSignature(overloadId);
+          const functionSignatureId =
+            this.elaborateFunctionSignature(overloadId);
           const methodEnv: Semantic.EnvBlockType = func.staticMethod
             ? null
             : {
@@ -14001,9 +14012,7 @@ export class SemanticElaborator {
       const preUnwrapTypeDef = this.sr.typeDefNodes.get(
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(value.type)).type
       );
-      if (
-        preUnwrapTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
-      ) {
+      if (preUnwrapTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
         const innerTypeDef = this.sr.typeDefNodes.get(
           this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(preUnwrapTypeDef.wrappedType)

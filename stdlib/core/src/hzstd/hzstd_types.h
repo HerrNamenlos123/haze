@@ -604,6 +604,7 @@ typedef struct {
   hzstd_dynamic_array_t *frames; /* hzstd_profiling_frame_t[], interned/deduplicated */
   hzstd_dynamic_array_t *samples; /* hzstd_profiling_sample_t[] */
   hzstd_int_t sampling_rate_hz;
+  hzstd_dynamic_array_t *memoryInstrumentationFrames; // []hzstd_memory_instrumentation_frame_t
 } hzstd_profiling_result_t;
 
 // ── Reactive ─────────────────────────────────────────────────────────────────

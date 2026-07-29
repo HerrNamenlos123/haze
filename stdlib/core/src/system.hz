@@ -68,6 +68,7 @@ namespace ffi {
 
     export extern C noemit opaque inline struct hzstd_stacktrace_t {
         frames: []hzstd_stackframe_t;
+        skip_n_frames: int;
 
         fn stringify(): str {
             return ffi.hzstd_stringify_stacktrace(hzstd_make_heap_allocator(), this);

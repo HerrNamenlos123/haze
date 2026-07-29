@@ -9,7 +9,7 @@ struct Cache {
     file: str | null = null;
 }
 
-const comptime profile = false;
+const comptime profile = true;
 const comptime vsync = false;
 
 // Translates app's platform-level pointer edge queue into ui_components'
@@ -125,24 +125,32 @@ fn main(): int {
         //     return 0;
         // }
 
-        let profiler = profile ? Profiler(0) : null;
+        let profiler = profile ? Profiler({
+            samplingRate: 0,
+        }) : null;
 
-        while let frame = a.nextFrame() {
-            if a.resized {
-                runtime.resize(a.windowState);
-            }
-            runtime.render(frame, a.canvas);
-            frame.present();
-
-            let highlightResult = getState().highlightEngine.loop();
-            if highlightResult {
-                assert(g_state);
-                g_state.highlightResults.push(highlightResult);
-                g_state.reactiveCounter++;
-            }
-
-            cache.flush();
+        let b: []Box<int> = [];
+        for (let i = 0; i < 1000; i++) {
+            let a = Box<int>(0);
+            b.push(a);
         }
+
+        // while let frame = a.nextFrame() {
+        //     if a.resized {
+        //         runtime.resize(a.windowState);
+        //     }
+        //     runtime.render(frame, a.canvas);
+        //     frame.present();
+
+        //     let highlightResult = getState().highlightEngine.loop();
+        //     if highlightResult {
+        //         assert(g_state);
+        //         g_state.highlightResults.push(highlightResult);
+        //         g_state.reactiveCounter++;
+        //     }
+
+        //     cache.flush();
+        // }
         
         if profiler {
             profiler.stopAndSave();

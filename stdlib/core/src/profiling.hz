@@ -18,10 +18,16 @@ namespace ffi {
         lost_before: int;
     };
 
+    export extern C noemit opaque inline struct hzstd_memory_instrumentation_frame_t {
+        stacktrace: hzstd_stacktrace_t;
+        timestamp: real;
+    };
+
     export extern C noemit opaque inline struct hzstd_profiling_result_t {
         frames: []hzstd_profiling_frame_t;
         samples: []hzstd_profiling_sample_t;
         sampling_rate_hz: int;
+        memoryInstrumentationFrames: []hzstd_memory_instrumentation_frame_t;
     };
 }
 
@@ -62,10 +68,21 @@ namespace profiling {
     // V8's inspector protocol uses 0-indexed line/column numbers; Haze source locations are
     // 1-indexed (0 means absent), hence the "- 1" below.
     fn callFrameForFrame(frame: Frame): CpuProfileCallFrame {
-        let filename = frame.sourceloc.filename();
-        let line = frame.sourceloc.line();
+        return callFrameForNameAndLoc(frame.name, frame.sourceloc);
+    }
+
+    // Same conversion as callFrameForFrame above, but for sys.StackFrame (the type used by
+    // memoryInstrumentationFrames' stacktraces) -- an unrelated FFI struct that happens to share
+    // the same `name`/`sourceloc` shape, so both funnel through this one implementation.
+    fn callFrameForStackFrame(frame: sys.StackFrame): CpuProfileCallFrame {
+        return callFrameForNameAndLoc(frame.name, frame.sourceloc);
+    }
+
+    fn callFrameForNameAndLoc(name: str, sourceloc: SourceLocation): CpuProfileCallFrame {
+        let filename = sourceloc.filename();
+        let line = sourceloc.line();
         return CpuProfileCallFrame {
-            functionName: frame.name.length > 0 ? frame.name : "(unknown)",
+            functionName: name.length > 0 ? name : "(unknown)",
             scriptId: filename ? "1" : "0",
             url: filename ? filename : "",
             lineNumber: line ? line - 1 : -1,
@@ -254,6 +271,177 @@ namespace profiling {
     export fn writeCpuProfile(result: profiling.ProfilingResult, path: str) {
         return fs.writeText(path, toCpuProfileJson(result));
     }
+
+    // ── Chrome DevTools trace.json export ────────────────────────────────────
+    //
+    // Chrome's "Trace Event Format" (the JSON Array Format DevTools' Performance panel loads) is
+    // a flat array of events. This embeds the very same call tree/samples/timeDeltas already
+    // built by buildCpuProfile above, carried inside the "Profile" + "ProfileChunk" trace events
+    // -- the same synthetic events V8/Chromium itself uses to fit a full CPU profile inside a
+    // trace, so DevTools renders it as the identical flame chart .cpuprofile would give. Plain
+    // structs + json.stringify<T>, exactly like CpuProfile above; each event variant that needs
+    // an "args.data" payload gets its own concrete struct rather than a dynamic map.
+
+    export struct TraceEventMetadataArgs {
+        name: str;
+    }
+
+    export struct TraceEventMetadata {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str;
+        cat: str;
+        name: str;
+        args: TraceEventMetadataArgs;
+    }
+
+    export struct TraceEventProfileArgs {
+        startTime: real;
+    }
+
+    export struct TraceEventProfile {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str;
+        cat: str;
+        name: str;
+        id: str;
+        args: TraceEventProfileArgs;
+    }
+
+    export struct CpuProfileChunk {
+        nodes: []CpuProfileNode;
+        samples: []int;
+        timeDeltas: []int;
+    }
+
+    export struct TraceEventProfileChunkArgs {
+        cpuProfile: CpuProfileChunk;
+    }
+
+    export struct TraceEventProfileChunk {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str;
+        cat: str;
+        name: str;
+        id: str;
+        args: TraceEventProfileChunkArgs;
+    }
+
+    // ── Memory instrumentation: one instant event per allocation ────────────
+    //
+    // Each recorded allocation becomes its own "I" (instant) trace event carrying a full
+    // stack trace in args.data.stackTrace -- the same shape DevTools already renders for its
+    // own instant markers with call stacks (e.g. "Timer Installed", "requestAnimationFrame").
+    // That gets every allocation plotted as a marker on the main thread track, in the same
+    // timeline as the CPU flame chart above, each expandable in the Performance panel to show
+    // exactly where it was allocated. stackTrace is innermost-frame-first, matching V8's own
+    // convention (and how hzstd_stackframe_t is captured -- see hzstd_panic_build_frames).
+
+    export struct TraceEventInstantArgsData {
+        stackTrace: []CpuProfileCallFrame;
+    }
+
+    export struct TraceEventInstantArgs {
+        data: TraceEventInstantArgsData;
+    }
+
+    export struct TraceEventInstant {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str;
+        cat: str;
+        name: str;
+        s: str;
+        args: TraceEventInstantArgs;
+    }
+
+    // stacktrace.frames[0 .. skip_n_frames) are internal hzstd frames (the call into
+    // hzstd_build_stacktrace itself and its callers inside the instrumentation hook) that
+    // were never meant to be user-visible -- skipped here the same way print_frames_to_stderr
+    // and sbuf_frames (hzstd_runtime.c) already do for panic stack traces.
+    fn callFramesForStacktrace(stacktrace: sys.Stacktrace): []CpuProfileCallFrame {
+        let callFrames: []CpuProfileCallFrame = [];
+        for (let i = stacktrace.skip_n_frames; i < stacktrace.frames.length; i++) {
+            callFrames.push(callFrameForStackFrame(stacktrace.frames[i]));
+        }
+        return callFrames;
+    }
+
+    fn buildMemoryInstantEvents(result: profiling.ProfilingResult, pid: int, tid: int): []TraceEventInstant {
+        let events: []TraceEventInstant = [];
+        for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
+            let frame = result.memoryInstrumentationFrames[i];
+            events.push(TraceEventInstant {
+                pid: pid, tid: tid, ts: frame.timestamp * 1000000.0,
+                ph: "I", cat: "devtools.timeline", name: "MemoryAllocation", s: "t",
+                args: TraceEventInstantArgs {
+                    data: TraceEventInstantArgsData { stackTrace: callFramesForStacktrace(frame.stacktrace) },
+                },
+            });
+        }
+        return events;
+    }
+
+    // json.stringify dumps a union purely by runtime `is Variant` match (no discriminator
+    // needed for dump, only for parse), so a heterogeneous JSON Array Format trace -- metadata
+    // events, the Profile event, the ProfileChunk event, the per-allocation instant events, and
+    // whatever event kinds get added later -- can be one flat []TraceEvent serialized in a
+    // single json.stringify<Trace> call, same as CpuProfile above, no manual string-joining
+    // required.
+    export type TraceEvent = TraceEventMetadata | TraceEventProfile | TraceEventProfileChunk | TraceEventInstant;
+
+    export struct Trace {
+        traceEvents: []TraceEvent;
+    }
+
+    // Builds the full Chrome DevTools "trace.json" (JSON Array Format / Trace Event Format)
+    // document. Today this carries exactly what .cpuprofile carries -- the deduplicated call
+    // tree plus the flat sample/timeDelta timeline -- wrapped in the "Profile"/"ProfileChunk"
+    // events DevTools' Performance panel already knows how to render as a full flame chart, with
+    // process/thread metadata events so the track gets a readable name instead of a bare pid/tid.
+    export fn buildTrace(result: profiling.ProfilingResult): Trace {
+        const pid = 1;
+        const tid = 1;
+        let profile = buildCpuProfile(result);
+
+        let traceEvents: []TraceEvent = [
+            TraceEventMetadata { pid: pid, tid: tid, ts: 0.0, ph: "M", cat: "__metadata", name: "process_name", args: TraceEventMetadataArgs { name: "Haze Process" } },
+            TraceEventMetadata { pid: pid, tid: tid, ts: 0.0, ph: "M", cat: "__metadata", name: "thread_name", args: TraceEventMetadataArgs { name: "Haze Main Thread" } },
+            TraceEventProfile {
+                pid: pid, tid: tid, ts: profile.startTime,
+                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "Profile", id: "0x1",
+                args: TraceEventProfileArgs { startTime: profile.startTime },
+            },
+            TraceEventProfileChunk {
+                pid: pid, tid: tid, ts: profile.startTime,
+                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "ProfileChunk", id: "0x1",
+                args: TraceEventProfileChunkArgs {
+                    cpuProfile: CpuProfileChunk { nodes: profile.nodes, samples: profile.samples, timeDeltas: profile.timeDeltas },
+                },
+            },
+        ];
+
+        let memoryEvents = buildMemoryInstantEvents(result, pid, tid);
+        for (let i = 0; i < memoryEvents.length; i++) {
+            traceEvents.push(memoryEvents[i]);
+        }
+
+        return Trace { traceEvents: traceEvents };
+    }
+
+    export fn toTraceJson(result: profiling.ProfilingResult): str {
+        return json.stringify<Trace>(buildTrace(result));
+    }
+
+    export fn writeTraceJson(result: profiling.ProfilingResult, path: str) {
+        return fs.writeText(path, toTraceJson(result));
+    }
 }
 
 // Sampling rate is configurable via the constructor parameter (default 10 kHz):
@@ -290,9 +478,14 @@ export struct Profiler {
         return ffi.hzstd_profiling_end(this.context);
     }
 
-    fn stopAndSave(path: str = "out.cpuprofile") {
+    // Dispatches on `path`'s extension: ".cpuprofile" writes the legacy Chrome DevTools /
+    // V8 CPU profiler format (still just today's cpu-only data), anything else (default
+    // "out.trace.json") writes a Chrome trace -- the format going forward, since it can also
+    // carry whatever the FFI layer starts reporting beyond CPU samples (e.g. memory
+    // instrumentation) that .cpuprofile has no room for.
+    fn stopAndSave(path: str = "trace.json") {
         const result = this.stop();
-        let r = profiling.writeCpuProfile(result, path);
+        let r = path.endsWith(".cpuprofile") ? profiling.writeCpuProfile(result, path) : profiling.writeTraceJson(result, path);
         fmt.println(f"Results were written to {path}");
         return r;
     }

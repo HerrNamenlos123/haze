@@ -136,7 +136,7 @@ static hzstd_arena_chunk_t *hzstd_arena_enlarge(hzstd_arena_chunk_t *last_chunk,
 
 void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
 {
-  assert(size != 0);
+  hzstd_assert(size != 0);
 
   if (hz_profiler_intrument_allocation) {
     hz_profiler_intrument_allocation(hz_profiler_instrument_allocation_type_arena_suballoc,

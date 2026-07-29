@@ -184,5 +184,6 @@ testsuite/.work/
 *.tsk
 
 *.cpuprofile
+*trace.json
 
 *.cache.*
