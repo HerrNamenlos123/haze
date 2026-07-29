@@ -278,9 +278,55 @@ namespace profiling {
     // a flat array of events. This embeds the very same call tree/samples/timeDeltas already
     // built by buildCpuProfile above, carried inside the "Profile" + "ProfileChunk" trace events
     // -- the same synthetic events V8/Chromium itself uses to fit a full CPU profile inside a
-    // trace, so DevTools renders it as the identical flame chart .cpuprofile would give. Plain
-    // structs + json.stringify<T>, exactly like CpuProfile above; each event variant that needs
-    // an "args.data" payload gets its own concrete struct rather than a dynamic map.
+    // trace, so DevTools renders it as the identical flame chart .cpuprofile would give.
+    //
+    // The exact shape below was reverse-engineered from a real Chrome-recorded trace (not just
+    // the informal docs), because it differs from the plain .cpuprofile shape in several load-
+    // bearing ways DevTools silently refuses to render without:
+    //   - args.data wraps startTime/cpuProfile/source (not args directly).
+    //   - cpuProfile.timeDeltas is NOT nested in cpuProfile -- it's a sibling of cpuProfile
+    //     under args.data.
+    //   - Nodes use a single `parent` id (omitted for the root), not a `children` list, and have
+    //     no `hitCount`.
+    //   - callFrame.scriptId is a JSON number, not a string, and url/lineNumber/columnNumber are
+    //     omitted entirely (not "" / -1) when there's no source location -- ints/strs typed
+    //     `T | none` dump as an omitted key rather than a null/placeholder, see
+    //     json.dumpJsonStruct's `if node { add-to-object }` skip.
+    //   - A real CPU profile is streamed as many small ProfileChunk events over time (one per
+    //     batch of samples as they're captured), not one giant chunk at the end; chunks after
+    //     the first only carry `samples`, no `nodes` (the call tree is already fully known by
+    //     then). This is why buildTraceProfileChunks below re-chunks buildCpuProfile's output
+    //     instead of emitting it as a single chunk.
+
+    export struct TraceCallFrame {
+        functionName: str;
+        codeType: str;
+        scriptId: int;
+        url?: str;
+        lineNumber?: int;
+        columnNumber?: int;
+    }
+
+    export struct TraceProfileNode {
+        id: int;
+        callFrame: TraceCallFrame;
+        parent?: int;
+    }
+
+    // V8's inspector protocol uses 0-indexed line/column numbers; Haze source locations are
+    // 1-indexed (0 means absent), hence the "- 1" below.
+    fn traceCallFrameForNameAndLoc(name: str, sourceloc: SourceLocation): TraceCallFrame {
+        let filename = sourceloc.filename();
+        let line = sourceloc.line();
+        return TraceCallFrame {
+            functionName: name.length > 0 ? name : "(unknown)",
+            codeType: filename ? "JS" : "other",
+            scriptId: filename ? 1 : 0,
+            url: filename,
+            lineNumber: line ? line - 1 : none,
+            columnNumber: filename ? 0 : none,
+        };
+    }
 
     export struct TraceEventMetadataArgs {
         name: str;
@@ -296,8 +342,30 @@ namespace profiling {
         args: TraceEventMetadataArgs;
     }
 
-    export struct TraceEventProfileArgs {
+    // A plain complete ("X") duration event with no args -- e.g. Chrome's own "RunTask". Real
+    // traces never leave the CPU-profiled thread bare between a Profile/ProfileChunk stream and
+    // an otherwise-empty track: it's packed with dozens of these. DevTools' flame chart for the
+    // sampled call tree renders as an overlay *within* such task blocks on that thread, not as
+    // its own self-sufficient lane -- a thread with zero "X" events was observed to never show
+    // a flame chart no matter how correct the Profile/ProfileChunk payload itself was. One
+    // event spanning the whole profiled duration gives it a block to render against.
+    export struct TraceEventComplete {
+        pid: int;
+        tid: int;
+        ts: real;
+        dur: real;
+        ph: str;
+        cat: str;
+        name: str;
+    }
+
+    export struct TraceEventProfileArgsData {
         startTime: real;
+        source: str;
+    }
+
+    export struct TraceEventProfileArgs {
+        data: TraceEventProfileArgsData;
     }
 
     export struct TraceEventProfile {
@@ -311,14 +379,19 @@ namespace profiling {
         args: TraceEventProfileArgs;
     }
 
-    export struct CpuProfileChunk {
-        nodes: []CpuProfileNode;
+    export struct TraceCpuProfileChunk {
+        nodes?: []TraceProfileNode;
         samples: []int;
+    }
+
+    export struct TraceEventProfileChunkArgsData {
+        cpuProfile: TraceCpuProfileChunk;
         timeDeltas: []int;
+        source: str;
     }
 
     export struct TraceEventProfileChunkArgs {
-        cpuProfile: CpuProfileChunk;
+        data: TraceEventProfileChunkArgsData;
     }
 
     export struct TraceEventProfileChunk {
@@ -332,18 +405,93 @@ namespace profiling {
         args: TraceEventProfileChunkArgs;
     }
 
+    // Real Chrome traces spread the samples of one profile over many ProfileChunk events (~100
+    // samples each) instead of one giant chunk; the node list only needs to appear once, on the
+    // first chunk, since node ids are stable/global for the whole profile. Mirroring that here
+    // rather than emitting a single chunk, since a single all-at-once chunk was observed not to
+    // render in DevTools.
+    const chunkSampleCount = 100;
+
+    fn buildTraceProfileChunks(profile: CpuProfile, pid: int, tid: int, id: str): []TraceEventProfileChunk {
+        let traceNodes: []TraceProfileNode = [];
+        for (let i = 0; i < profile.nodes.length; i++) {
+            let node = profile.nodes[i];
+            traceNodes.push(TraceProfileNode {
+                id: node.id,
+                callFrame: TraceCallFrame {
+                    functionName: node.callFrame.functionName,
+                    codeType: node.callFrame.url.length > 0 ? "JS" : "other",
+                    scriptId: node.callFrame.url.length > 0 ? 1 : 0,
+                    url: node.callFrame.url.length > 0 ? node.callFrame.url : none,
+                    lineNumber: node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber : none,
+                    columnNumber: node.callFrame.columnNumber >= 0 ? node.callFrame.columnNumber : none,
+                },
+                parent: none,
+            });
+        }
+        // node.children walks parent -> children; invert it into child -> parent, the shape the
+        // trace format wants, once, over the already-deduplicated node list above.
+        for (let i = 0; i < profile.nodes.length; i++) {
+            let node = profile.nodes[i];
+            for (let c = 0; c < node.children.length; c++) {
+                let childId = node.children[c];
+                traceNodes[childId - 1].parent = node.id;
+            }
+        }
+
+        let chunks: []TraceEventProfileChunk = [];
+        let offset = 0;
+        // Real Chrome ProfileChunk events are timestamped at roughly when each batch was
+        // flushed -- each chunk's ts is well after the previous one's, spanning the whole
+        // profile duration, never all identical. Every chunk sharing profile.startTime (as an
+        // earlier version of this did) doesn't match that, so ts is advanced here by the sum
+        // of each chunk's own timeDeltas as it's built.
+        let chunkTs = profile.startTime;
+        while offset < profile.samples.length {
+            let count = profile.samples.length - offset < chunkSampleCount ? profile.samples.length - offset : chunkSampleCount;
+            let chunkSamples: []int = [];
+            let chunkDeltas: []int = [];
+            for (let i = offset; i < offset + count; i++) {
+                chunkSamples.push(profile.samples[i]);
+                chunkDeltas.push(profile.timeDeltas[i]);
+            }
+
+            chunks.push(TraceEventProfileChunk {
+                pid: pid, tid: tid, ts: chunkTs,
+                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "ProfileChunk", id: id,
+                args: TraceEventProfileChunkArgs {
+                    data: TraceEventProfileChunkArgsData {
+                        cpuProfile: TraceCpuProfileChunk {
+                            nodes: offset == 0 ? traceNodes : none,
+                            samples: chunkSamples,
+                        },
+                        timeDeltas: chunkDeltas,
+                        source: "Internal",
+                    },
+                },
+            });
+
+            for (let i = 0; i < chunkDeltas.length; i++) {
+                chunkTs += chunkDeltas[i] as real;
+            }
+            offset += count;
+        }
+        return chunks;
+    }
+
     // ── Memory instrumentation: one instant event per allocation ────────────
     //
     // Each recorded allocation becomes its own "I" (instant) trace event carrying a full
-    // stack trace in args.data.stackTrace -- the same shape DevTools already renders for its
-    // own instant markers with call stacks (e.g. "Timer Installed", "requestAnimationFrame").
-    // That gets every allocation plotted as a marker on the main thread track, in the same
-    // timeline as the CPU flame chart above, each expandable in the Performance panel to show
-    // exactly where it was allocated. stackTrace is innermost-frame-first, matching V8's own
-    // convention (and how hzstd_stackframe_t is captured -- see hzstd_panic_build_frames).
+    // stack trace in args.data.stackTrace -- the same shape a real Chrome-recorded TimerInstall
+    // event uses (see the reverse-engineering note above), which is what gives it DevTools'
+    // native clickable "Call Stack" panel instead of a raw args JSON dump. That gets every
+    // allocation plotted as a marker in the same timeline as the CPU flame chart above, each
+    // expandable in the Performance panel to show exactly where it was allocated. stackTrace is
+    // innermost-frame-first, matching V8's own convention (and how hzstd_stackframe_t is
+    // captured -- see hzstd_panic_build_frames).
 
     export struct TraceEventInstantArgsData {
-        stackTrace: []CpuProfileCallFrame;
+        stackTrace: []TraceCallFrame;
     }
 
     export struct TraceEventInstantArgs {
@@ -365,10 +513,11 @@ namespace profiling {
     // hzstd_build_stacktrace itself and its callers inside the instrumentation hook) that
     // were never meant to be user-visible -- skipped here the same way print_frames_to_stderr
     // and sbuf_frames (hzstd_runtime.c) already do for panic stack traces.
-    fn callFramesForStacktrace(stacktrace: sys.Stacktrace): []CpuProfileCallFrame {
-        let callFrames: []CpuProfileCallFrame = [];
+    fn traceCallFramesForStacktrace(stacktrace: sys.Stacktrace): []TraceCallFrame {
+        let callFrames: []TraceCallFrame = [];
         for (let i = stacktrace.skip_n_frames; i < stacktrace.frames.length; i++) {
-            callFrames.push(callFrameForStackFrame(stacktrace.frames[i]));
+            let frame = stacktrace.frames[i];
+            callFrames.push(traceCallFrameForNameAndLoc(frame.name, frame.sourceloc));
         }
         return callFrames;
     }
@@ -381,7 +530,7 @@ namespace profiling {
                 pid: pid, tid: tid, ts: frame.timestamp * 1000000.0,
                 ph: "I", cat: "devtools.timeline", name: "MemoryAllocation", s: "t",
                 args: TraceEventInstantArgs {
-                    data: TraceEventInstantArgsData { stackTrace: callFramesForStacktrace(frame.stacktrace) },
+                    data: TraceEventInstantArgsData { stackTrace: traceCallFramesForStacktrace(frame.stacktrace) },
                 },
             });
         }
@@ -396,7 +545,21 @@ namespace profiling {
     // required.
     export type TraceEvent = TraceEventMetadata | TraceEventProfile | TraceEventProfileChunk | TraceEventInstant;
 
+    // A real "Save trace" export from DevTools' modern Performance panel (as opposed to the
+    // legacy "Save profile") is NOT just a bare traceEvents array -- it's wrapped in a
+    // top-level object with a sibling "metadata" key. `dataOrigin: "TraceEvents"` is what tells
+    // DevTools to hand the file to its modern trace-processing engine (the one that actually
+    // knows how to associate a Profile/ProfileChunk stream with a renderer thread and draw a
+    // flame chart) instead of some other/legacy import path -- a bare traceEvents array with no
+    // such wrapper was observed to load (no parse error) but never actually render the CPU
+    // profile, which is what led to finding this.
+    export struct TraceMetadata {
+        source: str;
+        dataOrigin: str;
+    }
+
     export struct Trace {
+        metadata: TraceMetadata;
         traceEvents: []TraceEvent;
     }
 
@@ -405,34 +568,52 @@ namespace profiling {
     // tree plus the flat sample/timeDelta timeline -- wrapped in the "Profile"/"ProfileChunk"
     // events DevTools' Performance panel already knows how to render as a full flame chart, with
     // process/thread metadata events so the track gets a readable name instead of a bare pid/tid.
+    // pid/tid layout mirrors real Chrome traces (one process, several purpose-specific
+    // threads/tracks within it) and leaves room to grow -- e.g. a future second Haze process
+    // (worker/subprocess) would get pid 2 rather than requiring these ids to be renumbered.
+    const hazeProcessPid = 1;
+    const mainThreadTid = 1; // owns the "Profile" event, like Chrome's CrRendererMain
+    const profilerEventThreadTid = 2; // owns the "ProfileChunk" stream, like Chrome's v8:ProfEvntProc
+    const heapAllocationsTid = 3;
+
     export fn buildTrace(result: profiling.ProfilingResult): Trace {
-        const pid = 1;
-        const tid = 1;
         let profile = buildCpuProfile(result);
+        const profileId = "0x1";
 
         let traceEvents: []TraceEvent = [
-            TraceEventMetadata { pid: pid, tid: tid, ts: 0.0, ph: "M", cat: "__metadata", name: "process_name", args: TraceEventMetadataArgs { name: "Haze Process" } },
-            TraceEventMetadata { pid: pid, tid: tid, ts: 0.0, ph: "M", cat: "__metadata", name: "thread_name", args: TraceEventMetadataArgs { name: "Haze Main Thread" } },
+            // DevTools' modern trace engine classifies processes/threads by these exact
+            // reserved name strings (confirmed against a real Chrome-recorded trace) to decide
+            // which ones are even eligible for JS-profile/flame-chart rendering -- an
+            // arbitrary process_name like "Haze Process" was silently treated as a generic,
+            // non-renderer process, which is why the flame chart never appeared even once the
+            // Profile/ProfileChunk byte shape itself was already correct. "Renderer" +
+            // "CrRendererMain" + "v8:ProfEvntProc" are exactly what a real Chrome renderer
+            // process/its main thread/its profiler event thread are named.
+            TraceEventMetadata { pid: hazeProcessPid, tid: mainThreadTid, ts: 0.0, ph: "M", cat: "__metadata", name: "process_name", args: TraceEventMetadataArgs { name: "Renderer" } },
+            TraceEventMetadata { pid: hazeProcessPid, tid: mainThreadTid, ts: 0.0, ph: "M", cat: "__metadata", name: "thread_name", args: TraceEventMetadataArgs { name: "CrRendererMain" } },
+            TraceEventMetadata { pid: hazeProcessPid, tid: profilerEventThreadTid, ts: 0.0, ph: "M", cat: "__metadata", name: "thread_name", args: TraceEventMetadataArgs { name: "v8:ProfEvntProc" } },
+            TraceEventMetadata { pid: hazeProcessPid, tid: heapAllocationsTid, ts: 0.0, ph: "M", cat: "__metadata", name: "thread_name", args: TraceEventMetadataArgs { name: "Heap Allocations" } },
             TraceEventProfile {
-                pid: pid, tid: tid, ts: profile.startTime,
-                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "Profile", id: "0x1",
-                args: TraceEventProfileArgs { startTime: profile.startTime },
-            },
-            TraceEventProfileChunk {
-                pid: pid, tid: tid, ts: profile.startTime,
-                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "ProfileChunk", id: "0x1",
-                args: TraceEventProfileChunkArgs {
-                    cpuProfile: CpuProfileChunk { nodes: profile.nodes, samples: profile.samples, timeDeltas: profile.timeDeltas },
-                },
+                pid: hazeProcessPid, tid: mainThreadTid, ts: profile.startTime,
+                ph: "P", cat: "disabled-by-default-v8.cpu_profiler", name: "Profile", id: profileId,
+                args: TraceEventProfileArgs { data: TraceEventProfileArgsData { startTime: profile.startTime, source: "Internal" } },
             },
         ];
 
-        let memoryEvents = buildMemoryInstantEvents(result, pid, tid);
+        let chunks = buildTraceProfileChunks(profile, hazeProcessPid, profilerEventThreadTid, profileId);
+        for (let i = 0; i < chunks.length; i++) {
+            traceEvents.push(chunks[i]);
+        }
+
+        let memoryEvents = buildMemoryInstantEvents(result, hazeProcessPid, heapAllocationsTid);
         for (let i = 0; i < memoryEvents.length; i++) {
             traceEvents.push(memoryEvents[i]);
         }
 
-        return Trace { traceEvents: traceEvents };
+        return Trace {
+            metadata: TraceMetadata { source: "Haze", dataOrigin: "TraceEvents" },
+            traceEvents: traceEvents,
+        };
     }
 
     export fn toTraceJson(result: profiling.ProfilingResult): str {

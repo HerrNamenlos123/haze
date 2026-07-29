@@ -362,7 +362,7 @@ static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
     };
   }
 
-  HZSTD_DYNAMIC_ARRAY_PUSH(context->memoryInstrumentationFrames, frame);
+  HZSTD_DYNAMIC_ARRAY_PUSH(context->memoryInstrumentationFrames, *frame);
 
   hzstd_temporarily_reenable_memory_instrumentation(prevMemoryState);
 }
