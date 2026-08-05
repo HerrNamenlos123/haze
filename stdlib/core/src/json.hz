@@ -451,10 +451,13 @@ namespace json {
                 // Now loop over all variants at compile time, and if any of the variants actually exist, return it.
                 // `none` is excluded here: by the time we have a real node, the value is present, and `none`
                 // (undefined/absent) can only ever come from a missing key, which is handled upstream.
-                // TODO: This should be a comptime fixed array with length T.variants.length, but
-                // currently we don't have a way to initialize the array at comptime depending on N:
-                const comptime N = T.variants.length;
-                let attemptErrors = createStaticArray<() => str, N>(() => "");
+                // At most one error-producing closure per union variant is ever recorded (usually fewer, since
+                // the loop returns immediately on the first success), so T.variants.length is a real, comptime
+                // upper bound: a fixed-size array of exactly that capacity, with a separate fill count, avoids
+                // any heap allocation here (unlike a dynamic array's .push).
+                const comptime errorCapacity = T.variants.length;
+                let attemptErrors = createStaticArray<() => str, errorCapacity>(() => "");
+                let errorCount = 0;
                 for comptime Variant in T.variants {
                     if comptime Variant is not none {
                         // Node is this type, return it
@@ -467,30 +470,25 @@ namespace json {
                             return Result<T, Error>.Ok(attemptResult);
                         }
                         else {
-                            if !attemptErrors {
-                                attemptErrors = [];
-                            }
-                            assert(attemptErrors);
-                            attemptErrors.push(() => {
+                            attemptErrors[errorCount] = () => {
                                 return f"{variantName}: {attemptResult.error()}";
-                            });
+                            };
+                            errorCount = errorCount + 1;
                         }
                     }
                 }
 
-                return Error { 
+                return Error {
                     error: () => {
                         let combinedErrors = "";
-                        if attemptErrors {
-                            for attemptError, i in attemptErrors {
-                                if i > 0 {
-                                    combinedErrors = combinedErrors + "; ";
-                                }
-                                combinedErrors = combinedErrors + attemptError;
+                        for (let i = 0; i < errorCount; i = i + 1) {
+                            if i > 0 {
+                                combinedErrors = combinedErrors + "; ";
                             }
+                            combinedErrors = combinedErrors + attemptErrors[i]();
                         }
                         return f"JSON type mismatch: Expected type {T.prettyName}, received no matching value ({combinedErrors})";
-                    } 
+                    }
                 };
             }
         }

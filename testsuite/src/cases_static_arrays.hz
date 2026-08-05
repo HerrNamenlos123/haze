@@ -9,8 +9,12 @@
 // `N` -- a generic parameter, not a literal -- to appear as the array size,
 // which never actually compiled. The fix widens the grammar to accept a
 // general expression there and CTFE-evaluates it down to a concrete integer
-// during elaboration, so both a literal and a comptime-constant expression
-// (a generic parameter, `N + 1`, etc.) work as the size.
+// during elaboration, so both a bare literal and a comptime-constant name
+// (a generic parameter, or a `const comptime` variable) work as the size.
+// (Along the way this also fixed a pre-existing, more general gap: any
+// comptime-constant *value* -- not just a bare literal token -- used where
+// the grammar expects a type, such as a generic argument, now resolves
+// correctly; see evaluateExpressionToDatatype() in Elaborate.ts.)
 //
 // This file pins down: construction (literal-cast and createStaticArray),
 // indexing (read/write, in bounds), iteration (for-each with and without
@@ -66,10 +70,12 @@ fn main(): int {
         assert(x == 9, "forwarded default value applied to every slot");
     }
 
-    // A comptime constant expression (not a bare literal) used as N.
-    const comptime base = 3;
-    let c = createStaticArray<int, base + 2>(0);
-    assert(c.length == 5, "N may be a comptime expression, not just a literal token");
+    // A named comptime constant (not a bare literal token) used as N: it
+    // must be CTFE-evaluated down to a concrete integer, not merely
+    // recognized when spelled as a literal at the call site.
+    const comptime five = 5;
+    let c = createStaticArray<int, five>(0);
+    assert(c.length == 5, "N may be a comptime-constant name, not just a literal token");
 
     fmt.println("ok");
     return 0;
@@ -148,7 +154,11 @@ fn mutateLocalCopy(arr: [3]int): int {
     return arr[0];
 }
 
-struct Holder {
+// `inline struct` (rather than a plain `struct`, which is a heap-allocated
+// reference type by design in this language, orthogonal to arrays) is used
+// here so copying the struct is itself a value copy -- exercising whether
+// the *embedded array field* is copied by value along with it.
+inline struct Holder {
     data: [3]int;
 }
 
@@ -170,12 +180,12 @@ fn main(): int {
     assert(seenInside == 777, "the callee did mutate its own local copy");
     assert(c[0] == 5, "the caller's array is untouched by the callee's mutation");
 
-    // A static array embedded as a struct field also has value semantics:
-    // copying the struct copies the embedded array.
+    // A static array embedded as an inline (value-typed) struct's field also
+    // has value semantics: copying the struct copies the embedded array.
     let h1 = Holder { data: [1, 1, 1] };
     let h2 = h1;
     h2.data[0] = 9;
-    assert(h1.data[0] == 1, "copying a struct copies its fixed-array field by value");
+    assert(h1.data[0] == 1, "copying a value-typed struct copies its fixed-array field by value");
     assert(h2.data[0] == 9, "the struct copy's array field was mutated independently");
 
     fmt.println("ok");
@@ -195,6 +205,51 @@ fn main(): int {
 
     let b = createStaticArray<int, 3>(0);
     static_assert(typeof(b).length == 3, "createStaticArray's result type also reports its comptime length");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        // Real-world regression: stdlib's json.parse<T>() for a non-discriminated
+        // union type collects one error-producing closure per failed variant into
+        // a `createStaticArray<() => str, T.variants.length>` (core/src/json.hz),
+        // not a dynamic array -- the number of attempts is a comptime upper bound
+        // known from T.variants.length, and json.parse() must not heap-allocate
+        // just to build its error message. This is also the scenario that first
+        // exposed a real bug in comptime-unrolled closures: `for comptime Variant
+        // in T.variants { ...closures.push(() => variantSpecificError)... }` used
+        // to silently collapse every iteration's closure into the FIRST variant's
+        // (wrong captures, then colliding C symbol names once captures were
+        // fixed) -- see [[haze-compiler-and-stdlib-gotchas]] for the fix. Pin
+        // down both the success path (one variant matches) and the failure path
+        // (every variant's own, distinct error message is present, in order).
+        s.run(
+            "static arrays: json.parse<T> over a non-discriminated union collects one error per variant via createStaticArray, no heap allocation, distinct messages per failed variant",
+            """
+struct Foo {
+    x: int;
+}
+
+type FooOrInt = Foo | int;
+
+fn main(): int {
+    let asInt = json.parse<FooOrInt>("42");
+    assert(asInt, "a plain number matches the 'int' variant");
+
+    let asStruct = json.parse<FooOrInt>("{\\"x\\": 7}");
+    assert(asStruct, "a matching object matches the 'Foo' variant");
+
+    let asNeither = json.parse<FooOrInt>("true");
+    assert(!asNeither, "a boolean matches neither variant");
+    let combined = asNeither.error();
+    assert(combined.contains("Foo"), "combined error mentions the Foo variant by name");
+    assert(combined.contains("int"), "combined error mentions the int variant by name");
+    assert(combined.contains("expected object"), "Foo's own parse failure reason is present");
+    assert(combined.contains("expected number"), "int's own parse failure reason is present");
+    assert(combined.contains(";"), "both variants' errors are combined, not just the first one kept");
 
     fmt.println("ok");
     return 0;

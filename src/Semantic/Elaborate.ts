@@ -5415,7 +5415,8 @@ export class SemanticElaborator {
     functionSignatureId: Semantic.SymbolId,
     parentSymbolId: Semantic.SymbolId | null,
     paramPackTypes: Semantic.TypeUseId[],
-    env: Semantic.EnvBlockType
+    env: Semantic.EnvBlockType,
+    args?: { bypassCache?: boolean }
   ): Semantic.SymbolId {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -5451,15 +5452,13 @@ export class SemanticElaborator {
           return substitute;
         });
 
-        const existing = getFromFuncDefCache(
-          this.sr,
-          functionSignature.originalFunction,
-          {
-            genericArgs: genericArgs,
-            paramPackTypes: paramPackTypes,
-            parentSymbolId: parentSymbolId,
-          }
-        );
+        const existing = args?.bypassCache
+          ? undefined
+          : getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
+              genericArgs: genericArgs,
+              paramPackTypes: paramPackTypes,
+              parentSymbolId: parentSymbolId,
+            });
         if (existing) {
           return existing;
         }
@@ -5497,7 +5496,18 @@ export class SemanticElaborator {
             parameterNames: func.parameters.map((p) => p.name),
             methodRequiredMutability: func.methodRequiredMutability,
             returnedDatatypes: new Set(),
-            name: func.name,
+            // A lambda literal is collected (and named) exactly once at its
+            // source location, but with bypassCache set it may be elaborated
+            // many times from that same Collect symbol -- e.g. once per
+            // iteration of a `for comptime` unrolled loop, each capturing a
+            // different outer variable. Two such closures would otherwise
+            // mangle to the identical C symbol name (their declared
+            // parameter list is the same; captures aren't part of the name),
+            // producing "redefinition"/"conflicting types" errors from the C
+            // compiler. Suffix with a fresh id per real elaboration so every
+            // instance gets its own name; named functions (which rely on the
+            // cache and never hit this branch) are unaffected.
+            name: args?.bypassCache ? `${func.name}_${makeTempId()}` : func.name,
             sourceloc: func.sourceloc,
             createsInstanceIds: new Set(),
             returnStatements: new Set(),
@@ -5521,6 +5531,12 @@ export class SemanticElaborator {
           }
         }
 
+        // This insert must happen even when bypassCache is set: nested scopes
+        // elaborated below (the closure body) look their own parent function
+        // back up through this same cache via elaborateParentSymbolFromCache().
+        // bypassCache only suppresses the early-return *read* above, so a
+        // lambda always gets a fresh symbolId here -- it does not skip
+        // publishing that fresh symbolId for the nested lookup to find.
         insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
           genericArgs: genericArgs,
           paramPackTypes: paramPackTypes,
@@ -6296,15 +6312,27 @@ export class SemanticElaborator {
       }
     }
 
-    // Exception: For "none" and "null" literals, since they are both values and types at the same time
-    // (unlike all other primitive types), there is a special case that reinterprets the literal as a type
-    // if required, because none and null types are also parsed as conventional symbol value expressions.
     if (expr.variant === Semantic.ENode.LiteralExpr) {
+      // Exception: For "none" and "null" literals, since they are both values and types at the same time
+      // (unlike all other primitive types), there is a special case that reinterprets the literal as a type
+      // if required, because none and null types are also parsed as conventional symbol value expressions.
       if (
         expr.literal.type === EPrimitive.null ||
         expr.literal.type === EPrimitive.none
       ) {
         return this.sr.b.primitiveType(expr.literal.type, expr.sourceloc);
+      }
+
+      // Any other literal (an integer, a bool, a string, ...) reinterpreted as
+      // a "literal type" -- this is what makes a value usable in a type-only
+      // syntactic position, e.g. a comptime-constant integer forwarded as a
+      // generic argument (`createStaticArray<int, N>` where `N` is `const
+      // comptime N = 4;`), or as the element count in `[N]T`. literalType()
+      // asserts on enum literals (not supported as literal types yet), so
+      // fall through to the generic error below for those instead of
+      // crashing.
+      if (expr.literal.type !== "enum") {
+        return this.sr.b.literalType(expr.literal, expr.sourceloc);
       }
     }
 
@@ -7735,7 +7763,18 @@ export class SemanticElaborator {
       const entries = this.sr.elaboratedFuncdefSymbols.get(
         parentScope.owningSymbol
       );
-      for (const cache of entries || []) {
+      // Search most-recently-inserted first: a lambda created fresh on each
+      // iteration of a `for comptime` unrolled loop shares its cache key
+      // (originalFunction/genericArgs/paramPackTypes) with every other
+      // iteration's lambda at the same source location, so several entries
+      // can legitimately coexist here. This lookup only ever runs while a
+      // function's own body is being elaborated (looking up its own parent),
+      // and that function's entry was just inserted immediately before body
+      // elaboration began -- so the newest matching entry is always the
+      // right one; an older entry with the same key belongs to an earlier
+      // iteration's already-finished closure.
+      for (let i = (entries || []).length - 1; i >= 0; i--) {
+        const cache = entries![i];
         if (
           cache.canonicalizedGenerics.length === funcGenericArgs.length &&
           cache.canonicalizedGenerics.every(
@@ -7770,7 +7809,10 @@ export class SemanticElaborator {
       const entries = this.sr.elaboratedFuncdefSymbols.get(
         parentScope.owningSymbol
       );
-      for (const cache of entries || []) {
+      // Search most-recently-inserted first -- see the identical comment in
+      // the FunctionScope branch above for why.
+      for (let i = (entries || []).length - 1; i >= 0; i--) {
+        const cache = entries![i];
         if (
           cache.canonicalizedGenerics.length === funcGenericArgs.length &&
           cache.canonicalizedGenerics.every(
@@ -14716,11 +14758,26 @@ export class SemanticElaborator {
       callableExprId
     );
 
+    // bypassCache: the func-def cache is keyed by (originalFunction, genericArgs,
+    // paramPackTypes, parentSymbolId) -- none of which vary between two lambda
+    // literals at the very same source location with the very same (empty)
+    // generics, e.g. a closure created fresh on each iteration of a `for
+    // comptime` unrolled loop. Without bypassing it here, the second and later
+    // iterations would silently reuse the FIRST iteration's already-elaborated
+    // closure -- including its capture list -- even though each iteration's
+    // closure captures a distinct outer variable (a fresh per-iteration `let`).
+    // Concretely this used to produce a closure function with zero parameters
+    // that referenced a captured variable as a bare (uncaptured, out-of-scope)
+    // identifier in the generated C. Named function generic instantiation
+    // (elaborateFunctionSymbolWithGenerics) legitimately wants this cache;
+    // lambdas, which are always elaborated fresh per call to callableExpr(),
+    // must not participate in it.
     const elaboratedFunctionId = this.elaborateFunctionSymbol(
       functionSignatureId,
       functionSignature.parentSymbolId,
       [],
-      envType
+      envType,
+      { bypassCache: true }
     );
     const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
     assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
