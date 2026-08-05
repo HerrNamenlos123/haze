@@ -809,7 +809,11 @@ export namespace Collect {
   export type StackArrayTypeDefinitionExpr = {
     variant: ENode.StackArrayTypeDefinitionExpr;
     datatype: Collect.ExprId;
-    length: bigint;
+    // A general expression rather than a resolved bigint: it may reference a
+    // generic parameter or be a comptime-constant expression, and is only
+    // CTFE-evaluated to a concrete length once elaborated (see
+    // elaborateDatatype's StackArrayTypeDefinitionExpr case).
+    length: Collect.ExprId;
     inline: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
@@ -3163,7 +3167,9 @@ function collectExpr(
         datatype: collectExpr(cc, item.type, {
           currentParentScope: args.currentParentScope,
         }),
-        length: item.arraySize,
+        length: collectExpr(cc, item.arraySize, {
+          currentParentScope: args.currentParentScope,
+        }),
         inline: false,
         mutability: EDatatypeMutability.Default,
         sourceloc: item.sourceloc,
@@ -3564,7 +3570,10 @@ export function printCollectedDatatype(
     // }
 
     case Collect.ENode.StackArrayTypeDefinitionExpr: {
-      return `[${type.length}]${printCollectedDatatype(cc, type.datatype)}`;
+      // type.length is a general expression (may reference a generic
+      // parameter), not a literal, so there's nothing more specific than its
+      // expr id to print here without a full expr-printer.
+      return `[<expr ${type.length}>]${printCollectedDatatype(cc, type.datatype)}`;
     }
 
     case Collect.ENode.DynamicArrayTypeDefinitionExpr: {

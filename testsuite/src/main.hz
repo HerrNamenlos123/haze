@@ -40,6 +40,7 @@ fn main(): int {
     cases_deferred_method_crash.register(suite);
     cases_reactive.register(suite);
     cases_foreach_reactive.register(suite);
+    cases_static_arrays.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -350,21 +350,33 @@ export function EvalCTFENumericValue(
     );
   }
   const [result] = r.value;
+
+  // A generic parameter bound to an integer (e.g. `N` in `createStaticArray<T, N>`
+  // called as `createStaticArray<int, 4>`) round-trips through the type system as a
+  // literal *type* (DatatypeAsValueExpr wrapping a LiteralDatatype), not a plain
+  // LiteralExpr -- generic arguments are always types, even when they represent a
+  // value. Unwrap that shape the same way EvalCTFEBoolean already does for booleans.
+  if (result.variant === Semantic.ENode.DatatypeAsValueExpr) {
+    const typeUse = sr.typeUseNodes.get(result.type);
+    const typeDef = sr.typeDefNodes.get(typeUse.type);
+    if (typeDef.variant === Semantic.ENode.LiteralDatatype) {
+      const integerValue = getLiteralIntegerValue(typeDef.literalValue);
+      if (integerValue) {
+        return integerValue[0];
+      }
+    }
+    throw new CompilerError(
+      "This value cannot be evaluated as an integer",
+      result.sourceloc,
+      HazeErrorCode.ThisValueCannotBeEvaluatedAsInteger
+    );
+  }
+
   assert(result.variant === Semantic.ENode.LiteralExpr);
 
-  if (
-    result.literal.type === EPrimitive.u8 ||
-    result.literal.type === EPrimitive.u16 ||
-    result.literal.type === EPrimitive.u32 ||
-    result.literal.type === EPrimitive.u64 ||
-    result.literal.type === EPrimitive.usize ||
-    result.literal.type === EPrimitive.i8 ||
-    result.literal.type === EPrimitive.i16 ||
-    result.literal.type === EPrimitive.i32 ||
-    result.literal.type === EPrimitive.i64 ||
-    result.literal.type === EPrimitive.int
-  ) {
-    return result.literal.value;
+  const integerValue = getLiteralIntegerValue(result.literal);
+  if (integerValue) {
+    return integerValue[0];
   }
   throw new CompilerError(
     "This value cannot be evaluated as an integer",

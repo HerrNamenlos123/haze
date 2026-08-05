@@ -978,19 +978,25 @@ class ASTBuilder extends HazeParserListener {
       ctx.typeExprModified() &&
       !ctx.LB()
     ) {
-      if (produced.length !== 1) {
-        throw new InternalError("TypeExprModified array stack mismatch");
-      }
-
-      const inner = produced[0] as ASTExpr;
       if (ctx._n) {
+        if (produced.length !== 2) {
+          throw new InternalError("TypeExprModified array stack mismatch");
+        }
+
+        const arraySize = produced[0] as ASTExpr;
+        const inner = produced[1] as ASTExpr;
         this.stack.push({
           variant: "StaticArrayTypeExpr",
           type: inner,
-          arraySize: this.integerFromDecimalOrHex(ctx),
+          arraySize: arraySize,
           sourceloc: this.loc(ctx),
         } satisfies ASTStaticArrayTypeExpr);
       } else {
+        if (produced.length !== 1) {
+          throw new InternalError("TypeExprModified array stack mismatch");
+        }
+
+        const inner = produced[0] as ASTExpr;
         this.stack.push({
           variant: "DynamicArrayTypeExpr",
           type: inner,
@@ -3177,28 +3183,6 @@ class ASTBuilder extends HazeParserListener {
 
     this.stack.push(node);
   };
-
-  integerFromDecimalOrHex(ctx: {
-    INTEGER_LITERAL: () => TerminalNode | null;
-    HEX_INTEGER_LITERAL: () => TerminalNode | null;
-  }) {
-    let value = 0n;
-    if (ctx.INTEGER_LITERAL()) {
-      const number = ctx.INTEGER_LITERAL()!.getText();
-      value = BigInt(number);
-      // Make sure the value is 100% correct
-      assert(value.toString() === number);
-    } else if (ctx.HEX_INTEGER_LITERAL()) {
-      const number = ctx.HEX_INTEGER_LITERAL()!.getText();
-      value = BigInt(number);
-      // Make sure the value is 100% correct
-      const normalized = number.toLowerCase();
-      assert(value.toString(16) === normalized.slice(2));
-    } else {
-      assert(false);
-    }
-    return value;
-  }
 
   exitRegexLiteral = (ctx: RegexLiteralContext) => {
     const start = this.getMark(ctx);

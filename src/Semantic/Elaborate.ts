@@ -6498,10 +6498,48 @@ export class SemanticElaborator {
       // =================================================================================================================
 
       case Collect.ENode.StackArrayTypeDefinitionExpr: {
+        // The size is a general expression -- typically a literal, but it
+        // may also reference a generic parameter (`N`) or be a
+        // comptime-constant expression (`N + 1`) -- so elaborate it as a
+        // value first and then CTFE-evaluate it down to a concrete integer,
+        // the same way any other comptime-constant expression is resolved.
+        const lengthExprId = this.expr(type.length, undefined)[1];
+        const lengthExpr = this.sr.exprNodes.get(lengthExprId);
+
+        // Function signatures are elaborated once "ungrounded" (generics left
+        // as bare GenericParameterDatatype placeholders, with no substitution
+        // available yet) purely to compute a cache identity -- see
+        // elaborateFunctionSignature(). `N` isn't bound to a real value in
+        // that pass, so CTFE can't succeed yet; that's expected, not an
+        // error. The real, substituted elaboration happens again per
+        // call-site instantiation (elaborateFunctionSymbol), where `N` is
+        // concrete and this placeholder length is discarded in favor of the
+        // real one.
+        if (
+          lengthExpr.variant === Semantic.ENode.DatatypeAsValueExpr &&
+          this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(lengthExpr.type).type)
+            .variant === Semantic.ENode.GenericParameterDatatype
+        ) {
+          return makeStackArrayDatatypeAvailable(
+            this.sr,
+            this.elaborateDatatype(type.datatype),
+            0n,
+            type.mutability,
+            type.inline,
+            type.sourceloc
+          );
+        }
+
+        const length = EvalCTFENumericValue(
+          this.sr,
+          lengthExprId,
+          type.sourceloc
+        );
+
         return makeStackArrayDatatypeAvailable(
           this.sr,
           this.elaborateDatatype(type.datatype),
-          type.length,
+          length,
           type.mutability,
           type.inline,
           type.sourceloc

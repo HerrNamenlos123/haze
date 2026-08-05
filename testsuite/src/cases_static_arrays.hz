@@ -1,0 +1,206 @@
+
+// Regression coverage for fixed-size ("static") arrays: `[N]T`.
+//
+// Context: the grammar's array-size slot in `typeExprModified`
+// (`LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET ...`) only
+// ever accepted a literal integer token, never a general expression. That's
+// fine for `let a: [3]int = [1, 2, 3];`, but stdlib's own
+// `createStaticArray<T, N>(defaultValue: T): [N]T` (core/src/util.hz) needs
+// `N` -- a generic parameter, not a literal -- to appear as the array size,
+// which never actually compiled. The fix widens the grammar to accept a
+// general expression there and CTFE-evaluates it down to a concrete integer
+// during elaboration, so both a literal and a comptime-constant expression
+// (a generic parameter, `N + 1`, etc.) work as the size.
+//
+// This file pins down: construction (literal-cast and createStaticArray),
+// indexing (read/write, in bounds), iteration (for-each with and without
+// index), and value semantics (copying an array copies its contents; no
+// aliasing, no heap allocation involved).
+
+namespace cases_static_arrays {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "static arrays: construction via literal cast and plain literal assignment",
+            """
+fn main(): int {
+    // Direct literal assignment against an explicit fixed-array type.
+    let a: [3]int = [1, 2, 3];
+    assert(a[0] == 1 && a[1] == 2 && a[2] == 3, "plain literal assignment");
+    assert(a.length == 3, "length reflects the fixed size");
+
+    // Explicit cast of an array literal to a fixed-array type.
+    let b = [4, 5, 6] as [3]int;
+    assert(b[0] == 4 && b[1] == 5 && b[2] == 6, "literal cast to static array type");
+    assert(b.length == 3, "casted array also reports the fixed length");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "static arrays: createStaticArray with a comptime-evaluated element count",
+            """
+fn makeFilled<T, N>(value: T): [N]T {
+    return createStaticArray<T, N>(value);
+}
+
+fn main(): int {
+    // N supplied directly as a literal generic argument.
+    let a = createStaticArray<int, 4>(7);
+    assert(a.length == 4, "createStaticArray produces the requested length");
+    for x in a {
+        assert(x == 7, "every slot holds the default value");
+    }
+
+    // N forwarded through another generic function -- must still be
+    // comptime-evaluable at the point [N]T is elaborated, not just a
+    // syntactically literal token at the call site.
+    let b = makeFilled<int, 5>(9);
+    assert(b.length == 5, "N threaded through a generic wrapper still resolves");
+    for x in b {
+        assert(x == 9, "forwarded default value applied to every slot");
+    }
+
+    // A comptime constant expression (not a bare literal) used as N.
+    const comptime base = 3;
+    let c = createStaticArray<int, base + 2>(0);
+    assert(c.length == 5, "N may be a comptime expression, not just a literal token");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "static arrays: indexing reads and writes correctly",
+            """
+fn main(): int {
+    let a: [5]int = [10, 20, 30, 40, 50];
+
+    // Reads.
+    assert(a[0] == 10, "index 0");
+    assert(a[4] == 50, "last index");
+
+    // Writes.
+    a[2] = 999;
+    assert(a[2] == 999, "write is visible through the same variable");
+    assert(a[1] == 20, "neighboring slots are untouched by a write");
+
+    // Index computed at runtime.
+    let i = 1 + 2;
+    a[i] = 111;
+    assert(a[3] == 111, "runtime-computed index writes the right slot");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "static arrays: for-each iteration, with and without an index variable",
+            """
+fn main(): int {
+    let a: [4]int = [1, 2, 3, 4];
+
+    let total = 0;
+    for x in a {
+        total = total + x;
+    }
+    assert(total == 10, "plain for-each visits every element exactly once");
+
+    let indexSum = 0;
+    let valueSum = 0;
+    for x, i in a {
+        indexSum = indexSum + i;
+        valueSum = valueSum + x;
+    }
+    assert(indexSum == 0 + 1 + 2 + 3, "index variable counts 0..length-1");
+    assert(valueSum == 10, "value variable still sees every element");
+
+    // Mutating through the loop variable must not affect the source array:
+    // `for x in a` binds `x` by value, just like any other value-typed read.
+    for x in a {
+        x = 0;
+    }
+    assert(a[0] == 1 && a[1] == 2 && a[2] == 3 && a[3] == 4, "for-each loop variable is a copy, not an alias");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "static arrays: value semantics on copy, assignment, and by-value parameters (no heap, no aliasing)",
+            """
+fn mutateLocalCopy(arr: [3]int): int {
+    arr[0] = 777;
+    return arr[0];
+}
+
+struct Holder {
+    data: [3]int;
+}
+
+fn main(): int {
+    // Assigning one static array variable to another copies contents;
+    // later mutating one must not affect the other.
+    let a: [3]int = [1, 2, 3];
+    let b = a;
+    b[0] = 42;
+    assert(a[0] == 1, "assignment copies the array; source is unaffected by mutating the copy");
+    assert(b[0] == 42, "the copy itself did receive the mutation");
+    assert(a[1] == 2 && a[2] == 3, "untouched source slots remain intact");
+    assert(b[1] == 2 && b[2] == 3, "untouched copy slots match the source");
+
+    // Passing a static array to a function passes a copy: mutating the
+    // parameter inside the function must not leak back to the caller.
+    let c: [3]int = [5, 6, 7];
+    let seenInside = mutateLocalCopy(c);
+    assert(seenInside == 777, "the callee did mutate its own local copy");
+    assert(c[0] == 5, "the caller's array is untouched by the callee's mutation");
+
+    // A static array embedded as a struct field also has value semantics:
+    // copying the struct copies the embedded array.
+    let h1 = Holder { data: [1, 1, 1] };
+    let h2 = h1;
+    h2.data[0] = 9;
+    assert(h1.data[0] == 1, "copying a struct copies its fixed-array field by value");
+    assert(h2.data[0] == 9, "the struct copy's array field was mutated independently");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "static arrays: element type and length are visible via reflection, matching a manually-built array",
+            """
+fn main(): int {
+    let a: [3]int = [1, 2, 3];
+    static_assert(typeof(a).length == 3, "reflection reports the static length at compile time");
+    static_assert(typeof(a).category == meta.TypeCategory.Array, "fixed arrays report TypeCategory.Array");
+
+    let b = createStaticArray<int, 3>(0);
+    static_assert(typeof(b).length == 3, "createStaticArray's result type also reports its comptime length");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+    }
+}

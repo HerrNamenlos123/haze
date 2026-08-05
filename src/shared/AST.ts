@@ -609,7 +609,10 @@ export type ASTDynamicArrayTypeExpr = {
 export type ASTStaticArrayTypeExpr = {
   variant: "StaticArrayTypeExpr";
   type: ASTExpr;
-  arraySize: bigint;
+  // A general expression, not just a literal: it may reference a generic
+  // parameter (`N`) or be a comptime-constant expression (`N + 1`). It gets
+  // CTFE-evaluated down to a concrete integer during elaboration.
+  arraySize: ASTExpr;
   sourceloc: SourceLoc;
 };
 

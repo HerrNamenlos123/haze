@@ -157,7 +157,11 @@ typeExprModified
     : INLINE typeExprModified
     | MUT typeExprModified
     | CONST typeExprModified
-    | LBRACKET n=(INTEGER_LITERAL | HEX_INTEGER_LITERAL) RBRACKET typeExprModified
+    // The array size is a general expression (a literal, a generic
+    // parameter like `N`, or a comptime-constant expression like `N + 1`),
+    // not just a literal token: it gets CTFE-evaluated down to a concrete
+    // integer during elaboration, once any generics it references are bound.
+    | LBRACKET n=expr RBRACKET typeExprModified
     | LBRACKET RBRACKET typeExprModified
     | LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
     | typeExprSimple
