@@ -201,7 +201,7 @@ export opaque struct ByteBuffer {
         return this._getData().length;
     }
 
-    fn assertNotCommitted() {
+    fn assertNotCommitted() :: final {
         if (this.committed) {
             sys.panic("A mutation was attempted on a ByteBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
         }
