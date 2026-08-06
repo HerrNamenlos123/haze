@@ -491,7 +491,8 @@ namespace profiling {
     // captured -- see hzstd_panic_build_frames).
 
     export struct TraceEventInstantArgsData {
-        stackTrace: []TraceCallFrame;
+        // stackTrace: []TraceCallFrame;
+        sampleTraceId: int;
     }
 
     export struct TraceEventInstantArgs {
@@ -528,7 +529,8 @@ namespace profiling {
             let frame = result.memoryInstrumentationFrames[i];
             events.push(TraceEventInstant {
                 pid: pid, tid: tid, ts: frame.timestamp * 1000000.0,
-                ph: "I", cat: "devtools.timeline", name: "MemoryAllocation", s: "t",
+                // ph: "I", cat: "devtools.timeline", name: "MemoryAllocation", s: "t",
+                ph: "I", cat: "devtools.timeline", name: "TimerInstall", s: "t",
                 args: TraceEventInstantArgs {
                     data: TraceEventInstantArgsData { stackTrace: traceCallFramesForStacktrace(frame.stacktrace) },
                 },
@@ -543,7 +545,7 @@ namespace profiling {
     // whatever event kinds get added later -- can be one flat []TraceEvent serialized in a
     // single json.stringify<Trace> call, same as CpuProfile above, no manual string-joining
     // required.
-    export type TraceEvent = TraceEventMetadata | TraceEventProfile | TraceEventProfileChunk | TraceEventInstant;
+    export type TraceEvent = TraceEventMetadata | TraceEventProfile | TraceEventProfileChunk | TraceEventInstant | TraceEventComplete;
 
     // A real "Save trace" export from DevTools' modern Performance panel (as opposed to the
     // legacy "Save profile") is NOT just a bare traceEvents array -- it's wrapped in a
@@ -600,6 +602,17 @@ namespace profiling {
             },
         ];
 
+        // This is what gets the flamegraph to show up
+        traceEvents.push(TraceEventComplete {
+            pid: hazeProcessPid,
+            tid: mainThreadTid,
+            ts: profile.startTime,
+            dur: profile.endTime - profile.startTime,
+            ph: "X",
+            cat: "disabled-by-default-devtools.timeline",
+            name: "RunTask",
+        });
+
         let chunks = buildTraceProfileChunks(profile, hazeProcessPid, profilerEventThreadTid, profileId);
         for (let i = 0; i < chunks.length; i++) {
             traceEvents.push(chunks[i]);
@@ -611,7 +624,7 @@ namespace profiling {
         }
 
         return Trace {
-            metadata: TraceMetadata { source: "Haze", dataOrigin: "TraceEvents" },
+            metadata: TraceMetadata { source: "DevTools", dataOrigin: "TraceEvents" },
             traceEvents: traceEvents,
         };
     }
