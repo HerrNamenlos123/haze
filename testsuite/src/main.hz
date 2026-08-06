@@ -41,6 +41,10 @@ fn main(): int {
     cases_reactive.register(suite);
     cases_foreach_reactive.register(suite);
     cases_static_arrays.register(suite);
+    cases_nested_struct_operator_assign.register(suite);
+    cases_ctfe_int_literal_cast_to_real.register(suite);
+    cases_json_custom_struct_hooks.register(suite);
+    cases_json_linear_map.register(suite);
 
     return testsuite.runAll(config, suite);
 }

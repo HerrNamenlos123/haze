@@ -243,9 +243,17 @@ export function EvalCTFE(
       const targetTypeDef = sr.typeDefNodes.get(targetType.type);
       if (value.variant === Semantic.ENode.LiteralExpr) {
         const integerLiteralValue = getLiteralIntegerValue(value.literal);
+        // The range check below (getIntegerMinMax) only makes sense when
+        // casting TO an integer type -- e.g. `T.max as real` is a plain
+        // widening numeric conversion with no integer range to violate.
+        // getIntegerMinMax() has no case for non-integer primitives (it
+        // asserts/throws "Unknown primitive type" for them), so this must
+        // gate on the target being an integer, not merely on the source
+        // literal being one.
         if (
           targetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
-          integerLiteralValue
+          integerLiteralValue &&
+          Conversion.isInteger(targetTypeDef.primitive)
         ) {
           const limit = Conversion.getIntegerMinMax(targetTypeDef.primitive);
           const literalValue = integerLiteralValue[0];
@@ -266,6 +274,24 @@ export function EvalCTFE(
                 type: integerLiteralValue[1],
                 unit: null,
                 value: literalValue,
+              },
+              expr.sourceloc
+            )
+          );
+        }
+        if (
+          targetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+          integerLiteralValue &&
+          (targetTypeDef.primitive === EPrimitive.real ||
+            targetTypeDef.primitive === EPrimitive.f32 ||
+            targetTypeDef.primitive === EPrimitive.f64)
+        ) {
+          return ok(
+            sr.b.literalValue(
+              {
+                type: targetTypeDef.primitive,
+                unit: null,
+                value: Number(integerLiteralValue[0]),
               },
               expr.sourceloc
             )

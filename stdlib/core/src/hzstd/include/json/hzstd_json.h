@@ -53,6 +53,25 @@ hzstd_bool_t hzstd_json_add_item_to_array(hzstd_allocator_t allocator,
                                           hzstd_json_node_t *object,
                                           hzstd_json_node_t *item);
 
+// Object-key enumeration, for consumers (e.g. LinearMap<K, V>'s
+// [[json.parse]] hook) that need to walk every key of an object whose key
+// set isn't known ahead of time -- unlike hzstd_json_get_object_item(),
+// which requires already knowing the key you're looking for. cJSON stores
+// both arrays and objects as the same child/next linked list (an object's
+// children just additionally carry a ->string name), so
+// hzstd_json_get_object_size()/hzstd_json_get_object_key_at()/
+// hzstd_json_get_object_value_at() are thin object-flavored wrappers
+// around that same walk hzstd_json_get_array_size()/hzstd_json_get_array_item()
+// already do.
+hzstd_usize_t hzstd_json_get_object_size(hzstd_allocator_t allocator,
+                                         hzstd_json_node_t *json);
+hzstd_str_ref_t *hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
+                                              hzstd_json_node_t *json,
+                                              hzstd_usize_t index);
+hzstd_json_node_t *hzstd_json_get_object_value_at(hzstd_allocator_t allocator,
+                                                  hzstd_json_node_t *json,
+                                                  hzstd_usize_t index);
+
 hzstd_str_t hzstd_json_print_unformatted(hzstd_allocator_t allocator,
                                          hzstd_json_node_t *json);
 hzstd_str_t hzstd_json_print(hzstd_allocator_t allocator,

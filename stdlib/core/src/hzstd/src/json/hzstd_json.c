@@ -173,6 +173,36 @@ hzstd_bool_t hzstd_json_add_item_to_array(hzstd_allocator_t allocator,
   return cJSON_AddItemToArray((cJSON *)object, (cJSON *)item);
 }
 
+// See the declaration comment in hzstd_json.h: objects and arrays share the
+// same child/next chain in cJSON, so these mirror
+// hzstd_json_get_array_size()/hzstd_json_get_array_item() above (which
+// already work correctly on an object node, keys aside) and additionally
+// expose the child's ->string key name.
+hzstd_usize_t hzstd_json_get_object_size(hzstd_allocator_t allocator,
+                                         hzstd_json_node_t *json) {
+  return cJSON_GetArraySize((cJSON *)json);
+}
+
+hzstd_str_ref_t *hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
+                                              hzstd_json_node_t *json,
+                                              hzstd_usize_t index) {
+  hzstd_json_use_arena(allocator);
+  cJSON *item = cJSON_GetArrayItem((cJSON *)json, (int)index);
+  if (!item || !item->string) {
+    return 0;
+  }
+  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t));
+  result->data = hzstd_str_from_cstr_ref(item->string);
+  return result;
+}
+
+hzstd_json_node_t *hzstd_json_get_object_value_at(hzstd_allocator_t allocator,
+                                                  hzstd_json_node_t *json,
+                                                  hzstd_usize_t index) {
+  hzstd_json_use_arena(allocator);
+  return (hzstd_json_node_t *)cJSON_GetArrayItem((cJSON *)json, (int)index);
+}
+
 hzstd_str_t hzstd_json_print_unformatted(hzstd_allocator_t allocator,
                                          hzstd_json_node_t *json) {
   hzstd_json_use_arena(allocator);

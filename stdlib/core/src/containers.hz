@@ -10,6 +10,22 @@
 // trait bounds yet) to primitive types (str/int/real/bool): struct equality
 // (`==`) does not compile by default, so a struct key would need its own
 // `operator==` before it could be used here.
+//
+// [[json.serialize]]/[[json.parse]] (stdlib/core/src/json.hz): a LinearMap
+// serializes as a real JSON *object* keyed by its own keys --
+// {"a": 1, "b": 2} -- rather than json.stringify()'s default field-by-field
+// walk of the struct's own {keys: [...], values: [...]} internals. JSON
+// object keys are always strings, so non-string keys round-trip through a
+// string: `str` keys are the identity conversion, and every fixed-width
+// integer type (i8/i16/i32/i64/u8/u16/u32/u64/usize, plus plain `int`) goes
+// through decimal text (f"{key}" to serialize; re-parsed as a JSON number
+// via json.parse<K> to read back -- see linearMapKeyToJson/
+// linearMapKeyFromJson below). Any other K is a static_assert at the call
+// site: this can only ever be discovered when the compiler actually
+// instantiates toJson<K,V>()/fromJson<K,V>() for a concrete K, same as
+// every other comptime-dispatched static_assert in this codebase (e.g.
+// json.hz's own Proxy.to<T>()).
+[[json.serialize="toJson", json.parse="fromJson"]]
 export struct LinearMap<K, V> {
     keys: []K = [];
     values: []V = [];
@@ -81,5 +97,104 @@ export struct LinearMap<K, V> {
     fn clear(): void {
         this.keys = [];
         this.values = [];
+    }
+
+    // Converts a key to the string used as its JSON object key. `str` is
+    // the identity conversion; every integer type goes through decimal
+    // text via the established f"{value}" stringify idiom (see
+    // json.hz's own dumpJsonNode<T>() for the same pattern applied to
+    // the equivalent JSON *value* case). static_assert's the K it was
+    // actually instantiated with, so an unsupported key type is a normal
+    // compile error naming the offending type rather than a generic one.
+    fn keyToJsonString(key: K): str {
+        // sys.unreachable() deliberately sits AFTER the whole if/else-if
+        // chain (not as the last statement inside the final `else`): the
+        // compiler's comptime control-flow analysis doesn't currently
+        // recognize a static_assert(false, ...) branch as diverging when
+        // it's the tail of the chain, so a trailing return type of
+        // `str | none` leaks through unless there's a real statement after
+        // the whole chain for control flow to "fall out to" -- see
+        // json.hz's parseJsonNodeFromFfi<T>() for the same shape.
+        if comptime K is str {
+            return key;
+        }
+        else if comptime K is i8 || K is i16 || K is i32 || K is i64 || K is int
+              || K is u8 || K is u16 || K is u32 || K is u64 || K is usize {
+            return f"{key}";
+        }
+        else {
+            static_assert(false, f"LinearMap<{K.prettyName}, {V.prettyName}>: json.serialize/json.parse only support str or integer key types, not '{K.prettyName}'");
+        }
+        sys.unreachable();
+    }
+
+    // Inverse of keyToJsonString(): parses a JSON object's key string back
+    // into K. Integer keys are re-parsed by reusing the JSON module's own
+    // number parser (json.parse<K>) against the decimal text -- this stays
+    // exactly consistent with whatever range-checking/type-support
+    // json.hz's parseJsonNodeFromFfi<K> does for that K, rather than
+    // duplicating it here.
+    static fn keyFromJsonString(keyStr: str): Result<K, json.Error> {
+        // See keyToJsonString() above for why sys.unreachable() sits after
+        // the whole if/else-if chain instead of inside the final `else`.
+        if comptime K is str {
+            return Result<K, json.Error>.Ok(keyStr);
+        }
+        else if comptime K is i8 || K is i16 || K is i32 || K is i64 || K is int
+              || K is u8 || K is u16 || K is u32 || K is u64 || K is usize {
+            return json.parse<K>(keyStr);
+        }
+        else {
+            static_assert(false, f"LinearMap<{K.prettyName}, {V.prettyName}>: json.serialize/json.parse only support str or integer key types, not '{K.prettyName}'");
+        }
+        sys.unreachable();
+    }
+
+    // [[json.serialize="toJson"]] hook (see json.hz's dumpJsonNode<T>()):
+    // called instead of the default field-by-field struct walk, so a
+    // LinearMap prints as a real {"key": value, ...} JSON object instead of
+    // its raw {"keys": [...], "values": [...]} internals.
+    fn toJson(): json.Node {
+        let node = json.object();
+        for (let i = 0; i < this.keys.length; i++) {
+            let keyStr = this.keyToJsonString(this.keys[i]);
+            let valueNode = json.encodeToJsonNode<V>(node.allocator, this.values[i]);
+            if valueNode {
+                let proxyResult = node[keyStr];
+                if proxyResult is json.Node.Proxy {
+                    proxyResult := valueNode;
+                }
+            }
+        }
+        return node;
+    }
+
+    // [[json.parse="fromJson"]] hook (see json.hz's parseJsonNodeFromFfi<T>()):
+    // called instead of the default field-by-field struct read. Walks every
+    // key of the JSON object via Node.objectEntryCount()/objectKeyAt()/
+    // objectValueAt() (json.hz) -- LinearMap's key set isn't known ahead of
+    // time, unlike a regular struct's fixed field list -- converting each
+    // key back to K and each value via the normal parseJsonNodeFromFfi<V>
+    // path (through json.parse<V>).
+    static fn fromJson(node: json.Node): Result<LinearMap<K, V>, json.Error> {
+        if !ffi.hzstd_json_is_object(node.data) {
+            return json.Error { error: () => "JSON type mismatch: expected object" };
+        }
+        let result = LinearMap<K, V>();
+        let count = node.objectEntryCount();
+        for (let i: usize = 0; i < count; i++) {
+            let keyStr = node.objectKeyAt(i);
+            let keyResult = LinearMap<K, V>.keyFromJsonString(keyStr);
+            if !keyResult {
+                return keyResult;
+            }
+            let valueNode = node.objectValueAt(i);
+            let valueResult = json.parse<V>(valueNode);
+            if !valueResult {
+                return valueResult;
+            }
+            result.set(keyResult, valueResult);
+        }
+        return result;
     }
 }

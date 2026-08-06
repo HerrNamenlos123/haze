@@ -27,6 +27,14 @@ namespace ffi {
     export extern C fn hzstd_json_get_array_size(allocator: Allocator, json: hzstd_json_node_t): usize :: final;
     export extern C fn hzstd_json_get_array_item(allocator: Allocator, json: hzstd_json_node_t, index: usize): hzstd_json_node_t :: final;
 
+    // Object-key enumeration: unlike hzstd_json_get_object_item(), which
+    // requires already knowing the key you want, these walk every key of an
+    // object whose key set isn't known ahead of time (e.g. LinearMap<K, V>'s
+    // json.parse hook, containers.hz).
+    export extern C fn hzstd_json_get_object_size(allocator: Allocator, json: hzstd_json_node_t): usize :: final;
+    export extern C fn hzstd_json_get_object_key_at(allocator: Allocator, json: hzstd_json_node_t, index: usize): ffi.hzstd_str_ref_t | none :: final;
+    export extern C fn hzstd_json_get_object_value_at(allocator: Allocator, json: hzstd_json_node_t, index: usize): hzstd_json_node_t :: final;
+
     export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: hzstd_json_node_t, name: str, item: hzstd_json_node_t): bool :: final;
     export extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: hzstd_json_node_t, item: hzstd_json_node_t): bool :: final;
 
@@ -185,6 +193,39 @@ namespace json {
             }
         }
 
+        // Object-key enumeration for consumers that need to walk every key of
+        // an object whose key set isn't known ahead of time (unlike
+        // operator[](str), which requires already knowing the key). Used by
+        // LinearMap<K, V>'s [[json.parse]] hook (containers.hz) to rebuild a
+        // map from an arbitrary {"key": value, ...} object. Panics if called
+        // on a non-object node, same as the rest of this API (see e.g.
+        // Proxy.operator[](str)'s "JSON was expected to be an object").
+        fn objectEntryCount(): usize {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("objectEntryCount() called on a JSON node that is not an object");
+            }
+            return ffi.hzstd_json_get_object_size(this.allocator, this.data);
+        }
+
+        fn objectKeyAt(index: usize): str {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("objectKeyAt() called on a JSON node that is not an object");
+            }
+            let key = ffi.hzstd_json_get_object_key_at(this.allocator, this.data, index);
+            if key { return key.data; }
+            sys.panic("objectKeyAt(): index out of range or entry has no key");
+        }
+
+        fn objectValueAt(index: usize): Node {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("objectValueAt() called on a JSON node that is not an object");
+            }
+            return Node {
+                allocator: this.allocator,
+                data: ffi.hzstd_json_get_object_value_at(this.allocator, this.data, index),
+            };
+        }
+
     }
 
     export fn parseToJsonNode(data: str): Result<Node, Error> {
@@ -338,20 +379,32 @@ namespace json {
             return Error { error: () => "JSON: failed to read string value" };
         }
         else if comptime T is int {
-            if !ffi.hzstd_json_is_number(node) { 
+            if !ffi.hzstd_json_is_number(node) {
                 return Error { error: () => "JSON type mismatch: expected number (int)" };
             }
             return ffi.hzstd_json_get_number_value(allocator, node) as int;
         }
-        else if comptime T is i32 {
-            if !ffi.hzstd_json_is_number(node) { 
-                return Error { error: () => "JSON type mismatch: expected number (i32)" };
+        else if comptime T is i8 || T is i16 || T is i32 || T is i64
+              || T is u8 || T is u16 || T is u32 || T is u64 || T is usize {
+            // Every fixed-width integer type shares the same shape: read the
+            // JSON number as a double (the only numeric representation
+            // hzstd_json_node_t has), range-check against T's own min/max
+            // (T.min/T.max are compiler-provided for every integer type, see
+            // Elaborate.ts elaboratePrimitiveDatatypeMemberAccess), then cast
+            // down. The range check compares as `real`, not `int`: u64.max
+            // (2^64-1) does not fit in a signed 64-bit int and would wrap
+            // around if cast there first. Values beyond a double's exact
+            // integer range (+-2^53) can already lose precision coming out
+            // of hzstd_json_get_number_value, same pre-existing caveat the
+            // plain `int` branch above has.
+            if !ffi.hzstd_json_is_number(node) {
+                return Error { error: () => f"JSON type mismatch: expected number ({T.prettyName})" };
             }
-            let v = ffi.hzstd_json_get_number_value(allocator, node) as int;
-            if v >= i32.min && v <= i32.max {
-                return v as i32;
+            let v = ffi.hzstd_json_get_number_value(allocator, node);
+            if v >= T.min as real && v <= T.max as real {
+                return v as T;
             }
-            return Error { error: () => "JSON range error: Expected number of type i32, but received value is out of range" };
+            return Error { error: () => f"JSON range error: Expected number of type {T.prettyName}, but received value is out of range" };
         }
         else if comptime T is real {
             if !ffi.hzstd_json_is_number(node) { 
@@ -378,7 +431,19 @@ namespace json {
             return parseJsonFixedArray<T>(allocator, node);
         }
         else if comptime T.category == meta.TypeCategory.Struct {
-            return parseJsonStruct<T>(allocator, node);
+            // Mirror image of the [[json.serialize=...]] hook in dumpJsonNode:
+            // a struct annotated with [[json.parse="methodName"]] opts out of
+            // the default field-by-field object read. Its static
+            // `methodName` method is called with the raw json.Node and must
+            // return Result<T, json.Error>, exactly like every other
+            // parseJsonNodeFromFfi<T> path.
+            if comptime T.hasAttribute("json.parse") && T.isAttributeOfType<str>("json.parse") {
+                const comptime parseMethod = T.getAttribute<str>("json.parse");
+                return T.[parseMethod]({ allocator: allocator, data: node });
+            }
+            else {
+                return parseJsonStruct<T>(allocator, node);
+            }
         }
         else if comptime T.category == meta.TypeCategory.Union {
 
@@ -566,8 +631,13 @@ namespace json {
         else if comptime T is int {
             return ffi.hzstd_json_create_number(allocator, value as real);
         }
-        else if comptime T is i32 {
-            return ffi.hzstd_json_create_number(allocator, value as int as real);
+        else if comptime T is i8 || T is i16 || T is i32 || T is i64
+              || T is u8 || T is u16 || T is u32 || T is u64 || T is usize {
+            // Straight to `real`, not via `int`: u64/usize's range (up to
+            // 2^64-1) does not fit in a signed 64-bit `int`, so the `as int`
+            // hop the old i32-only branch used would reject valid u64/usize
+            // values before they ever reached `real`.
+            return ffi.hzstd_json_create_number(allocator, value as real);
         }
         else if comptime T is real {
             return ffi.hzstd_json_create_number(allocator, value);
@@ -588,7 +658,21 @@ namespace json {
             return dumpJsonFixedArray<T>(allocator, value);
         }
         else if comptime T.category == meta.TypeCategory.Struct {
-            return dumpJsonStruct<T>(allocator, value);
+            // A struct annotated with [[json.serialize="methodName"]] opts out
+            // of the default field-by-field object walk: instead, its
+            // zero-arg `methodName` method (returning json.Node) is called,
+            // and that Node is spliced in verbatim. This is how e.g.
+            // LinearMap<K, V> (core/src/containers.hz) presents itself as a
+            // real {"key": value, ...} JSON object instead of its raw
+            // {"keys": [...], "values": [...]} internals.
+            if comptime T.hasAttribute("json.serialize") && T.isAttributeOfType<str>("json.serialize") {
+                const comptime serializeMethod = T.getAttribute<str>("json.serialize");
+                let node: Node = value.[serializeMethod]();
+                return node.data;
+            }
+            else {
+                return dumpJsonStruct<T>(allocator, value);
+            }
         }
         else if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {

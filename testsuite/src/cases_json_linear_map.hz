@@ -1,0 +1,306 @@
+
+// Proves LinearMap<K, V> (stdlib/core/src/containers.hz) is a real-world
+// consumer of the [[json.serialize]]/[[json.parse]] struct hooks added
+// alongside this test (see cases_json_custom_struct_hooks.hz for coverage
+// of the hook mechanism itself, independent of any container).
+//
+// Without the hooks, LinearMap would serialize as its raw internals --
+// {"keys":[...],"values":[...]} -- since it's just a plain struct with two
+// array fields. With the hooks, it instead reads/writes a proper JSON
+// *object* keyed by the map's actual keys, which is both the natural JSON
+// shape for a map and (unlike the raw-internals shape) something a
+// non-Haze JSON consumer would expect.
+//
+// JSON object keys are always strings, so LinearMap<K, V>'s hook must
+// convert non-string keys to/from strings. This is exercised for str keys
+// (identity conversion) and every integer key type (int, i8/i16/i32/i64,
+// u8/u16/u32/u64/usize), each round-tripped through actual min/max-ish
+// values to catch truncation, not just small numbers that would round-trip
+// through any width by accident.
+//
+// `main()` returns a plain `int`, not a `Result`, so top-level `?!` isn't
+// available directly -- these cases wrap the body in `attempt { ... } else
+// e { ... }` (see tsk/src/main.hz for the same idiom in real app code),
+// which lets `?!` propagate parse errors up to the `else` arm instead.
+
+namespace cases_json_linear_map {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "LinearMap json: string-keyed map serializes as a real JSON object, not raw internals",
+            """
+fn main(): int {
+    attempt {
+        let m = LinearMap<str, int>();
+        m.set("a", 1);
+        m.set("b", 2);
+        m.set("c", 3);
+
+        let out = json.stringify(m);
+        assert(out == \"\"\"{"a":1,"b":2,"c":3}\"\"\", f"expected a plain keyed object, got: {out}");
+
+        let back = json.parse<LinearMap<str, int>>(Alloc.arena(), out)?!;
+        assert(back.size() == 3, "round-tripped map has 3 entries");
+        let a = back.get("a");
+        let b = back.get("b");
+        let c = back.get("c");
+        if a is int && b is int && c is int {
+            assert(a == 1, "key a");
+            assert(b == 2, "key b");
+            assert(c == 3, "key c");
+        } else {
+            assert(false, "expected all three keys to be present");
+        }
+
+        // Round trip through an empty map too.
+        let empty = LinearMap<str, int>();
+        let emptyOut = json.stringify(empty);
+        assert(emptyOut == "{}", f"expected empty object, got: {emptyOut}");
+        let emptyBack = json.parse<LinearMap<str, int>>(Alloc.arena(), emptyOut)?!;
+        assert(emptyBack.size() == 0, "empty map round trip");
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected round trip to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "LinearMap json: int-keyed map converts keys to/from JSON object-key strings",
+            """
+fn main(): int {
+    attempt {
+        let m = LinearMap<int, str>();
+        m.set(1, "one");
+        m.set(-2, "neg two");
+        m.set(1000000, "million");
+
+        let out = json.stringify(m);
+        // Key order follows insertion order (LinearMap.set appends).
+        assert(out == \"\"\"{"1":"one","-2":"neg two","1000000":"million"}\"\"\", f"expected string-ified int keys, got: {out}");
+
+        let back = json.parse<LinearMap<int, str>>(Alloc.arena(), out)?!;
+        assert(back.size() == 3, "round-tripped map has 3 entries");
+        let v1 = back.get(1);
+        let v2 = back.get(-2);
+        let v3 = back.get(1000000);
+        if v1 is str && v2 is str && v3 is str {
+            assert(v1 == "one", "key 1");
+            assert(v2 == "neg two", "key -2");
+            assert(v3 == "million", "key 1000000");
+        } else {
+            assert(false, "expected all three keys to be present");
+        }
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected round trip to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "LinearMap json: every integer key type round trips, including near its min/max",
+            """
+fn getOrI8(m: LinearMap<i8, bool>, key: i8, fallback: bool): bool {
+    let v = m.get(key);
+    if v is bool { return v; }
+    return fallback;
+}
+
+fn main(): int {
+    attempt {
+        // i8: [-128, 127]
+        let mi8 = LinearMap<i8, bool>();
+        mi8.set((-128) as i8, true);
+        mi8.set(127 as i8, false);
+        let mi8Back = json.parse<LinearMap<i8, bool>>(Alloc.arena(), json.stringify(mi8))?!;
+        assert(getOrI8(mi8Back, (-128) as i8, false) == true, "i8 min round trip");
+        assert(getOrI8(mi8Back, 127 as i8, true) == false, "i8 max round trip");
+
+        // u8: [0, 255]
+        let mu8 = LinearMap<u8, int>();
+        mu8.set(0 as u8, 1);
+        mu8.set(255 as u8, 2);
+        let mu8Back = json.parse<LinearMap<u8, int>>(Alloc.arena(), json.stringify(mu8))?!;
+        let u8min = mu8Back.get(0 as u8);
+        let u8max = mu8Back.get(255 as u8);
+        if u8min is int && u8max is int {
+            assert(u8min == 1, "u8 min round trip");
+            assert(u8max == 2, "u8 max round trip");
+        } else {
+            assert(false, "expected both u8 keys to be present");
+        }
+
+        // i16 / u16
+        let mi16 = LinearMap<i16, int>();
+        mi16.set((-32768) as i16, 1);
+        mi16.set(32767 as i16, 2);
+        let mi16Back = json.parse<LinearMap<i16, int>>(Alloc.arena(), json.stringify(mi16))?!;
+        let i16min = mi16Back.get((-32768) as i16);
+        let i16max = mi16Back.get(32767 as i16);
+        if i16min is int && i16max is int {
+            assert(i16min == 1, "i16 min round trip");
+            assert(i16max == 2, "i16 max round trip");
+        } else {
+            assert(false, "expected both i16 keys to be present");
+        }
+
+        let mu16 = LinearMap<u16, int>();
+        mu16.set(0 as u16, 1);
+        mu16.set(65535 as u16, 2);
+        let mu16Back = json.parse<LinearMap<u16, int>>(Alloc.arena(), json.stringify(mu16))?!;
+        let u16min = mu16Back.get(0 as u16);
+        let u16max = mu16Back.get(65535 as u16);
+        if u16min is int && u16max is int {
+            assert(u16min == 1, "u16 min round trip");
+            assert(u16max == 2, "u16 max round trip");
+        } else {
+            assert(false, "expected both u16 keys to be present");
+        }
+
+        // i32 / u32
+        let mi32 = LinearMap<i32, int>();
+        mi32.set((-2147483648) as i32, 1);
+        mi32.set(2147483647 as i32, 2);
+        let mi32Back = json.parse<LinearMap<i32, int>>(Alloc.arena(), json.stringify(mi32))?!;
+        let i32min = mi32Back.get((-2147483648) as i32);
+        let i32max = mi32Back.get(2147483647 as i32);
+        if i32min is int && i32max is int {
+            assert(i32min == 1, "i32 min round trip");
+            assert(i32max == 2, "i32 max round trip");
+        } else {
+            assert(false, "expected both i32 keys to be present");
+        }
+
+        let mu32 = LinearMap<u32, int>();
+        mu32.set(0 as u32, 1);
+        mu32.set(4294967295 as u32, 2);
+        let mu32Back = json.parse<LinearMap<u32, int>>(Alloc.arena(), json.stringify(mu32))?!;
+        let u32min = mu32Back.get(0 as u32);
+        let u32max = mu32Back.get(4294967295 as u32);
+        if u32min is int && u32max is int {
+            assert(u32min == 1, "u32 min round trip");
+            assert(u32max == 2, "u32 max round trip");
+        } else {
+            assert(false, "expected both u32 keys to be present");
+        }
+
+        // i64 / u64 / usize -- large but exactly representable in a double, to
+        // stay within what the existing JSON-number machinery (real-backed)
+        // can round trip exactly.
+        let mi64 = LinearMap<i64, int>();
+        mi64.set((-9007199254740992) as i64, 1);
+        mi64.set(9007199254740992 as i64, 2);
+        let mi64Back = json.parse<LinearMap<i64, int>>(Alloc.arena(), json.stringify(mi64))?!;
+        let i64min = mi64Back.get((-9007199254740992) as i64);
+        let i64max = mi64Back.get(9007199254740992 as i64);
+        if i64min is int && i64max is int {
+            assert(i64min == 1, "i64 large-negative round trip");
+            assert(i64max == 2, "i64 large-positive round trip");
+        } else {
+            assert(false, "expected both i64 keys to be present");
+        }
+
+        let mu64 = LinearMap<u64, int>();
+        mu64.set(0 as u64, 1);
+        mu64.set(9007199254740992 as u64, 2);
+        let mu64Back = json.parse<LinearMap<u64, int>>(Alloc.arena(), json.stringify(mu64))?!;
+        let u64min = mu64Back.get(0 as u64);
+        let u64max = mu64Back.get(9007199254740992 as u64);
+        if u64min is int && u64max is int {
+            assert(u64min == 1, "u64 min round trip");
+            assert(u64max == 2, "u64 large round trip");
+        } else {
+            assert(false, "expected both u64 keys to be present");
+        }
+
+        let musize = LinearMap<usize, int>();
+        musize.set(0 as usize, 1);
+        musize.set(9007199254740992 as usize, 2);
+        let musizeBack = json.parse<LinearMap<usize, int>>(Alloc.arena(), json.stringify(musize))?!;
+        let usizeMin = musizeBack.get(0 as usize);
+        let usizeMax = musizeBack.get(9007199254740992 as usize);
+        if usizeMin is int && usizeMax is int {
+            assert(usizeMin == 1, "usize min round trip");
+            assert(usizeMax == 2, "usize large round trip");
+        } else {
+            assert(false, "expected both usize keys to be present");
+        }
+
+        // plain `int`
+        let mint = LinearMap<int, int>();
+        mint.set(-9007199254740992, 1);
+        mint.set(9007199254740992, 2);
+        let mintBack = json.parse<LinearMap<int, int>>(Alloc.arena(), json.stringify(mint))?!;
+        let intMin = mintBack.get(-9007199254740992);
+        let intMax = mintBack.get(9007199254740992);
+        if intMin is int && intMax is int {
+            assert(intMin == 1, "int large-negative round trip");
+            assert(intMax == 2, "int large-positive round trip");
+        } else {
+            assert(false, "expected both int keys to be present");
+        }
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected round trip to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "LinearMap json: struct values still serialize field-by-field inside the map's object shape",
+            """
+struct Entry {
+    label: str;
+    count: int;
+}
+
+fn main(): int {
+    attempt {
+        let m = LinearMap<str, Entry>();
+        m.set("first", Entry { label: "alpha", count: 1 });
+        m.set("second", Entry { label: "beta", count: 2 });
+
+        let out = json.stringify(m);
+        assert(out == \"\"\"{"first":{"label":"alpha","count":1},"second":{"label":"beta","count":2}}\"\"\", f"unexpected encoding: {out}");
+
+        let back = json.parse<LinearMap<str, Entry>>(Alloc.arena(), out)?!;
+        let e = back.get("first");
+        if e is Entry {
+            assert(e.label == "alpha" && e.count == 1, "first entry round trip");
+        } else {
+            assert(false, "expected first entry to be present");
+        }
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected round trip to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+    }
+}

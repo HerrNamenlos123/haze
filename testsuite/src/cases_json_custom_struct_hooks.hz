@@ -1,0 +1,178 @@
+
+// Regression coverage for custom per-struct JSON (de)serialization hooks.
+//
+// Context: json.serialize()/json.parse() previously always treated a struct
+// as a plain object built/read field-by-field (dumpJsonStruct/
+// parseJsonStruct). This adds an opt-out: a struct annotated with
+// [[json.serialize="methodName"]] has that zero-arg method called instead of
+// the default field walk, and the json.Node it returns is spliced in
+// verbatim. Symmetrically, [[json.parse="methodName"]] routes parsing
+// through a static method that receives the raw json.Node and returns
+// Result<T, json.Error>. The two attributes are independent: a struct may
+// define either or both (stacked as comma-separated items inside a single
+// [[...]] block -- the grammar allows only one meta-annotation block per
+// declaration).
+//
+// These cases use small hand-written structs (not LinearMap -- that gets
+// its own dedicated coverage in cases_json_linear_map.hz) so the hook
+// mechanism itself is pinned down independently of any particular
+// container's key/value scheme. The custom shape chosen (a single "sum"
+// field replacing the normal two-field {"x":..,"y":..} object) is
+// deliberately NOT what the default struct walk would produce, so a test
+// that silently fell back to the default encoding would fail loudly rather
+// than passing by coincidence.
+
+namespace cases_json_custom_struct_hooks {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json custom struct hooks: serialize replaces the default field walk",
+            """
+[[json.serialize="toJson"]]
+struct Point {
+    x: int;
+    y: int;
+
+    fn toJson(): json.Node {
+        let node = json.object();
+        // node["sum"] on a freshly created object always succeeds (it
+        // creates the attribute if missing) -- no ?! available here since
+        // this method returns a bare json.Node, not a Result.
+        let proxyResult = node["sum"];
+        if proxyResult is json.Node.Proxy {
+            proxyResult := (this.x + this.y) as real;
+        }
+        return node;
+    }
+}
+
+struct Wrapper {
+    label: str;
+    point: Point;
+}
+
+fn main(): int {
+    let p = Point { x: 3, y: 4 };
+    let out = json.stringify(p);
+    assert(out == \"\"\"{"sum":7}\"\"\", f"expected custom {{sum}} encoding, got: {out}");
+
+    // Struct nested inside another struct must also go through the hook
+    // rather than the default {"x":..,"y":..} shape.
+    let w = Wrapper { label: "origin", point: Point { x: 1, y: 2 } };
+    let wOut = json.stringify(w);
+    assert(wOut == \"\"\"{"label":"origin","point":{"sum":3}}\"\"\", f"expected nested custom encoding, got: {wOut}");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "json custom struct hooks: parse routes through the annotated method",
+            """
+[[json.parse="fromJson"]]
+struct Point {
+    x: int;
+    y: int;
+
+    static fn fromJson(node: json.Node): Result<Point, json.Error> {
+        // Parses the custom {"sum": ..} shape back into a struct, splitting
+        // the sum evenly -- proving parse used the hook instead of
+        // expecting the default {"x":..,"y":..} object.
+        let proxy = node["sum"]?!;
+        let sumOrNone = proxy.to<int>();
+        if sumOrNone is int {
+            return Result<Point, json.Error>.Ok(Point { x: sumOrNone / 2, y: sumOrNone - sumOrNone / 2 });
+        }
+        return json.Error { error: () => "expected 'sum' to be a number" };
+    }
+}
+
+fn main(): int {
+    attempt {
+        let p = json.parse<Point>(Alloc.arena(), \"\"\"{"sum":10}\"\"\")?!;
+        assert(p.x == 5 && p.y == 5, f"expected (5,5), got ({p.x},{p.y})");
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected parse to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "json custom struct hooks: round trip through both hooks together, including inside an array",
+            """
+[[json.serialize="toJson", json.parse="fromJson"]]
+struct Tagged {
+    id: int;
+    name: str;
+
+    fn toJson(): json.Node {
+        // Deliberately reversed key order/casing vs the default struct
+        // walk ("nm"/"identifier" instead of "name"/"id") -- proves the
+        // hook's shape, not the default field walk, is what's on the wire.
+        let node = json.object();
+        let idProxyResult = node["identifier"];
+        if idProxyResult is json.Node.Proxy {
+            idProxyResult := this.id as real;
+        }
+        let nameProxyResult = node["nm"];
+        if nameProxyResult is json.Node.Proxy {
+            nameProxyResult := this.name;
+        }
+        return node;
+    }
+
+    static fn fromJson(node: json.Node): Result<Tagged, json.Error> {
+        let idProxy = node["identifier"]?!;
+        let nameProxy = node["nm"]?!;
+        let idOrNone = idProxy.to<int>();
+        let nameOrNone = nameProxy.to<str>();
+        if idOrNone is int && nameOrNone is str {
+            return Result<Tagged, json.Error>.Ok(Tagged { id: idOrNone, name: nameOrNone });
+        }
+        return json.Error { error: () => "expected 'identifier' (number) and 'nm' (string)" };
+    }
+}
+
+fn main(): int {
+    attempt {
+        let original = Tagged { id: 42, name: "answer" };
+        let encoded = json.stringify(original);
+        assert(encoded == \"\"\"{"identifier":42,"nm":"answer"}\"\"\", f"unexpected encoding: {encoded}");
+
+        let decoded = json.parse<Tagged>(Alloc.arena(), encoded)?!;
+        assert(decoded.id == 42 && decoded.name == "answer", "round trip mismatch");
+
+        // Also round trip inside an array to prove the hook applies uniformly,
+        // not just at the top level. Explicit `[]Tagged` annotation: array
+        // literals of >1 explicitly-named struct literals need it here to
+        // infer (a separate, pre-existing gap, unrelated to json hooks).
+        let arr: []Tagged = [Tagged { id: 1, name: "a" }, Tagged { id: 2, name: "b" }];
+        let arrEncoded = json.stringify(arr);
+        assert(arrEncoded == \"\"\"[{"identifier":1,"nm":"a"},{"identifier":2,"nm":"b"}]\"\"\", f"unexpected array encoding: {arrEncoded}");
+        let arrDecoded = json.parse<[]Tagged>(Alloc.arena(), arrEncoded)?!;
+        assert(arrDecoded.length == 2 && arrDecoded[0].id == 1 && arrDecoded[1].name == "b", "array round trip mismatch");
+
+        fmt.println("ok");
+        return 0;
+    }
+    else e {
+        assert(false, f"expected parse/decode to succeed, got error: {e}");
+        return 1;
+    }
+}
+""",
+            "ok"
+        );
+    }
+}

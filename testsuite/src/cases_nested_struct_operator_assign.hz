@@ -1,0 +1,123 @@
+
+// ============================================================================
+// REGRESSION TEST
+//
+// Bug: a nested struct (`struct Outer { struct Inner { ... } }`) that
+// defines a custom `operator:=` failed to resolve it -- "Expression of type
+// '...Inner' is not a valid LHS, no matching assignment operator overload
+// exists" -- whenever the value was obtained through a *sibling method's*
+// `Result<Inner, E>` return type, e.g. `let v = outer.get()?!; v := x;`.
+// Constructing the same nested struct directly as a literal
+// (`Outer.Inner { ... }`) and immediately using `:=` on it worked fine, so
+// the bug was specific to reaching the nested struct via another method's
+// return type.
+//
+// This is exactly the shape json.Node.Proxy (stdlib/core/src/json.hz) has:
+// Proxy is nested inside Node, and Node.operator[] returns
+// Result<Proxy, Error>. Every attempt to build a JSON object by hand via
+// `node["key"]?!  := value;` hit this bug.
+//
+// Root cause (src/Semantic/Elaborate.ts, instantiateAndElaborateStruct()):
+// nested structs are pre-instantiated eagerly by
+// elaborateMethodsAndTypedefsOfStruct() while the *enclosing* struct is
+// still the root of the recursive elaboration stack. Being non-root at
+// that moment, the nested struct itself hits the "if this is NOT a root
+// struct, do NOT elaborate methods" branch, so its own .methods list stays
+// empty. Ordinarily a later lookup of that same nested struct with an
+// empty stack fixes this up (see the CACHE HIT branch's `methodsFinalized
+// || methodsInProgress` check) -- but if the nested struct is never looked
+// up again after its enclosing struct finishes elaborating (e.g. it's only
+// ever referenced from a sibling method's signature, resolved while the
+// parent was still mid-elaboration), the empty .methods list is never
+// fixed, and any operator overload resolution on it (:=, but this would
+// equally affect other operators looked up the same way) fails even
+// though the method is right there in the source.
+//
+// The fix: instantiateAndElaborateStruct(), once a struct finishes being
+// the elaboration root, now also walks its own .nestedStructs and
+// finalizes methods for any that never became a root themselves
+// (finalizeNestedStructMethods(), recursive since a nested struct can
+// itself nest further).
+// ============================================================================
+
+namespace cases_nested_struct_operator_assign {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "nested struct operator:= resolves when the value comes from a sibling method's Result<NestedStruct, E> return type",
+            """
+struct MyErr {
+    msg: str;
+}
+
+struct Outer {
+    struct Inner {
+        v: int;
+        fn operator:=(value: real): void {
+            this.v = value as int;
+        }
+    }
+
+    fn get(): Result<Inner, MyErr> {
+        return Result<Inner, MyErr>.Ok(Outer.Inner { v: 0 });
+    }
+}
+
+fn direct(): int {
+    // Sanity check: constructing the nested struct directly and using :=
+    // immediately never triggered the bug -- this must keep working.
+    let item = Outer.Inner { v: 0 };
+    item := 9.0 as real;
+    return item.v;
+}
+
+fn viaSiblingMethod(): int {
+    attempt {
+        let outer = Outer {};
+        // The bug: `item` here comes from Outer.get()'s Result<Inner, MyErr>
+        // return type, resolved while Outer was still mid-elaboration.
+        let item = outer.get()?!;
+        item := 7.0 as real;
+        return item.v;
+    }
+    else e {
+        assert(false, "expected Outer.get() to succeed");
+        return -1;
+    }
+}
+
+fn main(): int {
+    assert(direct() == 9, "direct construction + := still works");
+    assert(viaSiblingMethod() == 7, "nested struct := resolves via a sibling method's Result<Inner, E> return");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+
+        s.run(
+            "nested struct operator:= resolves through json.Node.Proxy specifically (the real-world trigger)",
+            """
+fn main(): int {
+    let node = json.object();
+    let proxyResult = node["sum"];
+    if proxyResult is json.Node.Proxy {
+        proxyResult := 7.0 as real;
+    } else {
+        assert(false, "expected node[\\"sum\\"] to succeed on a freshly created object");
+    }
+
+    let out = node.print({});
+    assert(out == \"\"\"{"sum":7}\"\"\", f"expected {{\\"sum\\":7}}, got: {out}");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+    }
+}

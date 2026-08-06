@@ -1,0 +1,69 @@
+
+// ============================================================================
+// REGRESSION TEST
+//
+// Bug: casting a compile-time-evaluable integer literal to a non-integer
+// primitive (e.g. `i8.max as real`, or more generally `SOME_CONST as real`
+// where SOME_CONST is an integer literal) crashed the compiler outright --
+// "Error: Unknown primitive type: real" -- whenever that cast appeared
+// anywhere CTFE gets involved in constraint building, e.g. as either side
+// of a comparison inside an `if` condition (buildLogicalConstraintSet calls
+// EvalCTFE on comparison operands to fold constant comparisons).
+//
+// Root cause (src/Semantic/CTFE.ts, EvalCTFE()'s ExplicitCastExpr case):
+// whenever the *source* value was an integer literal, the code
+// unconditionally treated the cast as an integer-to-integer range-checked
+// conversion and called Conversion.getIntegerMinMax(targetTypeDef.primitive)
+// -- using the CAST'S TARGET type -- to range-check it. getIntegerMinMax()
+// has no case for non-integer primitives and throws/asserts for them, so
+// any cast of an integer literal to `real`/`f32`/`f64` crashed instead of
+// just performing a normal widening numeric conversion (which never needs
+// an integer range check in the first place).
+//
+// The fix gates the integer range-check path on the TARGET type actually
+// being an integer type (Conversion.isInteger), and adds a sibling path
+// that performs a plain bigint -> number conversion when the target is
+// real/f32/f64 instead.
+// ============================================================================
+
+namespace cases_ctfe_int_literal_cast_to_real {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "CTFE: casting an integer-typed min/max constant to real no longer crashes the compiler",
+            """
+fn main(): int {
+    // Bare cast of a comptime integer constant to real -- this alone used
+    // to crash CTFE evaluation before any comparison was even involved.
+    let a = i8.max as real;
+    assert(a == 127.0, f"expected 127.0, got {a}");
+
+    let b = u64.min as real;
+    assert(b == 0.0, f"expected 0.0, got {b}");
+
+    // The actual trigger: used inside an `if` condition, where
+    // buildLogicalConstraintSet folds each comparison operand through
+    // EvalCTFE to look for constant comparisons.
+    let v: real = 50.0;
+    if v >= i8.min as real && v <= i8.max as real {
+        fmt.println("in range");
+    } else {
+        assert(false, "50.0 should be within i8's range as a real comparison");
+    }
+
+    let outOfRange: real = 1000.0;
+    if outOfRange >= i8.min as real && outOfRange <= i8.max as real {
+        assert(false, "1000.0 should NOT be within i8's range");
+    } else {
+        fmt.println("out of range");
+    }
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "in range\nout of range\nok"
+        );
+    }
+}

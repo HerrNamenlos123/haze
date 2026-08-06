@@ -4216,10 +4216,48 @@ export class SemanticElaborator {
         // Now elaborate all members again but without the stack, so they think they are the root now and fix themselves
         this.elaborateMembersOfStruct(structId, true);
         struct.membersFinalized = true;
+
+        // Nested structs (struct Foo { struct Bar { ... } }) are pre-instantiated eagerly
+        // by elaborateMethodsAndTypedefsOfStruct() above -- see the `nestedStructs.push(...)`
+        // there -- while THIS struct is still the root of the recursive elaboration stack.
+        // Being non-root at the time they're created, they hit the "If this is NOT a root
+        // struct, do NOT elaborate methods" branch and so never get their own .methods
+        // populated on the initial pass. Ordinarily a *later* lookup of that same nested
+        // struct while the stack is empty would fix it up via the CACHE HIT branch above
+        // (`if (!(struct.methodsFinalized || struct.methodsInProgress)) { ... }`), but if
+        // the nested struct is never looked up again after this root finishes (e.g. it's
+        // only ever referenced from within a sibling method's signature, such as a
+        // Result<NestedStruct, E> return type resolved while the parent was still mid-
+        // elaboration), it silently keeps an empty method list forever -- so operators like
+        // `nestedValue := x` (and any other method call on it) fail to resolve even though
+        // the method is right there in the source. Fix that up here, now that the stack is
+        // empty again, exactly the same way the CACHE HIT branch would.
+        this.finalizeNestedStructMethods(structId);
       }
     }
 
     return structId;
+  }
+
+  // See the call site above for why this is needed. Walks nested structs (recursively,
+  // since a nested struct can itself contain further nested structs) and finalizes methods
+  // for any that were pre-instantiated while a non-root ancestor was on the elaboration
+  // stack and therefore never got the chance to elaborate their own methods.
+  finalizeNestedStructMethods(structId: Semantic.TypeDefId) {
+    const struct = this.sr.typeDefNodes.get(structId);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+    for (const nestedId of struct.nestedStructs) {
+      const nested = this.sr.typeDefNodes.get(nestedId);
+      if (nested.variant !== Semantic.ENode.StructDatatype) {
+        continue; // nestedStructs may also contain elaborated enums
+      }
+      if (!(nested.methodsFinalized || nested.methodsInProgress)) {
+        nested.methodsInProgress = false;
+        nested.methodsFinalized = true;
+        this.elaborateMethodsAndTypedefsOfStruct(nestedId);
+      }
+      this.finalizeNestedStructMethods(nestedId);
+    }
   }
 
   elaborateVariableSymbolInScope(variableSymbolId: Collect.SymbolId) {

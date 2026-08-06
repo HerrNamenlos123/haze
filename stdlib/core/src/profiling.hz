@@ -491,7 +491,7 @@ namespace profiling {
     // captured -- see hzstd_panic_build_frames).
 
     export struct TraceEventInstantArgsData {
-        // stackTrace: []TraceCallFrame;
+        stackTrace: []TraceCallFrame;
         sampleTraceId: int;
     }
 
@@ -532,7 +532,7 @@ namespace profiling {
                 // ph: "I", cat: "devtools.timeline", name: "MemoryAllocation", s: "t",
                 ph: "I", cat: "devtools.timeline", name: "TimerInstall", s: "t",
                 args: TraceEventInstantArgs {
-                    data: TraceEventInstantArgsData { stackTrace: traceCallFramesForStacktrace(frame.stacktrace) },
+                    data: TraceEventInstantArgsData { stackTrace: traceCallFramesForStacktrace(frame.stacktrace), sampleTraceId: 0 },
                 },
             });
         }
