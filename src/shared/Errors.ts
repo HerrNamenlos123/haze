@@ -184,16 +184,46 @@ export function getCallerLocation(depth = 1): SourceLoc {
   };
 }
 
+// One step of a C++-style "in instantiation of ..." elaboration backtrace: the fully resolved
+// signature of the function/struct being elaborated (name, resolved generics, parameter and
+// return types) plus its definition's source location. Frames are ordered from the point of the
+// error down to (and including) the first fully concrete/monomorphized function -- see
+// SemanticElaborator.buildElaborationPathFromCurrentContext() for how this list is built.
+export type ElaborationPathFrame = {
+  signature: string;
+  loc: SourceLoc;
+};
+
+export function formatElaborationPath(path: ElaborationPathFrame[]): string {
+  return path
+    .map((frame) => {
+      const locText = frame.loc ? formatSourceLoc(frame.loc) : "<unknown location>";
+      return `  in ${frame.signature}\n    at ${locText}`;
+    })
+    .join("\n");
+}
+
 export class CompilerError extends Error {
   loc: SourceLoc;
   rawMessage: string;
   code: HazeErrorCode;
+  elaborationPath: ElaborationPathFrame[];
 
-  constructor(msg: string, loc: SourceLoc, code: HazeErrorCode) {
-    super(formatErrorMessage(msg, loc, code));
+  constructor(
+    msg: string,
+    loc: SourceLoc,
+    code: HazeErrorCode,
+    elaborationPath?: ElaborationPathFrame[]
+  ) {
+    const fullMsg =
+      elaborationPath && elaborationPath.length > 0
+        ? `${msg}\n${formatElaborationPath(elaborationPath)}`
+        : msg;
+    super(formatErrorMessage(fullMsg, loc, code));
     this.loc = loc;
     this.rawMessage = msg;
     this.code = code;
+    this.elaborationPath = elaborationPath ?? [];
   }
 }
 

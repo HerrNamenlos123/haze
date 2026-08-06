@@ -1572,7 +1572,27 @@ export namespace Semantic {
     symbolDependsOn: Map<Semantic.SymbolId, Set<Semantic.InstanceId>>;
   };
 
+  // Identifies the thing being elaborated by a single withContext() frame, for building
+  // an elaboration path (a la a C++ "instantiation of ..." backtrace) in error messages.
+  // `id` starts out null and is filled in by the caller once the real Semantic symbol/typedef
+  // has been created (both function and struct elaboration create their symbol partway through
+  // their own withContext callback, after the frame has already been pushed). Until it is filled
+  // in, `fallbackName` is used instead so the frame is still reported if an error happens before
+  // the real symbol exists.
+  export type ElaborationPathEntry = {
+    kind: "function" | "struct";
+    fallbackName: string;
+    id: Semantic.SymbolId | Semantic.TypeDefId | null;
+    // Definition site of the function/struct being elaborated (not a call site: a symbol can be
+    // called/instantiated from many places, but its definition is unambiguous and always available).
+    sourceloc: SourceLoc;
+  };
+
   export type ElaborationContext = {
+    // Set only on frames pushed directly for a function or struct (generic) instantiation.
+    // Frames pushed for other bookkeeping reasons (e.g. member access, default parameter
+    // values) leave this undefined and are skipped when building the elaboration path.
+    pathEntry?: ElaborationPathEntry;
     substitute: Map<Collect.SymbolId, Semantic.ExprId>;
     currentScope: Collect.ScopeId; // This is the scope in which we are elaborating and it changes (e.g. A<i32> when elaborating A<i32>.B)
     genericsScope: Collect.ScopeId; // This is the scope for generics which does not change (e.g. A<i32>.B<u8> => i32 and u8 are elaborated in the same scope)
@@ -1612,6 +1632,7 @@ export namespace Semantic {
   export function isolateElaborationContext(
     parent: ElaborationContext,
     args: {
+      pathEntry?: ElaborationPathEntry;
       currentScope: Collect.ScopeId;
       genericsScope: Collect.ScopeId;
       constraints: ConstraintSet;
@@ -1619,6 +1640,7 @@ export namespace Semantic {
     }
   ): ElaborationContext {
     return {
+      pathEntry: args.pathEntry,
       substitute: new Map(parent.substitute),
       constraints: args.constraints.clone(),
       currentScope: args.currentScope,

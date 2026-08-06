@@ -30,6 +30,7 @@ import {
   assert,
   assertCompilerError,
   CompilerError,
+  type ElaborationPathFrame,
   ErrorType,
   formatSourceLoc,
   InternalError,
@@ -79,6 +80,13 @@ class GenericDeductionIncompleteError extends CompilerError {}
 
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
+  // This is a stack, when a new current context is set, the old one is pushed here, then the old one
+  // is pulled out of here and assigned to currentContext again. We need this stack to be able to
+  // get debug info of where we are in the elaboration, what functions elaborated what functions,
+  // to be able to produce an elaboration path for error messages.
+  // Ideally, this would be combined and currentContext is just the topmost element, but it's a bigger rewrite.
+  prevContextStack: Semantic.ElaborationContext[] = [];
+
   inFunction: Semantic.SymbolId | null = null;
   inAttemptExpr: Semantic.ExprId | null = null;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
@@ -151,22 +159,122 @@ export class SemanticElaborator {
     },
     fn: () => T
   ): T {
+    // The prevContextStack is an after-hack and not a good solution, it tries to minimally touch the code.
+    //
+    // This MUST be try/finally: elaboration routinely does speculative attempts (overload
+    // resolution, implicit-constructor-conversion probing, `attempt` expressions, ...) where a
+    // CompilerError thrown deep inside fn() is caught by an ancestor and swallowed so a different
+    // path can be tried instead. Without try/finally, that throw unwinds straight past the
+    // pop()/restore below, leaking this frame onto prevContextStack forever and leaving
+    // currentContext pointing at a context that is no longer live. The next successful elaboration
+    // of the very same function then pushes a second, correct frame on top of the leaked one,
+    // which is exactly why every symbol was showing up twice in the elaboration path: the first
+    // (failed and abandoned) attempt's frame was never popped.
     const oldContext = this.currentContext;
-    this.currentContext = args.context;
     const oldAttempt = this.inAttemptExpr;
-    this.inAttemptExpr = args.inAttemptExpr;
     const oldReturn = this.inFunction;
-    this.inFunction = args.inFunction;
     const oldReturnIds = this.functionReturnsInstanceIds;
+
+    this.prevContextStack.push(oldContext);
+    this.currentContext = args.context;
+    this.inAttemptExpr = args.inAttemptExpr;
+    this.inFunction = args.inFunction;
     this.functionReturnsInstanceIds = args.functionReturnsInstanceIds;
 
-    const result = fn();
+    try {
+      return fn();
+    } finally {
+      this.prevContextStack.pop();
+      this.functionReturnsInstanceIds = oldReturnIds;
+      this.inFunction = oldReturn;
+      this.inAttemptExpr = oldAttempt;
+      this.currentContext = oldContext;
+    }
+  }
 
-    this.functionReturnsInstanceIds = oldReturnIds;
-    this.inFunction = oldReturn;
-    this.inAttemptExpr = oldAttempt;
-    this.currentContext = oldContext;
-    return result;
+  // Builds a C++-style "in instantiation of ..." elaboration path from the point of the error down
+  // to (and including) the first fully concrete function, i.e. the first frame whose function no
+  // longer depends on any unresolved generic parameter -- NOT simply the first frame with zero
+  // generics of its own (a non-generic method of a generic struct is still not concrete until the
+  // struct's generics are resolved). Frames beyond that point are just "how we eventually got
+  // called from main" and aren't useful for diagnosing a generics/elaboration issue.
+  //
+  // Ordering: prevContextStack holds ancestors oldest-first with currentContext being the
+  // innermost/live frame (the one active when the error was thrown), so appending currentContext
+  // and reversing yields innermost-first, matching "from the point of the error, down".
+  buildElaborationPathFromCurrentContext(): ElaborationPathFrame[] {
+    const contextStack = [...this.prevContextStack, this.currentContext].reverse();
+    const path: ElaborationPathFrame[] = [];
+
+    // A single function elaboration re-enters withContext() several times against its own
+    // (already current) context object -- once per parameter with a variable symbol, once for
+    // the body block, on top of the frame elaborateFunctionSymbol() itself pushed (see
+    // elaborateFunctionSymbol()'s parameter loop and makeAndElaborateBlockScope() call). Those
+    // re-pushes are sub-phases of the SAME instantiation, not a new nested one, and are only
+    // distinguishable from genuine recursion by object identity: a true recursive call always
+    // builds a brand new pathEntry (a fresh object literal per elaborateFunctionSymbol()/
+    // instantiateAndElaborateStruct() call), so skipping consecutive frames that share the exact
+    // same pathEntry reference collapses the sub-phase pushes without ever hiding real recursion.
+    let lastEntry: Semantic.ElaborationPathEntry | undefined;
+
+    for (const context of contextStack) {
+      const entry = context.pathEntry;
+      if (!entry) {
+        continue; // Frame pushed for other bookkeeping, not a function/struct instantiation
+      }
+      if (entry === lastEntry) {
+        continue; // Same instantiation re-entering withContext() for a sub-phase, not new nesting
+      }
+      lastEntry = entry;
+
+      if (entry.kind === "function") {
+        if (entry.id !== null) {
+          const symbolId = entry.id as Semantic.SymbolId;
+          const symbol = this.sr.symbolNodes.get(symbolId);
+          assert(symbol.variant === Semantic.ENode.FunctionSymbol);
+          // name<resolvedGenerics>, from serializeFullSymbolName(), plus the full
+          // (params) -> returnType, which renders as "(...) :: deferred" while this very
+          // frame's function type hasn't finished elaborating yet -- itself a useful signal.
+          const name = Semantic.serializeFullSymbolName(this.sr, symbolId);
+          const signature =
+            symbol.type !== (-1 as Semantic.TypeDefId)
+              ? `${name}${Semantic.serializeTypeDef(this.sr, symbol.type)}`
+              : `${name}(...) :: not yet elaborated`;
+          path.push({ signature: signature, loc: entry.sourceloc });
+          if (symbol.concrete) {
+            break;
+          }
+        } else {
+          // Error happened before the Semantic.FunctionSymbol was created (e.g. while
+          // elaborating this very function's parameter types) -- not concrete by definition,
+          // since we never got far enough to know its type.
+          path.push({
+            signature: `${entry.fallbackName}(...) :: not yet elaborated`,
+            loc: entry.sourceloc,
+          });
+        }
+      } else {
+        if (entry.id !== null) {
+          const typeDefId = entry.id as Semantic.TypeDefId;
+          const typeDef = this.sr.typeDefNodes.get(typeDefId);
+          assert(typeDef.variant === Semantic.ENode.StructDatatype);
+          path.push({
+            signature: `struct ${Semantic.serializeTypeDef(this.sr, typeDefId)}`,
+            loc: entry.sourceloc,
+          });
+          if (typeDef.concrete) {
+            break;
+          }
+        } else {
+          path.push({
+            signature: `struct ${entry.fallbackName}<...> :: not yet elaborated`,
+            loc: entry.sourceloc,
+          });
+        }
+      }
+    }
+
+    return path;
   }
 
   getFunctionSymbolReturnType(id: Semantic.SymbolId) {
@@ -1580,7 +1688,8 @@ export class SemanticElaborator {
         throw new CompilerError(
           `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
           callExpr.sourceloc,
-          HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart
+          HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
+          this.buildElaborationPathFromCurrentContext()
         );
       }
       assert(ftype.variant === Semantic.ENode.FunctionDatatype);
@@ -1616,7 +1725,8 @@ export class SemanticElaborator {
       throw new CompilerError(
         `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
         callExpr.sourceloc,
-        HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart
+        HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
+        this.buildElaborationPathFromCurrentContext()
       );
     }
     if (calledExprType.variant === Semantic.ENode.FunctionDatatype) {
@@ -3832,23 +3942,31 @@ export class SemanticElaborator {
       );
     }
 
-    let context = this.currentContext;
+    // Filled in with the real Semantic.TypeDefId below, once instantiateAndElaborateStruct()
+    // creates it (or finds it was already elaborated via the cache).
+    const pathEntry: Semantic.ElaborationPathEntry = {
+      kind: "struct",
+      fallbackName: definedStructType.name,
+      id: null,
+      sourceloc: definedStructType.sourceloc,
+    };
 
-    if (definedStructType.generics.length !== 0) {
-      assert(definedStructType.lexicalScope);
-      context = Semantic.isolateElaborationContext(context, {
-        currentScope: context.currentScope,
-        genericsScope: context.currentScope,
-        constraints: context.constraints,
-        instanceDeps: {
-          instanceDependsOn: new Map(),
-          structMembersDependOn: new Map(),
-          symbolDependsOn: new Map(),
-        },
-      });
-      for (let i = 0; i < definedStructType.generics.length; i++) {
-        context.substitute.set(definedStructType.generics[i], genericArgs[i]);
-      }
+    // Always isolate (even with zero generics) so pathEntry can be attached to a context object
+    // that belongs to this frame alone, never mutating the shared parent context in place.
+    assert(definedStructType.lexicalScope);
+    const context = Semantic.isolateElaborationContext(this.currentContext, {
+      pathEntry: pathEntry,
+      currentScope: this.currentContext.currentScope,
+      genericsScope: this.currentContext.currentScope,
+      constraints: this.currentContext.constraints,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
+    });
+    for (let i = 0; i < definedStructType.generics.length; i++) {
+      context.substitute.set(definedStructType.generics[i], genericArgs[i]);
     }
 
     return this.withContext(
@@ -3857,7 +3975,7 @@ export class SemanticElaborator {
         inAttemptExpr: null,
         inFunction: null,
       },
-      () => this.instantiateAndElaborateStruct(definedStructTypeId)
+      () => this.instantiateAndElaborateStruct(definedStructTypeId, pathEntry)
     );
   }
 
@@ -4076,7 +4194,8 @@ export class SemanticElaborator {
   }
 
   instantiateAndElaborateStruct(
-    definedStructTypeId: Collect.TypeDefId // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
+    definedStructTypeId: Collect.TypeDefId, // The defining struct datatype to be instantiated (e.g. struct Foo<T> {})
+    pathEntry: Semantic.ElaborationPathEntry
   ): Semantic.TypeDefId {
     const definedStructType = this.sr.cc.typeDefNodes.get(definedStructTypeId);
     assert(definedStructType.variant === Collect.ENode.StructTypeDef);
@@ -4108,6 +4227,7 @@ export class SemanticElaborator {
       parentSymbolId: parentSymbolId,
     });
     if (existing) {
+      pathEntry.id = existing;
       const struct = this.sr.typeDefNodes.get(existing);
       assert(struct.variant === Semantic.ENode.StructDatatype);
 
@@ -4157,6 +4277,9 @@ export class SemanticElaborator {
         annotations: definedStructType.annotations,
       }
     );
+    // Now that the real typedef exists, the elaboration path can report it (with its
+    // generics, once concrete is known) instead of falling back to the plain Collect name.
+    pathEntry.id = structId;
 
     if (struct.concrete) {
       insertIntoStructDefCache(this.sr, definedStructTypeId, {
@@ -5462,7 +5585,17 @@ export class SemanticElaborator {
     const func = this.sr.cc.symbolNodes.get(functionSignature.originalFunction);
     assert(func.variant === Collect.ENode.FunctionSymbol);
 
+    // Filled in with the real Semantic.SymbolId below, once it exists (or once we find it was
+    // already elaborated via the cache). Until then the elaboration path falls back to this name.
+    const pathEntry: Semantic.ElaborationPathEntry = {
+      kind: "function",
+      fallbackName: func.name,
+      id: null,
+      sourceloc: func.sourceloc,
+    };
+
     const newContext = Semantic.isolateElaborationContext(this.currentContext, {
+      pathEntry: pathEntry,
       genericsScope: func.functionScope || func.parentScope,
       currentScope: func.functionScope || func.parentScope,
       constraints: this.currentContext.constraints,
@@ -5498,6 +5631,7 @@ export class SemanticElaborator {
               parentSymbolId: parentSymbolId,
             });
         if (existing) {
+          pathEntry.id = existing;
           return existing;
         }
 
@@ -5557,6 +5691,9 @@ export class SemanticElaborator {
             originalCollectedFunction: functionSignature.originalFunction,
           }
         );
+        // Now that the real symbol exists, the elaboration path can report it (with its
+        // generics, once concrete is known) instead of falling back to the plain Collect name.
+        pathEntry.id = symbolId;
 
         if (childOf) {
           const parent = this.sr.typeDefNodes.get(childOf);
@@ -8150,7 +8287,8 @@ export class SemanticElaborator {
       throw new CompilerError(
         `Function ${functionSymbol.name}() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
         sourceloc,
-        HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart2
+        HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart2,
+        this.buildElaborationPathFromCurrentContext()
       );
     }
 
