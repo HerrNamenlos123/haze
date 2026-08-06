@@ -97,6 +97,12 @@ export opaque struct App {
     presentMode: wgpu.PresentMode;
     gfx: mut renderer.gfx.Context;
     canvas: mut renderer.gfx.Canvas;
+    // Owned once at startup and reset() in place every nextFrame(), never
+    // reconstructed per tick -- see Frame's doc comment in renderer.hz for
+    // why (reference semantics for correct sharing across every
+    // Renderer(frame, canvas) call this frame, without the per-frame heap
+    // allocation a fresh Frame(gfx) every tick would cost).
+    frame: mut renderer.gfx.Frame;
     windowState: renderer.gfx.CanvasSize;
     mousePosition: Vec2 = {};
     resized: bool = false;
@@ -114,7 +120,7 @@ export opaque struct App {
     wheelDeltaThisFrame: Vec2 = {};
     wheelModifiersThisFrame: KeyModifiers = KeyModifiers.None;
 
-    fn constructor(options: AppOptions): Result<App, str> {
+    fn constructor(options: AppOptions): Result<mut App, str> {
         let initResult = sdl.init();
         if !initResult { return f"SDL init failed: {initResult}"; }
 
@@ -162,6 +168,7 @@ export opaque struct App {
         });
 
         let pointerButtons = AppPointerButtons {};
+        let frame = renderer.gfx.Frame(gfx);
         let app = App {
             window: window,
             device: device,
@@ -171,6 +178,7 @@ export opaque struct App {
             presentMode: presentMode,
             gfx: gfx,
             canvas: canvas,
+            frame: frame,
             windowState: windowState,
             mousePosition: {},
             _pointerButtons: pointerButtons,
@@ -258,9 +266,11 @@ export opaque struct App {
         return this.wheelModifiersThisFrame;
     }
 
-    // Polls events, handles resize, and returns a fresh Frame for this tick.
+    // Polls events, handles resize, and returns this App's Frame reset for
+    // this tick (the same persistent instance every call, not a fresh
+    // allocation -- see Frame's doc comment in renderer.hz).
     // Returns none when the window has been closed — use as a while condition.
-    fn nextFrame(): mut renderer.gfx.Frame | none {
+    mut fn nextFrame(): mut renderer.gfx.Frame | none {
         if this.window.shouldClose() {
             return none;
         }
@@ -296,7 +306,8 @@ export opaque struct App {
             }
         }
 
-        return renderer.gfx.Frame(this.gfx);
+        this.frame.reset();
+        return this.frame;
     }
 
     fn destroy() {

@@ -1250,19 +1250,52 @@ export opaque struct Canvas {
 // Renderer.commit() below just adds another render pass to this encoder
 // instead of submitting on its own.
 //
-// Usage is always: create one Frame per application frame, create/commit as
-// many Renderer(frame, canvas) as needed against any Canvas (offscreen or
-// surface-backed, in any order, sampling each other's output freely), then
-// call frame.present() exactly once at the end.
-export opaque inline struct Frame {
+// Deliberately NOT constructed fresh every frame. A Frame is a single
+// mutable accumulator shared BY REFERENCE across Runtime.render(), every
+// Renderer(frame, canvas) built against it, and every nested
+// canvas-element/offscreen-composite call underneath that -- all of them
+// must observe and mutate the SAME pendingPresents list and encoder, not an
+// independent copy each (an earlier `inline` version of this struct gave
+// every one of those call sites its own value-copy, so a surface canvas's
+// commit() registered its pending present on a copy frame.present() never
+// saw -- its acquired surface texture then never got presented, and the
+// next frame's getCurrentTexture() call failed wgpu's acquire/present
+// pairing with "Surface image is already acquired").
+//
+// Reference semantics need a heap-allocated `struct`, but that must NOT mean
+// a fresh heap allocation every frame either: App owns exactly one Frame,
+// created once at startup, and reset() below reuses it every tick --
+// pendingPresents.clear() keeps its backing allocation (same trick
+// Renderer.transforms/glyphBuffer already use) instead of reallocating.
+// Only `encoder` is genuinely rebuilt each frame: a wgpu CommandEncoder is a
+// single-use handle consumed by finish(), not something Haze-side pooling
+// can avoid -- that allocation lives in wgpu-native, not here.
+//
+// Usage is always: App.nextFrame() returns this same Frame reset for the new
+// tick, create/commit as many Renderer(frame, canvas) as needed against any
+// Canvas (offscreen or surface-backed, in any order, sampling each other's
+// output freely), then call frame.present() exactly once at the end.
+export opaque struct Frame {
     gfx: mut Context;
     encoder: wgpu.CommandEncoder;
-    pendingPresents?: []mut Canvas;
+    pendingPresents: []mut Canvas = [];
 
     fn constructor(gfx: mut Context) {
         let encoder = gfx.device.createCommandEncoder();
         assert(encoder, "gfx: failed to create command encoder");
         return Frame { gfx: gfx, encoder: encoder };
+    }
+
+    // Rearms this same Frame for a new tick in place: a fresh encoder (the
+    // one part of this that can't be pooled, see above) and
+    // pendingPresents cleared without releasing its backing storage. Call
+    // at the top of every App.nextFrame() instead of constructing a new
+    // Frame.
+    mut fn reset() {
+        let encoder = this.gfx.device.createCommandEncoder();
+        assert(encoder, "gfx: failed to create command encoder");
+        this.encoder = encoder;
+        this.pendingPresents.clear();
     }
 
     // Submits every render pass recorded this frame (across however many
@@ -1277,10 +1310,8 @@ export opaque inline struct Frame {
         }
         this.gfx.queue.submit(commandBuffer);
 
-        if this.pendingPresents {
-            for canvas in this.pendingPresents {
-                canvas.present();
-            }
+        for canvas in this.pendingPresents {
+            canvas.present();
         }
     }
 }
@@ -1939,9 +1970,7 @@ export opaque struct Renderer {
         // frame.present() -- not here. Just register that this canvas needs
         // presenting once that happens.
         if canvas.surface {
-            if this.frame.pendingPresents {
-                this.frame.pendingPresents.push(canvas);
-            }
+            this.frame.pendingPresents.push(canvas);
         }
 
         // TODO: This is supposed to move into an async event queue at some point once we have task switching
