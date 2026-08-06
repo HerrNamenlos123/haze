@@ -1,0 +1,701 @@
+// ── ChromeTrace ───────────────────────────────────────────────────────────
+//
+// A self-contained library for emitting Chrome/V8-compatible profiling output:
+// both the legacy ".cpuprofile" format and the modern DevTools "trace.json"
+// (Trace Event Format / JSON Array Format) the Performance panel loads.
+//
+// Everything callers need to know about how Chrome/V8/DevTools actually
+// parse these formats lives here, reverse-engineered against real
+// Chrome-recorded traces and devtools-frontend's own source (not just the
+// informal docs, which are missing several load-bearing details). Callers
+// (e.g. profiling.hz) only need to feed in samples and events through the
+// public builder API below; they should never need to know what a
+// "ProfileChunk" is.
+//
+// ── Two hard-won invariants baked into this file ───────────────────────────
+//
+// 1. Sample/task ordering (see TraceBuilder.addTask/addCpuProfileSamples):
+//    DevTools reconstructs each CPU sample's timestamp as
+//    `profile.startTime + cumulative sum of timeDeltas`, and the FIRST
+//    sample's timestamp is therefore `profile.startTime + timeDeltas[0]` --
+//    never exactly `profile.startTime` itself. Samples and trace events
+//    (e.g. a task) are then merged by timestamp and walked to build nested
+//    flame chart rectangles; a task's JS stack gets reset to empty exactly
+//    when the task event starts. If a sample's timestamp lands BEFORE the
+//    task event meant to contain it, that sample gets merged in first and
+//    becomes a top-level sibling instead of a nested child -- silent,
+//    plausible-looking nonsense (e.g. "foo -> Task -> bar" instead of
+//    "Task -> foo -> bar"). TraceBuilder avoids this by construction: a
+//    profile's startTime always equals its owning task's start time, and
+//    the first timeDelta is always tiny (1us) rather than a full sampling
+//    interval.
+//
+// 2. Marker event visibility (see TraceBuilder.addInstantMarker):
+//    DevTools only renders an event in the flame chart/track if its `name`
+//    matches a predefined style (Styles.ts's hardcoded event registry) or
+//    it is one of a handful of recognized "timing API" shapes -- an
+//    arbitrary custom event name is silently invisible, and since a
+//    track's header is only appended once it has a visible entry, an
+//    all-custom-named track like a memory allocation timeline would never
+//    even show up. Of the recognized shapes, a `PerformanceMark`-shaped
+//    event (cat: "blink.user_timing", ph: "I") is the only one whose
+//    custom name is actually used as the on-chart label (console.timeStamp's
+//    custom text is not; it always displays as "Timestamp"). That shape
+//    also gets its embedded stack trace's line/column numbers
+//    auto-decremented by DevTools, so (unlike every other call frame in
+//    this file) the frames passed to addInstantMarker must be 1-indexed.
+//
+// See stdlib/core/src/profiling.hz for the only current consumer.
+
+namespace ChromeTrace {
+    // ── Generic call frame + CPU profile tree model ─────────────────────────
+    //
+    // FrameRef is the caller-facing input: whatever "one frame of a call
+    // stack" means to the caller (a real captured frame, or a synthetic
+    // marker like "(truncated)"), reduced to just what a call frame needs to
+    // be represented in either output format. `line`/`column` are 1-indexed
+    // (Haze source location convention) with 0 meaning "unknown/absent" --
+    // CpuProfileBuilder does whatever index conversion each output format
+    // needs internally, callers never adjust these themselves.
+    export inline struct FrameRef {
+        name: str;
+        url: str = "";
+        line: int = 0;
+        column: int = 0;
+    }
+
+    // ── .cpuprofile-compatible call tree (legacy CDP Profiler.Profile shape) ─
+
+    export struct CpuProfileCallFrame {
+        functionName: str;
+        scriptId: str;
+        url: str;
+        lineNumber: int;
+        columnNumber: int;
+    }
+
+    export struct CpuProfileNode {
+        id: int;
+        callFrame: CpuProfileCallFrame;
+        hitCount: int;
+        children: []int;
+    }
+
+    export struct CpuProfile {
+        nodes: []CpuProfileNode;
+        startTime: real;
+        endTime: real;
+        samples: []int;
+        timeDeltas: []int;
+    }
+
+    // V8's inspector protocol uses 0-indexed line/column numbers; FrameRef's
+    // are 1-indexed (0 means absent), hence the "- 1" below.
+    fn cpuProfileCallFrame(frame: FrameRef): CpuProfileCallFrame {
+        return CpuProfileCallFrame {
+            functionName: frame.name.length > 0 ? frame.name : "(unknown)",
+            scriptId: frame.url.length > 0 ? "1" : "0",
+            url: frame.url,
+            lineNumber: frame.line > 0 ? frame.line - 1 : -1,
+            columnNumber: frame.url.length > 0 ? frame.column - 1 : -1,
+        };
+    }
+
+    // ── trace.json-compatible call tree (the shape "Profile"/"ProfileChunk" ──
+    // trace events carry, which differs from CpuProfileNode above in several
+    // load-bearing ways DevTools silently refuses to render without: nodes
+    // use a single `parent` id instead of a `children` list and have no
+    // `hitCount`; scriptId is a JSON number, not a string; url/lineNumber/
+    // columnNumber are omitted entirely (not ""/-1) when absent.
+
+    export struct TraceCallFrame {
+        functionName: str;
+        codeType: str;
+        scriptId: int;
+        url?: str;
+        lineNumber?: int;
+        columnNumber?: int;
+    }
+
+    export struct TraceProfileNode {
+        id: int;
+        callFrame: TraceCallFrame;
+        parent?: int;
+    }
+
+    // Sentinel frame indices for CpuProfileBuilder's own synthetic nodes.
+    // Real frames are always identified by their (name, url, line, column)
+    // FrameRef value; these can't collide with that since they're never
+    // produced by frameKey() below.
+    const rootFrameKey = "$root";
+    const truncatedFrameKey = "$truncated";
+    const lostSamplesFrameKey = "$lostSamples";
+
+    fn frameKey(frame: FrameRef): str {
+        return f"{frame.url}:{frame.line}:{frame.column}:{frame.name}";
+    }
+
+    // ── CpuProfileBuilder ────────────────────────────────────────────────────
+    //
+    // Incrementally builds a deduplicated call tree (the "collapsed call
+    // tree" every sampling profiler UI expects) plus the flat chronological
+    // samples/timeDeltas lists, from a plain sequence of (timestamp, stack)
+    // samples. This is the one generic piece both output formats share;
+    // everything Haze-profiler-specific (off-cpu detection, deciding when a
+    // gap means lost samples vs. idle time, reading hzstd's raw sample
+    // shape) is the caller's job -- see profiling.hz's adapter loop, which
+    // is the only thing that decides *whether* and *how* to call addSample.
+    //
+    // Off-CPU time (the profiled thread simply wasn't running) is
+    // represented by NOT calling addSample at all for that gap: the next
+    // real sample's timeDelta then simply spans the full gap, same as any
+    // other inter-sample interval, so no marker/frame/block appears for it
+    // at all -- "nothing in the trace" for time that wasn't spent on-CPU.
+    // (A future distinction between "voluntarily yielded" and "kernel
+    // preemption" can add a real visible idle marker for the voluntary case
+    // without changing this default.)
+    export struct CpuProfileBuilder {
+        nodes: []CpuProfileNode = [];
+        nodeKeys: []str = []; // parallel to `nodes`, used for dedup lookups
+        samples: []int = [];
+        timeDeltas: []int = [];
+        startTimeUs: real = 0.0;
+        lastTimeUs: real = 0.0;
+        sampleCount: int = 0;
+
+        fn constructor() {
+            let builder = CpuProfileBuilder {};
+            builder.nodes.push(CpuProfileNode {
+                id: 1,
+                callFrame: CpuProfileCallFrame { functionName: "(root)", scriptId: "0", url: "", lineNumber: -1, columnNumber: -1 },
+                hitCount: 0,
+                children: [],
+            });
+            builder.nodeKeys.push(rootFrameKey);
+            return builder;
+        }
+
+        // Finds (or creates) a child of nodes[parent] identified by `key`,
+        // returning its index into `nodes`. Shared by real captured frames
+        // and synthetic marker frames (e.g. "(truncated)") alike -- same
+        // node-sharing either way, just parameterized over what identifies
+        // the frame and how to build its CpuProfileCallFrame the first time
+        // it's seen.
+        mut fn findOrCreateChild(parent: int, key: str, callFrame: CpuProfileCallFrame): int {
+            // Haze has no `break`, so this scans every child rather than
+            // stopping at the first match; only the first match found is
+            // ever kept.
+            let childNode = -1;
+            let children = this.nodes[parent].children;
+            for (let c = 0; c < children.length; c++) {
+                let candidate = children[c] - 1; // node id -> array index
+                if childNode == -1 && this.nodeKeys[candidate] == key {
+                    childNode = candidate;
+                }
+            }
+
+            if childNode == -1 {
+                let newId = this.nodes.length + 1;
+                this.nodes.push(CpuProfileNode {
+                    id: newId,
+                    callFrame: callFrame,
+                    hitCount: 0,
+                    children: [],
+                });
+                this.nodeKeys.push(key);
+                this.nodes[parent].children.push(newId);
+                childNode = newId - 1;
+            }
+
+            return childNode;
+        }
+
+        // Records one sample: the JS stack (outermost-first) that was
+        // executing at `timestampUs`. `truncated` marks that the real call
+        // chain continued above `frames` but wasn't captured -- inserted as
+        // an extra synthetic ancestor so a flamegraph reads this as
+        // "execution really did continue further here, we just don't know
+        // what it was" instead of silently looking like a shallower call
+        // than it actually was.
+        mut fn addSample(timestampUs: real, frames: []FrameRef, truncated: bool = false): void {
+            if this.sampleCount == 0 {
+                this.startTimeUs = timestampUs;
+                this.timeDeltas.push(0);
+            } else {
+                this.timeDeltas.push((timestampUs - this.lastTimeUs) as int);
+            }
+            this.lastTimeUs = timestampUs;
+            this.sampleCount += 1;
+
+            let currentNode = 0; // index into `nodes`; 0 is the root
+
+            if truncated {
+                currentNode = this.findOrCreateChild(currentNode, truncatedFrameKey, CpuProfileCallFrame {
+                    functionName: "(truncated -- call stack exceeded capture size)",
+                    scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
+                });
+            }
+
+            // `frames` is outermost-first; the call tree is built the same way.
+            for (let i = 0; i < frames.length; i++) {
+                currentNode = this.findOrCreateChild(currentNode, frameKey(frames[i]), cpuProfileCallFrame(frames[i]));
+            }
+
+            this.nodes[currentNode].hitCount += 1;
+            this.samples.push(this.nodes[currentNode].id);
+        }
+
+        // Records a sample known to have real code running (a hard fact
+        // from the kernel, e.g. PERF_RECORD_LOST -- not an inference from
+        // timing like an off-cpu gap), but whose actual stack wasn't
+        // captured. Takes an explicit duration in addition to the marker's
+        // own point-in-time timestamp, since -- unlike a real sample --
+        // there is no "next sample" for the timeline reconstruction to
+        // infer this marker's own visual width from.
+        mut fn addLostSamplesMarker(timestampUs: real, durationUs: real): void {
+            if this.sampleCount == 0 {
+                this.startTimeUs = timestampUs;
+                this.timeDeltas.push(0);
+            } else {
+                this.timeDeltas.push((timestampUs - this.lastTimeUs) as int);
+            }
+            this.sampleCount += 1;
+
+            let lostNode = this.findOrCreateChild(0, lostSamplesFrameKey, CpuProfileCallFrame {
+                functionName: "(samples lost -- kernel ring buffer overflow, real code ran here but wasn't captured)",
+                scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
+            });
+            this.nodes[lostNode].hitCount += 1;
+            this.samples.push(this.nodes[lostNode].id);
+
+            // This marker's own visual duration comes from the NEXT
+            // timeDelta pushed (timestamp[i+1] - timestamp[i] is what any
+            // trace/flamechart viewer treats as sample i's width) -- so it
+            // is deliberately not accounted for here; addSample's next call
+            // pushes it via `timestampUs - this.lastTimeUs`, and using
+            // `timestampUs + durationUs` as that basis (instead of
+            // `timestampUs`) is what makes that next delta equal
+            // `durationUs` when nothing else has happened in between.
+            this.lastTimeUs = timestampUs + durationUs;
+        }
+
+        fn build(): CpuProfile {
+            return CpuProfile {
+                nodes: this.nodes,
+                startTime: this.startTimeUs,
+                endTime: this.lastTimeUs,
+                samples: this.samples,
+                timeDeltas: this.timeDeltas,
+            };
+        }
+    }
+
+    export fn cpuProfileToJson(profile: CpuProfile): str {
+        return json.stringify<CpuProfile>(profile);
+    }
+
+    export fn writeCpuProfile(profile: CpuProfile, path: str) {
+        return fs.writeText(path, cpuProfileToJson(profile));
+    }
+
+    // ── trace.json wire format ───────────────────────────────────────────────
+
+    export inline struct TraceMetadata {
+        source: str;
+        dataOrigin: str;
+    }
+
+    export inline struct Trace {
+        metadata: TraceMetadata;
+        traceEvents: []TraceEvent;
+    }
+
+    export inline struct Metadata {
+        pid: int;
+        tid: int;
+        ts: real = 0.0;
+        ph: str = "M";
+        cat: str = "__metadata";
+        name: str;
+
+        inline struct Args {
+            name: str;
+        }
+        args: Args;
+
+        static fn processName(pid: int, tid: int, name: str) {
+            return Metadata { pid: pid, tid: tid, name: "process_name", args: { name: name } };
+        }
+
+        static fn threadName(pid: int, tid: int, name: str) {
+            return Metadata { pid: pid, tid: tid, name: "thread_name", args: { name: name } };
+        }
+    }
+
+    // A plain complete ("X") duration event, e.g. Chrome's own "RunTask".
+    // Real traces never leave a CPU-profiled thread bare between a
+    // Profile/ProfileChunk stream and an otherwise-empty track: DevTools'
+    // flame chart for the sampled call tree renders as an overlay *within*
+    // such task blocks on that thread, not as its own self-sufficient lane
+    // -- a thread with zero "X" events was observed to never show a flame
+    // chart no matter how correct the Profile/ProfileChunk payload itself
+    // was. This is also the anchor event whose start resets the JS call
+    // stack DevTools reconstructs (see invariant 1 in the file header).
+    export inline struct TraceEventComplete {
+        pid: int;
+        tid: int;
+        ts: real;
+        dur: real;
+        ph: str = "X";
+        cat: str = "disabled-by-default-devtools.timeline";
+        name: str = "RunTask";
+    }
+
+    export inline struct TraceEventProfile {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str = "P";
+        cat: str = "disabled-by-default-v8.cpu_profiler";
+        name: str = "Profile";
+        id: str;
+
+        inline struct Args {
+            inline struct Data {
+                startTime: real;
+                source: str = "Internal";
+            }
+            data: Data;
+        }
+        args: Args;
+    }
+
+    export inline struct TraceCpuProfileChunk {
+        nodes?: []TraceProfileNode;
+        samples: []int;
+    }
+
+    export inline struct TraceEventProfileChunk {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str = "P";
+        cat: str = "disabled-by-default-v8.cpu_profiler";
+        name: str = "ProfileChunk";
+        id: str;
+
+        inline struct Args {
+            inline struct Data {
+                cpuProfile: TraceCpuProfileChunk;
+                timeDeltas: []int;
+                source: str = "Internal";
+            }
+            data: Data;
+        }
+        args: Args;
+    }
+
+    export inline struct TraceFrame {
+        frame: str;
+        processId: int;
+        url: str;
+    }
+
+    // Essential to make stack traces work at all: without this event, the
+    // Summary tab always shows raw args JSON instead of a Call Stack panel.
+    export inline struct TraceTracingStartedInBrowser {
+        pid: int;
+        tid: int;
+        ts: real = 0.0;
+        ph: str = "I";
+        s: str = "t";
+        cat: str = "disabled-by-default-devtools.timeline";
+        name: str = "TracingStartedInBrowser";
+
+        inline struct Args {
+            inline struct Data {
+                frames: []TraceFrame;
+            }
+            data: Data;
+        }
+        args: Args;
+
+        fn constructor(pid: int, tid: int, frame: str, url: str) {
+            return TraceTracingStartedInBrowser {
+                pid: pid, tid: tid,
+                args: { data: { frames: [ { frame: frame, processId: pid, url: url } ] } },
+            };
+        }
+    }
+
+    // A "PerformanceMark"-shaped instant event -- see invariant 2 in the
+    // file header for why this exact shape (cat: "blink.user_timing") is
+    // required for a custom-named marker to be visible at all, and why its
+    // embedded stack trace's line/column numbers must be 1-indexed (unlike
+    // every other call frame in this file, DevTools decrements these for
+    // us).
+    export inline struct TraceEventInstantMarker {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str = "I";
+        cat: str = "blink.user_timing";
+        name: str;
+
+        inline struct Args {
+            inline struct Data {
+                stackTrace: []TraceCallFrame;
+            }
+            data: Data;
+        }
+        args: Args;
+    }
+
+    // json.stringify dumps a union purely by runtime `is Variant` match (no
+    // discriminator needed for dump, only for parse), so a heterogeneous
+    // JSON Array Format trace can be one flat []TraceEvent serialized in a
+    // single json.stringify<Trace> call, no manual string-joining required.
+    export type TraceEvent =
+        Metadata |
+        TraceEventProfile |
+        TraceEventProfileChunk |
+        TraceTracingStartedInBrowser |
+        TraceEventComplete |
+        TraceEventInstantMarker;
+
+    // ── TraceBuilder ─────────────────────────────────────────────────────────
+    //
+    // The public API for assembling a trace.json document. Bakes in both
+    // hard-won invariants from the file header so callers can't get them
+    // wrong: addTask() and addCpuProfileSamples() together keep a task's
+    // Profile.startTime pinned to the task's own start and its first
+    // timeDelta tiny; addInstantMarker() always emits the PerformanceMark
+    // shape.
+    //
+    // pid/tid layout mirrors real Chrome traces (one process, several
+    // purpose-specific threads/tracks within it) and leaves room to grow --
+    // e.g. a future second Haze process (worker/subprocess) would get pid 2
+    // rather than requiring these ids to be renumbered.
+    export struct TraceBuilder {
+        pid: int;
+        events: []TraceEvent = [];
+        nextProfileId: int = 1;
+
+        fn constructor(pid: int = 1) {
+            let builder = TraceBuilder { pid: pid };
+            // DevTools' modern trace engine classifies processes by this
+            // exact reserved name string (confirmed against a real
+            // Chrome-recorded trace) to decide whether it's even eligible
+            // for JS-profile/flame-chart rendering at all -- an arbitrary
+            // process name like "Haze Process" is silently treated as a
+            // generic, non-renderer process and nothing in it renders.
+            builder.events.push(Metadata.processName(pid, pid, "Renderer"));
+            return builder;
+        }
+
+        // Registers a thread's display name. `mainThread: true` uses
+        // Chrome's own main-thread name ("CrRendererMain"), the one
+        // DevTools recognizes as the thread eligible to host a JS flame
+        // chart (see addCpuProfileSamples); any other thread can be named
+        // freely and still renders (as a generic thread track) as long as
+        // it has at least one visible event on it.
+        mut fn addThread(tid: int, name: str, mainThread: bool = false): void {
+            this.events.push(Metadata.threadName(this.pid, tid, mainThread ? "CrRendererMain" : name));
+        }
+
+        // A top-level task block on `tid`, e.g. one "run the event loop"
+        // iteration. Required to host a JS flame chart on that thread (see
+        // file header) and acts as the anchor DevTools nests CPU profile
+        // samples under during that [ts, ts+dur) window.
+        mut fn addTask(tid: int, ts: real, dur: real, name: str = "RunTask"): void {
+            this.events.push(TraceEventComplete { pid: this.pid, tid: tid, ts: ts, dur: dur, name: name });
+        }
+
+        // Also emits the TracingStartedInBrowser event a stack trace panel
+        // needs to render at all (see that struct's own doc comment) --
+        // call this once, before the first addTask/addCpuProfileSamples on
+        // whichever thread should own the frame/URL association.
+        mut fn addFrame(tid: int, frame: str, url: str): void {
+            this.events.push(TraceTracingStartedInBrowser(this.pid, tid, frame, url));
+        }
+
+        // Streams a whole already-built CpuProfile onto `tid` as a
+        // Profile + chunked ProfileChunk events, anchored to start exactly
+        // at `taskTs` (the ts of the addTask call this profile's samples
+        // should nest under -- see invariant 1 in the file header). The
+        // profile's own first sample timestamp is shifted to
+        // `taskTs + 1us` and every other sample's timing preserved
+        // relative to that, guaranteeing the ordering invariant holds
+        // regardless of what `taskTs` the caller picked.
+        mut fn addCpuProfileSamples(tid: int, taskTs: real, profile: CpuProfile): void {
+            let id = f"0x{this.nextProfileId}";
+            this.nextProfileId += 1;
+
+            this.events.push(TraceEventProfile {
+                pid: this.pid, tid: tid, ts: taskTs, id: id,
+                args: { data: { startTime: taskTs } },
+            });
+
+            let chunks = buildProfileChunks(profile, this.pid, tid, id, taskTs);
+            for (let i = 0; i < chunks.length; i++) {
+                this.events.push(chunks[i]);
+            }
+        }
+
+        // A single custom-named, zero-length marker on `tid`, with a full
+        // stack trace shown when clicked -- see invariant 2 in the file
+        // header. `frames` must be 1-indexed (this is the one place in
+        // this API where that's true; every other frame list is the usual
+        // FrameRef 1-indexed-in/converted-internally convention -- this
+        // one round-trips 1-indexed all the way through because DevTools
+        // itself does the decrement for this specific event shape).
+        mut fn addInstantMarker(tid: int, ts: real, name: str, frames: []FrameRef): void {
+            let callFrames: []TraceCallFrame = [];
+            for (let i = 0; i < frames.length; i++) {
+                let frame = frames[i];
+                callFrames.push(TraceCallFrame {
+                    functionName: frame.name.length > 0 ? frame.name : "(unknown)",
+                    codeType: frame.url.length > 0 ? "JS" : "other",
+                    scriptId: frame.url.length > 0 ? 1 : 0,
+                    url: frame.url.length > 0 ? frame.url : none,
+                    lineNumber: frame.line > 0 ? frame.line : none,
+                    columnNumber: frame.url.length > 0 ? frame.column : none,
+                });
+            }
+            this.events.push(TraceEventInstantMarker {
+                pid: this.pid, tid: tid, ts: ts, name: name,
+                args: { data: { stackTrace: callFrames } },
+            });
+        }
+
+        fn build(): Trace {
+            return Trace {
+                metadata: { source: "DevTools", dataOrigin: "TraceEvents" },
+                traceEvents: this.events,
+            };
+        }
+    }
+
+    // Real Chrome traces spread the samples of one profile over many
+    // ProfileChunk events (~100 samples each) instead of one giant chunk;
+    // the node list only needs to appear once, on the first chunk, since
+    // node ids are stable/global for the whole profile. A single all-at-once
+    // chunk was observed not to render in DevTools, hence the re-chunking
+    // here rather than a single TraceEventProfileChunk per profile.
+    const chunkSampleCount = 100;
+
+    fn buildProfileChunks(profile: CpuProfile, pid: int, tid: int, id: str, taskTs: real): []TraceEventProfileChunk {
+        let traceNodes: []TraceProfileNode = [];
+        for (let i = 0; i < profile.nodes.length; i++) {
+            let node = profile.nodes[i];
+            traceNodes.push(TraceProfileNode {
+                id: node.id,
+                callFrame: TraceCallFrame {
+                    functionName: node.callFrame.functionName,
+                    codeType: node.callFrame.url.length > 0 ? "JS" : "other",
+                    scriptId: node.callFrame.url.length > 0 ? 1 : 0,
+                    url: node.callFrame.url.length > 0 ? node.callFrame.url : none,
+                    lineNumber: node.callFrame.lineNumber >= 0 ? node.callFrame.lineNumber : none,
+                    columnNumber: node.callFrame.columnNumber >= 0 ? node.callFrame.columnNumber : none,
+                },
+                parent: none,
+            });
+        }
+        // node.children walks parent -> children; invert it into child ->
+        // parent, the shape the trace format wants, once, over the
+        // already-deduplicated node list above.
+        for (let i = 0; i < profile.nodes.length; i++) {
+            let node = profile.nodes[i];
+            for (let c = 0; c < node.children.length; c++) {
+                let childId = node.children[c];
+                traceNodes[childId - 1].parent = node.id;
+            }
+        }
+
+        let chunks: []TraceEventProfileChunk = [];
+        let offset = 0;
+        // Anchor the first sample to taskTs + 1us (see invariant 1 in the
+        // file header) and preserve every other sample's timing relative
+        // to that, regardless of what profile.startTime originally was.
+        let chunkTs = taskTs;
+        let firstDeltaShifted = false;
+        while offset < profile.samples.length {
+            let count = profile.samples.length - offset < chunkSampleCount ? profile.samples.length - offset : chunkSampleCount;
+            let chunkSamples: []int = [];
+            let chunkDeltas: []int = [];
+            for (let i = offset; i < offset + count; i++) {
+                let delta = profile.timeDeltas[i];
+                if !firstDeltaShifted {
+                    delta = 1;
+                    firstDeltaShifted = true;
+                }
+                chunkSamples.push(profile.samples[i]);
+                chunkDeltas.push(delta);
+            }
+
+            chunks.push(TraceEventProfileChunk {
+                pid: pid, tid: tid, ts: chunkTs, id: id,
+                args: {
+                    data: {
+                        cpuProfile: { nodes: offset == 0 ? traceNodes : none, samples: chunkSamples },
+                        timeDeltas: chunkDeltas,
+                    },
+                },
+            });
+
+            for (let i = 0; i < chunkDeltas.length; i++) {
+                chunkTs += chunkDeltas[i] as real;
+            }
+            offset += count;
+        }
+        return chunks;
+    }
+
+    export fn traceToJson(trace: Trace): str {
+        return json.stringify<Trace>(trace);
+    }
+
+    export fn writeTrace(trace: Trace, path: str) {
+        return fs.writeText(path, traceToJson(trace));
+    }
+
+    // ── Throwaway smoke test ─────────────────────────────────────────────────
+    //
+    // Exercises the public API end to end (not a real profiling adapter --
+    // see profiling.hz for that). Kept around as a quick manual sanity
+    // check; not part of the public API.
+    export fn exportTrace() {
+        const comptime PID = 1;
+        const comptime MAIN_TID = 1;
+        const comptime MEM_TID = 2;
+
+        let builder = TraceBuilder(PID);
+        builder.addThread(MAIN_TID, "CrRendererMain", true);
+        builder.addThread(MEM_TID, "MemoryAllocation");
+        builder.addFrame(MAIN_TID, "FRAME1", "file:///tmp/example.hz");
+
+        const comptime taskTs = 20000.0;
+        builder.addTask(MAIN_TID, taskTs, 100000.0);
+
+        let profile = CpuProfileBuilder();
+        profile.addSample(taskTs, [FrameRef { name: "foo", url: "/tmp/example.hz", line: 10, column: 4 }]);
+        profile.addSample(taskTs + 10000.0, [FrameRef { name: "foo", url: "/tmp/example.hz", line: 10, column: 4 }]);
+        profile.addSample(taskTs + 20000.0, [
+            FrameRef { name: "foo", url: "/tmp/example.hz", line: 10, column: 4 },
+            FrameRef { name: "bar", url: "/tmp/example.hz", line: 20, column: 4 },
+        ]);
+        profile.addSample(taskTs + 30000.0, [
+            FrameRef { name: "foo", url: "/tmp/example.hz", line: 10, column: 4 },
+            FrameRef { name: "bar", url: "/tmp/example.hz", line: 20, column: 4 },
+        ]);
+        builder.addCpuProfileSamples(MAIN_TID, taskTs, profile.build());
+
+        builder.addInstantMarker(MEM_TID, taskTs + 5000.0, "ALLOCATE example_t (32 bytes)", [
+            FrameRef { name: "bar", url: "/tmp/example.hz", line: 20, column: 5 },
+            FrameRef { name: "foo", url: "/tmp/example.hz", line: 10, column: 5 },
+        ]);
+
+        let _ = writeTrace(builder.build(), "trace.json");
+        fmt.println("File written");
+    }
+}
