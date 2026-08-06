@@ -114,12 +114,7 @@ export function ExportCollectedTypeDefAlias(
   }
 
   alias.writeLine(
-    "type " +
-      typedef.name +
-      genericsString +
-      " = " +
-      aliasBody +
-      ";"
+    "type " + typedef.name + genericsString + " = " + aliasBody + ";"
   );
 
   if (typedef.sourceloc) {
@@ -609,23 +604,27 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
 
     if (symbol.variant === Collect.ENode.FunctionSymbol) {
       let code = symbol.originalSourcecode;
-      if (code.startsWith(" export ")) {
-        code = code.replace(" export ", "");
-      }
-      if (code.startsWith("export ")) {
-        code = code.replace("export ", "");
-      }
+      // This regex removes the "export" keyword if and only if it appears right at the beginning of the declaration,
+      // or after a [[...]] annotation, handling whitespace. Any other appearance MUST NOT be removed or it could
+      // break source code.
+      // We have to remove the export keyword because currently we do not have a way to properly re-emit
+      // generic code other than copy-pasting the original source code, and if we do not remove the export keyword,
+      // every module importing the type would re-export it again and multiple modules exporting
+      // the same generic symbol would clash.
+      code = code.replace(/^(?:(\[\[[\s\S]*?\]\]\s+))?export\s+/, "$1");
       file.writeLine(code);
     } else if (symbol.variant === Collect.ENode.TypeDefSymbol) {
       const typedef = sr.cc.typeDefNodes.get(symbol.typeDef);
       if (typedef.variant === Collect.ENode.StructTypeDef) {
         let code = typedef.originalSourcecode;
-        if (code.startsWith(" export ")) {
-          code = code.replace(" export ", "");
-        }
-        if (code.startsWith("export ")) {
-          code = code.replace("export ", "");
-        }
+        // This regex removes the "export" keyword if and only if it appears right at the beginning of the declaration,
+        // or after a [[...]] annotation, handling whitespace. Any other appearance MUST NOT be removed or it could
+        // break source code.
+        // We have to remove the export keyword because currently we do not have a way to properly re-emit
+        // generic code other than copy-pasting the original source code, and if we do not remove the export keyword,
+        // every module importing the type would re-export it again and multiple modules exporting
+        // the same generic symbol would clash.
+        code = code.replace(/^(?:(\[\[[\s\S]*?\]\]\s+))?export\s+/, "$1");
         file.writeLine(code);
       } else {
         assert(false);
