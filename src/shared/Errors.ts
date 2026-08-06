@@ -217,7 +217,7 @@ export class CompilerError extends Error {
   ) {
     const fullMsg =
       elaborationPath && elaborationPath.length > 0
-        ? `${msg}\n${formatElaborationPath(elaborationPath)}`
+        ? `${msg}\n\nElaborating (nearest first):\n${formatElaborationPath(elaborationPath)}`
         : msg;
     super(formatErrorMessage(fullMsg, loc, code));
     this.loc = loc;

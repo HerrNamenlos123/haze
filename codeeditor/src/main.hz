@@ -125,37 +125,37 @@ fn main(): int {
         //     return 0;
         // }
 
-        let profiler = profile ? Profiler({
-            samplingRate: 0,
-            // memoryInstrumentationStacktraces: false,
-        }) : null;
+        // let profiler = profile ? Profiler({
+        //     samplingRate: 0,
+        //     // memoryInstrumentationStacktraces: false,
+        // }) : null;
 
-        let b: []Box<int> = [];
-        for (let i = 0; i < 1000; i++) {
-            let a = Box<int>(0);
-            b.push(a);
-        }
-
-        // while let frame = a.nextFrame() {
-        //     if a.resized {
-        //         runtime.resize(a.windowState);
-        //     }
-        //     runtime.render(frame, a.canvas);
-        //     frame.present();
-
-        //     let highlightResult = getState().highlightEngine.loop();
-        //     if highlightResult {
-        //         assert(g_state);
-        //         g_state.highlightResults.push(highlightResult);
-        //         g_state.reactiveCounter++;
-        //     }
-
-        //     cache.flush();
+        // let b: []Box<int> = [];
+        // for (let i = 0; i < 1000; i++) {
+        //     let a = Box<int>(0);
+        //     b.push(a);
         // }
-        
-        if profiler {
-            profiler.stopAndSave();
+
+        while let frame = a.nextFrame() {
+            if a.resized {
+                runtime.resize(a.windowState);
+            }
+            runtime.render(frame, a.canvas);
+            frame.present();
+
+            let highlightResult = getState().highlightEngine.loop();
+            if highlightResult {
+                assert(g_state);
+                g_state.highlightResults.push(highlightResult);
+                g_state.reactiveCounter++;
+            }
+
+            cache.flush();
         }
+        
+        // if profiler {
+        //     profiler.stopAndSave();
+        // }
 
         a.destroy();
         return 0;

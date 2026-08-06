@@ -12,15 +12,15 @@ namespace ffi {
 }
 
 namespace sys {
-    export fn panic(msg: ccstr, skip_n_frames: int = 0) {
+    export fn panic(msg: ccstr, skip_n_frames: int = 0) :: noreturn, final {
         ffi.hzstd_panic_n(msg, 1 + skip_n_frames);
     }
 
-    export fn panic(msg: str, skip_n_frames: int = 0) {
+    export fn panic(msg: str, skip_n_frames: int = 0) :: noreturn, final {
         ffi.hzstd_panic_str_n(msg, 1 + skip_n_frames);
     }
 
-    export fn unreachable(skip_n_frames: int = 0) {
+    export fn unreachable(skip_n_frames: int = 0) :: noreturn, final {
         ffi.hzstd_unreachable(1 + skip_n_frames);
     }
 }
@@ -131,6 +131,11 @@ namespace sys {
     // skip_n_frames=0 hides only internal hzstd frames.
     export fn buildStacktrace(skip_n_frames: int = 0) {
         return ffi.hzstd_build_stacktrace(1 + skip_n_frames);
+    }
+
+    export fn printStacktrace(skip_n_frames: int = 0) {
+        let stacktrace = buildStacktrace(skip_n_frames + 1);
+        fmt.println(stacktrace);
     }
 }
 

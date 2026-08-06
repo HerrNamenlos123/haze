@@ -32,6 +32,7 @@ import {
   CompilerError,
   type ElaborationPathFrame,
   ErrorType,
+  formatElaborationPath,
   formatSourceLoc,
   InternalError,
   printCompilerMessage,
@@ -86,6 +87,22 @@ export class SemanticElaborator {
   // to be able to produce an elaboration path for error messages.
   // Ideally, this would be combined and currentContext is just the topmost element, but it's a bigger rewrite.
   prevContextStack: Semantic.ElaborationContext[] = [];
+
+  // Records, for every function symbol whose body is currently being elaborated (i.e. we are
+  // somewhere inside its own elaborateFunctionSymbol() call), a snapshot of the elaboration path
+  // as it stood the moment that function's elaboration began. Entered right after the symbol is
+  // created and its own pathEntry frame exists; removed when that elaborateFunctionSymbol() call
+  // returns or throws.
+  //
+  // This exists because a "not fully elaborated yet" (H7023/H7091) error is thrown from whichever
+  // call site happens to observe the callee's still-deferred type -- which is NOT necessarily an
+  // elaboration that's an ancestor of the current call stack. If some other, unrelated elaboration
+  // reached the callee first and is still working through its body (a real cycle), this map is how
+  // we find *that* path instead of just reporting the (possibly innocent, second-in-line) call site
+  // that happened to trip the check. If the callee isn't in this map at all, its elaboration hasn't
+  // started anywhere yet -- an elaboration-order issue, not a cycle -- and the error can say so
+  // instead of pointing at a nonexistent recursion.
+  functionElaborationInProgress: Map<Semantic.SymbolId, ElaborationPathFrame[]> = new Map();
 
   inFunction: Semantic.SymbolId | null = null;
   inAttemptExpr: Semantic.ExprId | null = null;
@@ -275,6 +292,57 @@ export class SemanticElaborator {
     }
 
     return path;
+  }
+
+  // A "not fully elaborated yet" error is thrown from whichever call site happens to observe the
+  // callee's still-deferred type -- which is a SEPARATE, unrelated elaboration from wherever the
+  // callee's own elaboration is actually stuck (if it's stuck at all). CompilerError prints the
+  // call-site path (built by buildElaborationPathFromCurrentContext(), passed as this error's 4th
+  // constructor argument) first; this method supplies a second, clearly-labeled block giving the
+  // OTHER half of the picture:
+  //
+  //  - If calleeSymbolId is in functionElaborationInProgress, its elaboration is genuinely still
+  //    running on some other path right now -- a real cycle -- so this prints the path snapshotted
+  //    at the moment THAT elaboration started, i.e. who is actually holding it open. This is a
+  //    different path than the call-site one above it; it is not a continuation of it.
+  //  - Otherwise the callee's elaboration hasn't been reached by anything yet: this is a plain
+  //    elaboration-order issue (e.g. return-type inference needs a not-yet-visited function), not
+  //    a cycle, and the message says so explicitly instead of implying recursion that isn't there.
+  //
+  // Returns text to append after the call-site path in the error message, or null if
+  // calleeSymbolId is unknown (so nothing can be said about it).
+  buildDeferredElaborationHint(calleeSymbolId: Semantic.SymbolId | null): string | null {
+    if (calleeSymbolId === null) {
+      return null;
+    }
+    const inProgressPath = this.functionElaborationInProgress.get(calleeSymbolId);
+    if (!inProgressPath) {
+      return (
+        "\n\nThis is NOT a recursive cycle: the callee's own elaboration has not started " +
+        "anywhere yet. This is an elaboration-order issue instead -- the compiler reached this " +
+        "call before anything gave it a reason to elaborate the callee's body/return type."
+      );
+    }
+    return (
+      "\n\nThis IS a recursive cycle: the callee is still mid-elaboration on a DIFFERENT, " +
+      "unrelated path from the call site above. That other path, from where the callee's " +
+      "elaboration is stuck back to where it started (nearest first):\n" +
+      formatElaborationPath(inProgressPath)
+    );
+  }
+
+  // Extracts the Semantic.SymbolId a called expression resolves to, when it's a direct reference
+  // to a named function (plain call or bound method value) -- the two shapes callExpr() already
+  // recognizes elsewhere. Returns null for anything else (e.g. a call through a plain local
+  // variable holding a function value), where there's no single symbol to look up.
+  symbolIdOfCalledExpr(calledExpr: Semantic.Expression): Semantic.SymbolId | null {
+    if (calledExpr.variant === Semantic.ENode.SymbolValueExpr) {
+      return calledExpr.symbol;
+    }
+    if (calledExpr.variant === Semantic.ENode.CallableExpr) {
+      return calledExpr.functionSymbol;
+    }
+    return null;
   }
 
   getFunctionSymbolReturnType(id: Semantic.SymbolId) {
@@ -1686,7 +1754,8 @@ export class SemanticElaborator {
       // than asserting on a reachable condition.
       if (ftype.variant === Semantic.ENode.DeferredFunctionDatatype) {
         throw new CompilerError(
-          `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+          `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
+            (this.buildDeferredElaborationHint(this.symbolIdOfCalledExpr(calledExpr)) ?? ""),
           callExpr.sourceloc,
           HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
           this.buildElaborationPathFromCurrentContext()
@@ -1723,7 +1792,8 @@ export class SemanticElaborator {
 
     if (calledExprType.variant === Semantic.ENode.DeferredFunctionDatatype) {
       throw new CompilerError(
-        `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+        `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
+          (this.buildDeferredElaborationHint(this.symbolIdOfCalledExpr(calledExpr)) ?? ""),
         callExpr.sourceloc,
         HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
         this.buildElaborationPathFromCurrentContext()
@@ -5606,13 +5676,18 @@ export class SemanticElaborator {
       },
     });
 
-    return this.withContext(
-      {
-        context: newContext,
-        inAttemptExpr: null,
-        inFunction: null,
-      },
-      () => {
+    // Set to the freshly created symbol id below (inside the withContext callback) only when
+    // we're actually starting a brand new elaboration of this function's body, never on a cache
+    // hit -- see functionElaborationInProgress's doc comment on the class field.
+    let startedFreshElaborationOf: Semantic.SymbolId | null = null;
+    try {
+      return this.withContext(
+        {
+          context: newContext,
+          inAttemptExpr: null,
+          inFunction: null,
+        },
+        () => {
         // The way this works is that first we define all generic substitutions outside of the function in the context,
         // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
         // for all of them. All substitutions must be available. This means that the system works very well, because
@@ -5694,6 +5769,14 @@ export class SemanticElaborator {
         // Now that the real symbol exists, the elaboration path can report it (with its
         // generics, once concrete is known) instead of falling back to the plain Collect name.
         pathEntry.id = symbolId;
+        // Record the path as of right now, so that if some other, unrelated elaboration later
+        // observes this function's type still deferred, it can report *this* -- the actual chain
+        // holding its elaboration open -- rather than just its own (possibly innocent) call site.
+        startedFreshElaborationOf = symbolId;
+        this.functionElaborationInProgress.set(
+          symbolId,
+          this.buildElaborationPathFromCurrentContext()
+        );
 
         if (childOf) {
           const parent = this.sr.typeDefNodes.get(childOf);
@@ -6388,7 +6471,12 @@ export class SemanticElaborator {
 
         return symbolId;
       }
-    );
+      );
+    } finally {
+      if (startedFreshElaborationOf !== null) {
+        this.functionElaborationInProgress.delete(startedFreshElaborationOf);
+      }
+    }
   }
 
   elaborateTypeDefAlias(
@@ -8285,7 +8373,8 @@ export class SemanticElaborator {
       elaboratedFunctionType.variant === Semantic.ENode.DeferredFunctionDatatype
     ) {
       throw new CompilerError(
-        `Function ${functionSymbol.name}() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+        `Function ${functionSymbol.name}() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
+          (this.buildDeferredElaborationHint(functionSymbolId) ?? ""),
         sourceloc,
         HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart2,
         this.buildElaborationPathFromCurrentContext()

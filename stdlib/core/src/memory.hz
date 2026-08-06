@@ -184,7 +184,7 @@ export opaque struct ByteBuffer {
         this.committed = true;
     }
 
-    fn resize(newSize: int) {
+    fn resize(newSize: int) :: final {
         let data = this._getMutableData();
         // Do the dumb, obvious thing now, optimize later
         while data.length < newSize {
