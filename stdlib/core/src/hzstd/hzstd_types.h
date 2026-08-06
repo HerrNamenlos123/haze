@@ -302,9 +302,21 @@ typedef struct hzstd_module_metadata_t {
 
 // ── Allocator / arena ────────────────────────────────────────────────────────
 
+// skip_n_frames follows this codebase's standard "_n" convention (see the
+// big comment on hzstd_heap_allocate_n in hzstd_memory.h): 0 means "the
+// stack trace this allocation records should start counting from whoever
+// called hzstd_allocate", and any wrapper further out that calls
+// hzstd_allocate on someone else's behalf must pass its own caller's
+// skip_n_frames + 1. This is threaded all the way into the function
+// pointers here (rather than assuming a fixed depth inside each
+// implementation, as an earlier version of this did) because the number of
+// internal frames between "the hook fires" and "real user code" is NOT a
+// fixed constant -- it depends on how many wrapper layers (e.g.
+// hzstd_dynamic_array_create, hzstd_arena_allocate) sit between the actual
+// call site and hzstd_allocate, which varies by caller.
 typedef struct hzstd_allocator_t {
-  void *(*allocate)(void *ctx, size_t size);
-  void *(*allocateAtomic)(void *ctx, size_t size);
+  void *(*allocate)(void *ctx, size_t size, int skip_n_frames);
+  void *(*allocateAtomic)(void *ctx, size_t size, int skip_n_frames);
   void *ctx;
 } hzstd_allocator_t;
 

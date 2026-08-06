@@ -3,8 +3,13 @@
 #include "../include/hzstd_memory.h"
 #include "hzstd/include/hzstd_runtime.h"
 
-/* Internal helper: expand buffer to at least new_capacity (in elements) */
-static hzstd_dynamic_array_result_t hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacity)
+/* Internal helper: expand buffer to at least new_capacity (in elements).
+ * skip_n_frames follows this codebase's "_n" convention (see the big
+ * comment on hzstd_heap_allocate_n in hzstd_memory.h) -- every caller below
+ * passes its own skip_n_frames + 1, since this function itself sits one
+ * frame above the direct hzstd_heap_allocate/_realloc call. */
+static hzstd_dynamic_array_result_t
+hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacity, int skip_n_frames)
 {
   hzstd_assert(da != NULL);
   if (new_capacity == 0) {
@@ -23,7 +28,7 @@ static hzstd_dynamic_array_result_t hzstd_dynamic_array_realloc_buffer(hzstd_dyn
   size_t new_bytes = new_capacity * da->elem_size;
 
   if (!da->buffer) {
-    void *p = hzstd_heap_allocate(new_bytes);
+    void *p = hzstd_heap_allocate_n(new_bytes, 1 + skip_n_frames);
     if (!p) {
       return hzstd_dynamic_array_result_out_of_memory;
     }
@@ -32,7 +37,7 @@ static hzstd_dynamic_array_result_t hzstd_dynamic_array_realloc_buffer(hzstd_dyn
     return hzstd_dynamic_array_result_ok;
   }
   else {
-    void *p = hzstd_heap_realloc(da->buffer, new_bytes);
+    void *p = hzstd_heap_realloc_n(da->buffer, new_bytes, 1 + skip_n_frames);
     if (!p) {
       return hzstd_dynamic_array_result_out_of_memory; /* leave old buffer intact on failure */
     }
@@ -57,7 +62,9 @@ hzstd_dynamic_array_create(hzstd_allocator_t allocator, size_t elem_size, size_t
   if (elem_size == 0) {
     return NULL;
   }
-  hzstd_dynamic_array_t *da = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t));
+  // skip_n_frames=1 hides this function's own frame -- see
+  // hzstd_dynamic_array_realloc_buffer's doc comment for the convention.
+  hzstd_dynamic_array_t *da = hzstd_allocate_n(allocator, sizeof(hzstd_dynamic_array_t), 1);
   if (!da) {
     return NULL;
   }
@@ -68,7 +75,7 @@ hzstd_dynamic_array_create(hzstd_allocator_t allocator, size_t elem_size, size_t
 
   if (initial_capacity > 0) {
     /* attempt to allocate initial buffer */
-    int rc = hzstd_dynamic_array_realloc_buffer(da, initial_capacity);
+    int rc = hzstd_dynamic_array_realloc_buffer(da, initial_capacity, 1);
     if (rc != hzstd_dynamic_array_result_ok) {
       /* failed to allocate buffer; but control struct remains in arena */
       return da; /* still return the control struct (buffer empty) */
@@ -84,7 +91,7 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_reserve(hzstd_dynamic_array_t *
   if (new_capacity <= da->capacity) {
     return hzstd_dynamic_array_result_ok;
   }
-  return hzstd_dynamic_array_realloc_buffer(da, new_capacity);
+  return hzstd_dynamic_array_realloc_buffer(da, new_capacity, 1);
 }
 
 /* shrink_to_fit: shrink to fit current size (or free if size==0) */
@@ -100,7 +107,7 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_shrink_to_fit(hzstd_dynamic_arr
     }
     return hzstd_dynamic_array_result_ok;
   }
-  return hzstd_dynamic_array_realloc_buffer(da, da->size);
+  return hzstd_dynamic_array_realloc_buffer(da, da->size, 1);
 }
 
 /* internal grow policy: double capacity or set to 1 */
@@ -131,7 +138,7 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_push(hzstd_dynamic_array_t *da,
   size_t needed = da->size + 1;
   if (needed > da->capacity) {
     size_t new_cap = hzstd_dynamic_array_grow_capacity(da, needed);
-    int rc = hzstd_dynamic_array_realloc_buffer(da, new_cap);
+    int rc = hzstd_dynamic_array_realloc_buffer(da, new_cap, 1);
     if (rc != hzstd_dynamic_array_result_ok) {
       return rc;
     }
@@ -152,7 +159,7 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_insert(hzstd_dynamic_array_t *d
   size_t needed = da->size + 1;
   if (needed > da->capacity) {
     size_t new_cap = hzstd_dynamic_array_grow_capacity(da, needed);
-    int rc = hzstd_dynamic_array_realloc_buffer(da, new_cap);
+    int rc = hzstd_dynamic_array_realloc_buffer(da, new_cap, 1);
     if (rc != hzstd_dynamic_array_result_ok) {
       return rc;
     }

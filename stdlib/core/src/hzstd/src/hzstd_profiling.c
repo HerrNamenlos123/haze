@@ -126,6 +126,31 @@ typedef struct {
                         // fact from the kernel, not an inference from timing.
 } hzstd_profiling_raw_sample_t;
 
+// Raw, per-allocation capture: just addresses + a timestamp, no symbol
+// resolution and no allocation beyond appending to the chunked list below.
+// Mirrors hzstd_profiling_raw_sample_t's "capture cheap now, resolve once in
+// postprocessing" split -- see hzstd_trace_memory_impl and the big comment on
+// hzstd_profiling_memory_captures_append for why this exists at all: the
+// previous version of this code resolved a full stack trace (proc-name +
+// source-line, ~2ms/call before either was cached) synchronously on every
+// single allocation, on the allocating thread, via a full round trip through
+// the panic-handler worker thread.
+typedef struct {
+  uint16_t depth;
+  void *pcs[HZSTD_MAX_FRAMES];
+  double timestamp; // seconds since profiling session start -- SAME
+                    // reference point as hzstd_profiling_raw_sample_t's own
+                    // timestamp (context->session_start_time), so CPU
+                    // samples and memory allocations land on one consistent
+                    // timeline. (The previous version used hzstd_time_now()
+                    // directly here, which is seconds since *process*
+                    // start -- a different epoch than CPU samples use,
+                    // which is exactly what made every allocation marker
+                    // appear shifted later than it really happened, by
+                    // however long the process had already been running
+                    // before profiling started.)
+} hzstd_memory_instrumentation_raw_frame_t;
+
 // Fixed capacity of the allocation-free handoff ring described below. Sized to
 // comfortably absorb the gap between sampling ticks even under scheduling
 // jitter; at one in-flight sample at a time (see sample_in_progress), this only
@@ -169,6 +194,19 @@ typedef struct hzstd_profiling_sample_chunk_t {
   // in this same, GC-scanned struct.
   hzstd_profiling_raw_sample_t *entries;
 } hzstd_profiling_sample_chunk_t;
+
+// Same chunked-list shape as hzstd_profiling_sample_chunk_t above, for raw
+// memory-instrumentation captures instead of CPU samples -- same rationale
+// (append-only, can grow into the tens of thousands of entries on a
+// long/allocation-heavy session, `pcs[]` values must never be GC-scanned as
+// candidate pointers).
+#define HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY 128
+
+typedef struct hzstd_profiling_memory_capture_chunk_t {
+  struct hzstd_profiling_memory_capture_chunk_t *next; // the only field the GC needs to scan in this header
+  size_t count;
+  hzstd_memory_instrumentation_raw_frame_t *entries; // separate atomic (unscanned) allocation, see `entries` above
+} hzstd_profiling_memory_capture_chunk_t;
 
 struct hzstd_profiling_context_t {
 #ifdef HAZE_PLATFORM_LINUX
@@ -329,45 +367,178 @@ struct hzstd_profiling_context_t {
   // support registering multiple profiler instances above each other
   hzstd_memory_instrumentation_state_t prevMemoryInstrumentationState;
   bool memoryInstrumentationRecordStacktraces;
-  // []hzstd_memory_instrumentation_frame_t
-  hzstd_dynamic_array_t *memoryInstrumentationFrames;
+  // Reference point for hzstd_memory_instrumentation_raw_frame_t::timestamp --
+  // same CLOCK_MONOTONIC reading as session_start_time (both taken at
+  // hzstd_profiling_start), so memory captures land on the exact same
+  // timeline as CPU samples (see hzstd_trace_memory_impl).
+  double memoryInstrumentationTimeRef;
+
+  // Append-only history of every allocation captured this session, raw (just
+  // PCs + a timestamp, no symbol resolution) -- see
+  // hzstd_memory_instrumentation_raw_frame_t and hzstd_trace_memory_impl.
+  // Resolved into real hzstd_memory_instrumentation_frame_t entries only
+  // once, during postprocessing (hzstd_profiling_end), the same
+  // capture-cheap-now/resolve-later split hzstd_profiling_raw_sample_t
+  // already uses for CPU samples.
+  hzstd_profiling_memory_capture_chunk_t *memoryCapturesHead;
+  hzstd_profiling_memory_capture_chunk_t *memoryCapturesTail;
+  size_t memoryCaptureCount;
+  // Guards memoryCapturesHead/Tail/Count (and each chunk's `entries` slot
+  // claims) against concurrent allocations from multiple threads -- unlike
+  // the CPU-sample ring buffer's single-producer design, allocations can
+  // legitimately come from any number of threads at once (this runtime's GC
+  // is built with GC_THREADS), so appends here need real mutual exclusion,
+  // not just a lock-free single-writer pattern. A plain mutex is fine: the
+  // critical section is only ever "claim the next slot" (a few pointer/
+  // integer writes), never the unwind itself, which happens fully outside
+  // the lock -- see hzstd_trace_memory_impl.
+  pthread_mutex_t memoryCapturesMutex;
 };
 
-static int TRACE_COUNT = 0;
-static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type, void *data)
+// ── Memory instrumentation: cheap capture, deferred resolution ─────────────
+//
+// The previous version of this function resolved a full stack trace (proc
+// name + source line, each individually uncached the first time -- see the
+// ~2ms/call measurement on hzstd_profiling_safe_get_proc_name_by_ip)
+// synchronously, on the allocating thread, on EVERY SINGLE allocation, via
+// hzstd_build_stacktrace -- which itself round-trips through a global
+// spinlock (panic_in_progress) and a full wake/wait handoff to the single
+// dedicated panic-handler worker thread (two semaphore round trips: trigger
+// + response). At any real allocation rate this serializes every allocating
+// thread in the whole process against that one worker thread and pays a
+// full thread wake-up/context-switch on top of the resolution cost itself,
+// which is exactly what made a memory-instrumented app "basically
+// unusable". None of that machinery is actually needed here: unlike an
+// actual panic, this thread hasn't crashed and its stack is perfectly
+// healthy, so it can unwind itself directly and cheaply, right here, with
+// no worker thread, no crash-recovery signal handler, and no locking beyond
+// a short critical section to claim a slot in the raw-capture list (see
+// hzstd_profiling_memory_captures_append). Symbol/source-line resolution is
+// deferred to postprocessing (hzstd_profiling_end), exactly mirroring how
+// CPU samples already work -- see hzstd_profiling_resolve_frame, which this
+// reuses (and shares its dedup table with, so a function hit by both CPU
+// sampling and allocation call sites is only ever resolved once).
+static void
+hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
 {
-  hzstd_profiling_context_t *context = data;
-  printf("Tracing allocation %d\n", TRACE_COUNT++);
+  out->depth = 0;
 
+  unw_context_t ctx;
+  unw_getcontext(&ctx);
+  unw_cursor_t cursor;
+  unw_init_local2(&cursor, &ctx, 0);
+
+  int skipped = 0;
+  do {
+    if (skipped < skip_n_frames) {
+      skipped++;
+    }
+    else {
+      if (out->depth >= HZSTD_MAX_FRAMES) {
+        break;
+      }
+      unw_word_t pc;
+      if (unw_get_reg(&cursor, UNW_REG_IP, &pc) < 0) {
+        break;
+      }
+      out->pcs[out->depth++] = (void *)pc;
+    }
+  } while (unw_step(&cursor) > 0);
+}
+
+// Appends `raw` into context->memoryCapturesHead/Tail under
+// memoryCapturesMutex, allocating a new fixed-size chunk whenever the
+// current tail is full -- same shape and rationale as
+// hzstd_profiling_samples_append (see hzstd_profiling_sample_chunk_t), just
+// for allocation captures instead of CPU samples, and with real mutual
+// exclusion since -- unlike the CPU sampler's single reader thread --
+// allocations can come from any number of threads at once. The critical
+// section only ever claims a slot (a handful of pointer/integer writes);
+// the unwind itself (the actually expensive part) always happens before
+// this is called, fully outside the lock.
+static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *context,
+                                                    hzstd_memory_instrumentation_raw_frame_t raw)
+{
+  pthread_mutex_lock(&context->memoryCapturesMutex);
+  if (!context->memoryCapturesTail || context->memoryCapturesTail->count == HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY) {
+    // Same GC-scanning hazard as hzstd_profiling_sample_chunk_t's entries --
+    // pcs[] values are opaque historical addresses, never real object
+    // pointers the GC should trace, so they live in their own atomic
+    // (unscanned) allocation.
+    //
+    // Instrumentation is suppressed for the duration of these two
+    // allocations specifically because it must NOT be safe to assume
+    // otherwise: hzstd_heap_allocate/_atomic unconditionally check the
+    // instrumentation hook (see hzstd_memory.c) and, since this thread's
+    // hook is very much still installed and not suppressed at this point,
+    // an unguarded allocation here would re-invoke hzstd_trace_memory_impl
+    // -> this very function -> pthread_mutex_lock on a mutex this thread
+    // already holds -- an immediate self-deadlock (confirmed: an earlier
+    // version of this comment claimed "no re-entrancy hazard here" without
+    // actually verifying it, and every single allocation hung the whole
+    // process). hzstd_temporarily_disable/reenable is the right tool since
+    // it's now per-thread (see hzstd_memory.c) -- suppressing it here can't
+    // affect any other thread concurrently allocating for real.
+    hzstd_memory_instrumentation_state_t prevState = hzstd_temporarily_disable_memory_instrumentation();
+    hzstd_profiling_memory_capture_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_memory_capture_chunk_t));
+    chunk->next = NULL;
+    chunk->count = 0;
+    chunk->entries = hzstd_heap_allocate_atomic(
+        HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY * sizeof(hzstd_memory_instrumentation_raw_frame_t));
+    hzstd_temporarily_reenable_memory_instrumentation(prevState);
+    if (context->memoryCapturesTail) {
+      context->memoryCapturesTail->next = chunk;
+    }
+    else {
+      context->memoryCapturesHead = chunk;
+    }
+    context->memoryCapturesTail = chunk;
+  }
+  context->memoryCapturesTail->entries[context->memoryCapturesTail->count++] = raw;
+  context->memoryCaptureCount++;
+  pthread_mutex_unlock(&context->memoryCapturesMutex);
+}
+
+// `skip_n_frames`, as received here, already accounts for every internal
+// frame between the real allocation call site and hzstd_heap_allocate_n/
+// hzstd_arena_*_n (see the big comment on hzstd_heap_allocate_n in
+// hzstd_memory.c and every call site that threads its own +1 through --
+// heap_allocator_impl, hzstd_arena_allocate_n, etc.). It does NOT yet
+// account for hzstd_memory_instrumentation_capture_stack or this function's
+// own frame, both of which are unconditionally present on top of it by the
+// time the unwind actually runs below -- hence the "+ 2" here. Getting
+// either half of this wrong (the threading in hzstd_memory.c, or this +2)
+// silently produces a stack trace that's off by exactly the frames it
+// misses -- see the big comment above hzstd_memory_instrumentation_capture_stack
+// for how badly wrong that can look (internal hzstd plumbing frames like
+// "hzstd_allocate"/"heap_allocator_impl" leaking into the trace as if they
+// were the user's own code).
+static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type, int skip_n_frames, void *data)
+{
+  (void)type;
+  hzstd_profiling_context_t *context = data;
+
+  if (!context->memoryInstrumentationRecordStacktraces) {
+    hzstd_memory_instrumentation_raw_frame_t raw = { .depth = 0 };
+    raw.timestamp = hzstd_time_now() - context->memoryInstrumentationTimeRef;
+    hzstd_profiling_memory_captures_append(context, raw);
+    return;
+  }
+
+  // Disabled only around the unwind itself (which can, via GC_malloc_atomic
+  // above and inside libunwind's own lazy CFI-cache population, allocate) --
+  // not because unwinding a healthy thread's own stack is unsafe the way it
+  // would be from inside a signal handler, just to avoid this instrumented
+  // allocation recursively re-triggering itself.
   hzstd_memory_instrumentation_state_t prevMemoryState = hzstd_temporarily_disable_memory_instrumentation();
 
-  hzstd_memory_instrumentation_frame_t *frame = HZSTD_ALLOC_STRUCT(
-      hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, (hzstd_memory_instrumentation_frame_t) {});
-
-  frame->timestamp = hzstd_time_now();
-
-  if (context->memoryInstrumentationRecordStacktraces) {
-    // TODO: This skip_n_frames cannot be hardcoded and should be passed along by the instrumentation because it may
-    // vary
-    frame->stacktrace = hzstd_build_stacktrace(3);
-    hzstd_print_stacktrace(frame->stacktrace);
-  }
-  else {
-    // Allocate an empty array as a fallback. TODO: This is awful because it literally heap allocates
-    // an always-empty array for every sample that does not make a stacktrace.
-    // But currently we can't do it better because we have to satisfy the Haze semantics to keep it safe,
-    // and we don't have enough integration in C yet to use proper enums.
-    // TODO: We should fix this by adding the same union-optimization to optimize "none | []T" into a nullable
-    // dynamic array, but currently the semantics do not allow for arrays to be nullable or anything similar.
-    frame->stacktrace = (hzstd_stacktrace_t) {
-      .frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_stackframe_t, 0),
-      .skip_n_frames = 0,
-    };
-  }
-
-  HZSTD_DYNAMIC_ARRAY_PUSH(context->memoryInstrumentationFrames, *frame);
+  hzstd_memory_instrumentation_raw_frame_t raw;
+  hzstd_memory_instrumentation_capture_stack(&raw, 2 + skip_n_frames);
+  raw.timestamp = hzstd_time_now() - context->memoryInstrumentationTimeRef;
 
   hzstd_temporarily_reenable_memory_instrumentation(prevMemoryState);
+
+  hzstd_profiling_memory_captures_append(context, raw);
 }
 
 // Writes `sample` into the ring buffer (no allocation, ever) and records where
@@ -1513,9 +1684,33 @@ static FILE *hzstd_profiling_create_raw_samples_file(void)
 }
 #endif
 
+// A freshly initialized unw_local_addr_space defaults to UNW_CACHE_NONE
+// (see the identical justification on _Ux86_64_set_caching_policy's own
+// declaration above, for the *remote* address space CPU sampling uses) --
+// without this, every single hzstd_memory_instrumentation_capture_stack
+// call would redo full CFI/module resolution (find_proc_info, which walks
+// dl_iterate_phdr) completely from scratch for every frame, with nothing
+// carried over even between allocation call sites that hit the exact same
+// hot functions repeatedly, which any allocation-heavy loop does
+// constantly. Global libunwind state (not per-session), so this only ever
+// needs to run once no matter how many Profiler instances get created
+// across the process's lifetime.
+static atomic_int g_hzstd_local_addr_space_cache_enabled = 0;
+
+static void hzstd_profiling_enable_local_addr_space_caching(void)
+{
+  int expected = 0;
+  if (!atomic_compare_exchange_strong(&g_hzstd_local_addr_space_cache_enabled, &expected, 1)) {
+    return;
+  }
+  _Ux86_64_set_caching_policy(unw_local_addr_space, UNW_CACHE_GLOBAL);
+}
+
 hzstd_profiling_context_t *
 hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool memoryInstrumentationStacktrace)
 {
+  hzstd_profiling_enable_local_addr_space_caching();
+
   // Enforce single-session constraint: only one profiling session can be active at a time.
   bool was_inactive = atomic_compare_exchange_strong(&g_hzstd_profiling_active, &(bool) { false }, true);
   if (!was_inactive) {
@@ -1562,10 +1757,16 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
 #endif
   context->sampling_rate_hz = effectiveRateHz;
 
-  context->memoryInstrumentationFrames
-      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_memory_instrumentation_frame_t, 10000);
-  context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
+  // memoryCapturesHead/Tail/Count start NULL/NULL/0: the first chunk is
+  // allocated lazily, on the first allocation captured, by
+  // hzstd_profiling_memory_captures_append -- same lazy-init shape as
+  // samples_head/samples_tail above.
+  pthread_mutex_init(&context->memoryCapturesMutex, NULL);
   context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
+  // NOTE: memoryInstrumentationTimeRef is set, and instrumentation actually
+  // enabled (hzstd_push_memory_instrumentation), further down -- see the
+  // comment there for why this can't happen here despite looking like the
+  // obvious place for it.
 
   // Plain calloc, deliberately outside the GC heap: this is the buffer the
   // stackwalker thread writes into while a sample is in flight, and it must
@@ -1717,6 +1918,40 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   struct timespec ref;
   clock_gettime(CLOCK_MONOTONIC, &ref);
   context->perf_time_ref_ns = (uint64_t)ref.tv_sec * 1000000000ull + (uint64_t)ref.tv_nsec;
+
+  // Deliberately NOT done back at the top of this function, next to
+  // session_start_time, despite looking like the obvious place for it: on
+  // Linux, everything between the top of this function and this exact
+  // point (_UPT_create, address-space setup, sigaction installs,
+  // hzstd_profiling_choose_stack_size, the perf_event_open syscall itself,
+  // the ring-buffer mmap loop -- all real, and on a cold run/first session
+  // measurably slow, tens of ms or more) happens BEFORE perf_time_ref_ns is
+  // captured. CPU sample timestamps are computed relative to
+  // perf_time_ref_ns (see hzstd_profiling_end), not session_start_time --
+  // those are two different moments. Anchoring memory-instrumentation
+  // timestamps to session_start_time (an earlier version of this fix) put
+  // every allocation's timestamp on session_start_time's timeline while CPU
+  // samples stay on perf_time_ref_ns's timeline: exactly the same class of
+  // bug as before (two different epochs), just a smaller, setup-cost-sized
+  // offset instead of a whole-process-lifetime one.
+  //
+  // hzstd_time_now() itself is called here, right next to the
+  // clock_gettime() that produced perf_time_ref_ns above, rather than
+  // simply reusing/converting perf_time_ref_ns directly -- the two use
+  // DIFFERENT reference frames for the same CLOCK_MONOTONIC reading:
+  // perf_time_ref_ns is the raw absolute value (nanoseconds since whatever
+  // arbitrary point CLOCK_MONOTONIC itself starts counting from, normally
+  // system boot), while hzstd_time_now() (and therefore every allocation's
+  // eventual `hzstd_time_now() - memoryInstrumentationTimeRef` in
+  // hzstd_trace_memory_impl) is relative to this process's own startup_ts.
+  // Calling hzstd_time_now() again here -- a handful of nanoseconds after
+  // the clock_gettime() above, close enough to not matter -- captures
+  // "right now" in that SAME startup_ts-relative frame allocations will
+  // later be measured in, so the subtraction in hzstd_trace_memory_impl
+  // actually yields a small, correct, comparable-to-CPU-samples delta
+  // instead of silently mixing two different zero points.
+  context->memoryInstrumentationTimeRef = hzstd_time_now();
+  context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
 
   ioctl(context->perf_fd, PERF_EVENT_IOC_RESET, 0);
   ioctl(context->perf_fd, PERF_EVENT_IOC_ENABLE, 0);
@@ -2631,14 +2866,39 @@ static uint64_t g_postprocess_resolve_frame_count = 0;
 
 // Intern `address` into `frames`, deduplicating by instruction pointer (the
 // same function hit by many samples must only be resolved/stored once), and
-// return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is for.
+// return its index. See hzstd_profiling_resolve_frame for what `isLeaf` is
+// for.
+//
+// BUG THIS FIXES: the dedup key used to be the raw, unadjusted `address`,
+// with `isLeaf` only consulted the FIRST time that address was seen (the
+// cache-hit path above returned the existing index without looking at
+// isLeaf again at all). hzstd_profiling_resolve_frame resolves a caller
+// frame (isLeaf=false) at `address - 1`, not `address` -- so the exact same
+// raw return address, seen once as a leaf (some sample's currently-
+// executing instruction happens to be numerically identical to another
+// call site's return address -- not rare in a large binary) and once as a
+// caller, would resolve correctly on whichever occurrence got interned
+// first and then silently reuse THAT resolution -- name and source
+// location both -- for every later occurrence of the same raw address,
+// regardless of whether it actually needed the -1 adjustment. Confirmed:
+// this is exactly what produced a frame whose resolved name belonged to
+// one function while its resolved source line belonged to another,
+// unrelated one. Fixed by keying the dedup cache on the ALREADY-ADJUSTED
+// lookup address (what actually gets resolved) instead of the raw one --
+// two occurrences of the same raw PC that need different isLeaf treatment
+// now correctly land in two different cache entries, each resolved
+// against the correct address; two occurrences that agree on isLeaf-ness
+// (the overwhelmingly common case) still collapse into one cache entry,
+// unchanged.
 static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames,
                                            hzstd_profiling_frame_index_t *frameIndex,
                                            void *address,
                                            bool isLeaf)
 {
+  void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
+
   size_t existingIndex;
-  if (hzstd_profiling_frame_index_find(frameIndex, address, &existingIndex)) {
+  if (hzstd_profiling_frame_index_find(frameIndex, lookupAddress, &existingIndex)) {
     return existingIndex;
   }
 
@@ -2662,7 +2922,7 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
   g_postprocess_resolve_frame_count++;
   frames->tail->entries[frames->tail->count++] = frame;
   frames->count++;
-  hzstd_profiling_frame_index_insert(frameIndex, address, newIndex);
+  hzstd_profiling_frame_index_insert(frameIndex, lookupAddress, newIndex);
   return newIndex;
 }
 
@@ -2947,6 +3207,43 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   }
 #endif
 #undef HZSTD_PROFILING_REPORT_PROGRESS
+
+  // Intern every captured allocation's raw PCs into the SAME frameTable/
+  // frameIndex CPU samples just built above -- a function hit by both the
+  // CPU sampler and an allocation call site is only ever symbol-resolved
+  // once. Only collects frame-table indices here (mirroring
+  // hzstd_profiling_build_sample's split for CPU samples); the actual
+  // hzstd_stackframe_t entries are built in a second pass below, once
+  // `frames` (the finished, contiguous, exactly-sized frame array) exists,
+  // so there's no need for a separate random-access lookup into the
+  // chunked frameTable. Must happen before frameIndex is freed just below.
+  // See hzstd_trace_memory_impl for why this resolution used to happen
+  // synchronously, on the allocating thread, on every single allocation,
+  // instead of once here.
+  typedef struct {
+    hzstd_dynamic_array_t *frameIndices; // hzstd_int_t[], one per raw.pcs entry
+    double timestamp;
+  } hzstd_profiling_memory_capture_interned_t;
+  hzstd_profiling_memory_capture_interned_t *internedMemoryCaptures
+      = context->memoryCaptureCount > 0
+      ? hzstd_allocate(allocator, context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
+      : NULL;
+  size_t memoryFramesProcessed = 0;
+  for (hzstd_profiling_memory_capture_chunk_t *chunk = context->memoryCapturesHead; chunk != NULL;
+       chunk = chunk->next) {
+    for (size_t i = 0; i < chunk->count; i++) {
+      hzstd_memory_instrumentation_raw_frame_t raw = chunk->entries[i];
+      hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_int_t, raw.depth);
+      for (uint16_t d = 0; d < raw.depth; d++) {
+        hzstd_int_t idx = (hzstd_int_t)hzstd_profiling_intern_frame(&frameTable, &frameIndex, raw.pcs[d], d == 0);
+        HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, idx);
+      }
+      internedMemoryCaptures[memoryFramesProcessed].frameIndices = frameIndices;
+      internedMemoryCaptures[memoryFramesProcessed].timestamp = raw.timestamp;
+      memoryFramesProcessed++;
+    }
+  }
+
   hzstd_profiling_frame_index_free(&frameIndex);
   if (context->sample_count > 0) {
     fprintf(stdout, "\n");
@@ -2960,6 +3257,41 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     for (size_t i = 0; i < chunk->count; i++) {
       HZSTD_DYNAMIC_ARRAY_PUSH(frames, chunk->entries[i]);
     }
+  }
+
+  // Second pass: turn each interned allocation capture into a real
+  // hzstd_memory_instrumentation_frame_t, reading resolved frames straight
+  // out of the now-finished `frames` array.
+  hzstd_dynamic_array_t *memoryInstrumentationFrames
+      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_memory_instrumentation_frame_t, memoryFramesProcessed);
+  for (size_t i = 0; i < memoryFramesProcessed; i++) {
+    hzstd_profiling_memory_capture_interned_t interned = internedMemoryCaptures[i];
+    size_t depth = (size_t)interned.frameIndices->size;
+    hzstd_dynamic_array_t *stackframes = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_stackframe_t, depth);
+    for (size_t d = 0; d < depth; d++) {
+      hzstd_int_t frameTableIndex = HZSTD_DYNAMIC_ARRAY_GET(interned.frameIndices, hzstd_int_t, d);
+      hzstd_profiling_frame_t resolved = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, (size_t)frameTableIndex);
+      hzstd_stackframe_t sf = {
+        .id = (size_t)frameTableIndex,
+        .instructionPointer = resolved.address,
+        .name = resolved.name,
+        .sourceloc = resolved.sourceloc,
+      };
+      HZSTD_DYNAMIC_ARRAY_PUSH(stackframes, sf);
+    }
+    hzstd_memory_instrumentation_frame_t memFrame = {
+      .stacktrace = (hzstd_stacktrace_t) { .frames = stackframes, .skip_n_frames = 0 },
+      .timestamp = interned.timestamp,
+    };
+    HZSTD_DYNAMIC_ARRAY_PUSH(memoryInstrumentationFrames, memFrame);
+  }
+  if (context->memoryCaptureCount > 0) {
+    fprintf(stdout,
+            "Resolved %zu memory allocation stack trace(s) (%zu unique frame(s) total across CPU samples and "
+            "allocations).\n",
+            memoryFramesProcessed,
+            frameTable.count);
+    fflush(stdout);
   }
 
 #ifdef HAZE_PLATFORM_LINUX
@@ -3009,6 +3341,6 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     .frames = frames,
     .samples = samples,
     .sampling_rate_hz = achievedRateHz,
-    .memoryInstrumentationFrames = context->memoryInstrumentationFrames,
+    .memoryInstrumentationFrames = memoryInstrumentationFrames,
   };
 }
