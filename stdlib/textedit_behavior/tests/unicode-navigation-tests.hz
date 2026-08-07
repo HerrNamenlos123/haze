@@ -1,0 +1,247 @@
+import unicode
+import textedit_behavior
+
+// Drives the editing engine headlessly over text containing emoji, CJK
+// and combining marks, asserting the behaviour a user would actually see.
+//
+// All state lives inside a Doc struct rather than module globals, because
+// module-level `let` cannot hold multi-line initializers in this compiler.
+
+struct Doc {
+    lines: []String = [];
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn setText(text: str) {
+        let parts = text.split("\n");
+        let fresh: []String = [];
+        for p, i in parts {
+            fresh.push(String(p));
+        }
+        this.lines = fresh;
+    }
+
+    fn text(): str {
+        let out = "";
+        for line, i in this.lines {
+            if i > 0 { out = f"{out}\n"; }
+            out = f"{out}{line.cloneString()}";
+        }
+        return out;
+    }
+
+    mut fn replace(start: Vec2i, end: Vec2i, text: String) {
+        let startLine = this.lines[start.y].cloneString();
+        let endLine = this.lines[end.y].cloneString();
+        let before = startLine.slice(0, clampI(start.x, 0, startLine.length));
+        let after = endLine.slice(clampI(end.x, 0, endLine.length), endLine.length);
+        let merged = f"{before}{text.cloneString()}{after}";
+
+        let rebuilt: []String = [];
+        for (let i = 0; i < start.y; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        let mergedParts = merged.split("\n");
+        for p, i in mergedParts {
+            rebuilt.push(String(p));
+        }
+        for (let i = end.y + 1; i < this.lines.length; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        this.lines = rebuilt;
+    }
+
+    fn lineText(index: int): str {
+        return this.lines[index].cloneString();
+    }
+
+    mut fn check(name: str, got: int, want: int) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got {got}, want {want}");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} = {got}");
+        }
+    }
+
+    mut fn checkText(name: str, got: str, want: str) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got \"{got}\", want \"{want}\"");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} = \"{got}\"");
+        }
+    }
+}
+
+fn clampI(v: int, lo: int, hi: int): int {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+fn makeContext(doc: mut Doc): mut textedit_behavior.Context {
+    return textedit_behavior.Context({
+        getLineLength: (lineIndex: int) => { return doc.lines[lineIndex].length(); },
+        getLine: (lineIndex: int) => { return doc.lines[lineIndex]; },
+        getLineCount: () => { return doc.lines.length; },
+        getTimeInSeconds: () => { return 0.0; },
+        replaceRange: (start: Vec2i, end: Vec2i, text: String) => { doc.replace(start, end, text); },
+    });
+}
+
+// "e" + U+0301 COMBINING ACUTE: one cluster spelled with two codepoints.
+fn decomposedAccent(): str {
+    let buffer = ByteBuffer();
+    buffer.push("xe");
+    buffer.push(Bytes(0xCC as u8));
+    buffer.push(Bytes(0x81 as u8));
+    buffer.commit();
+    return buffer.string();
+}
+
+fn main(): int {
+    let doc = Doc {};
+
+    // --- Right arrow clears a whole flag emoji in ONE press ---
+    doc.setText("a🇦🇹b");
+    let ctx = makeContext(doc);
+    ctx.moveCursorRight();
+    doc.check("right over 'a'", ctx.cursor().x, 1);
+    ctx.moveCursorRight();
+    doc.check("right clears whole flag (8 bytes)", ctx.cursor().x, 9);
+    ctx.moveCursorRight();
+    doc.check("right over 'b'", ctx.cursor().x, 10);
+
+    // --- Left arrow clears the whole flag going back ---
+    ctx.moveCursorLeft();
+    doc.check("left over 'b'", ctx.cursor().x, 9);
+    ctx.moveCursorLeft();
+    doc.check("left clears whole flag", ctx.cursor().x, 1);
+    ctx.moveCursorLeft();
+    doc.check("left over 'a'", ctx.cursor().x, 0);
+
+    // --- A 25-byte family emoji is ONE stop ---
+    doc.setText("x👩‍👩‍👧‍👦y");
+    let famCtx = makeContext(doc);
+    famCtx.moveCursorRight();
+    famCtx.moveCursorRight();
+    doc.check("family emoji crossed in one press", famCtx.cursor().x, 26);
+    famCtx.moveCursorLeft();
+    doc.check("family emoji crossed back in one press", famCtx.cursor().x, 1);
+
+    // --- Backspace deletes a whole emoji ---
+    doc.setText("a🇦🇹");
+    let bsCtx = makeContext(doc);
+    bsCtx.moveCursorEnd();
+    bsCtx.deleteBackward();
+    doc.checkText("backspace removed whole flag", doc.text(), "a");
+
+    // --- Delete-forward removes a whole emoji ---
+    doc.setText("🇦🇹b");
+    let delCtx = makeContext(doc);
+    delCtx.deleteForward();
+    doc.checkText("delete removed whole flag", doc.text(), "b");
+
+    // --- Backspace over a combining mark takes base+mark together ---
+    doc.setText(decomposedAccent());
+    let cmCtx = makeContext(doc);
+    cmCtx.moveCursorEnd();
+    doc.check("decomposed line is 4 bytes", cmCtx.cursor().x, 4);
+    cmCtx.deleteBackward();
+    doc.checkText("backspace took base and mark together", doc.text(), "x");
+
+    // --- Typing after an emoji must not split it ---
+    doc.setText("🇦🇹");
+    let insCtx = makeContext(doc);
+    insCtx.moveCursorEnd();
+    insCtx.insertText(String("!"));
+    doc.checkText("insert after emoji intact", doc.text(), "🇦🇹!");
+    assert(unicode.isValidUtf8(doc.text()), "document must stay valid UTF-8");
+
+    // --- Sticky column landing INSIDE a character snaps out of it ---
+    doc.setText("aaaa\n🇦🇹b");
+    let stickyCtx = makeContext(doc);
+    stickyCtx.moveCursorEnd();
+    doc.check("sticky column at 4", stickyCtx.cursor().x, 4);
+    stickyCtx.moveCursorDown();
+    // Byte 4 is the middle of the 8-byte flag, so it must snap back to 0.
+    doc.check("down snapped out of the flag", stickyCtx.cursor().x, 0);
+    assert(unicode.isClusterBoundary(doc.lineText(1), stickyCtx.cursor().x),
+        "cursor must always sit on a cluster boundary");
+
+    // --- Sticky column that lands exactly on a boundary is preserved ---
+    doc.setText("aaaaaaaa\n🇦🇹b");
+    let sticky2 = makeContext(doc);
+    sticky2.moveCursorEnd();
+    sticky2.moveCursorDown();
+    doc.check("down kept a legal boundary", sticky2.cursor().x, 8);
+
+    // --- Word motion treats a CJK run as ONE word ---
+    doc.setText("let 日本語 end");
+    let wordCtx = makeContext(doc);
+    wordCtx.moveCursorWordRight();
+    doc.check("word right past 'let'", wordCtx.cursor().x, 3);
+    wordCtx.moveCursorWordRight();
+    doc.check("word right crossed CJK as one word", wordCtx.cursor().x, 13);
+
+    // --- Normal mode clamps to the last CHARACTER, not the last byte ---
+    doc.setText("a🇦🇹");
+    let normalCtx = makeContext(doc);
+    normalCtx.setMode(textedit_behavior.Mode.Normal);
+    normalCtx.moveCursorEnd();
+    doc.check("normal mode clamps to last character", normalCtx.cursor().x, 1);
+    assert(unicode.isClusterBoundary(doc.lineText(0), normalCtx.cursor().x),
+        "clamped cursor must be on a boundary");
+
+    // --- Display columns are CELLS, not bytes ---
+    doc.setText("a🇦🇹b");
+    let dispCtx = makeContext(doc);
+    doc.check("cells before 'a'", dispCtx.displayColumnAt(0, 0), 0);
+    doc.check("cells after 'a'", dispCtx.displayColumnAt(0, 1), 1);
+    doc.check("cells after flag (2 wide)", dispCtx.displayColumnAt(0, 9), 3);
+    doc.check("cells after 'b'", dispCtx.displayColumnAt(0, 10), 4);
+
+    doc.setText("日本a");
+    let cjkCtx = makeContext(doc);
+    doc.check("CJK is 2 cells each", cjkCtx.displayColumnAt(0, 6), 4);
+
+    // --- The boundary invariant holds across many motions ---
+    doc.setText("a🇦🇹b日本é👩‍👩‍👧‍👦z");
+    let invCtx = makeContext(doc);
+    for (let i = 0; i < 40; i++) {
+        invCtx.moveCursorRight();
+        assert(unicode.isClusterBoundary(doc.lineText(0), invCtx.cursor().x),
+            "cursor left a cluster boundary moving right");
+    }
+    doc.check("right walk reached end of line", invCtx.cursor().x, doc.lineText(0).length);
+    for (let i = 0; i < 40; i++) {
+        invCtx.moveCursorLeft();
+        assert(unicode.isClusterBoundary(doc.lineText(0), invCtx.cursor().x),
+            "cursor left a cluster boundary moving left");
+    }
+    doc.check("left walk returned to start", invCtx.cursor().x, 0);
+
+    // --- Deleting character by character empties the line exactly ---
+    doc.setText("a🇦🇹b日本👩‍👩‍👧‍👦z");
+    let delAllCtx = makeContext(doc);
+    let deletes = 0;
+    while doc.lines[0].length() > 0 && deletes < 40 {
+        delAllCtx.moveTo({ x: 0, y: 0 }, true, false);
+        delAllCtx.deleteForward();
+        assert(unicode.isValidUtf8(doc.text()),
+            "document became invalid UTF-8 during deletion");
+        deletes = deletes + 1;
+    }
+    doc.check("line emptied", doc.lines[0].length(), 0);
+    doc.check("one delete per character (a,flag,b,日,本,family,z)", deletes, 7);
+
+    if doc.failures > 0 {
+        fmt.println(f"\n{doc.failures} FAILURES out of {doc.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {doc.checks} ENGINE CHECKS PASS");
+    return 0;
+}

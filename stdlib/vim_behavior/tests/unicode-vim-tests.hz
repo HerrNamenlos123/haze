@@ -1,0 +1,233 @@
+import unicode
+import textedit_behavior
+import vim_behavior
+
+// Drives the Vim behavior over emoji and CJK text.
+
+struct Doc {
+    lines: []String = [];
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn setText(text: str) {
+        let parts = text.split("\n");
+        let fresh: []String = [];
+        for p, i in parts {
+            fresh.push(String(p));
+        }
+        this.lines = fresh;
+    }
+
+    fn text(): str {
+        let out = "";
+        for line, i in this.lines {
+            if i > 0 { out = f"{out}\n"; }
+            out = f"{out}{line.cloneString()}";
+        }
+        return out;
+    }
+
+    mut fn replace(start: Vec2i, end: Vec2i, text: String) {
+        let startLine = this.lines[start.y].cloneString();
+        let endLine = this.lines[end.y].cloneString();
+        let before = startLine.slice(0, clampI(start.x, 0, startLine.length));
+        let after = endLine.slice(clampI(end.x, 0, endLine.length), endLine.length);
+        let merged = f"{before}{text.cloneString()}{after}";
+
+        let rebuilt: []String = [];
+        for (let i = 0; i < start.y; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        let mergedParts = merged.split("\n");
+        for p, i in mergedParts {
+            rebuilt.push(String(p));
+        }
+        for (let i = end.y + 1; i < this.lines.length; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        this.lines = rebuilt;
+    }
+
+    fn lineText(index: int): str {
+        return this.lines[index].cloneString();
+    }
+
+    mut fn check(name: str, got: int, want: int) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got {got}, want {want}");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} = {got}");
+        }
+    }
+
+    mut fn checkText(name: str, got: str, want: str) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got \"{got}\", want \"{want}\"");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} = \"{got}\"");
+        }
+    }
+}
+
+fn clampI(v: int, lo: int, hi: int): int {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+fn makeContext(doc: mut Doc): mut textedit_behavior.Context {
+    return textedit_behavior.Context({
+        getLineLength: (lineIndex: int) => { return doc.lines[lineIndex].length(); },
+        getLine: (lineIndex: int) => { return doc.lines[lineIndex]; },
+        getLineCount: () => { return doc.lines.length; },
+        getTimeInSeconds: () => { return 0.0; },
+        replaceRange: (start: Vec2i, end: Vec2i, text: String) => { doc.replace(start, end, text); },
+    });
+}
+
+fn main(): int {
+    let doc = Doc {};
+
+    // --- `l` and `h` move by CHARACTERS ---
+    doc.setText("a🇦🇹b");
+    let ctx = makeContext(doc);
+    let vim = vim_behavior.Vim(ctx);
+    vim.install();
+    vim.handleKey("l");
+    doc.check("vim l over 'a'", ctx.cursor().x, 1);
+    vim.handleKey("l");
+    doc.check("vim l clears whole flag", ctx.cursor().x, 9);
+    vim.handleKey("h");
+    doc.check("vim h back over whole flag", ctx.cursor().x, 1);
+
+    // --- `x` deletes a whole character ---
+    doc.setText("a🇦🇹b");
+    let xCtx = makeContext(doc);
+    let xVim = vim_behavior.Vim(xCtx);
+    xVim.install();
+    xVim.handleKey("l");
+    xVim.handleKey("x");
+    doc.checkText("vim x deleted the whole flag", doc.text(), "ab");
+    assert(unicode.isValidUtf8(doc.text()), "x must not corrupt UTF-8");
+
+    // --- `$` lands on the last CHARACTER, not the last byte ---
+    doc.setText("ab🇦🇹");
+    let dollarCtx = makeContext(doc);
+    let dollarVim = vim_behavior.Vim(dollarCtx);
+    dollarVim.install();
+    dollarVim.handleKey("$");
+    doc.check("vim $ lands on last character", dollarCtx.cursor().x, 2);
+    assert(unicode.isClusterBoundary(doc.lineText(0), dollarCtx.cursor().x),
+        "$ must land on a boundary");
+
+    // --- `D` from the flag deletes to end of line cleanly ---
+    doc.setText("ab🇦🇹cd");
+    let dCtx = makeContext(doc);
+    let dVim = vim_behavior.Vim(dCtx);
+    dVim.install();
+    dVim.handleKey("l");
+    dVim.handleKey("l");
+    dVim.handleKey("D");
+    doc.checkText("vim D from an emoji", doc.text(), "ab");
+
+    // --- `a` appends AFTER the whole character ---
+    doc.setText("🇦🇹");
+    let aCtx = makeContext(doc);
+    let aVim = vim_behavior.Vim(aCtx);
+    aVim.install();
+    aVim.handleKey("a");
+    doc.check("vim a moved past the whole flag", aCtx.cursor().x, 8);
+    aVim.handleTextInput(String("!"));
+    doc.checkText("vim a inserted after the flag", doc.text(), "🇦🇹!");
+
+    // --- Typing an emoji in insert mode inserts it WHOLE ---
+    // This is the regression test for splitting text input per byte.
+    doc.setText("");
+    let iCtx = makeContext(doc);
+    let iVim = vim_behavior.Vim(iCtx);
+    iVim.install();
+    iVim.handleKey("i");
+    iVim.handleTextInput(String("🇦🇹"));
+    doc.checkText("typed emoji inserted whole", doc.text(), "🇦🇹");
+    assert(unicode.isValidUtf8(doc.text()), "typed emoji must be valid UTF-8");
+    doc.check("typed emoji is one character", unicode.countCharacters(doc.text()), 1);
+
+    // --- Typing an accented letter in insert mode ---
+    doc.setText("");
+    let accCtx = makeContext(doc);
+    let accVim = vim_behavior.Vim(accCtx);
+    accVim.install();
+    accVim.handleKey("i");
+    accVim.handleTextInput(String("é"));
+    doc.checkText("typed accent inserted whole", doc.text(), "é");
+
+    // --- `r` replaces one character with a multi-byte one ---
+    doc.setText("abc");
+    let rCtx = makeContext(doc);
+    let rVim = vim_behavior.Vim(rCtx);
+    rVim.install();
+    rVim.handleKey("r");
+    rVim.handleTextInput(String("🇦🇹"));
+    doc.checkText("vim r replaced with an emoji", doc.text(), "🇦🇹bc");
+
+    // --- `r` replaces a multi-byte character with an ASCII one ---
+    doc.setText("🇦🇹bc");
+    let r2Ctx = makeContext(doc);
+    let r2Vim = vim_behavior.Vim(r2Ctx);
+    r2Vim.install();
+    r2Vim.handleKey("r");
+    r2Vim.handleTextInput(String("z"));
+    doc.checkText("vim r replaced an emoji with ascii", doc.text(), "zbc");
+
+    // --- `w` treats a CJK run as one word ---
+    doc.setText("let 日本語 end");
+    let wCtx = makeContext(doc);
+    let wVim = vim_behavior.Vim(wCtx);
+    wVim.install();
+    wVim.handleKey("w");
+    doc.check("vim w past 'let'", wCtx.cursor().x, 4);
+    wVim.handleKey("w");
+    doc.check("vim w crossed CJK as one word", wCtx.cursor().x, 14);
+
+    // --- The caret never lands off a boundary under vim motions ---
+    doc.setText("a🇦🇹b日本é👩‍👩‍👧‍👦z");
+    let invCtx = makeContext(doc);
+    let invVim = vim_behavior.Vim(invCtx);
+    invVim.install();
+    for (let i = 0; i < 30; i++) {
+        invVim.handleKey("l");
+        assert(unicode.isClusterBoundary(doc.lineText(0), invCtx.cursor().x),
+            "vim l left a cluster boundary");
+    }
+    for (let i = 0; i < 30; i++) {
+        invVim.handleKey("h");
+        assert(unicode.isClusterBoundary(doc.lineText(0), invCtx.cursor().x),
+            "vim h left a cluster boundary");
+    }
+    doc.check("vim motions returned to column 0", invCtx.cursor().x, 0);
+
+    // --- `x` repeatedly empties the line one character at a time ---
+    doc.setText("a🇦🇹b日本👩‍👩‍👧‍👦z");
+    let xxCtx = makeContext(doc);
+    let xxVim = vim_behavior.Vim(xxCtx);
+    xxVim.install();
+    let deletes = 0;
+    while doc.lines[0].length() > 0 && deletes < 40 {
+        xxVim.handleKey("x");
+        assert(unicode.isValidUtf8(doc.text()), "x corrupted UTF-8");
+        deletes = deletes + 1;
+    }
+    doc.check("vim x emptied the line", doc.lines[0].length(), 0);
+    doc.check("one x per character", deletes, 7);
+
+    if doc.failures > 0 {
+        fmt.println(f"\n{doc.failures} FAILURES out of {doc.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {doc.checks} VIM CHECKS PASS");
+    return 0;
+}
