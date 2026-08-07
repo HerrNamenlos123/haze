@@ -215,7 +215,35 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             fmt.println("Vue language server failed to start: ", vueBridge.message);
         }
 
+        // ── Hover state ──────────────────────────────────────────────
+        //
+        // A hover is a REQUEST at a position, not a thing that happens on
+        // its own. `hoverRequest` is that position (none = no hover wanted,
+        // so nothing is shown and nothing is asked of the language server);
+        // `hoverResult` is the answer once it arrives. Keeping the request
+        // separate from the answer is what lets the popup show a loading
+        // placeholder in the gap between the two, and what keeps a stale
+        // answer from outliving the request that produced it.
+        //
+        // Who sets the request depends on the editing model, and the two
+        // are deliberately different because the editors they imitate are:
+        //   - no vim: the mouse does, after dwelling (see hoverDwell).
+        //   - vim:    only an explicit keypress does (see hoverKeyPressed).
+        let hoverRequest = rx.reactive<Vec2i | none>(none);
         let hoverResult = rx.reactive<str | null>(null);
+        // Anchor in WINDOW pixels for the popup. The cursor position is the
+        // right anchor for the vim path but not the mouse path, where the
+        // popup belongs at the pointer, which may be nowhere near the caret.
+        let hoverAnchor = rx.reactive<Vec2 | none>(none);
+
+        // Drops whatever hover is on screen and cancels any pending one.
+        // Called from every input path that invalidates it: typing, moving
+        // the caret, scrolling, or moving the mouse away.
+        let dismissHover = () => {
+            hoverRequest := none;
+            hoverResult := null;
+            hoverAnchor := none;
+        };
 
         let highlights = rx.computed(() => {
             let state = getState();
@@ -480,6 +508,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return 0.0;
         };
 
+        // Left edge, same purpose -- absolutely-positioned children are
+        // placed in editor-local coordinates, but a pointer position is
+        // in window space.
+        let editorOriginX = (): real => {
+            let editorEl = rx.get(editorRef);
+            if editorEl {
+                let pos = editorEl.position();
+                if pos {
+                    return pos.x;
+                }
+            }
+            return 0.0;
+        };
+
         // Pointer position (window space) -> document (column, line).
         // Rounds to the NEAREST character boundary horizontally, like a
         // browser: clicking the right half of a glyph puts the caret
@@ -547,6 +589,33 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return result;
         };
 
+        // Is the pointer over the text area itself? documentPositionAt()
+        // answers "which character would this pixel be", and it clamps --
+        // so it happily reports a valid position for a pointer sitting in
+        // the status bar or outside the window entirely. Mouse hover must
+        // not fire in either case, hence the explicit bounds test.
+        let pointerInsideEditor = (pointer: Vec2): bool => {
+            let editorEl = rx.get(editorRef);
+            if !editorEl {
+                return false;
+            }
+            let pos = editorEl.position();
+            if pos {
+                let size = editorEl.size();
+                if size {
+                    // The scrollbar is chrome, not text: dwelling on it is
+                    // aiming at the bar, never at the token underneath.
+                    let textWidth = size.x;
+                    if scroll.showsVerticalBar() {
+                        textWidth = textWidth - scroll.style.size;
+                    }
+                    return pointer.x >= pos.x && pointer.x < pos.x + textWidth
+                        && pointer.y >= pos.y && pointer.y < pos.y + size.y;
+                }
+            }
+            return false;
+        };
+
         let state = getState();
 
         // Live highlighting, incrementally.
@@ -584,14 +653,45 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // every single keystroke while typing (typing moves the cursor) --
         // each one kicking off a tsserver + LSP round trip. Typing quickly
         // queued requests faster than they drained, and editing ground to a
-        // halt. Debounce instead: only ask for hover once the cursor has
-        // been still for a bit, and only if it's actually at a new position.
-        let hoverDebounceSeconds = 0.2;
+        // halt. Worse, it meant hover was permanently on: a popup followed
+        // the caret around whether or not anyone asked for one.
+        //
+        // Hover is now only ever requested by the two gestures that mean
+        // "tell me about this", matching the editor being imitated:
+        //
+        //   no vim -> VS Code: rest the MOUSE over a token for
+        //             hoverDwellSeconds and the popup appears at the
+        //             pointer; any pointer movement to a different
+        //             character, or any keystroke, takes it away again.
+        //
+        //   vim    -> neovim: hover is `vim.lsp.buf.hover`, bound to K in
+        //             every stock LSP config. It is a normal-mode COMMAND
+        //             at the caret, one popup per press, never automatic --
+        //             so nothing here is time-based at all. Per this
+        //             editor's binding it is shift+L rather than K (see
+        //             hoverKeyPressed).
+        let hoverDwellSeconds = 0.3;
         let lastEditAt = rx.reactive<real>(-1000.0);
         // Guards the one-shot LSP document open, so the per-frame loop
         // never has to build the whole document just to discard it.
         let lspDocumentOpened = rx.reactive<bool>(false);
+        // The position a request was last SENT for, so re-running the loop
+        // (which happens every frame) doesn't re-send the same query.
         let lastHoverPos = rx.reactive<Vec2i | none>(none);
+
+        // ── Mouse dwell tracking (non-vim path only) ─────────────────
+        //
+        // "The pointer has been still, over the same character, for long
+        // enough" -- the whole of VS Code's hover trigger. Tracked in
+        // window pixels rather than document positions because a pointer
+        // that moves within one character has NOT moved for this purpose,
+        // and comparing document positions is what makes that true.
+        let mouseRestX = rx.reactive<real>(-1.0);
+        let mouseRestY = rx.reactive<real>(-1.0);
+        let mouseRestSince = rx.reactive<real>(-1.0);
+        // Set by the vim keybinding; consumed by the loop below, which is
+        // where the document text needed to build the request is in scope.
+        let hoverKeyPressed = rx.reactive<bool>(false);
 
         // Exponentially-smoothed FPS, recomputed alongside the LSP drain
         // below since that's already the one thing guaranteed to re-run
@@ -671,18 +771,130 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     initialText := none;
                 }
 
-                if now - lastEditAt > hoverDebounceSeconds {
+                // ── Deciding whether a hover is wanted ───────────────
+                //
+                // Two INDEPENDENT triggers, not two alternatives. The mouse
+                // is a pointing device in either editing model -- pointing
+                // at a token and waiting means the same thing whether or
+                // not vim is on -- so dwell is always live. The keyboard
+                // trigger is what's vim-specific, since only vim has a
+                // modal normal mode for a bare letter to be a command in.
+                //
+                //   keyboard (vim only) -> neovim: `vim.lsp.buf.hover`,
+                //             stock-bound to K, here shift+L. An explicit
+                //             command at the CARET, one popup per press.
+                //
+                //   mouse (always)      -> VS Code: rest the pointer over a
+                //             token for hoverDwellSeconds, popup appears at
+                //             the POINTER. Any movement takes it away.
+                //
+                // The keyboard trigger runs first so that its caret-anchored
+                // popup is already standing when the dwell branch looks; the
+                // dwell branch only ever acts on an EMPTY hoverRequest, so a
+                // stationary mouse cannot steal a hover the keyboard just
+                // asked for.
+                if rx.get(vimOn) && rx.get(hoverKeyPressed) {
+                    hoverKeyPressed := false;
                     let cursor = texteditBehavior.cursorPosition;
-                    let curPos: Vec2i = { x: cursor.x, y: cursor.y };
+                    // Anchor under the caret, which is where neovim floats
+                    // its hover window -- `none` selects the caret anchor.
+                    hoverAnchor := none;
+                    hoverResult := null;
+                    hoverRequest := { x: cursor.x, y: cursor.y } as Vec2i;
+                    // The pointer has not moved, so without this the dwell
+                    // branch would be free to re-fire at the pointer the
+                    // moment this popup is dismissed, spawning a hover
+                    // nobody asked for. Make the mouse re-earn its dwell.
+                    mouseRestSince := now;
+                }
+
+                // Mouse dwell. Only while the pointer is actually inside
+                // the editor and not mid-drag -- selecting text with the
+                // mouse must not spawn popups.
+                let pointer = ui.mousePos;
+                let moved = pointer.x != rx.get(mouseRestX)
+                    || pointer.y != rx.get(mouseRestY);
+                if moved {
+                    mouseRestX := pointer.x;
+                    mouseRestY := pointer.y;
+                    mouseRestSince := now;
+                }
+
+                let busy = rx.get(mouseSelecting) || scroll.isDragging();
+                let restedFor = now - rx.get(mouseRestSince);
+                if busy || moved {
+                    // Moving the pointer at all takes the popup away, and
+                    // the dwell timer above has already restarted -- so
+                    // coming to rest on the SAME character re-asks and
+                    // shows it again, while a pointer travelling across
+                    // the text shows nothing on the way. That is what VS
+                    // Code does, and it is why this does not bother
+                    // comparing document positions: the reset of
+                    // lastHoverPos is what makes the re-ask happen.
+                    //
+                    // This also dismisses a shift+L popup as soon as the
+                    // mouse is moved, which is the right call: it is the
+                    // same "you did something else now" signal that a
+                    // keystroke gives.
+                    if rx.get(hoverRequest) {
+                        dismissHover();
+                        lastHoverPos := none;
+                    }
+                } else if restedFor > hoverDwellSeconds
+                        && now - lastEditAt > hoverDwellSeconds
+                        && pointerInsideEditor(pointer) {
+                    // Nothing is on screen here: any pointer movement
+                    // cleared it in the branch above, and without movement
+                    // this fires once and then sees its own request still
+                    // standing. This is also what keeps the branch off a
+                    // caret-anchored shift+L popup.
+                    if !rx.get(hoverRequest) {
+                        let target = documentPositionAt(pointer);
+                        // Past the end of a line there is no token to
+                        // describe, and asking wastes a round trip.
+                        if target.x < doc.lineText(target.y).length {
+                            hoverResult := null;
+                            hoverAnchor := { x: pointer.x, y: pointer.y } as Vec2;
+                            hoverRequest := target;
+                        }
+                    }
+                }
+
+                // ── Serving the request ──────────────────────────────
+                //
+                // One query per distinct requested position. This is kept
+                // apart from the triggers above so both paths get the same
+                // de-duplication, and so a request made while the servers
+                // were still starting is retried once they are up: the
+                // guard reads hoverAvailable() reactively, so this computed
+                // re-runs the moment it flips and the pending request --
+                // which is still sitting in hoverRequest -- goes out then.
+                let wanted = rx.get(hoverRequest);
+                if wanted && vueBridge.hoverAvailable() {
                     let prevPos = rx.get(lastHoverPos);
-                    let samePos = prevPos && prevPos.x == curPos.x && prevPos.y == curPos.y;
-                    if !samePos {
-                        lastHoverPos := curPos;
-                        // curPos.x is a BYTE offset. The bridge needs the
+                    let alreadySent = false;
+                    if prevPos {
+                        alreadySent = prevPos.x == wanted.x && prevPos.y == wanted.y;
+                    }
+                    if !alreadySent {
+                        lastHoverPos := wanted;
+                        // wanted.x is a BYTE offset. The bridge needs the
                         // line's text to convert it into whatever index
                         // space each language server actually counts in.
-                        let hoverLine = doc.lineText(curPos.y);
-                        vueBridge.hover(curPos.y, curPos.x, hoverLine, (text: str | null) => {
+                        let hoverLine = doc.lineText(wanted.y);
+                        let requestedFor: Vec2i = { x: wanted.x, y: wanted.y };
+                        vueBridge.hover(wanted.y, wanted.x, hoverLine, (text: str | null) => {
+                            // The answer may arrive after the user has
+                            // moved on or dismissed the popup; a reply for
+                            // a position we are no longer asking about must
+                            // not resurrect it.
+                            let current = rx.get(hoverRequest);
+                            if !current {
+                                return;
+                            }
+                            if current.x != requestedFor.x || current.y != requestedFor.y {
+                                return;
+                            }
                             hoverResult := text ? text : "(no hover info at this position)";
                         });
                     }
@@ -834,6 +1046,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // container; the scroll model clamps at both ends.
                     onWheel: (event: ui_components.WheelEvent) => {
                         scroll.handleWheel(event.delta);
+                        // The popup is anchored to a place in the text; once
+                        // the text moves under it, it is pointing at the
+                        // wrong token. Both editors close it on scroll.
+                        dismissHover();
                     },
 
                     // Click places the caret, drag extends a selection --
@@ -845,6 +1061,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         if scroll.isDragging() {
                             return;
                         }
+                        // Clicking is an interaction with the text, not a
+                        // request to describe it -- put the popup away.
+                        dismissHover();
                         let target = documentPositionAt(event.pos);
                         mouseSelecting := true;
                         dragOriginPxX := event.pos.x;
@@ -873,13 +1092,30 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // commands in normal/visual mode and literal text
                         // in insert mode -- the behavior decides which.
                         if rx.get(vimOn) {
+                            // Hover, as neovim binds it: an explicit
+                            // command in normal/visual mode (stock LSP
+                            // configs put `vim.lsp.buf.hover` on K; here it
+                            // is shift+L). Shifted letters arrive as text
+                            // input, not as key events, so the intercept
+                            // belongs here -- and it must happen BEFORE the
+                            // behavior sees the character, or vim would
+                            // also run its own "L" motion (screen-bottom).
+                            //
+                            // Insert mode is excluded for the same reason
+                            // neovim excludes it: there, "L" is just a
+                            // letter you are typing.
+                            let vimMode = rx.get(texteditBehavior.mode);
+                            if event.text == "L" && vimMode != textedit_behavior.Mode.Insert {
+                                hoverKeyPressed := true;
+                                return;
+                            }
                             texteditBehavior.handleTextInput(event.text);
                         } else {
                             texteditBehavior.insertText(event.text);
                         }
                         caretFollow := true;
                         lastEditAt := ui.now();
-                        hoverResult := null;
+                        dismissHover();
                     },
                     onKeyDown: (event: ui_components.KeyboardEvent) => {
                         let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
@@ -906,7 +1142,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             if name.length > 0 {
                                 texteditBehavior.handleKey(name);
                                 lastEditAt := ui.now();
-                                hoverResult := null;
+                                // neovim's hover float closes on the next
+                                // keypress; so does this one.
+                                dismissHover();
                             }
                             return;
                         }
@@ -956,7 +1194,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
 
                         lastEditAt := ui.now();
-                        hoverResult := null;
+                        dismissHover();
                     },
                 }, () => {
                     // Explicit font, so this stays identical to the value
@@ -1261,20 +1499,53 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         });
                     }
 
-                    if hoverResult {
+                    // The popup exists whenever a hover was ASKED for, not
+                    // only once an answer came back -- otherwise the gap
+                    // between the two (a cold language server takes many
+                    // seconds) looks exactly like the request having been
+                    // ignored. While that gap is open it shows why, so a
+                    // slow start reads as "starting up", not as "broken".
+                    if rx.get(hoverRequest) {
+                        let pending = rx.get(hoverResult);
+                        let ready = vueBridge && vueBridge.hoverAvailable();
+                        let hoverText = pending ? pending as str
+                            : (ready ? "Loading..." : "Starting language server...");
+
+                        // Anchor: at the pointer for the mouse path (VS
+                        // Code puts the popup where you are pointing),
+                        // under the caret for the vim path. Both are
+                        // converted to editor-local pixels, since the
+                        // popup is absolutely positioned inside it.
+                        let anchor = rx.get(hoverAnchor);
+                        let anchorX = cursorPos.x;
+                        let anchorY = cursorPos.y;
+                        if anchor {
+                            anchorX = anchor.x - editorOriginX();
+                            anchorY = anchor.y - editorOriginY();
+                        }
+
                         ui.div({
                             id: 300002,
                             presets: [
                                 presets.absolute(),
-                                presets.top(cursorPos.y + characterSize.y + 10.0),
-                                presets.left(cursorPos.x),
+                                presets.top(anchorY + characterSize.y + 10.0),
+                                presets.left(anchorX),
                                 presets.bg("#181818"),
                                 presets.border(1),
                                 presets.borderColor("#4F4F4F"),
                                 presets.rounded(2),
+                                // Without a bound, a long signature runs off
+                                // the right edge and the text is unreadable.
+                                presets.p(4),
                             ]
                         }, () => {
-                            ui.text({ id: 0, text: hoverResult });
+                            ui.text({
+                                id: 0,
+                                text: hoverText,
+                                presets: pending
+                                    ? []
+                                    : [presets.textColor("#9A9A9A")],
+                            });
                         });
                     }
                 });
