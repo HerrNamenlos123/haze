@@ -732,6 +732,23 @@ export opaque struct Context {
                 lineHeightPx = lineHeightMode.value;
             }
 
+            // Wrapping defaults to words (what CSS does), but a caller can
+            // turn it off. Anything that maps an x coordinate back to a
+            // character -- a code editor's hit-testing, a caret -- MUST
+            // disable it: a wrapped run moves onto a second visual row, so
+            // the glyph at column N is no longer at N*advance and every
+            // click past the wrap point resolves to the wrong character.
+            let wrapMode = ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words;
+            let wrapStyle = element.style.textWrap;
+            if wrapStyle {
+                if wrapStyle == ui_styling.TextWrap.None {
+                    wrapMode = ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_none;
+                }
+                else if wrapStyle == ui_styling.TextWrap.Newlines {
+                    wrapMode = ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_newlines;
+                }
+            }
+
             ffi.hzui_clay_define_text_element(
                 {
                     text: element.text,
@@ -739,7 +756,7 @@ export opaque struct Context {
                     fontId: fontId,
                     fontSize: fontSize,
                     lineHeight: lineHeightPx,
-                    wrapMode: ffi.hzui_text_wrap_mode_t.hzui_text_wrap_mode_wrap_words,
+                    wrapMode: wrapMode,
                     alignment: ffi.hzui_text_alignment_t.hzui_text_alignment_left,
                     elementPtr: elementPtr,
                 }

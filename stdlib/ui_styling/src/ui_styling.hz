@@ -146,6 +146,16 @@ export inline struct PositionValues {
 // actually uses.
 export type AnchorTarget = rx.ShallowReactive<TypeErasedBox | null>;
 
+// How text behaves when it is wider than the space available.
+//
+// `Words` (the default, and what CSS does) breaks onto a new visual line
+// at word boundaries. `None` lets the text run past its container --
+// which is what a code editor, a table cell or any single-line control
+// needs: wrapping would move glyphs onto a second visual row, so a
+// caret/hit-test that maps x to a column by dividing by the character
+// advance would silently address the wrong character.
+export enum TextWrap { Words, Newlines, None }
+
 export enum LineHeightMode { Auto, Relative, Pixels }
 export struct LineHeight {
     mode: LineHeightMode;
@@ -330,6 +340,7 @@ export inline struct TextStyle {
     lineHeight?: LineHeight;
     letterSpacing?: real;
     textColor?: Color;
+    textWrap?: TextWrap;
 
     fn operator:=(other: TextStyle) {
         this.fontFamily = other.fontFamily;
@@ -338,6 +349,7 @@ export inline struct TextStyle {
         this.lineHeight = other.lineHeight;
         this.letterSpacing = other.letterSpacing;
         this.textColor = other.textColor;
+        this.textWrap = other.textWrap;
     }
 
     fn operator==(other: TextStyle) {
@@ -429,6 +441,7 @@ export inline struct ComputedTextStyle {
     lineHeight?: LineHeight;
     letterSpacing?: real;
     textColor?: Color;
+    textWrap?: TextWrap;
 
     fn operator:=(other: ComputedTextStyle) {
         this.fontFamily = other.fontFamily;
@@ -437,6 +450,7 @@ export inline struct ComputedTextStyle {
         this.lineHeight = other.lineHeight;
         this.letterSpacing = other.letterSpacing;
         this.textColor = other.textColor;
+        this.textWrap = other.textWrap;
     }
 }
 
@@ -478,12 +492,14 @@ export struct FontSizeOp { value: real; }
 export struct FontWeightOp { value: real; }
 export struct LineHeightOp { value: LineHeight; }
 export struct LetterSpacingOp { value: real; }
+export struct TextWrapOp { value: TextWrap; }
 
 // Text-only ops are a sub-union of the div ops, so a single op value (e.g.
 // from presets.textColor(...)) satisfies both `[]TextStyleOp` and
 // `[]DivStyleOp` structurally -- no separate vocabularies needed.
 export type TextStyleOp =
-    TextColorOp | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
+    TextColorOp | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp
+    | TextWrapOp;
 
 // Flat (not nested) so a TextStyleOp member's value -- e.g. from
 // presets.textColor(...) -- is directly usable wherever DivStyleOp is
@@ -495,7 +511,7 @@ export type DivStyleOp =
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
-    | BorderColorOp
+    | BorderColorOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
 
 // Applies `ops` onto `raw`, with explicitly-set fields on `raw` always
@@ -588,6 +604,7 @@ export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedT
     if ops is not none {
         for op in ops {
             if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+            else if op is TextWrapOp { if !working.textWrap { working.textWrap = op.value; } }
             else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
             else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
             else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
