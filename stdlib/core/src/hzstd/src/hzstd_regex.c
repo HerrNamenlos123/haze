@@ -39,10 +39,8 @@ void hzstd_regex_init_table(hzstd_regex_blob_t *table, size_t table_count) {
   }
 }
 
-hzstd_regex_blob_t *
-hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags,
-                            hzstd_str_ref_t *error_message) {
-  assert(error_message);
+hzstd_regex_runtime_compile_result_t
+hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags) {
   uint32_t options = 0;
 
   /* ---- flag parsing ---- */
@@ -64,8 +62,10 @@ hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags,
       break;
 
     default:
-      error_message->data = HZSTD_STRING_FROM_CSTR("invalid regex flag");
-      return NULL;
+      return (hzstd_regex_runtime_compile_result_t){
+        .blob = NULL,
+        .error = HZSTD_STRING_FROM_CSTR("invalid regex flag"),
+      };
     }
   }
 
@@ -77,19 +77,17 @@ hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags,
                                    options, &error_code, &error_offset, NULL);
 
   if (!code) {
-    if (error_message) {
-      /* Translate PCRE2 error to string */
-      PCRE2_UCHAR buffer[256];
-      int len = pcre2_get_error_message(error_code, buffer, sizeof(buffer));
+    /* Translate PCRE2 error to string */
+    PCRE2_UCHAR buffer[256];
+    int len = pcre2_get_error_message(error_code, buffer, sizeof(buffer));
 
-      if (len > 0) {
-        error_message->data = HZSTD_STRING((const char *)buffer, (size_t)len);
-      } else {
-        error_message->data =
-            HZSTD_STRING_FROM_CSTR("regex compilation failed");
-      }
+    hzstd_str_t error;
+    if (len > 0) {
+      error = HZSTD_STRING((const char *)buffer, (size_t)len);
+    } else {
+      error = HZSTD_STRING_FROM_CSTR("regex compilation failed");
     }
-    return NULL;
+    return (hzstd_regex_runtime_compile_result_t){.blob = NULL, .error = error};
   }
 
   /* ---- allocate blob ---- */
@@ -98,16 +96,17 @@ hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags,
 
   if (!blob) {
     pcre2_code_free(code);
-    error_message->data =
-        HZSTD_STRING_FROM_CSTR("out of memory while allocating regex");
-    return NULL;
+    return (hzstd_regex_runtime_compile_result_t){
+      .blob = NULL,
+      .error = HZSTD_STRING_FROM_CSTR("out of memory while allocating regex"),
+    };
   }
 
   blob->data = NULL;
   blob->size = 0;
   blob->code = code;
 
-  return blob;
+  return (hzstd_regex_runtime_compile_result_t){.blob = blob, .error = HZSTD_STRING(NULL, 0)};
 }
 
 hzstd_bool_t hzstd_regex_match(hzstd_regex_t regex, hzstd_str_t text) {

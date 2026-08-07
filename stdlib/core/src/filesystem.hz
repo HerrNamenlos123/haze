@@ -21,7 +21,12 @@ namespace ffi {
         message: str;
     };
 
-    extern C fn hzstd_read_file_text(allocator: Allocator, path: str, outputBuffer: hzstd_str_ref_t): inline hzstd_fs_error_t :: final;
+    extern C noemit struct hzstd_read_file_text_result_t {
+        data: str;
+        error: inline hzstd_fs_error_t;
+    };
+
+    extern C fn hzstd_read_file_text(allocator: Allocator, path: str): inline hzstd_read_file_text_result_t :: final;
     extern C fn hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
     extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
@@ -140,13 +145,12 @@ export namespace fs {
     }
 
     export fn readText(allocator: Allocator, path: str): Result<str, Error> {
-        let output = ffi.hzstd_str_ref_t { data: "" } with allocator;
-        let result = ffi.hzstd_read_file_text(allocator, path, output);
-        if result.code == ffi.hzstd_fs_error_code_none {
-            return Result<str, Error>.Ok(output.data);
+        let result = ffi.hzstd_read_file_text(allocator, path);
+        if result.error.code == ffi.hzstd_fs_error_code_none {
+            return Result<str, Error>.Ok(result.data);
         }
         else {
-            return Result<str, Error>.Err(mapErrorEnum(result.code));
+            return Result<str, Error>.Err(mapErrorEnum(result.error.code));
         }
     }
 

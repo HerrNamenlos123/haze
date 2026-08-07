@@ -22,10 +22,22 @@ typedef enum {
   hz_filedialog_result_error = 3,
 } hz_filedialog_result_t;
 
-hz_filedialog_result_t
-hz_filedialog_open_dialog(hzstd_str_t filters, hzstd_str_t defaultPath,
-                          hzstd_str_ref_t *outPath,
-                          hzstd_str_ref_t *errorMessage) {
+// path is only valid when result == hz_filedialog_result_ok.
+// error is only valid when result == hz_filedialog_result_error.
+typedef struct {
+  hz_filedialog_result_t result;
+  hzstd_str_t path;
+  hzstd_str_t error;
+} hz_filedialog_path_result_t;
+
+// error is only valid when result == hz_filedialog_result_error.
+typedef struct {
+  hz_filedialog_result_t result;
+  hzstd_str_t error;
+} hz_filedialog_multiple_result_t;
+
+hz_filedialog_path_result_t
+hz_filedialog_open_dialog(hzstd_str_t filters, hzstd_str_t defaultPath) {
   const char *c_filters =
       filters.length > 0
           ? hzstd_cstr_from_str(hzstd_make_heap_allocator(), filters)
@@ -40,24 +52,23 @@ hz_filedialog_open_dialog(hzstd_str_t filters, hzstd_str_t defaultPath,
   nfdresult_t result = NFD_OpenDialog(c_filters, c_defaultPath, &c_outPath);
 
   if (result == NFD_OKAY) {
-    outPath->data =
+    hzstd_str_t path =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), c_outPath);
     free(c_outPath);
-    return hz_filedialog_result_ok;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_ok, .path = path};
   } else if (result == NFD_CANCEL) {
-    return hz_filedialog_result_cancel;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_cancel};
   } else {
     const char *error = NFD_GetError();
-    errorMessage->data =
+    hzstd_str_t errorMessage =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)error);
-    return hz_filedialog_result_error;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_error, .error = errorMessage};
   }
 }
 
-hz_filedialog_result_t
+hz_filedialog_multiple_result_t
 hz_filedialog_open_dialog_multiple(hzstd_str_t filters, hzstd_str_t defaultPath,
-                                   hzstd_dynamic_array_t *outPaths,
-                                   hzstd_str_ref_t *errorMessage) {
+                                   hzstd_dynamic_array_t *outPaths) {
   const char *c_filters =
       filters.length > 0
           ? hzstd_cstr_from_str(hzstd_make_heap_allocator(), filters)
@@ -80,21 +91,19 @@ hz_filedialog_open_dialog_multiple(hzstd_str_t filters, hzstd_str_t defaultPath,
       HZSTD_DYNAMIC_ARRAY_PUSH(outPaths, path);
     }
     NFD_PathSet_Free(&c_outPaths);
-    return hz_filedialog_result_ok;
+    return (hz_filedialog_multiple_result_t){.result = hz_filedialog_result_ok};
   } else if (result == NFD_CANCEL) {
-    return hz_filedialog_result_cancel;
+    return (hz_filedialog_multiple_result_t){.result = hz_filedialog_result_cancel};
   } else {
     const char *error = NFD_GetError();
-    errorMessage->data =
+    hzstd_str_t errorMessage =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)error);
-    return hz_filedialog_result_error;
+    return (hz_filedialog_multiple_result_t){.result = hz_filedialog_result_error, .error = errorMessage};
   }
 }
 
-hz_filedialog_result_t
-hz_filedialog_save_dialog(hzstd_str_t filters, hzstd_str_t defaultPath,
-                          hzstd_str_ref_t *outPath,
-                          hzstd_str_ref_t *errorMessage) {
+hz_filedialog_path_result_t
+hz_filedialog_save_dialog(hzstd_str_t filters, hzstd_str_t defaultPath) {
   const char *c_filters =
       filters.length > 0
           ? hzstd_cstr_from_str(hzstd_make_heap_allocator(), filters)
@@ -109,24 +118,22 @@ hz_filedialog_save_dialog(hzstd_str_t filters, hzstd_str_t defaultPath,
   nfdresult_t result = NFD_SaveDialog(c_filters, c_defaultPath, &c_outPath);
 
   if (result == NFD_OKAY) {
-    outPath->data =
+    hzstd_str_t path =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), c_outPath);
     free(c_outPath);
-    return hz_filedialog_result_ok;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_ok, .path = path};
   } else if (result == NFD_CANCEL) {
-    return hz_filedialog_result_cancel;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_cancel};
   } else {
     const char *error = NFD_GetError();
-    errorMessage->data =
+    hzstd_str_t errorMessage =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)error);
-    return hz_filedialog_result_error;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_error, .error = errorMessage};
   }
 }
 
-hz_filedialog_result_t
-hz_filedialog_open_folder_dialog(hzstd_str_t defaultPath,
-                                 hzstd_str_ref_t *outPath,
-                                 hzstd_str_ref_t *errorMessage) {
+hz_filedialog_path_result_t
+hz_filedialog_open_folder_dialog(hzstd_str_t defaultPath) {
   nfdchar_t *c_defaultPath =
       defaultPath.length > 0
           ? hzstd_cstr_from_str(hzstd_make_heap_allocator(), defaultPath)
@@ -136,16 +143,16 @@ hz_filedialog_open_folder_dialog(hzstd_str_t defaultPath,
   nfdresult_t result = NFD_PickFolder(c_defaultPath, &c_outPath);
 
   if (result == NFD_OKAY) {
-    outPath->data =
+    hzstd_str_t path =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), c_outPath);
     free(c_outPath);
-    return hz_filedialog_result_ok;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_ok, .path = path};
   } else if (result == NFD_CANCEL) {
-    return hz_filedialog_result_cancel;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_cancel};
   } else {
     const char *error = NFD_GetError();
-    errorMessage->data =
+    hzstd_str_t errorMessage =
         hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)error);
-    return hz_filedialog_result_error;
+    return (hz_filedialog_path_result_t){.result = hz_filedialog_result_error, .error = errorMessage};
   }
 }

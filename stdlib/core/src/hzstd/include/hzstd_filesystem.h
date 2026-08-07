@@ -9,7 +9,7 @@
 // hzstd_fs_exists_result_t, hzstd_file_stat_t, hzstd_open_dir_result_t,
 // hzstd_dir_entry_t are defined in hzstd_types.h.
 
-hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_ref_t* outputBuffer);
+hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path);
 hzstd_fs_error_t
 hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 
