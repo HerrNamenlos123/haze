@@ -10064,6 +10064,180 @@ export class SemanticElaborator {
           sourceloc
         );
       }
+      // array.insert(index, element) -- shift right, O(n) memmove.
+      // The counterpart to push() for the middle of the array; without it
+      // callers have to rebuild the whole array to add one element, which
+      // turns every line insertion in a text buffer into an O(document)
+      // copy.
+      if (name === "insert") {
+        const funcname = `__hz_dynamic_array_insert_${
+          Semantic.mangleTypeUse(this.sr, exprType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [
+              {
+                optional: false,
+                type: this.sr.b.intType(),
+              },
+              {
+                optional: false,
+                type: exprType.datatype,
+              },
+            ],
+            returnType: this.sr.b.voidType(),
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: sourceloc,
+            vararg: false,
+          });
+
+          const name = Semantic.mangleTypeUse(this.sr, exprType.datatype);
+          const code = `__c__("HZSTD_ARRAY_INSERT(this, ${
+            name.wasMangled ? "_H" + name.name : name.name
+          }, index, element);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: ["index", "element"],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                exprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                sourceloc
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              exprTypeUse.type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              sourceloc
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: exprId,
+          },
+          sourceloc
+        );
+      }
+
+      // array.remove(index) -- shift left, returns the removed element.
+      if (name === "remove") {
+        const funcname = `__hz_dynamic_array_remove_${
+          Semantic.mangleTypeUse(this.sr, exprType.datatype).name
+        }`;
+
+        let [func, funcId] = [null, null] as [
+          Semantic.FunctionSymbol | null,
+          Semantic.SymbolId | null,
+        ];
+        if (this.sr.syntheticFunctions.has(funcname)) {
+          funcId = this.sr.syntheticFunctions.get(funcname)!;
+          assert(funcId);
+          const sym = this.sr.symbolNodes.get(funcId);
+          assert(sym.variant === Semantic.ENode.FunctionSymbol);
+          func = sym;
+        } else {
+          const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+            parameters: [
+              {
+                optional: false,
+                type: this.sr.b.intType(),
+              },
+            ],
+            returnType: exprType.datatype,
+            requires: {
+              final: true,
+              pure: false,
+              noreturn: false,
+              noreturnIf: null,
+            },
+            sourceloc: sourceloc,
+            vararg: false,
+          });
+
+          const name = Semantic.mangleTypeUse(this.sr, exprType.datatype);
+          const code = `__c__("return HZSTD_ARRAY_REMOVE(this, ${
+            name.wasMangled ? "_H" + name.name : name.name
+          }, index);");`;
+
+          [func, funcId] = this.sr.b.syntheticFunctionFromCode({
+            functionTypeId: functionType,
+            parameterNames: ["index"],
+            funcname: funcname,
+            bodySourceCode: code,
+            currentScope: this.currentContext.currentScope,
+            sourceloc: sourceloc,
+            envType: {
+              type: "method",
+              thisExprType: makeTypeUse(
+                this.sr,
+                exprTypeUse.type,
+                EDatatypeMutability.Mut,
+                "force-no-inline",
+                sourceloc
+              )[1],
+            },
+          });
+          this.sr.syntheticFunctions.set(funcname, funcId);
+        }
+
+        assert(func && funcId);
+
+        return this.sr.b.callableExpr(
+          funcId,
+          {
+            type: "method",
+            thisExprType: makeTypeUse(
+              this.sr,
+              exprTypeUse.type,
+              EDatatypeMutability.Mut,
+              "force-no-inline",
+              sourceloc
+            )[1],
+          },
+          {
+            type: "method",
+            thisExpr: exprId,
+          },
+          sourceloc
+        );
+      }
+
       if (name === "pop") {
         const funcname = `__hz_dynamic_array_pop_${
           Semantic.mangleTypeUse(this.sr, exprType.datatype).name
@@ -14429,12 +14603,44 @@ export class SemanticElaborator {
         );
       }
 
+      // `arr[i]` denotes storage INSIDE the array, not a copy, so when
+      // the array itself is `mut` the element has to be mutable too --
+      // otherwise an in-place edit like `lines[i].insert(...)` is
+      // rejected and callers must rebuild the whole array to change one
+      // element.
+      //
+      // Restricted to mut DYNAMIC arrays of struct elements on purpose:
+      // widening this to every subscript re-mangles common value types
+      // (int/str/...) and makes generic stdlib functions such as
+      // fmt.format_to monomorphize twice, which is a duplicate-symbol
+      // error at C compile time.
+      let elementTypeUse = valueType.datatype;
+      if (
+        valueType.variant === Semantic.ENode.DynamicArrayDatatype &&
+        exprTypeUse.mutability === EDatatypeMutability.Mut
+      ) {
+        const elemUse = this.sr.typeUseNodes.get(elementTypeUse);
+        const elemDef = this.sr.typeDefNodes.get(elemUse.type);
+        if (
+          elemDef.variant === Semantic.ENode.StructDatatype &&
+          elemUse.mutability !== EDatatypeMutability.Mut
+        ) {
+          elementTypeUse = makeTypeUse(
+            this.sr,
+            elemUse.type,
+            EDatatypeMutability.Mut,
+            "force-no-inline",
+            arraySubscript.sourceloc
+          )[1];
+        }
+      }
+
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ArraySubscriptExpr,
         instanceIds: [],
         expr: valueId,
         indices: [indexId],
-        type: valueType.datatype,
+        type: elementTypeUse,
         sourceloc: arraySubscript.sourceloc,
         isTemporary: false,
         flow: value.flow,

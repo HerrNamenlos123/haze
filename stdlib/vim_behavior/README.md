@@ -106,8 +106,8 @@ anchor and register contents (including charwise/linewise-ness).
 
 | Suite | Result |
 | --- | --- |
-| Core subset, no remaps | **2340 / 2340** |
-| Core subset, vimrc remaps | **2340 / 2340** |
+| Core subset, no remaps | **2680 / 2680** |
+| Core subset, vimrc remaps | **2680 / 2680** |
 | Random fuzz (6 seeds × 150) | ~92% |
 
 The core suite is the regression gate and must stay at 100%. The fuzzer
@@ -142,7 +142,11 @@ Deliberately not all of Vim. What is covered, and verified:
   swap ends, operators over the selection, `p`/`P` to paste over it, and
   the linewise `D C X S Y` forms
 - **Edits** `x X r J ~ p P i a I A o O`
-- **Undo/redo** `u <C-r>`, with multi-step edits as single transactions
+- **Undo/redo** `u <C-r>`. Modelled on neovim's `u_save`: an undo entry
+  stores the LINE RANGE it replaced plus the old lines, never a copy of
+  the document, so the engine stays storage-agnostic and a keystroke
+  costs O(edit) rather than O(document). A whole insert session
+  (`ihello<Esc>`) is one undo step, as in vim.
 - **Jumps** `<C-o> <C-i>`, `<C-d> <C-u>`
 - **Registers** the unnamed register, charwise and linewise, optionally
   routed through the system clipboard (`clipboard=unnamedplus`)

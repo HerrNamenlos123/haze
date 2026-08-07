@@ -28,9 +28,19 @@ function errorMessage(error: Error) {
   }
 }
 
-function initialize() {}
+// ── Grammar / registry: built ONCE ────────────────────────────────────
+//
+// This used to happen inside highlight(), i.e. on every single request:
+// the oniguruma WASM was re-read from disk, a fresh Registry was built,
+// and every grammar JSON was re-parsed. That dominated the cost of
+// highlighting and is why re-highlighting on each keystroke was not
+// viable. Now it is done once, lazily, and reused.
+let grammarPromise: Promise<vsctm.IGrammar | undefined> | null = null;
 
-async function highlight(file: string) {
+function getGrammar(): Promise<vsctm.IGrammar | undefined> {
+  if (grammarPromise) {
+    return grammarPromise;
+  }
   const wasmBin = fs.readFileSync(onigWasmPath).buffer;
   const vscodeOnigurumaLib = oniguruma.loadWASM(wasmBin).then(() => {
     return {
@@ -182,57 +192,181 @@ async function highlight(file: string) {
     },
   });
 
-  // Load the JavaScript grammar and any other grammars included by it async.
-  const grammar = await registry.loadGrammar("source.vue");
-  if (!grammar) {
-    return;
-  }
-  // const file = fs.readFileSync("../Moduro_FE/src/Application.vue", "utf8");
-  // const file = fs.readFileSync("../Moduro_FE/src/Application.vue", "utf8");
-  // console.log(file);
-  const textLines = file.split("\n");
+  grammarPromise = registry.loadGrammar("source.vue");
+  return grammarPromise;
+}
 
-  type Token = {
-    lineIndex: number;
-    startIndex: number;
-    endIndex: number;
-    scopes: string[];
-  };
+function initialize() {
+  // Warm the grammar so the first real request isn't the one that pays
+  // for loading it.
+  void getGrammar();
+}
 
-  const ret = {
-    // file: file,
-    // lines: [] as string[][],
-    tokens: [] as Token[],
-  };
-  //   const text = [`function sayHello(name) {`, `\treturn "Hello, " + name;`, `}`];
-  let ruleStack = vsctm.INITIAL;
-  for (let lineIndex = 0; lineIndex < textLines.length; lineIndex++) {
-    const line = textLines[lineIndex];
-    const lineTokens = grammar.tokenizeLine(line, ruleStack);
-    for (let j = 0; j < lineTokens.tokens.length; j++) {
-      const token = lineTokens.tokens[j];
-      // console.log(
-      //   ` - token from ${token.startIndex} to ${token.endIndex} ` +
-      //     `(${line.substring(token.startIndex, token.endIndex)}) ` +
-      //     `with scopes ${token.scopes.join(", ")}`,
-      // );
-      // retLine.push(
-      //   ` - token from ${token.startIndex} to ${token.endIndex} ` +
-      //     `(${line.substring(token.startIndex, token.endIndex)}) ` +
-      //     `with scopes ${token.scopes.join(", ")}`,
-      // );
-      ret.tokens.push({
-        lineIndex: lineIndex,
-        startIndex: token.startIndex,
-        endIndex: token.endIndex,
-        scopes: token.scopes,
+type Token = {
+  lineIndex: number;
+  startIndex: number;
+  endIndex: number;
+  scopes: string[];
+};
+
+// ── Incremental tokenization ──────────────────────────────────────────
+//
+// TextMate tokenization is inherently sequential: a line's tokens depend
+// on the rule stack left behind by the line before it (that is how a
+// multi-line string or a <script> block "colours" the lines inside it).
+// So it cannot be made random-access -- but it CAN be made incremental,
+// which is what an editor actually needs:
+//
+//   * the rule stack at the END of every line is cached, so retokenizing
+//     can START at the first changed line instead of at the top of the
+//     file;
+//   * it STOPS as soon as a line's resulting rule stack matches what was
+//     cached there before, because from that point on every following
+//     line would tokenize identically to last time.
+//
+// Editing one line in the middle of a 50k-line file therefore costs a
+// handful of lines of work, not 50k. The pathological case (typing `"`
+// or `<script>`, which changes the stack for everything below) still
+// degrades to a full retokenize from the edit down -- correctly.
+type DocState = {
+  lines: string[];
+  // ruleStacks[i] is the stack AFTER line i. ruleStacks[-1] is INITIAL.
+  ruleStacks: vsctm.StateStack[];
+  // tokensByLine[i] are the tokens of line i.
+  tokensByLine: Token[][];
+};
+
+const documents = new Map<string, DocState>();
+
+function stackBefore(state: DocState, lineIndex: number): vsctm.StateStack {
+  return lineIndex === 0 ? vsctm.INITIAL : state.ruleStacks[lineIndex - 1];
+}
+
+// Tokenize from `fromLine` downwards, stopping early once the rule stack
+// reconverges with what was previously cached. Returns the range of lines
+// whose tokens actually changed, so only those need to be sent back.
+function retokenizeFrom(
+  grammar: vsctm.IGrammar,
+  state: DocState,
+  fromLine: number,
+  // Lines at/after this index have no trustworthy cached stack (they were
+  // just inserted or shifted), so convergence can only be checked beyond it.
+  minLineToCheckConvergence: number
+): { firstLine: number; lastLine: number } {
+  let ruleStack = stackBefore(state, fromLine);
+  let lastChanged = fromLine - 1;
+
+  for (let i = fromLine; i < state.lines.length; i++) {
+    const result = grammar.tokenizeLine(state.lines[i], ruleStack);
+
+    const tokens: Token[] = [];
+    for (const t of result.tokens) {
+      tokens.push({
+        lineIndex: i,
+        startIndex: t.startIndex,
+        endIndex: t.endIndex,
+        scopes: t.scopes,
       });
     }
-    ruleStack = lineTokens.ruleStack;
-    // ret.lines.push(retLine);
-    // Bun.spawnSync(["zenity", "--info", "--text=tokens: " + ret.tokens.length]);
+
+    const previousStack = state.ruleStacks[i];
+    state.tokensByLine[i] = tokens;
+    state.ruleStacks[i] = result.ruleStack;
+    lastChanged = i;
+
+    // If this line ended in exactly the state it ended in last time, every
+    // line below it is unaffected and already correct in the cache.
+    if (
+      i >= minLineToCheckConvergence &&
+      previousStack &&
+      previousStack === result.ruleStack
+    ) {
+      break;
+    }
+
+    ruleStack = result.ruleStack;
   }
-  return ret;
+
+  return { firstLine: fromLine, lastLine: lastChanged };
+}
+
+function collectTokens(state: DocState, firstLine: number, lastLine: number): Token[] {
+  const out: Token[] = [];
+  for (let i = firstLine; i <= lastLine && i < state.tokensByLine.length; i++) {
+    for (const t of state.tokensByLine[i]) {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
+// Full (re)tokenize of a document -- used on open, and as the fallback
+// whenever a client sends a change for a document we do not know.
+async function openDocument(uri: string, text: string) {
+  const grammar = await getGrammar();
+  if (!grammar) {
+    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
+  }
+  const lines = text.split("\n");
+  const state: DocState = {
+    lines: lines,
+    ruleStacks: new Array(lines.length),
+    tokensByLine: new Array(lines.length),
+  };
+  documents.set(uri, state);
+  const range = retokenizeFrom(grammar, state, 0, lines.length);
+  return {
+    tokens: collectTokens(state, range.firstLine, range.lastLine),
+    firstLine: range.firstLine,
+    lastLine: range.lastLine,
+    lineCount: lines.length,
+  };
+}
+
+// Apply a line-range edit and retokenize only what it affected.
+//
+// `startLine` + `removedCount` lines are replaced by `newLines`, which is
+// exactly the shape of text_document.ChangeSet on the Haze side.
+async function changeDocument(
+  uri: string,
+  startLine: number,
+  removedCount: number,
+  newLines: string[]
+) {
+  const grammar = await getGrammar();
+  if (!grammar) {
+    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
+  }
+  const state = documents.get(uri);
+  if (!state) {
+    // Never opened (or the engine restarted): nothing to be incremental
+    // against, so fall back to a full parse of what we were given.
+    return openDocument(uri, newLines.join("\n"));
+  }
+
+  state.lines.splice(startLine, removedCount, ...newLines);
+  state.ruleStacks.splice(startLine, removedCount, ...new Array(newLines.length));
+  state.tokensByLine.splice(startLine, removedCount, ...new Array(newLines.length));
+
+  // Lines from startLine to the end of the inserted block have no valid
+  // cached stack, so convergence may only be tested after them.
+  const range = retokenizeFrom(
+    grammar,
+    state,
+    startLine,
+    startLine + newLines.length
+  );
+  return {
+    tokens: collectTokens(state, range.firstLine, range.lastLine),
+    firstLine: range.firstLine,
+    lastLine: range.lastLine,
+    lineCount: state.lines.length,
+  };
+}
+
+// Backwards-compatible whole-document highlight.
+async function highlight(file: string) {
+  return openDocument("__default__", file);
 }
 
 async function main() {
@@ -265,6 +399,36 @@ async function main() {
           id: request.id,
           // id: 2,
           result: await highlight(request.fileContent),
+        };
+
+      // Full parse of a document, remembered under `uri` so later
+      // "change" requests can be incremental against it.
+      case "open":
+        if (!initialized) {
+          initialize();
+        }
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: await openDocument(request.uri, request.fileContent ?? ""),
+        };
+
+      // Incremental edit: replace `removedCount` lines at `startLine`
+      // with `newLines`, and return tokens ONLY for the lines whose
+      // highlighting actually changed.
+      case "change":
+        if (!initialized) {
+          initialize();
+        }
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: await changeDocument(
+            request.uri,
+            request.startLine ?? 0,
+            request.removedCount ?? 0,
+            request.newLines ?? []
+          ),
         };
 
       default:
