@@ -77,8 +77,18 @@ namespace profiling {
     // instrumentation hook) that were never meant to be user-visible --
     // skipped here the same way print_frames_to_stderr and sbuf_frames
     // (hzstd_runtime.c) already do for panic stack traces.
+    // Called once per memory-allocation capture (hundreds of thousands of times on a large
+    // session) -- .reserve() here matters a lot more than it looks like it should: leaving
+    // `frames` to grow from Haze's default tiny array capacity means every single call
+    // regrows it from scratch via GC_realloc, and at this call volume that repeated regrowth
+    // was observed (via a live gdb backtrace during a synthetic stress run) to keep tripping
+    // Boehm's own heap-growth-triggered collection over and over -- 16 GC-marker threads
+    // pegged at 100% CPU each, for tens of seconds, entirely inside this one array's growth.
+    // The exact final size is already known up front (stacktrace.frames.length minus the
+    // skipped internal frames), so there's no reason to pay for incremental growth at all.
     fn frameRefsForStacktrace(stacktrace: sys.Stacktrace): []ChromeTrace.FrameRef {
         let frames: []ChromeTrace.FrameRef = [];
+        frames.reserve(stacktrace.frames.length - stacktrace.skip_n_frames);
         for (let i = stacktrace.skip_n_frames; i < stacktrace.frames.length; i++) {
             frames.push(frameRefForStackFrame(stacktrace.frames[i]));
         }
@@ -165,6 +175,11 @@ namespace profiling {
 
     export fn buildTrace(result: ProfilingResult): ChromeTrace.Trace {
         let builder = ChromeTrace.TraceBuilder(hazeProcessPid);
+        // +1 for the addInstantMarker below is an underestimate of the real total (addTask/
+        // addCpuProfileSamples add more), but getting close in one shot avoids most of the
+        // doubling-regrowth copies a large memoryInstrumentationFrames count would otherwise
+        // cause -- see TraceBuilder.reserveEvents.
+        builder.reserveEvents(result.memoryInstrumentationFrames.length + 8);
         builder.addThread(mainThreadTid, "CrRendererMain", true);
         builder.addThread(heapAllocationsTid, "Heap Allocations");
         builder.addFrame(mainThreadTid, "HZFRAME0", "file:///haze");
@@ -193,33 +208,29 @@ namespace profiling {
         return ChromeTrace.traceToJson(buildTrace(result));
     }
 
-    // Deliberately staged rather than one expression (`writeTrace(buildTrace(result), path)`):
-    // `result` (the whole postprocessed session -- every resolved CPU sample and memory
-    // allocation stack trace) and `trace` (ChromeTrace's own struct form of the same data) are
-    // each, briefly, tens/hundreds of MB to low-GB on a large session, and traceToJson below
-    // builds yet another full representation on top (a json.Node DOM tree, then the final
-    // string) -- so at the peak instant, several full copies of the same underlying data would
-    // otherwise all be simultaneously reachable. `result`/`trace` genuinely have no further use
-    // once each next stage's output exists, but Haze's GC (Boehm) only reclaims by reachability
-    // on its own schedule (see sys.forceGc's doc comment) -- simply letting them go out of scope
-    // does not reliably free that memory before the next stage's allocations run. forceGc()
-    // between stages is what actually turns "no longer needed" into "actually reclaimed before
-    // building the next copy," bounding peak memory to roughly one stage's worth of data instead
-    // of all of them at once.
+    // `result` itself is still reachable as this function's own parameter for the rest of its
+    // body even once buildTrace has no further use for it, so dropping its big array fields here
+    // makes that backing data unreachable well before this function returns, instead of only
+    // once traceToJson has already built its own large representation on top of it too.
+    //
+    // Deliberately NOT forcing a GC collection here (an earlier version of this function did,
+    // via sys.forceGc/GC_gcollect): Haze's GC (Boehm) is a non-incremental, conservative
+    // collector, and a forced full mark+sweep pass over a session with hundreds of thousands of
+    // live objects is itself genuinely slow -- calling it right at each stage's local memory
+    // peak (exactly where this function would otherwise call it) turned out to cost far more
+    // wall-clock time than it saved, to the point of never finishing at all on a large session.
+    // Dropping the reference is still worth doing on its own: it's what makes this data eligible
+    // for reclamation whenever Boehm's own heap-growth heuristics next decide to collect, which
+    // is what actually fixed the original leak (see hzstd_profiling_end's context->
+    // memoryCapturesHead/samples_head/g_profiling_context handling) -- forcing an immediate,
+    // synchronous, full-heap collection on top of that is a different (and here, net harmful)
+    // thing.
     export fn writeTraceJson(result: ProfilingResult, path: str) {
         let trace = buildTrace(result);
-        // `result` itself is still reachable as this function's own parameter for the rest of
-        // its body, so buildTrace having no further use for it isn't enough on its own --
-        // dropping its big array fields here is what actually makes the ~324MB-and-up backing
-        // data unreachable before the forceGc() below, instead of only once this whole function
-        // returns (by which point traceToJson has already built its own large representation
-        // on top).
         result.frames = [];
         result.samples = [];
         result.memoryInstrumentationFrames = [];
-        sys.forceGc();
         let json = ChromeTrace.traceToJson(trace);
-        sys.forceGc();
         return fs.writeText(path, json);
     }
 }

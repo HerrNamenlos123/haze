@@ -62,6 +62,16 @@ namespace ChromeTrace {
         url: str = "";
         line: int = 0;
         column: int = 0;
+
+        // Structs don't get a default `==` -- this is what lets CpuProfileBuilder's dedup
+        // (findOrCreateChild) compare two frames' identity directly, field by field, instead of
+        // formatting both into a combined string first just to compare (see hashFrameRef's own
+        // doc comment for why that string-building was the actual bottleneck it looked like it
+        // shouldn't be).
+        fn operator==(other: FrameRef): bool {
+            return this.line == other.line && this.column == other.column
+                && this.url == other.url && this.name == other.name;
+        }
     }
 
     // ── .cpuprofile-compatible call tree (legacy CDP Profiler.Profile shape) ─
@@ -123,53 +133,65 @@ namespace ChromeTrace {
         parent?: int;
     }
 
-    // Sentinel frame indices for CpuProfileBuilder's own synthetic nodes.
-    // Real frames are always identified by their (name, url, line, column)
-    // FrameRef value; these can't collide with that since they're never
-    // produced by frameKey() below.
-    const rootFrameKey = "$root";
-    const truncatedFrameKey = "$truncated";
-    const lostSamplesFrameKey = "$lostSamples";
+    // Sentinel FrameRefs for CpuProfileBuilder's own synthetic nodes (root/truncated/lost-
+    // samples markers). A `name` starting with "$" can never collide with a real captured frame:
+    // frameRefForNameAndLoc (profiling.hz) always replaces an empty name with "(unknown)" and
+    // never produces one starting with "$" from real symbol data, so comparing the whole
+    // FrameRef (see operator== below) is enough to keep these distinct from any real frame
+    // without needing a separate tag.
+    const rootFrameRef = FrameRef { name: "$root" };
+    const truncatedFrameRef = FrameRef { name: "$truncated" };
+    const lostSamplesFrameRef = FrameRef { name: "$lostSamples" };
 
-    fn frameKey(frame: FrameRef): str {
-        return f"{frame.url}:{frame.line}:{frame.column}:{frame.name}";
-    }
-
-    // A simple base-31 polynomial rolling hash over the key's bytes (the
-    // same shape as java.lang.String.hashCode). Used only to route a child
-    // lookup to the right bucket in ChildTable below -- collisions are
-    // resolved by an actual string comparison against nodeKeys, same as
-    // before, so a hash collision can only cost a little extra probing,
-    // never a wrong answer; hash quality just needs to be reasonable, not
-    // cryptographic.
+    // A simple base-31 polynomial rolling hash (the same shape as java.lang.String.hashCode),
+    // mixed directly from FrameRef's own fields -- no string ever gets built just to compute a
+    // hash or to check identity (see operator== below for the latter). This used to route
+    // through a formatted "{url}:{line}:{column}:{name}" string on every single
+    // findOrCreateChild call (once per (sample, frame depth) pair); at real profiling-session
+    // call volumes (hundreds of thousands of calls) that string allocation was the actual
+    // bottleneck (confirmed live via gdb: every allocation here was a GC_malloc candidate to
+    // trigger a full Boehm collection) -- not the lookup it was feeding.
     //
-    // Haze `int` arithmetic panics on overflow rather than wrapping (no
-    // wrapping-arithmetic op exists), so unlike a typical C/Java hash this
-    // can't just let `h` grow and overflow -- instead it's kept bounded by
-    // reducing mod `hashModulus` after every step, small enough that
-    // `h * hashBase` can never overflow int64 no matter what `h` was.
+    // Haze `int` arithmetic panics on overflow rather than wrapping (no wrapping-arithmetic op
+    // exists), so unlike a typical C/Java hash this can't just let `h` grow and overflow --
+    // instead it's kept bounded by reducing mod `hashModulus` after every step, small enough
+    // that `h * hashBase` can never overflow int64 no matter what `h` was.
     const hashBase = 31;
     const hashModulus = 1000000007; // hashModulus * hashBase + 255 is far below int64's range
-    fn hashKey(key: str): int {
-        let h = 0;
-        for (let i = 0; i < key.length; i++) {
-            h = (h * hashBase + (key[i] as int)) % hashModulus;
+
+    fn hashStrInto(h: int, s: str): int {
+        for (let i = 0; i < s.length; i++) {
+            h = (h * hashBase + (s[i] as int)) % hashModulus;
         }
         return h;
     }
 
-    // Open-addressing (linear probing) index from a child's frameKey to its
-    // slot in the owning CpuProfileNode.children array, one per node.
-    // findOrCreateChild used to answer "does this parent already have a
-    // child for this key" by rescanning every existing child and string-
-    // comparing each one -- fine for a handful of children, but a hot
-    // call site's node can end up with hundreds/thousands of distinct
-    // children over a long profile, and this scan runs once per (sample,
-    // frame depth) pair, so that rescan dominated real profiling sessions.
-    // This table turns that into an O(1) amortized hash lookup instead,
-    // while keeping the exact same identity semantics (two children are
-    // the same node iff their frameKey()s are equal, checked with a real
-    // `==` on a collision) -- see CpuProfileBuilder.findOrCreateChild.
+    fn hashIntInto(h: int, value: int): int {
+        // value can be negative (e.g. 0 for "absent"/never actually negative today, but kept
+        // defensive); force it non-negative first so the running hash itself never goes
+        // negative (the `% hashModulus` result would otherwise inherit the sign).
+        let v = value < 0 ? -value : value;
+        return (h * hashBase + (v % hashModulus)) % hashModulus;
+    }
+
+    fn hashFrameRef(frame: FrameRef): int {
+        let h = hashStrInto(0, frame.url);
+        h = hashIntInto(h, frame.line);
+        h = hashIntInto(h, frame.column);
+        h = hashStrInto(h, frame.name);
+        return h;
+    }
+
+    // Open-addressing (linear probing) index from a child's identifying FrameRef to its slot in
+    // the owning CpuProfileNode.children array, one per node. findOrCreateChild used to answer
+    // "does this parent already have a child for this key" by rescanning every existing child
+    // and string-comparing each one -- fine for a handful of children, but a hot call site's
+    // node can end up with hundreds/thousands of distinct children over a long profile, and this
+    // scan runs once per (sample, frame depth) pair, so that rescan dominated real profiling
+    // sessions. This table turns that into an O(1) amortized hash lookup instead, while keeping
+    // the exact same identity semantics (two children are the same node iff their FrameRefs are
+    // `==`, checked directly on a collision, no string involved) -- see
+    // CpuProfileBuilder.findOrCreateChild.
     export struct ChildTable {
         // buckets[b] == 0 means empty; otherwise it's (childArrayIndex + 1)
         // into the owning node's `children` array (see findOrCreateChild),
@@ -210,10 +232,18 @@ namespace ChromeTrace {
     // without changing this default.)
     export struct CpuProfileBuilder {
         nodes: []CpuProfileNode = [];
-        nodeKeys: []str = []; // parallel to `nodes`, used for dedup lookups
+        // parallel to `nodes`: the FrameRef that identifies each node, used for dedup lookups --
+        // two children are the same node iff their FrameRefs are `==` (see findOrCreateChild).
+        nodeFrameRefs: []FrameRef = [];
+        // parallel to `nodes`: each node's own hash (hashFrameRef of nodeFrameRefs[i]), computed
+        // once at insert time. ChildTable's rehash path (insertChild) reseats existing children
+        // using THIS, never by recomputing a hash from nodeFrameRefs[...] on the fly -- not
+        // because it'd be wrong to recompute (hashFrameRef is a pure function of the FrameRef),
+        // just to avoid redoing that work for every child on every rehash.
+        nodeHashes: []int = [];
         // parallel to `nodes`: childTables[p] indexes nodes[p].children by
-        // frameKey, so findOrCreateChild doesn't have to rescan+string-
-        // compare every existing child on every call (see ChildTable above).
+        // FrameRef, so findOrCreateChild doesn't have to rescan every
+        // existing child on every call (see ChildTable above).
         childTables: []ChildTable = [];
         samples: []int = [];
         timeDeltas: []int = [];
@@ -229,7 +259,8 @@ namespace ChromeTrace {
                 hitCount: 0,
                 children: [],
             });
-            builder.nodeKeys.push(rootFrameKey);
+            builder.nodeFrameRefs.push(rootFrameRef);
+            builder.nodeHashes.push(hashFrameRef(rootFrameRef));
             builder.childTables.push(ChildTable());
             return builder;
         }
@@ -249,11 +280,11 @@ namespace ChromeTrace {
 
         // Raw linear-probing insert into `table`, growing+rehashing first if
         // the table's gotten too full. `childArrayIndex` is an index into
-        // nodes[parent].children (not a node id). Assumes `key` is not
+        // nodes[parent].children (not a node id). Assumes `frame` is not
         // already present -- findOrCreateChild only calls this right after
         // confirming a lookup miss, and rehashing only ever reinserts keys
         // already known to be distinct.
-        mut fn insertChild(parent: int, key: str, childArrayIndex: int): void {
+        mut fn insertChild(parent: int, hash: int, childArrayIndex: int): void {
             let table = this.childTables[parent];
             let children = this.nodes[parent].children;
 
@@ -269,50 +300,53 @@ namespace ChromeTrace {
                 table.buckets = newBuckets;
                 for (let i = 0; i < oldBuckets.length; i++) {
                     if oldBuckets[i] != 0 {
-                        // oldBuckets[i] is (childArrayIndex + 1); recover
-                        // that child's own key to re-seat it in the bigger
-                        // table (its hash bucket depends on capacity).
-                        let existingKey = this.nodeKeys[children[oldBuckets[i] - 1] - 1];
-                        this.probeInsert(table, existingKey, oldBuckets[i]);
+                        // oldBuckets[i] is (childArrayIndex + 1); recover that child's own
+                        // already-computed hash to re-seat it in the bigger table (its bucket
+                        // depends on capacity).
+                        let existingHash = this.nodeHashes[children[oldBuckets[i] - 1] - 1];
+                        this.probeInsert(table, existingHash, oldBuckets[i]);
                     }
                 }
             }
-            this.probeInsert(table, key, childArrayIndex + 1);
+            this.probeInsert(table, hash, childArrayIndex + 1);
             table.count += 1;
         }
 
         // Bucket-array insert shared by insertChild's fresh-key path and
         // its rehash path. `bucketValue` is already in the "+1" encoding
         // (0 means empty).
-        fn probeInsert(table: ChildTable, key: str, bucketValue: int): void {
+        fn probeInsert(table: ChildTable, hash: int, bucketValue: int): void {
             let capacity = table.buckets.length;
-            let slot = hashKey(key) % capacity;
+            let slot = hash % capacity;
             while table.buckets[slot] != 0 {
                 slot = (slot + 1) % capacity;
             }
             table.buckets[slot] = bucketValue;
         }
 
-        // Finds (or creates) a child of nodes[parent] identified by `key`,
-        // returning its index into `nodes`. Shared by real captured frames
-        // and synthetic marker frames (e.g. "(truncated)") alike -- same
-        // node-sharing either way, just parameterized over what identifies
-        // the frame and how to build its CpuProfileCallFrame the first time
-        // it's seen.
-        mut fn findOrCreateChild(parent: int, key: str, callFrame: CpuProfileCallFrame): int {
+        // Finds (or creates) a child of nodes[parent] identified by `frame`, returning its index
+        // into `nodes`. `hash` must be hashFrameRef(frame) -- passed in rather than recomputed
+        // here since the caller (addSample) already needs it to pick the initial bucket anyway,
+        // no reason to hash twice. Every field access here (hashing, `==` comparison,
+        // `callFrame` construction) works directly off FrameRef's own str/int fields -- nothing
+        // is ever formatted into a combined string first, which used to be built unconditionally
+        // on every single call and was the actual bottleneck at real profiling-session call
+        // volumes (confirmed live via gdb: every such allocation was a GC_malloc candidate to
+        // trigger a full Boehm collection).
+        mut fn findOrCreateChild(parent: int, hash: int, frame: FrameRef, callFrame: CpuProfileCallFrame): int {
             let table = this.childTables[parent];
             let children = this.nodes[parent].children;
             let capacity = table.buckets.length;
-            let slot = hashKey(key) % capacity;
+            let slot = hash % capacity;
             let childNode = -1;
 
             // Linear probe: a hash collision only means "keep probing", the
-            // actual identity check is still the real string `==` below, so
-            // this can never return a wrong match.
+            // actual identity check is still the real FrameRef `==` below,
+            // so this can never return a wrong match.
             let probed = 0;
             while childNode == -1 && probed < capacity && table.buckets[slot] != 0 {
                 let candidate = children[table.buckets[slot] - 1] - 1; // node id -> array index
-                if this.nodeKeys[candidate] == key {
+                if this.nodeFrameRefs[candidate] == frame {
                     childNode = candidate;
                 }
                 slot = (slot + 1) % capacity;
@@ -327,11 +361,12 @@ namespace ChromeTrace {
                     hitCount: 0,
                     children: [],
                 });
-                this.nodeKeys.push(key);
+                this.nodeFrameRefs.push(frame);
+                this.nodeHashes.push(hash);
                 this.childTables.push(ChildTable());
                 let childArrayIndex = this.nodes[parent].children.length;
                 this.nodes[parent].children.push(newId);
-                this.insertChild(parent, key, childArrayIndex);
+                this.insertChild(parent, hash, childArrayIndex);
                 childNode = newId - 1;
             }
 
@@ -358,15 +393,21 @@ namespace ChromeTrace {
             let currentNode = 0; // index into `nodes`; 0 is the root
 
             if truncated {
-                currentNode = this.findOrCreateChild(currentNode, truncatedFrameKey, CpuProfileCallFrame {
-                    functionName: "(truncated -- call stack exceeded capture size)",
-                    scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
-                });
+                currentNode = this.findOrCreateChild(
+                    currentNode,
+                    hashFrameRef(truncatedFrameRef),
+                    truncatedFrameRef,
+                    CpuProfileCallFrame {
+                        functionName: "(truncated -- call stack exceeded capture size)",
+                        scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
+                    },
+                );
             }
 
             // `frames` is outermost-first; the call tree is built the same way.
             for (let i = 0; i < frames.length; i++) {
-                currentNode = this.findOrCreateChild(currentNode, frameKey(frames[i]), cpuProfileCallFrame(frames[i]));
+                let frame = frames[i];
+                currentNode = this.findOrCreateChild(currentNode, hashFrameRef(frame), frame, cpuProfileCallFrame(frame));
             }
 
             this.nodes[currentNode].hitCount += 1;
@@ -389,10 +430,15 @@ namespace ChromeTrace {
             }
             this.sampleCount += 1;
 
-            let lostNode = this.findOrCreateChild(0, lostSamplesFrameKey, CpuProfileCallFrame {
-                functionName: "(samples lost -- kernel ring buffer overflow, real code ran here but wasn't captured)",
-                scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
-            });
+            let lostNode = this.findOrCreateChild(
+                0,
+                hashFrameRef(lostSamplesFrameRef),
+                lostSamplesFrameRef,
+                CpuProfileCallFrame {
+                    functionName: "(samples lost -- kernel ring buffer overflow, real code ran here but wasn't captured)",
+                    scriptId: "0", url: "", lineNumber: -1, columnNumber: -1,
+                },
+            );
             this.nodes[lostNode].hitCount += 1;
             this.samples.push(this.nodes[lostNode].id);
 
@@ -436,6 +482,12 @@ namespace ChromeTrace {
     export inline struct Trace {
         metadata: TraceMetadata;
         traceEvents: []TraceEvent;
+        // Deduplicated stack-frame dictionary events reference by id via `sf` (see
+        // TraceEventInstantMarker). Always present, `{}` when no memory-instrumentation markers
+        // were ever added -- LinearMap serializes as a real JSON object (see its own
+        // [[json.serialize]] hook, containers.hz), so an empty one is just `{}`, which the Trace
+        // Event Format spec treats identically to the key being absent.
+        stackFrames: LinearMap<str, TraceStackFrame>;
     }
 
     export inline struct Metadata {
@@ -556,12 +608,32 @@ namespace ChromeTrace {
         }
     }
 
+    // One entry in the trace's top-level, deduplicated `stackFrames` dictionary (the standard
+    // JSON Array Format mechanism for exactly this: repeated stacks referencing shared frame
+    // data by id instead of each event inlining its own full copy -- see TraceEventInstantMarker
+    // and Trace.stackFrames below). `parent` chains up to the caller's own entry, root frames
+    // omit it, mirroring TraceProfileNode's parent-id convention above for the same reason.
+    export inline struct TraceStackFrame {
+        category: str = "haze";
+        name: str;
+        parent?: str;
+    }
+
     // A "PerformanceMark"-shaped instant event -- see invariant 2 in the
     // file header for why this exact shape (cat: "blink.user_timing") is
     // required for a custom-named marker to be visible at all, and why its
     // embedded stack trace's line/column numbers must be 1-indexed (unlike
     // every other call frame in this file, DevTools decrements these for
     // us).
+    //
+    // `sf` (not an inlined stackTrace array) is the standard Trace Event Format field for "this
+    // event's stack, as the leaf id into the trace's top-level stackFrames dictionary" --
+    // DevTools walks `parent` chains from there to reconstruct the full call stack. On a session
+    // with hundreds of thousands of these events sharing mostly the same handful of real call
+    // sites, inlining a full stackTrace array per event (the previous shape) meant the same
+    // frame data was duplicated in the output hundreds of thousands of times over; `sf`
+    // reference-counts it for real, the same way CpuProfile's nodes+parent-id tree already
+    // dedupes CPU samples' call stacks instead of inlining each sample's full stack too.
     export inline struct TraceEventInstantMarker {
         pid: int;
         tid: int;
@@ -569,14 +641,20 @@ namespace ChromeTrace {
         ph: str = "I";
         cat: str = "blink.user_timing";
         name: str;
+        sf?: str;
 
+        // DevTools' PerformanceMark handler reads args.data unconditionally (observed: removing
+        // `args` entirely broke it with "Cannot read properties of undefined (reading 'data')"
+        // when this event only carried the new `sf` field) -- kept as an always-present, empty
+        // object so that access never fails, even though this event no longer has any actual
+        // args.data.* fields of its own (the stack trace moved to the top-level `sf` + the
+        // trace's shared `stackFrames` dictionary, see Trace.stackFrames' own doc comment).
         inline struct Args {
             inline struct Data {
-                stackTrace: []TraceCallFrame;
             }
-            data: Data;
+            data: Data = {};
         }
-        args: Args;
+        args: Args = {};
     }
 
     // json.stringify dumps a union purely by runtime `is Variant` match (no
@@ -608,9 +686,32 @@ namespace ChromeTrace {
         pid: int;
         events: []TraceEvent = [];
         nextProfileId: int = 1;
+        // Deduplicated stack-frame dictionary built up by addInstantMarker -- see
+        // Trace.stackFrames' own doc comment for why this exists at all (avoiding the same
+        // "inline a full copy of mostly-repeated data per event" cost CpuProfileBuilder's
+        // nodes+parent-id tree already avoids for CPU samples, applied here to memory-allocation
+        // markers instead).
+        stackFrames: LinearMap<str, TraceStackFrame>;
+        // Reuses CpuProfileBuilder itself as the interning structure (a real hash-table-backed
+        // dedup tree -- see its own file-level rationale for why a linear scan would reintroduce
+        // exactly the bottleneck this exists to avoid) purely for its id-assignment machinery;
+        // addInstantMarker walks the returned node chain to materialize `stackFrames` entries the
+        // first time each one is seen.
+        internedStacks: mut CpuProfileBuilder;
+        // Parallel to internedStacks.nodes: plain array indexed directly by node index (not a
+        // map -- node indices are already a dense 0..N id space, so this is real O(1) indexing,
+        // no hashing/scanning needed at all), "" until that node's stackFrames dictionary key has
+        // actually been assigned. Lets a previously-seen node's id be reused instantly instead of
+        // re-materialized (and its whole parent chain re-walked) on every later occurrence.
+        stackFrameIdForNode: []str = [];
+        nextStackFrameId: int = 1;
 
         fn constructor(pid: int = 1) {
-            let builder = TraceBuilder { pid: pid };
+            let builder = TraceBuilder {
+                pid: pid,
+                stackFrames: LinearMap<str, TraceStackFrame>(),
+                internedStacks: CpuProfileBuilder(),
+            };
             // DevTools' modern trace engine classifies processes by this
             // exact reserved name string (confirmed against a real
             // Chrome-recorded trace) to decide whether it's even eligible
@@ -619,6 +720,16 @@ namespace ChromeTrace {
             // generic, non-renderer process and nothing in it renders.
             builder.events.push(Metadata.processName(pid, pid, "Renderer"));
             return builder;
+        }
+
+        // Callers that know roughly how many events they'll add up front (e.g. profiling.hz,
+        // which knows result.memoryInstrumentationFrames.length before calling addInstantMarker
+        // that many times) should call this first: otherwise `events` grows one push at a time
+        // from Haze's default array capacity, doubling and recopying its entire contents on every
+        // regrowth -- see CpuProfileBuilder.reserveSamples for the same fix applied there, for the
+        // same reason.
+        mut fn reserveEvents(count: int): void {
+            this.events.reserve(count);
         }
 
         // Registers a thread's display name. `mainThread: true` uses
@@ -678,21 +789,62 @@ namespace ChromeTrace {
         // one round-trips 1-indexed all the way through because DevTools
         // itself does the decrement for this specific event shape).
         mut fn addInstantMarker(tid: int, ts: real, name: str, frames: []FrameRef): void {
-            let callFrames: []TraceCallFrame = [];
+            // Walk `frames` (outermost-first) through the SAME kind of hash-table-backed dedup
+            // tree CpuProfileBuilder already builds for CPU samples (internedStacks is a real
+            // CpuProfileBuilder, used purely for its O(1)-amortized findOrCreateChild -- its own
+            // samples/hitCount bookkeeping is simply never touched here), so a call path shared
+            // by many captures only ever occupies ONE node, no matter how many times it recurs.
+            // callFrame is a throwaway required by findOrCreateChild's signature (only used if
+            // this call happens to be this path's first-ever occurrence, and only for a field
+            // (CpuProfileCallFrame) this function has no use for -- the real identifying data is
+            // `frame` itself, compared via FrameRef.operator== on any hash collision).
+            //
+            // A stack-frame id is assigned/materialized the moment a node is first created,
+            // right here in the loop -- not in a separate pass afterward -- because this is the
+            // one place `parentId` (this iteration's OWN parent, i.e. last iteration's node) is
+            // already in hand for free; internedStacks.nodes has no parent pointer to recover it
+            // from later.
+            let node = 0; // index into internedStacks.nodes; 0 is the root
+            let parentId: str | none = none;
+            let internedStacks = this.internedStacks;
             for (let i = 0; i < frames.length; i++) {
                 let frame = frames[i];
-                callFrames.push(TraceCallFrame {
-                    functionName: frame.name.length > 0 ? frame.name : "(unknown)",
-                    codeType: frame.url.length > 0 ? "JS" : "other",
-                    scriptId: frame.url.length > 0 ? 1 : 0,
-                    url: frame.url.length > 0 ? frame.url : none,
-                    lineNumber: frame.line > 0 ? frame.line : none,
-                    columnNumber: frame.url.length > 0 ? frame.column : none,
-                });
+                let newNode = internedStacks.findOrCreateChild(
+                    node,
+                    hashFrameRef(frame),
+                    frame,
+                    CpuProfileCallFrame { functionName: "", scriptId: "0", url: "", lineNumber: -1, columnNumber: -1 },
+                );
+
+                // stackFrameIdForNode grows in lockstep with internedStacks.nodes (both indexed
+                // by the same node index) -- growing it here (once per newly-discovered node,
+                // not once per frame) keeps it exactly the right length rather than
+                // over-allocating for nodes that don't exist yet.
+                while this.stackFrameIdForNode.length <= newNode {
+                    this.stackFrameIdForNode.push("");
+                }
+                if this.stackFrameIdForNode[newNode].length == 0 {
+                    // First time this exact node (call path prefix) has ever been seen: assign
+                    // it a fresh id and materialize its stackFrames entry now, chained to
+                    // `parentId` (already resolved, from either the previous iteration of THIS
+                    // loop or a previous call to addInstantMarker that reached the same parent).
+                    let id = f"{this.nextStackFrameId}";
+                    this.nextStackFrameId += 1;
+                    this.stackFrames.set(id, TraceStackFrame {
+                        name: frame.name.length > 0 ? frame.name : "(unknown)",
+                        parent: parentId,
+                    });
+                    this.stackFrameIdForNode[newNode] = id;
+                }
+                node = newNode;
+                parentId = this.stackFrameIdForNode[newNode];
             }
+
+            // An empty `frames` never enters the loop above, so `parentId` stays `none` --
+            // DevTools' stackTrace-shown-on-click affordance simply doesn't apply to a marker
+            // with no captured frames, same as the previous inlined-empty-array shape did.
             this.events.push(TraceEventInstantMarker {
-                pid: this.pid, tid: tid, ts: ts, name: name,
-                args: { data: { stackTrace: callFrames } },
+                pid: this.pid, tid: tid, ts: ts, name: name, sf: parentId,
             });
         }
 
@@ -700,6 +852,7 @@ namespace ChromeTrace {
             return Trace {
                 metadata: { source: "DevTools", dataOrigin: "TraceEvents" },
                 traceEvents: this.events,
+                stackFrames: this.stackFrames,
             };
         }
     }
@@ -779,8 +932,39 @@ namespace ChromeTrace {
         return chunks;
     }
 
+    // json.stringify<Trace>(trace) (the obvious implementation) builds ONE json.Node DOM tree
+    // for the entire `traceEvents` array before printing any of it -- on a session with
+    // hundreds of thousands of memory-allocation markers, that means hundreds of thousands of
+    // TraceEventInstantMarker DOM subtrees (each itself a handful of nested cJSON node objects,
+    // one per field) are all simultaneously live in memory at once. Measured directly (attaching
+    // gdb to a live run under a synthetic stress workload): this is where the real time goes --
+    // tens of seconds to multiple minutes of Boehm GC fighting to keep up with an enormous
+    // number of small live objects, not `hzstd_profiling_end` (fast) and not buildTrace's own
+    // FrameRef construction (fixed separately, see reserve() calls above/in profiling.hz).
+    //
+    // This serializes `traceEvents` one element at a time instead: each element's DOM tree is
+    // built, printed to its own short JSON string via the same, already-correct
+    // json.stringify<TraceEvent> (so escaping/formatting is guaranteed identical to before --
+    // nothing here reimplements JSON encoding), and then genuinely discarded before the next
+    // element's DOM is built, rather than every element's DOM coexisting for the whole array.
+    // The output text is byte-for-byte identical to json.stringify<Trace>(trace) -- this is
+    // purely a "how", not a "what", change.
     export fn traceToJson(trace: Trace): str {
-        return json.stringify<Trace>(trace);
+        let out = String();
+        out.append("{\"metadata\":");
+        out.append(json.stringify<TraceMetadata>(trace.metadata));
+        out.append(",\"traceEvents\":[");
+        for (let i = 0; i < trace.traceEvents.length; i++) {
+            if i > 0 {
+                out.append(",");
+            }
+            out.append(json.stringify<TraceEvent>(trace.traceEvents[i]));
+        }
+        out.append("],\"stackFrames\":");
+        out.append(json.stringify<LinearMap<str, TraceStackFrame>>(trace.stackFrames));
+        out.append("}");
+        out.commit();
+        return out.string();
     }
 
     export fn writeTrace(trace: Trace, path: str) {

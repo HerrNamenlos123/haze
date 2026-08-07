@@ -237,6 +237,20 @@ void hzstd_memzero(void *target, size_t size)
 void hzstd_init_gc()
 {
   GC_INIT();
+
+  // Default is 3 (grow the heap only until live+slop is 1/3 of the heap, then collect) --
+  // tuned for workloads with a modest number of allocations where collecting often and keeping
+  // the heap small is the right tradeoff. Haze workloads that make a very large NUMBER of small
+  // allocations in a tight loop (confirmed directly: profiler postprocessing building JSON
+  // output for a session with hundreds of thousands of memory-allocation captures, each one
+  // triggering its own small array allocation) hit the opposite problem -- GC_realloc/GC_malloc
+  // decide to collect on a huge fraction of those individual allocations, and each of those
+  // collections has real fixed overhead (stopping every thread, a full mark phase over
+  // everything currently live) that dominates total time when it happens thousands of times in
+  // a row for a workload that's mostly short-lived garbage anyway. A higher divisor tolerates
+  // more garbage before collecting, trading some peak memory for drastically fewer, larger
+  // collections -- the right tradeoff for this runtime's actual allocation-heavy workloads.
+  GC_set_free_space_divisor(20);
 }
 
 void hzstd_force_gc()

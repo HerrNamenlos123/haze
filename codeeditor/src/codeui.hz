@@ -8,6 +8,7 @@ import text_document
 import unicode
 import ui_elements
 import ui_components
+import unicode
 type presets = headwind.presets;
 
 // Vim editing model on/off. The textedit engine is the same either way;
@@ -420,6 +421,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let editorRef: ui_components.ElementRef<ui_elements.DivElement> =
             rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
+        // Focus the text area as soon as the app comes up, so the window
+        // opens ready to type in -- without this, keyboard input goes nowhere
+        // until the user clicks into the editor first (key events are only
+        // delivered along the focused element's chain). onMounted runs after
+        // the first build, so editorRef is populated by the time this fires;
+        // the request itself is applied at the start of the next frame's
+        // input processing, before any keystrokes are dispatched.
+        ui.onMounted(() => {
+            let editorEl = rx.get(editorRef);
+            if editorEl {
+                editorEl.focus();
+            }
+        });
+
         // Set after anything that moves the caret, so the next frame
         // scrolls it back into view. A flag rather than an immediate
         // scroll because the viewport size is only known during render.
@@ -688,16 +703,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             let position = 0;
 
             for token in tokens {
-                if position < token.startIndex && token.startIndex <= lineText.length {
+                // Token indices are BYTE offsets (the highlighter converts
+                // from UTF-16 before sending them -- see toByteOffsets in
+                // syntax-engine.ts), but snap them anyway: a slice landing
+                // inside a multi-byte character yields a lone lead byte,
+                // i.e. text that is not valid UTF-8. The text renderer
+                // cannot decode that into a glyph, and the resulting
+                // undrawable run corrupts the whole frame. This guard costs
+                // a byte comparison on the ASCII fast path and makes that
+                // failure mode unreachable regardless of what the
+                // highlighter sends.
+                let tokenStart = unicode.clusterStart(lineText, token.startIndex);
+                if position < tokenStart && tokenStart <= lineText.length {
                     parts.push({
-                        text: lineText.slice(position, token.startIndex),
+                        text: lineText.slice(position, tokenStart),
                         color: defaultTextColor(),
                     });
                 }
-                let tokenEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
-                if tokenEnd > token.startIndex {
+                let rawEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
+                let tokenEnd = unicode.clusterStart(lineText, rawEnd);
+                if tokenEnd > tokenStart {
                     parts.push({
-                        text: lineText.slice(token.startIndex, tokenEnd),
+                        text: lineText.slice(tokenStart, tokenEnd),
                         color: getFirstScopeColor(token.scopes),
                     });
                     position = tokenEnd;

@@ -3228,25 +3228,47 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // See hzstd_trace_memory_impl for why this resolution used to happen
   // synchronously, on the allocating thread, on every single allocation,
   // instead of once here.
+  //
+  // internedMemoryCaptures (and every frameIndices buffer within it) is
+  // PURELY transient scratch: fully consumed by the second pass just below,
+  // which copies everything it needs out by value into `memoryInstrumentationFrames`
+  // (the actual, long-lived, returned-to-Haze result) -- nothing here survives past
+  // this function. On a session with hundreds of thousands of captures, allocating
+  // each one as its own individually GC-tracked object (a hzstd_dynamic_array_t
+  // control struct + its own separately-grown backing buffer, per capture) was
+  // exactly the "huge number of small live objects" shape that makes conservative
+  // Boehm mark-and-sweep slowest -- so this is allocated from a scratch arena
+  // instead: one bump allocator over a handful of large chunks, freed as a whole
+  // (well, made collectible as a whole -- see hzstd_arena_t's own doc comment) the
+  // moment this function returns, rather than tracked as one GC object per capture.
+  // Every hzstd_int_t[] here is a plain arena-allocated buffer, not a
+  // hzstd_dynamic_array_t: the dynamic-array abstraction's backing buffer is always
+  // heap/GC-allocated regardless of which allocator created the array (see
+  // hzstd_dynamic_array_realloc_buffer in hzstd_array.c), so it can't actually route
+  // through an arena here -- and there's no need for growable-array machinery at all
+  // when raw.depth is already known upfront.
   typedef struct {
-    hzstd_dynamic_array_t *frameIndices; // hzstd_int_t[], one per raw.pcs entry
+    hzstd_int_t *frameIndices; // hzstd_int_t[frameIndexCount], one per raw.pcs entry
+    uint16_t frameIndexCount;
     double timestamp;
   } hzstd_profiling_memory_capture_interned_t;
+  hzstd_arena_t *scratchArena = context->memoryCaptureCount > 0 ? hzstd_arena_create() : NULL;
   hzstd_profiling_memory_capture_interned_t *internedMemoryCaptures
       = context->memoryCaptureCount > 0
-      ? hzstd_allocate(allocator, context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
+      ? hzstd_arena_allocate(scratchArena, context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
       : NULL;
   size_t memoryFramesProcessed = 0;
   for (hzstd_profiling_memory_capture_chunk_t *chunk = context->memoryCapturesHead; chunk != NULL;
        chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
       hzstd_memory_instrumentation_raw_frame_t raw = chunk->entries[i];
-      hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_int_t, raw.depth);
+      hzstd_int_t *frameIndices
+          = raw.depth > 0 ? hzstd_arena_allocate(scratchArena, raw.depth * sizeof(hzstd_int_t)) : NULL;
       for (uint16_t d = 0; d < raw.depth; d++) {
-        hzstd_int_t idx = (hzstd_int_t)hzstd_profiling_intern_frame(&frameTable, &frameIndex, raw.pcs[d], d == 0);
-        HZSTD_DYNAMIC_ARRAY_PUSH(frameIndices, idx);
+        frameIndices[d] = (hzstd_int_t)hzstd_profiling_intern_frame(&frameTable, &frameIndex, raw.pcs[d], d == 0);
       }
       internedMemoryCaptures[memoryFramesProcessed].frameIndices = frameIndices;
+      internedMemoryCaptures[memoryFramesProcessed].frameIndexCount = raw.depth;
       internedMemoryCaptures[memoryFramesProcessed].timestamp = raw.timestamp;
       memoryFramesProcessed++;
     }
@@ -3264,19 +3286,6 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // for the rest of the process's life after that.
   context->memoryCapturesHead = NULL;
   context->memoryCapturesTail = NULL;
-
-  // Dropping the references above only makes the chunk list eligible for
-  // collection -- Boehm GC otherwise reclaims purely on its own heap-growth
-  // heuristics, not "as soon as" something becomes unreachable (see
-  // sys.forceGc's doc comment, system.hz), so without an explicit collection
-  // here that memory could easily still be sitting around, at the same
-  // moment `frames`/`memoryInstrumentationFrames` below are being built, as
-  // if nothing had been dropped at all. This is the single largest
-  // reclaimable block in the whole postprocessing pass (up to ~1KB per raw
-  // capture, times however many hundreds of thousands of allocations this
-  // session captured), so it's worth the cost of a real collection cycle to
-  // actually get it back before allocating the next large structure.
-  hzstd_force_gc();
 
   hzstd_profiling_frame_index_free(&frameIndex);
   if (context->sample_count > 0) {
@@ -3300,10 +3309,10 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
       = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_memory_instrumentation_frame_t, memoryFramesProcessed);
   for (size_t i = 0; i < memoryFramesProcessed; i++) {
     hzstd_profiling_memory_capture_interned_t interned = internedMemoryCaptures[i];
-    size_t depth = (size_t)interned.frameIndices->size;
+    size_t depth = (size_t)interned.frameIndexCount;
     hzstd_dynamic_array_t *stackframes = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_stackframe_t, depth);
     for (size_t d = 0; d < depth; d++) {
-      hzstd_int_t frameTableIndex = HZSTD_DYNAMIC_ARRAY_GET(interned.frameIndices, hzstd_int_t, d);
+      hzstd_int_t frameTableIndex = interned.frameIndices[d];
       hzstd_profiling_frame_t resolved = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, (size_t)frameTableIndex);
       hzstd_stackframe_t sf = {
         .id = (size_t)frameTableIndex,

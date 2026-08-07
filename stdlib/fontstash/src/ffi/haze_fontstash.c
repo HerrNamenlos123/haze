@@ -71,10 +71,35 @@ void haze_fontstash_layout_text(void* ctx,
 
   FONStextIter iter;
   FONSquad quad;
+  memset(&quad, 0, sizeof(quad));
 
   fonsTextIterInit(fs, &iter, x, y, text.data, text.data + text.length);
 
   while (fonsTextIterNext(fs, &iter, &quad)) {
+    // fonsTextIterNext returns 1 (keep going) in cases where it never
+    // touched `quad`:
+    //
+    //   - the byte range ended mid-UTF-8-sequence, so the decoder never
+    //     completed a codepoint, and
+    //   - fons__getGlyph returned NULL (invalid codepoint, or the atlas
+    //     is full and there is no error handler to grow it).
+    //
+    // Upstream's own renderers happen to survive this because they reuse
+    // one quad across iterations and simply redraw the previous glyph.
+    // We copy the quad out on every iteration, so an untouched quad here
+    // means reading whatever was last on the stack: coordinates in the
+    // hundreds of millions, which the renderer then emits as a vertex.
+    // A single one of those stretches a garbage glyph across the entire
+    // window and drags the rest of the batch with it.
+    //
+    // Zero the quad before each call and skip any glyph that came back
+    // still zeroed -- a real glyph always has a non-empty quad, and an
+    // empty one has nothing to draw anyway.
+    if (quad.x0 == 0.0f && quad.y0 == 0.0f && quad.x1 == 0.0f && quad.y1 == 0.0f) {
+      memset(&quad, 0, sizeof(quad));
+      continue;
+    }
+
     haze_fontstash_glyph_t glyph = {
       .x0 = quad.x0,
       .y0 = quad.y0,
@@ -87,6 +112,8 @@ void haze_fontstash_layout_text(void* ctx,
       .t1 = quad.t1,
     };
     HZSTD_DYNAMIC_ARRAY_PUSH(out, glyph);
+
+    memset(&quad, 0, sizeof(quad));
   }
 }
 

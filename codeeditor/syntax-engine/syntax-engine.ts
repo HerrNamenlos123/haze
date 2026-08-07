@@ -204,10 +204,93 @@ function initialize() {
 
 type Token = {
   lineIndex: number;
+  // BYTE offsets into the UTF-8 encoding of the line -- NOT JavaScript
+  // string indices. See toByteOffsets() for why the conversion happens
+  // here rather than on the consumer side.
   startIndex: number;
   endIndex: number;
   scopes: string[];
 };
+
+/**
+ * Convert vscode-textmate's token boundaries from JavaScript string indices
+ * (UTF-16 code units) into byte offsets in the line's UTF-8 encoding.
+ *
+ * These are two different index spaces and they diverge on any line holding
+ * a non-ASCII character: "hö" is 2 UTF-16 units but 3 UTF-8 bytes. The Haze
+ * side stores lines as UTF-8 and slices them by byte offset, so handing it
+ * a UTF-16 index makes it cut a multi-byte character in half -- producing a
+ * lone lead byte that is not valid UTF-8, which the text renderer then
+ * cannot turn into a glyph.
+ *
+ * Converting here, at the one place where the indices are still known to be
+ * UTF-16, keeps a single index space (bytes) everywhere downstream.
+ *
+ * Runs once per line per tokenization, and the ASCII fast path means the
+ * common case is a length check.
+ */
+function toByteOffsets(
+  line: string,
+  tokens: readonly { startIndex: number; endIndex: number; scopes: string[] }[],
+  lineIndex: number
+): Token[] {
+  // Fast path: for a pure-ASCII line the two index spaces are identical,
+  // which is every line in most source files.
+  let ascii = true;
+  for (let i = 0; i < line.length; i++) {
+    if (line.charCodeAt(i) > 0x7f) {
+      ascii = false;
+      break;
+    }
+  }
+  if (ascii) {
+    return tokens.map((t) => ({
+      lineIndex,
+      startIndex: t.startIndex,
+      endIndex: t.endIndex,
+      scopes: t.scopes,
+    }));
+  }
+
+  // Build a UTF-16 index -> byte offset map for this line. Entry i is the
+  // byte offset at which the UTF-16 prefix of length i ends, so the map has
+  // line.length + 1 entries and every token boundary can be looked up
+  // directly.
+  const byteAt = new Array<number>(line.length + 1);
+  let bytes = 0;
+  for (let i = 0; i < line.length; i++) {
+    byteAt[i] = bytes;
+    const code = line.codePointAt(i) as number;
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code <= 0xffff) {
+      bytes += 3;
+    } else {
+      // Astral: one codepoint spelled as a surrogate PAIR, so it occupies
+      // two UTF-16 indices. Record the second one as pointing at the same
+      // byte offset, and skip it.
+      bytes += 4;
+      byteAt[i + 1] = bytes;
+      i++;
+    }
+  }
+  byteAt[line.length] = bytes;
+
+  const clamp = (index: number): number => {
+    if (index <= 0) return 0;
+    if (index >= byteAt.length) return bytes;
+    return byteAt[index];
+  };
+
+  return tokens.map((t) => ({
+    lineIndex,
+    startIndex: clamp(t.startIndex),
+    endIndex: clamp(t.endIndex),
+    scopes: t.scopes,
+  }));
+}
 
 // ── Incremental tokenization ──────────────────────────────────────────
 //
@@ -259,15 +342,10 @@ function retokenizeFrom(
   for (let i = fromLine; i < state.lines.length; i++) {
     const result = grammar.tokenizeLine(state.lines[i], ruleStack);
 
-    const tokens: Token[] = [];
-    for (const t of result.tokens) {
-      tokens.push({
-        lineIndex: i,
-        startIndex: t.startIndex,
-        endIndex: t.endIndex,
-        scopes: t.scopes,
-      });
-    }
+    // tokenizeLine reports UTF-16 string indices; the Haze side slices UTF-8
+    // by byte offset. Convert here so a single index space (bytes) is used
+    // everywhere downstream -- see toByteOffsets.
+    const tokens: Token[] = toByteOffsets(state.lines[i], result.tokens, i);
 
     const previousStack = state.ruleStacks[i];
     state.tokensByLine[i] = tokens;
