@@ -575,7 +575,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     let samePos = prevPos && prevPos.x == curPos.x && prevPos.y == curPos.y;
                     if !samePos {
                         lastHoverPos := curPos;
-                        vueBridge.hover(curPos.y, curPos.x, (text: str | null) => {
+                        // curPos.x is a BYTE offset. The bridge needs the
+                        // line's text to convert it into whatever index
+                        // space each language server actually counts in.
+                        let hoverLine = doc.lineText(curPos.y);
+                        vueBridge.hover(curPos.y, curPos.x, hoverLine, (text: str | null) => {
                             hoverResult := text ? text : "(no hover info at this position)";
                         });
                     }
@@ -907,7 +911,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             // selected -- and so an EMPTY line inside a
                             // linewise (V) selection still shows up
                             // instead of collapsing to zero width.
-                            let columns = (sel.endCol - sel.startCol) as real;
+                            // startCol/endCol are BYTE offsets, which are not
+                            // proportional to screen distance: an emoji is 4
+                            // bytes but 2 cells wide. Convert both ends to
+                            // display columns so the highlight lines up with
+                            // the glyphs rather than with the byte count.
+                            let startCell = texteditBehavior.displayColumnAt(i, sel.startCol);
+                            let endCell = texteditBehavior.displayColumnAt(i, sel.endCol);
+                            let columns = (endCell - startCell) as real;
                             if sel.includesLineEnd {
                                 columns = columns + 1.0;
                             }
@@ -920,7 +931,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets: [
                                     presets.absolute(),
                                     presets.top(i as real * lineHeight - scrollY),
-                                    presets.left(sel.startCol as real * characterSize.x),
+                                    presets.left(startCell as real * characterSize.x),
                                     presets.bg("#3391FF55"),
                                 ]
                             }, () => {});
@@ -959,14 +970,30 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     let mode = rx.get(texteditBehavior.mode);
                     let blockCaret = mode == textedit_behavior.Mode.Normal
                                   || textedit_behavior.modeIsVisual(mode);
+
+                    // cursorPosition.x is a BYTE offset, so it cannot be
+                    // multiplied by a character width directly -- on a line
+                    // holding one emoji that would put the caret four cells
+                    // right of a glyph two cells wide. displayColumnAt does
+                    // the conversion from bytes to cells.
+                    let cursorCell = texteditBehavior.displayColumnAt(
+                        texteditBehavior.cursorPosition.y,
+                        texteditBehavior.cursorPosition.x,
+                    );
+                    // A block caret must cover the whole character it sits
+                    // on, which is two cells wide for CJK and emoji.
+                    let caretCells = texteditBehavior.displayWidthOfCharacterAt(
+                        texteditBehavior.cursorPosition.y,
+                        texteditBehavior.cursorPosition.x,
+                    );
                     let cursorPos = Vec2(
-                        texteditBehavior.cursorPosition.x as real * characterSize.x,
+                        cursorCell as real * characterSize.x,
                         cursorTop - scrollY,
                     );
                     ui.div({
                         id: 300001,
                         style: {
-                            width: blockCaret ? characterSize.x : 1.0,
+                            width: blockCaret ? caretCells as real * characterSize.x : 1.0,
                             height: lineHeight,
                         },
                         presets: [

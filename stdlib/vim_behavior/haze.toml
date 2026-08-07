@@ -8,3 +8,4 @@ type = "lib"
 
 [dependencies]
 textedit_behavior = { path = "../textedit_behavior" }
+unicode = { path = "../unicode" }

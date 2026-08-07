@@ -1,0 +1,254 @@
+// Tests for the unicode module.
+//
+// The cases below are chosen so that each one would fail under a *different*
+// wrong implementation:
+//
+//   - byte-indexed   : the flag/family/CJK cases fail
+//   - codepoint-only : the flag and family cases fail (GB12/GB13, GB11)
+//   - no CRLF rule   : the crlf case fails (GB3)
+//   - no state reset : the two-flags case fails (regional indicators pair up
+//                      in twos, so a stale state merges all four into one)
+
+import unicode
+
+// "🇦🇹" -- Austrian flag: 2 regional indicators, 8 bytes, 1 cluster.
+fn flagAT(): str { return "🇦🇹"; }
+// "🇦🇹🇩🇪" -- two flags: 4 regional indicators, must NOT merge into one.
+fn flagsATDE(): str { return "🇦🇹🇩🇪"; }
+// Woman+woman+girl+boy joined by ZWJ: 7 codepoints, 25 bytes, 1 cluster.
+fn family(): str { return "👩‍👩‍👧‍👦"; }
+// "e" followed by U+0301 COMBINING ACUTE ACCENT: 3 bytes, 2 codepoints, 1
+// cluster. This is the DECOMPOSED form and must be built explicitly -- typing
+// "é" in source normally yields precomposed U+00E9, which is 2 bytes and a
+// single codepoint and so would not exercise the combining-mark rule at all.
+fn eCombining(): str {
+    let buffer = ByteBuffer();
+    buffer.push("e");
+    buffer.push(Bytes(0xCC as u8));  // U+0301 first byte
+    buffer.push(Bytes(0x81 as u8));  // U+0301 second byte
+    buffer.commit();
+    return buffer.string();
+}
+
+// The precomposed form of the same character: 2 bytes, 1 codepoint.
+fn ePrecomposed(): str { return "é"; }
+
+test_byte_length_is_still_bytes() {
+    // The module must not change what str.length means.
+    assert(flagAT().length == 8);
+    assert(family().length == 25);
+    assert(eCombining().length == 3);
+}
+
+test_character_count_differs_from_byte_count() {
+    assert(unicode.countCharacters(flagAT()) == 1);
+    assert(unicode.countCharacters(family()) == 1);
+    assert(unicode.countCharacters(eCombining()) == 1);
+    assert(unicode.countCharacters(flagsATDE()) == 2);
+    assert(unicode.countCharacters("hello") == 5);
+}
+
+test_codepoint_count_is_its_own_thing() {
+    // Distinct from both the byte count and the character count.
+    assert(unicode.countCodepoints(flagAT()) == 2);
+    assert(unicode.countCodepoints(family()) == 7);
+    assert(unicode.countCodepoints(eCombining()) == 2);
+}
+
+test_precomposed_and_decomposed_both_count_as_one_character() {
+    // The same visible character reached two ways. Both are ONE cluster and
+    // one column wide, but they differ in bytes and codepoints -- which is
+    // exactly why the cursor must move by clusters and not by either of the
+    // other two units.
+    let decomposed = eCombining();
+    let precomposed = ePrecomposed();
+
+    assert(decomposed.length == 3);
+    assert(precomposed.length == 2);
+    assert(unicode.countCodepoints(decomposed) == 2);
+    assert(unicode.countCodepoints(precomposed) == 1);
+
+    assert(unicode.countCharacters(decomposed) == 1);
+    assert(unicode.countCharacters(precomposed) == 1);
+    assert(unicode.displayWidth(decomposed) == 1);
+    assert(unicode.displayWidth(precomposed) == 1);
+
+    // One keypress clears either form completely.
+    assert(unicode.nextClusterOffset(decomposed, 0) == 3);
+    assert(unicode.nextClusterOffset(precomposed, 0) == 2);
+    assert(unicode.previousClusterOffset(decomposed, 3) == 0);
+    assert(unicode.previousClusterOffset(precomposed, 2) == 0);
+}
+
+test_forward_movement_crosses_whole_clusters() {
+    let flag = flagAT();
+    // One step must clear all 8 bytes, not 1 and not 4.
+    assert(unicode.nextClusterOffset(flag, 0) == 8);
+
+    let fam = family();
+    assert(unicode.nextClusterOffset(fam, 0) == 25);
+
+    // Two flags are two separate stops -- the regional indicator rule pairs
+    // them up in twos rather than merging every RI in a run.
+    let both = flagsATDE();
+    assert(unicode.nextClusterOffset(both, 0) == 8);
+    assert(unicode.nextClusterOffset(both, 8) == 16);
+}
+
+test_backward_movement_crosses_whole_clusters() {
+    let flag = flagAT();
+    assert(unicode.previousClusterOffset(flag, 8) == 0);
+
+    let fam = family();
+    assert(unicode.previousClusterOffset(fam, 25) == 0);
+
+    let both = flagsATDE();
+    assert(unicode.previousClusterOffset(both, 16) == 8);
+    assert(unicode.previousClusterOffset(both, 8) == 0);
+}
+
+test_movement_is_symmetric() {
+    let text = "fn 👍() 日本 é end";
+    let forward = 0;
+    let steps = 0;
+    while forward < text.length {
+        let next = unicode.nextClusterOffset(text, forward);
+        assert(next > forward, "forward movement must always progress");
+        forward = next;
+        steps++;
+    }
+    assert(forward == text.length, "forward walk must land exactly on the end");
+
+    let backward = text.length;
+    let backSteps = 0;
+    while backward > 0 {
+        let prev = unicode.previousClusterOffset(text, backward);
+        assert(prev < backward, "backward movement must always progress");
+        backward = prev;
+        backSteps++;
+    }
+    assert(backward == 0, "backward walk must land exactly on zero");
+    assert(steps == backSteps, "both directions must find the same boundaries");
+}
+
+test_cluster_start_snaps_interior_offsets() {
+    let flag = flagAT();
+    // Every byte inside the flag belongs to the cluster starting at 0. This
+    // is the invariant that keeps an edit from splitting a codepoint.
+    for (let i = 0; i < 8; i++) {
+        assert(unicode.clusterStart(flag, i) == 0);
+    }
+    assert(unicode.clusterStart(flag, 8) == 8);
+
+    let fam = family();
+    for (let i = 0; i < 25; i++) {
+        assert(unicode.clusterStart(fam, i) == 0);
+    }
+}
+
+test_cluster_start_is_idempotent() {
+    let text = "a👍b日é";
+    for (let i = 0; i <= text.length; i++) {
+        let start = unicode.clusterStart(text, i);
+        assert(unicode.clusterStart(text, start) == start);
+        assert(unicode.isClusterBoundary(text, start));
+        assert(start <= i, "snapping must never move an offset forward");
+    }
+}
+
+test_out_of_range_offsets_are_clamped() {
+    let text = "abc";
+    // Editor state can lag a buffer edit by a frame; clamping keeps that a
+    // no-op rather than a crash.
+    assert(unicode.clusterStart(text, -5) == 0);
+    assert(unicode.clusterStart(text, 99) == 3);
+    assert(unicode.nextClusterOffset(text, 99) == 3);
+    assert(unicode.previousClusterOffset(text, -5) == 0);
+}
+
+test_crlf_is_one_cluster() {
+    // UAX #29 GB3: CR LF must never be split by cursor movement.
+    let text = "a\r\nb";
+    assert(unicode.nextClusterOffset(text, 1) == 3);
+    assert(unicode.previousClusterOffset(text, 3) == 1);
+    assert(unicode.countCharacters(text) == 3);
+}
+
+test_display_width_counts_columns_not_characters() {
+    // CJK and emoji are double-width; this is what a monospace grid needs and
+    // it is deliberately different from the character count.
+    assert(unicode.displayWidth("日本") == 4);
+    assert(unicode.countCharacters("日本") == 2);
+    assert(unicode.displayWidth(flagAT()) == 2);
+    assert(unicode.displayWidth("abc") == 3);
+    // A combining mark adds no width of its own.
+    assert(unicode.displayWidth(eCombining()) == 1);
+}
+
+test_character_index_round_trip() {
+    let text = "a👍b日é";
+    let count = unicode.countCharacters(text);
+    for (let i = 0; i < count; i++) {
+        let offset = unicode.offsetOfCharacter(text, i);
+        assert(unicode.characterIndexAt(text, offset) == i);
+        assert(unicode.isClusterBoundary(text, offset));
+    }
+}
+
+test_invalid_utf8_never_hangs() {
+    // A corrupt file must still be navigable: every step has to advance.
+    //
+    // The invalid bytes are assembled through a buffer rather than written as
+    // a string literal, because a `\xFF` escape in Haze source lowers to a C
+    // universal-character-name and will not survive as a raw byte.
+    let buffer = ByteBuffer();
+    buffer.push(Bytes(97 as u8));   // 'a'
+    buffer.push(Bytes(255 as u8));  // invalid lead byte
+    buffer.push(Bytes(128 as u8));  // stray continuation byte
+    buffer.push(Bytes(98 as u8));   // 'b'
+    buffer.commit();
+    let text = buffer.string();
+
+    assert(!unicode.isValidUtf8(text));
+
+    let at = 0;
+    let guard = 0;
+    while at < text.length && guard < 32 {
+        let next = unicode.nextClusterOffset(text, at);
+        assert(next > at, "movement must progress even over invalid bytes");
+        at = next;
+        guard++;
+    }
+    assert(at == text.length);
+}
+
+test_valid_utf8_accepted() {
+    assert(unicode.isValidUtf8("hello"));
+    assert(unicode.isValidUtf8(family()));
+    assert(unicode.isValidUtf8("日本語"));
+}
+
+test_utf16_conversion_round_trips() {
+    // Only used at the LSP boundary, but it must be exact when it is used.
+    let text = "a👍b";
+    // 'a' and 'b' are 1 unit each; the emoji is a surrogate pair, so 2.
+    assert(unicode.utf16UnitsBefore(text, text.length) == 4);
+
+    for (let i = 0; i <= text.length; i++) {
+        let start = unicode.codepointStart(text, i);
+        let units = unicode.utf16UnitsBefore(text, start);
+        assert(unicode.offsetFromUtf16Units(text, units) == start);
+    }
+}
+
+test_word_classification_handles_non_ascii() {
+    // Accented letters and ideographs must classify as word characters, or
+    // word motions fragment them at every non-ASCII byte.
+    assert(unicode.classifyAt("naive", 0) == unicode.CharClass.Word);
+    assert(unicode.classifyAt("日本", 0) == unicode.CharClass.Word);
+    assert(unicode.classifyAt(eCombining(), 0) == unicode.CharClass.Word);
+    assert(unicode.classifyAt(" a", 0) == unicode.CharClass.Whitespace);
+    assert(unicode.classifyAt("+a", 0) == unicode.CharClass.Punctuation);
+    assert(unicode.classifyAt("_x", 0) == unicode.CharClass.Word);
+    assert(unicode.classifyAt("9x", 0) == unicode.CharClass.Word);
+}
