@@ -331,3 +331,17 @@ export fn getClipboardText(): str {
 export fn setClipboardText(text: str): bool {
     return sdl.setClipboardText(text);
 }
+
+// === Mouse cursor =============================================
+//
+// Also process-global, and also called every frame by the UI layer (see
+// ui_components' cursor resolution) -- the underlying SDL wrapper caches
+// and early-outs, so a per-frame call costs nothing when the shape is
+// unchanged.
+//
+// `index` is a ui_styling.Cursor cast to int. This module deliberately
+// doesn't import ui_styling to name that type: app sits below the UI layer
+// and stays ignorant of it, exactly like the sdl module below it.
+export fn setCursor(index: int): void {
+    sdl.setCursor(index);
+}

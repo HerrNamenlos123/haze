@@ -844,6 +844,19 @@ export struct InputExtrasCallbacks {
     modifiers: () => KeyModifiers;
 }
 
+// How the resolved mouse cursor reaches the platform. Unlike the callbacks
+// above this is an OUTPUT: the UI decides a shape each frame and hands it
+// down, rather than polling the host for state.
+//
+// `index` is a ui_styling.Cursor cast to int -- ui_components stays free of
+// any platform cursor type, and the host maps the index to whatever its
+// windowing layer wants (app.setCursor does exactly this).
+//
+// Called every frame with the current shape, not only on change, so hosts
+// must make it cheap to repeat; the SDL-backed implementation caches and
+// early-outs.
+export type CursorCallback = (index: int) => void;
+
 // Internal pending pointer event before it is dispatched to elements.
 struct PendingPointerEvent {
     kind: PointerEventKind;
@@ -857,6 +870,7 @@ export opaque struct UIContext {
     _pointerButtons?: PointerHeldCallbacks;
     _inputExtras?: InputExtrasCallbacks;
     _keyboard?: KeyboardCallbacks;
+    _setCursor?: CursorCallback;
     // Optional so a headless/test UIContext (no layout engine wired up) can
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
@@ -893,6 +907,7 @@ export opaque struct UIContext {
         pointerButtons?: PointerHeldCallbacks;
         inputExtras?: InputExtrasCallbacks;
         keyboard?: KeyboardCallbacks;
+        setCursor?: CursorCallback;
         measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
     }
 
@@ -907,6 +922,7 @@ export opaque struct UIContext {
             _pointerButtons: args.pointerButtons,
             _inputExtras: args.inputExtras,
             _keyboard: args.keyboard,
+            _setCursor: args.setCursor,
             _measureText: args.measureText,
         };
 
@@ -1036,6 +1052,39 @@ export opaque struct UIContext {
         let path: []ui_elements.Element = [];
         path.push(element);
         return path;
+    }
+
+    // CSS `cursor` resolution for the element under the pointer.
+    //
+    // Walks this frame's hit path from the DEEPEST element outward and takes
+    // the first one that set a cursor. That single walk gives CSS's
+    // inheritance for free: an element with no cursor of its own shows its
+    // nearest positioned-ancestor-with-a-cursor's shape, because that
+    // ancestor is what the walk reaches next. Nothing has to cascade the
+    // property down the tree at layout time.
+    //
+    // Only DivElement and CanvasElement carry a ComputedDivStyle; a
+    // TextElement's style has no cursor field, so text is transparent to
+    // this walk and inherits from the div wrapping it -- which is what you
+    // want, since a label inside a button should show the button's cursor.
+    //
+    // Returns Default when the path is empty (pointer outside the window) or
+    // nothing along it set a cursor.
+    fn resolveCursor(hitPath: []ui_elements.Element): ui_styling.Cursor :: final {
+        let i = hitPath.length - 1;
+        while i >= 0 {
+            let element = hitPath[i];
+            if element is ui_elements.DivElement {
+                let c = element.style.cursor;
+                if c { return c; }
+            }
+            else if element is ui_elements.CanvasElement {
+                let c = element.style.cursor;
+                if c { return c; }
+            }
+            i = i - 1;
+        }
+        return ui_styling.Cursor.Default;
     }
 
     // Returns ordered path [root, ..., focused-element], mirroring
@@ -1545,6 +1594,17 @@ export opaque struct UIContext {
             // below happened.
             let finalHitPath = this.buildHitPath(tree, this.mousePos);
             this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
+
+            // The pointer's shape follows whatever it is currently over, so
+            // it is resolved from this frame's hit path -- the same path the
+            // wheel uses below, and for the same reason. Done here rather
+            // than during event dispatch because the cursor must be correct
+            // even on a frame with no input at all: the element under a
+            // stationary pointer can change when the UI itself moves.
+            let setCursor = this._setCursor;
+            if setCursor {
+                setCursor(ui_styling.cursorToInt(this.resolveCursor(finalHitPath)));
+            }
 
             // Programmatic focus (ui_focus/ui_blur) is applied before any of
             // this frame's input dispatch, so an element focused from

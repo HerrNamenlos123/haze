@@ -9,7 +9,7 @@ struct Cache {
     file: str | null = null;
 }
 
-const comptime profile = true;
+const comptime profile = false;
 const comptime vsync = false;
 
 // Translates app's platform-level pointer edge queue into ui_components'
@@ -97,6 +97,9 @@ fn main(): int {
                 keyEdgesThisFrame: () => toUIKeyEdges(a),
                 textInputThisFrame: () => a.textInput(),
             },
+            // The index is a ui_styling.Cursor; app maps it to the platform
+            // cursor. Called every frame, and cheap when unchanged.
+            setCursor: (index: int): void => { app.setCursor(index); },
             ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
         });
 

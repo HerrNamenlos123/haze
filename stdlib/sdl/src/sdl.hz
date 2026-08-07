@@ -28,6 +28,12 @@ namespace ffi {
 	extern C fn haze_sdl_getClipboardText(): str :: final;
 	extern C fn haze_sdl_setClipboardText(text: str): bool :: final;
 
+	// Mouse cursor. Takes a plain int rather than an enum because the
+	// vocabulary is owned by ui_styling.Cursor, which sdl must not import
+	// (it sits far below the UI layer) -- the C side holds the index-to-
+	// SDL_SystemCursor table. See sdl_impl.c.
+	extern C fn haze_sdl_setCursor(index: i32): void :: final;
+
 	// Event trampoline registration (private to ffi namespace — SDL headers not available outside)
 	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
 	extern C type HazeSdlResizeFn = (userdata: cptr, width: i32, height: i32) -> void :: final;
@@ -310,6 +316,26 @@ export fn getClipboardText(): str {
 
 export fn setClipboardText(text: str): bool {
 	return ffi.haze_sdl_setClipboardText(text);
+}
+
+// ---------------------------------------------------------------------------
+// Mouse cursor
+// ---------------------------------------------------------------------------
+
+// Sets the cursor by INDEX into the table in sdl_impl.c, whose order matches
+// ui_styling.Cursor. Cheap to call every frame: the C side caches the cursor
+// objects and early-outs when the shape hasn't changed.
+export fn setCursor(index: int): void {
+	// Narrowed against the cursor table's own bounds, not i32's: the
+	// compiler needs int constrained before it fits in the FFI's i32, and
+	// the only values that mean anything here are table indices anyway.
+	// Anything else is a caller passing a non-cursor, so fall back to the
+	// arrow rather than letting it reach the C table.
+	let safe = 0 as i32;
+	if index >= 0 && index < 12 {
+		safe = index as i32;
+	}
+	ffi.haze_sdl_setCursor(safe);
 }
 
 // ---------------------------------------------------------------------------

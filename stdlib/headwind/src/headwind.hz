@@ -238,4 +238,64 @@ namespace presets {
     export fn fontFamily(value: str): ui_styling.FontFamilyOp {
         return ui_styling.FontFamilyOp { value: value };
     }
+
+    // Mouse cursor, mirroring Tailwind's `cursor-*` utilities. `cursor(...)`
+    // is the general form; the rest are the shorthands you actually reach
+    // for, named exactly as Tailwind names them (cursor-pointer ->
+    // cursorPointer, cursor-not-allowed -> cursorNotAllowed, ...).
+    //
+    // Inherits like CSS: setting this on a container covers its whole
+    // subtree, and a descendant can override it (including back to
+    // cursorDefault()).
+    export fn cursor(value: ui_styling.Cursor): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: value };
+    }
+
+    export fn cursorDefault(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Default };
+    }
+
+    export fn cursorPointer(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Pointer };
+    }
+
+    export fn cursorText(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Text };
+    }
+
+    export fn cursorWait(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Wait };
+    }
+
+    export fn cursorProgress(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Progress };
+    }
+
+    export fn cursorCrosshair(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Crosshair };
+    }
+
+    export fn cursorMove(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.Move };
+    }
+
+    export fn cursorNotAllowed(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.NotAllowed };
+    }
+
+    export fn cursorResizeNS(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.ResizeNS };
+    }
+
+    export fn cursorResizeEW(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.ResizeEW };
+    }
+
+    export fn cursorResizeNWSE(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.ResizeNWSE };
+    }
+
+    export fn cursorResizeNESW(): ui_styling.CursorOp {
+        return ui_styling.CursorOp { value: ui_styling.Cursor.ResizeNESW };
+    }
 }

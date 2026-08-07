@@ -771,6 +771,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 prevUpdate = now;
             }
 
+            // Drives vim's 'timeoutlen'. A pending mapping chord (the `j` of
+            // `jk`) is shown immediately and taken back if the chord
+            // completes -- but if the next key never arrives, only the clock
+            // can settle it, and vim_behavior has no timer of its own. This
+            // is the one place guaranteed to run every frame, so it is where
+            // that decision gets made.
+            //
+            // Bump docVersion when it fires: the speculative character
+            // becoming permanent is a document change as far as the render
+            // path is concerned, even though no text moved.
+            if rx.get(vimOn) {
+                if vim.tick() {
+                    docVersion := rx.get(docVersion) + 1;
+                }
+            }
+
             drainHighlightResults();
 
             if vueBridge && cache.data.file {
@@ -1057,6 +1073,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // otherwise paint straight over the statusline and
                         // out past the window. Clip them to this box.
                         presets.overflowHidden(),
+                        // I-beam over the text, exactly like VS Code. Set on
+                        // the editor box rather than on each line so it also
+                        // covers the empty space past the last line and to
+                        // the right of short lines -- which is still text you
+                        // can click into. Inherited by the lines; the
+                        // scrollbar overrides it back to an arrow.
+                        presets.cursorText(),
                         // presets.p(8),
                     ],
                     focusable: true,
@@ -1495,6 +1518,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.top(0),
                                 presets.left(viewWidth - barWidth),
                                 presets.bg(scroll.style.trackColor),
+                                // The scrollbar sits inside the editor, so it
+                                // would inherit the I-beam; it's chrome, not
+                                // text. VS Code shows the plain arrow here.
+                                presets.cursorDefault(),
                             ],
                             onPointerDown: (event: ui_components.PointerEvent) => {
                                 // Stop this reaching the editor underneath,
@@ -1566,6 +1593,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 // Without a bound, a long signature runs off
                                 // the right edge and the text is unreadable.
                                 presets.p(4),
+                                // A popup floating over the text is chrome:
+                                // it would otherwise inherit the editor's
+                                // I-beam, implying you can select into it.
+                                presets.cursorDefault(),
                             ]
                         }, () => {
                             ui.text({
