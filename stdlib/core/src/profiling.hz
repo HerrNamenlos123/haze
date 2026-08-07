@@ -21,6 +21,11 @@ namespace ffi {
     export extern C noemit opaque inline struct hzstd_memory_instrumentation_frame_t {
         stacktrace: hzstd_stacktrace_t;
         timestamp: real;
+        sizeBytes: int;
+        // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) --
+        // see profiling.allocationKindName for the int -> label mapping.
+        allocationType: int;
+        dataType: str; // empty string = absent
     };
 
     export extern C noemit opaque inline struct hzstd_profiling_result_t {
@@ -168,9 +173,33 @@ namespace profiling {
     const hazeProcessPid = 1;
     const mainThreadTid = 1; // owns the "Profile"/"RunTask" stream, like Chrome's CrRendererMain
 
-    // Sane placeholders until real instrumentation reports an allocation's type/size -- every
-    // allocation currently looks identical in the trace beyond its stack trace and timestamp.
-    const placeholderAllocationName = "Allocation";
+    // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) -- kept as a plain int on
+    // the FFI struct (see ffi.hzstd_memory_instrumentation_frame_t) rather than a real enum type,
+    // since hzstd_types.h (which that struct is defined against) is deliberately freestanding and
+    // can't depend on hzstd_memory.h. Values must be kept in sync by hand.
+    fn allocationKindName(allocationType: int): str {
+        if allocationType == 0 { return "Heap alloc"; }       // hz_profiler_instrument_allocation_type_heap
+        if allocationType == 1 { return "Grow"; }              // hz_profiler_instrument_allocation_type_heap_realloc
+        if allocationType == 2 { return "Heap alloc"; }        // hz_profiler_instrument_allocation_type_heap_atomic
+        if allocationType == 3 { return "Create"; }            // hz_profiler_instrument_allocation_type_arena_create
+        if allocationType == 4 { return "Arena suballoc"; }    // hz_profiler_instrument_allocation_type_arena_suballoc (unused today)
+        if allocationType == 5 { return "Grow"; }              // hz_profiler_instrument_allocation_type_arena_enlarge
+        return "Allocation";
+    }
+
+    // Builds the human-readable marker name shown in the trace for one allocation capture:
+    // "<Kind> <dataType> (<size> bytes)" when a dataType string was actually reported by the
+    // compiler/runtime (see the big comment on hzstd_heap_allocate_n in hzstd_memory.h for which
+    // allocations carry one -- struct instantiation and array creation always do; array growth
+    // does via hzstd_dynamic_array_t::elementTypeName; a small number of internal-only runtime
+    // allocations legitimately don't), falling back to just "<Kind> (<size> bytes)" otherwise.
+    fn allocationMarkerName(frame: ffi.hzstd_memory_instrumentation_frame_t): str {
+        let kind = allocationKindName(frame.allocationType);
+        if frame.dataType.length > 0 {
+            return f"{kind} {frame.dataType} ({frame.sizeBytes} bytes)";
+        }
+        return f"{kind} ({frame.sizeBytes} bytes)";
+    }
 
     export fn buildTrace(result: ProfilingResult): ChromeTrace.Trace {
         let builder = ChromeTrace.TraceBuilder(hazeProcessPid);
@@ -212,8 +241,10 @@ namespace profiling {
             builder.addInstantMarker(
                 mainThreadTid,
                 frame.timestamp * 1000000.0,
-                placeholderAllocationName,
+                allocationMarkerName(frame),
                 frameRefsForStacktrace(frame.stacktrace),
+                frame.dataType.length > 0 ? frame.dataType : none,
+                frame.sizeBytes,
             );
         }
 

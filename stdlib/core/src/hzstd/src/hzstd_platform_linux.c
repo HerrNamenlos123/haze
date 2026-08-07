@@ -292,7 +292,7 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
 
       if (!pushed) {
         int maxNameLen = 4096;
-        hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen), 0);
+        hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen, NULL), 0);
         unw_word_t offset;
         if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLen, &offset) == 0) {
           name.length = strlen(name.data);
@@ -351,8 +351,8 @@ static void *hzstd_panic_handler_thread(void *_)
     // (HZSTD_PANIC_MAX_FRAMES) allocated once, up front -- see
     // hzstd_panic_build_frames for why this no longer needs an initial
     // dry-run pass to size it exactly.
-    hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t));
-    frameArray->buffer = hzstd_allocate(allocator, HZSTD_PANIC_MAX_FRAMES * sizeof(hzstd_stackframe_t));
+    hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
+    frameArray->buffer = hzstd_allocate(allocator, HZSTD_PANIC_MAX_FRAMES * sizeof(hzstd_stackframe_t), NULL);
     frameArray->elem_size = sizeof(hzstd_stackframe_t);
     frameArray->size = 0;
     frameArray->capacity = HZSTD_PANIC_MAX_FRAMES;
@@ -374,7 +374,7 @@ static void *hzstd_panic_handler_thread(void *_)
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
-      char *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1);
+      char *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1, NULL);
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
@@ -821,14 +821,14 @@ static inline char *read_all_fd_gc(int fd)
 {
   size_t cap = 4096, len = 0;
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char *buf = hzstd_allocate(allocator, cap + 1);
+  char *buf = hzstd_allocate(allocator, cap + 1, NULL);
   if (!buf) {
     return NULL;
   }
   for (;;) {
     if (len + 2048 > cap) {
       cap *= 2;
-      char *nb = hzstd_allocate(allocator, cap + 1);
+      char *nb = hzstd_allocate(allocator, cap + 1, NULL);
       if (!nb) {
         return NULL;
       }
@@ -866,7 +866,7 @@ static inline char *process_build_error_message_gc(int err)
     return NULL;
   }
   size_t len = strlen(msg);
-  char *gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+  char *gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1, NULL);
   if (gc) {
     memcpy(gc, msg, len);
     gc[len] = '\0';
@@ -1034,7 +1034,7 @@ static inline hzstd_str_t process_read_available_gc(int fd)
     if (buf) {
       if (len == cap) {
         cap *= 2;
-        buf = hzstd_heap_realloc(buf, cap);
+        buf = hzstd_heap_realloc(buf, cap, NULL);
         if (!buf) {
           hzstd_panic_fmt("realloc failed in process.read");
         }
@@ -1056,7 +1056,7 @@ static inline hzstd_str_t process_read_available_gc(int fd)
       // Overflowed the scratch buffer: allocate once and copy.
       if (!buf && len == sizeof(scratch)) {
         cap = sizeof(scratch) * 2;
-        buf = hzstd_allocate(allocator, cap);
+        buf = hzstd_allocate(allocator, cap, NULL);
         memcpy(buf, scratch, len);
       }
 
@@ -1079,7 +1079,7 @@ static inline hzstd_str_t process_read_available_gc(int fd)
       return HZSTD_STRING(NULL, 0);
     }
 
-    buf = hzstd_allocate(allocator, len);
+    buf = hzstd_allocate(allocator, len, NULL);
     memcpy(buf, scratch, len);
   }
 

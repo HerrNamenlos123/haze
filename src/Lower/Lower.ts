@@ -875,6 +875,35 @@ function makeIntrinsicCall(
   });
 }
 
+// A static `const char*` literal (never a dynamically-formatted string) for
+// hzstd's allocation-instrumentation `dataType` parameters (see the big
+// comment on hzstd_heap_allocate_n in hzstd_memory.h) -- compiled to a plain
+// C string literal (HZSTD's hzstd_ccstr_t), costing nothing at runtime
+// whether or not a profiler is attached.
+function makeAllocationDataTypeLiteral(
+  lr: Lowered.Module,
+  value: string,
+  sourceloc: SourceLoc
+): Lowered.ExprId {
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.LiteralExpr,
+    literal: {
+      type: EPrimitive.ccstr,
+      prefix: null,
+      value: value,
+    },
+    type: lowerTypeUse(
+      lr,
+      makePrimitiveAvailable(
+        lr.sr,
+        EPrimitive.ccstr,
+        EDatatypeMutability.Const,
+        sourceloc
+      )
+    ),
+  })[1];
+}
+
 // True iff `reactiveTypeUseId` is a deep `rx.reactive<[]T>()` (never a
 // ShallowReactive) whose wrapped type is a dynamic array. Those are backed
 // by hzstd_reactive_array_t, not hzstd_reactive_cell_t, so a whole-value
@@ -1541,10 +1570,16 @@ export function lowerExpr(
           type: makeLowerTypeUse(lr, structTypeUse.type, false)[1],
         })[1];
 
+        const dataTypeExprId = makeAllocationDataTypeLiteral(
+          lr,
+          `struct ${Semantic.serializeTypeUse(lr.sr, expr.type)}`,
+          expr.sourceloc
+        );
+
         const [result, resultId] = makeIntrinsicCall(
           lr,
           "HZSTD_ALLOC_STRUCT",
-          [allocatorExprId, structTypeExprId, structExprId],
+          [allocatorExprId, structTypeExprId, structExprId, dataTypeExprId],
           structType
         );
 
@@ -1679,6 +1714,12 @@ export function lowerExpr(
           instanceInfo
         );
 
+        const arrayDataTypeExprId = makeAllocationDataTypeLiteral(
+          lr,
+          `[](${Semantic.serializeTypeUse(lr.sr, typeDef.datatype)})`,
+          expr.sourceloc
+        );
+
         const statements: Lowered.StatementId[] = [];
         const tempVar = storeInTempVarAndGet(
           lr,
@@ -1693,6 +1734,7 @@ export function lowerExpr(
                 type: elementType,
               })[1],
               lengthExpr[1],
+              arrayDataTypeExprId,
             ],
             arrayType
           )[1],

@@ -653,14 +653,14 @@ namespace ChromeTrace {
         inline struct Args {
             inline struct Data {
                 stackTrace: []TraceCallFrame;
-                // Not wired up to real instrumentation yet -- hzstd's memory-instrumentation
-                // hook (hzstd_trace_memory_impl, hzstd_profiling.c) doesn't currently receive an
-                // allocation's type/size at all (its callback signature only carries
-                // type/skip_n_frames/data, no size_t), so there's nothing to plumb through yet.
-                // These fields exist so that once it does, TraceBuilder.addInstantMarker can pass
-                // them straight through without another wire-format change -- optional/omitted
-                // (rather than always-present placeholders) so today's callers, which have
-                // nothing real to put here, don't emit misleading empty/zero values.
+                // Populated from real allocation instrumentation -- see profiling.hz's
+                // buildTrace/allocationMarkerName, fed by hzstd_trace_memory_impl
+                // (hzstd_profiling.c) which now receives an allocation's kind/size/static
+                // type-name string from the compiler-emitted allocation call sites
+                // (HZSTD_ALLOC_STRUCT/HZSTD_DYNAMIC_ARRAY_CREATE) and the runtime allocator
+                // plumbing (hzstd_memory.c/hzstd_array.c). Optional/omitted (rather than
+                // always-present placeholders) because a small number of internal-only
+                // runtime allocations legitimately have no dataType to report.
                 dataType?: str;
                 sizeBytes?: int;
             }

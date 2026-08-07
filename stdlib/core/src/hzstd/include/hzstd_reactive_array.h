@@ -44,7 +44,7 @@ static inline hzstd_reactive_array_t*
 hzstd_reactive_array_create(hzstd_dynamic_array_t* data)
 {
   hzstd_reactive_array_t* ra =
-      (hzstd_reactive_array_t*)hzstd_heap_allocate(sizeof(hzstd_reactive_array_t));
+      (hzstd_reactive_array_t*)hzstd_heap_allocate(sizeof(hzstd_reactive_array_t), "hzstd_reactive_array_t");
   ra->data = data;
   void* slot = hzstd_slot_alloc(sizeof(size_t));
   size_t zero = 0;
@@ -116,7 +116,8 @@ hzstd_reactive_array_create_from_plain(hzstd_dynamic_array_t* plain,
   hzstd_dynamic_array_t* inner = hzstd_dynamic_array_create(
       hzstd_make_heap_allocator(),
       sizeof(hzstd_reactive_cell_t*),
-      plain->size > 0 ? plain->size : HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY);
+      plain->size > 0 ? plain->size : HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY,
+      NULL);
   for (size_t i = 0; i < plain->size; i++) {
     uint8_t* elem_ptr = (uint8_t*)plain->buffer + i * elem_size;
     void* slot = hzstd_slot_alloc(elem_size);

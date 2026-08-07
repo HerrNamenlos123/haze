@@ -142,7 +142,7 @@ export opaque struct ByteBuffer {
                 do unsafe {
                     let ptr: cptr = none as cptr;
                     let byte = source.singleByte;
-                    __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), 1);");
+                    __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), 1, \"ByteBuffer frozen bytes\");");
                     __c__("((hzstd_u8_t*)ptr)[0] = byte;");
                     this.frozenPtr = ptr;
                 };
@@ -172,7 +172,7 @@ export opaque struct ByteBuffer {
             let data = this._getData();
 
             if len > 0 {
-                __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), len);");
+                __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), len, \"ByteBuffer frozen bytes\");");
                 __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(data), len);");
             }
 

@@ -9,12 +9,12 @@
 hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator,
                                  hzstd_str_t data) {
   if (data.length > 0) {
-    hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1);
+    hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1, NULL);
     memcpy(buffer, data.data, data.length);
     buffer[data.length] = '\0';
     return buffer;
   } else {
-    hzstd_cstr_t buffer = hzstd_allocate(allocator, 1);
+    hzstd_cstr_t buffer = hzstd_allocate(allocator, 1, NULL);
     buffer[0] = '\0';
     return buffer;
   }
@@ -35,7 +35,7 @@ hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data) {
 }
 
 hzstd_str_t hzstd_str_dup(hzstd_str_t data) {
-  char *buffer = hzstd_heap_allocate_atomic(data.length);
+  char *buffer = hzstd_heap_allocate_atomic(data.length, NULL);
   memcpy(buffer, data.data, data.length);
   return HZSTD_STRING(buffer, data.length);
 }
@@ -51,7 +51,7 @@ hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator,
   if (length == 0) {
     return (hzstd_str_t){.length = 0, .data = 0};
   } else {
-    char *buffer = hzstd_allocate(allocator, length);
+    char *buffer = hzstd_allocate(allocator, length, NULL);
     memcpy(buffer, data, length);
     return (hzstd_str_t){
         .data = buffer,

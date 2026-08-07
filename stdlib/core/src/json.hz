@@ -304,7 +304,7 @@ namespace json {
                 // If T is an inline struct, just leave it uninitialized, the loop will later assign each field
             }
             else {
-                __c__("result = hzstd_allocate(allocator, sizeof(*result)); memset(result, 0, sizeof(*result));");
+                __c__(f"result = hzstd_allocate(allocator, sizeof(*result), \"JSON {T.prettyName}\"); memset(result, 0, sizeof(*result));");
             }
             for comptime field in T.fields {
                 const comptime fieldName = field.name;

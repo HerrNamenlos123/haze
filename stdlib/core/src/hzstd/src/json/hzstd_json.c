@@ -22,7 +22,7 @@ static thread_local hzstd_allocator_t hzstd_json_current_allocator;
 static thread_local bool hzstd_json_allocator_root_registered = false;
 
 static hzstd_cptr_t json_malloc(hzstd_usize_t size) {
-  return hzstd_allocate(hzstd_json_current_allocator, size);
+  return hzstd_allocate(hzstd_json_current_allocator, size, NULL);
 }
 static hzstd_void_t json_free(hzstd_cptr_t ptr) {}
 
@@ -92,7 +92,7 @@ hzstd_json_node_t *hzstd_json_create_null(hzstd_allocator_t allocator) {
 
 hzstd_bool_t hzstd_json_object_has_attribute(hzstd_json_node_t *json,
                                              hzstd_str_t name) {
-  hzstd_arena_t *arena = hzstd_arena_create();
+  hzstd_arena_t *arena = hzstd_arena_create("JSON scratch arena");
   int r = cJSON_HasObjectItemLen((cJSON *)json, name.data, name.length);
   return r;
 }
@@ -129,7 +129,7 @@ hzstd_str_ref_t *hzstd_json_get_string_value(hzstd_allocator_t allocator,
   if (!value) {
     return 0;
   }
-  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t));
+  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t), "hzstd_str_ref_t");
   result->data = hzstd_str_from_cstr_ref(value);
   return result;
 }
@@ -191,7 +191,7 @@ hzstd_str_ref_t *hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
   if (!item || !item->string) {
     return 0;
   }
-  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t));
+  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t), "hzstd_str_ref_t");
   result->data = hzstd_str_from_cstr_ref(item->string);
   return result;
 }

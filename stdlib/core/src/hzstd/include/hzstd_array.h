@@ -9,9 +9,11 @@
 
 #define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4
 
-#define HZSTD_DYNAMIC_ARRAY_CREATE(allocator, elementType, minInitialCapacity)                                         \
-  hzstd_dynamic_array_create(                                                                                          \
-      allocator, sizeof(elementType), HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY))
+#define HZSTD_DYNAMIC_ARRAY_CREATE(allocator, elementType, minInitialCapacity, elementTypeName)                        \
+  hzstd_dynamic_array_create(allocator,                                                                                \
+                              sizeof(elementType),                                                                     \
+                              HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY),                     \
+                              elementTypeName)
 
 // TODO: If something goes wrong during pushing, we crash. We should handle this
 // more gracefully and at least panic instead so it's recoverable
@@ -121,8 +123,8 @@
     __hz_temp_element;                                                                                                 \
   })
 
-hzstd_dynamic_array_t *
-hzstd_dynamic_array_create(hzstd_allocator_t allocator, size_t elem_size, size_t initial_capacity);
+hzstd_dynamic_array_t *hzstd_dynamic_array_create(
+    hzstd_allocator_t allocator, size_t elem_size, size_t initial_capacity, const char *elementTypeName);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_reserve(hzstd_dynamic_array_t *da, size_t new_capacity);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_shrink_to_fit(hzstd_dynamic_array_t *da);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_push(hzstd_dynamic_array_t *da, const void *elem);
