@@ -354,6 +354,22 @@ export struct Vim {
             this.ctx.deleteBackward(false);
             return;
         }
+        // Host-editor conveniences, not stock Vim. Real Vim binds
+        // insert-mode <C-v> to "insert the next character literally" and
+        // has no <C-BS> at all; these take the meaning every other text
+        // box on the desktop gives them, so muscle memory from outside
+        // the editor keeps working while inserting.
+        //
+        // Deliberately insert-mode only: in normal/visual, <C-v> stays
+        // blockwise-visual, which is load-bearing Vim.
+        if key == "<C-BS>" {
+            this.ctx.deleteBackward(true);
+            return;
+        }
+        if key == "<C-v>" || key == "<C-V>" {
+            this.ctx.paste();
+            return;
+        }
         if key == "<Tab>" {
             this.ctx.insertText(String("    "));
             return;
@@ -2710,6 +2726,11 @@ export fn namedKey(keyName: str, ctrl: bool, alt: bool): str {
     // Modifier-prefixed forms first: <C-d>, <M-Up>, ...
     if ctrl || alt {
         let prefix = ctrl ? "C" : "M";
+        // Named keys keep the same spelling they have unmodified, so
+        // <C-BS> is the modified form of <BS> -- not "<C-Backspace>",
+        // which nothing else in the key vocabulary would recognize and
+        // which `parseKeys` would never produce for a remap LHS.
+        if keyName == "Backspace" { return f"<{prefix}-BS>"; }
         return f"<{prefix}-{keyName}>";
     }
     if keyName == "Escape" { return "<Esc>"; }
@@ -2858,6 +2879,7 @@ export fn canonicalKeyName(name: str): str {
             else if restLower == "right" { rest = "Right"; }
             else if restLower == "cr" { rest = "CR"; }
             else if restLower == "esc" { rest = "Esc"; }
+            else if restLower == "bs" || restLower == "backspace" { rest = "BS"; }
         }
         return f"<{mod}-{rest}>";
     }

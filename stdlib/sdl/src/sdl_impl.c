@@ -1,6 +1,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_video.h>
 
+/* For the clipboard bridge at the bottom of this file, which hands SDL's
+   text to Haze as an owned str. */
+#include <hzstd/hzstd_types.h>
+#include <hzstd/include/hzstd_memory.h>
+#include <hzstd/include/hzstd_string.h>
+
 #define HAZE_SDL_SHOULD_CLOSE_PROPERTY "haze.should_close"
 #define HAZE_SDL_GL_CONTEXT_PROPERTY "haze.gl_context"
 #define HAZE_SDL_SIZE_CHANGED_PROPERTY "haze.size_changed"
@@ -378,3 +384,36 @@ bool haze_sdl_swapInterval(int interval) { return SDL_GL_SetSwapInterval(interva
 void* haze_sdl_getProcAddress(const char* procname) { return SDL_GL_GetProcAddress(procname); }
 
 double haze_sdl_getTime(void) { return (double)SDL_GetTicksNS() / 1000000000.0; }
+/* ---------- Clipboard ----------
+
+   SDL_GetClipboardText returns a buffer the CALLER owns and must SDL_free;
+   unlike SDL_GetError's static string, handing it straight to Haze as a
+   borrowed str would leak it on every read. Copy into GC-owned memory and
+   release SDL's copy here, so the Haze side gets an ordinary owned str with
+   no free obligation. SDL returns "" (never NULL) when the clipboard is
+   empty or holds non-text, which hzstd_cstr_dup maps to an empty str. */
+hzstd_str_t haze_sdl_getClipboardText(void)
+{
+  char* text = SDL_GetClipboardText();
+  if (!text) {
+    return hzstd_cstr_dup("");
+  }
+  hzstd_str_t owned = hzstd_cstr_dup(text);
+  SDL_free(text);
+  return owned;
+}
+
+/* Takes a Haze str (pointer + length, NOT null-terminated) rather than a
+   ccstr, so callers can pass ordinary runtime strings; SDL needs a C
+   string, so null-terminate into a temporary here and free it after. */
+bool haze_sdl_setClipboardText(hzstd_str_t text)
+{
+  if (text.length == 0) {
+    return SDL_SetClipboardText("");
+  }
+  /* GC-owned (BDWGC); there is no free-side API and none is needed --
+     SDL_SetClipboardText copies the text, so the collector may reclaim
+     this the moment the call returns. */
+  char* terminated = hzstd_cstr_from_str(hzstd_make_heap_allocator(), text);
+  return SDL_SetClipboardText(terminated);
+}
