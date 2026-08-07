@@ -1,0 +1,10 @@
+name = "vim_behavior"
+id = "vB7kQ2mX"
+version = "1.0.0"
+description = "Optional Vim editing model layered on top of textedit_behavior"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+textedit_behavior = { path = "../textedit_behavior" }

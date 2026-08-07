@@ -3,6 +3,169 @@
 // "lineIndex" and "lineNumber"
 // are both used, whereas "lineIndex" is the 0-based array index,
 // while "lineNumber" is the user-facing, 1-based line number.
+//
+// === Architecture =============================================
+//
+// This module is the *editing engine*. It owns text mutation, selections,
+// motions, undo and modes. It owns no keybindings and no editing model:
+// it does not know what "w" means, whether there are modes at all, or
+// whether "d" waits for another key. That lives in a *behavior* (see
+// `Behavior` below) -- e.g. the optional `vim_behavior` module, or the
+// built-in `DefaultBehavior` that reproduces ordinary desktop textbox
+// semantics.
+//
+// The engine is deliberately free of any rendering concern. It never
+// draws and never measures; it exposes queries (selectionRangeForLine,
+// cursorPosition, mode, scrollRequest, ...) that a host renders however
+// it likes.
+
+// === Modes ====================================================
+//
+// The engine knows *that* modes exist and what each one means for the
+// two things the engine itself must decide -- how the caret clamps, and
+// whether a selection tracks the caret -- but nothing about which keys
+// switch between them. A behavior with no modes simply stays in Insert
+// forever (the default), which is exactly a normal textbox.
+export enum Mode {
+    // Caret sits BETWEEN characters, max column == line length.
+    // This is normal textbox behavior and the default.
+    Insert,
+    // Caret sits ON a character, max column == line length - 1.
+    Normal,
+    // Like Normal for clamping, but a selection is anchored and tracks
+    // the caret. Characterwise.
+    Visual,
+    // Visual, but the selection always covers whole lines.
+    VisualLine,
+    // Visual, but the selection covers a rectangle.
+    VisualBlock,
+    // Caret sits ON a character and the document is immutable.
+    ReadOnly,
+}
+
+// True when the caret sits ON a character rather than between them, i.e.
+// the maximum legal column is lineLength-1 rather than lineLength. This
+// single predicate is the only place the Vim/textbox caret distinction
+// is encoded in the engine.
+//
+// Visual modes are deliberately NOT included: vim lets the caret sit one
+// past the last character while selecting (verified: `vj` onto a
+// one-character line reports column 1, while a plain `j` reports 0), so
+// that a selection can cover the final character.
+export fn modeClampsToLastChar(mode: Mode): bool {
+    return mode == Mode.Normal || mode == Mode.ReadOnly;
+}
+
+export fn modeIsVisual(mode: Mode): bool {
+    return mode == Mode.Visual || mode == Mode.VisualLine || mode == Mode.VisualBlock;
+}
+
+// === Ranges ===================================================
+
+// How a range of text is to be interpreted by an operation. Vim's
+// "motion kind", but it is a genuinely general concept: any editor that
+// can delete "these lines" as opposed to "this text" needs it.
+export enum RangeKind {
+    // Exactly from start to end, end exclusive.
+    Characterwise,
+    // Whole lines from start.y to end.y inclusive, including the
+    // trailing newline.
+    Linewise,
+    // Rectangle between the two columns on each line in the row span.
+    Blockwise,
+}
+
+// A normalized (start before end) region of the document plus how it
+// should be interpreted. This is what every editing operation consumes,
+// and what every motion/text-object produces.
+export struct Range {
+    start: Vec2i = {};
+    end: Vec2i = {};
+    kind: RangeKind = RangeKind.Characterwise;
+}
+
+// A half-open column range on a single line, as selected. Returned by
+// Context.selectionRangeForLine() so a host can render one highlight rect
+// per visual line without having to re-derive the per-line clamping of a
+// possibly multi-line selection itself.
+//
+// `includesLineEnd` marks a line whose selection extends past its last
+// character -- i.e. the newline itself is selected, which is always true
+// for the interior of a linewise selection. On an EMPTY line that makes
+// startCol == endCol == 0, so a host that sizes its highlight purely from
+// the column span would draw nothing at all; vim instead shows a narrow
+// block there. The engine cannot pick that width (it has no idea what a
+// pixel is), so it reports the fact and lets the host render it.
+export struct LineSelectionRange {
+    startCol: int;
+    endCol: int;
+    includesLineEnd: bool = false;
+}
+
+// What the engine wants the viewport to do. The engine cannot scroll --
+// it has no idea how tall the viewport is -- so instead it records an
+// intent that the host applies when it renders. This is how Vim's `zz`
+// (center the cursor) reaches the UI without the engine knowing what a
+// pixel is.
+export enum ScrollIntent {
+    None,
+    // Ensure the cursor line is visible, minimal movement.
+    Reveal,
+    // Put the cursor line in the vertical middle of the viewport.
+    Center,
+    // Put the cursor line at the top / bottom of the viewport.
+    Top,
+    Bottom,
+}
+
+// === Registers ================================================
+
+// Yanked/deleted text plus how it was taken, because pasting linewise
+// text must open a new line while pasting characterwise text must not.
+export struct RegisterContent {
+    text: String;
+    kind: RangeKind = RangeKind.Characterwise;
+
+    fn constructor() {
+        return RegisterContent { text: String("") };
+    }
+}
+
+// === Behavior interface =======================================
+//
+// A behavior translates raw input into engine calls. The engine owns a
+// single optional behavior and routes input to it; if there is none, the
+// engine applies `DefaultBehavior`-style handling itself.
+//
+// Every field is a callback so a behavior can be assembled from plain
+// closures without the language needing interfaces/vtables. A behavior
+// that does not care about a hook leaves it as `none`.
+//
+// `onKey` returns true if it consumed the key. `onTextInput` likewise:
+// returning false lets the engine insert the text itself, which is what
+// a behavior wants in Insert mode.
+export type KeyHandler = (key: str) => bool;
+export type TextHandler = (text: String) => bool;
+export type VoidHandler = () => void;
+
+export inline struct Behavior {
+    // Raw key press. `key` is a normalized key name: a single character
+    // for printable keys ("a", "$", " "), or a bracketed name for the
+    // rest ("<Esc>", "<CR>", "<C-d>", "<M-Up>").
+    onKey: KeyHandler | none = none;
+
+    // Committed text (IME / paste / ordinary typing). Return true to
+    // suppress the engine's own insertion.
+    onTextInput: TextHandler | none = none;
+
+    // Called after the engine has been constructed and wired, so a
+    // behavior can push its initial mode.
+    onAttach: VoidHandler | none = none;
+}
+
+export type ClipboardGetter = () => String;
+export type ClipboardSetter = (text: String) => void;
+
 export inline struct ContextArgs {
     // In Hertz
     cursorBlinkFrequency: real = 1;
@@ -25,15 +188,17 @@ export inline struct ContextArgs {
     // schedules any reactive re-render around that -- the engine only
     // needs the *data* to be current.
     replaceRange: (start: Vec2i, end: Vec2i, text: String) => void;
-}
 
-// A half-open column range on a single line, as selected. Returned by
-// Context.selectionRangeForLine() so a host can render one highlight rect
-// per visual line without having to re-derive the per-line clamping of a
-// possibly multi-line selection itself.
-export struct LineSelectionRange {
-    startCol: int;
-    endCol: int;
+    // Optional OS clipboard bridge. When absent, the engine's internal
+    // register is used for everything (fine for a self-contained app);
+    // when present, a behavior can opt into routing the unnamed register
+    // through the system clipboard, which is what Vim's
+    // `set clipboard=unnamedplus` does.
+    getClipboard: ClipboardGetter | none = none;
+    setClipboard: ClipboardSetter | none = none;
+
+    // Starting mode. A plain textbox leaves this at Insert.
+    initialMode: Mode = Mode.Insert;
 }
 
 export struct Context {
@@ -42,11 +207,17 @@ export struct Context {
     cursorVisible: rx.Computed<bool>;
     _cursorLastMovedAt: real;
 
-    // The cursor is always BETWEEN characters and never ON characters like with VIM bindings. (VIM is coming too).
+    // The active editing mode. See Mode. The engine only uses this to
+    // decide caret clamping and selection tracking; behaviors own the
+    // transitions.
+    mode: rx.Reactive<Mode>;
+
+    // The cursor is BETWEEN characters in Insert mode and ON a character
+    // in Normal/Visual modes (see modeClampsToLastChar).
     // cursorPos.x is the column, where
     // cursorPos.x = 0 -> left of first character
     // cursorPos.x = 1 -> right of first, left of second character
-    // cursorPos.x = lineLength -> right of last character
+    // cursorPos.x = lineLength -> right of last character (Insert only)
     // The y position refers to actual lineINDICES, starting at 0 for the first line.
     //
     // cursorPosition is where the cursor is actually rendered/edits happen.
@@ -66,22 +237,48 @@ export struct Context {
     selectionStart: rx.Computed<Vec2i>;
     selectionEnd: rx.Computed<Vec2i>;
 
-    // Internal yank/paste register. Not wired to the OS clipboard -- that's
-    // a host-level concern (platform clipboard API), this is just enough
-    // for copy/cut/paste to work within the app.
-    _clipboardRegister: String;
+    // Internal yank/paste register. Not wired to the OS clipboard by
+    // default -- that's a host-level concern (platform clipboard API) --
+    // but `useSystemClipboard` routes it through args.get/setClipboard,
+    // which is how Vim's clipboard=unnamedplus is implemented.
+    _register: RegisterContent;
+    useSystemClipboard: bool = false;
 
-    fn constructor(args: ContextArgs) {
+    // What the engine would like the viewport to do next. The host reads
+    // and clears this. See ScrollIntent.
+    scrollIntent: rx.Reactive<ScrollIntent>;
+
+    // Optional input behavior (Vim, Helix, ...). none => the engine
+    // applies default textbox handling to input itself.
+    behavior: Behavior | none = none;
+
+    // --- Undo ---------------------------------------------------
+    // Undo stores whole-document snapshots. That is O(document) per
+    // step rather than O(edit), which is the wrong complexity for a
+    // 100k-line file but is completely invisible for the sizes this
+    // engine actually sees, and it makes undo correct by construction
+    // for every possible edit (including multi-line replaces and
+    // future multi-cursor edits) instead of correct-per-operation.
+    // Swapping in a piece table later requires no interface change:
+    // nothing outside these three methods touches the stacks.
+    _undoStack: []UndoEntry = [];
+    _redoStack: []UndoEntry = [];
+    _txDepth: int = 0;
+    _txPending: UndoEntry | none = none;
+
+    fn constructor(args: ContextArgs): mut Context {
         let context = Context {
             args: args,
             cursorVisible: rx.computed(() => false),
             _cursorLastMovedAt: args.getTimeInSeconds(),
+            mode: rx.reactive<Mode>(args.initialMode),
             cursorPosition: rx.reactive(Vec2i(0, 0)),
             selectionAnchor: rx.reactive<Vec2i | none>(none),
             hasSelection: rx.computed(() => false),
             selectionStart: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
             selectionEnd: rx.computed((): Vec2i => ({ x: 0, y: 0 })),
-            _clipboardRegister: String(""),
+            _register: RegisterContent(),
+            scrollIntent: rx.reactive<ScrollIntent>(ScrollIntent.None),
         };
 
         context.cursorVisible = rx.computed(() => {
@@ -91,10 +288,17 @@ export struct Context {
             return math.modulo(elapsed, blinkInterval) <= blinkInterval / 2.0;
         });
 
+        // In visual modes the selection always exists (it is anchored at
+        // the point visual mode started), even when it is one character
+        // wide and anchor == cursor. Outside visual modes a zero-width
+        // selection is no selection at all, matching a plain textbox.
         context.hasSelection = rx.computed(() => {
             let anchor = rx.get(context.selectionAnchor);
             if !anchor {
                 return false;
+            }
+            if modeIsVisual(rx.get(context.mode)) {
+                return true;
             }
             return anchor.x != context.cursorPosition.x || anchor.y != context.cursorPosition.y;
         });
@@ -128,6 +332,84 @@ export struct Context {
         return context;
     }
 
+    // Install an input behavior (Vim, Helix, ...). Returns the context so
+    // wiring can be chained at the call site.
+    mut fn setBehavior(behavior: Behavior) {
+        this.behavior = behavior;
+        let attach = behavior.onAttach;
+        if attach {
+            attach();
+        }
+    }
+
+    // === Input entry points =======================================
+    //
+    // A host funnels all raw input through these two. They delegate to
+    // the behavior if there is one and fall back to plain textbox
+    // handling otherwise, so a host never has to branch on "is there a
+    // Vim attached".
+
+    mut fn handleTextInput(text: String) {
+        let b = this.behavior;
+        if b {
+            let handler = b.onTextInput;
+            if handler {
+                if handler(text) {
+                    return;
+                }
+            }
+        }
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
+        this.insertText(text);
+    }
+
+    // Returns true if the key was consumed by a behavior.
+    mut fn handleKey(key: str): bool {
+        let b = this.behavior;
+        if b {
+            let handler = b.onKey;
+            if handler {
+                return handler(key);
+            }
+        }
+        return false;
+    }
+
+    // === Mode =====================================================
+
+    mut fn setMode(mode: Mode) {
+        let previous = rx.get(this.mode);
+        if previous == mode {
+            return;
+        }
+        this.mode := mode;
+
+        if modeIsVisual(mode) {
+            // Entering a visual mode anchors the selection at the caret
+            // if nothing is anchored yet.
+            if !this.selectionAnchor {
+                this.selectionAnchor := this._cursorPos();
+            }
+        } else if !modeIsVisual(mode) && modeIsVisual(previous) {
+            this.selectionAnchor := none;
+        }
+
+        // Leaving Insert for an on-a-character mode can strand the caret
+        // one past the end of the line; re-clamp through _moveTo.
+        this._moveTo(this._cursorPos(), false, this.selectionAnchor ? true : false);
+    }
+
+    mut fn requestScroll(intent: ScrollIntent) {
+        this.scrollIntent := intent;
+    }
+
+    // Host calls this once it has applied the intent.
+    mut fn clearScrollRequest() {
+        this.scrollIntent := ScrollIntent.None;
+    }
+
     // === Movement ================================================
     //
     // Every move function is a thin wrapper around a pure "_target*"
@@ -135,68 +417,111 @@ export struct Context {
     // _moveTo (applies it: clamps, updates the sticky column, and grows or
     // collapses the selection). Keeping the target computation pure means
     // the same motion can be reused to move the caret, to extend a
-    // selection (`extend: true`, i.e. Shift held), and later to compute the
+    // selection (`extend: true`, i.e. Shift held), and to compute the
     // range an operator (Vim's d/y/c) or a click-drag should act on --
     // without three divergent copies of word/line-boundary logic.
+    //
+    // The `target*` variants are public precisely so a behavior can ask
+    // "where would this motion land?" and turn the answer into an
+    // operator range instead of a cursor move.
 
-    fn moveCursorRight(extend: bool = false) {
+    mut fn moveCursorRight(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetRight(pos), true, extend);
     }
 
-    fn moveCursorLeft(extend: bool = false) {
+    mut fn moveCursorLeft(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetLeft(pos), true, extend);
     }
 
-    fn moveCursorUp(extend: bool = false) {
+    mut fn moveCursorUp(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetUp(pos), false, extend);
     }
 
-    fn moveCursorDown(extend: bool = false) {
+    mut fn moveCursorDown(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetDown(pos), false, extend);
     }
 
     // Ctrl+Left in every mainstream editor: jump to the start of the previous
     // word, crossing to the end of the previous line if already at column 0.
-    fn moveCursorWordLeft(extend: bool = false) {
+    mut fn moveCursorWordLeft(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetWordLeft(pos), true, extend);
     }
 
     // Ctrl+Right: jump to the start of the next word, crossing to the start
     // of the next line if already at the end of the current one.
-    fn moveCursorWordRight(extend: bool = false) {
+    mut fn moveCursorWordRight(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetWordRight(pos), true, extend);
     }
 
     // Home / End: start / end of the current line.
-    fn moveCursorHome(extend: bool = false) {
+    mut fn moveCursorHome(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetHome(pos), true, extend);
     }
 
-    fn moveCursorEnd(extend: bool = false) {
+    mut fn moveCursorEnd(extend: bool = false) {
         let pos = this._cursorPos();
         this._moveTo(this._targetEnd(pos), true, extend);
     }
 
     // Ctrl+Home / Ctrl+End: start / end of the whole document.
-    fn moveCursorDocumentStart(extend: bool = false) {
+    mut fn moveCursorDocumentStart(extend: bool = false) {
         this._moveTo(this._targetDocumentStart(), true, extend);
     }
 
-    fn moveCursorDocumentEnd(extend: bool = false) {
+    mut fn moveCursorDocumentEnd(extend: bool = false) {
         this._moveTo(this._targetDocumentEnd(), true, extend);
     }
 
+    // Generic entry point for behaviors: place the caret anywhere,
+    // clamped, optionally extending the selection. This is what a Vim
+    // motion ultimately calls.
+    mut fn moveTo(target: Vec2i, updateDesiredX: bool = true, extend: bool = false) {
+        this._moveTo(target, updateDesiredX, extend);
+    }
+
     // Ctrl+A.
-    fn selectAll() {
+    mut fn selectAll() {
         this.selectionAnchor := this._targetDocumentStart();
         this._moveTo(this._targetDocumentEnd(), true, true);
+    }
+
+    // Explicit selection control, for behaviors that own their own
+    // selection lifecycle (visual modes, click-drag).
+    mut fn setSelectionAnchor(anchor: Vec2i) {
+        this.selectionAnchor := anchor;
+    }
+
+    mut fn clearSelection() {
+        this.selectionAnchor := none;
+    }
+
+    fn anchorPosition(): Vec2i | none {
+        let a = rx.get(this.selectionAnchor);
+        if !a {
+            return none;
+        }
+        let result: Vec2i = { x: a.x, y: a.y };
+        return result;
+    }
+
+    // Swap caret and anchor, keeping the same span. Vim's `o` in visual
+    // mode; also what a host wants when a drag crosses its origin.
+    mut fn swapSelectionEnds() {
+        let anchor = rx.get(this.selectionAnchor);
+        if !anchor {
+            return;
+        }
+        let oldAnchor: Vec2i = { x: anchor.x, y: anchor.y };
+        let cursor = this._cursorPos();
+        this.selectionAnchor := cursor;
+        this._moveTo(oldAnchor, true, true);
     }
 
     // === Editing ==================================================
@@ -205,16 +530,20 @@ export struct Context {
     // TextInputEvent chunk at a time), and paste. If there's a selection it
     // is replaced; otherwise `text` is inserted at the caret. The caret ends
     // up right after the inserted text either way.
-    fn insertText(text: String) {
+    mut fn insertText(text: String) {
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
+        this.beginTransaction();
         let insertAt: Vec2i = this._cursorPos();
         if this.hasSelection {
             let start = this._selStart();
             let end = this._selEnd();
             insertAt = start;
-            this.args.replaceRange(start, end, "");
+            this._applyReplace(start, end, String(""));
             this.selectionAnchor := none;
         }
-        this.args.replaceRange(insertAt, insertAt, text);
+        this._applyReplace(insertAt, insertAt, text);
 
         let parts = text.cloneString().split("\n");
         let target: Vec2i = {};
@@ -224,11 +553,12 @@ export struct Context {
             target = { x: parts[parts.length - 1].length, y: insertAt.y + parts.length - 1 };
         }
         this._moveTo(target, true, false);
+        this.endTransaction();
     }
 
     // Enter/Return.
-    fn insertNewline() {
-        this.insertText("\n");
+    mut fn insertNewline() {
+        this.insertText(String("\n"));
     }
 
     // Backspace. `wholeWord: true` (Ctrl+Backspace) deletes back to the
@@ -236,7 +566,10 @@ export struct Context {
     // when there's no selection, matching Chrome/VS Code: with a selection,
     // plain Backspace already deletes exactly the selection regardless of
     // modifiers.
-    fn deleteBackward(wholeWord: bool = false) {
+    mut fn deleteBackward(wholeWord: bool = false) {
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
         if this.hasSelection {
             this._deleteSelection();
             return;
@@ -246,13 +579,18 @@ export struct Context {
             return;
         }
         let deleteFrom = wholeWord ? this._targetWordLeft(pos) : this._targetLeft(pos);
-        this.args.replaceRange(deleteFrom, pos, "");
+        this.beginTransaction();
+        this._applyReplace(deleteFrom, pos, String(""));
         this._moveTo(deleteFrom, true, false);
+        this.endTransaction();
     }
 
     // Delete. `wholeWord: true` (Ctrl+Delete) deletes forward to the start
     // of the next word; same selection caveat as deleteBackward.
-    fn deleteForward(wholeWord: bool = false) {
+    mut fn deleteForward(wholeWord: bool = false) {
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
         if this.hasSelection {
             this._deleteSelection();
             return;
@@ -263,32 +601,267 @@ export struct Context {
             return;
         }
         let deleteTo = wholeWord ? this._targetWordRight(pos) : this._targetRight(pos);
-        this.args.replaceRange(pos, deleteTo, "");
+        this.beginTransaction();
+        this._applyReplace(pos, deleteTo, String(""));
         this._moveTo(pos, true, false);
+        this.endTransaction();
     }
 
-    // === Clipboard (internal register -- see _clipboardRegister) =======
+    // === Range-based editing (what behaviors/operators use) =======
+    //
+    // These are the primitives a Vim operator is built from. They take an
+    // explicit Range so the *behavior* decides what to act on and the
+    // engine only performs it.
 
-    fn copy() {
+    fn textInRange(range: Range): String {
+        let normalized = this.normalizeRange(range);
+        if normalized.kind == RangeKind.Linewise {
+            return this._getLinewiseText(normalized.start.y, normalized.end.y);
+        }
+        if normalized.kind == RangeKind.Blockwise {
+            return this._getBlockwiseText(range);
+        }
+        return this._getTextInRange(normalized.start, normalized.end);
+    }
+
+    // The column span of a blockwise range. normalizeRange only orders
+    // the two corners top-to-bottom; for a rectangle the LEFT column is
+    // the smaller of the two x's regardless of which corner it came
+    // from (dragging up-and-left is still a rectangle).
+    fn _blockColumns(range: Range): Vec2i {
+        let left = range.start.x < range.end.x ? range.start.x : range.end.x;
+        let right = range.start.x < range.end.x ? range.end.x : range.start.x;
+        let cols: Vec2i = { x: left, y: right };
+        return cols;
+    }
+
+    // One line per row of the rectangle, each clamped to that row's
+    // length -- a short line inside the block contributes what it has.
+    fn _getBlockwiseText(range: Range): String {
+        let normalized = this.normalizeRange(range);
+        let cols = this._blockColumns(range);
+        let result = "";
+        for (let y = normalized.start.y; y <= normalized.end.y; y++) {
+            if y > normalized.start.y {
+                result = f"{result}\n";
+            }
+            let lineLen = this.args.getLineLength(y);
+            let sliceStart = clamp<int>(cols.x, 0, lineLen);
+            let sliceEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            if sliceEnd > sliceStart {
+                result = f"{result}{this.args.getLine(y).cloneString().slice(sliceStart, sliceEnd)}";
+            }
+        }
+        return String(result);
+    }
+
+    // Delete a range and place the caret where Vim would leave it.
+    mut fn deleteRange(range: Range, keepColumn: int = -1) {
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
+        let normalized = this.normalizeRange(range);
+        this.beginTransaction();
+        if normalized.kind == RangeKind.Linewise {
+            this._deleteLines(normalized.start.y, normalized.end.y, keepColumn);
+        } else if normalized.kind == RangeKind.Blockwise {
+            this._deleteBlock(range);
+        } else {
+            this._applyReplace(normalized.start, normalized.end, String(""));
+            this._moveTo(normalized.start, true, false);
+        }
+        this.endTransaction();
+    }
+
+    // Cut the rectangle out of each row, leaving the rows themselves in
+    // place. Rows are edited BOTTOM-UP so that each replaceRange call
+    // cannot shift the line indices of the rows still to be edited.
+    mut fn _deleteBlock(range: Range) {
+        let normalized = this.normalizeRange(range);
+        let cols = this._blockColumns(range);
+        for (let y = normalized.end.y; y >= normalized.start.y; y--) {
+            let lineLen = this.args.getLineLength(y);
+            let cutStart = clamp<int>(cols.x, 0, lineLen);
+            let cutEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            if cutEnd > cutStart {
+                let a: Vec2i = { x: cutStart, y: y };
+                let b: Vec2i = { x: cutEnd, y: y };
+                this._applyReplace(a, b, String(""));
+            }
+        }
+        // The caret lands on the block's top-left corner.
+        let landing: Vec2i = { x: cols.x, y: normalized.start.y };
+        this._moveTo(landing, true, false);
+    }
+
+    mut fn replaceRangeWith(range: Range, text: String) {
+        if this.mode == Mode.ReadOnly {
+            return;
+        }
+        let normalized = this.normalizeRange(range);
+        this.beginTransaction();
+        if normalized.kind == RangeKind.Linewise {
+            this._deleteLines(normalized.start.y, normalized.end.y);
+            this._applyReplace(this._cursorPos(), this._cursorPos(), text);
+        } else {
+            this._applyReplace(normalized.start, normalized.end, text);
+            this._moveTo(normalized.start, true, false);
+        }
+        this.endTransaction();
+    }
+
+    // Ensure start <= end, and expand a linewise range to full lines.
+    fn normalizeRange(range: Range): Range {
+        let start: Vec2i = { x: range.start.x, y: range.start.y };
+        let end: Vec2i = { x: range.end.x, y: range.end.y };
+        if end.y < start.y || (end.y == start.y && end.x < start.x) {
+            let tmp: Vec2i = { x: start.x, y: start.y };
+            start = { x: end.x, y: end.y };
+            end = { x: tmp.x, y: tmp.y };
+        }
+        let result: Range = { start: start, end: end, kind: range.kind };
+        return result;
+    }
+
+    // The range currently selected, as a Range the operators accept.
+    // Visual mode is *inclusive* of the character under the caret, which
+    // is the single most common source of off-by-one bugs when
+    // reimplementing Vim, so it is centralized here.
+    fn selectionAsRange(): Range {
+        let start = this._selStart();
+        let end = this._selEnd();
+        let mode = rx.get(this.mode);
+
+        if mode == Mode.VisualLine {
+            let r: Range = { start: { x: 0, y: start.y }, end: { x: 0, y: end.y }, kind: RangeKind.Linewise };
+            return r;
+        }
+
+        if mode == Mode.VisualBlock {
+            // A blockwise range keeps BOTH corners inclusive: the
+            // rectangle is defined by its corners, not by a half-open
+            // run, and _blockColumns()/_getBlockwiseText() add the +1
+            // themselves. Converting to exclusive here as well would
+            // widen every block by one column.
+            let r: Range = { start: start, end: end, kind: RangeKind.Blockwise };
+            return r;
+        }
+
+        if modeIsVisual(mode) {
+            // inclusive -> exclusive
+            let inclusiveEnd: Vec2i = { x: end.x + 1, y: end.y };
+            let r: Range = { start: start, end: inclusiveEnd, kind: RangeKind.Characterwise };
+            return r;
+        }
+
+        let kind = RangeKind.Characterwise;
+        let r: Range = { start: start, end: end, kind: kind };
+        return r;
+    }
+
+    // === Registers / clipboard ====================================
+
+    mut fn setRegister(text: String, kind: RangeKind) {
+        this._register = RegisterContent { text: text, kind: kind };
+        let setter = this.args.setClipboard;
+        if this.useSystemClipboard && setter {
+            setter(text);
+        }
+    }
+
+    fn getRegister(): RegisterContent {
+        let getter = this.args.getClipboard;
+        if this.useSystemClipboard && getter {
+            let external = getter();
+            // The system clipboard has no notion of linewise-ness; Vim
+            // infers it from a trailing newline, and so do we.
+            let kind = external.cloneString().endsWith("\n") ? RangeKind.Linewise : RangeKind.Characterwise;
+            let r: RegisterContent = { text: external, kind: kind };
+            return r;
+        }
+        return this._register;
+    }
+
+    mut fn copy() {
         if !this.hasSelection {
             return;
         }
-        this._clipboardRegister = this._getTextInRange(this._selStart(), this._selEnd());
+        let range = this.selectionAsRange();
+        this.setRegister(this.textInRange(range), range.kind);
     }
 
-    fn cut() {
+    mut fn cut() {
         if !this.hasSelection {
             return;
         }
-        this._clipboardRegister = this._getTextInRange(this._selStart(), this._selEnd());
-        this._deleteSelection();
+        let range = this.selectionAsRange();
+        this.setRegister(this.textInRange(range), range.kind);
+        this.deleteRange(range);
+        this.selectionAnchor := none;
     }
 
-    fn paste() {
-        if this._clipboardRegister.length() == 0 {
+    mut fn paste() {
+        let reg = this.getRegister();
+        if reg.text.length() == 0 {
             return;
         }
-        this.insertText(this._clipboardRegister);
+        this.insertText(reg.text);
+    }
+
+    // === Undo / transactions ======================================
+    //
+    // Everything between begin/endTransaction collapses into one undo
+    // step, so a compound edit (delete selection + insert replacement,
+    // or a Vim `cw`) undoes as a unit. Nested transactions join the
+    // outermost one, which lets primitives call each other freely
+    // without each one creating its own undo step.
+
+    mut fn beginTransaction() {
+        if this._txDepth == 0 {
+            this._txPending = this._snapshot();
+        }
+        this._txDepth = this._txDepth + 1;
+    }
+
+    mut fn endTransaction() {
+        if this._txDepth == 0 {
+            return;
+        }
+        this._txDepth = this._txDepth - 1;
+        if this._txDepth > 0 {
+            return;
+        }
+        let pending = this._txPending;
+        this._txPending = none;
+        if !pending {
+            return;
+        }
+        // Nothing actually changed -> don't create a dead undo step.
+        if this._documentText() == pending.text {
+            return;
+        }
+        this._undoStack.push(pending);
+        this._redoStack = [];
+    }
+
+    mut fn undo() {
+        if this._undoStack.length == 0 {
+            return;
+        }
+        let entry = this._undoStack[this._undoStack.length - 1];
+        this._undoStack.pop();
+        this._redoStack.push(this._snapshot());
+        this._restore(entry);
+    }
+
+    mut fn redo() {
+        if this._redoStack.length == 0 {
+            return;
+        }
+        let entry = this._redoStack[this._redoStack.length - 1];
+        this._redoStack.pop();
+        this._undoStack.push(this._snapshot());
+        this._restore(entry);
     }
 
     // === Selection queries, for rendering =========================
@@ -301,15 +874,126 @@ export struct Context {
         if !this.hasSelection {
             return none;
         }
+        let mode = rx.get(this.mode);
         let start = this._selStart();
         let end = this._selEnd();
         if lineIndex < start.y || lineIndex > end.y {
             return none;
         }
+
+        if mode == Mode.VisualLine {
+            // Every line of a linewise selection includes its newline.
+            let full: LineSelectionRange = {
+                startCol: 0,
+                endCol: this.args.getLineLength(lineIndex),
+                includesLineEnd: true,
+            };
+            return full;
+        }
+
+        if mode == Mode.VisualBlock {
+            let left = start.x < end.x ? start.x : end.x;
+            let right = start.x < end.x ? end.x : start.x;
+            let lineLen = this.args.getLineLength(lineIndex);
+            let block: LineSelectionRange = {
+                startCol: clamp<int>(left, 0, lineLen),
+                endCol: clamp<int>(right + 1, 0, lineLen),
+            };
+            return block;
+        }
+
         let startCol = lineIndex == start.y ? start.x : 0;
         let endCol = lineIndex == end.y ? end.x : this.args.getLineLength(lineIndex);
-        let result: LineSelectionRange = { startCol: startCol, endCol: endCol };
+        // Visual mode includes the character under the caret.
+        if modeIsVisual(mode) && lineIndex == end.y {
+            endCol = clamp<int>(endCol + 1, 0, this.args.getLineLength(lineIndex));
+        }
+        // Every line except the last one in a multi-line characterwise
+        // selection runs through its newline.
+        let result: LineSelectionRange = {
+            startCol: startCol,
+            endCol: endCol,
+            includesLineEnd: lineIndex < end.y,
+        };
         return result;
+    }
+
+    // === Public pure motions ======================================
+    //
+    // Behaviors compute destinations with these and then decide whether
+    // to move the caret, extend the selection, or hand the span to an
+    // operator. They never mutate.
+
+    fn targetLeft(pos: Vec2i): Vec2i { return this._targetLeft(pos); }
+    fn targetRight(pos: Vec2i): Vec2i { return this._targetRight(pos); }
+    fn targetUp(pos: Vec2i): Vec2i { return this._targetUp(pos); }
+    fn targetDown(pos: Vec2i): Vec2i { return this._targetDown(pos); }
+    fn targetHome(pos: Vec2i): Vec2i { return this._targetHome(pos); }
+    fn targetEnd(pos: Vec2i): Vec2i { return this._targetEnd(pos); }
+    fn targetDocumentStart(): Vec2i { return this._targetDocumentStart(); }
+    fn targetDocumentEnd(): Vec2i { return this._targetDocumentEnd(); }
+    fn targetWordLeft(pos: Vec2i): Vec2i { return this._targetWordLeft(pos); }
+    fn targetWordRight(pos: Vec2i): Vec2i { return this._targetWordRight(pos); }
+
+    // First non-blank column of a line (Vim's ^, and where linewise
+    // operations leave the caret).
+    fn firstNonBlank(lineIndex: int): int {
+        let len = this.args.getLineLength(lineIndex);
+        if len == 0 {
+            return 0;
+        }
+        let line = this.args.getLine(lineIndex);
+        let x = 0;
+        while x < len && ascii.isWhitespace(line[x].get()) {
+            x++;
+        }
+        if x >= len {
+            return len > 0 ? len - 1 : 0;
+        }
+        return x;
+    }
+
+    // Character class, exposed so a behavior can implement its own word
+    // motions (Vim's w vs W) without duplicating the classification.
+    // 0 = whitespace, 1 = word character, 2 = punctuation.
+    fn charClassAt(lineIndex: int, column: int): int {
+        let len = this.args.getLineLength(lineIndex);
+        if column < 0 || column >= len {
+            return 0;
+        }
+        return this._charClassAt(this.args.getLine(lineIndex), column);
+    }
+
+    fn lineLength(lineIndex: int): int {
+        return this.args.getLineLength(lineIndex);
+    }
+
+    fn lineCount(): int {
+        return this.args.getLineCount();
+    }
+
+    fn line(lineIndex: int): String {
+        return this.args.getLine(lineIndex);
+    }
+
+    fn cursor(): Vec2i {
+        return this._cursorPos();
+    }
+
+    // The sticky column an Up/Down move aims at. Exposed so a behavior
+    // can build its own vertical motions on the same rule the engine's
+    // moveCursorUp/Down use.
+    fn desiredColumn(): int {
+        return this._desiredCursorPosition.x;
+    }
+
+    // Highest legal column for the current mode on a given line.
+    fn maxColumn(lineIndex: int): int {
+        let len = this.args.getLineLength(lineIndex);
+        if modeClampsToLastChar(rx.get(this.mode)) {
+            return len > 0 ? len - 1 : 0;
+        }
+        return len;
     }
 
     // === Internals =================================================
@@ -335,27 +1019,126 @@ export struct Context {
         return { x: e.x, y: e.y };
     }
 
-    fn _deleteSelection() {
-        let start = this._selStart();
-        let end = this._selEnd();
-        this.args.replaceRange(start, end, "");
+    // All document mutation funnels through here so undo snapshotting has
+    // exactly one place to hook, and so a bare replaceRange outside a
+    // transaction still produces its own undo step.
+    mut fn _applyReplace(start: Vec2i, end: Vec2i, text: String) {
+        let standalone = this._txDepth == 0;
+        if standalone {
+            this.beginTransaction();
+        }
+        this.args.replaceRange(start, end, text);
+        if standalone {
+            this.endTransaction();
+        }
+    }
+
+    mut fn _deleteSelection() {
+        let range = this.selectionAsRange();
+        this.beginTransaction();
+        if range.kind == RangeKind.Linewise {
+            this._deleteLines(range.start.y, range.end.y);
+        } else {
+            let normalized = this.normalizeRange(range);
+            this._applyReplace(normalized.start, normalized.end, String(""));
+            this._moveTo(normalized.start, true, false);
+        }
         this.selectionAnchor := none;
-        this._moveTo(start, true, false);
+        this.endTransaction();
+    }
+
+    // Delete whole lines startY..endY inclusive, including one newline,
+    // and leave the caret at the first non-blank of the line that slid
+    // into place -- which is what Vim does after `dd`.
+    // `keepColumnOverride` is the column the caret should keep; pass it
+    // when the caret is not already at the right one. In visual mode the
+    // caret sits at the selection's moving END, but vim leaves it on the
+    // column the selection STARTED at, so the caller supplies that.
+    mut fn _deleteLines(startY: int, endY: int, keepColumnOverride: int = -1) {
+        let keepColumn = keepColumnOverride >= 0 ? keepColumnOverride : this._cursorPos().x;
+        let lineCount = this.args.getLineCount();
+        let cutStart: Vec2i = { x: 0, y: startY };
+        let cutEnd: Vec2i = {};
+        if endY < lineCount - 1 {
+            // Take the trailing newline with it.
+            cutEnd = { x: 0, y: endY + 1 };
+        } else if startY > 0 {
+            // Last line(s): take the *preceding* newline instead.
+            cutStart = { x: this.args.getLineLength(startY - 1), y: startY - 1 };
+            cutEnd = { x: this.args.getLineLength(endY), y: endY };
+        } else {
+            // Deleting every line: the buffer keeps one empty line.
+            cutEnd = { x: this.args.getLineLength(endY), y: endY };
+        }
+        this._applyReplace(cutStart, cutEnd, String(""));
+
+        // Keep the column rather than jumping to the first non-blank:
+        // neovim ships with 'startofline' OFF, so `dd` leaves the caret
+        // on the same column of the line that slid into place (clamped
+        // to that line's length by _moveTo).
+        let landingY = clamp<int>(startY, 0, this.args.getLineCount() - 1);
+        let target: Vec2i = { x: keepColumn, y: landingY };
+        this._moveTo(target, true, false);
     }
 
     fn _getTextInRange(start: Vec2i, end: Vec2i): String {
         if start.y == end.y {
-            // TODO: Improve this cloneString() situation
-            return this.args.getLine(start.y).cloneString().slice(start.x, end.x);
+            let lineLen = this.args.getLineLength(start.y);
+            let s = clamp<int>(start.x, 0, lineLen);
+            let e = clamp<int>(end.x, 0, lineLen);
+            if e <= s {
+                return String("");
+            }
+            return String(this.args.getLine(start.y).cloneString().slice(s, e));
         }
         let firstLine = this.args.getLine(start.y);
-        let result = firstLine.cloneString().slice(start.x, this.args.getLineLength(start.y));
+        let startLen = this.args.getLineLength(start.y);
+        let result = firstLine.cloneString().slice(clamp<int>(start.x, 0, startLen), startLen);
         for (let y = start.y + 1; y < end.y; y++) {
             result = f"{result}\n{this.args.getLine(y)}";
         }
         let lastLine = this.args.getLine(end.y);
-        result = f"{result}\n{lastLine.cloneString().slice(0, end.x)}";
+        let endLen = this.args.getLineLength(end.y);
+        result = f"{result}\n{lastLine.cloneString().slice(0, clamp<int>(end.x, 0, endLen))}";
+        return String(result);
+    }
+
+    // Linewise text always carries a trailing newline, which is exactly
+    // what makes a linewise paste open a new line.
+    fn _getLinewiseText(startY: int, endY: int): String {
+        let result = "";
+        for (let y = startY; y <= endY; y++) {
+            result = f"{result}{this.args.getLine(y)}\n";
+        }
+        return String(result);
+    }
+
+    fn _documentText(): str {
+        let result = "";
+        let count = this.args.getLineCount();
+        for (let y = 0; y < count; y++) {
+            if y > 0 {
+                result = f"{result}\n";
+            }
+            result = f"{result}{this.args.getLine(y)}";
+        }
         return result;
+    }
+
+    fn _snapshot(): UndoEntry {
+        let pos = this._cursorPos();
+        let entry: UndoEntry = { text: this._documentText(), cursor: pos };
+        return entry;
+    }
+
+    // Restoring is a single whole-document replace so it goes through the
+    // host's one mutation primitive like every other edit.
+    mut fn _restore(entry: UndoEntry) {
+        let lastLine = this.args.getLineCount() - 1;
+        let start: Vec2i = { x: 0, y: 0 };
+        let end: Vec2i = { x: this.args.getLineLength(lastLine), y: lastLine };
+        this.args.replaceRange(start, end, String(entry.text));
+        this._moveTo(entry.cursor, true, false);
     }
 
     // Single point of truth for placing the cursor: clamps to valid
@@ -365,18 +1148,21 @@ export struct Context {
     // any future one (click-to-place, drag, Vim visual mode, ...) -- should
     // go through this rather than writing cursorPosition/selectionAnchor
     // directly.
-    fn _moveTo(target: Vec2i, updateDesiredX: bool, extend: bool) {
+    mut fn _moveTo(target: Vec2i, updateDesiredX: bool, extend: bool) {
         this._cursorLastMovedAt = this.args.getTimeInSeconds();
 
         let lineCount = this.args.getLineCount();
         let y = clamp<int>(target.y, 0, lineCount - 1);
-        let x = clamp<int>(target.x, 0, this.args.getLineLength(y));
+        let x = clamp<int>(target.x, 0, this.maxColumn(y));
 
         if extend {
             if !this.selectionAnchor {
                 this.selectionAnchor := this._cursorPos();
             }
-        } else if this.selectionAnchor {
+        } else if this.selectionAnchor && !modeIsVisual(rx.get(this.mode)) {
+            // Visual modes own their anchor: an unextended move inside
+            // visual mode still tracks the existing anchor rather than
+            // dropping the selection.
             this.selectionAnchor := none;
         }
 
@@ -397,11 +1183,15 @@ export struct Context {
 
     fn _targetRight(pos: Vec2i): Vec2i {
         let lineLength = this.args.getLineLength(pos.y);
-        if pos.x < lineLength {
+        let limit = this.maxColumn(pos.y);
+        if pos.x < limit {
             return { x: pos.x + 1, y: pos.y };
         }
-        if pos.y < this.args.getLineCount() - 1 {
-            return { x: 0, y: pos.y + 1 };
+        // In on-a-character modes, `l` never wraps to the next line.
+        if !modeClampsToLastChar(rx.get(this.mode)) && pos.x >= lineLength {
+            if pos.y < this.args.getLineCount() - 1 {
+                return { x: 0, y: pos.y + 1 };
+            }
         }
         return pos;
     }
@@ -410,7 +1200,8 @@ export struct Context {
         if pos.x > 0 {
             return { x: pos.x - 1, y: pos.y };
         }
-        if pos.y > 0 {
+        // In on-a-character modes, `h` never wraps to the previous line.
+        if !modeClampsToLastChar(rx.get(this.mode)) && pos.y > 0 {
             return { x: this.args.getLineLength(pos.y - 1), y: pos.y - 1 };
         }
         return pos;
@@ -518,4 +1309,11 @@ export struct Context {
         }
         return 2;
     }
+}
+
+// A whole-document undo snapshot. See Context._undoStack for why this is
+// a snapshot rather than a diff.
+export struct UndoEntry {
+    text: str = "";
+    cursor: Vec2i = {};
 }

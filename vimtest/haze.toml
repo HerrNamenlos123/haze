@@ -1,0 +1,12 @@
+name = "vimtest"
+id = "vImTst01"
+version = "0.1.0"
+description = "vim differential test harness"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[dependencies]
+textedit_behavior = { path = "../stdlib/textedit_behavior" }
+vim_behavior = { path = "../stdlib/vim_behavior" }

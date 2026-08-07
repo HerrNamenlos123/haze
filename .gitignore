@@ -181,6 +181,11 @@ __haze__
 # Compiler test suite scratch space (generated per-case source files)
 testsuite/.work/
 
+# Vim/textedit differential test scratch space: the job and result JSON
+# handed to the neovim oracle and to the Haze harness, rewritten on every
+# run. The suites themselves (scripts/vim-*.ts, vimtest/) are tracked.
+vimtest/.work/
+
 *.tsk
 
 *.cpuprofile

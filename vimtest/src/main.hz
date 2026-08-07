@@ -1,0 +1,189 @@
+import textedit_behavior
+import vim_behavior
+
+// Differential test harness: runs a batch of cases through the Haze
+// textedit_behavior + vim_behavior stack and writes the resulting state
+// in the same JSON shape the neovim oracle produces, so the two can be
+// compared field by field.
+//
+// Driven by scripts/vim-difftest.ts, which generates the cases, runs the
+// oracle, runs this, and diffs. See vimtest/oracle/ORACLE.md for the
+// schema and for the vim quirks this implementation is validated against.
+//
+//   HAZE_VIM_JOB  - input  JSON path
+//   HAZE_VIM_OUT  - output JSON path
+
+struct MapSpec {
+    mode: str = "n";
+    lhs: str = "";
+    rhs: str = "";
+    noremap: bool = true;
+}
+
+struct CursorSpec {
+    // 1-based line, 0-based column, matching nvim's convention.
+    line: int = 1;
+    col: int = 0;
+}
+
+struct CaseSpec {
+    id: str = "";
+    lines: []str = [];
+    cursor: CursorSpec = {};
+    keys: str = "";
+    maps: []MapSpec = [];
+    clipboard: str = "";
+}
+
+struct Job {
+    cases: []CaseSpec = [];
+}
+
+struct StateOut {
+    lines: []str = [];
+    cursor: CursorSpec = {};
+    mode: str = "n";
+    visual: bool = false;
+    // 1-based line, 1-based column -- getpos("v") convention, so the
+    // comparison script does not have to convert.
+    vstartLine: int = 0;
+    vstartCol: int = 0;
+    registerLines: []str = [];
+    registerKind: str = "empty";
+}
+
+struct ResultOut {
+    id: str = "";
+    ok: bool = true;
+    state: StateOut = {};
+}
+
+struct Output {
+    count: int = 0;
+    results: []ResultOut = [];
+}
+
+// Feed one key sequence through the Vim behavior.
+fn runCase(spec: CaseSpec): ResultOut {
+    let text = "";
+    for line, i in spec.lines {
+        if i > 0 {
+            text = f"{text}\n";
+        }
+        text = f"{text}{line}";
+    }
+
+    let doc = Doc(text);
+    let ctx = makeContext(doc);
+    let vim = vim_behavior.Vim(ctx);
+    vim.install();
+
+    for m in spec.maps {
+        vim.addRemap(m.mode, m.lhs, m.rhs, m.noremap);
+    }
+
+    // nvim gives 1-based lines, the engine uses 0-based indices.
+    let startY = clampIdx(spec.cursor.line - 1, doc.lines.length);
+    let startX = spec.cursor.col;
+    let start: Vec2i = { x: startX, y: startY };
+    ctx.moveTo(start, true, false);
+
+    for key in vim_behavior.parseKeys(spec.keys) {
+        ctx.handleKey(key);
+    }
+
+    let out = ResultOut { id: spec.id, ok: true };
+    let state = StateOut {};
+
+    let resultLines: []str = [];
+    for line in doc.lines {
+        resultLines.push(line.cloneString());
+    }
+    state.lines = resultLines;
+
+    let cursor = ctx.cursor();
+    state.cursor = CursorSpec { line: cursor.y + 1, col: cursor.x };
+    state.mode = modeString(rx.get(ctx.mode));
+
+    let mode = rx.get(ctx.mode);
+    state.visual = textedit_behavior.modeIsVisual(mode);
+    if state.visual {
+        let anchor = ctx.anchorPosition();
+        if anchor {
+            state.vstartLine = anchor.y + 1;
+            state.vstartCol = anchor.x + 1;
+        }
+    }
+
+    let reg = ctx.getRegister();
+    if reg.text.length() > 0 {
+        let regText = reg.text.cloneString();
+        let isLinewise = reg.kind == textedit_behavior.RangeKind.Linewise;
+        let isBlockwise = reg.kind == textedit_behavior.RangeKind.Blockwise;
+        // A linewise register carries a trailing newline; nvim reports
+        // the lines without a trailing empty element.
+        if isLinewise && regText.length > 0 {
+            regText = regText.slice(0, regText.length - 1);
+        }
+        let regLines: []str = [];
+        for part in regText.split("\n") {
+            regLines.push(part);
+        }
+        state.registerLines = regLines;
+        state.registerKind = isLinewise ? "linewise" : (isBlockwise ? "blockwise" : "charwise");
+    }
+
+    out.state = state;
+    return out;
+}
+
+// Match nvim's nvim_get_mode().mode strings so the comparison is direct.
+fn modeString(mode: textedit_behavior.Mode): str {
+    if mode == textedit_behavior.Mode.Insert { return "i"; }
+    if mode == textedit_behavior.Mode.Visual { return "v"; }
+    if mode == textedit_behavior.Mode.VisualLine { return "V"; }
+    // nvim reports visual-block as a raw 0x16 byte, which is not
+    // expressible as a C string literal here; the comparison script maps
+    // this marker onto it.
+    if mode == textedit_behavior.Mode.VisualBlock { return "CTRL-V"; }
+    return "n";
+}
+
+fn main(): int {
+    let jobPath = env.get("HAZE_VIM_JOB");
+    if !jobPath {
+        fmt.println("HAZE_VIM_JOB is not set");
+        return 2;
+    }
+    let outPath = env.get("HAZE_VIM_OUT");
+    if !outPath {
+        fmt.println("HAZE_VIM_OUT is not set");
+        return 2;
+    }
+
+    let raw = fs.readText(jobPath as str);
+    if !raw {
+        fmt.println(f"could not read job file {jobPath}");
+        return 3;
+    }
+
+    let job = json.parse<Job>(raw as str);
+    if !job {
+        fmt.println(f"could not parse job JSON: {job.error()}");
+        return 3;
+    }
+
+    let output = Output {};
+    for spec in job.cases {
+        output.results.push(runCase(spec));
+    }
+    output.count = output.results.length;
+
+    let encoded = json.stringify(output);
+    let written = fs.writeText(outPath as str, encoded);
+    if !written {
+        fmt.println("could not write output");
+        return 3;
+    }
+    return 0;
+}

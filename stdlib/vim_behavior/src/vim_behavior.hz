@@ -1,0 +1,2630 @@
+import textedit_behavior
+
+// === vim_behavior =============================================
+//
+// A Vim editing model implemented entirely on top of the
+// `textedit_behavior` engine's primitives. This module owns modes,
+// operator-pending state, counts, registers and keymaps; the engine owns
+// text, selections, motions and undo. Nothing in here renders, and
+// nothing in the engine knows this module exists.
+//
+// Usage:
+//     let ctx = textedit_behavior.Context({...});
+//     let vim = vim_behavior.Vim(ctx);
+//     vim.install();                  // registers itself as the behavior
+//     vim.addRemap("n", "j", "jzz");  // optional, see Remaps below
+//     ...
+//     ctx.handleKey("<Esc>");         // host feeds normalized keys
+//
+// === Key naming ===============================================
+//
+// Keys arrive as normalized names, matching Vim's own notation so that
+// a keymap written by a user reads exactly like their vimrc:
+//   printable  -> the character itself: "a", "$", " "
+//   named      -> "<Esc>" "<CR>" "<BS>" "<Tab>" "<Space>" "<Up>" ...
+//   modified   -> "<C-d>" "<M-Up>" "<S-Up>"
+// `parseKeys` turns a vimrc-style RHS string ("ggVG", ":m .-2<CR>==")
+// into this normalized key list, which is what makes remapping to
+// arbitrary key sequences work.
+
+// The state machine's pending input. Vim commands are
+//   [count] [register] [operator [count]] motion|text-object
+// and every one of those parts is optional, so parsing has to be
+// incremental: each key either completes a command, or extends the
+// pending state and waits for more.
+export enum PendingKind {
+    // Nothing pending; the next key starts a fresh command.
+    None,
+    // An operator (d/y/c/>/<) is waiting for a motion or text object.
+    Operator,
+    // A character-argument command (f/F/t/T/r) is waiting for its char.
+    AwaitChar,
+    // A multi-key prefix (g, z, [, ]) is waiting for its second key.
+    Prefix,
+}
+
+// Which operator is pending. Kept separate from the key that produced
+// it so a remap can bind an operator to any key.
+export enum Operator {
+    NoneOp,
+    Delete,
+    Yank,
+    Change,
+    IndentRight,
+    IndentLeft,
+    // gu / gU / g~ would slot in here.
+}
+
+// A single keymap entry, mirroring vim's :map family.
+// `mode` is one of "n", "i", "v", "o" (operator-pending) -- the same
+// letters vim uses -- so a user's vimrc translates one-to-one.
+export struct Remap {
+    mode: str = "n";
+    lhs: str = "";
+    rhs: str = "";
+    // noremap: the RHS is NOT re-expanded through the keymap table.
+    // This is what makes `nnoremap j jzz` terminate instead of looping.
+    noremap: bool = true;
+}
+
+// How Vim's f/F/t/T remember their last search, for ; and ,
+export struct LastFind {
+    valid: bool = false;
+    // The key that started it: "f", "F", "t" or "T".
+    kind: str = "f";
+    target: str = "";
+}
+
+// A recorded jump position, for <C-o>/<C-i>.
+export struct Jump {
+    pos: Vec2i = {};
+}
+
+export struct Vim {
+    ctx: mut textedit_behavior.Context;
+
+    // --- pending command state ---
+    pending: PendingKind = PendingKind.None;
+    pendingOperator: Operator = Operator.NoneOp;
+    // The literal keys accumulated for the current command, used for
+    // prefix matching ("g" then "g" -> gg) and for AwaitChar commands.
+    pendingKeys: []str = [];
+    // Counts: vim has two (3d2w == 6 words), multiplied together.
+    count1: int = 0;
+    count2: int = 0;
+
+    lastFind: LastFind = {};
+
+    // Jump list for <C-o>. Only the positions we push explicitly
+    // (gg, G, searches, large motions), which is what vim does too.
+    jumps: []Jump = [];
+    jumpIndex: int = 0;
+
+    // Keymaps, keyed by "<mode>\x00<lhs>" so one flat map serves every
+    // mode without nesting maps.
+    remaps: LinearMap<str, Remap>;
+    // Longest LHS currently registered, so the matcher knows how many
+    // keys it may have to buffer before deciding a sequence can't match.
+    maxRemapLength: int = 1;
+
+    // Keys waiting to be matched against a possibly-longer remap LHS.
+    // e.g. after " a" with " aa" mapped, we must wait for one more key.
+    remapBuffer: []str = [];
+
+    // Guard against runaway recursive remaps (vim uses maxmapdepth=1000).
+    expansionDepth: int = 0;
+
+    // Set while replaying the RHS of a noremap, so expansion is skipped.
+    suppressRemap: bool = false;
+
+    // Vim's "insert-mode chord" support (e.g. `inoremap jk <Esc>`):
+    // keys typed in insert mode that might still turn out to be the
+    // start of a mapping are held here rather than inserted immediately.
+    insertPending: []str = [];
+
+    // Column the current visual selection started at, captured before
+    // the mode is dropped so a linewise delete can restore it.
+    visualStartColumn: int = 0;
+
+    // A counted insert (`3ix`, `2A!`) repeats the inserted text
+    // `count` times when insert mode is left. insertTyped accumulates
+    // what was typed; insertCount is the pending repeat factor.
+    insertCount: int = 1;
+    insertTyped: str = "";
+    // True when insert mode was entered via o/O, so a counted repeat
+    // opens a new line each time instead of repeating text in place.
+    insertOpensLine: bool = false;
+
+    // `set clipboard=unnamedplus`
+    useSystemClipboard: bool = false;
+
+    // What one `>` level inserts. Vim's default is a literal tab
+    // (noexpandtab, shiftwidth=8); an editor that prefers spaces sets
+    // this to "    " and everything else follows.
+    indentUnit: str = "\t";
+
+    fn constructor(ctx: mut textedit_behavior.Context): mut Vim {
+        let vim = Vim {
+            ctx: ctx,
+            remaps: LinearMap<str, Remap>(),
+        };
+        return vim;
+    }
+
+    // Register this Vim as the engine's input behavior and enter Normal
+    // mode. Split out from the constructor so a host can wire extra
+    // things (remaps, clipboard) before input starts flowing.
+    mut fn install() {
+        let self = this;
+        let behavior = textedit_behavior.Behavior {
+            onKey: (key: str) => self.handleKey(key),
+            onTextInput: (text: String) => self.handleTextInput(text),
+        };
+        this.ctx.setBehavior(behavior);
+        this.ctx.setMode(textedit_behavior.Mode.Normal);
+    }
+
+    // === Remaps ===================================================
+
+    mut fn addRemap(mode: str, lhs: str, rhs: str, noremap: bool = true) {
+        let keys = parseKeys(lhs);
+        let entry = Remap { mode: mode, lhs: lhs, rhs: rhs, noremap: noremap };
+        this.remaps.set(remapKey(mode, keys), entry);
+        if keys.length > this.maxRemapLength {
+            this.maxRemapLength = keys.length;
+        }
+    }
+
+    mut fn clearRemaps() {
+        this.remaps = LinearMap<str, Remap>();
+        this.maxRemapLength = 1;
+    }
+
+    // The mode letter used for keymap lookup, matching vim's map modes.
+    fn currentMapMode(): str {
+        let mode = rx.get(this.ctx.mode);
+        if mode == textedit_behavior.Mode.Insert {
+            return "i";
+        }
+        if textedit_behavior.modeIsVisual(mode) {
+            return "v";
+        }
+        if this.pending == PendingKind.Operator {
+            return "o";
+        }
+        return "n";
+    }
+
+    // === Input entry points =======================================
+
+    // Text input in insert mode goes in verbatim, EXCEPT that a
+    // character which could begin an insert-mode mapping (`jk`) must be
+    // withheld until we know it isn't one. That is exactly what vim
+    // does, and why `jk` doesn't briefly show a "j".
+    mut fn handleTextInput(text: String): bool {
+        let mode = rx.get(this.ctx.mode);
+        if mode != textedit_behavior.Mode.Insert {
+            // Normal/visual mode: printable characters are commands, so
+            // route them through the key handler and never insert them.
+            let s = text.cloneString();
+            for (let i = 0; i < s.length; i++) {
+                this.handleKey(s.slice(i, i + 1));
+            }
+            return true;
+        }
+        // Insert mode: let handleKey deal with it so mappings apply.
+        let s = text.cloneString();
+        for (let i = 0; i < s.length; i++) {
+            this.handleKey(s.slice(i, i + 1));
+        }
+        return true;
+    }
+
+    // Main entry: one normalized key.
+    mut fn handleKey(key: str): bool :: final {
+        if this.suppressRemap {
+            this.dispatch(key);
+            return true;
+        }
+        this.feedWithRemap(key);
+        return true;
+    }
+
+    // Push a key through the remap matcher. Because an LHS can be
+    // several keys long, this buffers until the buffer either matches a
+    // mapping, or can no longer be a prefix of one.
+    mut fn feedWithRemap(key: str): void :: final {
+        this.remapBuffer.push(key);
+        let mapMode = this.currentMapMode();
+
+        // Exact match wins as soon as no longer mapping could extend it.
+        let exact = this.remaps.get(remapKey(mapMode, this.remapBuffer));
+        let hasLonger = this.hasPrefixMatch(mapMode, this.remapBuffer);
+
+        // An exact match is taken immediately, even when a longer mapping
+        // could still extend it. Vim would wait for 'timeoutlen' and then
+        // take the short mapping; with no timer here, taking it at once
+        // is the same end state and is the only option that can't hang
+        // waiting for a key that may never arrive.
+        if exact {
+            this.remapBuffer = [];
+            this.applyRemap(exact);
+            return;
+        }
+        if hasLonger {
+            // Keep buffering; nothing to do yet.
+            return;
+        }
+
+        // No mapping can match. Flush the buffered keys as literal input.
+        let buffered = this.remapBuffer;
+        this.remapBuffer = [];
+        for k in buffered {
+            this.dispatch(k);
+        }
+    }
+
+    // True if some registered LHS in this mode is strictly longer than
+    // `keys` and starts with it.
+    fn hasPrefixMatch(mapMode: str, keys: []str): bool {
+        if keys.length >= this.maxRemapLength {
+            return false;
+        }
+        let prefix = remapKey(mapMode, keys);
+        for (let i = 0; i < this.remaps.keys.length; i++) {
+            let candidate = this.remaps.keys[i];
+            if candidate.length > prefix.length && startsWithStr(candidate, prefix) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    mut fn applyRemap(remap: Remap): void :: final {
+        if this.expansionDepth > 100 {
+            // Runaway recursive mapping; drop it like vim's maxmapdepth.
+            return;
+        }
+        this.expansionDepth = this.expansionDepth + 1;
+        let keys = parseKeys(remap.rhs);
+        if remap.noremap {
+            // The RHS is executed literally: no further expansion. This
+            // is what makes `nnoremap j jzz` terminate.
+            let previous = this.suppressRemap;
+            this.suppressRemap = true;
+            for k in keys {
+                this.dispatch(k);
+            }
+            this.suppressRemap = previous;
+        } else {
+            for k in keys {
+                this.feedWithRemap(k);
+            }
+        }
+        this.expansionDepth = this.expansionDepth - 1;
+    }
+
+    // === Dispatch =================================================
+    //
+    // One key, already past the remap layer. Routes by current mode and
+    // pending state. Everything below assumes `key` is a normalized key
+    // name.
+
+    mut fn dispatch(key: str) {
+        let mode = rx.get(this.ctx.mode);
+
+        if this.pending == PendingKind.AwaitChar {
+            this.completeCharCommand(key);
+            return;
+        }
+
+        if mode == textedit_behavior.Mode.Insert {
+            this.dispatchInsert(key);
+            return;
+        }
+        this.dispatchNormalOrVisual(key);
+    }
+
+    // --- Insert mode ---------------------------------------------
+
+    mut fn dispatchInsert(key: str) {
+        if key == "<Esc>" {
+            this.leaveInsertMode();
+            return;
+        }
+        // Record what is typed so a counted insert (`3Ax`) can replay it
+        // `count-1` more times when insert mode is left.
+        if this.insertCount > 1 {
+            if key.length == 1 {
+                this.insertTyped = f"{this.insertTyped}{key}";
+            } else if key == "<CR>" {
+                this.insertTyped = f"{this.insertTyped}\n";
+            }
+        }
+        if key == "<CR>" {
+            this.ctx.insertNewline();
+            return;
+        }
+        if key == "<BS>" {
+            this.ctx.deleteBackward(false);
+            return;
+        }
+        if key == "<Tab>" {
+            this.ctx.insertText(String("    "));
+            return;
+        }
+        if key == "<Left>"  { this.ctx.moveCursorLeft(false); return; }
+        if key == "<Right>" { this.ctx.moveCursorRight(false); return; }
+        if key == "<Up>"    { this.ctx.moveCursorUp(false); return; }
+        if key == "<Down>"  { this.ctx.moveCursorDown(false); return; }
+
+        // Any other single printable character is literal text.
+        if key.length == 1 {
+            this.ctx.insertText(String(key));
+        }
+    }
+
+    // Vim moves the caret one left when leaving insert mode, because the
+    // insert caret sits *after* the last typed character while the normal
+    // caret sits *on* a character.
+    mut fn leaveInsertMode() {
+        // Replay the counted insert before the caret is fixed up.
+        // `3ox` opens three lines, so the replayed unit for o/O carries
+        // its own newline; `3ax` just repeats the text in place.
+        if this.insertCount > 1 && this.insertTyped.length > 0 {
+            let unit = this.insertOpensLine ? f"\n{this.insertTyped}" : this.insertTyped;
+            let repeat = "";
+            for (let i = 1; i < this.insertCount; i++) {
+                repeat = f"{repeat}{unit}";
+            }
+            this.ctx.insertText(String(repeat));
+        }
+        this.insertOpensLine = false;
+        this.insertCount = 1;
+        this.insertTyped = "";
+
+        let pos = this.ctx.cursor();
+        this.ctx.setMode(textedit_behavior.Mode.Normal);
+        if pos.x > 0 {
+            let target: Vec2i = { x: pos.x - 1, y: pos.y };
+            this.ctx.moveTo(target, true, false);
+        }
+        this.resetPending();
+    }
+
+    // --- Normal / visual mode ------------------------------------
+
+    mut fn dispatchNormalOrVisual(key: str) {
+        let mode = rx.get(this.ctx.mode);
+        let visual = textedit_behavior.modeIsVisual(mode);
+
+        // Counts. "0" is only a count digit if a count is already being
+        // built; otherwise it's the start-of-line motion.
+        if key.length == 1 && isDigitStr(key) {
+            if !(key == "0" && this.activeCount() == 0) {
+                this.pushCountDigit(key);
+                return;
+            }
+        }
+
+        // Multi-key prefixes (g..., z..., [..., ]...).
+        if this.pending == PendingKind.Prefix {
+            this.completePrefix(key);
+            return;
+        }
+        if key == "g" || key == "z" {
+            this.pending = PendingKind.Prefix;
+            this.pendingKeys.push(key);
+            return;
+        }
+
+        if key == "<Esc>" {
+            if visual {
+                this.ctx.setMode(textedit_behavior.Mode.Normal);
+            }
+            this.resetPending();
+            return;
+        }
+
+        // Character-argument motions.
+        if key == "f" || key == "F" || key == "t" || key == "T" || key == "r" {
+            this.pending = PendingKind.AwaitChar;
+            this.pendingKeys.push(key);
+            return;
+        }
+
+        // Operators. In visual mode an operator applies immediately to
+        // the selection instead of waiting for a motion.
+        let op = operatorForKey(key);
+        if op != Operator.NoneOp {
+            if visual {
+                this.applyOperatorToSelection(op);
+                return;
+            }
+            if this.pending == PendingKind.Operator && this.pendingOperator == op {
+                // Doubled operator (dd/yy/cc) == linewise on `count` lines.
+                this.applyOperatorLinewise(op, this.effectiveCount());
+                return;
+            }
+            // Vim allows a count before AND after the operator.
+            this.count2 = this.count1;
+            this.count1 = 0;
+            this.pending = PendingKind.Operator;
+            this.pendingOperator = op;
+            return;
+        }
+
+        // `cw`/`cW` is special-cased in vim itself: on a non-blank it
+        // behaves like `ce`, i.e. it changes to the END of the word and
+        // leaves the trailing whitespace alone. Verified against nvim:
+        // `cwbye` on "hello world" gives "byeworld", not "bye world".
+        if this.pending == PendingKind.Operator && this.pendingOperator == Operator.Change
+                && (key == "w" || key == "W") {
+            let pos = this.ctx.cursor();
+            if this.ctx.charClassAt(pos.y, pos.x) != 0 {
+                let count = this.effectiveCount();
+                // The first step must be able to stop at the end of the
+                // run the cursor is ALREADY inside. wordEnd() always
+                // advances first, so feed it one position back -- except
+                // at column 0, where there is nothing to step back to and
+                // the end of the current run is computed directly.
+                let p = pos;
+                for (let i = 0; i < count; i++) {
+                    if i == 0 && pos.x == 0 {
+                        p = this.endOfRunAt(pos, key == "W");
+                    } else {
+                        p = this.wordEnd(i == 0 ? this.backOne(p) : p, key == "W");
+                    }
+                }
+                // An UNCOUNTED `cw` never leaves the current line (on a
+                // one-character line wordEnd() would wrap onto the next);
+                // a counted one is allowed to, since it is explicitly
+                // asking for that many words.
+                if p.y != pos.y && count <= 1 {
+                    let lineEnd = this.ctx.lineLength(pos.y);
+                    p = { x: lineEnd > 0 ? lineEnd - 1 : 0, y: pos.y };
+                }
+                // Verified directly against nvim: `cw` on "hello world"
+                // at col 2 gives "he world" -- the trailing space is
+                // never consumed, at any position inside the word.
+                let motion = Motion { valid: true, target: p, inclusive: true };
+                this.applyMotion(motion);
+                return;
+            }
+        }
+
+        // Text objects (iw/aw/i(/a( ...) only make sense after an
+        // operator or in visual mode.
+        if (key == "i" || key == "a") && (this.pending == PendingKind.Operator || visual) {
+            this.pending = PendingKind.AwaitChar;
+            this.pendingKeys.push(key);
+            return;
+        }
+
+        // Motions: if an operator is pending, the motion defines its
+        // range; otherwise it just moves (or extends, in visual mode).
+        let motion = this.resolveMotion(key);
+        if motion.valid {
+            this.applyMotion(motion);
+            return;
+        }
+        // The key IS a motion, it just failed (count ran off the end of
+        // the buffer, `f` found nothing). That aborts a pending operator
+        // rather than falling through and being treated as a command --
+        // except for `c`, which still enters insert mode on a zero-width
+        // range (`c^` sitting at column 0 changes nothing but inserts).
+        if isMotionKey(key) {
+            let wasChange = this.pending == PendingKind.Operator
+                && this.pendingOperator == Operator.Change
+                && (key == "^" || key == "0" || key == "h" || key == "l");
+            this.resetPending();
+            if wasChange {
+                this.enterInsertMode();
+            }
+            return;
+        }
+
+        // Non-motion normal-mode commands.
+        this.applyCommand(key);
+    }
+
+    // === Counts ===================================================
+
+    mut fn pushCountDigit(key: str) {
+        let digit = digitValue(key);
+        this.count1 = this.count1 * 10 + digit;
+    }
+
+    fn activeCount(): int {
+        return this.count1;
+    }
+
+    // The effective repeat count: vim multiplies a pre-operator count by
+    // a post-operator count (2d3w deletes 6 words).
+    fn effectiveCount(): int {
+        let a = this.count1 > 0 ? this.count1 : 1;
+        let b = this.count2 > 0 ? this.count2 : 1;
+        return a * b;
+    }
+
+    mut fn resetPending() {
+        this.pending = PendingKind.None;
+        this.pendingOperator = Operator.NoneOp;
+        this.pendingKeys = [];
+        this.count1 = 0;
+        this.count2 = 0;
+    }
+
+    // === Motions ==================================================
+
+    // Resolve a motion key to a destination, applying the current count.
+    // Pure with respect to the document: it reads but never mutates, so
+    // the same call serves "move the caret" and "give me an operator
+    // range".
+    fn resolveMotion(key: str): Motion {
+        let count = this.effectiveCount();
+        let pos = this.ctx.cursor();
+        let result = Motion {};
+
+        if key == "h" || key == "<Left>" || key == "<BS>" {
+            let x = pos.x;
+            for (let i = 0; i < count; i++) {
+                if x > 0 { x = x - 1; }
+            }
+            result = Motion { valid: true, target: { x: x, y: pos.y } };
+            return result;
+        }
+        if key == "l" || key == "<Right>" || key == " " {
+            // As an operator target `l` is allowed to reach one PAST the
+            // last character (`yl` on the final column still yanks that
+            // character), which normal-mode cursor clamping forbids.
+            let limit = this.pending == PendingKind.Operator
+                ? this.ctx.lineLength(pos.y) : this.ctx.maxColumn(pos.y);
+            let x = clampInt(pos.x + count, 0, limit);
+            result = Motion { valid: true, target: { x: x, y: pos.y } };
+            return result;
+        }
+        // `j`/`k` CLAMP their count to the buffer rather than failing --
+        // verified against nvim: `3k` from line 3 lands on line 1, and
+        // `3dj` on a 3-line buffer deletes all three. (A motion that
+        // cannot move at all still fails, via the generic check in
+        // applyMotion.)
+        // `j`/`k` clamp their count, but cannot move AT ALL past the
+        // buffer edge -- `k` on line 1 fails, so `ck`/`>k` there are
+        // no-ops rather than acting on the single current line.
+        // Vertical motions aim at the STICKY column (the x a previous
+        // horizontal move established), not at the clamped current one,
+        // so moving down through a short line and back onto a long one
+        // returns to the original column.
+        if key == "j" || key == "<Down>" || key == "<CR>" {
+            if pos.y >= this.ctx.lineCount() - 1 {
+                return result;
+            }
+            let y = clampInt(pos.y + count, 0, this.ctx.lineCount() - 1);
+            result = Motion { valid: true, target: { x: this.ctx.desiredColumn(), y: y },
+                              linewise: true, keepsColumn: true };
+            return result;
+        }
+        if key == "k" || key == "<Up>" {
+            if pos.y <= 0 {
+                return result;
+            }
+            let y = clampInt(pos.y - count, 0, this.ctx.lineCount() - 1);
+            result = Motion { valid: true, target: { x: this.ctx.desiredColumn(), y: y },
+                              linewise: true, keepsColumn: true };
+            return result;
+        }
+        if key == "0" {
+            result = Motion { valid: true, target: { x: 0, y: pos.y } };
+            return result;
+        }
+        if key == "^" {
+            result = Motion { valid: true, target: { x: this.ctx.firstNonBlank(pos.y), y: pos.y } };
+            return result;
+        }
+        if key == "$" {
+            // With a count, $ moves down count-1 lines first.
+            let y = clampInt(pos.y + count - 1, 0, this.ctx.lineCount() - 1);
+            let len = this.ctx.lineLength(y);
+            // `$` is inclusive for operators (d$ deletes to end of line).
+            result = Motion { valid: true, target: { x: len > 0 ? len - 1 : 0, y: y }, inclusive: true };
+            return result;
+        }
+        if key == "G" {
+            // G with a count goes to that line number; without, last line.
+            // Neovim ships with 'startofline' OFF, so G/gg keep the
+            // current column rather than jumping to the first non-blank.
+            // (Vim's documented default differs from neovim's here.)
+            let y = this.count1 > 0 ? clampInt(this.count1 - 1, 0, this.ctx.lineCount() - 1)
+                                    : this.ctx.lineCount() - 1;
+            result = Motion { valid: true, target: { x: pos.x, y: y },
+                              linewise: true, setsJump: true, keepsColumn: true };
+            return result;
+        }
+        if key == "w" || key == "W" {
+            let p = pos;
+            for (let i = 0; i < count; i++) {
+                p = this.wordForward(p, key == "W");
+            }
+            result = Motion { valid: true, target: p, clampsToLineEnd: true };
+            return result;
+        }
+        if key == "b" || key == "B" {
+            let p = pos;
+            for (let i = 0; i < count; i++) {
+                p = this.wordBackward(p, key == "B");
+            }
+            result = Motion { valid: true, target: p, stopsAtLineStart: true };
+            return result;
+        }
+        if key == "e" || key == "E" {
+            let p = pos;
+            for (let i = 0; i < count; i++) {
+                p = this.wordEnd(p, key == "E");
+            }
+            // `e` includes the character it lands on.
+            result = Motion { valid: true, target: p, inclusive: true };
+            return result;
+        }
+        // `{`/`}` fail (rather than clamp) when the count cannot be
+        // satisfied, so `2c{` from the first paragraph is a no-op.
+        if key == "{" {
+            let p = this.paragraphBackward(pos, count);
+            if p.y < 0 || (p.x == pos.x && p.y == pos.y) {
+                // No paragraph boundary behind: `{` still goes to the
+                // very start of the buffer.
+                let startPos: Vec2i = { x: 0, y: 0 };
+                if startPos.x == pos.x && startPos.y == pos.y {
+                    return result;
+                }
+                result = Motion { valid: true, target: startPos, setsJump: true };
+                return result;
+            }
+            result = Motion { valid: true, target: p, setsJump: true };
+            return result;
+        }
+        if key == "}" {
+            let p = this.paragraphForward(pos, count);
+            if p.y < 0 {
+                // A COUNT that cannot be satisfied fails outright; only a
+                // plain `}` falls back to the end of the buffer.
+                if count > 1 {
+                    return result;
+                }
+                // No paragraph boundary ahead at all: `}` still moves to
+                // the end of the buffer (on a one-line buffer, to the
+                // last column of that line).
+                let lastY = this.ctx.lineCount() - 1;
+                let lastLen = this.ctx.lineLength(lastY);
+                let endPos: Vec2i = { x: lastLen > 0 ? lastLen - 1 : 0, y: lastY };
+                if endPos.x == pos.x && endPos.y == pos.y {
+                    return result;
+                }
+                result = Motion { valid: true, target: endPos, setsJump: true, inclusive: lastLen > 0 };
+                return result;
+            }
+            // With no blank line ahead, `}` goes to the very end of the
+            // buffer -- on a single-line buffer that is the last column,
+            // not "no movement".
+            if p.x == pos.x && p.y == pos.y {
+                let lastY = this.ctx.lineCount() - 1;
+                let lastLen = this.ctx.lineLength(lastY);
+                let endPos: Vec2i = { x: lastLen > 0 ? lastLen - 1 : 0, y: lastY };
+                if endPos.x == pos.x && endPos.y == pos.y {
+                    return result;
+                }
+                result = Motion { valid: true, target: endPos, setsJump: true, inclusive: lastLen > 0 };
+                return result;
+            }
+            // `}` is normally exclusive (it stops ON the blank line), but
+            // when it runs into the end of the buffer there is no blank
+            // line to stop on, so it lands on the last character and the
+            // operator must include it: `c}` clears the final line.
+            let atBufferEnd = p.y >= this.ctx.lineCount() - 1 && this.ctx.lineLength(p.y) > 0;
+            result = Motion { valid: true, target: p, setsJump: true, inclusive: atBufferEnd };
+            return result;
+        }
+        if key == ";" || key == "," {
+            return this.repeatLastFind(key == ",");
+        }
+        return result;
+    }
+
+    // Vim's `w`: advance to the start of the next word. A word is either
+    // a run of word characters or a run of punctuation ("big word" `W`
+    // treats everything non-blank as one word). Crossing a line end
+    // counts as one step, and an empty line is itself a word.
+    fn wordForward(pos: Vec2i, bigWord: bool): Vec2i {
+        let x = pos.x;
+        let y = pos.y;
+        let lineLen = this.ctx.lineLength(y);
+
+        if lineLen == 0 {
+            // Empty line: step to the next line.
+            if y < this.ctx.lineCount() - 1 {
+                let next: Vec2i = { x: 0, y: y + 1 };
+                return this.skipBlanksForWord(next);
+            }
+            let same: Vec2i = { x: x, y: y };
+            return same;
+        }
+
+        let startClass = this.classAt(y, x, bigWord);
+        // Skip the rest of the current run.
+        while x < lineLen && this.classAt(y, x, bigWord) == startClass && startClass != 0 {
+            x = x + 1;
+        }
+        // Skip whitespace, wrapping across lines.
+        let p: Vec2i = { x: x, y: y };
+        return this.skipBlanksForWord(p);
+    }
+
+    // Advance past blanks, wrapping to following lines. An empty line is
+    // a word in vim, so we stop on one.
+    fn skipBlanksForWord(pos: Vec2i): Vec2i {
+        let x = pos.x;
+        let y = pos.y;
+        let lineCount = this.ctx.lineCount();
+
+        // Every exit from this scan is a `return`, so no break is needed.
+        let scanning = true;
+        while scanning {
+            let lineLen = this.ctx.lineLength(y);
+            if x >= lineLen {
+                if y >= lineCount - 1 {
+                    let end: Vec2i = { x: lineLen > 0 ? lineLen - 1 : 0, y: y };
+                    return end;
+                }
+                y = y + 1;
+                x = 0;
+                // An empty line is a word: stop here.
+                if this.ctx.lineLength(y) == 0 {
+                    let empty: Vec2i = { x: 0, y: y };
+                    return empty;
+                }
+            } else if this.classAt(y, x, false) == 0 {
+                x = x + 1;
+            } else {
+                let found: Vec2i = { x: x, y: y };
+                return found;
+            }
+        }
+        let fallback: Vec2i = { x: x, y: y };
+        return fallback;
+    }
+
+    // Vim's `b`: back to the start of the current or previous word.
+    fn wordBackward(pos: Vec2i, bigWord: bool): Vec2i {
+        let x = pos.x;
+        let y = pos.y;
+
+        // Step back one, wrapping lines.
+        if x == 0 {
+            if y == 0 {
+                let origin: Vec2i = { x: 0, y: 0 };
+                return origin;
+            }
+            y = y - 1;
+            x = this.ctx.lineLength(y);
+            if x == 0 {
+                let empty: Vec2i = { x: 0, y: y };
+                return empty;
+            }
+            x = x - 1;
+        } else {
+            x = x - 1;
+        }
+
+        // Skip blanks backwards, wrapping lines. `searching` replaces the
+        // break/continue this language doesn't have.
+        let searching = true;
+        while searching {
+            if this.ctx.lineLength(y) == 0 {
+                let empty: Vec2i = { x: 0, y: y };
+                return empty;
+            }
+            if this.classAt(y, x, false) != 0 {
+                searching = false;
+            } else if x == 0 {
+                if y == 0 {
+                    let origin: Vec2i = { x: 0, y: 0 };
+                    return origin;
+                }
+                y = y - 1;
+                let len = this.ctx.lineLength(y);
+                if len == 0 {
+                    let empty: Vec2i = { x: 0, y: y };
+                    return empty;
+                }
+                x = len - 1;
+            } else {
+                x = x - 1;
+            }
+        }
+
+        // Walk back to the start of this run.
+        let runClass = this.classAt(y, x, bigWord);
+        while x > 0 && this.classAt(y, x - 1, bigWord) == runClass {
+            x = x - 1;
+        }
+        let result: Vec2i = { x: x, y: y };
+        return result;
+    }
+
+    // Vim's `e`: forward to the last character of the current or next word.
+    fn wordEnd(pos: Vec2i, bigWord: bool): Vec2i {
+        let x = pos.x;
+        let y = pos.y;
+        let lineCount = this.ctx.lineCount();
+
+        // Always step at least one character forward.
+        x = x + 1;
+        let searching = true;
+        while searching {
+            let lineLen = this.ctx.lineLength(y);
+            if x >= lineLen {
+                if y >= lineCount - 1 {
+                    let end: Vec2i = { x: lineLen > 0 ? lineLen - 1 : 0, y: y };
+                    return end;
+                }
+                y = y + 1;
+                x = 0;
+            } else if this.classAt(y, x, false) == 0 {
+                x = x + 1;
+            } else {
+                searching = false;
+            }
+        }
+        // Advance to the end of this run.
+        let runClass = this.classAt(y, x, bigWord);
+        let lineLen = this.ctx.lineLength(y);
+        while x + 1 < lineLen && this.classAt(y, x + 1, bigWord) == runClass {
+            x = x + 1;
+        }
+        let result: Vec2i = { x: x, y: y };
+        return result;
+    }
+
+    // `}` forwards. Same failure convention as paragraphBackward.
+    fn paragraphForward(pos: Vec2i, count: int): Vec2i {
+        let y = pos.y;
+        let lineCount = this.ctx.lineCount();
+        for (let i = 0; i < count; i++) {
+            if y >= lineCount - 1 {
+                let failed: Vec2i = { x: -1, y: -1 };
+                return failed;
+            }
+            y = y + 1;
+            while y < lineCount - 1 && this.ctx.lineLength(y) != 0 {
+                y = y + 1;
+            }
+        }
+        let atLast = y >= lineCount - 1;
+        let result: Vec2i = { x: atLast ? (this.ctx.lineLength(y) > 0 ? this.ctx.lineLength(y) - 1 : 0) : 0, y: y };
+        return result;
+    }
+
+    // `{` backwards. Returns {-1,-1} when the count cannot be satisfied
+    // (already at/above the first paragraph boundary), which the caller
+    // turns into a failed motion so `2c{` at the top of the file aborts
+    // instead of silently acting on a clamped range.
+    fn paragraphBackward(pos: Vec2i, count: int): Vec2i {
+        let y = pos.y;
+        for (let i = 0; i < count; i++) {
+            if y <= 0 {
+                let failed: Vec2i = { x: -1, y: -1 };
+                return failed;
+            }
+            y = y - 1;
+            while y > 0 && this.ctx.lineLength(y) != 0 {
+                y = y - 1;
+            }
+        }
+        let result: Vec2i = { x: 0, y: y };
+        return result;
+    }
+
+    // The leading whitespace of a line, as a string -- what 'autoindent'
+    // copies onto a newly opened line.
+    fn leadingWhitespace(lineIndex: int): str {
+        let len = this.ctx.lineLength(lineIndex);
+        let line = this.ctx.line(lineIndex);
+        let n = 0;
+        while n < len && ascii.isWhitespace(line.getAt(n)) {
+            n = n + 1;
+        }
+        return line.cloneString().slice(0, n);
+    }
+
+    // The last character of the run (word or punctuation) the cursor is
+    // currently on, without moving to the next run.
+    fn endOfRunAt(pos: Vec2i, bigWord: bool): Vec2i {
+        let len = this.ctx.lineLength(pos.y);
+        if len == 0 {
+            let empty: Vec2i = { x: 0, y: pos.y };
+            return empty;
+        }
+        let runClass = this.classAt(pos.y, pos.x, bigWord);
+        let x = pos.x;
+        while x + 1 < len && this.classAt(pos.y, x + 1, bigWord) == runClass {
+            x = x + 1;
+        }
+        let result: Vec2i = { x: x, y: pos.y };
+        return result;
+    }
+
+    // One position to the left, without wrapping lines. `wordEnd` always
+    // advances at least one character, so `cw` (which must be able to
+    // stop at the END of the word the cursor is already inside) starts
+    // its search one character back.
+    fn backOne(pos: Vec2i): Vec2i {
+        let result: Vec2i = { x: pos.x > 0 ? pos.x - 1 : 0, y: pos.y };
+        return result;
+    }
+
+    // 0 = blank, 1 = word char, 2 = punctuation. With `bigWord`, anything
+    // non-blank collapses to class 1 -- that is exactly the W/B/E rule.
+    fn classAt(y: int, x: int, bigWord: bool): int {
+        let c = this.ctx.charClassAt(y, x);
+        if bigWord && c == 2 {
+            return 1;
+        }
+        return c;
+    }
+    // Either move the caret (no operator pending) or run the pending
+    // operator over the span the motion covers.
+    mut fn applyMotion(motion: Motion) {
+        if motion.setsJump {
+            this.pushJump();
+        }
+
+        // A motion that cannot move at all (`{` on the first line, `j`
+        // past the last) FAILS, and a failed motion aborts the operator
+        // waiting on it: `2c{` at the top of the file changes nothing
+        // and does not enter insert mode. Without this an operator would
+        // silently act on an empty or clamped range instead.
+        if this.pending == PendingKind.Operator {
+            let pos = this.ctx.cursor();
+            // A LINEWISE motion that lands on the current line is still a
+            // real range -- `ygg` on line 1 yanks that line. Only a
+            // charwise motion that went nowhere is a failure.
+            // `w` on the last word of a line looks like it went nowhere
+            // (it clamps onto the final character) but still gives the
+            // operator a range to the line end -- see clampsToLineEnd.
+            if motion.target.x == pos.x && motion.target.y == pos.y
+                    && !motion.inclusive && !motion.linewise && !motion.clampsToLineEnd {
+                // `c` still enters insert mode on a zero-width range:
+                // `c^` with the caret already at the first non-blank
+                // changes no text but does start insert.
+                let wasChange = this.pendingOperator == Operator.Change;
+                this.resetPending();
+                if wasChange {
+                    this.enterInsertMode();
+                }
+                return;
+            }
+        }
+
+        if this.pending == PendingKind.Operator {
+            let op = this.pendingOperator;
+            let range = this.rangeForMotion(motion);
+            // Vim's special case for `w` as an operator target: `dw`
+            // never carries the operator onto the following line. If the
+            // motion would land on a later line (or could not advance at
+            // all, because this is the last word), the range is clamped
+            // to the end of the current line -- so `dw` on the last word
+            // deletes through the line end and does not join lines.
+            // Vim's exclusive-motion adjustment (:h exclusive): when a
+            // charwise operator range starts at/before the first
+            // non-blank of its first line and ends at column 0 of a
+            // later line, the whole thing becomes LINEWISE. This is why
+            // `dE` spanning "c" and "d" yanks them as whole lines
+            // (regtype V) rather than as a charwise blob.
+            if range.kind == textedit_behavior.RangeKind.Characterwise
+                    && range.end.y > range.start.y {
+                let normalized = this.ctx.normalizeRange(range);
+                let startsAtIndent = normalized.start.x <= this.ctx.firstNonBlank(normalized.start.y);
+                // The range covers whole lines either by reaching the end
+                // of its last line, or by stopping at column 0 of the
+                // line after (an exclusive motion like `b`/`B`, which
+                // then covers up to the previous line's end).
+                let endsAtLineEnd = normalized.end.x >= this.ctx.lineLength(normalized.end.y);
+                let endsAtLineStart = normalized.end.x == 0;
+                // Promotion of an INCLUSIVE motion is delete-only, which
+                // is a genuinely surprising vim asymmetry: on ["a".."e"]
+                // from (0,0), `de` yields regtype V (whole lines gone)
+                // while `ye` and `ce` on the identical range yield
+                // regtype v. Exclusive motions promote for any operator.
+                // `w` clamped to the line end (see clampsToLineEnd below)
+                // stays charwise: `dw` on a whole short line yanks it as
+                // text, not as a line.
+                let promotes = motion.inclusive ? op == Operator.Delete : !motion.clampsToLineEnd;
+                if startsAtIndent && (endsAtLineEnd || endsAtLineStart) && promotes {
+                    let lastY = endsAtLineStart && normalized.end.y > normalized.start.y
+                        ? normalized.end.y - 1 : normalized.end.y;
+                    range = textedit_behavior.Range {
+                        start: { x: 0, y: normalized.start.y },
+                        end: { x: 0, y: lastY },
+                        kind: textedit_behavior.RangeKind.Linewise,
+                    };
+                }
+            }
+            // `db` from column 0 moves onto the previous line, but the
+            // operator must stop at THAT line's end rather than deleting
+            // the newline and joining the two lines together.
+            let cursorNow = this.ctx.cursor();
+            if motion.stopsAtLineStart && cursorNow.x == 0 && motion.target.y < cursorNow.y
+                    && range.kind == textedit_behavior.RangeKind.Characterwise {
+                range = textedit_behavior.Range {
+                    start: { x: motion.target.x, y: motion.target.y },
+                    end: { x: this.ctx.lineLength(motion.target.y), y: motion.target.y },
+                    kind: textedit_behavior.RangeKind.Characterwise,
+                };
+            }
+            if motion.clampsToLineEnd && range.kind == textedit_behavior.RangeKind.Characterwise {
+                let pos = this.ctx.cursor();
+                let lineEnd = this.ctx.lineLength(pos.y);
+                // Landed on a later line, or ran out of words on this one
+                // (the motion clamps onto the last character rather than
+                // past it, and on a one-character line it cannot move at
+                // all). Either way the operator stops at the line end.
+                let ranOut = motion.target.y == pos.y && motion.target.x >= lineEnd - 1;
+                if motion.target.y > pos.y || ranOut {
+                    range = textedit_behavior.Range {
+                        start: { x: pos.x, y: pos.y },
+                        end: { x: lineEnd, y: pos.y },
+                        kind: textedit_behavior.RangeKind.Characterwise,
+                    };
+                }
+            }
+            this.resetPending();
+            this.runOperator(op, range);
+            return;
+        }
+
+        let visual = textedit_behavior.modeIsVisual(rx.get(this.ctx.mode));
+        this.ctx.moveTo(motion.target, !motion.keepsColumn, visual);
+        this.resetPending();
+    }
+
+    // Turn "cursor + motion" into the range an operator consumes,
+    // honoring the motion's inclusive/linewise flags.
+    fn rangeForMotion(motion: Motion): textedit_behavior.Range {
+        let pos = this.ctx.cursor();
+        let target = motion.target;
+
+        if motion.linewise {
+            let r = textedit_behavior.Range {
+                start: { x: 0, y: pos.y },
+                end: { x: 0, y: target.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+            return r;
+        }
+
+        let start: Vec2i = { x: pos.x, y: pos.y };
+        let end: Vec2i = { x: target.x, y: target.y };
+        // Normalize so start precedes end.
+        if end.y < start.y || (end.y == start.y && end.x < start.x) {
+            let tmp: Vec2i = { x: start.x, y: start.y };
+            start = { x: end.x, y: end.y };
+            end = { x: tmp.x, y: tmp.y };
+            // A backwards inclusive motion includes the character the
+            // cursor started on.
+            if motion.inclusive {
+                end = { x: end.x + 1, y: end.y };
+            }
+        } else if motion.inclusive {
+            end = { x: end.x + 1, y: end.y };
+        }
+
+        let r = textedit_behavior.Range {
+            start: start, end: end,
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        return r;
+    }
+
+    mut fn runOperator(op: Operator, range: textedit_behavior.Range, wholeLineForm: bool = false, fromVisual: bool = false) {
+        let linewise = range.kind == textedit_behavior.RangeKind.Linewise;
+
+        if op == Operator.Yank {
+            // Note an EMPTY charwise yank is still a yank: `yiw` on an
+            // empty line loads the register with "" rather than leaving
+            // whatever was there before.
+            let text = this.ctx.textInRange(range);
+            this.ctx.setRegister(text, range.kind);
+            // Vim leaves the caret at the start of the yanked region.
+            let normalized = this.ctx.normalizeRange(range);
+            if range.kind == textedit_behavior.RangeKind.Blockwise {
+                let left = range.start.x < range.end.x ? range.start.x : range.end.x;
+                let corner: Vec2i = { x: left, y: normalized.start.y };
+                this.ctx.moveTo(corner, true, false);
+                return;
+            }
+            if linewise {
+                // A linewise yank from VISUAL mode parks the caret at
+                // column 0 of the first yanked line; `yy` in normal mode
+                // leaves the column alone.
+                let x = fromVisual ? 0 : this.ctx.cursor().x;
+                let target: Vec2i = { x: x, y: normalized.start.y };
+                this.ctx.moveTo(target, false, false);
+            } else {
+                this.ctx.moveTo(normalized.start, true, false);
+            }
+            return;
+        }
+
+        if op == Operator.Delete {
+            let text = this.ctx.textInRange(range);
+            this.ctx.setRegister(text, range.kind);
+            let anchorColumn = (linewise && fromVisual) ? this.visualStartColumn : -1;
+            this.ctx.deleteRange(range, anchorColumn);
+            // Verified against nvim: a linewise delete (from visual OR
+            // via `dd`) keeps the caret COLUMN, merely clamped to the
+            // line that slid into place -- 'startofline' is off.
+            this.clampCursorToMode();
+            return;
+        }
+
+        if op == Operator.Change {
+            let text = this.ctx.textInRange(range);
+            this.ctx.setRegister(text, range.kind);
+            // Switch to insert mode BEFORE editing: the caret must be
+            // free to sit one past the last character (`C` at the end of
+            // a line), which normal-mode clamping would forbid.
+            let normalizedStart = this.ctx.normalizeRange(range).start;
+            if !linewise {
+                // Even a zero-width change range enters insert mode:
+                // `c^` at column 0 and `cl` on an empty line delete
+                // nothing but still leave you in insert.
+                this.enterInsertMode();
+                this.ctx.deleteRange(range);
+                this.ctx.moveTo(normalizedStart, true, false);
+                return;
+            }
+            if linewise {
+                // `cc` keeps the line but empties it, preserving indent
+                // position, then enters insert mode.
+                let normalized = this.ctx.normalizeRange(range);
+                // 'autoindent' keeps the original leading whitespace.
+                let indent = this.leadingWhitespace(normalized.start.y);
+                let blank = textedit_behavior.Range {
+                    start: { x: 0, y: normalized.start.y },
+                    end: { x: this.ctx.lineLength(normalized.end.y), y: normalized.end.y },
+                    kind: textedit_behavior.RangeKind.Characterwise,
+                };
+                this.ctx.replaceRangeWith(blank, String(indent));
+                // Leave the caret after the preserved indent.
+                let afterIndent: Vec2i = { x: indent.length, y: normalized.start.y };
+                this.enterInsertMode();
+                this.ctx.moveTo(afterIndent, true, false);
+            } else {
+                this.ctx.deleteRange(range);
+            }
+            this.enterInsertMode();
+            return;
+        }
+
+        if op == Operator.IndentRight || op == Operator.IndentLeft {
+            let normalized = this.ctx.normalizeRange(range);
+            this.indentLines(normalized.start.y, normalized.end.y,
+                             op == Operator.IndentRight, wholeLineForm, fromVisual);
+            return;
+        }
+    }
+
+    // Whole-line operator (dd / yy / cc) over `count` lines.
+    //
+    // Count handling, verified against nvim:
+    //   `4dd` from line 2 of 4 deletes the 3 available lines (clamps),
+    //   but `2dd` on the LAST line does nothing at all (fails).
+    // So a count > 1 needs at least one line below the cursor; given
+    // that, it simply clamps. The change operators are stricter and fail
+    // whenever the full count is not available (`3cc` with 2 left).
+    mut fn applyOperatorLinewise(op: Operator, count: int) {
+        let pos = this.ctx.cursor();
+        let lastY = this.ctx.lineCount() - 1;
+        let endY = pos.y + count - 1;
+        this.resetPending();
+        if endY > lastY {
+            if op == Operator.Change || pos.y >= lastY {
+                return;
+            }
+            endY = lastY;
+        }
+        let range = textedit_behavior.Range {
+            start: { x: 0, y: pos.y },
+            end: { x: 0, y: endY },
+            kind: textedit_behavior.RangeKind.Linewise,
+        };
+        // This is the doubled form (`dd`, `>>`, `<<`), which keeps the
+        // caret's screen column across a reindent.
+        this.runOperator(op, range, true);
+    }
+
+    // An operator typed in visual mode acts on the selection and returns
+    // to normal mode.
+    mut fn applyOperatorToSelection(op: Operator) {
+        let range = this.ctx.selectionAsRange();
+        // Vim leaves the caret on the column belonging to the selection's
+        // TOP corner, but the caret may currently sit at its moving end.
+        // Capture that column now, before setMode() drops the anchor.
+        // (A linewise range reports column 0 for both corners, so this
+        // has to come from the raw anchor/cursor pair, not the range.)
+        let here = this.ctx.cursor();
+        let anchorNow = this.ctx.anchorPosition();
+        this.visualStartColumn = here.x;
+        if anchorNow {
+            this.visualStartColumn = anchorNow.y <= here.y ? anchorNow.x : here.x;
+        }
+        // `>`/`<` always indent WHOLE LINES, even from a characterwise
+        // or blockwise selection -- there is no such thing as indenting
+        // half a line.
+        if op == Operator.IndentRight || op == Operator.IndentLeft {
+            let normalized = this.ctx.normalizeRange(range);
+            range = textedit_behavior.Range {
+                start: { x: 0, y: normalized.start.y },
+                end: { x: 0, y: normalized.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+        }
+        this.ctx.setMode(textedit_behavior.Mode.Normal);
+        this.resetPending();
+        this.runOperator(op, range, false, true);
+        this.clampCursorToMode();
+    }
+
+    // Screen column of a byte position, expanding tabs to the next
+    // multiple of 8 (vim's default 'tabstop').
+    fn screenColumnOf(lineIndex: int, byteColumn: int): int {
+        let line = this.ctx.line(lineIndex);
+        let len = this.ctx.lineLength(lineIndex);
+        let screen = 0;
+        let upTo = byteColumn < len ? byteColumn : len;
+        for (let i = 0; i < upTo; i++) {
+            if line.getAt(i) == b"\t" {
+                screen = screen + (8 - (screen % 8));
+            } else {
+                screen = screen + 1;
+            }
+        }
+        return screen;
+    }
+
+    // Inverse of screenColumnOf: the byte column whose screen column is
+    // at or just past `target`, clamped to the line.
+    fn byteColumnForScreenColumn(lineIndex: int, target: int): int {
+        let line = this.ctx.line(lineIndex);
+        let len = this.ctx.lineLength(lineIndex);
+        let screen = 0;
+        for (let i = 0; i < len; i++) {
+            if screen >= target {
+                return i;
+            }
+            if line.getAt(i) == b"\t" {
+                screen = screen + (8 - (screen % 8));
+            } else {
+                screen = screen + 1;
+            }
+        }
+        return len > 0 ? len - 1 : 0;
+    }
+
+    mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
+        let screenColumnBefore = this.screenColumnOf(startY, this.ctx.cursor().x);
+        this.ctx.beginTransaction();
+        let changedAnything = false;
+        for (let y = startY; y <= endY; y++) {
+            let len = this.ctx.lineLength(y);
+            if addIndent {
+                // Vim does not indent an empty line.
+                if len > 0 {
+                    let at: Vec2i = { x: 0, y: y };
+                    let r = textedit_behavior.Range { start: at, end: at,
+                        kind: textedit_behavior.RangeKind.Characterwise };
+                    this.ctx.replaceRangeWith(r, String(this.indentUnit));
+                    changedAnything = true;
+                }
+            } else {
+                // Remove one indent level: a leading tab, or up to the
+                // equivalent run of spaces.
+                let line = this.ctx.line(y);
+                let remove = 0;
+                if len > 0 && line.getAt(0) == b"\t" {
+                    remove = 1;
+                } else {
+                    while remove < 8 && remove < len && line.getAt(remove) == b" " {
+                        remove = remove + 1;
+                    }
+                }
+                if remove > 0 {
+                    let r = textedit_behavior.Range {
+                        start: { x: 0, y: y },
+                        end: { x: remove, y: y },
+                        kind: textedit_behavior.RangeKind.Characterwise,
+                    };
+                    this.ctx.replaceRangeWith(r, String(""));
+                    changedAnything = true;
+                }
+            }
+        }
+        this.ctx.endTransaction();
+        // `>`/`<` keep the caret on the same SCREEN column, since one
+        // tab is 8 screen columns: indenting "hello world" with the
+        // caret at screen column 9 leaves it at byte column 2. But the
+        // caret never lands inside the indent itself -- it stops at the
+        // first non-blank. A no-op `<` leaves the caret exactly put.
+        // The caret keeps its SCREEN column across the reindent (one tab
+        // is 8 screen columns, so ">>" on "hello world" with the caret at
+        // screen column 9 leaves it at byte column 2) -- but never lands
+        // beyond what the new line actually has.
+        // The doubled form (`>>`) keeps the caret's screen column; the
+        // motion/text-object form (`>w`, `>aw`) parks it at column 0.
+        // The caret follows its SCREEN column across the reindent (a tab
+        // is 8 screen columns, so ">>" with the caret at screen column 9
+        // lands on byte column 2), but never lands left of the new first
+        // non-blank -- and a caret that started inside the old indent
+        // just ends up at the start of the new one.
+        // A visual-mode `<`/`>` always moves the caret to the start of
+        // the selection, even when there was nothing to unindent; the
+        // normal-mode forms only move if they actually changed something.
+        if changedAnything || fromVisualIndent {
+            let byScreen = this.byteColumnForScreenColumn(startY, screenColumnBefore);
+            let firstText = this.ctx.firstNonBlank(startY);
+            // A visual-mode indent always keeps the caret column (vim
+            // does not reposition it the way the normal-mode forms do).
+            // Visual-mode `>` parks the caret at column 0; visual-mode
+            // `<` keeps the column the selection started at. (Verified:
+            // on "  indented text" from column 3, `Vj>` gives column 0
+            // and `Vj<` gives column 3.)
+            let x = fromVisualIndent ? (addIndent ? 0 : this.visualStartColumn)
+                  : (keepScreenColumn ? (byScreen <= firstText ? 0 : byScreen) : 0);
+            let landing: Vec2i = { x: x, y: startY };
+            this.ctx.moveTo(landing, true, false);
+        }
+    }
+
+    // === Character-argument commands ==============================
+    //
+    // f/F/t/T take the next key as their target; r replaces with it;
+    // i/a introduce a text object.
+    mut fn completeCharCommand(key: str) {
+        let leader = this.pendingKeys.length > 0 ? this.pendingKeys[0] : "";
+        this.pendingKeys = [];
+        // AwaitChar replaced Operator in `pending` when f/t/i/a was
+        // typed, so restore the operator-pending state before applying
+        // the resulting motion -- otherwise `yfo` would move the caret
+        // instead of yanking.
+        this.pending = this.pendingOperator != Operator.NoneOp
+            ? PendingKind.Operator : PendingKind.None;
+
+        if key == "<Esc>" {
+            this.resetPending();
+            return;
+        }
+
+        if leader == "r" {
+            this.replaceChar(key, this.effectiveCount());
+            this.resetPending();
+            return;
+        }
+
+        if leader == "i" || leader == "a" {
+            let range = this.textObjectRange(leader == "a", key, this.effectiveCount());
+            if !range.valid {
+                this.resetPending();
+                return;
+            }
+            let objectRange = range.range;
+            if textedit_behavior.modeIsVisual(rx.get(this.ctx.mode)) {
+                // Extend the visual selection over the object.
+                this.ctx.setSelectionAnchor(objectRange.start);
+                let last: Vec2i = { x: objectRange.end.x > 0 ? objectRange.end.x - 1 : 0, y: objectRange.end.y };
+                this.ctx.moveTo(last, true, true);
+                this.resetPending();
+                return;
+            }
+            let op = this.pendingOperator;
+            this.resetPending();
+            if op != Operator.NoneOp {
+                this.runOperator(op, objectRange);
+            }
+            return;
+        }
+
+        // f/F/t/T
+        this.lastFind = LastFind { valid: true, kind: leader, target: key };
+        let motion = this.findMotion(leader, key, this.effectiveCount(), false);
+        if motion.valid {
+            this.applyMotion(motion);
+        } else {
+            this.resetPending();
+        }
+    }
+
+    // f/F/t/T within the current line, which is all vim searches for these.
+    fn findMotion(kind: str, target: str, count: int, skipAdjacent: bool = false): Motion {
+        let pos = this.ctx.cursor();
+        let line = this.ctx.line(pos.y);
+        let len = this.ctx.lineLength(pos.y);
+        let targetByte = String(target).getAt(0);
+        let result = Motion {};
+
+        let forward = kind == "f" || kind == "t";
+        let till = kind == "t" || kind == "T";
+
+        let x = pos.x;
+        for (let n = 0; n < count; n++) {
+            // For `t`/`T` repeated via `;`, the cursor is already sitting
+            // adjacent to the previous match, so searching from the very
+            // next character would find that same match and stand still.
+            // Vim skips it; `tc` then `;` on "abcabcabc" goes 1 -> 4.
+            // Forward searches start one PAST the cursor; backward
+            // searches stop one BEFORE it (lastIndexOfByteBefore's bound
+            // is exclusive), so the two directions need different
+            // origins. `t`/`T` repeated with `;` additionally step over
+            // the adjacent match they are already parked next to.
+            let searchFrom = forward ? x + 1 : x;
+            if till && skipAdjacent && n == 0 {
+                searchFrom = forward ? x + 2 : x - 1;
+            }
+            let found = forward ? indexOfByteFrom(line, targetByte, searchFrom, len)
+                                : lastIndexOfByteBefore(line, targetByte, searchFrom);
+            if found < 0 {
+                return result;
+            }
+            x = found;
+        }
+
+        if till {
+            x = forward ? x - 1 : x + 1;
+        }
+
+        // f/t are inclusive for operators; F/T are exclusive.
+        result = Motion { valid: true, target: { x: x, y: pos.y }, inclusive: forward };
+        return result;
+    }
+
+    fn repeatLastFind(reverse: bool): Motion {
+        let result = Motion {};
+        if !this.lastFind.valid {
+            return result;
+        }
+        let kind = this.lastFind.kind;
+        if reverse {
+            if kind == "f" { kind = "F"; }
+            else if kind == "F" { kind = "f"; }
+            else if kind == "t" { kind = "T"; }
+            else if kind == "T" { kind = "t"; }
+        }
+        return this.findMotion(kind, this.lastFind.target, this.effectiveCount(), true);
+    }
+
+    // `r` replaces exactly `count` characters. If there are fewer than
+    // `count` left on the line the command FAILS and changes nothing --
+    // `3ra` on a one-character line is a no-op.
+    mut fn replaceChar(key: str, count: int) {
+        if key.length != 1 {
+            return;
+        }
+        let pos = this.ctx.cursor();
+        let len = this.ctx.lineLength(pos.y);
+        if len == 0 || pos.x + count > len {
+            return;
+        }
+        let replacement = "";
+        for (let i = 0; i < count; i++) {
+            replacement = f"{replacement}{key}";
+        }
+        let r = textedit_behavior.Range {
+            start: { x: pos.x, y: pos.y },
+            end: { x: pos.x + count, y: pos.y },
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        this.ctx.replaceRangeWith(r, String(replacement));
+        // `r` leaves the caret on the LAST replaced character.
+        let target: Vec2i = { x: pos.x + count - 1, y: pos.y };
+        this.ctx.moveTo(target, true, false);
+    }
+
+    // === Text objects =============================================
+
+    fn textObjectRange(around: bool, kind: str, count: int = 1): TextObjectResult {
+        let result = TextObjectResult {};
+        let pos = this.ctx.cursor();
+
+        if kind == "w" || kind == "W" {
+            let bigWord = kind == "W";
+            let len = this.ctx.lineLength(pos.y);
+            if len == 0 {
+                // `iw` on an empty line selects the (empty) line itself.
+                let empty = textedit_behavior.Range {
+                    start: { x: 0, y: pos.y },
+                    end: { x: 0, y: pos.y },
+                    kind: textedit_behavior.RangeKind.Characterwise,
+                };
+                result = TextObjectResult { valid: true, range: empty };
+                return result;
+            }
+            let cls = this.classAt(pos.y, pos.x, bigWord);
+            let startX = pos.x;
+            let endX = pos.x;
+            while startX > 0 && this.classAt(pos.y, startX - 1, bigWord) == cls {
+                startX = startX - 1;
+            }
+            while endX + 1 < len && this.classAt(pos.y, endX + 1, bigWord) == cls {
+                endX = endX + 1;
+            }
+            if around && cls == 0 {
+                // Starting ON whitespace, `aw` takes the blank run plus
+                // the word that follows it.
+                while endX + 1 < len && this.classAt(pos.y, endX + 1, bigWord) == 0 {
+                    endX = endX + 1;
+                }
+                if endX + 1 < len {
+                    let wordCls = this.classAt(pos.y, endX + 1, bigWord);
+                    endX = endX + 1;
+                    while endX + 1 < len && this.classAt(pos.y, endX + 1, bigWord) == wordCls {
+                        endX = endX + 1;
+                    }
+                }
+            } else if around {
+                // `aw` also takes the trailing whitespace (or leading, if
+                // there is none trailing).
+                let extended = endX;
+                while extended + 1 < len && this.classAt(pos.y, extended + 1, bigWord) == 0 {
+                    extended = extended + 1;
+                }
+                if extended == endX {
+                    while startX > 0 && this.classAt(pos.y, startX - 1, bigWord) == 0 {
+                        startX = startX - 1;
+                    }
+                } else {
+                    endX = extended;
+                }
+            }
+            // A count takes that many further objects. For `iw` each
+            // extra step is one run (a word OR a whitespace gap); for
+            // `aw` it is a whole word plus its trailing gap. Running out
+            // of line makes the whole command fail, like vim.
+            for (let n = 1; n < count; n++) {
+                if endX + 1 >= len {
+                    let failed = TextObjectResult {};
+                    return failed;
+                }
+                let nextCls = this.classAt(pos.y, endX + 1, bigWord);
+                endX = endX + 1;
+                while endX + 1 < len && this.classAt(pos.y, endX + 1, bigWord) == nextCls {
+                    endX = endX + 1;
+                }
+                if around {
+                    while endX + 1 < len && this.classAt(pos.y, endX + 1, bigWord) == 0 {
+                        endX = endX + 1;
+                    }
+                }
+            }
+            let r = textedit_behavior.Range {
+                start: { x: startX, y: pos.y },
+                end: { x: endX + 1, y: pos.y },
+                kind: textedit_behavior.RangeKind.Characterwise,
+            };
+            result = TextObjectResult { valid: true, range: r };
+            return result;
+        }
+
+        // Bracket / quote objects on the current line.
+        let openChar = "";
+        let closeChar = "";
+        if kind == "(" || kind == ")" || kind == "b" { openChar = "("; closeChar = ")"; }
+        else if kind == "[" || kind == "]" { openChar = "["; closeChar = "]"; }
+        else if kind == "{" || kind == "}" || kind == "B" { openChar = "{"; closeChar = "}"; }
+        else if kind == "<" || kind == ">" { openChar = "<"; closeChar = ">"; }
+        else if kind == "\"" || kind == "'" || kind == "`" { openChar = kind; closeChar = kind; }
+        else { return result; }
+
+        let line = this.ctx.line(pos.y);
+        let len = this.ctx.lineLength(pos.y);
+        if len == 0 {
+            return result;
+        }
+        let openByte = String(openChar).getAt(0);
+        let closeByte = String(closeChar).getAt(0);
+
+        let startX = -1;
+        let endX = -1;
+        if openChar == closeChar {
+            // Quotes: pair them up left to right and take the first pair
+            // that ends at or after the cursor.
+            let positions: []int = [];
+            for (let i = 0; i < len; i++) {
+                if line.getAt(i) == openByte {
+                    positions.push(i);
+                }
+            }
+            let pair = firstQuotePairCovering(positions, pos.x);
+            startX = pair.x;
+            endX = pair.y;
+        } else {
+            startX = findUnmatchedOpen(line, openByte, closeByte, pos.x);
+            if startX >= 0 {
+                endX = findMatchingClose(line, openByte, closeByte, startX, len);
+            }
+            // Vim also accepts a cursor sitting BEFORE the pair on the
+            // same line (`di(` from column 0 of "one(two)three"): if no
+            // enclosing pair was found, take the next one to the right.
+            if startX < 0 || endX < 0 {
+                let nextOpen = indexOfByteFrom(line, openByte, pos.x, len);
+                if nextOpen >= 0 {
+                    let nextClose = findMatchingClose(line, openByte, closeByte, nextOpen, len);
+                    if nextClose >= 0 {
+                        startX = nextOpen;
+                        endX = nextClose;
+                    }
+                }
+            }
+        }
+
+        if startX < 0 || endX < 0 {
+            return result;
+        }
+
+        let innerStart = around ? startX : startX + 1;
+        let innerEnd = around ? endX + 1 : endX;
+        if innerEnd < innerStart {
+            return result;
+        }
+        let r = textedit_behavior.Range {
+            start: { x: innerStart, y: pos.y },
+            end: { x: innerEnd, y: pos.y },
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        result = TextObjectResult { valid: true, range: r };
+        return result;
+    }
+
+    // === Multi-key prefixes (g..., z...) ==========================
+
+    mut fn completePrefix(key: str) {
+        let prefix = this.pendingKeys.length > 0 ? this.pendingKeys[0] : "";
+        this.pendingKeys = [];
+        // Like completeCharCommand: Prefix replaced Operator in
+        // `pending`, so restore it or `ygg` would just move the caret.
+        this.pending = this.pendingOperator != Operator.NoneOp
+            ? PendingKind.Operator : PendingKind.None;
+
+        if prefix == "g" {
+            if key == "g" {
+                this.pushJump();
+                // gg: line `count` or the first line. Keeps the column,
+                // like G -- see the 'startofline' note there.
+                let y = this.count1 > 0 ? clampInt(this.count1 - 1, 0, this.ctx.lineCount() - 1) : 0;
+                let pos = this.ctx.cursor();
+                let motion = Motion { valid: true, target: { x: pos.x, y: y },
+                                      linewise: true, keepsColumn: true };
+                this.applyMotion(motion);
+                return;
+            }
+            if key == "u" || key == "U" || key == "~" {
+                // Case operators are not implemented; swallow the key so
+                // it can't be misread as a motion.
+                this.resetPending();
+                return;
+            }
+            this.resetPending();
+            return;
+        }
+
+        if prefix == "z" {
+            // Scroll commands: the engine can't scroll, so these turn
+            // into a scroll *intent* the host applies.
+            if key == "z" {
+                this.ctx.requestScroll(textedit_behavior.ScrollIntent.Center);
+            } else if key == "t" {
+                this.ctx.requestScroll(textedit_behavior.ScrollIntent.Top);
+            } else if key == "b" {
+                this.ctx.requestScroll(textedit_behavior.ScrollIntent.Bottom);
+            }
+            this.resetPending();
+            return;
+        }
+
+        this.resetPending();
+    }
+
+    // === Remaining normal-mode commands ===========================
+
+    mut fn applyCommand(key: str) {
+        let count = this.effectiveCount();
+        let visual = textedit_behavior.modeIsVisual(rx.get(this.ctx.mode));
+
+        if key == "i" { this.resetPending(); this.enterInsertMode(count); return; }
+        if key == "a" {
+            this.resetPending();
+            let pos = this.ctx.cursor();
+            if this.ctx.lineLength(pos.y) > 0 {
+                let target: Vec2i = { x: pos.x + 1, y: pos.y };
+                this.enterInsertMode(count);
+                this.ctx.moveTo(target, true, false);
+                return;
+            }
+            this.enterInsertMode(count);
+            return;
+        }
+        if key == "I" {
+            this.resetPending();
+            let pos = this.ctx.cursor();
+            let target: Vec2i = { x: this.ctx.firstNonBlank(pos.y), y: pos.y };
+            this.enterInsertMode(count);
+            this.ctx.moveTo(target, true, false);
+            return;
+        }
+        if key == "A" {
+            this.resetPending();
+            let pos = this.ctx.cursor();
+            this.enterInsertMode(count);
+            let target: Vec2i = { x: this.ctx.lineLength(pos.y), y: pos.y };
+            this.ctx.moveTo(target, true, false);
+            return;
+        }
+        if key == "o" || key == "O" {
+            if visual && key == "o" {
+                // In visual mode `o` swaps the selection ends.
+                this.ctx.swapSelectionEnds();
+                this.resetPending();
+                return;
+            }
+            this.resetPending();
+            this.openLine(key == "o", count);
+            return;
+        }
+        // A count before `v`/`V` means "reuse the size of the LAST visual
+        // selection, `count` times over" (:h v_count) -- not "select
+        // count characters/lines". With no previous selection in this
+        // session there is no size to reuse, so the count is ignored and
+        // plain visual mode is entered. Modelling the full last-selection
+        // memory is not worth it for the supported subset; ignoring the
+        // count is the honest approximation.
+        if key == "v" {
+            this.resetPending();
+            this.toggleVisual(textedit_behavior.Mode.Visual);
+            return;
+        }
+        if key == "V" {
+            this.resetPending();
+            this.toggleVisual(textedit_behavior.Mode.VisualLine);
+            return;
+        }
+        if key == "<C-v>" {
+            this.resetPending();
+            this.toggleVisual(textedit_behavior.Mode.VisualBlock);
+            return;
+        }
+        if key == "x" {
+            this.resetPending();
+            this.deleteCharsForward(count);
+            return;
+        }
+        if key == "X" {
+            this.resetPending();
+            this.deleteCharsBackward(count);
+            return;
+        }
+        // In visual mode D/C/X/S/Y are linewise on the whole selection,
+        // regardless of how the selection was made.
+        if visual && (key == "D" || key == "X" || key == "C" || key == "S" || key == "Y") {
+            this.resetPending();
+            let selection = this.ctx.selectionAsRange();
+            let lineRange = textedit_behavior.Range {
+                start: { x: 0, y: selection.start.y },
+                end: { x: 0, y: selection.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+            let op = (key == "C" || key == "S") ? Operator.Change
+                   : (key == "Y" ? Operator.Yank : Operator.Delete);
+            // Keep the caret column, like every other visual operator.
+            let hereNow = this.ctx.cursor();
+            let anchorHere = this.ctx.anchorPosition();
+            this.visualStartColumn = hereNow.x;
+            if anchorHere {
+                this.visualStartColumn = anchorHere.y <= hereNow.y ? anchorHere.x : hereNow.x;
+            }
+            this.ctx.setMode(textedit_behavior.Mode.Normal);
+            this.runOperator(op, lineRange, false, true);
+            this.clampCursorToMode();
+            return;
+        }
+
+        if key == "D" {
+            this.resetPending();
+            let pos = this.ctx.cursor();
+            // `D` clamps its count (unlike `C`, which fails) -- see
+            // applyOperatorLinewise.
+            let endY = clampInt(pos.y + count - 1, 0, this.ctx.lineCount() - 1);
+            let r = textedit_behavior.Range {
+                start: { x: pos.x, y: pos.y },
+                end: { x: this.ctx.lineLength(endY), y: endY },
+                kind: textedit_behavior.RangeKind.Characterwise,
+            };
+            this.runOperator(Operator.Delete, r);
+            return;
+        }
+        if key == "C" {
+            this.resetPending();
+            let pos = this.ctx.cursor();
+            // `C` with a count spans count lines; running past the last
+            // line fails the whole command, like every counted operator.
+            if pos.y + count - 1 > this.ctx.lineCount() - 1 {
+                return;
+            }
+            let endY = pos.y + count - 1;
+            let r = textedit_behavior.Range {
+                start: { x: pos.x, y: pos.y },
+                end: { x: this.ctx.lineLength(endY), y: endY },
+                kind: textedit_behavior.RangeKind.Characterwise,
+            };
+            this.runOperator(Operator.Change, r);
+            return;
+        }
+        if key == "Y" {
+            this.resetPending();
+            this.applyOperatorLinewise(Operator.Yank, count);
+            return;
+        }
+        if key == "S" {
+            this.resetPending();
+            this.applyOperatorLinewise(Operator.Change, count);
+            return;
+        }
+        if key == "p" || key == "P" {
+            this.resetPending();
+            if visual {
+                this.putOverSelection(key == "p");
+                return;
+            }
+            this.put(key == "p", count);
+            return;
+        }
+        if key == "u" {
+            this.resetPending();
+            for (let i = 0; i < count; i++) {
+                this.ctx.undo();
+            }
+            this.clampCursorToMode();
+            return;
+        }
+        if key == "<C-r>" {
+            this.resetPending();
+            for (let i = 0; i < count; i++) {
+                this.ctx.redo();
+            }
+            this.clampCursorToMode();
+            return;
+        }
+        if key == "J" {
+            this.resetPending();
+            this.joinLines(count);
+            return;
+        }
+        if key == "~" {
+            this.resetPending();
+            this.toggleCase(count);
+            return;
+        }
+        if key == "<C-o>" {
+            this.resetPending();
+            this.jumpBack();
+            return;
+        }
+        if key == "<C-i>" {
+            this.resetPending();
+            this.jumpForward();
+            return;
+        }
+        if key == "<C-d>" || key == "<C-u>" {
+            this.resetPending();
+            // Half-page scroll. Without a viewport height the engine
+            // uses a conventional 10 lines, and signals the intent so a
+            // host that knows its height can do better.
+            let delta = key == "<C-d>" ? 10 : -10;
+            let pos = this.ctx.cursor();
+            let y = clampInt(pos.y + delta, 0, this.ctx.lineCount() - 1);
+            let target: Vec2i = { x: pos.x, y: y };
+            this.ctx.moveTo(target, false, false);
+            this.clampCursorToMode();
+            return;
+        }
+
+        this.resetPending();
+    }
+
+    mut fn enterInsertMode(count: int = 1, opensLine: bool = false) {
+        this.insertCount = count;
+        this.insertTyped = "";
+        this.insertOpensLine = opensLine;
+        this.ctx.setMode(textedit_behavior.Mode.Insert);
+    }
+
+    mut fn toggleVisual(target: textedit_behavior.Mode) {
+        let mode = rx.get(this.ctx.mode);
+        if mode == target {
+            this.ctx.setMode(textedit_behavior.Mode.Normal);
+            return;
+        }
+        if !textedit_behavior.modeIsVisual(mode) {
+            this.ctx.setSelectionAnchor(this.ctx.cursor());
+        }
+        this.ctx.setMode(target);
+    }
+
+    mut fn openLine(below: bool, count: int = 1) {
+        let pos = this.ctx.cursor();
+        this.ctx.beginTransaction();
+        // nvim ships with 'autoindent' ON, so a newly opened line starts
+        // with the same leading whitespace as the line it came from.
+        let indent = this.leadingWhitespace(pos.y);
+        if below {
+            let at: Vec2i = { x: this.ctx.lineLength(pos.y), y: pos.y };
+            this.enterInsertMode(count, true);
+            this.ctx.moveTo(at, true, false);
+            this.ctx.insertText(String(f"\n{indent}"));
+        } else {
+            let at: Vec2i = { x: 0, y: pos.y };
+            this.enterInsertMode(count, true);
+            this.ctx.moveTo(at, true, false);
+            this.ctx.insertText(String(f"{indent}\n"));
+            let up: Vec2i = { x: indent.length, y: pos.y };
+            this.ctx.moveTo(up, true, false);
+        }
+        this.ctx.endTransaction();
+    }
+
+    mut fn deleteCharsForward(count: int) {
+        let pos = this.ctx.cursor();
+        let len = this.ctx.lineLength(pos.y);
+        if len == 0 {
+            return;
+        }
+        let endX = clampInt(pos.x + count, 0, len);
+        let r = textedit_behavior.Range {
+            start: { x: pos.x, y: pos.y },
+            end: { x: endX, y: pos.y },
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        let text = this.ctx.textInRange(r);
+        this.ctx.setRegister(text, textedit_behavior.RangeKind.Characterwise);
+        this.ctx.deleteRange(r);
+        this.clampCursorToMode();
+    }
+
+    mut fn deleteCharsBackward(count: int) {
+        let pos = this.ctx.cursor();
+        if pos.x == 0 {
+            return;
+        }
+        let startX = clampInt(pos.x - count, 0, pos.x);
+        let r = textedit_behavior.Range {
+            start: { x: startX, y: pos.y },
+            end: { x: pos.x, y: pos.y },
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        let text = this.ctx.textInRange(r);
+        this.ctx.setRegister(text, textedit_behavior.RangeKind.Characterwise);
+        this.ctx.deleteRange(r);
+        this.clampCursorToMode();
+    }
+
+    // p / P. Linewise register content opens new lines; characterwise
+    // content goes after (p) or before (P) the caret.
+    mut fn put(after: bool, count: int) {
+        let reg = this.ctx.getRegister();
+        if reg.text.length() == 0 {
+            return;
+        }
+        let pos = this.ctx.cursor();
+        this.ctx.beginTransaction();
+
+        if reg.kind == textedit_behavior.RangeKind.Linewise {
+            let insertY = after ? pos.y + 1 : pos.y;
+            let atEnd = insertY >= this.ctx.lineCount();
+            let payload = "";
+            for (let i = 0; i < count; i++) {
+                payload = f"{payload}{reg.text}";
+            }
+            if atEnd {
+                // Appending past the last line: newline first, no trailing one.
+                let lastY = this.ctx.lineCount() - 1;
+                let at: Vec2i = { x: this.ctx.lineLength(lastY), y: lastY };
+                let body = payload.slice(0, payload.length - 1);
+                let r = textedit_behavior.Range { start: at, end: at,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                this.ctx.replaceRangeWith(r, String(f"\n{body}"));
+            } else {
+                let at: Vec2i = { x: 0, y: insertY };
+                let r = textedit_behavior.Range { start: at, end: at,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                this.ctx.replaceRangeWith(r, String(payload));
+            }
+            let landing = clampInt(insertY, 0, this.ctx.lineCount() - 1);
+            let target: Vec2i = { x: this.ctx.firstNonBlank(landing), y: landing };
+            this.ctx.moveTo(target, true, false);
+            this.ctx.endTransaction();
+            return;
+        }
+
+        // Characterwise
+        let len = this.ctx.lineLength(pos.y);
+        let insertX = after && len > 0 ? pos.x + 1 : pos.x;
+        insertX = clampInt(insertX, 0, len);
+        let payload = "";
+        for (let i = 0; i < count; i++) {
+            payload = f"{payload}{reg.text}";
+        }
+        let at: Vec2i = { x: insertX, y: pos.y };
+        let r = textedit_behavior.Range { start: at, end: at,
+            kind: textedit_behavior.RangeKind.Characterwise };
+        this.ctx.replaceRangeWith(r, String(payload));
+        // Vim leaves the caret on the last pasted character.
+        let payloadLen = String(payload).length();
+        let target: Vec2i = { x: insertX + payloadLen - 1, y: pos.y };
+        this.ctx.moveTo(target, true, false);
+        this.clampCursorToMode();
+        this.ctx.endTransaction();
+    }
+
+    // Paste in VISUAL mode: the selection is replaced by the register.
+    //
+    // The `p`/`P` distinction here is the entire reason for the user's
+    // `vnoremap p P`: plain `p` also loads the text it just replaced
+    // INTO the unnamed register, so pasting the same thing twice pastes
+    // something different the second time. `P` leaves the register
+    // alone. Both produce identical buffers -- only the register differs.
+    mut fn putOverSelection(swapRegister: bool) {
+        // Note: unlike normal-mode `p`, an EMPTY register does not make
+        // this a no-op -- vim still deletes the selection (and the
+        // deleted text becomes the new register content).
+        let reg = this.ctx.getRegister();
+        let range = this.ctx.selectionAsRange();
+        let replaced = this.ctx.textInRange(range);
+        let replacedKind = range.kind;
+
+        this.ctx.beginTransaction();
+        let normalized = this.ctx.normalizeRange(range);
+
+        // A LINEWISE selection (V) is replaced whole-lines-for-
+        // whole-lines: the selected lines go and the register's content
+        // takes their place as its own lines, whichever kind it is.
+        if range.kind == textedit_behavior.RangeKind.Linewise {
+            let payload = reg.text.cloneString();
+            if payload.length > 0 && reg.kind != textedit_behavior.RangeKind.Linewise {
+                payload = f"{payload}\n";
+            }
+            let lineCount = this.ctx.lineCount();
+            let replacing = textedit_behavior.Range {
+                start: { x: 0, y: normalized.start.y },
+                end: { x: 0, y: normalized.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+            this.ctx.deleteRange(replacing);
+            // deleteRange collapsed the lines away; re-open them at the
+            // same index (or append, if the selection ran to the end).
+            let atEnd = normalized.start.y >= this.ctx.lineCount()
+                        || normalized.end.y >= lineCount - 1;
+            if payload.length == 0 {
+                // nothing to insert; the selection simply went away
+            } else if atEnd && this.ctx.lineCount() > 0 {
+                let lastY = this.ctx.lineCount() - 1;
+                let tail: Vec2i = { x: this.ctx.lineLength(lastY), y: lastY };
+                let insertAt = textedit_behavior.Range { start: tail, end: tail,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                let body = payload.slice(0, payload.length - 1);
+                this.ctx.replaceRangeWith(insertAt, String(f"\n{body}"));
+            } else if payload.length > 0 {
+                let head: Vec2i = { x: 0, y: normalized.start.y };
+                let insertAt = textedit_behavior.Range { start: head, end: head,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                this.ctx.replaceRangeWith(insertAt, String(payload));
+            }
+            let landingY = clampInt(normalized.start.y, 0, this.ctx.lineCount() - 1);
+            let landing: Vec2i = { x: this.ctx.firstNonBlank(landingY), y: landingY };
+            this.ctx.moveTo(landing, true, false);
+            this.ctx.setMode(textedit_behavior.Mode.Normal);
+            this.clampCursorToMode();
+            this.ctx.endTransaction();
+            if swapRegister {
+                this.ctx.setRegister(replaced, replacedKind);
+            }
+            return;
+        }
+
+        if reg.kind == textedit_behavior.RangeKind.Linewise {
+            // Linewise register over a charwise selection: the selection
+            // goes, and the register's lines are opened in its place.
+            this.ctx.deleteRange(range);
+            let at: Vec2i = { x: 0, y: normalized.start.y };
+            let insertRange = textedit_behavior.Range { start: at, end: at,
+                kind: textedit_behavior.RangeKind.Characterwise };
+            this.ctx.replaceRangeWith(insertRange, reg.text);
+            this.ctx.moveTo(at, true, false);
+        } else {
+            this.ctx.replaceRangeWith(range, reg.text);
+            let landing: Vec2i = {
+                x: normalized.start.x + reg.text.length() - 1,
+                y: normalized.start.y,
+            };
+            this.ctx.moveTo(landing, true, false);
+        }
+
+        this.ctx.setMode(textedit_behavior.Mode.Normal);
+        this.clampCursorToMode();
+        this.ctx.endTransaction();
+
+        if swapRegister {
+            this.ctx.setRegister(replaced, replacedKind);
+        }
+    }
+
+    mut fn joinLines(count: int) {
+        let repeats = count > 1 ? count - 1 : 1;
+        this.ctx.beginTransaction();
+        let joining = true;
+        for (let i = 0; i < repeats && joining; i++) {
+            let pos = this.ctx.cursor();
+            if pos.y >= this.ctx.lineCount() - 1 {
+                joining = false;
+            } else {
+            let endOfLine = this.ctx.lineLength(pos.y);
+            let nextStart = this.ctx.firstNonBlank(pos.y + 1);
+            // Vim replaces the newline (and the next line's indent) with
+            // a single space -- but not when the current line is empty,
+            // nor when it already ends in whitespace (no double space).
+            // ...and not when the line being pulled up is empty, which
+            // would otherwise leave a stray trailing space.
+            let endsInBlank = endOfLine > 0
+                && ascii.isWhitespace(this.ctx.line(pos.y).getAt(endOfLine - 1));
+            let nextIsEmpty = this.ctx.lineLength(pos.y + 1) == 0;
+            let separator = (endOfLine == 0 || endsInBlank || nextIsEmpty) ? "" : " ";
+            let r = textedit_behavior.Range {
+                start: { x: endOfLine, y: pos.y },
+                end: { x: nextStart, y: pos.y + 1 },
+                kind: textedit_behavior.RangeKind.Characterwise,
+            };
+            this.ctx.replaceRangeWith(r, String(separator));
+            let target: Vec2i = { x: endOfLine, y: pos.y };
+            this.ctx.moveTo(target, true, false);
+            }
+        }
+        this.ctx.endTransaction();
+    }
+
+    mut fn toggleCase(count: int) {
+        let pos = this.ctx.cursor();
+        let len = this.ctx.lineLength(pos.y);
+        if len == 0 {
+            return;
+        }
+        let endX = clampInt(pos.x + count, 0, len);
+        let line = this.ctx.line(pos.y);
+        let out = "";
+        for (let i = pos.x; i < endX; i++) {
+            let b = line.getAt(i);
+            if b >= b"a" && b <= b"z" { b = b - 32 as u8; }
+            else if b >= b"A" && b <= b"Z" { b = b + 32 as u8; }
+            let one = String("x");
+            one.setAt(0, b);
+            out = f"{out}{one.cloneString()}";
+        }
+        let r = textedit_behavior.Range {
+            start: { x: pos.x, y: pos.y },
+            end: { x: endX, y: pos.y },
+            kind: textedit_behavior.RangeKind.Characterwise,
+        };
+        this.ctx.replaceRangeWith(r, String(out));
+        let target: Vec2i = { x: clampInt(endX, 0, len > 0 ? len - 1 : 0), y: pos.y };
+        this.ctx.moveTo(target, true, false);
+    }
+
+    // === Jump list ================================================
+
+    mut fn pushJump() {
+        let pos = this.ctx.cursor();
+        let entry = Jump { pos: pos };
+        // Truncate any forward history, like vim does on a new jump.
+        let kept: []Jump = [];
+        for (let i = 0; i < this.jumpIndex && i < this.jumps.length; i++) {
+            kept.push(this.jumps[i]);
+        }
+        kept.push(entry);
+        this.jumps = kept;
+        this.jumpIndex = kept.length;
+    }
+
+    mut fn jumpBack() {
+        if this.jumpIndex <= 0 || this.jumps.length == 0 {
+            return;
+        }
+        // Stepping back from the newest entry records where we are now,
+        // so <C-i> can return.
+        if this.jumpIndex == this.jumps.length {
+            let here = Jump { pos: this.ctx.cursor() };
+            this.jumps.push(here);
+        }
+        this.jumpIndex = this.jumpIndex - 1;
+        let target = this.jumps[this.jumpIndex];
+        this.ctx.moveTo(target.pos, true, false);
+        this.clampCursorToMode();
+    }
+
+    mut fn jumpForward() {
+        if this.jumpIndex + 1 >= this.jumps.length {
+            return;
+        }
+        this.jumpIndex = this.jumpIndex + 1;
+        let target = this.jumps[this.jumpIndex];
+        this.ctx.moveTo(target.pos, true, false);
+        this.clampCursorToMode();
+    }
+
+    // After an edit the caret can end up one past the last character,
+    // which is legal in insert mode but not in normal mode.
+    mut fn clampCursorToMode() {
+        let pos = this.ctx.cursor();
+        let maxX = this.ctx.maxColumn(pos.y);
+        if pos.x > maxX {
+            let target: Vec2i = { x: maxX, y: pos.y };
+            this.ctx.moveTo(target, true, false);
+        }
+    }
+}
+
+
+export fn clampInt(value: int, low: int, high: int): int {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+// Linear byte scans. These exist as standalone functions because the
+// language has no `break`: an early `return` is the only way to stop a
+// loop, so every search has to be its own function.
+
+// First index >= `startAt` (and < `limit`) holding `target`, or -1.
+// `limit` is clamped to the line so a caret past the end can't read OOB.
+export fn indexOfByteFrom(line: String, target: u8, startAt: int, limit: int): int {
+    let end = limit > line.length() ? line.length() : limit;
+    for (let i = startAt < 0 ? 0 : startAt; i < end; i++) {
+        if line.getAt(i) == target {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Last index < `before` holding `target`, or -1.
+export fn lastIndexOfByteBefore(line: String, target: u8, before: int): int {
+    let start = before > line.length() ? line.length() : before;
+    for (let i = start - 1; i >= 0; i--) {
+        if line.getAt(i) == target {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Scan backwards from `startAt` for the unmatched `openByte`, honoring
+// nesting. Used by the bracket text objects. `startAt` is clamped: on an
+// empty line, or with the caret one past the end, there is simply
+// nothing to scan.
+export fn findUnmatchedOpen(line: String, openByte: u8, closeByte: u8, startAt: int): int {
+    let depth = 0;
+    let begin = startAt;
+    let limit = line.length();
+    if begin >= limit {
+        begin = limit - 1;
+    }
+    for (let i = begin; i >= 0; i--) {
+        let b = line.getAt(i);
+        if b == closeByte && i != begin {
+            depth = depth + 1;
+        } else if b == openByte {
+            if depth == 0 {
+                return i;
+            }
+            depth = depth - 1;
+        }
+    }
+    return -1;
+}
+
+// Given the sorted positions of identical quote characters on a line,
+// pair them up (0-1, 2-3, ...) and return the first pair whose closing
+// quote is at or after `column`, as {x: open, y: close}, or {-1,-1}.
+export fn firstQuotePairCovering(positions: []int, column: int): Vec2i {
+    for (let i = 0; i + 1 < positions.length; i = i + 2) {
+        if positions[i + 1] >= column {
+            let pair: Vec2i = { x: positions[i], y: positions[i + 1] };
+            return pair;
+        }
+    }
+    let missing: Vec2i = { x: -1, y: -1 };
+    return missing;
+}
+
+// Scan forwards from just after `openAt` for the matching close.
+export fn findMatchingClose(line: String, openByte: u8, closeByte: u8, openAt: int, limit: int): int {
+    let depth = 0;
+    let end = limit > line.length() ? line.length() : limit;
+    for (let i = openAt + 1; i < end; i++) {
+        let b = line.getAt(i);
+        if b == openByte {
+            depth = depth + 1;
+        } else if b == closeByte {
+            if depth == 0 {
+                return i;
+            }
+            depth = depth - 1;
+        }
+    }
+    return -1;
+}
+
+// Applying motions, operators and the remaining commands.
+
+export struct TextObjectResult {
+    valid: bool = false;
+    range: textedit_behavior.Range = {};
+}
+
+export fn isDigitStr(s: str): bool {
+    if s.length != 1 {
+        return false;
+    }
+    let b = String(s).getAt(0);
+    return b >= b"0" && b <= b"9";
+}
+
+export fn digitValue(s: str): int {
+    return (String(s).getAt(0) as int) - (b"0" as int);
+}
+
+// Keys that resolveMotion() understands. Needed to tell "this motion
+// failed" (abort the operator) apart from "this key is not a motion at
+// all" (try it as a command).
+export fn isMotionKey(key: str): bool {
+    if key == "h" || key == "j" || key == "k" || key == "l" { return true; }
+    if key == "w" || key == "W" || key == "b" || key == "B" { return true; }
+    if key == "e" || key == "E" { return true; }
+    if key == "0" || key == "^" || key == "$" || key == "G" { return true; }
+    if key == "{" || key == "}" || key == ";" || key == "," { return true; }
+    if key == " " { return true; }
+    if key == "<Left>" || key == "<Right>" || key == "<Up>" || key == "<Down>" { return true; }
+    if key == "<CR>" || key == "<BS>" { return true; }
+    return false;
+}
+
+export fn operatorForKey(key: str): Operator {
+    if key == "d" { return Operator.Delete; }
+    if key == "y" { return Operator.Yank; }
+    if key == "c" { return Operator.Change; }
+    if key == ">" { return Operator.IndentRight; }
+    if key == "<" { return Operator.IndentLeft; }
+    return Operator.NoneOp;
+}
+
+// The result of resolving a motion key: where it lands and how an
+// operator should treat the span between here and there.
+//
+// `inclusive` is the classic Vim trap: `e` and `f` include the character
+// under the destination, `w` and `$`-style motions do not. Getting this
+// wrong is an off-by-one in every operator, so it is carried explicitly
+// rather than inferred at each use site.
+export struct Motion {
+    valid: bool = false;
+    target: Vec2i = {};
+    linewise: bool = false;
+    inclusive: bool = false;
+    // Motions like gg/G/{/} set a jump mark for <C-o>.
+    setsJump: bool = false;
+    // Vim keeps the sticky column for j/k but resets it for horizontal
+    // motions.
+    keepsColumn: bool = false;
+    // `w`/`W` as an operator target never carries the operator onto the
+    // next line: `dw` on the last word of a line stops at the line end.
+    clampsToLineEnd: bool = false;
+    // `b`/`B` from column 0 lands on the previous line but the operator
+    // must stop at that line's END, not join the two lines.
+    stopsAtLineStart: bool = false;
+}
+
+// Build the flat keymap lookup key. "\x00" can't appear in a key name,
+// so mode and LHS can't collide.
+// === Host key translation =====================================
+//
+// A UI toolkit reports physical keys (arrows, Escape, Ctrl+D) separately
+// from committed text ("a", "$"). Vim needs both as normalized key
+// names. `namedKey` covers the non-character keys and modifier
+// combinations; ordinary printable characters arrive through the host's
+// text-input path and need no translation.
+//
+// `ctrl`/`alt`/`shift` are the modifier state at the time of the press.
+// Returns "" when the key produces no Vim key by itself (a bare modifier
+// press, or a plain printable key that the text-input path will deliver).
+export fn namedKey(keyName: str, ctrl: bool, alt: bool): str {
+    if keyName == "" {
+        return "";
+    }
+    // Modifier-prefixed forms first: <C-d>, <M-Up>, ...
+    if ctrl || alt {
+        let prefix = ctrl ? "C" : "M";
+        return f"<{prefix}-{keyName}>";
+    }
+    if keyName == "Escape" { return "<Esc>"; }
+    if keyName == "Return" { return "<CR>"; }
+    if keyName == "Backspace" { return "<BS>"; }
+    if keyName == "Tab" { return "<Tab>"; }
+    if keyName == "Up" { return "<Up>"; }
+    if keyName == "Down" { return "<Down>"; }
+    if keyName == "Left" { return "<Left>"; }
+    if keyName == "Right" { return "<Right>"; }
+    if keyName == "Delete" { return "<Del>"; }
+    if keyName == "Home" { return "<Home>"; }
+    if keyName == "End" { return "<End>"; }
+    if keyName == "PageUp" { return "<PageUp>"; }
+    if keyName == "PageDown" { return "<PageDown>"; }
+    return "";
+}
+
+// === Configuration presets ====================================
+//
+// Remaps are ordinary data, so a host can build them from a config file,
+// a settings UI, or a literal list. `applyVimrc` takes the same
+// (mode, lhs, rhs) triples a vimrc uses, so a user's real mappings
+// translate line for line.
+export struct RemapSpec {
+    mode: str = "n";
+    lhs: str = "";
+    rhs: str = "";
+    noremap: bool = true;
+}
+
+// Install a list of mappings. `nnoremap j jzz` becomes
+// RemapSpec { mode: "n", lhs: "j", rhs: "jzz" }.
+export fn applyRemaps(vim: mut Vim, specs: []RemapSpec) {
+    for spec in specs {
+        vim.addRemap(spec.mode, spec.lhs, spec.rhs, spec.noremap);
+    }
+}
+
+// The maintainer's own vimrc, as a ready-made preset. Provided because
+// it is also exactly what the differential test suite validates against
+// real neovim, so it is the configuration known to be correct.
+//
+// Note `<space>` is the leader here: `<space>aa` selects the whole file.
+export fn defaultVimrc(): []RemapSpec {
+    let specs: []RemapSpec = [];
+    specs.push(RemapSpec { mode: "i", lhs: "jk", rhs: "<Esc>" });
+    specs.push(RemapSpec { mode: "n", lhs: "j", rhs: "jzz" });
+    specs.push(RemapSpec { mode: "n", lhs: "k", rhs: "kzz" });
+    specs.push(RemapSpec { mode: "n", lhs: "<space>aa", rhs: "ggVG" });
+    specs.push(RemapSpec { mode: "v", lhs: "p", rhs: "P" });
+    specs.push(RemapSpec { mode: "n", lhs: "<C-d>", rhs: "<C-d>zz" });
+    specs.push(RemapSpec { mode: "n", lhs: "<C-u>", rhs: "<C-u>zz" });
+    specs.push(RemapSpec { mode: "n", lhs: "<C-o>", rhs: "<C-o>zz" });
+    specs.push(RemapSpec { mode: "n", lhs: "n", rhs: "nzzzv" });
+    specs.push(RemapSpec { mode: "n", lhs: "N", rhs: "Nzzzv" });
+    return specs;
+}
+
+export fn remapKey(mode: str, keys: []str): str {
+    let joined = mode;
+    for k in keys {
+        joined = f"{joined}\x00{k}";
+    }
+    return joined;
+}
+
+// First index >= `startAt` where `needle` (one character) occurs, or -1.
+export fn indexOfCharFrom(haystack: str, needle: str, startAt: int): int {
+    for (let i = startAt; i < haystack.length; i++) {
+        if haystack.slice(i, i + 1) == needle {
+            return i;
+        }
+    }
+    return -1;
+}
+
+export fn startsWithStr(haystack: str, needle: str): bool {
+    if needle.length > haystack.length {
+        return false;
+    }
+    return haystack.slice(0, needle.length) == needle;
+}
+
+// Turn a vimrc-style key string into normalized key names.
+// "ggVG"        -> ["g","g","V","G"]
+// ":m .-2<CR>==" -> [":","m"," ",".","-","2","<CR>","=","="]
+// "<C-d>zz"     -> ["<C-d>","z","z"]
+export fn parseKeys(spec: str): []str {
+    let keys: []str = [];
+    let i = 0;
+    while i < spec.length {
+        let ch = spec.slice(i, i + 1);
+        // A '<' starts a bracketed key name if there is a matching '>';
+        // otherwise it is just a literal '<' the user wants to type.
+        let close = ch == "<" ? indexOfCharFrom(spec, ">", i + 1) : -1;
+        if close > 0 {
+            let name = spec.slice(i, close + 1);
+            keys.push(canonicalKeyName(name));
+            i = close + 1;
+        } else {
+            keys.push(ch);
+            i = i + 1;
+        }
+    }
+    return keys;
+}
+
+// Normalize the spelling of a bracketed key so "<esc>", "<ESC>" and
+// "<Esc>" are the same key, and "<Space>"/"<leader>" resolve to what
+// they actually produce.
+export fn canonicalKeyName(name: str): str {
+    let inner = name.slice(1, name.length - 1);
+    let lower = toLowerStr(inner);
+
+    if lower == "space" { return " "; }
+    if lower == "leader" { return " "; }  // leader defaults to space here
+    if lower == "esc" { return "<Esc>"; }
+    if lower == "cr" || lower == "enter" || lower == "return" { return "<CR>"; }
+    if lower == "bs" || lower == "backspace" { return "<BS>"; }
+    if lower == "tab" { return "<Tab>"; }
+    if lower == "up" { return "<Up>"; }
+    if lower == "down" { return "<Down>"; }
+    if lower == "left" { return "<Left>"; }
+    if lower == "right" { return "<Right>"; }
+    if lower == "lt" { return "<"; }
+    if lower == "gt" { return ">"; }
+
+    // Modifier forms: <C-x>, <M-x>, <S-x>, <A-x>. Keep the modifier
+    // letter uppercase and preserve the rest so <C-d> != <C-D>.
+    if inner.length >= 3 && inner.slice(1, 2) == "-" {
+        let mod = toUpperStr(inner.slice(0, 1));
+        let rest = inner.slice(2, inner.length);
+        if mod == "A" { mod = "M"; }  // <A-x> and <M-x> are the same
+        // A named key can follow a modifier: <M-Up>
+        if rest.length > 1 {
+            let restLower = toLowerStr(rest);
+            if restLower == "up" { rest = "Up"; }
+            else if restLower == "down" { rest = "Down"; }
+            else if restLower == "left" { rest = "Left"; }
+            else if restLower == "right" { rest = "Right"; }
+            else if restLower == "cr" { rest = "CR"; }
+            else if restLower == "esc" { rest = "Esc"; }
+        }
+        return f"<{mod}-{rest}>";
+    }
+    return name;
+}
+
+// Case conversion is done on the String byte buffer because the stdlib
+// has no ascii case helpers and key names are pure ASCII by definition.
+export fn toLowerStr(s: str): str {
+    let buf = String(s);
+    for (let i = 0; i < buf.length(); i++) {
+        let b = buf.getAt(i);
+        if b >= b"A" && b <= b"Z" {
+            buf.setAt(i, b + 32 as u8);
+        }
+    }
+    return buf.cloneString();
+}
+
+export fn toUpperStr(s: str): str {
+    let buf = String(s);
+    for (let i = 0; i < buf.length(); i++) {
+        let b = buf.getAt(i);
+        if b >= b"a" && b <= b"z" {
+            buf.setAt(i, b - 32 as u8);
+        }
+    }
+    return buf.cloneString();
+}
