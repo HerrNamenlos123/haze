@@ -59,9 +59,24 @@ Every function completes one operation in a single FFI call; the loops live in
 C. ASCII fast paths mean the utf8proc property tables are never consulted for
 ordinary source code, so the common case costs a couple of byte comparisons.
 
-`previousClusterOffset` is O(1) on the ASCII fast path but O(line) on a line
-that is non-ASCII before the cursor, because UAX #29 has no reverse form. For
-long non-ASCII lines that are walked repeatedly, cache boundaries per line.
+Measured on this machine (`-O2`, 100-character lines):
+
+| operation | ASCII | emoji |
+|---|---|---|
+| `nextClusterOffset` | 3 ns | 40 ns |
+| `previousClusterOffset` | 3.5 ns | 490 ns |
+| `displayWidth` (whole line) | 2.1 µs | — |
+
+`previousClusterOffset` is O(1) on the ASCII fast path but O(line) when the
+text before the cursor is non-ASCII, because UAX #29 has no reverse form. At
+~0.5 µs it is still far below a keystroke, but do not call it in a loop over a
+long non-ASCII line without caching boundaries per line.
+
+`displayWidth` is the one to watch, since a renderer calls it per line per
+frame. A realistic frame (one cursor conversion plus ~50 selection
+conversions over 80-column lines) costs ~78 µs, about 0.5% of a 60fps frame
+budget — acceptable without caching, but it is the first thing to memoize if
+line count grows a lot.
 
 ## Shaping is a separate problem
 

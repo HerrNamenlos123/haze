@@ -1513,10 +1513,16 @@ export struct Vim {
     // f/F/t/T within the current line, which is all vim searches for these.
     fn findMotion(kind: str, target: str, count: int, skipAdjacent: bool = false): Motion {
         let pos = this.ctx.cursor();
-        let line = this.ctx.line(pos.y);
+        let line = this.ctx.line(pos.y).cloneString();
         let len = this.ctx.lineLength(pos.y);
-        let targetByte = String(target).getAt(0);
+        // The target is one CHARACTER, which may be several bytes -- `fé`
+        // and `f日` are legal. Comparing only its first byte would match a
+        // lead byte shared with a different character, landing the caret in
+        // the wrong place (or mid-character).
         let result = Motion {};
+        if target.length == 0 {
+            return result;
+        }
 
         let forward = kind == "f" || kind == "t";
         let till = kind == "t" || kind == "T";
@@ -1532,12 +1538,16 @@ export struct Vim {
             // is exclusive), so the two directions need different
             // origins. `t`/`T` repeated with `;` additionally step over
             // the adjacent match they are already parked next to.
-            let searchFrom = forward ? x + 1 : x;
+            // Origins step by CHARACTERS, so "one past" and "one before"
+            // clear a whole multi-byte character rather than a single byte.
+            let searchFrom = forward ? unicode.nextClusterOffset(line, x) : x;
             if till && skipAdjacent && n == 0 {
-                searchFrom = forward ? x + 2 : x - 1;
+                searchFrom = forward
+                    ? unicode.nextClusterOffset(line, unicode.nextClusterOffset(line, x))
+                    : unicode.previousClusterOffset(line, x);
             }
-            let found = forward ? indexOfByteFrom(line, targetByte, searchFrom, len)
-                                : lastIndexOfByteBefore(line, targetByte, searchFrom);
+            let found = forward ? indexOfCharacterFrom(line, target, searchFrom, len)
+                                : lastIndexOfCharacterBefore(line, target, searchFrom);
             if found < 0 {
                 return result;
             }
@@ -1545,7 +1555,9 @@ export struct Vim {
         }
 
         if till {
-            x = forward ? x - 1 : x + 1;
+            // `t` stops one CHARACTER short of the match.
+            x = forward ? unicode.previousClusterOffset(line, x)
+                        : unicode.nextClusterOffset(line, x);
         }
 
         // f/t are inclusive for operators; F/T are exclusive.
@@ -2257,8 +2269,14 @@ export struct Vim {
             this.ctx.moveTo(at, true, false);
         } else {
             this.ctx.replaceRangeWith(range, reg.text);
+            // Land on the START of the last pasted character, so back up one
+            // CHARACTER from the end of the pasted text rather than one byte.
+            let pasted = reg.text.cloneString();
+            let lastCharOffset = pasted.length > 0
+                ? unicode.previousClusterOffset(pasted, pasted.length)
+                : 0;
             let landing: Vec2i = {
-                x: normalized.start.x + reg.text.length() - 1,
+                x: normalized.start.x + lastCharOffset,
                 y: normalized.start.y,
             };
             this.ctx.moveTo(landing, true, false);
@@ -2463,6 +2481,48 @@ export fn lastIndexOfByteBefore(line: String, target: u8, before: int): int {
         }
     }
     return -1;
+}
+
+// === Character search (f/F/t/T) ===================================
+//
+// The byte variants above are still used for bracket matching, where the
+// targets are ASCII by definition. `f`/`t` take an arbitrary character the
+// user typed, so they need these instead: comparing a single byte would
+// match the lead byte of an unrelated character and land the caret inside
+// it.
+
+// First byte offset >= `startAt` (and < `limit`) where the CHARACTER
+// `target` begins, or -1. Both the scan and the comparison are per
+// character, so the result is always a cluster boundary.
+export fn indexOfCharacterFrom(line: str, target: str, startAt: int, limit: int): int {
+    let end = limit > line.length ? line.length : limit;
+    let at = startAt < 0 ? 0 : unicode.clusterStart(line, startAt);
+    while at < end {
+        let next = unicode.nextClusterOffset(line, at);
+        if next - at == target.length && line.slice(at, next) == target {
+            return at;
+        }
+        at = next;
+    }
+    return -1;
+}
+
+// Last byte offset < `before` where the CHARACTER `target` begins, or -1.
+export fn lastIndexOfCharacterBefore(line: str, target: str, before: int): int {
+    let bound = before > line.length ? line.length : before;
+    let at = 0;
+    let found = -1;
+    while at < bound {
+        let next = unicode.nextClusterOffset(line, at);
+        if next > bound {
+            return found;
+        }
+        if next - at == target.length && line.slice(at, next) == target {
+            found = at;
+        }
+        at = next;
+    }
+    return found;
 }
 
 // Scan backwards from `startAt` for the unmatched `openByte`, honoring

@@ -224,6 +224,58 @@ fn main(): int {
     doc.check("vim x emptied the line", doc.lines[0].length(), 0);
     doc.check("one x per character", deletes, 7);
 
+
+    // --- `f` finds a MULTI-BYTE character ---
+    doc.setText("ab日cd");
+    let fCtx = makeContext(doc);
+    let fVim = vim_behavior.Vim(fCtx);
+    fVim.install();
+    fVim.handleKey("f");
+    fVim.handleTextInput(String("日"));
+    doc.check("vim f found the CJK character", fCtx.cursor().x, 2);
+    assert(unicode.isClusterBoundary(doc.lineText(0), fCtx.cursor().x),
+        "f must land on a boundary");
+
+    // --- `f` past a multi-byte character finds an ASCII one ---
+    doc.setText("ab日cd");
+    let f2Ctx = makeContext(doc);
+    let f2Vim = vim_behavior.Vim(f2Ctx);
+    f2Vim.install();
+    f2Vim.handleKey("f");
+    f2Vim.handleTextInput(String("d"));
+    doc.check("vim f skipped over CJK to find 'd'", f2Ctx.cursor().x, 6);
+
+    // --- `t` stops one CHARACTER short of a multi-byte target ---
+    doc.setText("ab日cd");
+    let tCtx = makeContext(doc);
+    let tVim = vim_behavior.Vim(tCtx);
+    tVim.install();
+    tVim.handleKey("t");
+    tVim.handleTextInput(String("日"));
+    doc.check("vim t stopped one character before CJK", tCtx.cursor().x, 1);
+
+    // --- `df` over a multi-byte target deletes cleanly ---
+    doc.setText("ab日cd");
+    let dfCtx = makeContext(doc);
+    let dfVim = vim_behavior.Vim(dfCtx);
+    dfVim.install();
+    dfVim.handleKey("d");
+    dfVim.handleKey("f");
+    dfVim.handleTextInput(String("日"));
+    doc.checkText("vim df deleted through the CJK character", doc.text(), "cd");
+    assert(unicode.isValidUtf8(doc.text()), "df must not corrupt UTF-8");
+
+    // --- `p` after yanking an emoji lands on its start ---
+    doc.setText("🇦🇹x");
+    let pCtx = makeContext(doc);
+    let pVim = vim_behavior.Vim(pCtx);
+    pVim.install();
+    pVim.handleKey("y");
+    pVim.handleKey("l");
+    pVim.handleKey("p");
+    doc.checkText("vim yl then p duplicated the flag", doc.text(), "🇦🇹🇦🇹x");
+    assert(unicode.isValidUtf8(doc.text()), "p must not corrupt UTF-8");
+
     if doc.failures > 0 {
         fmt.println(f"\n{doc.failures} FAILURES out of {doc.checks} checks");
         return 1;
