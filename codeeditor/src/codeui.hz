@@ -5,6 +5,7 @@ import headwind
 import textedit_behavior
 import vim_behavior
 import text_document
+import unicode
 import ui_elements
 import ui_components
 type presets = headwind.presets;
@@ -17,6 +18,31 @@ type presets = headwind.presets;
 // variables cannot hold multi-line initializers here.
 fn vimEnabled(): bool {
     return true;
+}
+
+// The editor's font, as ONE definition used by both the text that gets
+// rendered and every measurement taken of it.
+//
+// This must never be split into two places. `ui.measureText(text)` with no
+// font arguments resolves the font from the LIVE RENDER STACK -- so it
+// returns the editor's font when called during the render pass, but the
+// application default when called from anywhere else. Event handlers
+// (onPointerDown) and the per-frame pointer pump both run OUTSIDE the
+// render tree, so a bare measureText() there silently measured a different
+// font: 9px per character instead of the editor's 7px.
+//
+// Nothing looked wrong at column 0, and the 2px-per-column error was
+// absorbed by the end-of-line clamp on short lines -- so it only showed up
+// on lines long enough for the drift to still land inside the text, as a
+// cursor that lagged further behind the mouse the further right you
+// clicked. Any measurement used to convert pixels <-> columns MUST pass
+// the font explicitly.
+fn editorFontFamily(): str {
+    return "JetBrainsMonoNerdFont-Regular";
+}
+
+fn editorFontSize(): real {
+    return 16.0;
 }
 
 // Map the UI toolkit's physical Key onto the key NAMES vim_behavior
@@ -404,6 +430,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // like a browser text area (and like vim's own mouse support).
         let mouseSelecting = rx.reactive<bool>(false);
 
+        // Where the press landed, and whether the pointer has since moved
+        // off it. A click and a drag begin identically -- button down, and
+        // still down on the next frame -- so the pump cannot tell them
+        // apart from button state alone. Without this, every plain click
+        // started a selection (and in vim, entered visual mode) on the
+        // frame after the press, because the caret gets re-derived from
+        // the live mouse position and any disagreement becomes a range.
+        // The PIXEL position of the press, and the document position it
+        // resolved to. The drag test has to be made in pixels: converting
+        // a pixel to a document position goes through maxColumn(), which
+        // is MODE-DEPENDENT (normal mode clamps to the last character,
+        // visual mode allows one past it). Comparing document positions
+        // therefore reports "moved" the instant the mode changes, even
+        // with the mouse held perfectly still -- which is what made a
+        // click past the end of a line enter visual mode and select back
+        // to the click column.
+        let dragOriginPxX = rx.reactive<real>(0.0);
+        let dragOriginPxY = rx.reactive<real>(0.0);
+        let dragOriginX = rx.reactive<int>(0);
+        let dragOriginY = rx.reactive<int>(0);
+        let dragMoved = rx.reactive<bool>(false);
+
         // Top edge of the text area in window space, used to convert a
         // global pointer position into a local one.
         let editorOriginY = (): real => {
@@ -422,7 +470,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // browser: clicking the right half of a glyph puts the caret
         // after it, which is what makes click-to-place feel right.
         let documentPositionAt = (pointer: Vec2): Vec2i => {
-            let charSize = ui.measureText("X");
+            // Explicit font -- see editorFontFamily(). This runs from an
+            // event handler, where the contextual font is NOT the editor's.
+            let charSize = ui.measureText("X", editorFontFamily(), editorFontSize());
             let editorEl = rx.get(editorRef);
             let originX = 0.0;
             let originY = 0.0;
@@ -442,13 +492,38 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
             lineIndex = text_document.clampIndex(lineIndex, doc.lineCount());
 
-            let column = 0;
+            // Pixels -> DISPLAY column (the renderer lays every cluster out
+            // on a fixed monospace advance, so this division is exact).
+            let displayColumn = 0;
             if charSize.x > 0.0 {
-                column = ((localX / charSize.x) + 0.5) as int;
+                displayColumn = ((localX / charSize.x) + 0.5) as int;
             }
-            if column < 0 {
-                column = 0;
+            if displayColumn < 0 {
+                displayColumn = 0;
             }
+
+            // Display column -> BYTE offset, which is what the engine means
+            // by "column". These coincide only for pure-ASCII lines: a tab,
+            // a CJK glyph or an emoji occupies a different number of bytes
+            // than it does screen cells, and feeding a display column
+            // straight in lands the caret at an unrelated byte.
+            let lineText = doc.lineText(lineIndex);
+            let column = 0;
+            let cell = 0;
+            let scanning = true;
+            while scanning && column < lineText.length {
+                let width = unicode.clusterColumnWidth(lineText, column);
+                if cell + width > displayColumn {
+                    scanning = false;
+                } else {
+                    cell = cell + width;
+                    column = unicode.nextClusterOffset(lineText, column);
+                }
+            }
+
+            // Past the end of the text, the caret belongs at the line's own
+            // limit -- NOT at the column the pixel maths implied. Clamping
+            // is deliberate and must use the CURRENT mode's limit.
             let maxColumn = texteditBehavior.maxColumn(lineIndex);
             if column > maxColumn {
                 column = maxColumn;
@@ -709,8 +784,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     ref: editorRef,
                     style: {
                         direction: ui_styling.Direction.Column,
-                        fontFamily: "JetBrainsMonoNerdFont-Regular",
-                        fontSize: 16.0,
+                        fontFamily: editorFontFamily(),
+                        fontSize: editorFontSize(),
                         textColor: "#FFF" as Color,
                     },
                     presets: [
@@ -740,6 +815,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
                         let target = documentPositionAt(event.pos);
                         mouseSelecting := true;
+                        dragOriginPxX := event.pos.x;
+                        dragOriginPxY := event.pos.y;
+                        dragOriginX := target.x;
+                        dragOriginY := target.y;
+                        dragMoved := false;
                         if rx.get(vimOn) {
                             // Leave whatever visual selection existed, then
                             // place the caret; a subsequent drag re-enters
@@ -847,7 +927,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         hoverResult := null;
                     },
                 }, () => {
-                    let characterSize = ui.measureText("X");
+                    // Explicit font, so this stays identical to the value
+                    // documentPositionAt() uses -- the two MUST agree.
+                    let characterSize = ui.measureText("X", editorFontFamily(), editorFontSize());
                     let lineHeight = characterSize.y;
                     let lineCount = doc.lineCount();
 
@@ -898,19 +980,52 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // released, wherever that happens.
                     if rx.get(mouseSelecting) {
                         if leftDown {
-                            // In vim, dragging IS a visual selection, so
-                            // the first movement enters visual mode.
-                            if rx.get(vimOn) {
-                                let dragMode = rx.get(texteditBehavior.mode);
-                                if !textedit_behavior.modeIsVisual(dragMode) {
-                                    texteditBehavior.setSelectionAnchor(texteditBehavior.cursor());
-                                    texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                            // A click and a drag look identical on the frame
+                            // after the press. Only once the pointer has
+                            // actually reached a DIFFERENT document position
+                            // is this a drag -- until then, leave the caret
+                            // exactly where the press put it and select
+                            // nothing.
+                            let origin: Vec2i = {
+                                x: rx.get(dragOriginX),
+                                y: rx.get(dragOriginY),
+                            };
+                            if !rx.get(dragMoved) {
+                                // Purely a pixel test -- see dragOriginPx.
+                                // A press must travel at least one whole
+                                // cell before it counts as a drag, so the
+                                // jitter of a normal click never selects.
+                                let dx = ui.mousePos.x - rx.get(dragOriginPxX);
+                                let dy = ui.mousePos.y - rx.get(dragOriginPxY);
+                                if dx < 0.0 { dx = -dx; }
+                                if dy < 0.0 { dy = -dy; }
+                                if dx >= characterSize.x || dy >= lineHeight {
+                                    dragMoved := true;
+                                    // In vim, dragging IS a visual selection.
+                                    // Enter it from the PRESS position, not
+                                    // the current caret: visual mode allows
+                                    // the caret one past the last character,
+                                    // so re-deriving it here would shift the
+                                    // anchor by one on any click past the
+                                    // end of a line.
+                                    if rx.get(vimOn) {
+                                        let dragMode = rx.get(texteditBehavior.mode);
+                                        if !textedit_behavior.modeIsVisual(dragMode) {
+                                            texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                                            texteditBehavior.setSelectionAnchor(origin);
+                                        }
+                                    } else {
+                                        texteditBehavior.setSelectionAnchor(origin);
+                                    }
                                 }
                             }
-                            texteditBehavior.moveTo(
-                                documentPositionAt(ui.mousePos), true, true);
+                            if rx.get(dragMoved) {
+                                texteditBehavior.moveTo(
+                                    documentPositionAt(ui.mousePos), true, true);
+                            }
                         } else {
                             mouseSelecting := false;
+                            dragMoved := false;
                         }
                     }
 
@@ -998,6 +1113,14 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.top(i as real * lineHeight - scrollY),
                                 presets.left(0),
                                 presets.row(),
+                                // A code line must NEVER wrap. Wrapping puts
+                                // the overflow on a second visual row, so the
+                                // glyph at column N stops being at
+                                // N*charWidth -- and documentPositionAt(),
+                                // the caret and the selection highlight all
+                                // assume exactly that. Long lines overflow
+                                // and get clipped instead, like every editor.
+                                presets.noWrap(),
                             ],
                         }, () => {
                             if tokens.length > 0 {
