@@ -11,7 +11,7 @@
 
 #define HZSTD_STRING_FROM_BYTE(allocator, byte)                                                                        \
   ({                                                                                                                   \
-    char *buf = hzstd_allocate(allocator, 1);                                                                          \
+    char *buf = hzstd_allocate(allocator, 1, NULL);                                                                    \
     buf[0] = byte;                                                                                                     \
     HZSTD_STRING(buf, 1);                                                                                              \
   })
@@ -33,7 +33,7 @@
       __hz_lim = (uint32_t)__hz_limit.as_tag_0;                                                                        \
     }                                                                                                                  \
                                                                                                                        \
-    hzstd_dynamic_array_t *__hz_result = HZSTD_DYNAMIC_ARRAY_CREATE(__hz_alloc, hzstd_str_t, 4);                       \
+    hzstd_dynamic_array_t *__hz_result = HZSTD_DYNAMIC_ARRAY_CREATE(__hz_alloc, hzstd_str_t, 4, "str");                \
                                                                                                                        \
     if (__hz_lim == 0) {                                                                                               \
       /* limit of zero always yields an empty array */                                                                 \

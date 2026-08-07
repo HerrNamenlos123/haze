@@ -94,7 +94,7 @@ hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags,
 
   /* ---- allocate blob ---- */
   hzstd_regex_blob_t *blob = (hzstd_regex_blob_t *)hzstd_allocate(
-      hzstd_make_heap_allocator(), sizeof(hzstd_regex_blob_t));
+      hzstd_make_heap_allocator(), sizeof(hzstd_regex_blob_t), "hzstd_regex_blob_t");
 
   if (!blob) {
     pcre2_code_free(code);
@@ -157,7 +157,7 @@ hzstd_regex_find_one_result_t hzstd_regex_find(hzstd_allocator_t allocator,
     result.match.text.length = ovec[1] - ovec[0];
 
     result.match.groups =
-        HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_group_t, group_count);
+        HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_group_t, group_count, "hzstd_regex_group_t");
 
     for (uint32_t i = 1; i <= group_count; i++) {
       PCRE2_SIZE start = ovec[2 * i];
@@ -300,7 +300,7 @@ hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_regex_t regex,
                      hzstd_str_t text) {
   HZSTD_DARRAY(hzstd_regex_find_match_t)
   result = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_regex_find_match_t,
-                                      HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY);
+                                      HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY, "hzstd_regex_find_match_t");
 
   if (!regex.blob || !regex.blob->code) {
     return result;
@@ -338,7 +338,7 @@ hzstd_regex_find_all(hzstd_allocator_t allocator, hzstd_regex_t regex,
         .groups = HZSTD_DYNAMIC_ARRAY_CREATE(
             allocator, hzstd_regex_group_t,
             // the minimum size is internally maxed anyways
-            group_count)};
+            group_count, "hzstd_regex_group_t")};
 
     /* ---- capture groups ---- */
     for (uint32_t i = 1; i <= group_count; i++) {

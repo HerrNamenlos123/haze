@@ -170,7 +170,7 @@ hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t p
     };
   }
 
-  char* buffer = hzstd_allocate(allocator, (size_t)size);
+  char* buffer = hzstd_allocate(allocator, (size_t)size, NULL);
   if (!buffer) {
     fclose(f);
     return (hzstd_fs_error_t) {

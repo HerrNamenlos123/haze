@@ -74,8 +74,8 @@ static _Thread_local bool hz_profiler_instrumentation_suppressed_for_thread = fa
 // hzstd_push_memory_instrumentation/pop to publish atomically. Returns NULL
 // for a NULL callback (nothing installed), the same sentinel
 // hz_profiler_instrumentation_state itself uses at rest.
-static hzstd_memory_instrumentation_state_t *hz_profiler_publish_instrumentation_state(
-    void (*callback)(hz_profiler_instrument_allocation_type type, int skip_n_frames, void *data), void *data)
+static hzstd_memory_instrumentation_state_t *
+hz_profiler_publish_instrumentation_state(hzstd_memory_instrumentation_callback_t callback, void *data)
 {
   if (!callback) {
     return NULL;
@@ -86,8 +86,8 @@ static hzstd_memory_instrumentation_state_t *hz_profiler_publish_instrumentation
   return state;
 }
 
-hzstd_memory_instrumentation_state_t hzstd_push_memory_instrumentation(
-    void (*callback)(hz_profiler_instrument_allocation_type type, int skip_n_frames, void *data), void *data)
+hzstd_memory_instrumentation_state_t
+hzstd_push_memory_instrumentation(hzstd_memory_instrumentation_callback_t callback, void *data)
 {
   hzstd_memory_instrumentation_state_t *newState = hz_profiler_publish_instrumentation_state(callback, data);
   // release: any thread that subsequently loads this new pointer (acquire,
@@ -102,7 +102,7 @@ hzstd_memory_instrumentation_state_t hzstd_push_memory_instrumentation(
 void hzstd_pop_memory_instrumentation(hzstd_memory_instrumentation_state_t prevState)
 {
   hzstd_memory_instrumentation_state_t *restored = hz_profiler_publish_instrumentation_state(
-      (void (*)(hz_profiler_instrument_allocation_type, int, void *))prevState.fn, prevState.data);
+      (hzstd_memory_instrumentation_callback_t)prevState.fn, prevState.data);
   atomic_store_explicit(&hz_profiler_instrumentation_state, restored, memory_order_release);
   // Deliberately leaked (a handful of these live for the life of the
   // process, at most one per nested Profiler push/pop) rather than freed:
@@ -136,7 +136,7 @@ void hzstd_temporarily_reenable_memory_instrumentation(hzstd_memory_instrumentat
 // this thread's own suppression flag. Every allocation entry point below
 // funnels through this single check.
 static inline bool
-hz_profiler_instrumentation_try_get(void (**outFn)(hz_profiler_instrument_allocation_type, int, void *), void **outData)
+hz_profiler_instrumentation_try_get(hzstd_memory_instrumentation_callback_t *outFn, void **outData)
 {
   if (hz_profiler_instrumentation_suppressed_for_thread) {
     return false;
@@ -148,7 +148,7 @@ hz_profiler_instrumentation_try_get(void (**outFn)(hz_profiler_instrument_alloca
   if (!state) {
     return false;
   }
-  *outFn = (void (*)(hz_profiler_instrument_allocation_type, int, void *))state->fn;
+  *outFn = (hzstd_memory_instrumentation_callback_t)state->fn;
   *outData = state->data;
   return true;
 }
@@ -169,12 +169,12 @@ hz_profiler_instrumentation_try_get(void (**outFn)(hz_profiler_instrument_alloca
 // frames from THIS function's immediate caller outward, and this function
 // adds exactly 1 for its own frame before invoking the instrumentation
 // hook.
-void *hzstd_heap_allocate_n(size_t size, int skip_n_frames)
+void *hzstd_heap_allocate_n(size_t size, const char *dataType, int skip_n_frames)
 {
-  void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
+  hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_heap, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_heap, size, dataType, 1 + skip_n_frames, data);
   }
 
   void *ptr = GC_malloc(size);
@@ -184,17 +184,17 @@ void *hzstd_heap_allocate_n(size_t size, int skip_n_frames)
   return ptr;
 }
 
-void *hzstd_heap_allocate(size_t size)
+void *hzstd_heap_allocate(size_t size, const char *dataType)
 {
-  return hzstd_heap_allocate_n(size, 1);
+  return hzstd_heap_allocate_n(size, dataType, 1);
 }
 
-void *hzstd_heap_allocate_atomic_n(size_t size, int skip_n_frames)
+void *hzstd_heap_allocate_atomic_n(size_t size, const char *dataType, int skip_n_frames)
 {
-  void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
+  hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_heap_atomic, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_heap_atomic, size, dataType, 1 + skip_n_frames, data);
   }
 
   void *ptr = GC_malloc_atomic(size);
@@ -204,17 +204,17 @@ void *hzstd_heap_allocate_atomic_n(size_t size, int skip_n_frames)
   return ptr;
 }
 
-void *hzstd_heap_allocate_atomic(size_t size)
+void *hzstd_heap_allocate_atomic(size_t size, const char *dataType)
 {
-  return hzstd_heap_allocate_atomic_n(size, 1);
+  return hzstd_heap_allocate_atomic_n(size, dataType, 1);
 }
 
-void *hzstd_heap_realloc_n(void *buffer, size_t size, int skip_n_frames)
+void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int skip_n_frames)
 {
-  void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
+  hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_heap_realloc, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_heap_realloc, size, dataType, 1 + skip_n_frames, data);
   }
 
   void *ptr = GC_realloc(buffer, size);
@@ -224,9 +224,9 @@ void *hzstd_heap_realloc_n(void *buffer, size_t size, int skip_n_frames)
   return ptr;
 }
 
-void *hzstd_heap_realloc(void *buffer, size_t size)
+void *hzstd_heap_realloc(void *buffer, size_t size, const char *dataType)
 {
-  return hzstd_heap_realloc_n(buffer, size, 1);
+  return hzstd_heap_realloc_n(buffer, size, dataType, 1);
 }
 
 void hzstd_memzero(void *target, size_t size)
@@ -258,39 +258,40 @@ void hzstd_force_gc()
   GC_gcollect();
 }
 
-hzstd_arena_t *hzstd_arena_create_n(int skip_n_frames)
+hzstd_arena_t *hzstd_arena_create_n(const char *dataType, int skip_n_frames)
 {
-  void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
+  hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_arena_create, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_arena_create, sizeof(hzstd_arena_t), dataType, 1 + skip_n_frames, data);
   }
 
-  hzstd_arena_t *arena = (hzstd_arena_t *)hzstd_heap_allocate_n(sizeof(hzstd_arena_t), 1 + skip_n_frames);
+  hzstd_arena_t *arena = (hzstd_arena_t *)hzstd_heap_allocate_n(sizeof(hzstd_arena_t), NULL, 1 + skip_n_frames);
   return arena;
 }
 
-hzstd_arena_t *hzstd_arena_create()
+hzstd_arena_t *hzstd_arena_create(const char *dataType)
 {
-  return hzstd_arena_create_n(1);
+  return hzstd_arena_create_n(dataType, 1);
 }
 
-static hzstd_arena_chunk_t *hzstd_arena_create_chunk(size_t chunk_size, int skip_n_frames)
+static hzstd_arena_chunk_t *hzstd_arena_create_chunk(size_t chunk_size, const char *dataType, int skip_n_frames)
 {
-  void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
+  hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_arena_enlarge, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_arena_enlarge, chunk_size, dataType, 1 + skip_n_frames, data);
   }
   size_t alloc_size = sizeof(hzstd_arena_chunk_t) + chunk_size;
-  hzstd_arena_chunk_t *chunk = (hzstd_arena_chunk_t *)hzstd_heap_allocate_n(alloc_size, 1 + skip_n_frames);
+  hzstd_arena_chunk_t *chunk = (hzstd_arena_chunk_t *)hzstd_heap_allocate_n(alloc_size, NULL, 1 + skip_n_frames);
   chunk->capacity = chunk_size;
   return chunk;
 }
 
-static hzstd_arena_chunk_t *hzstd_arena_enlarge(hzstd_arena_chunk_t *last_chunk, size_t chunk_size, int skip_n_frames)
+static hzstd_arena_chunk_t *
+hzstd_arena_enlarge(hzstd_arena_chunk_t *last_chunk, size_t chunk_size, const char *dataType, int skip_n_frames)
 {
-  last_chunk->next_chunk = hzstd_arena_create_chunk(chunk_size, 1 + skip_n_frames);
+  last_chunk->next_chunk = hzstd_arena_create_chunk(chunk_size, dataType, 1 + skip_n_frames);
   return last_chunk->next_chunk;
 }
 
@@ -298,20 +299,17 @@ void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frame
 {
   hzstd_assert(size != 0);
 
-  // Suballocation tracking is deactivated since it's way too crazy to track during json parsing,
-  // and arena suballocation is actually already the fast path and if someone knowingly allocates into arenas,
-  // we can actually consider this a good thing since at least they use arenas. Growing is still tracked elsewhere.
-  // void (*fn)(hz_profiler_instrument_allocation_type, int, void *);
-  // void *data;
-  // if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-  //   fn(hz_profiler_instrument_allocation_type_arena_suballoc, 1 + skip_n_frames, data);
-  // }
+  // Suballocation tracking is deliberately off (way too crazy to track during json parsing,
+  // and arena suballocation is already the fast path -- if someone knowingly allocates into
+  // arenas, that's already a good thing since at least they use arenas). Growing is still
+  // tracked, via hzstd_arena_create_chunk/hzstd_arena_enlarge above, which is why this
+  // function doesn't need a dataType parameter of its own -- there is nothing to report here.
 
   size_t alignment = alignof(max_align_t);
   size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size + alignment);
 
   if (!arena->first_chunk) {
-    arena->first_chunk = hzstd_arena_create_chunk(chunk_size, 1 + skip_n_frames);
+    arena->first_chunk = hzstd_arena_create_chunk(chunk_size, "Arena chunk", 1 + skip_n_frames);
     arena->last_chunk = arena->first_chunk;
   }
 
@@ -324,7 +322,7 @@ void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frame
   size_t new_used = (aligned - base) + size;
 
   if (new_used > chunk->capacity) {
-    chunk = hzstd_arena_enlarge(chunk, chunk_size, 1 + skip_n_frames);
+    chunk = hzstd_arena_enlarge(chunk, chunk_size, "Arena chunk", 1 + skip_n_frames);
     arena->last_chunk = chunk;
     base = (uintptr_t)(chunk + 1);
     aligned = (base + (alignment - 1)) & ~(alignment - 1);
@@ -345,13 +343,13 @@ void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
 // each adds exactly its own one frame on top of whatever skip_n_frames it
 // was given (the "+1" pattern, same as every other _n function in this
 // file).
-static void *heap_allocator_impl(void *ctx, size_t size, int skip_n_frames)
+static void *heap_allocator_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
-  return hzstd_heap_allocate_n(size, 1 + skip_n_frames);
+  return hzstd_heap_allocate_n(size, dataType, 1 + skip_n_frames);
 }
-static void *heap_allocator_atomic_impl(void *ctx, size_t size, int skip_n_frames)
+static void *heap_allocator_atomic_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
-  return hzstd_heap_allocate_atomic_n(size, 1 + skip_n_frames);
+  return hzstd_heap_allocate_atomic_n(size, dataType, 1 + skip_n_frames);
 }
 
 hzstd_allocator_t hzstd_make_heap_allocator()
@@ -363,9 +361,10 @@ hzstd_allocator_t hzstd_make_heap_allocator()
   };
 }
 
-static void *malloc_allocator_impl(void *ctx, size_t size, int skip_n_frames)
+static void *malloc_allocator_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
   (void)skip_n_frames; // plain malloc, never instrumented -- nothing to thread this into
+  (void)dataType;
   void *ptr = malloc(size);
   if (!ptr) {
     hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
@@ -384,8 +383,9 @@ hzstd_allocator_t hzstd_make_non_gc_raw_malloc_allocator()
   };
 }
 
-static void *arena_allocator_impl(void *ctx, size_t size, int skip_n_frames)
+static void *arena_allocator_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
+  (void)dataType; // arena suballocation is deliberately untracked -- see hzstd_arena_allocate_n
   return hzstd_arena_allocate_n((hzstd_arena_t *)ctx, size, 1 + skip_n_frames);
 }
 
@@ -403,16 +403,16 @@ hzstd_allocator_t hzstd_make_arena_allocator()
   return (hzstd_allocator_t) {
     .allocate = arena_allocator_impl,
     .allocateAtomic = arena_allocator_impl,
-    .ctx = hzstd_arena_create_n(1),
+    .ctx = hzstd_arena_create_n("Arena", 1),
   };
 }
 
-void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, int skip_n_frames)
+void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames)
 {
-  return allocator.allocate(allocator.ctx, size, 1 + skip_n_frames);
+  return allocator.allocate(allocator.ctx, size, dataType, 1 + skip_n_frames);
 }
 
-void *hzstd_allocate(hzstd_allocator_t allocator, size_t size)
+void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataType)
 {
-  return hzstd_allocate_n(allocator, size, 1);
+  return hzstd_allocate_n(allocator, size, dataType, 1);
 }

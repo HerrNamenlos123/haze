@@ -35,7 +35,7 @@ haze_image_result_t haze_image_load_memory(hzstd_cptr_t data, hzstd_int_t length
     // Atomic: this buffer is opaque bytes with no internal pointers, so the
     // collector doesn't need to scan it for references -- just like
     // hzstd_string.c/hzstd_utils.c do for string data.
-    gcPixels = hzstd_heap_allocate_atomic(size);
+    gcPixels = hzstd_heap_allocate_atomic(size, NULL);
     memcpy(gcPixels, decoded, size);
   }
   stbi_image_free(decoded);

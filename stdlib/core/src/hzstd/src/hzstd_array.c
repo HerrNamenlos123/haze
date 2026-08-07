@@ -27,8 +27,14 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
 
   size_t new_bytes = new_capacity * da->elem_size;
 
+  // Growth has no compiler call site of its own (unlike creation, which the
+  // compiler emits directly at HZSTD_DYNAMIC_ARRAY_CREATE with the static
+  // element type already in hand) -- da->elementTypeName is what lets a
+  // "Grow ..." instrumentation event still report a real type here, carried
+  // forward from whatever HZSTD_DYNAMIC_ARRAY_CREATE was originally called
+  // with.
   if (!da->buffer) {
-    void *p = hzstd_heap_allocate_n(new_bytes, 1 + skip_n_frames);
+    void *p = hzstd_heap_allocate_n(new_bytes, da->elementTypeName, 1 + skip_n_frames);
     if (!p) {
       return hzstd_dynamic_array_result_out_of_memory;
     }
@@ -37,7 +43,7 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
     return hzstd_dynamic_array_result_ok;
   }
   else {
-    void *p = hzstd_heap_realloc_n(da->buffer, new_bytes, 1 + skip_n_frames);
+    void *p = hzstd_heap_realloc_n(da->buffer, new_bytes, da->elementTypeName, 1 + skip_n_frames);
     if (!p) {
       return hzstd_dynamic_array_result_out_of_memory; /* leave old buffer intact on failure */
     }
@@ -56,15 +62,16 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
  * The control struct is allocated from the arena. The variable buffer is NULL initially.
  * Returns pointer to DynArray on success, NULL on allocation failure (arena ran out).
  */
-hzstd_dynamic_array_t *
-hzstd_dynamic_array_create(hzstd_allocator_t allocator, size_t elem_size, size_t initial_capacity)
+hzstd_dynamic_array_t *hzstd_dynamic_array_create(
+    hzstd_allocator_t allocator, size_t elem_size, size_t initial_capacity, const char *elementTypeName)
 {
   if (elem_size == 0) {
     return NULL;
   }
   // skip_n_frames=1 hides this function's own frame -- see
   // hzstd_dynamic_array_realloc_buffer's doc comment for the convention.
-  hzstd_dynamic_array_t *da = hzstd_allocate_n(allocator, sizeof(hzstd_dynamic_array_t), 1);
+  hzstd_dynamic_array_t *da
+      = hzstd_allocate_n(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t", 1);
   if (!da) {
     return NULL;
   }
@@ -72,6 +79,7 @@ hzstd_dynamic_array_create(hzstd_allocator_t allocator, size_t elem_size, size_t
   da->elem_size = elem_size;
   da->size = 0;
   da->capacity = 0;
+  da->elementTypeName = elementTypeName;
 
   if (initial_capacity > 0) {
     /* attempt to allocate initial buffer */

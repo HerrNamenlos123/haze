@@ -2248,7 +2248,7 @@ class CodeGenerator {
             tempWriter.write(e.temp);
             return `env[${i}] = ${e.out.get()};`;
           });
-          env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}); ${setters.join(" ")} (void*)env; })`;
+          env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}, "Closure env"); ${setters.join(" ")} (void*)env; })`;
         }
         const func = this.lr.functionNodes.get(expr.function);
         outWriter.write(

@@ -21,6 +21,11 @@ namespace ffi {
     export extern C noemit opaque inline struct hzstd_memory_instrumentation_frame_t {
         stacktrace: hzstd_stacktrace_t;
         timestamp: real;
+        sizeBytes: int;
+        // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) --
+        // see profiling.allocationKindName for the int -> label mapping.
+        allocationType: int;
+        dataType: str; // empty string = absent
     };
 
     export extern C noemit opaque inline struct hzstd_profiling_result_t {
@@ -162,16 +167,39 @@ namespace profiling {
 
     // ── trace.json export ────────────────────────────────────────────────────
     //
-    // pid/tid layout mirrors real Chrome traces (one process, several purpose-specific
-    // threads/tracks within it) and leaves room to grow -- e.g. a future second Haze process
-    // (worker/subprocess) would get pid 2 rather than requiring these ids to be renumbered.
+    // pid/tid layout mirrors real Chrome traces (one process, one main thread/track within it)
+    // and leaves room to grow -- e.g. a future second Haze process (worker/subprocess) would get
+    // pid 2 rather than requiring these ids to be renumbered.
     const hazeProcessPid = 1;
     const mainThreadTid = 1; // owns the "Profile"/"RunTask" stream, like Chrome's CrRendererMain
-    const heapAllocationsTid = 2;
 
-    // Sane placeholders until real instrumentation reports an allocation's type/size -- every
-    // allocation currently looks identical in the trace beyond its stack trace and timestamp.
-    const placeholderAllocationName = "Allocation";
+    // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) -- kept as a plain int on
+    // the FFI struct (see ffi.hzstd_memory_instrumentation_frame_t) rather than a real enum type,
+    // since hzstd_types.h (which that struct is defined against) is deliberately freestanding and
+    // can't depend on hzstd_memory.h. Values must be kept in sync by hand.
+    fn allocationKindName(allocationType: int): str {
+        if allocationType == 0 { return "Heap alloc"; }       // hz_profiler_instrument_allocation_type_heap
+        if allocationType == 1 { return "Grow"; }              // hz_profiler_instrument_allocation_type_heap_realloc
+        if allocationType == 2 { return "Heap alloc"; }        // hz_profiler_instrument_allocation_type_heap_atomic
+        if allocationType == 3 { return "Create"; }            // hz_profiler_instrument_allocation_type_arena_create
+        if allocationType == 4 { return "Arena suballoc"; }    // hz_profiler_instrument_allocation_type_arena_suballoc (unused today)
+        if allocationType == 5 { return "Grow"; }              // hz_profiler_instrument_allocation_type_arena_enlarge
+        return "Allocation";
+    }
+
+    // Builds the human-readable marker name shown in the trace for one allocation capture:
+    // "<Kind> <dataType> (<size> bytes)" when a dataType string was actually reported by the
+    // compiler/runtime (see the big comment on hzstd_heap_allocate_n in hzstd_memory.h for which
+    // allocations carry one -- struct instantiation and array creation always do; array growth
+    // does via hzstd_dynamic_array_t::elementTypeName; a small number of internal-only runtime
+    // allocations legitimately don't), falling back to just "<Kind> (<size> bytes)" otherwise.
+    fn allocationMarkerName(frame: ffi.hzstd_memory_instrumentation_frame_t): str {
+        let kind = allocationKindName(frame.allocationType);
+        if frame.dataType.length > 0 {
+            return f"{kind} {frame.dataType} ({frame.sizeBytes} bytes)";
+        }
+        return f"{kind} ({frame.sizeBytes} bytes)";
+    }
 
     export fn buildTrace(result: ProfilingResult): ChromeTrace.Trace {
         let builder = ChromeTrace.TraceBuilder(hazeProcessPid);
@@ -181,7 +209,6 @@ namespace profiling {
         // cause -- see TraceBuilder.reserveEvents.
         builder.reserveEvents(result.memoryInstrumentationFrames.length + 8);
         builder.addThread(mainThreadTid, "CrRendererMain", true);
-        builder.addThread(heapAllocationsTid, "Heap Allocations");
         builder.addFrame(mainThreadTid, "HZFRAME0", "file:///haze");
 
         let profile = buildCpuProfile(result);
@@ -191,13 +218,33 @@ namespace profiling {
         builder.addTask(mainThreadTid, profile.startTime, profile.endTime - profile.startTime);
         builder.addCpuProfileSamples(mainThreadTid, profile.startTime, profile);
 
+        // Deliberately NOT a separate "Heap Allocations" thread (that was the previous
+        // approach): DevTools hardcodes thread-track order by thread TYPE, classified purely
+        // from the thread's NAME (devtools-frontend's Threads.ts/getThreadTypeForRendererThread)
+        // -- an unrecognized name always lands in ThreadType.OTHER, which
+        // CompatibilityTracksAppender's threadTrackOrder always sorts below MAIN_THREAD (priority
+        // 7 vs 0), unconditionally, regardless of tid, registration order, or thread_sort_index
+        // (all three were tried and confirmed to have no effect on this specific decision -- see
+        // git history). There is no trace.json-level way to outrank MAIN_THREAD via a second
+        // thread.
+        //
+        // The actual fix: DevTools' Timings track (TimingsTrackAppender) is appended before any
+        // thread tracks at all in CompatibilityTracksAppender's constructor -- it always renders
+        // above every thread, main included, unconditionally. It's populated by UserTimingsHandler
+        // scanning the WHOLE trace for cat: "blink.user_timing" events (see
+        // Types.Events.isPerformanceMark / UserTimingsHandler.ts), independent of which tid an
+        // event is attached to -- our addInstantMarker calls already emit exactly that category
+        // (see ChromeTrace.TraceEventInstantMarker), so putting them on the main thread's own tid
+        // is enough for them to land in the always-first Timings track; no second thread needed.
         for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
             let frame = result.memoryInstrumentationFrames[i];
             builder.addInstantMarker(
-                heapAllocationsTid,
+                mainThreadTid,
                 frame.timestamp * 1000000.0,
-                placeholderAllocationName,
+                allocationMarkerName(frame),
                 frameRefsForStacktrace(frame.stacktrace),
+                frame.dataType.length > 0 ? frame.dataType : none,
+                frame.sizeBytes,
             );
         }
 

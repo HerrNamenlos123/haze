@@ -315,8 +315,8 @@ typedef struct hzstd_module_metadata_t {
 // hzstd_dynamic_array_create, hzstd_arena_allocate) sit between the actual
 // call site and hzstd_allocate, which varies by caller.
 typedef struct hzstd_allocator_t {
-  void *(*allocate)(void *ctx, size_t size, int skip_n_frames);
-  void *(*allocateAtomic)(void *ctx, size_t size, int skip_n_frames);
+  void *(*allocate)(void *ctx, size_t size, const char *dataType, int skip_n_frames);
+  void *(*allocateAtomic)(void *ctx, size_t size, const char *dataType, int skip_n_frames);
   void *ctx;
 } hzstd_allocator_t;
 
@@ -349,6 +349,14 @@ typedef struct {
   size_t elem_size;
   size_t size;
   size_t capacity;
+  // Static, compile-time-constant description of the element type (e.g.
+  // "int", "struct Foo.Bar<int>"), set once at HZSTD_DYNAMIC_ARRAY_CREATE
+  // time and read back by hzstd_dynamic_array_realloc_buffer whenever the
+  // array grows -- growth has no compiler call site of its own (`.push`/
+  // `.insert` are pure runtime code with no static type info), so this is
+  // the only way a "Grow ..." instrumentation event can report what it's
+  // growing. NULL if the array was created with no metadata available.
+  const char *elementTypeName;
 } hzstd_dynamic_array_t;
 
 // This type is to be used for encoding the actual type in the code, so we know
@@ -398,6 +406,14 @@ typedef struct {
 typedef struct {
   hzstd_stacktrace_t stacktrace;
   double timestamp;
+  hzstd_int_t sizeBytes;
+  // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) as a
+  // plain int rather than that enum type itself -- this header is types-only
+  // and freestanding (see the file header) and must not depend on
+  // hzstd_memory.h, which in turn depends back on this file for
+  // hzstd_allocator_t/hzstd_arena_t.
+  hzstd_int_t allocationType;
+  hzstd_str_t dataType; /* empty string (length == 0) = absent */
 } hzstd_memory_instrumentation_frame_t;
 
 // Full panic context: message, type, and frames (value type).

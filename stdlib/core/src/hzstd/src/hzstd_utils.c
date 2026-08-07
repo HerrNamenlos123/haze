@@ -123,7 +123,7 @@ hzstd_str_t hzstd_color_to_hex(hzstd_color_t color,
   unsigned b = (unsigned)(clamp01(color.b) * 255.0 + 0.5);
   unsigned a = (unsigned)(clamp01(color.a) * 255.0 + 0.5);
   hzstd_bool_t skip_alpha = omit_alpha_if_opaque && a == 255;
-  char *buf = hzstd_heap_allocate_atomic(skip_alpha ? 6 : 8);
+  char *buf = hzstd_heap_allocate_atomic(skip_alpha ? 6 : 8, NULL);
   if (skip_alpha || !argb_mode) {
     /* RRGGBB[AA] */
     buf[0] = hex_chars[r >> 4]; buf[1] = hex_chars[r & 0xf];
