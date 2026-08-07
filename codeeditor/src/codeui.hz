@@ -1,4 +1,5 @@
 
+import app
 import renderer
 import ui_styling
 import headwind
@@ -408,7 +409,25 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 return ui.now();
             },
             replaceRange: applyReplaceRange,
+
+            // Route the unnamed register through the OS clipboard, so
+            // yanking here pastes into other applications and vice
+            // versa. Vim spells this `set clipboard=unnamedplus`; the
+            // engine only wires the bridge, `useSystemClipboard` below
+            // is what turns it on.
+            getClipboard: () => {
+                let text: String = String(app.getClipboardText());
+                return text;
+            },
+            setClipboard: (text: String): void => {
+                app.setClipboardText(text.cloneString());
+            },
         });
+
+        // Turns the bridge wired above on. Applies in both editing models:
+        // vim's y/p and the plain editor's ctrl+c/ctrl+v share this one
+        // register, so the OS clipboard is the single source of truth.
+        texteditBehavior.useSystemClipboard = true;
 
         // Vim is an OPTIONAL behavior layered on the same engine. Toggling
         // it at runtime only swaps which behavior is installed -- the
@@ -1427,6 +1446,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         texteditBehavior.cursorPosition.y,
                         texteditBehavior.cursorPosition.x,
                     );
+                    // ...but where there is NO character under it there is
+                    // no width either, and a zero-wide block is an
+                    // invisible caret. That is not an edge case: an empty
+                    // line in normal mode always lands here (so does the
+                    // one-past-the-end position visual mode allows), and
+                    // the caret simply vanished. Fall back to one cell,
+                    // which is what vim itself draws on a blank line.
+                    if caretCells <= 0 {
+                        caretCells = 1;
+                    }
                     let cursorPos = Vec2(
                         cursorCell as real * characterSize.x,
                         cursorTop - scrollY,
