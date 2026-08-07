@@ -17,12 +17,24 @@
 // real user code as its first (least-internal) frame instead of hzstd's
 // own allocator plumbing -- see the big comment on
 // hzstd_memory_instrumentation_capture_stack in hzstd_profiling.c.
-void *hzstd_heap_allocate(size_t size);
-void *hzstd_heap_allocate_n(size_t size, int skip_n_frames);
-void *hzstd_heap_allocate_atomic(size_t size);
-void *hzstd_heap_allocate_atomic_n(size_t size, int skip_n_frames);
-void *hzstd_heap_realloc(void *buffer, size_t size);
-void *hzstd_heap_realloc_n(void *buffer, size_t size, int skip_n_frames);
+// dataType is a static, compile-time-constant description of the
+// high-level Haze value being allocated (e.g. "struct Foo.Bar<int>",
+// "Create [](int)", "Grow [](int)", "Arena") -- always a string literal
+// (or a `static const char*` sourced from one, e.g.
+// hzstd_dynamic_array_t::elementTypeName, itself only ever set from a
+// literal at HZSTD_DYNAMIC_ARRAY_CREATE time), NEVER built/formatted at
+// runtime. Passing it costs nothing when no profiler is attached: it's
+// just one more register-passed argument to a call
+// (hz_profiler_instrumentation_try_get) that doesn't happen. NULL means
+// "no metadata available" and should be rare -- see the callers of these
+// functions for the few legitimate cases (e.g. plain internal bookkeeping
+// allocations with no user-facing type).
+void *hzstd_heap_allocate(size_t size, const char *dataType);
+void *hzstd_heap_allocate_n(size_t size, const char *dataType, int skip_n_frames);
+void *hzstd_heap_allocate_atomic(size_t size, const char *dataType);
+void *hzstd_heap_allocate_atomic_n(size_t size, const char *dataType, int skip_n_frames);
+void *hzstd_heap_realloc(void *buffer, size_t size, const char *dataType);
+void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int skip_n_frames);
 void hzstd_memzero(void *target, size_t size);
 void hzstd_init_gc();
 
@@ -45,16 +57,16 @@ void hzstd_force_gc();
 
 #define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
 
-#define HZSTD_ALLOC_STRUCT(allocator, struct_t, value)                                                                 \
-  ({                                                                                                                   \
-    struct_t *tmp = hzstd_allocate(allocator, sizeof(struct_t));                                                       \
+#define HZSTD_ALLOC_STRUCT(allocator, struct_t, value, dataType)                                                       \
+  ({                                                                                                                    \
+    struct_t *tmp = hzstd_allocate(allocator, sizeof(struct_t), dataType);                                             \
     *tmp = (struct_t)(value);                                                                                          \
     tmp;                                                                                                               \
   })
 
 #define HZSTD_ENV_BLOCK_FOR_THIS_PTR(value)                                                                            \
   ({                                                                                                                   \
-    void **env = hzstd_heap_allocate(sizeof(void *));                                                                  \
+    void **env = hzstd_heap_allocate(sizeof(void *), NULL);                                                            \
     *env = (value);                                                                                                    \
     (void *)env;                                                                                                       \
   })
@@ -67,11 +79,17 @@ void hzstd_force_gc();
 
 #define HZSTD_HOIST(struct_t, value)                                                                                   \
   ({                                                                                                                   \
-    struct_t *ptr = hzstd_heap_allocate(sizeof(struct_t));                                                             \
+    struct_t *ptr = hzstd_heap_allocate(sizeof(struct_t), NULL);                                                       \
     *ptr = value;                                                                                                      \
     ptr;                                                                                                               \
   })
 
+// Array growth has no dedicated value of its own: HZSTD_DYNAMIC_ARRAY_CREATE's initial buffer
+// allocation and every later regrowth both go straight through hzstd_heap_allocate_n/
+// hzstd_heap_realloc_n (see hzstd_dynamic_array_realloc_buffer in hzstd_array.c), so they already
+// report as plain heap/heap_realloc -- distinguishable from any other heap allocation/realloc by
+// the dataType string carried alongside (hzstd_dynamic_array_t::elementTypeName), not by a
+// separate enum value.
 typedef enum {
   hz_profiler_instrument_allocation_type_heap = 0,
   hz_profiler_instrument_allocation_type_heap_realloc = 1,
@@ -85,25 +103,32 @@ typedef struct {
   void *fn;
   void *data;
 } hzstd_memory_instrumentation_state_t;
+
 // skip_n_frames here is the depth from the callback's OWN frame down to the
 // real allocation call site, decided once by whichever hzstd_heap_allocate_n/
 // hzstd_arena_*_n call ultimately invoked it -- see
-// hzstd_trace_memory_impl's use of it in hzstd_profiling.c.
-hzstd_memory_instrumentation_state_t hzstd_push_memory_instrumentation(
-    void (*callback)(hz_profiler_instrument_allocation_type type, int skip_n_frames, void *data), void *data);
+// hzstd_trace_memory_impl's use of it in hzstd_profiling.c. `size` is the
+// byte size of this specific allocation; `dataType` is the static
+// description of what's being allocated (see the big comment on
+// hzstd_heap_allocate_n above) or NULL if genuinely unknown.
+typedef void (*hzstd_memory_instrumentation_callback_t)(
+    hz_profiler_instrument_allocation_type type, size_t size, const char *dataType, int skip_n_frames, void *data);
+
+hzstd_memory_instrumentation_state_t
+hzstd_push_memory_instrumentation(hzstd_memory_instrumentation_callback_t callback, void *data);
 void hzstd_pop_memory_instrumentation(hzstd_memory_instrumentation_state_t prevState);
 
 hzstd_memory_instrumentation_state_t hzstd_temporarily_disable_memory_instrumentation();
 void hzstd_temporarily_reenable_memory_instrumentation(hzstd_memory_instrumentation_state_t prev);
 
-hzstd_arena_t *hzstd_arena_create();
-hzstd_arena_t *hzstd_arena_create_n(int skip_n_frames);
+hzstd_arena_t *hzstd_arena_create(const char *dataType);
+hzstd_arena_t *hzstd_arena_create_n(const char *dataType, int skip_n_frames);
 
 void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size);
 void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frames);
 
-void *hzstd_allocate(hzstd_allocator_t allocator, size_t size);
-void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, int skip_n_frames);
+void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataType);
+void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
 
 hzstd_allocator_t hzstd_make_heap_allocator();
 hzstd_allocator_t hzstd_make_arena_allocator();

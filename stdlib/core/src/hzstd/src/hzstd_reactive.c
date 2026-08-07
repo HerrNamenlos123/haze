@@ -28,12 +28,12 @@ static void register_dependency(hzstd_node_t* src, hzstd_computed_node_t* dst)
     return;
   }
 
-  hzstd_dep_edge_t* edge = hzstd_heap_allocate(sizeof(*edge));
+  hzstd_dep_edge_t* edge = hzstd_heap_allocate(sizeof(*edge), "hzstd_dep_edge_t");
   edge->node = (hzstd_node_t*)dst;
   edge->next = src->dependents;
   src->dependents = edge;
 
-  hzstd_cell_dep_t* dep = hzstd_heap_allocate(sizeof(*dep));
+  hzstd_cell_dep_t* dep = hzstd_heap_allocate(sizeof(*dep), "hzstd_cell_dep_t");
   dep->node = src;
   dep->next = dst->deps;
   dst->deps = dep;
@@ -41,7 +41,7 @@ static void register_dependency(hzstd_node_t* src, hzstd_computed_node_t* dst)
 
 hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env)
 {
-  hzstd_computed_node_t* c = hzstd_heap_allocate(sizeof(*c));
+  hzstd_computed_node_t* c = hzstd_heap_allocate(sizeof(*c), "hzstd_computed_node_t");
   c->base.dependents = NULL;
   c->dirty = 1;
   c->cached = NULL;
@@ -103,7 +103,7 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp)
 
 hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial)
 {
-  hzstd_reactive_cell_t* cell = hzstd_heap_allocate(sizeof(*cell));
+  hzstd_reactive_cell_t* cell = hzstd_heap_allocate(sizeof(*cell), "hzstd_reactive_cell_t");
 
   cell->value = initial;
   cell->base.dependents = NULL;
@@ -141,7 +141,7 @@ void hzstd_reactive_cell_write(hzstd_reactive_cell_t* cell, void* value)
   mark_dirty(&cell->base);
 }
 
-void* hzstd_slot_alloc(size_t size) { return hzstd_heap_allocate(size); }
+void* hzstd_slot_alloc(size_t size) { return hzstd_heap_allocate(size, NULL); }
 
 void hzstd_slot_write(void* slot, void* src, size_t size) { memcpy(slot, src, size); }
 

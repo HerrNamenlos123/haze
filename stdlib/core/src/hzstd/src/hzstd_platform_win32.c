@@ -275,7 +275,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
-      char* reason_data = (char*)hzstd_allocate(allocator, reason_len + 1);
+      char* reason_data = (char*)hzstd_allocate(allocator, reason_len + 1, NULL);
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
@@ -501,7 +501,7 @@ bool hzstd_get_cwd(char* buf, size_t buf_size)
 static inline char* hzstd_strdup_gc(const char* src)
 {
   size_t len = strlen(src);
-  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), len + 1);
+  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), len + 1, NULL);
   if (!buf) {
     return NULL;
   }
@@ -515,7 +515,7 @@ static inline char** process_str_array_to_cstrv(hzstd_dynamic_array_t* arr)
   size_t count = hzstd_dynamic_array_size(arr);
   hzstd_str_t* elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(arr);
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char** out = hzstd_allocate(allocator, sizeof(char*) * (count + 1));
+  char** out = hzstd_allocate(allocator, sizeof(char*) * (count + 1), NULL);
   if (!out) {
     return NULL;
   }
@@ -544,7 +544,7 @@ static inline char* hzstd_quote_windows_arg(const char* arg)
   }
 
   size_t cap = len * 2 + 3;
-  char* out = hzstd_allocate(hzstd_make_heap_allocator(), cap);
+  char* out = hzstd_allocate(hzstd_make_heap_allocator(), cap, NULL);
   char* dst = out;
   *dst++ = '"';
   size_t bs = 0;
@@ -579,7 +579,7 @@ static inline char* hzstd_append_gc(hzstd_allocator_t alloc, char* dst, const ch
 {
   size_t dl = dst ? strlen(dst) : 0;
   size_t sl = strlen(src);
-  char* buf = hzstd_allocate(alloc, dl + sl + 2);
+  char* buf = hzstd_allocate(alloc, dl + sl + 2, NULL);
   if (!buf) {
     return NULL;
   }
@@ -595,14 +595,14 @@ static inline char* read_all_handle(HANDLE h)
 {
   DWORD chunk = 4096;
   size_t cap = chunk, len = 0;
-  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1);
+  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1, NULL);
   if (!buf) {
     return NULL;
   }
   for (;;) {
     if (len + chunk > cap) {
       cap *= 2;
-      char* nb = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1);
+      char* nb = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1, NULL);
       if (!nb) {
         return NULL;
       }
@@ -635,7 +635,7 @@ static inline char* process_build_error_message_gc(DWORD err)
                        NULL);
   char* gc = NULL;
   if (size > 0 && msg) {
-    gc = hzstd_allocate(hzstd_make_heap_allocator(), size + 1);
+    gc = hzstd_allocate(hzstd_make_heap_allocator(), size + 1, NULL);
     if (gc) {
       memcpy(gc, msg, size);
       gc[size] = '\0';
@@ -753,11 +753,11 @@ static inline char* process_read_available_gc(HANDLE h)
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   DWORD available = 0;
   if (!h || !PeekNamedPipe(h, NULL, 0, NULL, &available, NULL) || available == 0) {
-    char* empty = hzstd_allocate(allocator, 1);
+    char* empty = hzstd_allocate(allocator, 1, NULL);
     empty[0] = '\0';
     return empty;
   }
-  char* buf = hzstd_allocate(allocator, available + 1);
+  char* buf = hzstd_allocate(allocator, available + 1, NULL);
   DWORD read_bytes = 0;
   if (!ReadFile(h, buf, available, &read_bytes, NULL)) {
     read_bytes = 0;

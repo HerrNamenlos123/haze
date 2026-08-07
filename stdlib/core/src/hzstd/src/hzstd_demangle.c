@@ -170,7 +170,7 @@ hzstd_demangle_result_t hzstd_demangle(hzstd_allocator_t allocator,
     hzstd_str_t mn = r.segments[0].moduleMinor;
     hzstd_str_t pt = r.segments[0].modulePatch;
     size_t vlen = mj.length + 1 + mn.length + 1 + pt.length;
-    char *vbuf  = (char *)hzstd_allocate(allocator, vlen + 1);
+    char *vbuf  = (char *)hzstd_allocate(allocator, vlen + 1, NULL);
     if (vbuf) {
       size_t off = 0;
       memcpy(vbuf + off, mj.data, mj.length); off += mj.length;
@@ -228,7 +228,7 @@ hzstd_str_t hzstd_demangle_display(hzstd_allocator_t allocator,
     return (hzstd_str_t){ .data = unknown, .length = sizeof(unknown) - 1 };
   }
 
-  char *buf = (char *)hzstd_allocate(allocator, total + 1);
+  char *buf = (char *)hzstd_allocate(allocator, total + 1, NULL);
   if (!buf) {
     static const char oom[] = "(oom)";
     return (hzstd_str_t){ .data = oom, .length = sizeof(oom) - 1 };
