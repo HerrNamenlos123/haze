@@ -482,6 +482,12 @@ namespace ChromeTrace {
     export inline struct Trace {
         metadata: TraceMetadata;
         traceEvents: []TraceEvent;
+        // Deduplicated stack-frame dictionary events reference by id via `sf` (see
+        // TraceEventInstantMarker). Always present, `{}` when no memory-instrumentation markers
+        // were ever added -- LinearMap serializes as a real JSON object (see its own
+        // [[json.serialize]] hook, containers.hz), so an empty one is just `{}`, which the Trace
+        // Event Format spec treats identically to the key being absent.
+        stackFrames: LinearMap<str, TraceStackFrame>;
     }
 
     export inline struct Metadata {
@@ -602,12 +608,32 @@ namespace ChromeTrace {
         }
     }
 
+    // One entry in the trace's top-level, deduplicated `stackFrames` dictionary (the standard
+    // JSON Array Format mechanism for exactly this: repeated stacks referencing shared frame
+    // data by id instead of each event inlining its own full copy -- see TraceEventInstantMarker
+    // and Trace.stackFrames below). `parent` chains up to the caller's own entry, root frames
+    // omit it, mirroring TraceProfileNode's parent-id convention above for the same reason.
+    export inline struct TraceStackFrame {
+        category: str = "haze";
+        name: str;
+        parent?: str;
+    }
+
     // A "PerformanceMark"-shaped instant event -- see invariant 2 in the
     // file header for why this exact shape (cat: "blink.user_timing") is
     // required for a custom-named marker to be visible at all, and why its
     // embedded stack trace's line/column numbers must be 1-indexed (unlike
     // every other call frame in this file, DevTools decrements these for
     // us).
+    //
+    // `sf` (not an inlined stackTrace array) is the standard Trace Event Format field for "this
+    // event's stack, as the leaf id into the trace's top-level stackFrames dictionary" --
+    // DevTools walks `parent` chains from there to reconstruct the full call stack. On a session
+    // with hundreds of thousands of these events sharing mostly the same handful of real call
+    // sites, inlining a full stackTrace array per event (the previous shape) meant the same
+    // frame data was duplicated in the output hundreds of thousands of times over; `sf`
+    // reference-counts it for real, the same way CpuProfile's nodes+parent-id tree already
+    // dedupes CPU samples' call stacks instead of inlining each sample's full stack too.
     export inline struct TraceEventInstantMarker {
         pid: int;
         tid: int;
@@ -615,14 +641,20 @@ namespace ChromeTrace {
         ph: str = "I";
         cat: str = "blink.user_timing";
         name: str;
+        sf?: str;
 
+        // DevTools' PerformanceMark handler reads args.data unconditionally (observed: removing
+        // `args` entirely broke it with "Cannot read properties of undefined (reading 'data')"
+        // when this event only carried the new `sf` field) -- kept as an always-present, empty
+        // object so that access never fails, even though this event no longer has any actual
+        // args.data.* fields of its own (the stack trace moved to the top-level `sf` + the
+        // trace's shared `stackFrames` dictionary, see Trace.stackFrames' own doc comment).
         inline struct Args {
             inline struct Data {
-                stackTrace: []TraceCallFrame;
             }
-            data: Data;
+            data: Data = {};
         }
-        args: Args;
+        args: Args = {};
     }
 
     // json.stringify dumps a union purely by runtime `is Variant` match (no
@@ -654,9 +686,32 @@ namespace ChromeTrace {
         pid: int;
         events: []TraceEvent = [];
         nextProfileId: int = 1;
+        // Deduplicated stack-frame dictionary built up by addInstantMarker -- see
+        // Trace.stackFrames' own doc comment for why this exists at all (avoiding the same
+        // "inline a full copy of mostly-repeated data per event" cost CpuProfileBuilder's
+        // nodes+parent-id tree already avoids for CPU samples, applied here to memory-allocation
+        // markers instead).
+        stackFrames: LinearMap<str, TraceStackFrame>;
+        // Reuses CpuProfileBuilder itself as the interning structure (a real hash-table-backed
+        // dedup tree -- see its own file-level rationale for why a linear scan would reintroduce
+        // exactly the bottleneck this exists to avoid) purely for its id-assignment machinery;
+        // addInstantMarker walks the returned node chain to materialize `stackFrames` entries the
+        // first time each one is seen.
+        internedStacks: mut CpuProfileBuilder;
+        // Parallel to internedStacks.nodes: plain array indexed directly by node index (not a
+        // map -- node indices are already a dense 0..N id space, so this is real O(1) indexing,
+        // no hashing/scanning needed at all), "" until that node's stackFrames dictionary key has
+        // actually been assigned. Lets a previously-seen node's id be reused instantly instead of
+        // re-materialized (and its whole parent chain re-walked) on every later occurrence.
+        stackFrameIdForNode: []str = [];
+        nextStackFrameId: int = 1;
 
         fn constructor(pid: int = 1) {
-            let builder = TraceBuilder { pid: pid };
+            let builder = TraceBuilder {
+                pid: pid,
+                stackFrames: LinearMap<str, TraceStackFrame>(),
+                internedStacks: CpuProfileBuilder(),
+            };
             // DevTools' modern trace engine classifies processes by this
             // exact reserved name string (confirmed against a real
             // Chrome-recorded trace) to decide whether it's even eligible
@@ -734,25 +789,62 @@ namespace ChromeTrace {
         // one round-trips 1-indexed all the way through because DevTools
         // itself does the decrement for this specific event shape).
         mut fn addInstantMarker(tid: int, ts: real, name: str, frames: []FrameRef): void {
-            let callFrames: []TraceCallFrame = [];
-            // Same reasoning as frameRefsForStacktrace (profiling.hz): this is called once per
-            // memory-allocation capture, so an unpresized array here regrows from scratch on
-            // every single call at exactly the call volume where that becomes very expensive.
-            callFrames.reserve(frames.length);
+            // Walk `frames` (outermost-first) through the SAME kind of hash-table-backed dedup
+            // tree CpuProfileBuilder already builds for CPU samples (internedStacks is a real
+            // CpuProfileBuilder, used purely for its O(1)-amortized findOrCreateChild -- its own
+            // samples/hitCount bookkeeping is simply never touched here), so a call path shared
+            // by many captures only ever occupies ONE node, no matter how many times it recurs.
+            // callFrame is a throwaway required by findOrCreateChild's signature (only used if
+            // this call happens to be this path's first-ever occurrence, and only for a field
+            // (CpuProfileCallFrame) this function has no use for -- the real identifying data is
+            // `frame` itself, compared via FrameRef.operator== on any hash collision).
+            //
+            // A stack-frame id is assigned/materialized the moment a node is first created,
+            // right here in the loop -- not in a separate pass afterward -- because this is the
+            // one place `parentId` (this iteration's OWN parent, i.e. last iteration's node) is
+            // already in hand for free; internedStacks.nodes has no parent pointer to recover it
+            // from later.
+            let node = 0; // index into internedStacks.nodes; 0 is the root
+            let parentId: str | none = none;
+            let internedStacks = this.internedStacks;
             for (let i = 0; i < frames.length; i++) {
                 let frame = frames[i];
-                callFrames.push(TraceCallFrame {
-                    functionName: frame.name.length > 0 ? frame.name : "(unknown)",
-                    codeType: frame.url.length > 0 ? "JS" : "other",
-                    scriptId: frame.url.length > 0 ? 1 : 0,
-                    url: frame.url.length > 0 ? frame.url : none,
-                    lineNumber: frame.line > 0 ? frame.line : none,
-                    columnNumber: frame.url.length > 0 ? frame.column : none,
-                });
+                let newNode = internedStacks.findOrCreateChild(
+                    node,
+                    hashFrameRef(frame),
+                    frame,
+                    CpuProfileCallFrame { functionName: "", scriptId: "0", url: "", lineNumber: -1, columnNumber: -1 },
+                );
+
+                // stackFrameIdForNode grows in lockstep with internedStacks.nodes (both indexed
+                // by the same node index) -- growing it here (once per newly-discovered node,
+                // not once per frame) keeps it exactly the right length rather than
+                // over-allocating for nodes that don't exist yet.
+                while this.stackFrameIdForNode.length <= newNode {
+                    this.stackFrameIdForNode.push("");
+                }
+                if this.stackFrameIdForNode[newNode].length == 0 {
+                    // First time this exact node (call path prefix) has ever been seen: assign
+                    // it a fresh id and materialize its stackFrames entry now, chained to
+                    // `parentId` (already resolved, from either the previous iteration of THIS
+                    // loop or a previous call to addInstantMarker that reached the same parent).
+                    let id = f"{this.nextStackFrameId}";
+                    this.nextStackFrameId += 1;
+                    this.stackFrames.set(id, TraceStackFrame {
+                        name: frame.name.length > 0 ? frame.name : "(unknown)",
+                        parent: parentId,
+                    });
+                    this.stackFrameIdForNode[newNode] = id;
+                }
+                node = newNode;
+                parentId = this.stackFrameIdForNode[newNode];
             }
+
+            // An empty `frames` never enters the loop above, so `parentId` stays `none` --
+            // DevTools' stackTrace-shown-on-click affordance simply doesn't apply to a marker
+            // with no captured frames, same as the previous inlined-empty-array shape did.
             this.events.push(TraceEventInstantMarker {
-                pid: this.pid, tid: tid, ts: ts, name: name,
-                args: { data: { stackTrace: callFrames } },
+                pid: this.pid, tid: tid, ts: ts, name: name, sf: parentId,
             });
         }
 
@@ -760,6 +852,7 @@ namespace ChromeTrace {
             return Trace {
                 metadata: { source: "DevTools", dataOrigin: "TraceEvents" },
                 traceEvents: this.events,
+                stackFrames: this.stackFrames,
             };
         }
     }
@@ -867,7 +960,9 @@ namespace ChromeTrace {
             }
             out.append(json.stringify<TraceEvent>(trace.traceEvents[i]));
         }
-        out.append("]}");
+        out.append("],\"stackFrames\":");
+        out.append(json.stringify<LinearMap<str, TraceStackFrame>>(trace.stackFrames));
+        out.append("}");
         out.commit();
         return out.string();
     }
