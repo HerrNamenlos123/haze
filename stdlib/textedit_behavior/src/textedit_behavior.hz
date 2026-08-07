@@ -699,8 +699,13 @@ export struct Context {
                 result = f"{result}\n";
             }
             let lineLen = this.args.getLineLength(y);
-            let sliceStart = clamp<int>(cols.x, 0, lineLen);
-            let sliceEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            // The block's right column is INCLUSIVE, so the slice ends at
+            // the start of the NEXT character on this line -- not the next
+            // byte, which would split a multi-byte character. The boundary
+            // is resolved per line because the same byte column can be a
+            // character start on one row and mid-character on another.
+            let sliceStart = this._snapColumn(y, clamp<int>(cols.x, 0, lineLen));
+            let sliceEnd = clamp<int>(this.nextColumn(y, clamp<int>(cols.y, 0, lineLen)), 0, lineLen);
             if sliceEnd > sliceStart {
                 result = f"{result}{this.args.getLine(y).cloneString().slice(sliceStart, sliceEnd)}";
             }
@@ -734,8 +739,11 @@ export struct Context {
         let cols = this._blockColumns(range);
         for (let y = normalized.end.y; y >= normalized.start.y; y--) {
             let lineLen = this.args.getLineLength(y);
-            let cutStart = clamp<int>(cols.x, 0, lineLen);
-            let cutEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            // Inclusive right column -> exclusive end at the next CHARACTER
+            // boundary on this line, so a block edge never cuts a
+            // multi-byte character in half. See _getBlockwiseText.
+            let cutStart = this._snapColumn(y, clamp<int>(cols.x, 0, lineLen));
+            let cutEnd = clamp<int>(this.nextColumn(y, clamp<int>(cols.y, 0, lineLen)), 0, lineLen);
             if cutEnd > cutStart {
                 let a: Vec2i = { x: cutStart, y: y };
                 let b: Vec2i = { x: cutEnd, y: y };
@@ -955,9 +963,11 @@ export struct Context {
             let left = start.x < end.x ? start.x : end.x;
             let right = start.x < end.x ? end.x : start.x;
             let lineLen = this.args.getLineLength(lineIndex);
+            // Inclusive right column -> exclusive end at the next CHARACTER
+            // boundary on this line. See _getBlockwiseText.
             let block: LineSelectionRange = {
-                startCol: clamp<int>(left, 0, lineLen),
-                endCol: clamp<int>(right + 1, 0, lineLen),
+                startCol: this._snapColumn(lineIndex, clamp<int>(left, 0, lineLen)),
+                endCol: clamp<int>(this.nextColumn(lineIndex, clamp<int>(right, 0, lineLen)), 0, lineLen),
             };
             return block;
         }
