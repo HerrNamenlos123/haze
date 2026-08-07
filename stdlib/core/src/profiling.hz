@@ -193,8 +193,34 @@ namespace profiling {
         return ChromeTrace.traceToJson(buildTrace(result));
     }
 
+    // Deliberately staged rather than one expression (`writeTrace(buildTrace(result), path)`):
+    // `result` (the whole postprocessed session -- every resolved CPU sample and memory
+    // allocation stack trace) and `trace` (ChromeTrace's own struct form of the same data) are
+    // each, briefly, tens/hundreds of MB to low-GB on a large session, and traceToJson below
+    // builds yet another full representation on top (a json.Node DOM tree, then the final
+    // string) -- so at the peak instant, several full copies of the same underlying data would
+    // otherwise all be simultaneously reachable. `result`/`trace` genuinely have no further use
+    // once each next stage's output exists, but Haze's GC (Boehm) only reclaims by reachability
+    // on its own schedule (see sys.forceGc's doc comment) -- simply letting them go out of scope
+    // does not reliably free that memory before the next stage's allocations run. forceGc()
+    // between stages is what actually turns "no longer needed" into "actually reclaimed before
+    // building the next copy," bounding peak memory to roughly one stage's worth of data instead
+    // of all of them at once.
     export fn writeTraceJson(result: ProfilingResult, path: str) {
-        return ChromeTrace.writeTrace(buildTrace(result), path);
+        let trace = buildTrace(result);
+        // `result` itself is still reachable as this function's own parameter for the rest of
+        // its body, so buildTrace having no further use for it isn't enough on its own --
+        // dropping its big array fields here is what actually makes the ~324MB-and-up backing
+        // data unreachable before the forceGc() below, instead of only once this whole function
+        // returns (by which point traceToJson has already built its own large representation
+        // on top).
+        result.frames = [];
+        result.samples = [];
+        result.memoryInstrumentationFrames = [];
+        sys.forceGc();
+        let json = ChromeTrace.traceToJson(trace);
+        sys.forceGc();
+        return fs.writeText(path, json);
     }
 }
 

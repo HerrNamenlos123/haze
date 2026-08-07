@@ -26,6 +26,23 @@ void *hzstd_heap_realloc_n(void *buffer, size_t size, int skip_n_frames);
 void hzstd_memzero(void *target, size_t size);
 void hzstd_init_gc();
 
+// Forces an immediate full Boehm collection (GC_gcollect) instead of waiting
+// for GC's own heap-growth-driven heuristics to decide one is due. Normally
+// callers should never need this -- letting GC run on its own schedule is
+// the whole point of using it -- but it exists for exactly one situation:
+// code that is about to explicitly drop a large, no-longer-needed structure
+// (e.g. profiling postprocessing's raw capture data, or an intermediate
+// representation on the way to a final result) and specifically wants that
+// memory reclaimed NOW, before allocating the next large structure, rather
+// than have both be simultaneously live at whatever moment GC happens to
+// decide to collect. Without this, "drop the reference early" has no
+// reliable effect on peak RSS at all -- an unreachable object can still sit
+// in memory at the same wall-clock moment as later, unrelated allocations
+// that push the process to its actual peak, until *some* collection cycle
+// happens to run in between. See sys.forceGc (system.hz) for the Haze-level
+// binding and where it's actually used.
+void hzstd_force_gc();
+
 #define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
 
 #define HZSTD_ALLOC_STRUCT(allocator, struct_t, value)                                                                 \

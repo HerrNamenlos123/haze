@@ -3,6 +3,7 @@ namespace ffi {
     extern C noemit fn hzstd_panic_str_n(msg: str, skip: int) :: final, noreturn;
     extern C noemit fn hzstd_panic_n(msg: ccstr, skip: int) :: final, noreturn;
     extern C noemit fn hzstd_unreachable(skip: int) :: final, noreturn;
+    extern C noemit fn hzstd_force_gc() :: final;
 
     extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): hzstd_stacktrace_t :: final;
     extern C noemit fn hzstd_print_stacktrace(st: hzstd_stacktrace_t) :: final;
@@ -22,6 +23,26 @@ namespace sys {
 
     export fn unreachable(skip_n_frames: int = 0) :: noreturn, final {
         ffi.hzstd_unreachable(1 + skip_n_frames);
+    }
+
+    // Forces an immediate full GC collection instead of waiting for the
+    // collector's own heap-growth heuristics to decide one is due. Haze's
+    // GC (Boehm) has no scope-based/arena-reset deallocation for ordinary
+    // locals -- everything is reclaimed purely by reachability, on the
+    // collector's own schedule -- so simply letting a large structure go
+    // out of scope does NOT reliably lower peak memory: it can still be
+    // sitting in RAM at the same moment as later, unrelated allocations
+    // that push the process to its real peak, until some collection cycle
+    // happens to run in between. Call this right after dropping a large,
+    // no-longer-needed structure and before building the next one, when
+    // peak memory (not throughput) is what matters -- e.g. profiling
+    // postprocessing, which briefly holds multiple large representations
+    // of the same session's data across pipeline stages (see profiling.hz).
+    // Not something ordinary code should ever need: a full collection has
+    // real cost, so only reach for this at a handful of known,
+    // memory-sensitive stage boundaries, not in a hot loop.
+    export fn forceGc(): void {
+        ffi.hzstd_force_gc();
     }
 }
 
