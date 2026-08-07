@@ -141,6 +141,7 @@ namespace profiling {
 
     export fn buildCpuProfile(result: ProfilingResult): ChromeTrace.CpuProfile {
         let builder = ChromeTrace.CpuProfileBuilder();
+        builder.reserveSamples(result.samples.length);
         addSamplesToProfile(builder, result);
         return builder.build();
     }

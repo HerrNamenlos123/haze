@@ -1,0 +1,184 @@
+// Regression coverage for ChromeTrace.CpuProfileBuilder's child-node dedup
+// (stdlib/core/src/chrome-trace.hz), specifically findOrCreateChild/
+// ChildTable. That dedup used to be a plain linear rescan of each node's
+// existing children with a string comparison per candidate -- correct, but
+// it made real profiling sessions (tens/hundreds of thousands of samples)
+// dominate wall time and GC pressure, since it ran once per (sample, frame
+// depth) pair. It was replaced with a per-node open-addressing hash table
+// (see ChildTable/insertChild/probeInsert), which must still produce
+// EXACTLY the same call tree -- same node identities, same hitCounts, same
+// children -- as the old scan did. These cases exist to pin that down,
+// including forcing the table's grow/rehash path (many distinct children of
+// one node, well past its initial capacity of 4).
+//
+// See feedback-tdd-loop-for-compiler-bugs: this isn't a crash/miscompile
+// bug (nothing was broken before), so there's no red/green stash step --
+// these assertions just lock down the dedup's observable behavior across
+// the rewrite.
+
+namespace cases_chrome_trace_cpu_profile {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.runExitCode(
+            "ChromeTrace.CpuProfileBuilder: child dedup is correct under repetition, branching, and table growth",
+            """
+fn frame(name: str): ChromeTrace.FrameRef {
+    return ChromeTrace.FrameRef { name: name, url: "/tmp/example.hz", line: 1, column: 1 };
+}
+
+// Same single-frame sample repeated many times must collapse onto ONE
+// child node of the root, with hitCount == the repeat count -- this is
+// the base case the old linear scan already got right, kept as a sanity
+// floor for the new hash-table path.
+fn checkRepeatedSampleCollapses(): void {
+    let profile = ChromeTrace.CpuProfileBuilder();
+    for (let i = 0; i < 50; i++) {
+        profile.addSample(i as real, [frame("hot")]);
+    }
+    let built = profile.build();
+
+    // root (1) + exactly one child ("hot")
+    assert(built.nodes.length == 2, f"expected 2 nodes (root + hot), got {built.nodes.length}");
+    assert(built.nodes[0].children.length == 1, f"expected root to have exactly 1 child, got {built.nodes[0].children.length}");
+    assert(built.nodes[1].callFrame.functionName == "hot", f"expected second node to be 'hot', got {built.nodes[1].callFrame.functionName}");
+    assert(built.nodes[1].hitCount == 50, f"expected hitCount 50, got {built.nodes[1].hitCount}");
+    assert(built.samples.length == 50, f"expected 50 samples recorded, got {built.samples.length}");
+}
+
+// A single parent with many DISTINCT children -- well past ChildTable's
+// initial bucket capacity of 4 -- forces at least one grow+rehash. Every
+// child must still be distinct (no false-positive collisions merging two
+// different frames) and every child must be found again on repeat (no
+// false negatives creating duplicate nodes for the same frame).
+fn checkWideFanOutForcesRehashCorrectly(): void {
+    let profile = ChromeTrace.CpuProfileBuilder();
+    const comptime fanOut = 200;
+
+    // First pass: one sample per distinct child of the root.
+    for (let i = 0; i < fanOut; i++) {
+        profile.addSample(i as real, [frame(f"child{i}")]);
+    }
+    // Second pass: repeat every single one of them again, in reverse
+    // order, to make sure lookups after growth still find the right
+    // existing node instead of creating a duplicate.
+    for (let i = fanOut - 1; i >= 0; i--) {
+        profile.addSample((fanOut + (fanOut - 1 - i)) as real, [frame(f"child{i}")]);
+    }
+
+    let built = profile.build();
+    assert(built.nodes.length == fanOut + 1, f"expected {fanOut + 1} nodes (root + {fanOut} distinct children), got {built.nodes.length}");
+    assert(built.nodes[0].children.length == fanOut, f"expected root to have {fanOut} children, got {built.nodes[0].children.length}");
+
+    for (let i = 0; i < fanOut; i++) {
+        let expectedName = f"child{i}";
+        let matches = 0;
+        let hitCount = 0;
+        for (let n = 1; n < built.nodes.length; n++) {
+            if built.nodes[n].callFrame.functionName == expectedName {
+                matches += 1;
+                hitCount = built.nodes[n].hitCount;
+            }
+        }
+        assert(matches == 1, f"expected exactly 1 node named {expectedName}, found {matches}");
+        assert(hitCount == 2, f"expected {expectedName} to have hitCount 2 (one per pass), got {hitCount}");
+    }
+}
+
+// Two different parents can each have a child with the identical frame
+// (same name/url/line/column) -- these must NOT collapse into one shared
+// node across parents; dedup is scoped per-parent (a per-node ChildTable),
+// not global.
+fn checkSameFrameUnderDifferentParentsStaysDistinct(): void {
+    let profile = ChromeTrace.CpuProfileBuilder();
+    profile.addSample(0.0, [frame("outerA"), frame("shared")]);
+    profile.addSample(1.0, [frame("outerB"), frame("shared")]);
+    profile.addSample(2.0, [frame("outerA"), frame("shared")]);
+
+    let built = profile.build();
+    // root -> outerA -> shared, root -> outerB -> shared: 5 nodes total.
+    assert(built.nodes.length == 5, f"expected 5 nodes, got {built.nodes.length}");
+    assert(built.nodes[0].children.length == 2, f"expected root to have 2 children (outerA, outerB), got {built.nodes[0].children.length}");
+
+    let sharedCount = 0;
+    for (let n = 1; n < built.nodes.length; n++) {
+        if built.nodes[n].callFrame.functionName == "shared" {
+            sharedCount += 1;
+        }
+    }
+    assert(sharedCount == 2, f"expected 2 distinct 'shared' nodes (one per parent), got {sharedCount}");
+}
+
+// A deep, varying-depth call stack exercises findOrCreateChild along a
+// chain of parents (not just direct children of root), proving dedup works
+// past the first level too, not only for root's immediate children (which
+// checkWideFanOutForcesRehashCorrectly above already covers).
+fn checkDeepVaryingStacks(): void {
+    let profile = ChromeTrace.CpuProfileBuilder();
+    for (let i = 0; i < 30; i++) {
+        let depth = (i % 5) + 1;
+        let frames: []ChromeTrace.FrameRef = [];
+        for (let d = 0; d < depth; d++) {
+            frames.push(frame(f"level{d}"));
+        }
+        profile.addSample(i as real, frames);
+    }
+    let built = profile.build();
+
+    // level0..level4 each appear exactly once as distinct nodes (a linear
+    // chain root->level0->level1->...), regardless of how many samples
+    // shared that prefix.
+    for (let d = 0; d < 5; d++) {
+        let expectedName = f"level{d}";
+        let matches = 0;
+        for (let n = 1; n < built.nodes.length; n++) {
+            if built.nodes[n].callFrame.functionName == expectedName {
+                matches += 1;
+            }
+        }
+        assert(matches == 1, f"expected exactly 1 node named {expectedName}, found {matches}");
+    }
+    assert(built.samples.length == 30, f"expected 30 samples recorded, got {built.samples.length}");
+}
+
+// Truncated samples ("call stack exceeded capture size") get an extra
+// synthetic "$truncated" ancestor inserted before the real frames (see
+// addSample) -- so the SAME real frame name reached through a truncated
+// stack must land on a DIFFERENT node than the one reached through a
+// normal stack, even though findOrCreateChild's dedup key is otherwise
+// identical. This is the same "dedup is scoped per-parent, not global"
+// property checkSameFrameUnderDifferentParentsStaysDistinct checks above,
+// specifically for the synthetic-marker-as-parent case.
+fn checkTruncatedStacksStayDistinctFromNormalOnes(): void {
+    let profile = ChromeTrace.CpuProfileBuilder();
+    profile.addSample(0.0, [frame("level0")], false);
+    profile.addSample(1.0, [frame("level0")], true);
+    profile.addSample(2.0, [frame("level0")], false);
+    profile.addSample(3.0, [frame("level0")], true);
+    let built = profile.build();
+
+    // root -> $truncated -> level0, root -> level0: 4 nodes total.
+    assert(built.nodes.length == 4, f"expected 4 nodes (root, $truncated, and two distinct level0 nodes), got {built.nodes.length}");
+    let level0Matches = 0;
+    for (let n = 1; n < built.nodes.length; n++) {
+        if built.nodes[n].callFrame.functionName == "level0" {
+            level0Matches += 1;
+            assert(built.nodes[n].hitCount == 2, f"expected each 'level0' node to have hitCount 2, got {built.nodes[n].hitCount}");
+        }
+    }
+    assert(level0Matches == 2, f"expected 2 distinct 'level0' nodes (direct and under $truncated), found {level0Matches}");
+}
+
+fn main(): int {
+    checkRepeatedSampleCollapses();
+    checkWideFanOutForcesRehashCorrectly();
+    checkSameFrameUnderDifferentParentsStaysDistinct();
+    checkDeepVaryingStacks();
+    checkTruncatedStacksStayDistinctFromNormalOnes();
+    fmt.println("ok");
+    return 0;
+}
+""",
+            0
+        );
+    }
+}

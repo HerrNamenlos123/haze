@@ -135,6 +135,60 @@ namespace ChromeTrace {
         return f"{frame.url}:{frame.line}:{frame.column}:{frame.name}";
     }
 
+    // A simple base-31 polynomial rolling hash over the key's bytes (the
+    // same shape as java.lang.String.hashCode). Used only to route a child
+    // lookup to the right bucket in ChildTable below -- collisions are
+    // resolved by an actual string comparison against nodeKeys, same as
+    // before, so a hash collision can only cost a little extra probing,
+    // never a wrong answer; hash quality just needs to be reasonable, not
+    // cryptographic.
+    //
+    // Haze `int` arithmetic panics on overflow rather than wrapping (no
+    // wrapping-arithmetic op exists), so unlike a typical C/Java hash this
+    // can't just let `h` grow and overflow -- instead it's kept bounded by
+    // reducing mod `hashModulus` after every step, small enough that
+    // `h * hashBase` can never overflow int64 no matter what `h` was.
+    const hashBase = 31;
+    const hashModulus = 1000000007; // hashModulus * hashBase + 255 is far below int64's range
+    fn hashKey(key: str): int {
+        let h = 0;
+        for (let i = 0; i < key.length; i++) {
+            h = (h * hashBase + (key[i] as int)) % hashModulus;
+        }
+        return h;
+    }
+
+    // Open-addressing (linear probing) index from a child's frameKey to its
+    // slot in the owning CpuProfileNode.children array, one per node.
+    // findOrCreateChild used to answer "does this parent already have a
+    // child for this key" by rescanning every existing child and string-
+    // comparing each one -- fine for a handful of children, but a hot
+    // call site's node can end up with hundreds/thousands of distinct
+    // children over a long profile, and this scan runs once per (sample,
+    // frame depth) pair, so that rescan dominated real profiling sessions.
+    // This table turns that into an O(1) amortized hash lookup instead,
+    // while keeping the exact same identity semantics (two children are
+    // the same node iff their frameKey()s are equal, checked with a real
+    // `==` on a collision) -- see CpuProfileBuilder.findOrCreateChild.
+    export struct ChildTable {
+        // buckets[b] == 0 means empty; otherwise it's (childArrayIndex + 1)
+        // into the owning node's `children` array (see findOrCreateChild),
+        // the same "index + 1" convention `children` itself already uses
+        // for node ids so 0 can mean "absent".
+        buckets: []int = [];
+        count: int = 0;
+
+        fn constructor() {
+            let table = ChildTable {};
+            table.buckets.reserve(4);
+            table.buckets.push(0);
+            table.buckets.push(0);
+            table.buckets.push(0);
+            table.buckets.push(0);
+            return table;
+        }
+    }
+
     // ── CpuProfileBuilder ────────────────────────────────────────────────────
     //
     // Incrementally builds a deduplicated call tree (the "collapsed call
@@ -157,6 +211,10 @@ namespace ChromeTrace {
     export struct CpuProfileBuilder {
         nodes: []CpuProfileNode = [];
         nodeKeys: []str = []; // parallel to `nodes`, used for dedup lookups
+        // parallel to `nodes`: childTables[p] indexes nodes[p].children by
+        // frameKey, so findOrCreateChild doesn't have to rescan+string-
+        // compare every existing child on every call (see ChildTable above).
+        childTables: []ChildTable = [];
         samples: []int = [];
         timeDeltas: []int = [];
         startTimeUs: real = 0.0;
@@ -172,7 +230,67 @@ namespace ChromeTrace {
                 children: [],
             });
             builder.nodeKeys.push(rootFrameKey);
+            builder.childTables.push(ChildTable());
             return builder;
+        }
+
+        // Callers that know the sample count up front (see profiling.hz)
+        // should call this before the addSample loop: `samples`/`timeDeltas`
+        // otherwise grow one push at a time from Haze's default array
+        // capacity, doubling and recopying their entire contents on every
+        // regrowth -- the exact "repeated allocation of a large block"
+        // pattern hzstd_profiling.c's own comments identify as a confirmed
+        // memory/GC-pressure source, avoidable entirely when the final size
+        // is already known.
+        mut fn reserveSamples(count: int): void {
+            this.samples.reserve(count);
+            this.timeDeltas.reserve(count);
+        }
+
+        // Raw linear-probing insert into `table`, growing+rehashing first if
+        // the table's gotten too full. `childArrayIndex` is an index into
+        // nodes[parent].children (not a node id). Assumes `key` is not
+        // already present -- findOrCreateChild only calls this right after
+        // confirming a lookup miss, and rehashing only ever reinserts keys
+        // already known to be distinct.
+        mut fn insertChild(parent: int, key: str, childArrayIndex: int): void {
+            let table = this.childTables[parent];
+            let children = this.nodes[parent].children;
+
+            // Keep the load factor under ~70% so probe chains stay short.
+            if (table.count + 1) * 10 >= table.buckets.length * 7 {
+                let oldBuckets = table.buckets;
+                let newCapacity = table.buckets.length * 2;
+                let newBuckets: []int = [];
+                newBuckets.reserve(newCapacity);
+                for (let i = 0; i < newCapacity; i++) {
+                    newBuckets.push(0);
+                }
+                table.buckets = newBuckets;
+                for (let i = 0; i < oldBuckets.length; i++) {
+                    if oldBuckets[i] != 0 {
+                        // oldBuckets[i] is (childArrayIndex + 1); recover
+                        // that child's own key to re-seat it in the bigger
+                        // table (its hash bucket depends on capacity).
+                        let existingKey = this.nodeKeys[children[oldBuckets[i] - 1] - 1];
+                        this.probeInsert(table, existingKey, oldBuckets[i]);
+                    }
+                }
+            }
+            this.probeInsert(table, key, childArrayIndex + 1);
+            table.count += 1;
+        }
+
+        // Bucket-array insert shared by insertChild's fresh-key path and
+        // its rehash path. `bucketValue` is already in the "+1" encoding
+        // (0 means empty).
+        fn probeInsert(table: ChildTable, key: str, bucketValue: int): void {
+            let capacity = table.buckets.length;
+            let slot = hashKey(key) % capacity;
+            while table.buckets[slot] != 0 {
+                slot = (slot + 1) % capacity;
+            }
+            table.buckets[slot] = bucketValue;
         }
 
         // Finds (or creates) a child of nodes[parent] identified by `key`,
@@ -182,16 +300,23 @@ namespace ChromeTrace {
         // the frame and how to build its CpuProfileCallFrame the first time
         // it's seen.
         mut fn findOrCreateChild(parent: int, key: str, callFrame: CpuProfileCallFrame): int {
-            // Haze has no `break`, so this scans every child rather than
-            // stopping at the first match; only the first match found is
-            // ever kept.
-            let childNode = -1;
+            let table = this.childTables[parent];
             let children = this.nodes[parent].children;
-            for (let c = 0; c < children.length; c++) {
-                let candidate = children[c] - 1; // node id -> array index
-                if childNode == -1 && this.nodeKeys[candidate] == key {
+            let capacity = table.buckets.length;
+            let slot = hashKey(key) % capacity;
+            let childNode = -1;
+
+            // Linear probe: a hash collision only means "keep probing", the
+            // actual identity check is still the real string `==` below, so
+            // this can never return a wrong match.
+            let probed = 0;
+            while childNode == -1 && probed < capacity && table.buckets[slot] != 0 {
+                let candidate = children[table.buckets[slot] - 1] - 1; // node id -> array index
+                if this.nodeKeys[candidate] == key {
                     childNode = candidate;
                 }
+                slot = (slot + 1) % capacity;
+                probed += 1;
             }
 
             if childNode == -1 {
@@ -203,7 +328,10 @@ namespace ChromeTrace {
                     children: [],
                 });
                 this.nodeKeys.push(key);
+                this.childTables.push(ChildTable());
+                let childArrayIndex = this.nodes[parent].children.length;
                 this.nodes[parent].children.push(newId);
+                this.insertChild(parent, key, childArrayIndex);
                 childNode = newId - 1;
             }
 

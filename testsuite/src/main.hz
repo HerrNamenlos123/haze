@@ -45,6 +45,7 @@ fn main(): int {
     cases_ctfe_int_literal_cast_to_real.register(suite);
     cases_json_custom_struct_hooks.register(suite);
     cases_json_linear_map.register(suite);
+    cases_chrome_trace_cpu_profile.register(suite);
 
     return testsuite.runAll(config, suite);
 }
