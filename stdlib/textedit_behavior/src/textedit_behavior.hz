@@ -1,3 +1,4 @@
+import unicode
 
 // For this entire module, the convention is that
 // "lineIndex" and "lineNumber"
@@ -18,6 +19,36 @@
 // draws and never measures; it exposes queries (selectionRangeForLine,
 // cursorPosition, mode, scrollRequest, ...) that a host renders however
 // it likes.
+//
+// === What a "column" is =======================================
+//
+// A column (the `.x` of every Vec2i here, every `startCol`/`endCol`, every
+// `getLineLength` result) is a BYTE OFFSET into the line, because that is
+// what `str.length` and every slicing operation in Haze mean. The engine
+// does not maintain a second index space in characters -- one index space
+// is the whole reason the offsets it hands to the host, to the LSP layer
+// and to `replaceRange` all agree without conversion.
+//
+// The invariant on top of that is:
+//
+//     every column the engine stores or returns sits on a grapheme
+//     cluster boundary (UAX #29).
+//
+// So a column is a byte offset, but not just any byte offset: it is always
+// a legal place for a caret to be. Moving right by "one character" adds 1
+// byte for 'a', 3 for a decomposed 'e'+accent, 8 for a flag emoji and 25
+// for a family emoji. `_moveTo` is the single chokepoint that enforces
+// this: anything arriving there is snapped to a boundary, so no motion,
+// click, restored cursor or sticky column can ever leave the caret inside
+// a codepoint where the next edit would corrupt the buffer.
+//
+// Consequently `getLineLength` is a BYTE length, and the maximum column on
+// a line in an on-a-character mode is the offset of the LAST CLUSTER, not
+// `length - 1` (which would be the last byte, i.e. the middle of a
+// multi-byte character).
+//
+// Quantities that are genuinely not byte offsets are named so they cannot
+// be confused with one -- see `characterColumn()` and `displayColumn()`.
 
 // === Modes ====================================================
 //
@@ -226,6 +257,12 @@ export struct Context {
     // through short lines and back onto a long one restores the original
     // column, like every mainstream text editor. It is only updated by
     // horizontal movement (left/right/word/home/end), never by up/down.
+    //
+    // It is a BYTE OFFSET like every other column, which means that carrying
+    // it to another line can land it inside a character -- byte 8 may be a
+    // boundary on one line and the middle of an emoji on the next. _moveTo
+    // snaps it, so the sticky column is stored raw (preserving the user's
+    // intended reach across short lines) and only ever *applied* aligned.
     _desiredCursorPosition: Vec2i = {};
     cursorPosition: rx.Reactive<Vec2i>;
 
@@ -600,7 +637,23 @@ export struct Context {
         if pos.x == this.args.getLineLength(pos.y) && pos.y == lastLine {
             return;
         }
-        let deleteTo = wholeWord ? this._targetWordRight(pos) : this._targetRight(pos);
+        // Deliberately NOT _targetRight: that motion clamps to maxColumn, so
+        // in an on-a-character mode it would refuse to move past the last
+        // character and Delete would erase nothing there. Deletion wants the
+        // next character boundary itself, or the start of the following line
+        // when the caret is already at the end.
+        let deleteTo: Vec2i = {};
+        if wholeWord {
+            deleteTo = this._targetWordRight(pos);
+        } else if pos.x >= this.args.getLineLength(pos.y) {
+            // At end of line: swallow the newline and join the next line.
+            deleteTo = { x: 0, y: pos.y + 1 };
+        } else {
+            deleteTo = {
+                x: unicode.nextClusterOffset(this._lineText(pos.y), pos.x),
+                y: pos.y,
+            };
+        }
         this.beginTransaction();
         this._applyReplace(pos, deleteTo, String(""));
         this._moveTo(pos, true, false);
@@ -748,8 +801,15 @@ export struct Context {
         }
 
         if modeIsVisual(mode) {
-            // inclusive -> exclusive
-            let inclusiveEnd: Vec2i = { x: end.x + 1, y: end.y };
+            // inclusive -> exclusive. The exclusive end is the start of the
+            // NEXT character, not the next byte: the caret sits on a whole
+            // grapheme cluster, so a visual selection covering an emoji has
+            // to take all of its bytes or the yank/delete would cut it in
+            // half and corrupt the buffer.
+            let inclusiveEnd: Vec2i = {
+                x: unicode.nextClusterOffset(this._lineText(end.y), end.x),
+                y: end.y,
+            };
             let r: Range = { start: start, end: inclusiveEnd, kind: RangeKind.Characterwise };
             return r;
         }
@@ -942,26 +1002,31 @@ export struct Context {
         if len == 0 {
             return 0;
         }
-        let line = this.args.getLine(lineIndex);
+        // Leading whitespace is always ASCII in practice, but walk by
+        // clusters anyway so the returned column is guaranteed to be a
+        // legal caret position on any line.
+        let line = this._lineText(lineIndex);
         let x = 0;
-        while x < len && ascii.isWhitespace(line[x].get()) {
-            x++;
+        while x < len && unicode.classifyAt(line, x) == unicode.CharClass.Whitespace {
+            x = unicode.nextClusterOffset(line, x);
         }
         if x >= len {
-            return len > 0 ? len - 1 : 0;
+            // An all-whitespace line: land on the last CHARACTER, which is
+            // not `len - 1` when that character is multi-byte.
+            return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
         }
         return x;
     }
 
-    // Character class, exposed so a behavior can implement its own word
-    // motions (Vim's w vs W) without duplicating the classification.
-    // 0 = whitespace, 1 = word character, 2 = punctuation.
+    // Character class at a BYTE OFFSET, exposed so a behavior can implement
+    // its own word motions (Vim's w vs W) without duplicating the
+    // classification. 0 = whitespace, 1 = word character, 2 = punctuation.
     fn charClassAt(lineIndex: int, column: int): int {
         let len = this.args.getLineLength(lineIndex);
         if column < 0 || column >= len {
             return 0;
         }
-        return this._charClassAt(this.args.getLine(lineIndex), column);
+        return this._charClassAt(this._lineText(lineIndex), column);
     }
 
     fn lineLength(lineIndex: int): int {
@@ -987,13 +1052,91 @@ export struct Context {
         return this._desiredCursorPosition.x;
     }
 
-    // Highest legal column for the current mode on a given line.
+    // Highest legal column (BYTE OFFSET) for the current mode on a line.
+    //
+    // In on-a-character modes this is the offset of the LAST GRAPHEME
+    // CLUSTER, not `length - 1`. Those differ whenever a line ends in a
+    // multi-byte character: on a line holding one flag emoji, `length - 1`
+    // is byte 7, which is the middle of the flag, while the correct answer
+    // is byte 0 -- the caret sits ON the flag.
     fn maxColumn(lineIndex: int): int {
         let len = this.args.getLineLength(lineIndex);
         if modeClampsToLastChar(rx.get(this.mode)) {
-            return len > 0 ? len - 1 : 0;
+            if len <= 0 {
+                return 0;
+            }
+            return unicode.previousClusterOffset(this._lineText(lineIndex), len);
         }
         return len;
+    }
+
+    // The line's text as a slice. Zero-copy for the committed/borrowed
+    // Strings the host supplies (see ByteBuffer.cloneString), so this is
+    // cheap enough to call on every keystroke.
+    fn _lineText(lineIndex: int): str {
+        return this.args.getLine(lineIndex).cloneString();
+    }
+
+    // === Character stepping =======================================
+    //
+    // The byte offset one CHARACTER left/right of `column` on a line, and
+    // the alignment guard. Behaviors must use these instead of `column + 1`
+    // and `column - 1`: those step one BYTE, which lands inside multi-byte
+    // characters and corrupts the buffer on the next edit.
+    //
+    // Both clamp at the ends of the line and never wrap.
+
+    fn nextColumn(lineIndex: int, column: int): int {
+        return unicode.nextClusterOffset(this._lineText(lineIndex), column);
+    }
+
+    fn previousColumn(lineIndex: int, column: int): int {
+        return unicode.previousClusterOffset(this._lineText(lineIndex), column);
+    }
+
+    // Snap an arbitrary byte offset onto the character boundary at or before
+    // it. Use on any column that came from arithmetic rather than from the
+    // two steppers above.
+    fn snapColumn(lineIndex: int, column: int): int {
+        return this._snapColumn(lineIndex, column);
+    }
+
+    // Snap a byte offset onto the nearest cluster boundary at or before it.
+    //
+    // This is what makes the engine's central invariant hold. Every column
+    // that reaches the cursor passes through here, so an offset computed by
+    // arithmetic -- a sticky column carried onto a line whose characters sit
+    // at different offsets, a click converted from pixels, a cursor restored
+    // from an undo snapshot -- can never land inside a character.
+    fn _snapColumn(lineIndex: int, column: int): int {
+        if column <= 0 {
+            return 0;
+        }
+        return unicode.clusterStart(this._lineText(lineIndex), column);
+    }
+
+    // === Character-space queries ==================================
+    //
+    // Everything else in this engine speaks byte offsets. These two are the
+    // exceptions, and they are named so they cannot be mistaken for one.
+    // They exist for UI that must show a human a count, and their results
+    // must never be fed back into a slice, an edit or a column.
+
+    // How many CHARACTERS (grapheme clusters) precede the cursor on its
+    // line -- what a status bar means by "column 12". Not a byte offset.
+    fn characterColumn(): int {
+        let pos = this._cursorPos();
+        return unicode.characterIndexAt(this._lineText(pos.y), pos.x);
+    }
+
+    // How many monospace CELLS precede the cursor on its line. Differs from
+    // characterColumn wherever CJK or emoji appear, since those occupy two
+    // cells each. This is the number a fixed-advance renderer needs to
+    // place a caret; it is not a byte offset and not a character count.
+    fn displayColumn(): int {
+        let pos = this._cursorPos();
+        let line = this._lineText(pos.y);
+        return unicode.displayWidth(line.slice(0, clamp<int>(pos.x, 0, line.length)));
     }
 
     // === Internals =================================================
@@ -1153,7 +1296,7 @@ export struct Context {
 
         let lineCount = this.args.getLineCount();
         let y = clamp<int>(target.y, 0, lineCount - 1);
-        let x = clamp<int>(target.x, 0, this.maxColumn(y));
+        let x = this._snapColumn(y, clamp<int>(target.x, 0, this.maxColumn(y)));
 
         if extend {
             if !this.selectionAnchor {
@@ -1185,7 +1328,12 @@ export struct Context {
         let lineLength = this.args.getLineLength(pos.y);
         let limit = this.maxColumn(pos.y);
         if pos.x < limit {
-            return { x: pos.x + 1, y: pos.y };
+            // One character to the right, which is 1..25 bytes depending on
+            // what is actually there. Clamped to `limit` so that in
+            // on-a-character modes a cluster at the end of the line cannot
+            // push the caret past the last legal position.
+            let next = unicode.nextClusterOffset(this._lineText(pos.y), pos.x);
+            return { x: next < limit ? next : limit, y: pos.y };
         }
         // In on-a-character modes, `l` never wraps to the next line.
         if !modeClampsToLastChar(rx.get(this.mode)) && pos.x >= lineLength {
@@ -1198,7 +1346,10 @@ export struct Context {
 
     fn _targetLeft(pos: Vec2i): Vec2i {
         if pos.x > 0 {
-            return { x: pos.x - 1, y: pos.y };
+            // One character to the left. Note this walks to the START of the
+            // preceding cluster, so a single press clears a whole flag or
+            // family emoji rather than stepping into the middle of it.
+            return { x: unicode.previousClusterOffset(this._lineText(pos.y), pos.x), y: pos.y };
         }
         // In on-a-character modes, `h` never wraps to the previous line.
         if !modeClampsToLastChar(rx.get(this.mode)) && pos.y > 0 {
@@ -1229,19 +1380,26 @@ export struct Context {
             return pos;
         }
 
-        let line = this.args.getLine(pos.y);
+        // Walks CHARACTERS, not bytes: stepping byte-by-byte would classify
+        // each byte of a multi-byte character separately and stop in the
+        // middle of "naive" or "日本語".
+        let line = this._lineText(pos.y);
         let x = pos.x;
 
         // Skip whitespace directly to the left of the cursor
-        while x > 0 && ascii.isWhitespace(line[x - 1].get()) {
-            x--;
+        let scan = unicode.previousClusterOffset(line, x);
+        while x > 0 && unicode.classifyAt(line, scan) == unicode.CharClass.Whitespace {
+            x = scan;
+            scan = unicode.previousClusterOffset(line, x);
         }
 
         // Skip one run of same-class characters to land on the word's start
         if x > 0 {
-            let targetClass = this._charClassAt(line, x - 1);
-            while x > 0 && this._charClassAt(line, x - 1) == targetClass {
-                x--;
+            let previous = unicode.previousClusterOffset(line, x);
+            let targetClass = unicode.classifyAt(line, previous);
+            while x > 0 && unicode.classifyAt(line, previous) == targetClass {
+                x = previous;
+                previous = unicode.previousClusterOffset(line, x);
             }
         }
 
@@ -1257,7 +1415,8 @@ export struct Context {
             return pos;
         }
 
-        let line = this.args.getLine(pos.y);
+        // Walks CHARACTERS, not bytes -- see _targetWordLeft.
+        let line = this._lineText(pos.y);
         let x = pos.x;
 
         // Skip whitespace immediately ahead, if any -- matching Chrome's
@@ -1266,16 +1425,15 @@ export struct Context {
         // whitespace (or the end of a word) it skips the gap and stops at
         // the end of the next run instead. So whitespace is only ever
         // consumed as a leading skip, never trailing.
-        // TODO: line[x] is a compiler bug when x is reactive
-        while x < lineLength && ascii.isWhitespace(line[rx.get(x)].get()) {
-            x++;
+        while x < lineLength && unicode.classifyAt(line, x) == unicode.CharClass.Whitespace {
+            x = unicode.nextClusterOffset(line, x);
         }
 
         // Skip one run of the resulting class (word or punctuation).
         if x < lineLength {
-            let targetClass = this._charClassAt(line, x);
-            while x < lineLength && this._charClassAt(line, x) == targetClass {
-                x++;
+            let targetClass = unicode.classifyAt(line, x);
+            while x < lineLength && unicode.classifyAt(line, x) == targetClass {
+                x = unicode.nextClusterOffset(line, x);
             }
         }
 
@@ -1299,12 +1457,16 @@ export struct Context {
         return { x: this.args.getLineLength(lastLine), y: lastLine };
     }
 
-    fn _charClassAt(line: String, index: int): int {
-        let b = line[index];
-        if ascii.isWhitespace(b.get()) {
+    // Classify the character at a BYTE OFFSET. Unicode-aware: non-ASCII
+    // letters, marks and ideographs count as word characters, so a word
+    // motion crosses "naive" and "日本語" as single words rather than
+    // splitting them at every non-ASCII byte.
+    fn _charClassAt(line: str, index: int): int {
+        let classification = unicode.classifyAt(line, index);
+        if classification == unicode.CharClass.Whitespace {
             return 0;
         }
-        if ascii.isAlpha(b.get()) || ascii.isDigit(b.get()) || b.get() == b"_" {
+        if classification == unicode.CharClass.Word {
             return 1;
         }
         return 2;

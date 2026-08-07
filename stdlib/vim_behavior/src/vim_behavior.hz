@@ -1,4 +1,5 @@
 import textedit_behavior
+import unicode
 
 // === vim_behavior =============================================
 //
@@ -386,7 +387,9 @@ export struct Vim {
         let pos = this.ctx.cursor();
         this.ctx.setMode(textedit_behavior.Mode.Normal);
         if pos.x > 0 {
-            let target: Vec2i = { x: pos.x - 1, y: pos.y };
+            // One CHARACTER back, not one byte: leaving insert mode after
+            // typing an emoji must put the caret on the emoji, not inside it.
+            let target: Vec2i = { x: this.ctx.previousColumn(pos.y, pos.x), y: pos.y };
             this.ctx.moveTo(target, true, false);
         }
         this.resetPending();
@@ -627,7 +630,13 @@ export struct Vim {
             let y = clampInt(pos.y + count - 1, 0, this.ctx.lineCount() - 1);
             let len = this.ctx.lineLength(y);
             // `$` is inclusive for operators (d$ deletes to end of line).
-            result = Motion { valid: true, target: { x: len > 0 ? len - 1 : 0, y: y }, inclusive: true };
+            // The target is the last CHARACTER, which is not `len - 1` when
+            // the line ends in a multi-byte character.
+            result = Motion {
+                valid: true,
+                target: { x: len > 0 ? this.ctx.previousColumn(y, len) : 0, y: y },
+                inclusive: true,
+            };
             return result;
         }
         if key == "G" {
@@ -836,9 +845,10 @@ export struct Vim {
                     let empty: Vec2i = { x: 0, y: y };
                     return empty;
                 }
-                x = len - 1;
+                // Last CHARACTER of the previous line, not its last byte.
+                x = this.ctx.previousColumn(y, len);
             } else {
-                x = x - 1;
+                x = this.ctx.previousColumn(y, x);
             }
         }
 
@@ -946,8 +956,12 @@ export struct Vim {
         }
         let runClass = this.classAt(pos.y, pos.x, bigWord);
         let x = pos.x;
-        while x + 1 < len && this.classAt(pos.y, x + 1, bigWord) == runClass {
-            x = x + 1;
+        // Steps by CHARACTERS: a run of non-ASCII word characters must not
+        // be broken up at every byte.
+        let next = this.ctx.nextColumn(pos.y, x);
+        while next < len && this.classAt(pos.y, next, bigWord) == runClass {
+            x = next;
+            next = this.ctx.nextColumn(pos.y, x);
         }
         let result: Vec2i = { x: x, y: pos.y };
         return result;
@@ -958,7 +972,10 @@ export struct Vim {
     // stop at the END of the word the cursor is already inside) starts
     // its search one character back.
     fn backOne(pos: Vec2i): Vec2i {
-        let result: Vec2i = { x: pos.x > 0 ? pos.x - 1 : 0, y: pos.y };
+        let result: Vec2i = {
+            x: pos.x > 0 ? this.ctx.previousColumn(pos.y, pos.x) : 0,
+            y: pos.y,
+        };
         return result;
     }
 
@@ -1110,12 +1127,14 @@ export struct Vim {
             start = { x: end.x, y: end.y };
             end = { x: tmp.x, y: tmp.y };
             // A backwards inclusive motion includes the character the
-            // cursor started on.
+            // cursor started on. "Inclusive" means up to and including a
+            // whole CHARACTER, so the exclusive end is the start of the next
+            // one -- `end.x + 1` would cut a multi-byte character in half.
             if motion.inclusive {
-                end = { x: end.x + 1, y: end.y };
+                end = { x: this.ctx.nextColumn(end.y, end.x), y: end.y };
             }
         } else if motion.inclusive {
-            end = { x: end.x + 1, y: end.y };
+            end = { x: this.ctx.nextColumn(end.y, end.x), y: end.y };
         }
 
         let r = textedit_behavior.Range {
@@ -1275,40 +1294,52 @@ export struct Vim {
         this.clampCursorToMode();
     }
 
-    // Screen column of a byte position, expanding tabs to the next
-    // multiple of 8 (vim's default 'tabstop').
+    // Screen column of a byte position, expanding tabs to the next multiple
+    // of 8 (vim's default 'tabstop') and counting each character by its
+    // DISPLAY WIDTH -- 2 cells for CJK and emoji, 1 for Latin.
+    //
+    // Stepping per byte would make an emoji four columns wide and a CJK
+    // ideograph three, so `>>` and `<<` would restore the caret to the wrong
+    // place on any line containing them.
     fn screenColumnOf(lineIndex: int, byteColumn: int): int {
-        let line = this.ctx.line(lineIndex);
-        let len = this.ctx.lineLength(lineIndex);
+        let line = this.ctx.line(lineIndex).cloneString();
+        let len = line.length;
         let screen = 0;
         let upTo = byteColumn < len ? byteColumn : len;
-        for (let i = 0; i < upTo; i++) {
-            if line.getAt(i) == b"\t" {
+        let i = 0;
+        while i < upTo {
+            if line[i] == b"\t" {
                 screen = screen + (8 - (screen % 8));
+                i = i + 1;
             } else {
-                screen = screen + 1;
+                screen = screen + unicode.clusterColumnWidth(line, i);
+                i = unicode.nextClusterOffset(line, i);
             }
         }
         return screen;
     }
 
-    // Inverse of screenColumnOf: the byte column whose screen column is
-    // at or just past `target`, clamped to the line.
+    // Inverse of screenColumnOf: the byte column whose screen column is at or
+    // just past `target`, clamped to the line. Always returns a character
+    // boundary.
     fn byteColumnForScreenColumn(lineIndex: int, target: int): int {
-        let line = this.ctx.line(lineIndex);
-        let len = this.ctx.lineLength(lineIndex);
+        let line = this.ctx.line(lineIndex).cloneString();
+        let len = line.length;
         let screen = 0;
-        for (let i = 0; i < len; i++) {
+        let i = 0;
+        while i < len {
             if screen >= target {
                 return i;
             }
-            if line.getAt(i) == b"\t" {
+            if line[i] == b"\t" {
                 screen = screen + (8 - (screen % 8));
+                i = i + 1;
             } else {
-                screen = screen + 1;
+                screen = screen + unicode.clusterColumnWidth(line, i);
+                i = unicode.nextClusterOffset(line, i);
             }
         }
-        return len > 0 ? len - 1 : 0;
+        return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
     }
 
     mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
@@ -1420,7 +1451,14 @@ export struct Vim {
             if textedit_behavior.modeIsVisual(rx.get(this.ctx.mode)) {
                 // Extend the visual selection over the object.
                 this.ctx.setSelectionAnchor(objectRange.start);
-                let last: Vec2i = { x: objectRange.end.x > 0 ? objectRange.end.x - 1 : 0, y: objectRange.end.y };
+                // The object's end is exclusive; the caret goes on the last
+                // CHARACTER inside it.
+                let last: Vec2i = {
+                    x: objectRange.end.x > 0
+                        ? this.ctx.previousColumn(objectRange.end.y, objectRange.end.x)
+                        : 0,
+                    y: objectRange.end.y,
+                };
                 this.ctx.moveTo(last, true, true);
                 this.resetPending();
                 return;
@@ -1505,26 +1543,46 @@ export struct Vim {
     // `count` left on the line the command FAILS and changes nothing --
     // `3ra` on a one-character line is a no-op.
     mut fn replaceChar(key: str, count: int) {
-        if key.length != 1 {
+        // `key` is one CHARACTER, which may be several bytes -- `r` followed
+        // by an emoji is legal. A `key.length != 1` test here would reject
+        // every non-ASCII replacement.
+        if key.length == 0 || unicode.countCharacters(key) != 1 {
             return;
         }
         let pos = this.ctx.cursor();
         let len = this.ctx.lineLength(pos.y);
-        if len == 0 || pos.x + count > len {
+        if len == 0 {
             return;
         }
+
+        // `count` counts CHARACTERS to replace, so walk that many boundaries
+        // rather than adding a byte count. Bail if the line is too short.
+        let line = this.ctx.line(pos.y).cloneString();
+        let end = pos.x;
+        for (let i = 0; i < count; i++) {
+            if end >= len {
+                return;
+            }
+            end = unicode.nextClusterOffset(line, end);
+        }
+
         let replacement = "";
         for (let i = 0; i < count; i++) {
             replacement = f"{replacement}{key}";
         }
         let r = textedit_behavior.Range {
             start: { x: pos.x, y: pos.y },
-            end: { x: pos.x + count, y: pos.y },
+            end: { x: end, y: pos.y },
             kind: textedit_behavior.RangeKind.Characterwise,
         };
         this.ctx.replaceRangeWith(r, String(replacement));
-        // `r` leaves the caret on the LAST replaced character.
-        let target: Vec2i = { x: pos.x + count - 1, y: pos.y };
+        // `r` leaves the caret on the LAST replaced character. The line has
+        // changed, so measure the caret from the replacement text itself.
+        let caret = pos.x;
+        for (let i = 0; i < count - 1; i++) {
+            caret = caret + key.length;
+        }
+        let target: Vec2i = { x: caret, y: pos.y };
         this.ctx.moveTo(target, true, false);
     }
 
@@ -1743,7 +1801,9 @@ export struct Vim {
             this.resetPending();
             let pos = this.ctx.cursor();
             if this.ctx.lineLength(pos.y) > 0 {
-                let target: Vec2i = { x: pos.x + 1, y: pos.y };
+                // Append AFTER the character under the caret -- past all of
+                // its bytes, so `a` on an emoji types after the emoji.
+                let target: Vec2i = { x: this.ctx.nextColumn(pos.y, pos.x), y: pos.y };
                 this.enterInsertMode(count);
                 this.ctx.moveTo(target, true, false);
                 return;
@@ -2054,7 +2114,9 @@ export struct Vim {
 
         // Characterwise
         let len = this.ctx.lineLength(pos.y);
-        let insertX = after && len > 0 ? pos.x + 1 : pos.x;
+        // `p` pastes after the character under the caret -- past all of its
+        // bytes, not just its first one.
+        let insertX = after && len > 0 ? this.ctx.nextColumn(pos.y, pos.x) : pos.x;
         insertX = clampInt(insertX, 0, len);
         let payload = "";
         for (let i = 0; i < count; i++) {
@@ -2064,9 +2126,14 @@ export struct Vim {
         let r = textedit_behavior.Range { start: at, end: at,
             kind: textedit_behavior.RangeKind.Characterwise };
         this.ctx.replaceRangeWith(r, String(payload));
-        // Vim leaves the caret on the last pasted character.
-        let payloadLen = String(payload).length();
-        let target: Vec2i = { x: insertX + payloadLen - 1, y: pos.y };
+        // Vim leaves the caret on the last pasted character -- the START of
+        // that character, so back up one CHARACTER from the end of the
+        // pasted text rather than one byte.
+        let payloadLen = payload.length;
+        let target: Vec2i = {
+            x: payloadLen > 0 ? unicode.previousClusterOffset(payload, payloadLen) + insertX : insertX,
+            y: pos.y,
+        };
         this.ctx.moveTo(target, true, false);
         this.clampCursorToMode();
         this.ctx.endTransaction();
@@ -2180,6 +2247,11 @@ export struct Vim {
             // nor when it already ends in whitespace (no double space).
             // ...and not when the line being pulled up is empty, which
             // would otherwise leave a stray trailing space.
+            // Reading the last BYTE is correct here even for a multi-byte
+            // line: every whitespace character is single-byte ASCII, and the
+            // trailing byte of a multi-byte character is a continuation byte
+            // (0b10xxxxxx), which is never whitespace. So this asks "does the
+            // line end in a blank" without needing a character boundary.
             let endsInBlank = endOfLine > 0
                 && ascii.isWhitespace(this.ctx.line(pos.y).getAt(endOfLine - 1));
             let nextIsEmpty = this.ctx.lineLength(pos.y + 1) == 0;

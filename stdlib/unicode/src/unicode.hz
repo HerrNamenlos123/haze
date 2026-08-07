@@ -1,0 +1,265 @@
+// Unicode support for Haze, backed by utf8proc (Unicode 16.0).
+//
+// === The central rule =========================================
+//
+// EVERY offset in this module is a BYTE OFFSET, and every length is a BYTE
+// COUNT, because that is what `str.length` and every slicing operation in
+// Haze already mean. This module never introduces a second, competing index
+// space for positions -- doing so is the usual source of off-by-N corruption
+// in editors, where a "column" silently means bytes in one function and
+// characters in another.
+//
+// What this module adds is not a new index space but a CONSTRAINT on the
+// existing one:
+//
+//     a cursor offset must always sit on a grapheme cluster boundary.
+//
+// So arrow keys still move a byte offset -- just not by 1. They move it to
+// the next legal boundary, which may be 1, 2, 3, 8 or 25 bytes away.
+//
+// The few quantities here that genuinely are NOT byte counts are named so
+// they cannot be mistaken for one:
+//
+//     characterCount / countCharacters   -- grapheme clusters ("characters")
+//     codepointCount / countCodepoints   -- Unicode codepoints
+//     displayWidth   / columnWidth       -- monospace terminal columns
+//     utf16UnitCount                     -- UTF-16 code units (LSP only)
+//
+// If a name does not say otherwise, it is bytes.
+//
+// === Terminology ==============================================
+//
+// byte          -- one octet of UTF-8. `str.length` counts these.
+// codepoint     -- one Unicode scalar value. 1-4 bytes.
+// cluster       -- one extended grapheme cluster (UAX #29); what a user
+//                  calls "a character". 1..N codepoints.
+// column/width  -- how many monospace cells a cluster occupies (1 or 2).
+//
+// For "AT" (the Austrian flag emoji): 8 bytes, 2 codepoints, 1 cluster,
+// 2 columns wide. All four numbers are different and all four matter.
+
+__c__("#include \"ffi/haze_unicode.c\"");
+export __c__("#include \"ffi/public/haze_unicode.h\"");
+
+namespace ffi {
+    export extern C fn haze_unicode_next_cluster(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_previous_cluster(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_cluster_start(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_cluster_size(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_cluster_width(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_is_cluster_boundary(text: str, offset: int): bool :: final;
+    export extern C fn haze_unicode_codepoint_start(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_decode_codepoint(text: str, offset: int): i32 :: final;
+    export extern C fn haze_unicode_decode_codepoint_size(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_count_clusters(text: str): int :: final;
+    export extern C fn haze_unicode_count_codepoints(text: str): int :: final;
+    export extern C fn haze_unicode_display_width(text: str): int :: final;
+    export extern C fn haze_unicode_offset_of_cluster(text: str, index: int): int :: final;
+    export extern C fn haze_unicode_cluster_index_at(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_utf16_units_before(text: str, offset: int): int :: final;
+    export extern C fn haze_unicode_offset_from_utf16_units(text: str, units: int): int :: final;
+    export extern C fn haze_unicode_is_valid_utf8(text: str): bool :: final;
+    export extern C fn haze_unicode_version(): str :: final;
+}
+
+// === Cursor movement ==========================================
+
+// The byte offset of the next grapheme cluster boundary at or after `offset`.
+// Returns text.length at the end of the string.
+//
+// This is what a Right arrow key does. It moves over exactly one user-visible
+// character, whether that is 1 byte ('a'), 3 bytes ('e' + combining acute),
+// 8 bytes (a flag) or 25 bytes (a family emoji).
+export fn nextClusterOffset(text: str, offset: int): int {
+    return ffi.haze_unicode_next_cluster(text, offset);
+}
+
+// The byte offset of the previous grapheme cluster boundary strictly before
+// `offset`. Returns 0 at the start of the string.
+//
+// This is what a Left arrow key and Backspace do.
+export fn previousClusterOffset(text: str, offset: int): int {
+    return ffi.haze_unicode_previous_cluster(text, offset);
+}
+
+// Round a byte offset DOWN onto the start of the grapheme cluster containing
+// it. An offset already on a boundary is returned unchanged.
+//
+// This is the guard that enforces the module's invariant. Any offset produced
+// by arithmetic rather than by the two movement functions above -- a mouse
+// click converted from pixels, a cursor restored from a file, a sticky column
+// carried to a shorter line -- must be passed through here before it is used
+// to slice or edit text. Otherwise a cursor can land inside a codepoint and
+// the next edit will corrupt the buffer.
+export fn clusterStart(text: str, offset: int): int {
+    return ffi.haze_unicode_cluster_start(text, offset);
+}
+
+// Whether `offset` sits exactly on a grapheme cluster boundary. Offset 0 and
+// offset text.length always do.
+export fn isClusterBoundary(text: str, offset: int): bool {
+    return ffi.haze_unicode_is_cluster_boundary(text, offset);
+}
+
+// The length IN BYTES of the grapheme cluster starting at `offset`.
+export fn clusterSizeBytes(text: str, offset: int): int {
+    return ffi.haze_unicode_cluster_size(text, offset);
+}
+
+// The width IN MONOSPACE COLUMNS of the cluster at `offset`: 1 for Latin, 2
+// for CJK and most emoji. Never 0, so that a combining mark without a base
+// still occupies somewhere to sit.
+export fn clusterColumnWidth(text: str, offset: int): int {
+    return ffi.haze_unicode_cluster_width(text, offset);
+}
+
+// === Codepoints ===============================================
+
+// Round a byte offset down onto the start of the codepoint containing it.
+// Weaker than clusterStart -- prefer clusterStart for anything cursor-shaped.
+// This exists for protocol conversion, where codepoints, not clusters, are
+// the unit being counted.
+export fn codepointStart(text: str, offset: int): int {
+    return ffi.haze_unicode_codepoint_start(text, offset);
+}
+
+// Decode the codepoint at `offset`, or -1 if the bytes there are not valid
+// UTF-8. Invalid bytes are consumed one at a time so iteration always
+// progresses.
+export fn codepointAt(text: str, offset: int): i32 {
+    return ffi.haze_unicode_decode_codepoint(text, offset);
+}
+
+// The length IN BYTES of the UTF-8 encoding of the codepoint at `offset`.
+export fn codepointSizeBytes(text: str, offset: int): int {
+    return ffi.haze_unicode_decode_codepoint_size(text, offset);
+}
+
+// === Counting =================================================
+//
+// These return counts that are NOT byte lengths. They are named accordingly
+// and must never be assigned to something a slice operation will consume.
+
+// How many grapheme clusters ("characters" as a user counts them) the string
+// contains. NOT a byte length: `str.length` is the byte length.
+export fn countCharacters(text: str): int {
+    return ffi.haze_unicode_count_clusters(text);
+}
+
+// How many Unicode codepoints the string contains. NOT a byte length.
+export fn countCodepoints(text: str): int {
+    return ffi.haze_unicode_count_codepoints(text);
+}
+
+// Total width of the string in monospace columns. NOT a byte length. This is
+// what decides how wide a run of text renders on a fixed-advance grid, and
+// differs from the character count wherever CJK or emoji appear.
+export fn displayWidth(text: str): int {
+    return ffi.haze_unicode_display_width(text);
+}
+
+// The BYTE OFFSET at which the cluster with the given index begins. Converts
+// a character count back into a byte offset; clamped to the end of string.
+export fn offsetOfCharacter(text: str, characterIndex: int): int {
+    return ffi.haze_unicode_offset_of_cluster(text, characterIndex);
+}
+
+// How many clusters precede the given BYTE OFFSET. The inverse of
+// offsetOfCharacter. Use only where a character index is genuinely required
+// (a UI that displays "column N" to a human, for instance).
+export fn characterIndexAt(text: str, offset: int): int {
+    return ffi.haze_unicode_cluster_index_at(text, offset);
+}
+
+// === Validation ===============================================
+
+// Whether the string is well-formed UTF-8 throughout.
+export fn isValidUtf8(text: str): bool {
+    return ffi.haze_unicode_is_valid_utf8(text);
+}
+
+// The Unicode version of the vendored tables, e.g. "16.0.0".
+export fn unicodeVersion(): str {
+    return ffi.haze_unicode_version();
+}
+
+// === UTF-16 (protocol boundary only) ==========================
+//
+// The editor stores byte offsets. The Language Server Protocol defaults to
+// counting UTF-16 code units in `Position.character`, so a server that will
+// not negotiate the `utf-8` position encoding needs these two functions
+// applied at the wire boundary -- and NOWHERE else. See lsp_position.hz for
+// the negotiation that usually makes them unnecessary.
+
+// Convert a BYTE OFFSET into the number of UTF-16 code units before it.
+export fn utf16UnitsBefore(text: str, offset: int): int {
+    return ffi.haze_unicode_utf16_units_before(text, offset);
+}
+
+// Convert a count of UTF-16 code units into the equivalent BYTE OFFSET. A
+// count landing inside a surrogate pair rounds down to that codepoint's start
+// rather than erroring, so a server that counts differently cannot corrupt
+// the buffer.
+export fn offsetFromUtf16Units(text: str, units: int): int {
+    return ffi.haze_unicode_offset_from_utf16_units(text, units);
+}
+
+// === Word classification ======================================
+//
+// Word motions (Vim's w/b/e, Ctrl+Arrow in a textbox) need to know whether a
+// character is a word character, whitespace or punctuation. Doing this on raw
+// bytes classifies every non-ASCII byte identically, which makes Ctrl+Left
+// treat an accented word as punctuation and stop in the wrong place.
+
+export enum CharClass {
+    Whitespace,
+    Word,
+    Punctuation,
+}
+
+// Classify the grapheme cluster at `offset`.
+//
+// Non-ASCII letters, marks and emoji all count as Word characters: that
+// matches what Vim does with 'iskeyword' for multibyte text, and means a word
+// motion crosses "naïve" and "日本語" as single words rather than fragmenting
+// them at every non-ASCII byte.
+export fn classifyAt(text: str, offset: int): CharClass {
+    let codepoint = codepointAt(text, offset);
+
+    if codepoint < 0 {
+        // Invalid bytes behave as punctuation: they break words, which keeps
+        // a corrupt region from merging with the identifiers around it.
+        return CharClass.Punctuation;
+    }
+
+    if codepoint == 32 || codepoint == 9 || codepoint == 10 || codepoint == 13 {
+        return CharClass.Whitespace;
+    }
+
+    // ASCII: letters, digits and underscore are word characters.
+    if codepoint < 128 {
+        let isDigit = codepoint >= 48 && codepoint <= 57;
+        let isUpper = codepoint >= 65 && codepoint <= 90;
+        let isLower = codepoint >= 97 && codepoint <= 122;
+        let isUnderscore = codepoint == 95;
+        if isDigit || isUpper || isLower || isUnderscore {
+            return CharClass.Word;
+        }
+        return CharClass.Punctuation;
+    }
+
+    // Non-breaking space and the Unicode space separators are whitespace.
+    if codepoint == 0x00A0 || codepoint == 0x2007 || codepoint == 0x202F {
+        return CharClass.Whitespace;
+    }
+    if codepoint >= 0x2000 && codepoint <= 0x200A {
+        return CharClass.Whitespace;
+    }
+    if codepoint == 0x3000 {
+        return CharClass.Whitespace;
+    }
+
+    // Everything else non-ASCII -- letters, marks, ideographs, emoji -- is a
+    // word character.
+    return CharClass.Word;
+}

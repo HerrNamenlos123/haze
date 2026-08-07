@@ -28,3 +28,4 @@ filedialog = { path = "../stdlib/filedialog" }
 textedit_behavior = { path = "../stdlib/textedit_behavior" }
 vim_behavior = { path = "../stdlib/vim_behavior" }
 language_server_protocol = { path = "../stdlib/language_server_protocol" }
+unicode = { path = "../stdlib/unicode" }

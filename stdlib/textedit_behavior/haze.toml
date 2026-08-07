@@ -5,3 +5,6 @@ description = "A foundational module for implementing text edit behavior"
 license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "lib"
+
+[dependencies]
+unicode = { path = "../unicode" }
