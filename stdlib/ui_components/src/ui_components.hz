@@ -245,6 +245,18 @@ export inline struct DivProps {
     // the click path for a focus target -- they neither gain focus
     // themselves nor block an ancestor from getting it.
     focusable?: bool;
+
+    // Focus this element as soon as it first appears, without waiting for a
+    // click -- the DOM's autofocus attribute. Use it so the app is usable
+    // from the keyboard the instant the window opens (e.g. a text editor you
+    // can type into immediately). Only meaningful together with
+    // `focusable: true`, and only applied once, on this element's first
+    // build; afterwards focus follows clicks and ui_focus() as usual.
+    //
+    // For focus that has to be decided at runtime rather than declared here,
+    // use a `ref:` and call .focus()/.blur() on it (see ElementWrapper).
+    autofocus?: bool;
+
     onFocus?: () => none;
     onBlur?: () => none;
 
@@ -365,6 +377,23 @@ export struct ChildElementEntry {
     element: mut ui_elements.Element;
 }
 
+// A pending programmatic focus change, parked on an element's runtime data
+// until the next process() applies it -- see
+// ComponentElementRuntimeData.focusRequested and UIContext.applyPendingFocus.
+// `Blur` is distinct from `None` on purpose: "this element asked to be
+// blurred" and "this element has no pending request" have to be told apart,
+// otherwise a blur() would be indistinguishable from never having been called.
+export enum FocusRequest { None, Focus, Blur }
+
+// Out-parameter for UIContext.takeFocusRequest's tree walk, which has to
+// report two things at once (which kind of request, and whose) while still
+// recursing -- a plain return value can't carry both back up out of a
+// recursive walk without allocating on every level.
+export struct FocusRequestTarget {
+    kind: FocusRequest = FocusRequest.None;
+    data: ComponentElementRuntimeData | null = null;
+}
+
 export struct ComponentElementRuntimeData {
     renderFeedback?: RenderFeedback;
     renderFeedbackVersion: rx.Reactive<bool>;
@@ -409,6 +438,26 @@ export struct ComponentElementRuntimeData {
     focusable: bool = false;
     focused: bool = false;
     focusVersion: rx.Reactive<bool>;
+
+    // Programmatic focus (ElementWrapper.focus()/blur(), see also
+    // UIContext.applyPendingFocus): a *request*, not the focus state itself.
+    // Focusing has to blur whatever else was focused, which needs the tree
+    // root -- and an ElementWrapper only knows its own element, so it cannot
+    // do that work itself. Instead it just flags its intent here and the next
+    // process() resolves it against the real root, exactly like every other
+    // piece of per-element state in this module (a flag found by a tree walk,
+    // never a remembered handle -- see buildFocusPath's comment).
+    //
+    // Deliberately not reactive: nothing renders off "a focus was requested",
+    // only off `focused` above, which applyFocusChange already bumps.
+    focusRequested: FocusRequest = FocusRequest.None;
+
+    // Whether DivProps.autofocus has already had its one and only chance to
+    // fire for this element. Set on the first build regardless of whether
+    // autofocus was actually set, so that toggling `autofocus` on later
+    // (after the element already exists) doesn't retroactively steal focus --
+    // matching the DOM, where the attribute only matters at insertion time.
+    autofocusApplied: bool = false;
 
     onFocus?: () => none;
     onBlur?: () => none;
@@ -601,6 +650,33 @@ export fn ui_focused(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.focusVersion);
     return data.focused;
+}
+
+// Programmatic counterpart to clicking a focusable element -- the equivalent
+// of the DOM's HTMLElement.focus(). Takes effect on the next process(), not
+// here (see ComponentElementRuntimeData.focusRequested for why), so
+// ui_focused() keeps reporting the old value until then; onFocus/onBlur fire
+// from that frame's normal FIRE PHASE, in the same order and with the same
+// timing a click-driven focus change would produce.
+//
+// Focusing an element that isn't `focusable` is a no-op, mirroring
+// click-to-focus (which skips non-focusable elements entirely) rather than
+// silently creating a focus target keyboard events could reach but no click
+// ever could.
+export fn ui_focus(element: ui_elements.Element): void {
+    let data = runtimeDataOf(element);
+    if !data.focusable {
+        return;
+    }
+    data.focusRequested = FocusRequest.Focus;
+}
+
+// Programmatic blur -- the DOM's HTMLElement.blur(). Only blurs if this
+// element is actually the focused one by the time the request is applied,
+// so a stale blur() can never knock out whatever got focused after it.
+export fn ui_blur(element: ui_elements.Element): void {
+    let data = runtimeDataOf(element);
+    data.focusRequested = FocusRequest.Blur;
 }
 
 // Sets pointerDownHere and bumps inputFeedbackVersion, but only when the
@@ -1032,6 +1108,57 @@ export opaque struct UIContext {
         }
     }
 
+    // Finds an element with a pending programmatic focus request (see
+    // ui_focus/ui_blur), clearing the flag on every element it walks past so
+    // a request is consumed exactly once whether or not it ends up applying.
+    // Returns the first request found in tree order, or None.
+    //
+    // Requests are cleared even while one has already been found, so that two
+    // elements each calling focus() in the same frame don't leave the loser's
+    // flag set to spuriously re-fire on the next frame -- last writer in tree
+    // order would win a frame late, which is worse than simply dropping it.
+    fn takeFocusRequest(element: ui_elements.Element, found: FocusRequestTarget): void :: final {
+        let data = runtimeDataOf(element);
+        if data.focusRequested != FocusRequest.None {
+            if found.kind == FocusRequest.None {
+                found.kind = data.focusRequested;
+                found.data = data;
+            }
+            data.focusRequested = FocusRequest.None;
+        }
+        if element is ui_elements.DivElement {
+            let i = 0;
+            while i < element.children.length {
+                this.takeFocusRequest(element.children[i], found);
+                i = i + 1;
+            }
+        }
+    }
+
+    // Applies whatever ui_focus()/ui_blur() asked for since the last frame,
+    // routing it through the very same applyFocusChange() a click uses -- so
+    // programmatic and click-driven focus cannot drift apart in behavior
+    // (blur-the-old-one, fire onBlur then onFocus, both onto `eventQueue`).
+    fn applyPendingFocus(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        let found = FocusRequestTarget {};
+        this.takeFocusRequest(tree, found);
+
+        if found.kind == FocusRequest.Focus {
+            this.applyFocusChange(tree, found.data, eventQueue);
+        }
+        else if found.kind == FocusRequest.Blur {
+            // Only a blur of the *currently* focused element means anything;
+            // blurring something that isn't focused must not clear whatever
+            // else happens to be focused right now.
+            let d = found.data;
+            if d is not null {
+                if d.focused {
+                    this.applyFocusChange(tree, null, eventQueue);
+                }
+            }
+        }
+    }
+
     // Traverses the full tree, updates hover/hit reactive state, and
     // schedules onHoverEnter/Leave + onHitEnter/Leave callbacks onto
     // `eventQueue`. Neither is bubbling: every element that geometrically
@@ -1419,6 +1546,14 @@ export opaque struct UIContext {
             let finalHitPath = this.buildHitPath(tree, this.mousePos);
             this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
 
+            // Programmatic focus (ui_focus/ui_blur) is applied before any of
+            // this frame's input dispatch, so an element focused from
+            // onMounted -- or from any handler that ran last frame -- receives
+            // this frame's keystrokes rather than dropping them. A click later
+            // in this same frame still wins over it, which is correct: the
+            // user's actual pointer input is the more recent intent.
+            this.applyPendingFocus(tree, eventQueue);
+
             // Capture phase (root -> target), then bubble phase (target ->
             // root), for down/up/move; then, on up, the same two phases again
             // for the synthesized click. Each event hit-tests against its
@@ -1751,6 +1886,22 @@ export opaque struct UIContext {
         let instance = this.makeCurrentComponentAvailable(id);
 
         if !instance.setupDone {
+            // Setup runs with a render context pushed for this component, so
+            // the hooks that identify "the component being defined" by looking
+            // at the top of renderStack -- onMounted/onUnmount, see
+            // getCurrentComponent() -- work from inside setup, which is the
+            // only place they can sensibly be called (setup runs once; the
+            // template re-runs on every reactive change, so registering a
+            // mount hook from there would re-register it endlessly).
+            //
+            // Nothing here builds elements, so this context is only ever
+            // consulted for `currentComponent`; the template pushes its own
+            // context later for the actual element building.
+            this.pushRenderContext({
+                currentComponent: instance,
+                currentParent: instance.rootElement,
+                idPath: "",
+            });
             attempt {
                 instance.currentTemplate = setupFn();
                 instance.setupDone = true;
@@ -1758,7 +1909,10 @@ export opaque struct UIContext {
                 instance.crashed = true;
                 instance.crashInfo = e;
                 instance.setupDone = true;
+                fmt.println(f"[crash] component {instance.id} setup:");
+                e.print();
             };
+            this.popRenderContext();
         }
 
         if (propsChanged) {
@@ -1977,6 +2131,17 @@ export opaque struct UIContext {
         data.onHitEnter = props.onHitEnter;
         data.onHitLeave = props.onHitLeave;
         data.focusable = props.focusable is not none ? props.focusable : false;
+        // autofocus: request focus the first time this element is built, and
+        // never again -- re-requesting every frame would make it impossible to
+        // ever focus anything else (each frame would steal focus straight
+        // back). `autofocusApplied` is what makes it fire exactly once, which
+        // is why it lives on the persistent runtime data and not here.
+        if !data.autofocusApplied {
+            data.autofocusApplied = true;
+            if data.focusable && props.autofocus is not none && props.autofocus {
+                data.focusRequested = FocusRequest.Focus;
+            }
+        }
         data.onFocus = props.onFocus;
         data.onBlur = props.onBlur;
         data.onKeyDown = props.onKeyDown;
@@ -2151,6 +2316,19 @@ export struct ElementWrapper<T> {
     // Mirrors CSS :focus -- see DivProps.focusable.
     fn focused(): bool {
         return ui_focused(this._element);
+    }
+
+    // Focus this element programmatically, like the DOM's element.focus() --
+    // e.g. from onMounted, so a text editor is typeable the moment the window
+    // opens without the user having to click into it first. Applied on the
+    // next process(); see ui_focus() for the exact semantics.
+    fn focus(): void {
+        ui_focus(this._element);
+    }
+
+    // Give up focus, like the DOM's element.blur(). See ui_blur().
+    fn blur(): void {
+        ui_blur(this._element);
     }
 
     fn position(): Vec2 | none {

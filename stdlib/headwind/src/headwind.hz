@@ -24,6 +24,18 @@ namespace presets {
         return ui_styling.TextColorOp { color: color };
     }
 
+    // Text wrapping. `noWrap()` lets a long run extend past its container
+    // instead of breaking onto a second visual row -- required by anything
+    // that maps an x coordinate back to a character index (a code editor's
+    // hit-testing, a caret), since a wrapped row breaks that mapping.
+    export fn textWrap(value: ui_styling.TextWrap): ui_styling.TextWrapOp {
+        return ui_styling.TextWrapOp { value: value };
+    }
+
+    export fn noWrap(): ui_styling.TextWrapOp {
+        return ui_styling.TextWrapOp { value: ui_styling.TextWrap.None };
+    }
+
     export fn p(value: real): ui_styling.PaddingOp {
         return ui_styling.PaddingOp {
             padding: ui_styling.StylePaddingSimple { value: computeSize(value) },

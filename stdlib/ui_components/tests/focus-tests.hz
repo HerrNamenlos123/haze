@@ -1,0 +1,179 @@
+import ui_components
+import ui_elements
+
+// Drives the component system headlessly to verify programmatic focus
+// (ui_focus/ui_blur, ElementWrapper.focus()/blur()) and, most importantly,
+// that a focus requested from onMounted actually receives keyboard input on
+// the very next frame -- the "window opens ready to type" behaviour the code
+// editor depends on.
+//
+// No layout engine and no renderer are wired up: UIContext.measureText is
+// optional and nothing here measures text, so process() runs fine headless.
+// Elements never get a bounding box this way, which means hit-testing always
+// misses -- that is exactly why these tests drive focus programmatically and
+// never synthesise clicks.
+
+struct TestArgs {
+    fn operator!=(other: TestArgs) {
+        return false;
+    }
+}
+
+// All mutable test state lives in one struct so the UI closures can capture a
+// single handle and still see later writes (the same reason the code editor's
+// own component state is grouped rather than held in loose locals).
+struct State {
+    typed: str = "";
+    events: str = "";
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected '{expected}', got '{actual}')");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+
+    let editorRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let otherRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+    // Queued keyboard input, drained every frame the same way a real backend
+    // drains its SDL event queue.
+    let pendingText: []str = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                ctx.onMounted(() => {
+                    let el = rx.get(editorRef);
+                    if el {
+                        el.focus();
+                    }
+                });
+
+                return () => {
+                    ctx.div({
+                        id: 1,
+                        ref: editorRef,
+                        focusable: true,
+                        onFocus: () => { state.events = f"{state.events}editor-focus;"; },
+                        onBlur: () => { state.events = f"{state.events}editor-blur;"; },
+                        onTextInput: (e: ui_components.TextInputEvent) => {
+                            state.typed = f"{state.typed}{e.text}";
+                        },
+                    }, () => {});
+
+                    ctx.div({
+                        id: 2,
+                        ref: otherRef,
+                        focusable: true,
+                        onFocus: () => { state.events = f"{state.events}other-focus;"; },
+                        onBlur: () => { state.events = f"{state.events}other-blur;"; },
+                    }, () => {});
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(0.0, 0.0); },
+        keyboard: {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => { return []; },
+            // Drains the queue in place (.clear(), not a fresh `[]`) -- the
+            // closure captured this exact array, so rebinding the local would
+            // leave it holding every chunk ever queued.
+            textInputThisFrame: (): []str => {
+                let out: []str = [];
+                for t in pendingText { out.push(t); }
+                pendingText.clear();
+                return out;
+            },
+        },
+    });
+
+    // Frame 1: builds the tree, fires onMounted (which requests focus).
+    // The request is deliberately NOT applied yet -- it is picked up at the
+    // start of the next frame's input processing.
+    ui.process();
+
+    let editorEl = rx.get(editorRef);
+    assert(editorEl, "editor ref was not populated after the first frame");
+    let otherEl = rx.get(otherRef);
+    assert(otherEl, "other ref was not populated after the first frame");
+
+    // Frame 2: the pending request is applied before input dispatch, so text
+    // typed during this same frame must land in the editor.
+    pendingText.push("hello");
+    ui.process();
+
+    state.check("editor is focused after onMounted focus()", editorEl.focused(), true);
+    state.checkStr("editor received text typed on the frame focus applied",
+        state.typed, "hello");
+    state.checkStr("onFocus fired exactly once", state.events, "editor-focus;");
+
+    // --- Typing keeps flowing to the focused element on later frames ------
+    pendingText.push(" world");
+    ui.process();
+    state.checkStr("editor keeps receiving text while focused",
+        state.typed, "hello world");
+
+    // --- Moving focus programmatically blurs the previous element ---------
+    state.events = "";
+    otherEl.focus();
+    ui.process();
+
+    state.check("editor lost focus when the other element took it", editorEl.focused(), false);
+    state.check("other element gained focus", otherEl.focused(), true);
+    state.checkStr("blur fired before focus, exactly like a click would",
+        state.events, "editor-blur;other-focus;");
+
+    // Text now goes to the newly focused element, which has no onTextInput,
+    // so the editor's buffer must stay untouched.
+    pendingText.push("XXX");
+    ui.process();
+    state.checkStr("text no longer reaches the blurred editor",
+        state.typed, "hello world");
+
+    // --- blur() clears focus entirely --------------------------------------
+    state.events = "";
+    otherEl.blur();
+    ui.process();
+    state.check("other element is no longer focused after blur()", otherEl.focused(), false);
+    state.checkStr("onBlur fired for the blurred element", state.events, "other-blur;");
+
+    // --- A stale blur() on an unfocused element must not steal focus ------
+    editorEl.focus();
+    ui.process();
+    state.check("editor re-focused", editorEl.focused(), true);
+
+    otherEl.blur();          // 'other' is not focused -- must be a no-op
+    ui.process();
+    state.check("blur() on an unfocused element left the real focus alone",
+        editorEl.focused(), true);
+
+    // --- Focus survives across frames without being re-requested ----------
+    ui.process();
+    ui.process();
+    state.check("focus persists across frames", editorEl.focused(), true);
+
+    if state.failures > 0 {
+        fmt.println(f"\n{state.failures} FAILURES out of {state.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {state.checks} FOCUS CHECKS PASS");
+    return 0;
+}
