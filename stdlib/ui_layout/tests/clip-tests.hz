@@ -1,0 +1,232 @@
+import ui_layout
+import ui_elements
+import ui_styling
+
+// Drives the real Clay layout engine headlessly to verify that
+// ui_styling.Overflow.Hidden on a div actually reaches the renderer as a
+// resolved clip rect on that div's subtree -- the whole point of the overflow
+// plumbing, and the part a unit test of the styling layer alone cannot see
+// (computeDivStyle can resolve overflow perfectly while the layout/FFI layer
+// still drops it on the floor).
+//
+// It also pins the property that made the first attempt at this wrong:
+// enabling overflow must NOT change layout. The sizes asserted below are the
+// sizes the same tree lays out to with overflow off.
+//
+// No GPU renderer is involved: the callbacks just record what they were
+// handed, so this runs anywhere.
+
+fn measureStub(fontId: int, fontSize: real, text: str): Vec2 {
+    return Vec2(text.length as real * 8.0, fontSize);
+}
+
+// A drawn rectangle plus whatever clip was active for it -- the pairing is
+// the whole point, so they're recorded together rather than in parallel
+// lists.
+struct DrawRecord {
+    box: str;
+    clip: str;
+}
+
+struct Recorder {
+    draws: []DrawRecord = [];
+    // Clip most recently handed to setClip, in the same "minX,minY,maxX,maxY"
+    // form used in assertions. Starts unclipped.
+    current: str = "none";
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n   expected: {expected}\n   actual:   {actual}");
+        }
+    }
+
+    // The clip that was active when the rect with this exact box was drawn.
+    // "<missing>" if no such rect was drawn at all, which is itself a
+    // failure worth seeing spelled out.
+    fn clipFor(box: str): str {
+        for draw in this.draws {
+            if draw.box == box {
+                return draw.clip;
+            }
+        }
+        return "<missing>";
+    }
+}
+
+// Round-half-up in both directions -- a bare (value + 0.5) truncates the
+// wrong way for negatives, which the unbounded clip axis is.
+fn r(value: real): int {
+    return value < 0.0 ? (value - 0.5) as int : (value + 0.5) as int;
+}
+
+fn fmtClip(clip: ui_layout.ResolvedClip): str {
+    if !clip.active {
+        return "none";
+    }
+    return f"{r(clip.minX)},{r(clip.minY)},{r(clip.maxX)},{r(clip.maxY)}";
+}
+
+fn recordingCallbacks(rec: mut Recorder): ui_layout.RenderCallbacks {
+    return {
+        renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+            rec.draws.push({
+                box: f"{r(position.x)},{r(position.y)},{r(size.x)}x{r(size.y)}",
+                clip: rec.current,
+            });
+        },
+        renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {},
+        onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {},
+        renderCanvas: (element: ui_elements.CanvasElement): void => {},
+        renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {},
+        setClip: (clip: ui_layout.ResolvedClip): void => {
+            rec.current = fmtClip(clip);
+        },
+    };
+}
+
+// A 100x50 clipper holding a 400x400 child, inside an 800x600 root. The
+// child is deliberately far bigger than its parent so there is genuinely
+// something to clip -- and so that any layout disturbance shows up as a
+// changed size in the assertions.
+fn clippedTree(overflowX: ui_styling.Overflow, overflowY: ui_styling.Overflow): ui_elements.Element {
+    let inner = ui_elements.DivElement({
+        id: 1,
+        globalId: "root/clipper/inner",
+        style: {
+            width: 400.0,
+            height: 400.0,
+            backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
+        },
+    });
+
+    let clipper = ui_elements.DivElement({
+        id: 0,
+        globalId: "root/clipper",
+        children: [inner],
+        style: {
+            width: 100.0,
+            height: 50.0,
+            overflowX: overflowX,
+            overflowY: overflowY,
+            backgroundColor: Color(0.0, 0.0, 1.0, 1.0),
+        },
+    });
+
+    return ui_elements.DivElement({
+        id: 0,
+        globalId: "root",
+        children: [clipper],
+        style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
+    });
+}
+
+fn makeContext(): ui_layout.Context {
+    return ui_layout.Context({
+        width: 800,
+        height: 600,
+        fonts: [],
+        getFontLineHeight: (fontId: int, fontSize: real): real => fontSize,
+        measureText: (fontId: int, fontSize: real, text: str): Vec2 => measureStub(fontId, fontSize, text),
+    });
+}
+
+fn main(): int {
+    let ctx = makeContext();
+    ctx.setLayoutSize(800, 600);
+
+    // --- overflow: visible (the default) clips nothing ------------------
+    let visible = Recorder {};
+    ctx.render(clippedTree(ui_styling.Overflow.Visible, ui_styling.Overflow.Visible), recordingCallbacks(visible));
+
+    visible.checkStr("visible: clipper unclipped", visible.clipFor("0,0,100x50"), "none");
+    visible.checkStr("visible: child unclipped", visible.clipFor("0,0,400x400"), "none");
+
+    // --- overflow: hidden clips the subtree to the element's own box -----
+    let hidden = Recorder {};
+    ctx.render(clippedTree(ui_styling.Overflow.Hidden, ui_styling.Overflow.Hidden), recordingCallbacks(hidden));
+
+    // The clipper's own background is clipped to itself, and -- the actual
+    // fix -- so is its oversized child.
+    hidden.checkStr("hidden: clipper clipped to itself", hidden.clipFor("0,0,100x50"), "0,0,100,50");
+    hidden.checkStr("hidden: child clipped to parent", hidden.clipFor("0,0,400x400"), "0,0,100,50");
+    // The root is outside the clipper, so it must stay unclipped.
+    hidden.checkStr("hidden: root unclipped", hidden.clipFor("0,0,800x600"), "none");
+
+    // LAYOUT MUST BE UNCHANGED. Routing clipping through Clay's scroll
+    // config (the first attempt) resized these -- that is precisely the
+    // regression this pins.
+    hidden.checkStr("hidden: clipper keeps its size", hidden.clipFor("0,0,100x50") == "<missing>" ? "missing" : "present", "present");
+    hidden.checkStr("hidden: child keeps its size", hidden.clipFor("0,0,400x400") == "<missing>" ? "missing" : "present", "present");
+
+    // --- overflow-x only leaves the Y axis unconstrained -----------------
+    let xOnly = Recorder {};
+    ctx.render(clippedTree(ui_styling.Overflow.Hidden, ui_styling.Overflow.Visible), recordingCallbacks(xOnly));
+
+    // X is pinned to the 100px box; Y is widened to CLIP_UNBOUNDED so the
+    // 400px-tall child is not cut off vertically.
+    xOnly.checkStr("x-only: child clipped on x, free on y",
+        xOnly.clipFor("0,0,400x400"), "0,-10000000,100,10000000");
+
+    // --- nested clippers intersect --------------------------------------
+    let innermost = ui_elements.DivElement({
+        id: 0,
+        globalId: "root/outer/inner/box",
+        style: { width: 900.0, height: 900.0, backgroundColor: Color(1.0, 1.0, 0.0, 1.0) },
+    });
+    let innerClip = ui_elements.DivElement({
+        id: 0,
+        globalId: "root/outer/inner",
+        children: [innermost],
+        style: {
+            width: 200.0,
+            height: 200.0,
+            overflowX: ui_styling.Overflow.Hidden,
+            overflowY: ui_styling.Overflow.Hidden,
+            backgroundColor: Color(0.0, 1.0, 0.0, 1.0),
+        },
+    });
+    let outerClip = ui_elements.DivElement({
+        id: 0,
+        globalId: "root/outer",
+        children: [innerClip],
+        style: {
+            width: 300.0,
+            height: 100.0,
+            overflowX: ui_styling.Overflow.Hidden,
+            overflowY: ui_styling.Overflow.Hidden,
+            backgroundColor: Color(0.0, 0.0, 1.0, 1.0),
+        },
+    });
+    let nestedRoot = ui_elements.DivElement({
+        id: 0,
+        globalId: "root",
+        children: [outerClip],
+        style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
+    });
+
+    let nested = Recorder {};
+    ctx.render(nestedRoot, recordingCallbacks(nested));
+
+    // The inner clipper is 200x200 but sits inside a 300x100 clipper, so
+    // everything under it is bounded by the *intersection*: 200 wide (inner
+    // wins) by 100 tall (outer wins).
+    nested.checkStr("nested: outer clipped to itself", nested.clipFor("0,0,300x100"), "0,0,300,100");
+    nested.checkStr("nested: inner clipped to intersection", nested.clipFor("0,0,200x200"), "0,0,200,100");
+    nested.checkStr("nested: leaf clipped to intersection", nested.clipFor("0,0,900x900"), "0,0,200,100");
+
+    let checks = visible.checks + hidden.checks + xOnly.checks + nested.checks;
+    let failures = visible.failures + hidden.failures + xOnly.failures + nested.failures;
+    fmt.println(f"clip-tests: {checks - failures}/{checks} checks passed");
+    if failures > 0 {
+        fmt.println(f"clip-tests: {failures} FAILURE(S)");
+    }
+    else {
+        fmt.println("clip-tests: OK");
+    }
+    return failures > 0 ? 1 : 0;
+}

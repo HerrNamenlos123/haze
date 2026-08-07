@@ -41,6 +41,14 @@ typedef struct {
                        hzui_corner_radius_values_t cornerRadius,
                        hzui_border_widths_t borderWidth);
   void* renderBorderUserdata;
+  // Sets the clip rect for the draw callback that immediately follows, given
+  // the element that command belongs to (Clay's own userData -- may be NULL,
+  // which means "unclipped"). The Haze side resolved every element's clip
+  // before this dispatch started; this just selects the right one per
+  // command, because Clay's command stream is flat and z-sorted and so
+  // carries no subtree structure a clip stack could follow.
+  void (*setClip)(void* userdata, void* elementPtr);
+  void* setClipUserdata;
 } ClayCallbacks;
 
 void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
@@ -59,6 +67,9 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
         callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_div, rcmd->userData, x, y, w, h);
+      }
+      if (callbacks.setClip) {
+        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
       }
       Clay_RectangleRenderData* config = &rcmd->renderData.rectangle;
       Clay_Color col = rcmd->renderData.rectangle.backgroundColor;
@@ -79,6 +90,9 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     case CLAY_RENDER_COMMAND_TYPE_TEXT: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
         callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_text, rcmd->userData, x, y, w, h);
+      }
+      if (callbacks.setClip) {
+        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
       }
       callbacks.renderText(
         callbacks.renderTextUserdata,
@@ -159,6 +173,13 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
       // transparent (so Clay skipped RECTANGLE and only emitted BORDER),
       // ui_layout.hz's own fallback pass (applyBoundingBoxesRecursive)
       // already covers that content-less-element case generically by id.
+      //
+      // The clip still has to be set, though -- a border is drawn like any
+      // other primitive and must be cut off by a clipping ancestor exactly
+      // as the background would be.
+      if (callbacks.setClip) {
+        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
+      }
       Clay_BorderRenderData* config = &rcmd->renderData.border;
       Clay_Color col = config->color;
       callbacks.renderBorder(callbacks.renderBorderUserdata,
@@ -181,17 +202,13 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
                               });
     } break;
     case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
-      // Clay_BoundingBox boundingBox = rcmd->boundingBox;
-      // currentClippingRectangle = (SDL_Rect) {
-      //   .x = boundingBox.x,
-      //   .y = boundingBox.y,
-      //   .w = boundingBox.width,
-      //   .h = boundingBox.height,
-      // };
-      // SDL_SetRenderClipRect(rendererData->renderer, &currentClippingRectangle);
+      // Never emitted: nothing here configures Clay scroll containers (see
+      // hzui_clay_define_div_element). Clipping is driven from the Haze side
+      // instead -- see ui_layout's own clip stack -- because routing it
+      // through Clay's scroll config would also change child sizing on the
+      // clipped axis, and overflow must not affect layout.
     } break;
     case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END: {
-      // SDL_SetRenderClipRect(rendererData->renderer, NULL);
     } break;
     case CLAY_RENDER_COMMAND_TYPE_IMAGE: {
       // SDL_Texture* texture = (SDL_Texture*)rcmd->renderData.image.imageData;
@@ -201,6 +218,9 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
         callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_canvas, rcmd->userData, x, y, w, h);
+      }
+      if (callbacks.setClip) {
+        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
       }
       callbacks.renderCustom(callbacks.renderCustomUserdata, rcmd->userData, x, y, w, h);
     } break;

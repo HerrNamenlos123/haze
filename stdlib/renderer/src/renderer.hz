@@ -1479,10 +1479,16 @@ export opaque struct Renderer {
     // intersected with whatever clip is already active. Always pair with
     // popClip().
     mut fn pushClip(pos: Vec2, size: Vec2) {
-        let minX = pos.x as f32;
-        let minY = pos.y as f32;
-        let maxX = (pos.x + size.x) as f32;
-        let maxY = (pos.y + size.y) as f32;
+        // Draw calls are issued in logical coordinates, but the shader tests
+        // against `in.pos`, which is a framebuffer pixel position -- under
+        // any DPI scale above 1 those differ by exactly dpiScale, so an
+        // unscaled box clips in the wrong place (visibly: cutting off one
+        // edge of a container while missing the opposite one entirely).
+        let scale = this.canvas.size.dpiScale;
+        let minX = pos.x as f32 * scale;
+        let minY = pos.y as f32 * scale;
+        let maxX = (pos.x + size.x) as f32 * scale;
+        let maxY = (pos.y + size.y) as f32 * scale;
         if this._clipStack.length > 0 {
             let parent = this._clipStack[this._clipStack.length - 1];
             if parent.z > parent.x && parent.w > parent.y {
@@ -1499,6 +1505,42 @@ export opaque struct Renderer {
     mut fn popClip() {
         if this._clipStack.length > 0 {
             this._clipStack.pop();
+        }
+    }
+
+    // Set the active clip directly, as screen-space min/max, replacing
+    // whatever was active rather than nesting under it. For callers that
+    // resolve nesting themselves and just need each primitive stamped with
+    // an already-final rect (see ui_runtime's setClip) -- pushClip/popClip
+    // above remain the right API when you want the stack to do the
+    // intersecting for you. The two share the same storage, so a
+    // setClipRect inside a pushClip/popClip pair is overwritten by the pop.
+    mut fn setClipRect(minX: real, minY: real, maxX: real, maxY: real) {
+        // Logical -> framebuffer pixels, same reason as in pushClip above.
+        let scale = this.canvas.size.dpiScale;
+        let box: Vec4f = {
+            x: minX as f32 * scale,
+            y: minY as f32 * scale,
+            z: maxX as f32 * scale,
+            w: maxY as f32 * scale,
+        };
+        if this._clipStack.length > 0 {
+            this._clipStack[this._clipStack.length - 1] = box;
+        }
+        else {
+            this._clipStack.push(box);
+        }
+    }
+
+    // Back to unclipped -- a zero-area box, which is what the shader treats
+    // as clipping disabled.
+    mut fn clearClipRect() {
+        let unclipped: Vec4f = { x: 0, y: 0, z: 0, w: 0 };
+        if this._clipStack.length > 0 {
+            this._clipStack[this._clipStack.length - 1] = unclipped;
+        }
+        else {
+            this._clipStack.push(unclipped);
         }
     }
 

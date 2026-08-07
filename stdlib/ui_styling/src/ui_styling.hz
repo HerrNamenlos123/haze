@@ -42,6 +42,21 @@ export enum Packing { Start, Center, End, SpaceBetween }
 //     size (Grow or a fixed value) are left alone.
 export enum CrossAlign { Start, Center, End, Stretch }
 
+// Whether content larger than this element's box is clipped to it, mirroring
+// CSS `overflow` on a per-axis basis. Purely about *painting*: clipping here
+// never changes layout, so a clipped child still occupies the size it would
+// have had, it simply stops being drawn past the edge.
+//   - Visible: the default, exactly as in CSS -- content spills out of the
+//     box and is painted in full.
+//   - Hidden: content is clipped to this element's bounds (its padding box,
+//     the same box CSS clips to). Descendant clips intersect with this one,
+//     so nesting composes the way nested overflow:hidden containers do.
+// Scrolling is deliberately not a mode here: this element clips, and a
+// scroll offset is applied by whoever owns the scroll state (see
+// ui_components.ScrollState, whose own Overflow adds Auto/Scroll on top of
+// this to decide whether a *scrollbar* is drawn).
+export enum Overflow { Visible, Hidden }
+
 // How an element's width/height is determined along one axis.
 //   - Fit: wraps tightly to the size of the element's contents. The default
 //     when unset, on both axes -- an element with no sized content shrinks
@@ -238,6 +253,11 @@ export inline struct DivStyle {
     gap?: real;
     backgroundColor?: Color;
 
+    // Per-axis clipping of overflowing content -- see Overflow. Unset means
+    // Visible, matching CSS's own default.
+    overflowX?: Overflow;
+    overflowY?: Overflow;
+
     position?: Position;
     positionValues: PositionValues = {};
     zIndex?: int;
@@ -263,6 +283,8 @@ export inline struct DivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.overflowX = other.overflowX;
+        this.overflowY = other.overflowY;
         this.position = other.position;
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
@@ -285,6 +307,8 @@ export inline struct DivStyle {
             this.packing == other.packing &&
             this.crossAlign == other.crossAlign &&
             this.gap == other.gap &&
+            this.overflowX == other.overflowX &&
+            this.overflowY == other.overflowY &&
             this.position == other.position &&
             this.zIndex == other.zIndex &&
             this.fontFamily == other.fontFamily &&
@@ -350,6 +374,12 @@ export inline struct ComputedDivStyle {
     gap: real = 0.0;
     backgroundColor: Color = {};
 
+    // Resolved from DivStyle.overflowX/Y -- unset there becomes Visible
+    // here, so this pair is always a concrete answer to "does this element
+    // clip on that axis".
+    overflowX: Overflow = Overflow.Visible;
+    overflowY: Overflow = Overflow.Visible;
+
     position: Position = Position.Static;
     positionValues: PositionValues = {};
     zIndex: int = 0;
@@ -375,6 +405,8 @@ export inline struct ComputedDivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.overflowX = other.overflowX;
+        this.overflowY = other.overflowY;
         this.position = other.position;
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
@@ -417,6 +449,11 @@ export struct BackgroundColorOp { color: Color; }
 export struct TextColorOp { color: Color; }
 export struct PaddingOp { padding: StylePadding; }
 export struct GapOp { value: real; }
+// Both axes at once (the CSS `overflow` shorthand); OverflowXOp/OverflowYOp
+// are the per-axis longhands.
+export struct OverflowOp { x: Overflow; y: Overflow; }
+export struct OverflowXOp { value: Overflow; }
+export struct OverflowYOp { value: Overflow; }
 export struct CrossAlignOp { value: CrossAlign; }
 export struct PackingOp { value: Packing; }
 export struct DirectionOp { value: Direction; }
@@ -454,6 +491,7 @@ export type TextStyleOp =
 // `TextStyleOp | ...` here wouldn't actually include its variants.
 export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
+    | OverflowOp | OverflowXOp | OverflowYOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
@@ -477,6 +515,12 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
             else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
             else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
             else if op is GapOp { if !working.gap { working.gap = op.value; } }
+            else if op is OverflowOp {
+                if !working.overflowX { working.overflowX = op.x; }
+                if !working.overflowY { working.overflowY = op.y; }
+            }
+            else if op is OverflowXOp { if !working.overflowX { working.overflowX = op.value; } }
+            else if op is OverflowYOp { if !working.overflowY { working.overflowY = op.value; } }
             else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
             else if op is PackingOp { if !working.packing { working.packing = op.value; } }
             else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
@@ -529,6 +573,8 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
     if working.crossAlign { result.crossAlign = working.crossAlign; }
     if working.gap { result.gap = working.gap; }
     if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
+    if working.overflowX { result.overflowX = working.overflowX; }
+    if working.overflowY { result.overflowY = working.overflowY; }
     if working.position { result.position = working.position; }
     if working.zIndex { result.zIndex = working.zIndex; }
     if working.borderColor { result.borderColor = working.borderColor; }

@@ -120,6 +120,19 @@ export opaque struct Runtime {
             renderCanvas: (element: ui_elements.CanvasElement): void => {
                 this.renderCanvasElement(element, frame, r);
             },
+            // Arrives already intersected through every clipping ancestor
+            // (see ui_layout.collectClipsRecursive), so this just replaces
+            // whatever was set for the previous draw rather than maintaining
+            // a stack. setClipRect takes the same screen-space min/max the
+            // per-primitive clipRect is stored as.
+            setClip: (clip: ui_layout.ResolvedClip): void => {
+                if clip.active {
+                    r.setClipRect(clip.minX, clip.minY, clip.maxX, clip.maxY);
+                }
+                else {
+                    r.clearClipRect();
+                }
+            },
             renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {
                 r.drawRect({
                     pos: position,
