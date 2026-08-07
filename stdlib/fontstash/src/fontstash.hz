@@ -29,6 +29,17 @@ namespace ffi {
         out: []Glyph,
     ): void :: final;
 
+    export extern C fn haze_fontstash_layout_text_scaled(
+        ctx: cptr,
+        font: int,
+        size: f32,
+        scale: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        out: []Glyph,
+    ): void :: final;
+
     export extern C fn haze_fontstash_get_atlas(
         ctx: cptr,
     ): haze_fontstash_atlas_t :: final;
@@ -165,6 +176,34 @@ export opaque struct FontStash {
             this.fonsContext,
             font,
             size,
+            x,
+            y,
+            text,
+            out,
+        );
+    }
+
+    // Lays out `text` with glyphs rasterized at `size * scale` but advanced
+    // at `size`, writing quads back in logical (unscaled) space. Use this
+    // instead of layoutText wherever the target is a DPI-scaled surface: it
+    // keeps glyph bitmaps at one texel per physical pixel while leaving the
+    // run's width identical to what measureText(size, ...) reports, so drawn
+    // text still fits the box the layout engine reserved for it.
+    fn layoutTextScaled(
+        font: int,
+        size: f32,
+        scale: f32,
+        x: f32,
+        y: f32,
+        text: str,
+        out: []Glyph
+    ) {
+        assert(this.fonsContext, "FontStash Context not available");
+        ffi.haze_fontstash_layout_text_scaled(
+            this.fonsContext,
+            font,
+            size,
+            scale,
             x,
             y,
             text,

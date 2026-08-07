@@ -224,8 +224,23 @@ void haze_sdl_pollEvents(void)
       continue;
     }
 
+    /* SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED is what fires when a window is
+       dragged between two monitors running different scaling factors (e.g. a
+       100% external display and a 150% laptop panel). It is deliberately
+       listed separately from DISPLAY_CHANGED: the scale can change without
+       the window ever moving displays (the user changes the scale in system
+       settings while the app is running), and conversely the window can move
+       to a different display of the *same* scale. Without this, the app keeps
+       rendering at the old DPI until something else happens to resize the
+       window, which is what made text blurry after a drag to the other
+       monitor -- glyphs stay baked at the previous display's pixel size.
+
+       All four events funnel into the same size-changed latch, which makes
+       getWindowState() re-read both the pixel size and the logical size, so
+       whichever of the two actually changed is picked up. */
     if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
-        || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
+        || event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED
+        || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
       SDL_Window* window = SDL_GetWindowFromID(event.window.windowID);
       if (window) {
         haze_sdl_set_window_size_changed(window, true);

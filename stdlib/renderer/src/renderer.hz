@@ -142,6 +142,11 @@ export opaque struct Texture {
     }
 }
 
+// Side length of the glyph atlas, shared by the CPU-side fontstash surface
+// (TextRenderer below) and the GPU texture it is uploaded into (Context's
+// constructor). Single constant so the two can never drift apart.
+const fontAtlasSize = 2048;
+
 export struct TextRenderer {
     fs: fontstash.FontStash;
     glyphBuffer: []fontstash.Glyph;
@@ -151,7 +156,18 @@ export struct TextRenderer {
         let glyphBuffer: []fontstash.Glyph = [];
         glyphBuffer.reserve(1024);
 
-        let fs = fontstash.FontStash(1024, 1024);
+        // Must stay in lockstep with the GPU-side font atlas texture in
+        // Context's constructor -- the upload does a straight full-surface
+        // writeTexture, so a mismatch corrupts the atlas.
+        //
+        // 2048 rather than 1024 because glyphs are baked at physical pixel
+        // size (see drawText): at 150% scaling a glyph covers 2.25x the atlas
+        // area it did when everything was baked at logical size, and a full
+        // atlas here fails silently -- fontstash has no error callback
+        // installed, so fons__getGlyph just returns NULL and drawText skips
+        // the glyph, dropping characters from the screen rather than
+        // reporting anything.
+        let fs = fontstash.FontStash(fontAtlasSize, fontAtlasSize);
 
         let fontBytes = embed.binary("resources/ProggyClean.ttf");
         let defaultFont = fs.addFont("default", fontBytes);
@@ -610,7 +626,7 @@ export opaque struct Context {
             maxAnisotropy: 1,
         });
 
-        let atlasSize = 1024;
+        let atlasSize = fontAtlasSize;
 
         let fontAtlasTexture = options.device.createTexture({
             size: { width: atlasSize, height: atlasSize, depthOrArrayLayers: 1 },
@@ -1633,12 +1649,44 @@ export opaque struct Renderer {
         // there.
         tr.glyphBuffer.clear();
 
+        // Text is the one primitive that is *not* resolution-independent: rects
+        // and borders are SDF math that re-evaluates at whatever size the
+        // rasterizer runs them at, but a glyph is a bitmap baked into the atlas
+        // at one fixed size. Baking at the logical size and letting the
+        // viewport (which is in framebufferSize) stretch it to the physical
+        // size is a straight linear upsample -- a 14px glyph blurred across 21
+        // physical pixels at 150% scaling. It looks fine at dpiScale 1.0 only
+        // because the stretch factor is then exactly 1.
+        //
+        // layoutTextScaled bakes each glyph at the physical size (one texel per
+        // physical pixel, so the GPU never has to upsample) while advancing the
+        // pen at the logical size, returning quads in logical space. The
+        // advance has to stay logical because that is the space the layout
+        // engine measured in: fontstash rounds advances to whole pixels at
+        // whatever size it is handed, so laying out at 21px and dividing by 1.5
+        // does not reproduce the 14px advances -- for JetBrains Mono at size 14
+        // it comes out 11% wider, which overflows the reserved box and runs the
+        // text into whatever sits next to it.
+        //
+        // Guard the degenerate case: dpiScale is derived from a division by the
+        // logical size in app.getWindowState, and a window reported as 0-sized
+        // (minimized on some platforms) can yield 0 or a garbage ratio. Falling
+        // back to 1.0 renders at logical size -- soft, but text still appears,
+        // whereas scaling by 0 would collapse every glyph to nothing.
+        let scale = this.canvas.size.dpiScale as real;
+        if scale <= 0.0 {
+            scale = 1.0;
+        }
+
+        // Logical-size metrics: the baseline lives in logical space along with
+        // the quads, and must match what the layout engine assumed.
         let metrics = tr.fs.getMetrics(opts.font, opts.size as f32);
         let baseline = opts.position.y as real + metrics.ascender;
 
-        tr.fs.layoutText(
+        tr.fs.layoutTextScaled(
             opts.font,
             opts.size as f32,
+            scale as f32,
             opts.position.x as f32,
             baseline as f32,
             opts.text,
