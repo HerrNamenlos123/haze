@@ -1,5 +1,6 @@
 
 import language_server_protocol
+import unicode
 
 __c__("#include <unistd.h>");
 
@@ -297,10 +298,27 @@ export opaque struct VueLspBridge {
     // been opened -- reactive, so calling this from inside an
     // rx.computed() naturally re-fires once that happens even without the
     // position changing again.
-    fn hover(line: int, character: int, callback: (text: str | null) => none) {
+    // `byteColumn` is a BYTE OFFSET into `lineText`, matching how the editor
+    // stores every column. The two channels below count positions
+    // differently and neither counts bytes by default, so the conversion
+    // happens here rather than being pushed onto callers:
+    //
+    //   - tsserver's `offset` is a UTF-16 code unit index (its host is
+    //     TypeScript, whose strings are UTF-16), and is 1-based.
+    //   - LSP's `character` is UTF-16 by default, or bytes if the server
+    //     accepted our `utf-8` request during initialize.
+    //
+    // `lineText` must be the text of line `line`; without it neither
+    // conversion is possible, since both depend on what precedes the offset.
+    fn hover(line: int, byteColumn: int, lineText: str, callback: (text: str | null) => none) {
         if !rx.get(this._documentReady) {
             return;
         }
+
+        // tsserver always counts UTF-16 code units.
+        let tsserverOffset = unicode.utf16UnitsBefore(lineText, byteColumn);
+        // The LSP side may have negotiated byte offsets instead.
+        let lspCharacter = this._lsp.characterFromByteOffset(lineText, byteColumn);
 
         let quickInfoText: str | null = null;
         let lspHoverText: str | null = null;
@@ -314,7 +332,7 @@ export opaque struct VueLspBridge {
             callback(quickInfoText ? quickInfoText : lspHoverText);
         };
 
-        this._sendQuickInfoRequest(line, character, (body: QuickInfoBody | none) => {
+        this._sendQuickInfoRequest(line, tsserverOffset, (body: QuickInfoBody | none) => {
             if body && body.displayString {
                 quickInfoText = body.displayString;
             }
@@ -322,7 +340,7 @@ export opaque struct VueLspBridge {
             tryEmit();
         });
 
-        this._lsp.sendDocumentHoverRequest(this._filepath, line, character, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
+        this._lsp.sendDocumentHoverRequest(this._filepath, line, lspCharacter, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
             if response {
                 let hover = response;
                 if hover {
@@ -339,8 +357,11 @@ export opaque struct VueLspBridge {
     // 3) for why this works. Not the same thing as the "tsserver/request"
     // relay below (channel 2), which is for vue-language-server's own
     // Vue-specific queries.
-    fn _sendQuickInfoRequest(line: int, character: int, callback: (body: QuickInfoBody | none) => none) {
-        let argsNode = json.encodeToJsonNode<QuickInfoArgs>({ file: this._filepath, line: line + 1, offset: character + 1 });
+    // `utf16Offset` is a 0-based UTF-16 code unit index into the line; the
+    // +1 below converts it to tsserver's 1-based `offset`. It is NOT a byte
+    // offset -- see hover() for where the conversion happens.
+    fn _sendQuickInfoRequest(line: int, utf16Offset: int, callback: (body: QuickInfoBody | none) => none) {
+        let argsNode = json.encodeToJsonNode<QuickInfoArgs>({ file: this._filepath, line: line + 1, offset: utf16Offset + 1 });
         if !argsNode {
             sys.panic("vue_lsp_bridge: failed to encode tsserver 'quickinfo' arguments");
         }

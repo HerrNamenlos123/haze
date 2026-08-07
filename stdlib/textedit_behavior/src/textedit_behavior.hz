@@ -1135,8 +1135,27 @@ export struct Context {
     // place a caret; it is not a byte offset and not a character count.
     fn displayColumn(): int {
         let pos = this._cursorPos();
-        let line = this._lineText(pos.y);
-        return unicode.displayWidth(line.slice(0, clamp<int>(pos.x, 0, line.length)));
+        return this.displayColumnAt(pos.y, pos.x);
+    }
+
+    // How many monospace CELLS precede a given BYTE OFFSET on a line.
+    //
+    // This is the conversion a fixed-advance renderer needs to turn any
+    // engine column into an x position: a byte offset is not proportional to
+    // screen distance once a line contains multi-byte or double-width
+    // characters. Multiplying a byte column by a character width -- the
+    // obvious thing to do, and correct for pure ASCII -- puts the caret four
+    // cells to the right of a single emoji.
+    fn displayColumnAt(lineIndex: int, column: int): int {
+        let line = this._lineText(lineIndex);
+        return unicode.displayWidth(line.slice(0, clamp<int>(column, 0, line.length)));
+    }
+
+    // Width in monospace CELLS of the character at a byte offset: 2 for CJK
+    // and emoji, 1 otherwise. A block caret in normal mode should be this
+    // wide so it covers the character it is sitting on.
+    fn displayWidthOfCharacterAt(lineIndex: int, column: int): int {
+        return unicode.clusterColumnWidth(this._lineText(lineIndex), column);
     }
 
     // === Internals =================================================
