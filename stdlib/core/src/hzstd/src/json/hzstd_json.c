@@ -41,17 +41,18 @@ static void hzstd_json_use_arena(hzstd_allocator_t allocator) {
   cJSON_InitHooks(&hooks);
 }
 
-hzstd_json_node_t *hzstd_json_parse(hzstd_allocator_t allocator,
-                                    hzstd_str_t data, hzstd_str_ref_t *error) {
+hzstd_json_parse_result_t hzstd_json_parse(hzstd_allocator_t allocator,
+                                           hzstd_str_t data) {
   hzstd_json_use_arena(allocator);
   cJSON *cjson = cJSON_ParseWithLength(data.data, data.length);
   if (!cjson) {
-    error->data =
-        hzstd_str_from_cstr_dup(allocator, (hzstd_cstr_t)cJSON_GetErrorPtr());
-    return 0;
+    return (hzstd_json_parse_result_t){
+      .node = NULL,
+      .error = hzstd_str_from_cstr_dup(allocator, (hzstd_cstr_t)cJSON_GetErrorPtr()),
+    };
   }
 
-  return (hzstd_json_node_t *)cjson;
+  return (hzstd_json_parse_result_t){.node = (hzstd_json_node_t *)cjson, .error = HZSTD_STRING(NULL, 0)};
 }
 
 hzstd_json_node_t *hzstd_json_create_string(hzstd_allocator_t allocator,
@@ -122,16 +123,14 @@ hzstd_bool_t hzstd_json_is_null(hzstd_json_node_t *json) {
   return cJSON_IsNull((cJSON *)json);
 }
 
-hzstd_str_ref_t *hzstd_json_get_string_value(hzstd_allocator_t allocator,
-                                             hzstd_json_node_t *json) {
+hzstd_json_get_string_result_t hzstd_json_get_string_value(hzstd_allocator_t allocator,
+                                                            hzstd_json_node_t *json) {
   hzstd_json_use_arena(allocator);
   hzstd_cstr_t value = cJSON_GetStringValue((cJSON *)json);
   if (!value) {
-    return 0;
+    return (hzstd_json_get_string_result_t){.found = false};
   }
-  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t), "hzstd_str_ref_t");
-  result->data = hzstd_str_from_cstr_ref(value);
-  return result;
+  return (hzstd_json_get_string_result_t){.found = true, .value = hzstd_str_from_cstr_ref(value)};
 }
 
 double hzstd_json_get_number_value(hzstd_allocator_t allocator,
@@ -183,17 +182,15 @@ hzstd_usize_t hzstd_json_get_object_size(hzstd_allocator_t allocator,
   return cJSON_GetArraySize((cJSON *)json);
 }
 
-hzstd_str_ref_t *hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
-                                              hzstd_json_node_t *json,
-                                              hzstd_usize_t index) {
+hzstd_json_get_string_result_t hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
+                                                             hzstd_json_node_t *json,
+                                                             hzstd_usize_t index) {
   hzstd_json_use_arena(allocator);
   cJSON *item = cJSON_GetArrayItem((cJSON *)json, (int)index);
   if (!item || !item->string) {
-    return 0;
+    return (hzstd_json_get_string_result_t){.found = false};
   }
-  hzstd_str_ref_t *result = hzstd_allocate(allocator, sizeof(hzstd_str_ref_t), "hzstd_str_ref_t");
-  result->data = hzstd_str_from_cstr_ref(item->string);
-  return result;
+  return (hzstd_json_get_string_result_t){.found = true, .value = hzstd_str_from_cstr_ref(item->string)};
 }
 
 hzstd_json_node_t *hzstd_json_get_object_value_at(hzstd_allocator_t allocator,

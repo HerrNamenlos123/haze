@@ -1,7 +1,13 @@
 
 namespace ffi {
     extern C noemit struct hzstd_regex_blob_t {};
-    extern C fn hzstd_regex_runtime_compile(pattern: str, flags: str, error_message: ffi.hzstd_str_ref_t): hzstd_regex_blob_t :: final;
+
+    extern C noemit inline struct hzstd_regex_runtime_compile_result_t {
+        blob: hzstd_regex_blob_t | none;
+        error: str;
+    };
+
+    extern C fn hzstd_regex_runtime_compile(pattern: str, flags: str): inline hzstd_regex_runtime_compile_result_t :: final;
 
     extern C noemit struct hzstd_regex_span_t {
         start: usize;
@@ -57,14 +63,11 @@ namespace regex {
                 realFlags = flags;
             }
 
-            let errorMessage = ffi.hzstd_str_ref_t {};
-            let resultBlob = ffi.hzstd_regex_runtime_compile(pattern, realFlags, errorMessage);
-
-            let isError = false;
-            __c__("isError = resultBlob == NULL;");
-            if isError {
-                return Result<Regex, str>.Err(errorMessage.data);
+            let result = ffi.hzstd_regex_runtime_compile(pattern, realFlags);
+            if !result.blob {
+                return Result<Regex, str>.Err(result.error);
             }
+            let resultBlob = result.blob;
             let resultRegex: Regex = uninitialized;
             __c__("resultRegex.blob = resultBlob;");
             return Result<Regex, str>.Ok(resultRegex);

@@ -17,11 +17,11 @@
  *
  * 3- and 6-char forms are always treated as RGB/RRGGBB with alpha = 1 regardless of mode.
  *
- * On success: returns the color and leaves *error untouched (empty string).
- * On failure: returns all-zero color and sets *error to a short error message.
+ * On success: returns the color with error.length == 0.
+ * On failure: returns all-zero color and a short error message.
  *   The error string is a string literal — do not free it.
  */
-hzstd_color_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_str_ref_t* error, hzstd_bool_t argb_mode);
+hzstd_color_from_hex_result_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_bool_t argb_mode);
 
 /*
  * Serialize a hzstd_color_t to a lowercase hex string without a leading '#'.

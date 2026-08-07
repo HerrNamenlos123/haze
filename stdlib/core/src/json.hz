@@ -2,7 +2,17 @@
 namespace ffi {
     export extern C noemit struct hzstd_json_node_t {};
 
-    export extern C fn hzstd_json_parse(allocator: Allocator, data: str, error: ffi.hzstd_str_ref_t): hzstd_json_node_t | none :: final;
+    export extern C noemit inline struct hzstd_json_parse_result_t {
+        node: hzstd_json_node_t | none;
+        error: str;
+    };
+
+    export extern C noemit inline struct hzstd_json_get_string_result_t {
+        found: bool;
+        value: str;
+    };
+
+    export extern C fn hzstd_json_parse(allocator: Allocator, data: str): inline hzstd_json_parse_result_t :: final;
     export extern C fn hzstd_json_create_string(allocator: Allocator, data: str): hzstd_json_node_t :: final;
     export extern C fn hzstd_json_create_number(allocator: Allocator, data: real): hzstd_json_node_t :: final;
     export extern C fn hzstd_json_create_bool(allocator: Allocator, data: bool): hzstd_json_node_t :: final;
@@ -20,7 +30,7 @@ namespace ffi {
     export extern C fn hzstd_json_is_array(json: hzstd_json_node_t): bool :: final;
     export extern C fn hzstd_json_is_null(json: hzstd_json_node_t): bool :: final;
 
-    export extern C fn hzstd_json_get_string_value(allocator: Allocator, json: hzstd_json_node_t): ffi.hzstd_str_ref_t | none :: final;
+    export extern C fn hzstd_json_get_string_value(allocator: Allocator, json: hzstd_json_node_t): inline hzstd_json_get_string_result_t :: final;
     export extern C fn hzstd_json_get_number_value(allocator: Allocator, json: hzstd_json_node_t): real :: final;
 
     export extern C fn hzstd_json_get_object_item(allocator: Allocator, json: hzstd_json_node_t, name: str): hzstd_json_node_t | none :: final;
@@ -32,7 +42,7 @@ namespace ffi {
     // object whose key set isn't known ahead of time (e.g. LinearMap<K, V>'s
     // json.parse hook, containers.hz).
     export extern C fn hzstd_json_get_object_size(allocator: Allocator, json: hzstd_json_node_t): usize :: final;
-    export extern C fn hzstd_json_get_object_key_at(allocator: Allocator, json: hzstd_json_node_t, index: usize): ffi.hzstd_str_ref_t | none :: final;
+    export extern C fn hzstd_json_get_object_key_at(allocator: Allocator, json: hzstd_json_node_t, index: usize): inline hzstd_json_get_string_result_t :: final;
     export extern C fn hzstd_json_get_object_value_at(allocator: Allocator, json: hzstd_json_node_t, index: usize): hzstd_json_node_t :: final;
 
     export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: hzstd_json_node_t, name: str, item: hzstd_json_node_t): bool :: final;
@@ -62,7 +72,7 @@ namespace json {
                     if !obj { sys.panic("JSON object does not have attribute"); }
                     if comptime T is str {
                         let value = ffi.hzstd_json_get_string_value(this.json.allocator, obj);
-                        if value { return value.data; }
+                        if value.found { return value.value; }
                         sys.panic("JSON value is not of type String");
                     }
                     else if comptime T is real {
@@ -212,7 +222,7 @@ namespace json {
                 sys.panic("objectKeyAt() called on a JSON node that is not an object");
             }
             let key = ffi.hzstd_json_get_object_key_at(this.allocator, this.data, index);
-            if key { return key.data; }
+            if key.found { return key.value; }
             sys.panic("objectKeyAt(): index out of range or entry has no key");
         }
 
@@ -233,15 +243,14 @@ namespace json {
     }
 
     export fn parseToJsonNode(allocator: Allocator, data: str): Result<Node, Error> {
-        let error = ffi.hzstd_str_ref_t { data: "" };
-        const cjson = ffi.hzstd_json_parse(allocator, data, error);
-        if cjson {
+        let result = ffi.hzstd_json_parse(allocator, data);
+        if result.node {
             return Result<Node, Error>.Ok({
                 allocator: allocator,
-                data: cjson,
+                data: result.node,
             } with allocator);
         }
-        return Result<Node, Error>.Err({ error: () => error.data });
+        return Result<Node, Error>.Err({ error: () => result.error });
     }
 
     export fn object(): Node {
@@ -375,7 +384,7 @@ namespace json {
                 return Error { error: () => "JSON type mismatch: expected string" };
             }
             let value = ffi.hzstd_json_get_string_value(allocator, node);
-            if value { return value.data; }
+            if value.found { return value.value; }
             return Error { error: () => "JSON: failed to read string value" };
         }
         else if comptime T is int {

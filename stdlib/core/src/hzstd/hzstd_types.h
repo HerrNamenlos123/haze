@@ -64,14 +64,6 @@ typedef struct hzstd_str_t {
   int64_t length;
 } hzstd_str_t;
 
-// The purpose of this struct is to wrap a hzstd_str in an object which can be
-// passed around by reference. To be used if you actually want a 'hzstd_str*'
-// for an out-parameter. Hint: 'hzstd_str*' cannot be used directly since
-// hzstd_str is not a normal object but mapped to the 'str' primitive.
-typedef struct {
-  hzstd_str_t data;
-} hzstd_str_ref_t;
-
 #define HZSTD_STRING(str, len) ((hzstd_str_t) { .data = str, .length = len })
 
 #define HZSTD_STRING_SLICE(string, start, end)                                                                         \
@@ -539,6 +531,12 @@ typedef struct {
   hzstd_fs_error_t error;
 } hzstd_fs_exists_result_t;
 
+// data is only valid when error.code == hzstd_fs_error_code_none.
+typedef struct {
+  hzstd_str_t data;
+  hzstd_fs_error_t error;
+} hzstd_read_file_text_result_t;
+
 typedef struct {
   bool exists;
   int64_t mtime_ns; // modification time (nanoseconds since Unix epoch)
@@ -685,6 +683,12 @@ typedef struct {
   void *code; // pcre2_code
 } hzstd_regex_blob_t;
 
+// blob is NULL on failure; error is only valid in that case.
+typedef struct {
+  hzstd_regex_blob_t *blob;
+  hzstd_str_t error;
+} hzstd_regex_runtime_compile_result_t;
+
 // This corresponds to the compiler-builtin primitive 'Regex'
 typedef struct {
   hzstd_regex_blob_t *blob;
@@ -722,6 +726,12 @@ typedef struct {
   hzstd_real_t a;
 } hzstd_color_t;
 
+// error.length == 0 means success; color is only valid in that case.
+typedef struct {
+  hzstd_color_t color;
+  hzstd_str_t error;
+} hzstd_color_from_hex_result_t;
+
 typedef struct {
   hzstd_f32_t r;
   hzstd_f32_t g;
@@ -753,5 +763,17 @@ typedef struct {
 // ── JSON (opaque) ────────────────────────────────────────────────────────────
 
 typedef struct hzstd_json_node_t hzstd_json_node_t;
+
+// node is NULL on failure; error is only valid in that case.
+typedef struct {
+  hzstd_json_node_t *node;
+  hzstd_str_t error;
+} hzstd_json_parse_result_t;
+
+// value is only valid when found == true.
+typedef struct {
+  bool found;
+  hzstd_str_t value;
+} hzstd_json_get_string_result_t;
 
 #endif // HZSTD_TYPES_H

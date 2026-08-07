@@ -12,7 +12,7 @@
 
 void hzstd_regex_init_table(hzstd_regex_blob_t* table, size_t table_count);
 
-hzstd_regex_blob_t* hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags, hzstd_str_ref_t* error_message);
+hzstd_regex_runtime_compile_result_t hzstd_regex_runtime_compile(hzstd_str_t pattern, hzstd_str_t flags);
 
 hzstd_bool_t hzstd_regex_match(hzstd_regex_t regex, hzstd_str_t text);
 hzstd_regex_find_one_result_t hzstd_regex_find(hzstd_allocator_t allocator, hzstd_regex_t regex, hzstd_str_t text);
