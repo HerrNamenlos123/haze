@@ -1446,6 +1446,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         texteditBehavior.cursorPosition.y,
                         texteditBehavior.cursorPosition.x,
                     );
+                    // ...but where there is NO character under it there is
+                    // no width either, and a zero-wide block is an
+                    // invisible caret. That is not an edge case: an empty
+                    // line in normal mode always lands here (so does the
+                    // one-past-the-end position visual mode allows), and
+                    // the caret simply vanished. Fall back to one cell,
+                    // which is what vim itself draws on a blank line.
+                    if caretCells <= 0 {
+                        caretCells = 1;
+                    }
                     let cursorPos = Vec2(
                         cursorCell as real * characterSize.x,
                         cursorTop - scrollY,
