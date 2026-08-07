@@ -395,6 +395,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let editorRef: ui_components.ElementRef<ui_elements.DivElement> =
             rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
+        // Focus the text area as soon as the app comes up, so the window
+        // opens ready to type in -- without this, keyboard input goes nowhere
+        // until the user clicks into the editor first (key events are only
+        // delivered along the focused element's chain). onMounted runs after
+        // the first build, so editorRef is populated by the time this fires;
+        // the request itself is applied at the start of the next frame's
+        // input processing, before any keystrokes are dispatched.
+        ui.onMounted(() => {
+            let editorEl = rx.get(editorRef);
+            if editorEl {
+                editorEl.focus();
+            }
+        });
+
         // Set after anything that moves the caret, so the next frame
         // scrolls it back into view. A flag rather than an immediate
         // scroll because the viewport size is only known during render.

@@ -1,0 +1,90 @@
+import ui_components
+import ui_elements
+
+struct TestArgs {
+    fn operator!=(other: TestArgs) { return false; }
+}
+
+struct State {
+    typed: str = "";
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected '{expected}', got '{actual}')");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+    let aRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let bRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let pendingText: []str = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return () => {
+                    // autofocus, declared -- no ref, no onMounted needed.
+                    ctx.div({
+                        id: 1, ref: aRef, focusable: true, autofocus: true,
+                        onTextInput: (e: ui_components.TextInputEvent) => {
+                            state.typed = f"{state.typed}{e.text}";
+                        },
+                    }, () => {});
+                    // Not focusable: autofocus must be ignored entirely.
+                    ctx.div({ id: 2, ref: bRef, autofocus: true }, () => {});
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(0.0, 0.0); },
+        keyboard: {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => { return []; },
+            textInputThisFrame: (): []str => {
+                let out: []str = [];
+                for t in pendingText { out.push(t); }
+                pendingText.clear();
+                return out;
+            },
+        },
+    });
+
+    ui.process();
+    let a = rx.get(aRef); assert(a, "a ref missing");
+    let b = rx.get(bRef); assert(b, "b ref missing");
+
+    pendingText.push("hi");
+    ui.process();
+    state.check("autofocus focused the element", a.focused(), true);
+    state.checkStr("autofocused element received text immediately", state.typed, "hi");
+    state.check("autofocus ignored on a non-focusable element", b.focused(), false);
+
+    // autofocus must fire only once: after focusing something else, the
+    // next frames must NOT steal focus back.
+    a.blur();
+    ui.process();
+    state.check("blurred", a.focused(), false);
+    ui.process();
+    ui.process();
+    state.check("autofocus did not re-steal focus on later frames", a.focused(), false);
+
+    if state.failures > 0 {
+        fmt.println(f"\n{state.failures} FAILURES out of {state.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {state.checks} AUTOFOCUS CHECKS PASS");
+    return 0;
+}
