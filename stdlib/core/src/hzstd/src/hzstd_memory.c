@@ -239,6 +239,11 @@ void hzstd_init_gc()
   GC_INIT();
 }
 
+void hzstd_force_gc()
+{
+  GC_gcollect();
+}
+
 hzstd_arena_t *hzstd_arena_create_n(int skip_n_frames)
 {
   void (*fn)(hz_profiler_instrument_allocation_type, int, void *);

@@ -3205,6 +3205,14 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
       HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
     }
   }
+  // Same reasoning as the memoryCapturesHead drop below: every raw sample
+  // has now been read into `samples` above, so the chunk list itself (each
+  // chunk embedding HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY raw, HZSTD_MAX_FRAMES-
+  // deep-regardless-of-actual-depth samples) has no further use and would
+  // otherwise sit alongside the resolved result for the rest of this
+  // session's lifetime (see g_profiling_context at the end of this function).
+  context->samples_head = NULL;
+  context->samples_tail = NULL;
 #endif
 #undef HZSTD_PROFILING_REPORT_PROGRESS
 
@@ -3243,6 +3251,32 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
       memoryFramesProcessed++;
     }
   }
+
+  // Every raw capture has now been read and interned above; the chunk list
+  // itself (potentially hundreds of MB -- each chunk embeds
+  // HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY raw frames, each of which
+  // carries a full HZSTD_MAX_FRAMES-deep `pcs` array regardless of that
+  // capture's actual depth) has no further use. Drop every reference to it
+  // so the GC can reclaim it now, in the middle of postprocessing, instead
+  // of it sitting alongside the resolved result for the rest of this
+  // function (frames/memoryInstrumentationFrames below) and, since nothing
+  // ever cleared g_profiling_context either (see hzstd_profiling_start),
+  // for the rest of the process's life after that.
+  context->memoryCapturesHead = NULL;
+  context->memoryCapturesTail = NULL;
+
+  // Dropping the references above only makes the chunk list eligible for
+  // collection -- Boehm GC otherwise reclaims purely on its own heap-growth
+  // heuristics, not "as soon as" something becomes unreachable (see
+  // sys.forceGc's doc comment, system.hz), so without an explicit collection
+  // here that memory could easily still be sitting around, at the same
+  // moment `frames`/`memoryInstrumentationFrames` below are being built, as
+  // if nothing had been dropped at all. This is the single largest
+  // reclaimable block in the whole postprocessing pass (up to ~1KB per raw
+  // capture, times however many hundreds of thousands of allocations this
+  // session captured), so it's worth the cost of a real collection cycle to
+  // actually get it back before allocating the next large structure.
+  hzstd_force_gc();
 
   hzstd_profiling_frame_index_free(&frameIndex);
   if (context->sample_count > 0) {
@@ -3336,6 +3370,18 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
 
   // Release the profiling session lock so a new session can be started.
   atomic_store(&g_hzstd_profiling_active, false);
+
+  // g_profiling_context is otherwise never read after hzstd_profiling_start
+  // sets it (it has no purpose beyond that assignment -- grep the file: it
+  // is write-only), but leaving it set kept this entire context -- and
+  // everything still reachable from it, including any raw chunk-list heads
+  // this function didn't already null out above -- permanently GC-reachable
+  // for the rest of the process's life, no matter how many more profiling
+  // sessions start and stop after this one. Clearing it here is what
+  // actually lets the GC reclaim a finished session's memory at all.
+  if (g_profiling_context == context) {
+    g_profiling_context = NULL;
+  }
 
   return (hzstd_profiling_result_t) {
     .frames = frames,
