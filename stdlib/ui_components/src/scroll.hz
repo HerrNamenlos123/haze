@@ -1,0 +1,384 @@
+
+// === Scrolling ================================================
+//
+// A scroll container modelled on the DOM's scrolling API, because that
+// vocabulary is already precise and widely understood:
+//
+//   scrollTop / scrollLeft     where the content is scrolled to
+//   scrollHeight / scrollWidth the full size of the content
+//   clientHeight / clientWidth the size of the visible viewport
+//   overflow                   Auto | Scroll | Hidden | Visible
+//   scrollTo() / scrollBy()    programmatic scrolling
+//   scrollIntoView()           reveal a region
+//
+// A scrollbar is drawn automatically according to `overflow`, and it is a
+// real control: the thumb can be dragged, the track can be clicked, and
+// the wheel scrolls the content.
+//
+// The container does NOT lay its children out differently as you scroll.
+// It translates them and clips them (see gfx.pushClip), so scrolling is
+// free -- no relayout per frame. Content that scrolls out of view is
+// clipped on the GPU rather than drawn off-screen.
+//
+// For very large content (a 100k-line file) a host should ALSO cull:
+// `visibleRange()` reports which slice is on screen so the caller can
+// build elements only for that slice. Clipping keeps it correct;
+// culling keeps it fast.
+
+// When to show a scrollbar on a given axis. Mirrors CSS `overflow`.
+export enum Overflow {
+    // Scrollbar appears only when the content actually overflows.
+    Auto,
+    // Scrollbar is always visible, even when it would not be needed.
+    Scroll,
+    // Content is clipped and scrollable, but no scrollbar is drawn.
+    Hidden,
+    // No clipping, no scrolling -- content simply overflows the box.
+    Visible,
+}
+
+export struct ScrollbarStyle {
+    // Thickness of the bar, in pixels.
+    size: real = 10.0;
+    trackColor: str = "#00000000";
+    thumbColor: str = "#FFFFFF33";
+    thumbHoverColor: str = "#FFFFFF55";
+    thumbActiveColor: str = "#FFFFFF77";
+    // Corner rounding of the thumb.
+    radius: real = 5.0;
+    // Smallest the thumb may get, so it stays grabbable in a huge document.
+    minThumbLength: real = 24.0;
+}
+
+// Live scroll state. A host creates one of these, keeps it across
+// frames, and reads/writes it like a DOM element's scroll properties.
+export struct ScrollState {
+    // Current scroll offset in pixels. The DOM's scrollTop/scrollLeft.
+    scrollTop: rx.Reactive<real>;
+    scrollLeft: rx.Reactive<real>;
+
+    // Full content size. The DOM's scrollHeight/scrollWidth. The host
+    // sets these -- it is the only side that knows how big the content
+    // is (line count x line height, for a text editor).
+    scrollHeight: rx.Reactive<real>;
+    scrollWidth: rx.Reactive<real>;
+
+    // Viewport size, measured from the container element each frame.
+    // The DOM's clientHeight/clientWidth.
+    clientHeight: rx.Reactive<real>;
+    clientWidth: rx.Reactive<real>;
+
+    overflowY: Overflow = Overflow.Auto;
+    overflowX: Overflow = Overflow.Auto;
+
+    // Pixels scrolled per wheel notch.
+    wheelStep: real = 60.0;
+
+    style: ScrollbarStyle = {};
+
+    // Drag bookkeeping: which axis is being dragged and where the grab
+    // started, so the thumb tracks the pointer exactly instead of
+    // jumping to centre on it.
+    _draggingY: bool = false;
+    _draggingX: bool = false;
+    _dragStartPointer: real = 0.0;
+    _dragStartScroll: real = 0.0;
+
+    fn constructor(): mut ScrollState {
+        return ScrollState {
+            scrollTop: rx.reactive<real>(0.0),
+            scrollLeft: rx.reactive<real>(0.0),
+            scrollHeight: rx.reactive<real>(0.0),
+            scrollWidth: rx.reactive<real>(0.0),
+            clientHeight: rx.reactive<real>(0.0),
+            clientWidth: rx.reactive<real>(0.0),
+        };
+    }
+
+    // --- Queries -------------------------------------------------
+
+    // How far the content can scroll before hitting the end. Never
+    // negative: content smaller than the viewport does not scroll.
+    fn maxScrollTop(): real {
+        let slack = rx.get(this.scrollHeight) - rx.get(this.clientHeight);
+        return slack > 0.0 ? slack : 0.0;
+    }
+
+    fn maxScrollLeft(): real {
+        let slack = rx.get(this.scrollWidth) - rx.get(this.clientWidth);
+        return slack > 0.0 ? slack : 0.0;
+    }
+
+    fn canScrollY(): bool {
+        return this.maxScrollTop() > 0.0;
+    }
+
+    fn canScrollX(): bool {
+        return this.maxScrollLeft() > 0.0;
+    }
+
+    fn showsVerticalBar(): bool {
+        if this.overflowY == Overflow.Hidden || this.overflowY == Overflow.Visible {
+            return false;
+        }
+        if this.overflowY == Overflow.Scroll {
+            return true;
+        }
+        return this.canScrollY();
+    }
+
+    fn showsHorizontalBar(): bool {
+        if this.overflowX == Overflow.Hidden || this.overflowX == Overflow.Visible {
+            return false;
+        }
+        if this.overflowX == Overflow.Scroll {
+            return true;
+        }
+        return this.canScrollX();
+    }
+
+    // --- Programmatic scrolling ----------------------------------
+
+    mut fn scrollTo(top: real, left: real) {
+        this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
+        this.scrollLeft := clampReal(left, 0.0, this.maxScrollLeft());
+    }
+
+    mut fn scrollBy(dy: real, dx: real) {
+        this.scrollTo(rx.get(this.scrollTop) + dy, rx.get(this.scrollLeft) + dx);
+    }
+
+    // Scroll the vertical span [top, top+height) into view with the
+    // smallest movement that makes it visible -- the DOM's
+    // scrollIntoView({block: "nearest"}). This is what an editor calls to
+    // keep the caret on screen while typing.
+    mut fn scrollIntoView(top: real, height: real) {
+        let viewTop = rx.get(this.scrollTop);
+        let viewHeight = rx.get(this.clientHeight);
+        let viewBottom = viewTop + viewHeight;
+        let bottom = top + height;
+
+        if top < viewTop {
+            this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
+        } else if bottom > viewBottom {
+            this.scrollTop := clampReal(bottom - viewHeight, 0.0, this.maxScrollTop());
+        }
+    }
+
+    // Put a span in the vertical middle of the viewport -- vim's `zz`.
+    mut fn centerInView(top: real, height: real) {
+        let viewHeight = rx.get(this.clientHeight);
+        let target = top + height / 2.0 - viewHeight / 2.0;
+        this.scrollTop := clampReal(target, 0.0, this.maxScrollTop());
+    }
+
+    // Put a span at the top / bottom of the viewport -- vim's `zt`/`zb`.
+    mut fn scrollToTop(top: real) {
+        this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
+    }
+
+    mut fn scrollToBottom(top: real, height: real) {
+        let viewHeight = rx.get(this.clientHeight);
+        this.scrollTop := clampReal(top + height - viewHeight, 0.0, this.maxScrollTop());
+    }
+
+    // --- Culling helper ------------------------------------------
+
+    // The index range currently on screen, for uniformly-sized rows. Half
+    // open: [first, last). `overscan` rows are added on each side so a
+    // partially-scrolled row is not missing while scrolling.
+    //
+    // A host uses this to build elements only for visible rows, which is
+    // what keeps a 100k-line document's frame cost independent of its
+    // length.
+    fn visibleRange(rowHeight: real, rowCount: int, overscan: int = 2): Vec2i {
+        if rowHeight <= 0.0 || rowCount <= 0 {
+            let empty: Vec2i = { x: 0, y: 0 };
+            return empty;
+        }
+        let top = rx.get(this.scrollTop);
+        let height = rx.get(this.clientHeight);
+        let first = (top / rowHeight) as int - overscan;
+        let visibleRows = (height / rowHeight) as int + 1 + overscan * 2;
+        let start = first < 0 ? 0 : first;
+        let end = start + visibleRows;
+        if end > rowCount {
+            end = rowCount;
+        }
+        let range: Vec2i = { x: start, y: end };
+        return range;
+    }
+
+    // --- Input ---------------------------------------------------
+
+    // Feed a wheel event. Returns true if it was consumed, so a caller
+    // can let the event bubble when this container is already at its end
+    // (matching how nested scroll areas behave in a browser).
+    mut fn handleWheel(delta: Vec2): bool {
+        let consumed = false;
+        if this.canScrollY() && delta.y != 0.0 {
+            let before = rx.get(this.scrollTop);
+            this.scrollBy(-delta.y * this.wheelStep, 0.0);
+            if rx.get(this.scrollTop) != before {
+                consumed = true;
+            }
+        }
+        if this.canScrollX() && delta.x != 0.0 {
+            let before = rx.get(this.scrollLeft);
+            this.scrollBy(0.0, -delta.x * this.wheelStep);
+            if rx.get(this.scrollLeft) != before {
+                consumed = true;
+            }
+        }
+        return consumed;
+    }
+
+    // --- Scrollbar geometry --------------------------------------
+    //
+    // Returned in the container's local pixel space so a host can both
+    // draw the bar and hit-test it with the same numbers.
+
+    // Length of the vertical thumb: proportional to how much of the
+    // content is visible, floored so it stays usable.
+    fn verticalThumbLength(): real {
+        let track = this.verticalTrackLength();
+        let content = rx.get(this.scrollHeight);
+        if content <= 0.0 {
+            return track;
+        }
+        let proportion = rx.get(this.clientHeight) / content;
+        let length = track * proportion;
+        if length < this.style.minThumbLength {
+            return this.style.minThumbLength;
+        }
+        return length > track ? track : length;
+    }
+
+    fn verticalTrackLength(): real {
+        let height: real = rx.get(this.clientHeight);
+        if this.showsHorizontalBar() {
+            return height - this.style.size;
+        }
+        return height;
+    }
+
+    // Where the thumb sits along the track, given the current scroll.
+    fn verticalThumbOffset(): real {
+        let maxScroll = this.maxScrollTop();
+        if maxScroll <= 0.0 {
+            return 0.0;
+        }
+        let travel = this.verticalTrackLength() - this.verticalThumbLength();
+        return travel * (rx.get(this.scrollTop) / maxScroll);
+    }
+
+    fn horizontalThumbLength(): real {
+        let track = this.horizontalTrackLength();
+        let content = rx.get(this.scrollWidth);
+        if content <= 0.0 {
+            return track;
+        }
+        let proportion = rx.get(this.clientWidth) / content;
+        let length = track * proportion;
+        if length < this.style.minThumbLength {
+            return this.style.minThumbLength;
+        }
+        return length > track ? track : length;
+    }
+
+    fn horizontalTrackLength(): real {
+        let width: real = rx.get(this.clientWidth);
+        if this.showsVerticalBar() {
+            return width - this.style.size;
+        }
+        return width;
+    }
+
+    fn horizontalThumbOffset(): real {
+        let maxScroll = this.maxScrollLeft();
+        if maxScroll <= 0.0 {
+            return 0.0;
+        }
+        let travel = this.horizontalTrackLength() - this.horizontalThumbLength();
+        return travel * (rx.get(this.scrollLeft) / maxScroll);
+    }
+
+    // --- Scrollbar dragging --------------------------------------
+
+    // Begin a drag. `pointerOffset` is the pointer's position along the
+    // track, in container-local pixels.
+    mut fn beginDragY(pointerOffset: real) {
+        let thumbStart = this.verticalThumbOffset();
+        let thumbEnd = thumbStart + this.verticalThumbLength();
+        if pointerOffset < thumbStart || pointerOffset > thumbEnd {
+            // Clicked the track, not the thumb: jump so the thumb centres
+            // on the click, then drag from there.
+            let travel = this.verticalTrackLength() - this.verticalThumbLength();
+            if travel > 0.0 {
+                let ratio = (pointerOffset - this.verticalThumbLength() / 2.0) / travel;
+                this.scrollTop := clampReal(ratio * this.maxScrollTop(), 0.0, this.maxScrollTop());
+            }
+        }
+        this._draggingY = true;
+        this._dragStartPointer = pointerOffset;
+        this._dragStartScroll = rx.get(this.scrollTop);
+    }
+
+    mut fn beginDragX(pointerOffset: real) {
+        let thumbStart = this.horizontalThumbOffset();
+        let thumbEnd = thumbStart + this.horizontalThumbLength();
+        if pointerOffset < thumbStart || pointerOffset > thumbEnd {
+            let travel = this.horizontalTrackLength() - this.horizontalThumbLength();
+            if travel > 0.0 {
+                let ratio = (pointerOffset - this.horizontalThumbLength() / 2.0) / travel;
+                this.scrollLeft := clampReal(ratio * this.maxScrollLeft(), 0.0, this.maxScrollLeft());
+            }
+        }
+        this._draggingX = true;
+        this._dragStartPointer = pointerOffset;
+        this._dragStartScroll = rx.get(this.scrollLeft);
+    }
+
+    // Continue a drag. Converts pointer travel along the track into
+    // content travel, so the thumb stays under the pointer.
+    mut fn updateDrag(pointerOffset: real) {
+        if this._draggingY {
+            let travel = this.verticalTrackLength() - this.verticalThumbLength();
+            if travel > 0.0 {
+                let moved = pointerOffset - this._dragStartPointer;
+                let scrolled = this._dragStartScroll + (moved / travel) * this.maxScrollTop();
+                this.scrollTop := clampReal(scrolled, 0.0, this.maxScrollTop());
+            }
+        } else if this._draggingX {
+            let travel = this.horizontalTrackLength() - this.horizontalThumbLength();
+            if travel > 0.0 {
+                let moved = pointerOffset - this._dragStartPointer;
+                let scrolled = this._dragStartScroll + (moved / travel) * this.maxScrollLeft();
+                this.scrollLeft := clampReal(scrolled, 0.0, this.maxScrollLeft());
+            }
+        }
+    }
+
+    mut fn endDrag() {
+        this._draggingY = false;
+        this._draggingX = false;
+    }
+
+    fn isDragging(): bool {
+        return this._draggingY || this._draggingX;
+    }
+
+    // Re-clamp after the content or the viewport changed size, so
+    // deleting the last lines of a file cannot leave the view scrolled
+    // past the end.
+    mut fn clampToBounds() {
+        this.scrollTop := clampReal(rx.get(this.scrollTop), 0.0, this.maxScrollTop());
+        this.scrollLeft := clampReal(rx.get(this.scrollLeft), 0.0, this.maxScrollLeft());
+    }
+}
+
+export fn clampReal(value: real, low: real, high: real): real {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}

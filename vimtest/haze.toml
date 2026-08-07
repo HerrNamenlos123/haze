@@ -9,4 +9,5 @@ type = "exe"
 
 [dependencies]
 textedit_behavior = { path = "../stdlib/textedit_behavior" }
+text_document = { path = "../stdlib/text_document" }
 vim_behavior = { path = "../stdlib/vim_behavior" }

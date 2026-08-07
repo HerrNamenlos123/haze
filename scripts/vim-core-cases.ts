@@ -60,8 +60,12 @@ const CORE_KEYS = [
   "x", "X", "3x", "J", "~", "rz", "2rz",
   // copy / paste
   "yyp", "yyP", "ddp", "ddP", "yiwP", "diwp",
-  // undo / redo
+  // undo / redo -- including chains, since an insert session must undo
+  // as ONE step (vim groups it) and multi-step chains exposed real bugs
   "ddu", "xu", "dwu", "ddup", "xu<C-r>",
+  "xxu", "xxuu", "xxuuu", "xxxxxuuuuu", "dddduu", "ddjddu",
+  "xu<C-r>", "xxuu<C-r><C-r>", "cwXYZ<Esc>u", "oNEW<Esc>u", "oNEW<Esc>u<C-r>",
+  "Ju", "yyjpu", "3ddu", "Vjdu", "ihello<Esc>u", "ia<Esc>ib<Esc>uu",
   // insert-mode entry and exit
   "iX<Esc>", "aX<Esc>", "IX<Esc>", "AX<Esc>", "oX<Esc>", "OX<Esc>",
   "cwX<Esc>", "ciwX<Esc>", "2iX<Esc>",

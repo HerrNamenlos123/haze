@@ -1,0 +1,7 @@
+name = "text_document"
+id = "tDoc91Xk"
+version = "1.0.0"
+description = "Line-based text document with in-place editing and change notifications"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

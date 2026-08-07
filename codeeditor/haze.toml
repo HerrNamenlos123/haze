@@ -14,6 +14,7 @@ test = "haze test"
 
 [dependencies]
 # Core runtime and UI framework stuff
+text_document = { path = "../stdlib/text_document" }
 ui_components = { path = "../stdlib/ui_components" }
 ui_elements = { path = "../stdlib/ui_elements" }
 ui_styling = { path = "../stdlib/ui_styling" }
@@ -28,3 +29,4 @@ filedialog = { path = "../stdlib/filedialog" }
 textedit_behavior = { path = "../stdlib/textedit_behavior" }
 vim_behavior = { path = "../stdlib/vim_behavior" }
 language_server_protocol = { path = "../stdlib/language_server_protocol" }
+unicode = { path = "../stdlib/unicode" }

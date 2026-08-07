@@ -4,6 +4,9 @@ import ui_styling
 import headwind
 import textedit_behavior
 import vim_behavior
+import text_document
+import ui_elements
+import ui_components
 type presets = headwind.presets;
 
 // Vim editing model on/off. The textedit engine is the same either way;
@@ -117,33 +120,40 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        let lines = rx.shallowReactive<[]String>([]);
+        // The document. Lines are mutated IN PLACE (see
+        // stdlib/text_document): typing a character is one String.insert
+        // on one line, not a rebuild of the line array and not a
+        // reassembly of the whole file into a str. `docVersion` is bumped
+        // by every edit so the render path can invalidate exactly what
+        // changed instead of diffing content.
+        let doc = text_document.Document();
+        let docVersion = rx.reactive<int>(0);
 
-        let replaceAllLines = (newLines: []String) => {
-            lines := newLines;
-        };
+        // Per-line syntax tokens, cached. Rebuilding these for the whole
+        // document on every keystroke was the single biggest cost in the
+        // old render path (O(lines x tokens) per frame); now a line's
+        // tokens are recomputed only when that line actually changes.
+        let lineTokens = rx.shallowReactive<[][]HighlightToken>([]);
 
-        let joinLines = (ls: []String): str => {
-            let result = "";
-            for line, i in ls {
-                if i > 0 {
-                    result = f"{result}\n";
-                }
-                result = f"{result}{line}";
-            }
-            return result;
-        };
-
-        let doc = rx.computed(() => joinLines(lines));
+        // The file exactly as read from disk, kept until the highlighter
+        // and the LSP have been handed their initial copy.
+        //
+        // Both of them need the whole document once at startup -- and we
+        // ALREADY have it, straight from fs.readText. Splitting it into
+        // lines and then re-joining those lines back into the identical
+        // string (which is what doc.text() does) is two pointless
+        // O(document) passes to reproduce a value we were holding all
+        // along. So keep it, use it, then drop it.
+        let initialText = rx.reactive<str | none>(none);
 
         let load = () => {
             if cache.data.file {
                 let file = fs.readText(cache.data.file as str);
                 if file {
-                    lines := [] as []String;
-                    for line in file.split("\n") {
-                        lines.push(String(line));
-                    }
+                    let text = file as str;
+                    doc.setText(text);
+                    initialText := text;
+                    docVersion := rx.get(docVersion) + 1;
                 }
                 else {
                     fmt.println("Failed loading file");
@@ -151,68 +161,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         };
 
-        // The single mutation primitive textedit_behavior needs: rebuild the
-        // line array with [start, end) replaced by `text`. No splice/insert
-        // in stdlib arrays, so this is a full rebuild -- see the docLines
-        // comment above.
+        // The single mutation primitive textedit_behavior drives. Cost is
+        // proportional to the EDIT, not to the document: within-line edits
+        // touch one line, multi-line edits touch only the lines they span.
         let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
-            let before = lines[start.y].cloneString().slice(0, start.x);
-            let afterLine = lines[end.y].cloneString();
-            let after = afterLine.slice(end.x, afterLine.length);
-            let insertedLines = text.cloneString().split("\n");
-
-            let newLines: []String = [];
-            for (let i = 0; i < start.y; i++) {
-                newLines.push(lines[i]);
-            }
-            if insertedLines.length == 1 {
-                newLines.push(f"{before}{insertedLines[0]}{after}");
-            } else {
-                newLines.push(f"{before}{insertedLines[0]}");
-                for (let i = 1; i < insertedLines.length - 1; i++) {
-                    newLines.push(insertedLines[i]);
-                }
-                newLines.push(f"{insertedLines[insertedLines.length - 1]}{after}");
-            }
-            for (let i = end.y + 1; i < lines.length; i++) {
-                newLines.push(lines[i]);
-            }
-
-            lines := newLines;
+            doc.replaceRange(start, end, text.cloneString());
+            docVersion := rx.get(docVersion) + 1;
         };
-        // let applyReplaceRange = (start: Vec2i, end: Vec2i, text: String): void => {
-        //     let before = lines[start.y].slice(0, start.x);
-        //     let after = lines[end.y].slice(end.x, lines[end.y].length);
-
-        //     let inserted = text.split("\n");
-
-        //     let replacement: []String = [];
-
-        //     if inserted.length == 1 {
-        //         replacement.push(f"{before}{inserted[0]}{after}");
-        //     } else {
-        //         replacement.push(f"{before}{inserted[0]}");
-
-        //         for (let i = 1; i < inserted.length - 1; i++) {
-        //             replacement.push(inserted[i]);
-        //         }
-
-        //         replacement.push(f"{inserted[inserted.length - 1]}{after}");
-        //     }
-
-        //     // Replace only the affected lines.
-        //     lines.splice(
-        //         start.y,
-        //         end.y - start.y + 1,
-        //         ...replacement,
-        //     );
-
-        //     notifyLinesChanged(
-        //         start.y,
-        //         replacement.length,
-        //         end.y - start.y + 1,
-        //     );
-        // };
 
         // The project currently being edited. Vue's language server doesn't actually need
         // this to be precise (tsserver does its own tsconfig discovery once a file is
@@ -242,6 +197,67 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             state.highlightResults = [];
             return results;
         });
+
+        // Persistent per-line token cache.
+        //
+        // An incremental reply carries tokens ONLY for the lines whose
+        // highlighting changed, so results must be merged into this cache
+        // rather than replacing it -- rebuilding from the latest reply
+        // alone would blank every other line in the file.
+        let tokenCache = rx.shallowReactive<[][]Token>([]);
+        let tokenCacheVersion = rx.reactive<int>(0);
+
+        let mergeHighlightResult = (result: HighlightResult) => {
+            let buckets: [][]Token = rx.get(tokenCache);
+
+            if !result.incremental {
+                // Full parse: the reply is the whole truth.
+                buckets = [];
+            }
+
+            // Grow/shrink to the engine's current line count so cached
+            // tokens for deleted lines cannot linger.
+            if result.lineCount > 0 {
+                while buckets.length < result.lineCount {
+                    let empty: []Token = [];
+                    buckets.push(empty);
+                }
+                while buckets.length > result.lineCount {
+                    buckets.pop();
+                }
+            }
+
+            // Clear just the range this reply covers, then refill it.
+            if result.incremental {
+                for (let i = result.firstLine; i <= result.lastLine && i < buckets.length; i++) {
+                    let empty: []Token = [];
+                    buckets[i] = empty;
+                }
+            }
+
+            for token in result.tokens {
+                while buckets.length <= token.lineIndex {
+                    let empty: []Token = [];
+                    buckets.push(empty);
+                }
+                buckets[token.lineIndex].push(token);
+            }
+
+            tokenCache := buckets;
+            tokenCacheVersion := rx.get(tokenCacheVersion) + 1;
+        };
+
+        // Drain replies and merge them. Called once per frame from the
+        // render pass rather than from inside a computed, because merging
+        // is a side effect and a computed may be skipped or re-run at the
+        // reactive system's discretion -- a dropped reply would leave the
+        // affected lines uncoloured until the next edit.
+        let drainHighlightResults = () => {
+            let hh: []HighlightResult = rx.get(highlights);
+            for result in hh {
+                mergeHighlightResult(result);
+            }
+        };
 
         let theme = rx.reactive<VscodeTheme | none>(none);
         let loadTheme = () => {
@@ -330,37 +346,136 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         }
 
         let texteditBehavior = textedit_behavior.Context({
-            getLineLength: (lineIndex: int) => {
-                return lines[lineIndex].length();
-            },
-            getLine: (lineIndex: int) => {
-                return lines[lineIndex];
-            },
-            getLineCount: () => {
-                return lines.length;
-            },
+            getLineLength: (lineIndex: int) => doc.lineLength(lineIndex),
+            getLine: (lineIndex: int) => doc.line(lineIndex),
+            getLineCount: () => doc.lineCount(),
             getTimeInSeconds: () => {
                 return ui.now();
             },
             replaceRange: applyReplaceRange,
-            initialMode: vimEnabled() ? textedit_behavior.Mode.Normal
-                                    : textedit_behavior.Mode.Insert,
         });
 
-        // Vim is an OPTIONAL behavior layered on the same engine: with it
-        // off, the editor keeps the plain textbox bindings below; with it
-        // on, every key goes through the Vim state machine instead. The
-        // engine itself is identical either way.
+        // Vim is an OPTIONAL behavior layered on the same engine. Toggling
+        // it at runtime only swaps which behavior is installed -- the
+        // engine, the document and the undo history are untouched, so you
+        // keep your place and your history across the switch.
         let vim = vim_behavior.Vim(texteditBehavior);
-        if vimEnabled() {
-            vim.install();
-            vim_behavior.applyRemaps(vim, vim_behavior.defaultVimrc());
-        }
+        let vimOn = rx.reactive<bool>(true);
+
+        let applyVimMode = (enabled: bool) => {
+            if enabled {
+                vim.install();
+                vim_behavior.applyRemaps(vim, vim_behavior.defaultVimrc());
+                texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+            } else {
+                // Detaching the behavior returns the engine to plain
+                // textbox handling: keys fall through to the default
+                // bindings and the caret goes back to sitting BETWEEN
+                // characters (Insert-mode clamping).
+                texteditBehavior.clearBehavior();
+                texteditBehavior.setMode(textedit_behavior.Mode.Insert);
+            }
+        };
+        applyVimMode(true);
+
+        let toggleVim = () => {
+            let next = !rx.get(vimOn);
+            vimOn := next;
+            applyVimMode(next);
+        };
+
+        // Scroll state for the text area. The editor owns it (it knows
+        // the content size); the scroll component owns the maths.
+        let scroll = ui_components.ScrollState();
+        scroll.overflowY = ui_components.Overflow.Auto;
+        scroll.overflowX = ui_components.Overflow.Hidden;
+        // Handle on the text area element, so the render pass can read
+        // its measured size (the viewport height the scroll maths needs).
+        let editorRef: ui_components.ElementRef<ui_elements.DivElement> =
+            rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+        // Set after anything that moves the caret, so the next frame
+        // scrolls it back into view. A flag rather than an immediate
+        // scroll because the viewport size is only known during render.
+        let caretFollow = rx.reactive<bool>(false);
+
+        // Mouse selection: pointer position -> document position, then
+        // click places the caret and drag extends the selection, exactly
+        // like a browser text area (and like vim's own mouse support).
+        let mouseSelecting = rx.reactive<bool>(false);
+
+        // Pointer position (window space) -> document (column, line).
+        // Rounds to the NEAREST character boundary horizontally, like a
+        // browser: clicking the right half of a glyph puts the caret
+        // after it, which is what makes click-to-place feel right.
+        let documentPositionAt = (pointer: Vec2): Vec2i => {
+            let charSize = ui.measureText("X");
+            let editorEl = rx.get(editorRef);
+            let originX = 0.0;
+            let originY = 0.0;
+            if editorEl {
+                let pos = editorEl.position();
+                if pos {
+                    originX = pos.x;
+                    originY = pos.y;
+                }
+            }
+            let localX = pointer.x - originX;
+            let localY = pointer.y - originY + rx.get(scroll.scrollTop);
+
+            let lineIndex = 0;
+            if charSize.y > 0.0 {
+                lineIndex = (localY / charSize.y) as int;
+            }
+            lineIndex = text_document.clampIndex(lineIndex, doc.lineCount());
+
+            let column = 0;
+            if charSize.x > 0.0 {
+                column = ((localX / charSize.x) + 0.5) as int;
+            }
+            if column < 0 {
+                column = 0;
+            }
+            let maxColumn = texteditBehavior.maxColumn(lineIndex);
+            if column > maxColumn {
+                column = maxColumn;
+            }
+            let result: Vec2i = { x: column, y: lineIndex };
+            return result;
+        };
 
         let state = getState();
+
+        // Live highlighting, incrementally.
+        //
+        // The document reports exactly which lines an edit replaced
+        // (ChangeSet), and the syntax engine speaks that same shape: it
+        // keeps a per-line rule-stack cache, retokenizes from the changed
+        // line, and stops as soon as the stack reconverges. Editing one
+        // line in a 5000-line file costs ~0.4ms instead of the ~24ms a
+        // full reparse takes, so this runs on every edit with no debounce
+        // and the colours never lag behind what you typed.
+        //
+        // Opening a block comment (which genuinely does recolour
+        // everything below it) still cascades correctly -- the engine
+        // simply keeps going until the rule stack matches again.
+        let highlightUri = "buffer";
         if cache.data.file {
-            state.highlightEngine.sendHighlightRequest(rx.get(doc));
+            highlightUri = cache.data.file as str;
+            // Reuse the text we just read rather than re-deriving it.
+            let startupText = rx.get(initialText);
+            state.highlightEngine.sendOpenDocument(
+                highlightUri, startupText ? startupText as str : doc.text());
         }
+
+        doc.addChangeListener((change: text_document.ChangeSet) => {
+            let newLines: []str = [];
+            for (let i = 0; i < change.insertedCount; i++) {
+                newLines.push(doc.lineText(change.startLine + i));
+            }
+            state.highlightEngine.sendDocumentChange(
+                highlightUri, change.startLine, change.removedCount, newLines);
+        });
 
         // Hover used to be requested every time the cursor moved, including
         // every single keystroke while typing (typing moves the cursor) --
@@ -370,6 +485,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // been still for a bit, and only if it's actually at a new position.
         let hoverDebounceSeconds = 0.2;
         let lastEditAt = rx.reactive<real>(-1000.0);
+        // Guards the one-shot LSP document open, so the per-frame loop
+        // never has to build the whole document just to discard it.
+        let lspDocumentOpened = rx.reactive<bool>(false);
         let lastHoverPos = rx.reactive<Vec2i | none>(none);
 
         // Exponentially-smoothed FPS, recomputed alongside the LSP drain
@@ -378,6 +496,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let lastFrameAt = rx.reactive<real>(0.0);
         let fps = rx.reactive<real>(0.0);
         let fpsText = rx.computed(() => f"{fps as int} FPS");
+
+        // Status-bar label for the active editing model / vim mode.
+        let modeLabel = rx.computed(() => {
+            if !rx.get(vimOn) {
+                return "INSERT (vim off - F2)";
+            }
+            let mode = rx.get(texteditBehavior.mode);
+            if mode == textedit_behavior.Mode.Insert { return "-- INSERT --"; }
+            if mode == textedit_behavior.Mode.Visual { return "-- VISUAL --"; }
+            if mode == textedit_behavior.Mode.VisualLine { return "-- VISUAL LINE --"; }
+            if mode == textedit_behavior.Mode.VisualBlock { return "-- VISUAL BLOCK --"; }
+            return "-- NORMAL --";
+        });
+        let modeColor = rx.computed((): Color => {
+            if !rx.get(vimOn) {
+                return "#888" as Color;
+            }
+            let mode = rx.get(texteditBehavior.mode);
+            if mode == textedit_behavior.Mode.Insert { return "#7FD97F" as Color; }
+            if textedit_behavior.modeIsVisual(mode) { return "#D9B87F" as Color; }
+            return "#7FA8D9" as Color;
+        });
 
         let prevUpdate = ui.now();
 
@@ -409,8 +549,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 prevUpdate = now;
             }
 
+            drainHighlightResults();
+
             if vueBridge && cache.data.file {
-                vueBridge.openDocument(cache.data.file, "vue", 1, rx.get(doc));
+                // openDocument() is a ONE-SHOT (it early-returns once the
+                // document is open), but the argument was still being
+                // evaluated on every frame -- and doc.text() reassembles
+                // the entire file. That alone cost seconds per frame on a
+                // large file. Send the text once, then never again, and
+                // send the copy we already read from disk.
+                if !rx.get(lspDocumentOpened) {
+                    lspDocumentOpened := true;
+                    let startupText = rx.get(initialText);
+                    vueBridge.openDocument(cache.data.file, "vue", 1,
+                        startupText ? startupText as str : doc.text());
+                    // Both consumers have their copy now; stop pinning
+                    // a second full copy of the file in memory.
+                    initialText := none;
+                }
 
                 if now - lastEditAt > hoverDebounceSeconds {
                     let cursor = texteditBehavior.cursorPosition;
@@ -419,7 +575,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     let samePos = prevPos && prevPos.x == curPos.x && prevPos.y == curPos.y;
                     if !samePos {
                         lastHoverPos := curPos;
-                        vueBridge.hover(curPos.y, curPos.x, (text: str | null) => {
+                        // curPos.x is a BYTE offset. The bridge needs the
+                        // line's text to convert it into whatever index
+                        // space each language server actually counts in.
+                        let hoverLine = doc.lineText(curPos.y);
+                        vueBridge.hover(curPos.y, curPos.x, hoverLine, (text: str | null) => {
                             hoverResult := text ? text : "(no hover info at this position)";
                         });
                     }
@@ -429,60 +589,63 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         });
 
-        let splitByTokens = (lineIndex: int, string: String, tokens: []Token): []HighlightToken => {
+        // Split ONE line's text into coloured runs, given only the tokens
+        // that belong to that line. The old version scanned the whole
+        // document's token list for every line, which is O(lines x tokens)
+        // -- quadratic, re-run on every keystroke, and the main reason
+        // typing froze. Tokens are bucketed by line once (see
+        // `tokensByLine`) so this only ever walks its own line's tokens.
+        let splitLineTokens = (lineText: str, tokens: []Token): []HighlightToken => {
             let parts: []HighlightToken = [];
             let position = 0;
 
             for token in tokens {
-                if token.lineIndex == lineIndex {
-                    // Text before the token
-                    if (position < token.startIndex) {
-                        parts.push({
-                            text: string.cloneString().slice(position, token.startIndex),
-                            color: defaultTextColor(),
-                        });
-                    }
-
-                    // The token itself
+                if position < token.startIndex && token.startIndex <= lineText.length {
                     parts.push({
-                        text: string.cloneString().slice(token.startIndex, token.endIndex),
+                        text: lineText.slice(position, token.startIndex),
+                        color: defaultTextColor(),
+                    });
+                }
+                let tokenEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
+                if tokenEnd > token.startIndex {
+                    parts.push({
+                        text: lineText.slice(token.startIndex, tokenEnd),
                         color: getFirstScopeColor(token.scopes),
                     });
-
-                    position = token.endIndex;
+                    position = tokenEnd;
                 }
             }
 
-            // Remaining text
-            if (position < string.length()) {
+            if position < lineText.length {
                 parts.push({
-                    text: string.cloneString().slice(position, string.length()),
+                    text: lineText.slice(position, lineText.length),
                     color: defaultTextColor(),
                 });
             }
-
             return parts;
-        }
+        };
 
-        let highlightedLines = rx.computed(() => {
-            let resultTokens: [][]HighlightToken = [];
-            for line, lineIndex in lines {
-                let currentIndex = 0;
-                let reconstructedLine = "";
-
-                let tokens: []Token = [];
-                // TODO: Fix this and implement subscripting reactive values
-                let hh: []HighlightResult = rx.get(highlights);
-                if hh.length > 0 {
-                    let hhh = hh[hh.length - 1];
-                    tokens = hhh.tokens;
-                }
-
-                let finalTokens: []HighlightToken = splitByTokens(lineIndex, line, tokens);
-                resultTokens.push(finalTokens);
-            }
-            return resultTokens;
+        // Tokens grouped by line index, rebuilt only when a new highlight
+        // result arrives -- one pass over the token list instead of one
+        // pass per line.
+        let tokensByLine = rx.computed(() => {
+            rx.get(tokenCacheVersion);
+            return rx.get(tokenCache);
         });
+
+        // The coloured runs for a single line, computed on demand. Only
+        // VISIBLE lines are ever asked for (see the render loop's use of
+        // scroll.visibleRange), so frame cost is O(lines on screen) rather
+        // than O(lines in file).
+        let highlightedLine = (lineIndex: int): []HighlightToken => {
+            let lineText = doc.lineText(lineIndex);
+            let buckets: [][]Token = rx.get(tokensByLine);
+            let tokensForLine: []Token = [];
+            if lineIndex < buckets.length {
+                tokensForLine = buckets[lineIndex];
+            }
+            return splitLineTokens(lineText, tokensForLine);
+        };
 
         return () => {
             ui.div({
@@ -508,6 +671,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         text: fpsText,
                     });
 
+                    // Which editing model is active, and (in vim) which
+                    // mode -- the same information vim's own statusline
+                    // shows, because with modal editing you cannot tell
+                    // what a keystroke will do without it.
+                    ui.text({
+                        id: 2,
+                        text: modeLabel,
+                        presets: [presets.textColor(modeColor)],
+                    });
+
                     if lspMemStat {
                         ui.text({
                             id: 1,
@@ -520,6 +693,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
                 ui.div({
                     id: 1,
+                    ref: editorRef,
                     style: {
                         direction: ui_styling.Direction.Column,
                         fontFamily: "JetBrainsMonoNerdFont-Regular",
@@ -535,15 +709,64 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // presets.p(8),
                     ],
                     focusable: true,
+
+                    // Wheel scrolls the text, exactly like any scroll
+                    // container; the scroll model clamps at both ends.
+                    onWheel: (event: ui_components.WheelEvent) => {
+                        scroll.handleWheel(event.delta);
+                    },
+
+                    // Click places the caret, drag extends a selection --
+                    // chrome's behavior, and what vim does with the mouse
+                    // too (a drag puts vim into visual mode).
+                    onPointerDown: (event: ui_components.PointerEvent) => {
+                        let target = documentPositionAt(event.pos);
+                        mouseSelecting := true;
+                        if rx.get(vimOn) {
+                            // Leave whatever visual selection existed, then
+                            // place the caret; a subsequent drag re-enters
+                            // visual mode from here.
+                            texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+                            texteditBehavior.clearSelection();
+                        } else {
+                            texteditBehavior.clearSelection();
+                        }
+                        texteditBehavior.moveTo(target, true, false);
+                    },
+                    onPointerMove: (event: ui_components.PointerEvent) => {
+                        if !rx.get(mouseSelecting) {
+                            return;
+                        }
+                        let target = documentPositionAt(event.pos);
+                        if rx.get(vimOn) {
+                            // Dragging in vim selects: enter visual mode on
+                            // the first movement, then extend.
+                            let mode = rx.get(texteditBehavior.mode);
+                            if !textedit_behavior.modeIsVisual(mode) {
+                                texteditBehavior.setSelectionAnchor(texteditBehavior.cursor());
+                                texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                            }
+                            texteditBehavior.moveTo(target, true, true);
+                        } else {
+                            texteditBehavior.moveTo(target, true, true);
+                        }
+                    },
+                    onPointerUp: (event: ui_components.PointerEvent) => {
+                        // Ending a drag also settles the caret, which is
+                        // what keeps a click-drag-release selection stable.
+                        mouseSelecting := false;
+                        texteditBehavior.moveTo(documentPositionAt(event.pos), true, rx.get(mouseSelecting));
+                    },
                     onTextInput: (event: ui_components.TextInputEvent) => {
                         // With Vim active, printable characters are
                         // commands in normal/visual mode and literal text
                         // in insert mode -- the behavior decides which.
-                        if vimEnabled() {
+                        if rx.get(vimOn) {
                             texteditBehavior.handleTextInput(event.text);
                         } else {
                             texteditBehavior.insertText(event.text);
                         }
+                        caretFollow := true;
                         lastEditAt := ui.now();
                         hoverResult := null;
                     },
@@ -552,7 +775,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
                         let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
 
-                        if vimEnabled() {
+                        // F2 toggles the vim editing model at runtime.
+                        // Handled before anything else so it works in
+                        // every mode, including vim's insert mode.
+                        if event.key == ui_components.Key.F2 {
+                            toggleVim();
+                            return;
+                        }
+
+                        // Any key may move the caret, so ask the next
+                        // frame to scroll it back into view.
+                        caretFollow := true;
+
+                        if rx.get(vimOn) {
                             // Non-character keys (and modifier combos)
                             // reach Vim here; plain characters arrive via
                             // onTextInput above.
@@ -613,15 +848,61 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         hoverResult := null;
                     },
                 }, () => {
-                    let id = 1;
-
                     let characterSize = ui.measureText("X");
+                    let lineHeight = characterSize.y;
+                    let lineCount = doc.lineCount();
 
-                    // Selection highlight, rendered before the line text so
-                    // it sits behind it. One div per touched line, driven by
-                    // the engine's reactive selection state -- see
-                    // selectionRangeForLine's doc comment.
-                    for line, i in lines {
+                    // Keep the scroll model in sync with the content and
+                    // the viewport, then clamp -- deleting the last lines
+                    // must not leave the view scrolled past the end.
+                    scroll.scrollHeight := lineCount as real * lineHeight;
+                    let editorEl = rx.get(editorRef);
+                    if editorEl {
+                        let viewport = editorEl.size();
+                        if viewport {
+                            scroll.clientHeight := viewport.y;
+                            scroll.clientWidth := viewport.x;
+                        }
+                    }
+                    scroll.clampToBounds();
+
+                    // Apply any scroll the engine asked for (vim's zz/zt/zb
+                    // arrive as intents because the engine has no idea how
+                    // tall the viewport is), then keep the caret on screen.
+                    let cursorLine = texteditBehavior.cursorPosition.y;
+                    let cursorTop = cursorLine as real * lineHeight;
+                    let intent = rx.get(texteditBehavior.scrollIntent);
+                    if intent == textedit_behavior.ScrollIntent.Center {
+                        scroll.centerInView(cursorTop, lineHeight);
+                    } else if intent == textedit_behavior.ScrollIntent.Top {
+                        scroll.scrollToTop(cursorTop);
+                    } else if intent == textedit_behavior.ScrollIntent.Bottom {
+                        scroll.scrollToBottom(cursorTop, lineHeight);
+                    } else if intent == textedit_behavior.ScrollIntent.Reveal {
+                        scroll.scrollIntoView(cursorTop, lineHeight);
+                    }
+                    if intent != textedit_behavior.ScrollIntent.None {
+                        texteditBehavior.clearScrollRequest();
+                    }
+                    if rx.get(caretFollow) {
+                        scroll.scrollIntoView(cursorTop, lineHeight);
+                        caretFollow := false;
+                    }
+
+                    let scrollY = rx.get(scroll.scrollTop);
+
+                    // Only build elements for lines that are actually on
+                    // screen. This is what makes idle and typing cost
+                    // independent of document length -- the old loop built
+                    // a div plus one text element per token for EVERY line
+                    // in the file, every frame.
+                    let range = scroll.visibleRange(lineHeight, lineCount, 2);
+                    let firstLine = range.x;
+                    let lastLine = range.y;
+
+                    // Selection highlight, behind the text. Only visible
+                    // lines are considered, same as the text itself.
+                    for (let i = firstLine; i < lastLine; i++) {
                         let sel = texteditBehavior.selectionRangeForLine(i);
                         if sel {
                             // A line whose selection runs through its
@@ -630,67 +911,166 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             // selected -- and so an EMPTY line inside a
                             // linewise (V) selection still shows up
                             // instead of collapsing to zero width.
-                            let columns = (sel.endCol - sel.startCol) as real;
+                            // startCol/endCol are BYTE offsets, which are not
+                            // proportional to screen distance: an emoji is 4
+                            // bytes but 2 cells wide. Convert both ends to
+                            // display columns so the highlight lines up with
+                            // the glyphs rather than with the byte count.
+                            let startCell = texteditBehavior.displayColumnAt(i, sel.startCol);
+                            let endCell = texteditBehavior.displayColumnAt(i, sel.endCol);
+                            let columns = (endCell - startCell) as real;
                             if sel.includesLineEnd {
                                 columns = columns + 1.0;
                             }
                             ui.div({
-                                id: lines.length + 3 + i,
+                                id: 100000 + i,
                                 style: {
                                     width: columns * characterSize.x,
-                                    height: characterSize.y,
+                                    height: lineHeight,
                                 },
                                 presets: [
                                     presets.absolute(),
-                                    presets.top(i as real * characterSize.y),
-                                    presets.left(sel.startCol as real * characterSize.x),
+                                    presets.top(i as real * lineHeight - scrollY),
+                                    presets.left(startCell as real * characterSize.x),
                                     presets.bg("#3391FF55"),
                                 ]
                             }, () => {});
                         }
                     }
 
-                    let total = 0;
-                    for tokens, i in highlightedLines {
+                    // The visible text, one absolutely-positioned row per
+                    // line so scrolling is a translation rather than a
+                    // relayout.
+                    for (let i = firstLine; i < lastLine; i++) {
+                        let tokens = highlightedLine(i);
                         ui.div({
-                            id: i,
+                            id: 200000 + i,
+                            presets: [
+                                presets.absolute(),
+                                presets.top(i as real * lineHeight - scrollY),
+                                presets.left(0),
+                                presets.row(),
+                            ],
                         }, () => {
                             if tokens.length > 0 {
-                                for t, i in tokens {
-                                    ui.text({ id: i, text: t.text, presets: [presets.textColor(t.color)] });
-                                    total++;
+                                for t, ti in tokens {
+                                    ui.text({ id: ti, text: t.text, presets: [presets.textColor(t.color)] });
                                 }
                             }
                             else {
                                 ui.text({ id: 0, text: "" });
-                                total++;
                             }
                         });
                     }
-                    // fmt.println(f"{total} text elements on screen");
 
-                    // Cursor
+                    // Caret. In vim's normal/visual modes it is a BLOCK
+                    // covering the character it sits on (the caret is *on*
+                    // a character there, not between two); in insert mode
+                    // and with vim off it is the usual thin bar.
+                    let mode = rx.get(texteditBehavior.mode);
+                    let blockCaret = mode == textedit_behavior.Mode.Normal
+                                  || textedit_behavior.modeIsVisual(mode);
+
+                    // cursorPosition.x is a BYTE offset, so it cannot be
+                    // multiplied by a character width directly -- on a line
+                    // holding one emoji that would put the caret four cells
+                    // right of a glyph two cells wide. displayColumnAt does
+                    // the conversion from bytes to cells.
+                    let cursorCell = texteditBehavior.displayColumnAt(
+                        texteditBehavior.cursorPosition.y,
+                        texteditBehavior.cursorPosition.x,
+                    );
+                    // A block caret must cover the whole character it sits
+                    // on, which is two cells wide for CJK and emoji.
+                    let caretCells = texteditBehavior.displayWidthOfCharacterAt(
+                        texteditBehavior.cursorPosition.y,
+                        texteditBehavior.cursorPosition.x,
+                    );
                     let cursorPos = Vec2(
-                        texteditBehavior.cursorPosition.x as real * characterSize.x,
-                        texteditBehavior.cursorPosition.y as real * characterSize.y,
+                        cursorCell as real * characterSize.x,
+                        cursorTop - scrollY,
                     );
                     ui.div({
-                        id: lines.length + 1,
+                        id: 300001,
                         style: {
-                            width: 1.0,
-                            height: characterSize.y,
+                            width: blockCaret ? caretCells as real * characterSize.x : 1.0,
+                            height: lineHeight,
                         },
                         presets: [
                             presets.absolute(),
                             presets.top(cursorPos.y),
                             presets.left(cursorPos.x),
-                            texteditBehavior.cursorVisible ? presets.bg("#FFF") : presets.bg("#00000000"),
+                            texteditBehavior.cursorVisible
+                                ? (blockCaret ? presets.bg("#FFFFFF99") : presets.bg("#FFF"))
+                                : presets.bg("#00000000"),
                         ]
                     }, () => {});
 
+                    // Scrollbar. Drawn last so it sits above the text,
+                    // and only when the content actually overflows
+                    // (Overflow.Auto). The thumb is draggable and the
+                    // track is clickable -- see ScrollState.beginDragY.
+                    if scroll.showsVerticalBar() {
+                        let barWidth = scroll.style.size;
+                        let trackHeight = scroll.verticalTrackLength();
+                        let thumbTop = scroll.verticalThumbOffset();
+                        let thumbHeight = scroll.verticalThumbLength();
+                        let viewWidth = rx.get(scroll.clientWidth);
+
+                        ui.div({
+                            id: 400000,
+                            style: { width: barWidth, height: trackHeight },
+                            presets: [
+                                presets.absolute(),
+                                presets.top(0),
+                                presets.left(viewWidth - barWidth),
+                                presets.bg(scroll.style.trackColor),
+                            ],
+                            onPointerDown: (event: ui_components.PointerEvent) => {
+                                let editorEl = rx.get(editorRef);
+                                let originY = 0.0;
+                                if editorEl {
+                                    let pos = editorEl.position();
+                                    if pos { originY = pos.y; }
+                                }
+                                scroll.beginDragY(event.pos.y - originY);
+                            },
+                            onPointerMove: (event: ui_components.PointerEvent) => {
+                                if scroll.isDragging() {
+                                    let editorEl = rx.get(editorRef);
+                                    let originY = 0.0;
+                                    if editorEl {
+                                        let pos = editorEl.position();
+                                        if pos { originY = pos.y; }
+                                    }
+                                    scroll.updateDrag(event.pos.y - originY);
+                                }
+                            },
+                            onPointerUp: (event: ui_components.PointerEvent) => {
+                                scroll.endDrag();
+                                scroll.clampToBounds();
+                                lastEditAt := ui.now();
+                            },
+                        }, () => {
+                            ui.div({
+                                id: 0,
+                                style: { width: barWidth, height: thumbHeight },
+                                presets: [
+                                    presets.absolute(),
+                                    presets.top(thumbTop),
+                                    presets.left(0),
+                                    presets.bg(scroll.isDragging()
+                                        ? scroll.style.thumbActiveColor
+                                        : scroll.style.thumbColor),
+                                    presets.rounded(5),
+                                ],
+                            }, () => {});
+                        });
+                    }
+
                     if hoverResult {
                         ui.div({
-                            id: lines.length + 2,
+                            id: 300002,
                             presets: [
                                 presets.absolute(),
                                 presets.top(cursorPos.y + characterSize.y + 10.0),

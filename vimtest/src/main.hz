@@ -1,5 +1,6 @@
 import textedit_behavior
 import vim_behavior
+import text_document
 
 // Differential test harness: runs a batch of cases through the Haze
 // textedit_behavior + vim_behavior stack and writes the resulting state
@@ -73,7 +74,8 @@ fn runCase(spec: CaseSpec): ResultOut {
         text = f"{text}{line}";
     }
 
-    let doc = Doc(text);
+    let doc = text_document.Document();
+    doc.setText(text);
     let ctx = makeContext(doc);
     let vim = vim_behavior.Vim(ctx);
     vim.install();
@@ -83,7 +85,7 @@ fn runCase(spec: CaseSpec): ResultOut {
     }
 
     // nvim gives 1-based lines, the engine uses 0-based indices.
-    let startY = clampIdx(spec.cursor.line - 1, doc.lines.length);
+    let startY = text_document.clampIndex(spec.cursor.line - 1, doc.lineCount());
     let startX = spec.cursor.col;
     let start: Vec2i = { x: startX, y: startY };
     ctx.moveTo(start, true, false);
@@ -96,8 +98,8 @@ fn runCase(spec: CaseSpec): ResultOut {
     let state = StateOut {};
 
     let resultLines: []str = [];
-    for line in doc.lines {
-        resultLines.push(line.cloneString());
+    for (let i = 0; i < doc.lineCount(); i++) {
+        resultLines.push(doc.lineText(i));
     }
     state.lines = resultLines;
 

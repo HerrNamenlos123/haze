@@ -1,0 +1,7 @@
+name = "unicode"
+id = "Un1c0dE9"
+version = "1.0.0"
+description = "Unicode grapheme cluster and codepoint handling for Haze, backed by utf8proc"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

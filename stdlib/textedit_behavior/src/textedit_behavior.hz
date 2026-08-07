@@ -1,3 +1,4 @@
+import unicode
 
 // For this entire module, the convention is that
 // "lineIndex" and "lineNumber"
@@ -18,6 +19,36 @@
 // draws and never measures; it exposes queries (selectionRangeForLine,
 // cursorPosition, mode, scrollRequest, ...) that a host renders however
 // it likes.
+//
+// === What a "column" is =======================================
+//
+// A column (the `.x` of every Vec2i here, every `startCol`/`endCol`, every
+// `getLineLength` result) is a BYTE OFFSET into the line, because that is
+// what `str.length` and every slicing operation in Haze mean. The engine
+// does not maintain a second index space in characters -- one index space
+// is the whole reason the offsets it hands to the host, to the LSP layer
+// and to `replaceRange` all agree without conversion.
+//
+// The invariant on top of that is:
+//
+//     every column the engine stores or returns sits on a grapheme
+//     cluster boundary (UAX #29).
+//
+// So a column is a byte offset, but not just any byte offset: it is always
+// a legal place for a caret to be. Moving right by "one character" adds 1
+// byte for 'a', 3 for a decomposed 'e'+accent, 8 for a flag emoji and 25
+// for a family emoji. `_moveTo` is the single chokepoint that enforces
+// this: anything arriving there is snapped to a boundary, so no motion,
+// click, restored cursor or sticky column can ever leave the caret inside
+// a codepoint where the next edit would corrupt the buffer.
+//
+// Consequently `getLineLength` is a BYTE length, and the maximum column on
+// a line in an on-a-character mode is the offset of the LAST CLUSTER, not
+// `length - 1` (which would be the last byte, i.e. the middle of a
+// multi-byte character).
+//
+// Quantities that are genuinely not byte offsets are named so they cannot
+// be confused with one -- see `characterColumn()` and `displayColumn()`.
 
 // === Modes ====================================================
 //
@@ -226,6 +257,12 @@ export struct Context {
     // through short lines and back onto a long one restores the original
     // column, like every mainstream text editor. It is only updated by
     // horizontal movement (left/right/word/home/end), never by up/down.
+    //
+    // It is a BYTE OFFSET like every other column, which means that carrying
+    // it to another line can land it inside a character -- byte 8 may be a
+    // boundary on one line and the middle of an emoji on the next. _moveTo
+    // snaps it, so the sticky column is stored raw (preserving the user's
+    // intended reach across short lines) and only ever *applied* aligned.
     _desiredCursorPosition: Vec2i = {};
     cursorPosition: rx.Reactive<Vec2i>;
 
@@ -264,7 +301,18 @@ export struct Context {
     _undoStack: []UndoEntry = [];
     _redoStack: []UndoEntry = [];
     _txDepth: int = 0;
-    _txPending: UndoEntry | none = none;
+    // The undo entry being accumulated by the transaction in progress.
+    // `_txOpen` says whether anything has actually been edited yet, so a
+    // transaction that changes nothing leaves no undo step behind.
+    _txEntry: UndoEntry = {};
+    _txOpen: bool = false;
+    _txCursorBefore: Vec2i = {};
+    // Depth of an "undo group": everything typed between
+    // beginUndoGroup()/endUndoGroup() collapses into ONE undo step, even
+    // though each keystroke is its own transaction. Vim works the same
+    // way -- a whole insert session (`ihello<Esc>`) undoes at once, not
+    // one character at a time.
+    _undoGroupDepth: int = 0;
 
     fn constructor(args: ContextArgs): mut Context {
         let context = Context {
@@ -334,6 +382,13 @@ export struct Context {
 
     // Install an input behavior (Vim, Helix, ...). Returns the context so
     // wiring can be chained at the call site.
+    // Detach the current behavior, returning the engine to its built-in
+    // textbox handling. The document, the caret and the undo history are
+    // untouched -- switching editing models mid-session keeps your place.
+    mut fn clearBehavior() {
+        this.behavior = none;
+    }
+
     mut fn setBehavior(behavior: Behavior) {
         this.behavior = behavior;
         let attach = behavior.onAttach;
@@ -600,7 +655,23 @@ export struct Context {
         if pos.x == this.args.getLineLength(pos.y) && pos.y == lastLine {
             return;
         }
-        let deleteTo = wholeWord ? this._targetWordRight(pos) : this._targetRight(pos);
+        // Deliberately NOT _targetRight: that motion clamps to maxColumn, so
+        // in an on-a-character mode it would refuse to move past the last
+        // character and Delete would erase nothing there. Deletion wants the
+        // next character boundary itself, or the start of the following line
+        // when the caret is already at the end.
+        let deleteTo: Vec2i = {};
+        if wholeWord {
+            deleteTo = this._targetWordRight(pos);
+        } else if pos.x >= this.args.getLineLength(pos.y) {
+            // At end of line: swallow the newline and join the next line.
+            deleteTo = { x: 0, y: pos.y + 1 };
+        } else {
+            deleteTo = {
+                x: unicode.nextClusterOffset(this._lineText(pos.y), pos.x),
+                y: pos.y,
+            };
+        }
         this.beginTransaction();
         this._applyReplace(pos, deleteTo, String(""));
         this._moveTo(pos, true, false);
@@ -646,8 +717,13 @@ export struct Context {
                 result = f"{result}\n";
             }
             let lineLen = this.args.getLineLength(y);
-            let sliceStart = clamp<int>(cols.x, 0, lineLen);
-            let sliceEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            // The block's right column is INCLUSIVE, so the slice ends at
+            // the start of the NEXT character on this line -- not the next
+            // byte, which would split a multi-byte character. The boundary
+            // is resolved per line because the same byte column can be a
+            // character start on one row and mid-character on another.
+            let sliceStart = this._snapColumn(y, clamp<int>(cols.x, 0, lineLen));
+            let sliceEnd = clamp<int>(this.nextColumn(y, clamp<int>(cols.y, 0, lineLen)), 0, lineLen);
             if sliceEnd > sliceStart {
                 result = f"{result}{this.args.getLine(y).cloneString().slice(sliceStart, sliceEnd)}";
             }
@@ -681,8 +757,11 @@ export struct Context {
         let cols = this._blockColumns(range);
         for (let y = normalized.end.y; y >= normalized.start.y; y--) {
             let lineLen = this.args.getLineLength(y);
-            let cutStart = clamp<int>(cols.x, 0, lineLen);
-            let cutEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            // Inclusive right column -> exclusive end at the next CHARACTER
+            // boundary on this line, so a block edge never cuts a
+            // multi-byte character in half. See _getBlockwiseText.
+            let cutStart = this._snapColumn(y, clamp<int>(cols.x, 0, lineLen));
+            let cutEnd = clamp<int>(this.nextColumn(y, clamp<int>(cols.y, 0, lineLen)), 0, lineLen);
             if cutEnd > cutStart {
                 let a: Vec2i = { x: cutStart, y: y };
                 let b: Vec2i = { x: cutEnd, y: y };
@@ -748,8 +827,15 @@ export struct Context {
         }
 
         if modeIsVisual(mode) {
-            // inclusive -> exclusive
-            let inclusiveEnd: Vec2i = { x: end.x + 1, y: end.y };
+            // inclusive -> exclusive. The exclusive end is the start of the
+            // NEXT character, not the next byte: the caret sits on a whole
+            // grapheme cluster, so a visual selection covering an emoji has
+            // to take all of its bytes or the yank/delete would cut it in
+            // half and corrupt the buffer.
+            let inclusiveEnd: Vec2i = {
+                x: unicode.nextClusterOffset(this._lineText(end.y), end.x),
+                y: end.y,
+            };
             let r: Range = { start: start, end: inclusiveEnd, kind: RangeKind.Characterwise };
             return r;
         }
@@ -816,9 +902,39 @@ export struct Context {
     // outermost one, which lets primitives call each other freely
     // without each one creating its own undo step.
 
+    // Open an undo GROUP: nested transactions inside it all accumulate
+    // into a single undo entry, which is only pushed when the group ends.
+    // A behavior wraps an insert session in this so the whole session
+    // undoes as a unit.
+    mut fn beginUndoGroup() {
+        if this._undoGroupDepth == 0 {
+            this._txCursorBefore = this._cursorPos();
+            this._txOpen = false;
+        }
+        this._undoGroupDepth = this._undoGroupDepth + 1;
+    }
+
+    mut fn endUndoGroup() {
+        if this._undoGroupDepth == 0 {
+            return;
+        }
+        this._undoGroupDepth = this._undoGroupDepth - 1;
+        if this._undoGroupDepth > 0 {
+            return;
+        }
+        if !this._txOpen {
+            return;
+        }
+        this._txOpen = false;
+        this._txEntry.cursorAfter = this._cursorPos();
+        this._undoStack.push(this._txEntry);
+        this._redoStack = [];
+    }
+
     mut fn beginTransaction() {
-        if this._txDepth == 0 {
-            this._txPending = this._snapshot();
+        if this._txDepth == 0 && this._undoGroupDepth == 0 {
+            this._txOpen = false;
+            this._txCursorBefore = this._cursorPos();
         }
         this._txDepth = this._txDepth + 1;
     }
@@ -831,16 +947,106 @@ export struct Context {
         if this._txDepth > 0 {
             return;
         }
-        let pending = this._txPending;
-        this._txPending = none;
-        if !pending {
+        // Inside an undo group the entry stays open until the group ends.
+        if this._undoGroupDepth > 0 {
             return;
         }
-        // Nothing actually changed -> don't create a dead undo step.
-        if this._documentText() == pending.text {
+        if !this._txOpen {
+            // Nothing was edited -> no undo step.
             return;
         }
-        this._undoStack.push(pending);
+        this._txOpen = false;
+        this._txEntry.cursorAfter = this._cursorPos();
+        this._undoStack.push(this._txEntry);
+        this._redoStack = [];
+    }
+
+    // Record what a pending edit is about to overwrite. Called by
+    // _applyReplace BEFORE the host mutates anything, so the "before"
+    // lines are still readable through getLine.
+    //
+    // Within one transaction the recorded range only ever GROWS: a
+    // compound edit (delete selection, then insert) saves the union of
+    // the lines it touched, which is exactly what neovim's u_save does
+    // when several changes land in one undo block.
+    mut fn _recordEdit(startLine: int, endLine: int, insertedLines: int) {
+        if !this._txOpen {
+            let saved: []str = [];
+            for (let y = startLine; y <= endLine; y++) {
+                saved.push(this.args.getLine(y).cloneString());
+            }
+            let before = this._txCursorBefore;
+            let beforeY = clamp<int>(before.y, 0, this.args.getLineCount() - 1);
+            let clampedBefore: Vec2i = {
+                x: clamp<int>(before.x, 0, this.args.getLineLength(beforeY)),
+                y: beforeY,
+            };
+            this._txEntry = UndoEntry {
+                startLine: startLine,
+                removedCount: endLine - startLine + 1,
+                removedLines: saved,
+                insertedCount: insertedLines,
+                cursorBefore: clampedBefore,
+            };
+            this._txOpen = true;
+            return;
+        }
+
+        // Extend an already-open entry to cover this edit too.
+        let entry = this._txEntry;
+        let coveredEnd = entry.startLine + entry.insertedCount - 1;
+        if startLine < entry.startLine {
+            let prefix: []str = [];
+            for (let y = startLine; y < entry.startLine; y++) {
+                prefix.push(this.args.getLine(y).cloneString());
+            }
+            for old in entry.removedLines {
+                prefix.push(old);
+            }
+            entry.removedLines = prefix;
+            entry.removedCount = entry.removedCount + (entry.startLine - startLine);
+            entry.startLine = startLine;
+        }
+        if endLine > coveredEnd {
+            for (let y = coveredEnd + 1; y <= endLine; y++) {
+                entry.removedLines.push(this.args.getLine(y).cloneString());
+                entry.removedCount = entry.removedCount + 1;
+            }
+        }
+        let newCovered = endLine > coveredEnd ? endLine : coveredEnd;
+        entry.insertedCount = newCovered - entry.startLine + 1
+                              + (insertedLines - (endLine - startLine + 1));
+        this._txEntry = entry;
+    }
+
+    // Record an undo step that changes nothing. Some commands are no-ops
+    // on the text but still consume an undo step in vim (`x` on an empty
+    // line); without this the undo stack drifts out of step.
+    // Mark the in-progress undo entry as a whole-line replacement, so
+    // undoing it lands the caret at column 0 (see UndoEntry.linewise).
+    mut fn markUndoEntryLinewise() {
+        if this._txOpen {
+            this._txEntry.linewise = true;
+            return;
+        }
+        // The transaction may already have been committed by the time the
+        // behavior knows the edit was linewise; mark the entry it pushed.
+        if this._undoStack.length > 0 {
+            this._undoStack[this._undoStack.length - 1].linewise = true;
+        }
+    }
+
+    mut fn pushEmptyUndoStep() {
+        let pos = this._cursorPos();
+        let entry = UndoEntry {
+            startLine: pos.y,
+            removedCount: 1,
+            removedLines: [this.args.getLine(pos.y).cloneString()],
+            insertedCount: 1,
+            cursorBefore: pos,
+            cursorAfter: pos,
+        };
+        this._undoStack.push(entry);
         this._redoStack = [];
     }
 
@@ -850,8 +1056,16 @@ export struct Context {
         }
         let entry = this._undoStack[this._undoStack.length - 1];
         this._undoStack.pop();
-        this._redoStack.push(this._snapshot());
-        this._restore(entry);
+        this._redoStack.push(this._applyUndoEntry(entry));
+        // Clamp against the line as it is AFTER the restore: a delete
+        // that emptied the buffer leaves nowhere for a saved column to
+        // land, and vim reports column 0 there.
+        let landing: Vec2i = {
+            x: entry.linewise ? 0 : entry.cursorBefore.x,
+            y: entry.cursorBefore.y,
+        };
+        this._moveTo(landing, true, false);
+        this.clampToLine();
     }
 
     mut fn redo() {
@@ -860,8 +1074,62 @@ export struct Context {
         }
         let entry = this._redoStack[this._redoStack.length - 1];
         this._redoStack.pop();
-        this._undoStack.push(this._snapshot());
-        this._restore(entry);
+        this._undoStack.push(this._applyUndoEntry(entry));
+        this._moveTo(entry.cursorAfter, true, false);
+        this.clampToLine();
+    }
+
+    // Swap the lines currently occupying an entry's range for the ones it
+    // saved, and return the inverse entry (what was just replaced), which
+    // is what makes undo and redo the same operation in both directions.
+    mut fn _applyUndoEntry(entry: UndoEntry): UndoEntry {
+        let lineCount = this.args.getLineCount();
+        let firstLine = clamp<int>(entry.startLine, 0, lineCount - 1);
+        let lastLine = clamp<int>(entry.startLine + entry.insertedCount - 1, firstLine, lineCount - 1);
+
+        let current: []str = [];
+        for (let y = firstLine; y <= lastLine; y++) {
+            current.push(this.args.getLine(y).cloneString());
+        }
+
+        let replacement = "";
+        for line, i in entry.removedLines {
+            if i > 0 {
+                replacement = f"{replacement}\n";
+            }
+            replacement = f"{replacement}{line}";
+        }
+
+        let start: Vec2i = { x: 0, y: firstLine };
+        let end: Vec2i = { x: this.args.getLineLength(lastLine), y: lastLine };
+        this.args.replaceRange(start, end, String(replacement));
+
+        let inverse = UndoEntry {
+            startLine: firstLine,
+            removedCount: current.length,
+            removedLines: current,
+            insertedCount: entry.removedLines.length,
+            cursorBefore: entry.cursorAfter,
+            cursorAfter: entry.cursorBefore,
+        };
+        return inverse;
+    }
+
+    // Re-clamp the caret after an undo/redo changed the line under it.
+    //
+    // The saved column is clamped against the line's length at the time
+    // of the EDIT, not after the restore: a delete that emptied the line
+    // leaves nowhere for column 3 to land, and vim reports column 0 --
+    // so the clamp has to happen before the old text comes back.
+    mut fn clampToLine() {
+        let pos = this._cursorPos();
+        let maxY = this.args.getLineCount() - 1;
+        let y = clamp<int>(pos.y, 0, maxY);
+        let x = clamp<int>(pos.x, 0, this.maxColumn(y));
+        if x != pos.x || y != pos.y {
+            let target: Vec2i = { x: x, y: y };
+            this._moveTo(target, true, false);
+        }
     }
 
     // === Selection queries, for rendering =========================
@@ -895,9 +1163,11 @@ export struct Context {
             let left = start.x < end.x ? start.x : end.x;
             let right = start.x < end.x ? end.x : start.x;
             let lineLen = this.args.getLineLength(lineIndex);
+            // Inclusive right column -> exclusive end at the next CHARACTER
+            // boundary on this line. See _getBlockwiseText.
             let block: LineSelectionRange = {
-                startCol: clamp<int>(left, 0, lineLen),
-                endCol: clamp<int>(right + 1, 0, lineLen),
+                startCol: this._snapColumn(lineIndex, clamp<int>(left, 0, lineLen)),
+                endCol: clamp<int>(this.nextColumn(lineIndex, clamp<int>(right, 0, lineLen)), 0, lineLen),
             };
             return block;
         }
@@ -942,26 +1212,31 @@ export struct Context {
         if len == 0 {
             return 0;
         }
-        let line = this.args.getLine(lineIndex);
+        // Leading whitespace is always ASCII in practice, but walk by
+        // clusters anyway so the returned column is guaranteed to be a
+        // legal caret position on any line.
+        let line = this._lineText(lineIndex);
         let x = 0;
-        while x < len && ascii.isWhitespace(line[x].get()) {
-            x++;
+        while x < len && unicode.classifyAt(line, x) == unicode.CharClass.Whitespace {
+            x = unicode.nextClusterOffset(line, x);
         }
         if x >= len {
-            return len > 0 ? len - 1 : 0;
+            // An all-whitespace line: land on the last CHARACTER, which is
+            // not `len - 1` when that character is multi-byte.
+            return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
         }
         return x;
     }
 
-    // Character class, exposed so a behavior can implement its own word
-    // motions (Vim's w vs W) without duplicating the classification.
-    // 0 = whitespace, 1 = word character, 2 = punctuation.
+    // Character class at a BYTE OFFSET, exposed so a behavior can implement
+    // its own word motions (Vim's w vs W) without duplicating the
+    // classification. 0 = whitespace, 1 = word character, 2 = punctuation.
     fn charClassAt(lineIndex: int, column: int): int {
         let len = this.args.getLineLength(lineIndex);
         if column < 0 || column >= len {
             return 0;
         }
-        return this._charClassAt(this.args.getLine(lineIndex), column);
+        return this._charClassAt(this._lineText(lineIndex), column);
     }
 
     fn lineLength(lineIndex: int): int {
@@ -987,13 +1262,121 @@ export struct Context {
         return this._desiredCursorPosition.x;
     }
 
-    // Highest legal column for the current mode on a given line.
+    // Highest legal column (BYTE OFFSET) for the current mode on a line.
+    //
+    // In on-a-character modes this is the offset of the LAST GRAPHEME
+    // CLUSTER, not `length - 1`. Those differ whenever a line ends in a
+    // multi-byte character: on a line holding one flag emoji, `length - 1`
+    // is byte 7, which is the middle of the flag, while the correct answer
+    // is byte 0 -- the caret sits ON the flag.
     fn maxColumn(lineIndex: int): int {
         let len = this.args.getLineLength(lineIndex);
         if modeClampsToLastChar(rx.get(this.mode)) {
-            return len > 0 ? len - 1 : 0;
+            if len <= 0 {
+                return 0;
+            }
+            return unicode.previousClusterOffset(this._lineText(lineIndex), len);
         }
         return len;
+    }
+
+    // The line's text as a slice.
+    //
+    // cloneString() is zero-copy while a line is still committed/borrowed,
+    // but a host whose lines are mutated in place (text_document does this
+    // deliberately, to keep a keystroke O(line) instead of O(document))
+    // hands back a live buffer, and cloning one costs a malloc + memcpy --
+    // measured at ~14ns for lines up to 400 bytes.
+    //
+    // That is the dominant cost of a cursor motion, which is otherwise ~3ns
+    // on the ASCII fast path, and it is still three orders of magnitude
+    // below a keystroke. If it ever matters, the fix is to cache the
+    // boundary array per line and invalidate it from the host's ChangeSet,
+    // NOT to hand a live mutable buffer to the FFI layer -- that would
+    // violate the `str` immutability invariant this clone exists to keep.
+    fn _lineText(lineIndex: int): str {
+        return this.args.getLine(lineIndex).cloneString();
+    }
+
+    // === Character stepping =======================================
+    //
+    // The byte offset one CHARACTER left/right of `column` on a line, and
+    // the alignment guard. Behaviors must use these instead of `column + 1`
+    // and `column - 1`: those step one BYTE, which lands inside multi-byte
+    // characters and corrupts the buffer on the next edit.
+    //
+    // Both clamp at the ends of the line and never wrap.
+
+    fn nextColumn(lineIndex: int, column: int): int {
+        return unicode.nextClusterOffset(this._lineText(lineIndex), column);
+    }
+
+    fn previousColumn(lineIndex: int, column: int): int {
+        return unicode.previousClusterOffset(this._lineText(lineIndex), column);
+    }
+
+    // Snap an arbitrary byte offset onto the character boundary at or before
+    // it. Use on any column that came from arithmetic rather than from the
+    // two steppers above.
+    fn snapColumn(lineIndex: int, column: int): int {
+        return this._snapColumn(lineIndex, column);
+    }
+
+    // Snap a byte offset onto the nearest cluster boundary at or before it.
+    //
+    // This is what makes the engine's central invariant hold. Every column
+    // that reaches the cursor passes through here, so an offset computed by
+    // arithmetic -- a sticky column carried onto a line whose characters sit
+    // at different offsets, a click converted from pixels, a cursor restored
+    // from an undo snapshot -- can never land inside a character.
+    fn _snapColumn(lineIndex: int, column: int): int {
+        if column <= 0 {
+            return 0;
+        }
+        return unicode.clusterStart(this._lineText(lineIndex), column);
+    }
+
+    // === Character-space queries ==================================
+    //
+    // Everything else in this engine speaks byte offsets. These two are the
+    // exceptions, and they are named so they cannot be mistaken for one.
+    // They exist for UI that must show a human a count, and their results
+    // must never be fed back into a slice, an edit or a column.
+
+    // How many CHARACTERS (grapheme clusters) precede the cursor on its
+    // line -- what a status bar means by "column 12". Not a byte offset.
+    fn characterColumn(): int {
+        let pos = this._cursorPos();
+        return unicode.characterIndexAt(this._lineText(pos.y), pos.x);
+    }
+
+    // How many monospace CELLS precede the cursor on its line. Differs from
+    // characterColumn wherever CJK or emoji appear, since those occupy two
+    // cells each. This is the number a fixed-advance renderer needs to
+    // place a caret; it is not a byte offset and not a character count.
+    fn displayColumn(): int {
+        let pos = this._cursorPos();
+        return this.displayColumnAt(pos.y, pos.x);
+    }
+
+    // How many monospace CELLS precede a given BYTE OFFSET on a line.
+    //
+    // This is the conversion a fixed-advance renderer needs to turn any
+    // engine column into an x position: a byte offset is not proportional to
+    // screen distance once a line contains multi-byte or double-width
+    // characters. Multiplying a byte column by a character width -- the
+    // obvious thing to do, and correct for pure ASCII -- puts the caret four
+    // cells to the right of a single emoji.
+    fn displayColumnAt(lineIndex: int, column: int): int {
+        let line = this._lineText(lineIndex);
+        return unicode.displayWidth(line.slice(0, clamp<int>(column, 0, line.length)));
+    }
+
+    // Width in monospace CELLS of the character at a byte offset: 2 for CJK
+    // and emoji, 1 otherwise. A block caret in normal mode should be this
+    // wide so it covers the character it is sitting on.
+    fn displayWidthOfCharacterAt(lineIndex: int, column: int): int {
+        return unicode.clusterColumnWidth(this._lineText(lineIndex), column);
     }
 
     // === Internals =================================================
@@ -1027,6 +1410,17 @@ export struct Context {
         if standalone {
             this.beginTransaction();
         }
+        // Save what this edit is about to overwrite, while the old lines
+        // are still readable, then perform it. How many lines the new
+        // text occupies decides the range undo has to take back out.
+        let insertedLines = 1;
+        let raw = text.cloneString();
+        for (let i = 0; i < raw.length; i++) {
+            if raw[i] == b"\n" {
+                insertedLines = insertedLines + 1;
+            }
+        }
+        this._recordEdit(start.y, end.y, insertedLines);
         this.args.replaceRange(start, end, text);
         if standalone {
             this.endTransaction();
@@ -1095,7 +1489,7 @@ export struct Context {
         let startLen = this.args.getLineLength(start.y);
         let result = firstLine.cloneString().slice(clamp<int>(start.x, 0, startLen), startLen);
         for (let y = start.y + 1; y < end.y; y++) {
-            result = f"{result}\n{this.args.getLine(y)}";
+            result = f"{result}\n{this.args.getLine(y).cloneString()}";
         }
         let lastLine = this.args.getLine(end.y);
         let endLen = this.args.getLineLength(end.y);
@@ -1108,7 +1502,7 @@ export struct Context {
     fn _getLinewiseText(startY: int, endY: int): String {
         let result = "";
         for (let y = startY; y <= endY; y++) {
-            result = f"{result}{this.args.getLine(y)}\n";
+            result = f"{result}{this.args.getLine(y).cloneString()}\n";
         }
         return String(result);
     }
@@ -1120,25 +1514,9 @@ export struct Context {
             if y > 0 {
                 result = f"{result}\n";
             }
-            result = f"{result}{this.args.getLine(y)}";
+            result = f"{result}{this.args.getLine(y).cloneString()}";
         }
         return result;
-    }
-
-    fn _snapshot(): UndoEntry {
-        let pos = this._cursorPos();
-        let entry: UndoEntry = { text: this._documentText(), cursor: pos };
-        return entry;
-    }
-
-    // Restoring is a single whole-document replace so it goes through the
-    // host's one mutation primitive like every other edit.
-    mut fn _restore(entry: UndoEntry) {
-        let lastLine = this.args.getLineCount() - 1;
-        let start: Vec2i = { x: 0, y: 0 };
-        let end: Vec2i = { x: this.args.getLineLength(lastLine), y: lastLine };
-        this.args.replaceRange(start, end, String(entry.text));
-        this._moveTo(entry.cursor, true, false);
     }
 
     // Single point of truth for placing the cursor: clamps to valid
@@ -1153,7 +1531,7 @@ export struct Context {
 
         let lineCount = this.args.getLineCount();
         let y = clamp<int>(target.y, 0, lineCount - 1);
-        let x = clamp<int>(target.x, 0, this.maxColumn(y));
+        let x = this._snapColumn(y, clamp<int>(target.x, 0, this.maxColumn(y)));
 
         if extend {
             if !this.selectionAnchor {
@@ -1185,7 +1563,12 @@ export struct Context {
         let lineLength = this.args.getLineLength(pos.y);
         let limit = this.maxColumn(pos.y);
         if pos.x < limit {
-            return { x: pos.x + 1, y: pos.y };
+            // One character to the right, which is 1..25 bytes depending on
+            // what is actually there. Clamped to `limit` so that in
+            // on-a-character modes a cluster at the end of the line cannot
+            // push the caret past the last legal position.
+            let next = unicode.nextClusterOffset(this._lineText(pos.y), pos.x);
+            return { x: next < limit ? next : limit, y: pos.y };
         }
         // In on-a-character modes, `l` never wraps to the next line.
         if !modeClampsToLastChar(rx.get(this.mode)) && pos.x >= lineLength {
@@ -1198,7 +1581,10 @@ export struct Context {
 
     fn _targetLeft(pos: Vec2i): Vec2i {
         if pos.x > 0 {
-            return { x: pos.x - 1, y: pos.y };
+            // One character to the left. Note this walks to the START of the
+            // preceding cluster, so a single press clears a whole flag or
+            // family emoji rather than stepping into the middle of it.
+            return { x: unicode.previousClusterOffset(this._lineText(pos.y), pos.x), y: pos.y };
         }
         // In on-a-character modes, `h` never wraps to the previous line.
         if !modeClampsToLastChar(rx.get(this.mode)) && pos.y > 0 {
@@ -1229,19 +1615,26 @@ export struct Context {
             return pos;
         }
 
-        let line = this.args.getLine(pos.y);
+        // Walks CHARACTERS, not bytes: stepping byte-by-byte would classify
+        // each byte of a multi-byte character separately and stop in the
+        // middle of "naive" or "日本語".
+        let line = this._lineText(pos.y);
         let x = pos.x;
 
         // Skip whitespace directly to the left of the cursor
-        while x > 0 && ascii.isWhitespace(line[x - 1].get()) {
-            x--;
+        let scan = unicode.previousClusterOffset(line, x);
+        while x > 0 && unicode.classifyAt(line, scan) == unicode.CharClass.Whitespace {
+            x = scan;
+            scan = unicode.previousClusterOffset(line, x);
         }
 
         // Skip one run of same-class characters to land on the word's start
         if x > 0 {
-            let targetClass = this._charClassAt(line, x - 1);
-            while x > 0 && this._charClassAt(line, x - 1) == targetClass {
-                x--;
+            let previous = unicode.previousClusterOffset(line, x);
+            let targetClass = unicode.classifyAt(line, previous);
+            while x > 0 && unicode.classifyAt(line, previous) == targetClass {
+                x = previous;
+                previous = unicode.previousClusterOffset(line, x);
             }
         }
 
@@ -1257,7 +1650,8 @@ export struct Context {
             return pos;
         }
 
-        let line = this.args.getLine(pos.y);
+        // Walks CHARACTERS, not bytes -- see _targetWordLeft.
+        let line = this._lineText(pos.y);
         let x = pos.x;
 
         // Skip whitespace immediately ahead, if any -- matching Chrome's
@@ -1266,16 +1660,15 @@ export struct Context {
         // whitespace (or the end of a word) it skips the gap and stops at
         // the end of the next run instead. So whitespace is only ever
         // consumed as a leading skip, never trailing.
-        // TODO: line[x] is a compiler bug when x is reactive
-        while x < lineLength && ascii.isWhitespace(line[rx.get(x)].get()) {
-            x++;
+        while x < lineLength && unicode.classifyAt(line, x) == unicode.CharClass.Whitespace {
+            x = unicode.nextClusterOffset(line, x);
         }
 
         // Skip one run of the resulting class (word or punctuation).
         if x < lineLength {
-            let targetClass = this._charClassAt(line, x);
-            while x < lineLength && this._charClassAt(line, x) == targetClass {
-                x++;
+            let targetClass = unicode.classifyAt(line, x);
+            while x < lineLength && unicode.classifyAt(line, x) == targetClass {
+                x = unicode.nextClusterOffset(line, x);
             }
         }
 
@@ -1299,21 +1692,53 @@ export struct Context {
         return { x: this.args.getLineLength(lastLine), y: lastLine };
     }
 
-    fn _charClassAt(line: String, index: int): int {
-        let b = line[index];
-        if ascii.isWhitespace(b.get()) {
+    // Classify the character at a BYTE OFFSET. Unicode-aware: non-ASCII
+    // letters, marks and ideographs count as word characters, so a word
+    // motion crosses "naive" and "日本語" as single words rather than
+    // splitting them at every non-ASCII byte.
+    fn _charClassAt(line: str, index: int): int {
+        let classification = unicode.classifyAt(line, index);
+        if classification == unicode.CharClass.Whitespace {
             return 0;
         }
-        if ascii.isAlpha(b.get()) || ascii.isDigit(b.get()) || b.get() == b"_" {
+        if classification == unicode.CharClass.Word {
             return 1;
         }
         return 2;
     }
 }
 
-// A whole-document undo snapshot. See Context._undoStack for why this is
-// a snapshot rather than a diff.
+// One undo step, modelled on neovim's `u_save(lo, hi)`.
+//
+// Neovim does not snapshot the buffer; it records, for each change, the
+// LINE RANGE that is about to be replaced together with the lines that
+// were there before. Undoing swaps the current contents of that range
+// back out for the saved ones (which is itself recorded, so redo is the
+// same operation in reverse).
+//
+// That model is what keeps the engine storage-agnostic: an entry holds
+// only line strings the host handed over via `getLine`, plus indices --
+// never a copy of the document, and no assumption about how the host
+// stores it (array of lines, rope, piece table, ...). It is also O(edit)
+// rather than O(document), so typing a character in a 100k-line file
+// costs the same as in a 10-line one.
 export struct UndoEntry {
-    text: str = "";
-    cursor: Vec2i = {};
+    // The range replaced, as line indices: [startLine, startLine+removedCount).
+    startLine: int = 0;
+    // How many lines the edit removed from that position...
+    removedCount: int = 0;
+    // ...and the text of those lines, to put back on undo.
+    removedLines: []str = [];
+    // How many lines the edit put there instead (needed to find the
+    // range to take back out when undoing).
+    insertedCount: int = 0;
+    // Caret position before the edit, restored along with the text.
+    cursorBefore: Vec2i = {};
+    // Caret position after the edit, restored on redo.
+    cursorAfter: Vec2i = {};
+    // True when the edit replaced WHOLE lines (a linewise delete/change).
+    // Undoing one of those puts the caret at column 0 of the first
+    // restored line, which is what vim reports -- the saved column
+    // belonged to text that no longer exists in the same shape.
+    linewise: bool = false;
 }

@@ -1,4 +1,5 @@
 import textedit_behavior
+import unicode
 
 // === vim_behavior =============================================
 //
@@ -134,6 +135,8 @@ export struct Vim {
     // True when insert mode was entered via o/O, so a counted repeat
     // opens a new line each time instead of repeating text in place.
     insertOpensLine: bool = false;
+    // Whether an undo group is currently open for the insert session.
+    insertGroupOpen: bool = false;
 
     // `set clipboard=unnamedplus`
     useSystemClipboard: bool = false;
@@ -202,20 +205,20 @@ export struct Vim {
     // withheld until we know it isn't one. That is exactly what vim
     // does, and why `jk` doesn't briefly show a "j".
     mut fn handleTextInput(text: String): bool {
-        let mode = rx.get(this.ctx.mode);
-        if mode != textedit_behavior.Mode.Insert {
-            // Normal/visual mode: printable characters are commands, so
-            // route them through the key handler and never insert them.
-            let s = text.cloneString();
-            for (let i = 0; i < s.length; i++) {
-                this.handleKey(s.slice(i, i + 1));
-            }
-            return true;
-        }
-        // Insert mode: let handleKey deal with it so mappings apply.
+        // Split into CHARACTERS, not bytes. A text-input chunk from the OS
+        // is UTF-8, so slicing per byte would hand handleKey the individual
+        // bytes of an emoji as four separate meaningless "keys" -- breaking
+        // `r<emoji>` in normal mode and inserting mojibake in insert mode.
+        //
+        // Both modes split identically; only handleKey's interpretation
+        // differs (commands in normal/visual, literal text in insert), and
+        // that decision lives in dispatch(), not here.
         let s = text.cloneString();
-        for (let i = 0; i < s.length; i++) {
-            this.handleKey(s.slice(i, i + 1));
+        let at = 0;
+        while at < s.length {
+            let next = unicode.nextClusterOffset(s, at);
+            this.handleKey(s.slice(at, next));
+            at = next;
         }
         return true;
     }
@@ -335,7 +338,9 @@ export struct Vim {
         // Record what is typed so a counted insert (`3Ax`) can replay it
         // `count-1` more times when insert mode is left.
         if this.insertCount > 1 {
-            if key.length == 1 {
+            // One CHARACTER, which may be several bytes -- a named key like
+            // "<CR>" is many characters and handled separately below.
+            if isSinglePrintableCharacter(key) {
                 this.insertTyped = f"{this.insertTyped}{key}";
             } else if key == "<CR>" {
                 this.insertTyped = f"{this.insertTyped}\n";
@@ -358,8 +363,11 @@ export struct Vim {
         if key == "<Up>"    { this.ctx.moveCursorUp(false); return; }
         if key == "<Down>"  { this.ctx.moveCursorDown(false); return; }
 
-        // Any other single printable character is literal text.
-        if key.length == 1 {
+        // Any other single printable character is literal text. Tested by
+        // CHARACTER count so that typing an emoji or an accented letter
+        // inserts it rather than being silently dropped for "not being one
+        // byte long".
+        if isSinglePrintableCharacter(key) {
             this.ctx.insertText(String(key));
         }
     }
@@ -383,10 +391,17 @@ export struct Vim {
         this.insertCount = 1;
         this.insertTyped = "";
 
+        if this.insertGroupOpen {
+            this.ctx.endUndoGroup();
+            this.insertGroupOpen = false;
+        }
+
         let pos = this.ctx.cursor();
         this.ctx.setMode(textedit_behavior.Mode.Normal);
         if pos.x > 0 {
-            let target: Vec2i = { x: pos.x - 1, y: pos.y };
+            // One CHARACTER back, not one byte: leaving insert mode after
+            // typing an emoji must put the caret on the emoji, not inside it.
+            let target: Vec2i = { x: this.ctx.previousColumn(pos.y, pos.x), y: pos.y };
             this.ctx.moveTo(target, true, false);
         }
         this.resetPending();
@@ -567,9 +582,11 @@ export struct Vim {
         let result = Motion {};
 
         if key == "h" || key == "<Left>" || key == "<BS>" {
+            // `count` counts CHARACTERS, so step boundaries rather than
+            // subtracting bytes -- `2h` past an emoji must clear all of it.
             let x = pos.x;
             for (let i = 0; i < count; i++) {
-                if x > 0 { x = x - 1; }
+                if x > 0 { x = this.ctx.previousColumn(pos.y, x); }
             }
             result = Motion { valid: true, target: { x: x, y: pos.y } };
             return result;
@@ -580,7 +597,13 @@ export struct Vim {
             // character), which normal-mode cursor clamping forbids.
             let limit = this.pending == PendingKind.Operator
                 ? this.ctx.lineLength(pos.y) : this.ctx.maxColumn(pos.y);
-            let x = clampInt(pos.x + count, 0, limit);
+            // Step CHARACTER boundaries: adding `count` bytes would land
+            // inside a multi-byte character and corrupt the next edit.
+            let x = pos.x;
+            for (let i = 0; i < count; i++) {
+                if x < limit { x = this.ctx.nextColumn(pos.y, x); }
+            }
+            x = clampInt(x, 0, limit);
             result = Motion { valid: true, target: { x: x, y: pos.y } };
             return result;
         }
@@ -627,7 +650,13 @@ export struct Vim {
             let y = clampInt(pos.y + count - 1, 0, this.ctx.lineCount() - 1);
             let len = this.ctx.lineLength(y);
             // `$` is inclusive for operators (d$ deletes to end of line).
-            result = Motion { valid: true, target: { x: len > 0 ? len - 1 : 0, y: y }, inclusive: true };
+            // The target is the last CHARACTER, which is not `len - 1` when
+            // the line ends in a multi-byte character.
+            result = Motion {
+                valid: true,
+                target: { x: len > 0 ? this.ctx.previousColumn(y, len) : 0, y: y },
+                inclusive: true,
+            };
             return result;
         }
         if key == "G" {
@@ -750,9 +779,10 @@ export struct Vim {
         }
 
         let startClass = this.classAt(y, x, bigWord);
-        // Skip the rest of the current run.
+        // Skip the rest of the current run, one CHARACTER at a time so a
+        // run of CJK or accented letters counts as a single word.
         while x < lineLen && this.classAt(y, x, bigWord) == startClass && startClass != 0 {
-            x = x + 1;
+            x = this.ctx.nextColumn(y, x);
         }
         // Skip whitespace, wrapping across lines.
         let p: Vec2i = { x: x, y: y };
@@ -772,7 +802,11 @@ export struct Vim {
             let lineLen = this.ctx.lineLength(y);
             if x >= lineLen {
                 if y >= lineCount - 1 {
-                    let end: Vec2i = { x: lineLen > 0 ? lineLen - 1 : 0, y: y };
+                    // Last CHARACTER of the line, not its last byte.
+                    let end: Vec2i = {
+                        x: lineLen > 0 ? this.ctx.previousColumn(y, lineLen) : 0,
+                        y: y,
+                    };
                     return end;
                 }
                 y = y + 1;
@@ -783,7 +817,7 @@ export struct Vim {
                     return empty;
                 }
             } else if this.classAt(y, x, false) == 0 {
-                x = x + 1;
+                x = this.ctx.nextColumn(y, x);
             } else {
                 let found: Vec2i = { x: x, y: y };
                 return found;
@@ -810,9 +844,9 @@ export struct Vim {
                 let empty: Vec2i = { x: 0, y: y };
                 return empty;
             }
-            x = x - 1;
+            x = this.ctx.previousColumn(y, x);
         } else {
-            x = x - 1;
+            x = this.ctx.previousColumn(y, x);
         }
 
         // Skip blanks backwards, wrapping lines. `searching` replaces the
@@ -836,16 +870,20 @@ export struct Vim {
                     let empty: Vec2i = { x: 0, y: y };
                     return empty;
                 }
-                x = len - 1;
+                // Last CHARACTER of the previous line, not its last byte.
+                x = this.ctx.previousColumn(y, len);
             } else {
-                x = x - 1;
+                x = this.ctx.previousColumn(y, x);
             }
         }
 
-        // Walk back to the start of this run.
+        // Walk back to the start of this run, inspecting the PREVIOUS
+        // CHARACTER rather than the previous byte.
         let runClass = this.classAt(y, x, bigWord);
-        while x > 0 && this.classAt(y, x - 1, bigWord) == runClass {
-            x = x - 1;
+        let prev = this.ctx.previousColumn(y, x);
+        while x > 0 && this.classAt(y, prev, bigWord) == runClass {
+            x = prev;
+            prev = this.ctx.previousColumn(y, x);
         }
         let result: Vec2i = { x: x, y: y };
         return result;
@@ -858,28 +896,36 @@ export struct Vim {
         let lineCount = this.ctx.lineCount();
 
         // Always step at least one character forward.
-        x = x + 1;
+        x = this.ctx.nextColumn(y, x);
         let searching = true;
         while searching {
             let lineLen = this.ctx.lineLength(y);
             if x >= lineLen {
                 if y >= lineCount - 1 {
-                    let end: Vec2i = { x: lineLen > 0 ? lineLen - 1 : 0, y: y };
+                    // Last CHARACTER of the line, not its last byte.
+                    let end: Vec2i = {
+                        x: lineLen > 0 ? this.ctx.previousColumn(y, lineLen) : 0,
+                        y: y,
+                    };
                     return end;
                 }
                 y = y + 1;
                 x = 0;
             } else if this.classAt(y, x, false) == 0 {
-                x = x + 1;
+                x = this.ctx.nextColumn(y, x);
             } else {
                 searching = false;
             }
         }
-        // Advance to the end of this run.
+        // Advance to the end of this run, inspecting the NEXT CHARACTER
+        // rather than the next byte, and leaving the caret on the START of
+        // the last character in the run (which is what `e` means).
         let runClass = this.classAt(y, x, bigWord);
         let lineLen = this.ctx.lineLength(y);
-        while x + 1 < lineLen && this.classAt(y, x + 1, bigWord) == runClass {
-            x = x + 1;
+        let ahead = this.ctx.nextColumn(y, x);
+        while ahead < lineLen && this.classAt(y, ahead, bigWord) == runClass {
+            x = ahead;
+            ahead = this.ctx.nextColumn(y, x);
         }
         let result: Vec2i = { x: x, y: y };
         return result;
@@ -946,8 +992,12 @@ export struct Vim {
         }
         let runClass = this.classAt(pos.y, pos.x, bigWord);
         let x = pos.x;
-        while x + 1 < len && this.classAt(pos.y, x + 1, bigWord) == runClass {
-            x = x + 1;
+        // Steps by CHARACTERS: a run of non-ASCII word characters must not
+        // be broken up at every byte.
+        let next = this.ctx.nextColumn(pos.y, x);
+        while next < len && this.classAt(pos.y, next, bigWord) == runClass {
+            x = next;
+            next = this.ctx.nextColumn(pos.y, x);
         }
         let result: Vec2i = { x: x, y: pos.y };
         return result;
@@ -958,7 +1008,10 @@ export struct Vim {
     // stop at the END of the word the cursor is already inside) starts
     // its search one character back.
     fn backOne(pos: Vec2i): Vec2i {
-        let result: Vec2i = { x: pos.x > 0 ? pos.x - 1 : 0, y: pos.y };
+        let result: Vec2i = {
+            x: pos.x > 0 ? this.ctx.previousColumn(pos.y, pos.x) : 0,
+            y: pos.y,
+        };
         return result;
     }
 
@@ -1110,12 +1163,14 @@ export struct Vim {
             start = { x: end.x, y: end.y };
             end = { x: tmp.x, y: tmp.y };
             // A backwards inclusive motion includes the character the
-            // cursor started on.
+            // cursor started on. "Inclusive" means up to and including a
+            // whole CHARACTER, so the exclusive end is the start of the next
+            // one -- `end.x + 1` would cut a multi-byte character in half.
             if motion.inclusive {
-                end = { x: end.x + 1, y: end.y };
+                end = { x: this.ctx.nextColumn(end.y, end.x), y: end.y };
             }
         } else if motion.inclusive {
-            end = { x: end.x + 1, y: end.y };
+            end = { x: this.ctx.nextColumn(end.y, end.x), y: end.y };
         }
 
         let r = textedit_behavior.Range {
@@ -1160,6 +1215,9 @@ export struct Vim {
             this.ctx.setRegister(text, range.kind);
             let anchorColumn = (linewise && fromVisual) ? this.visualStartColumn : -1;
             this.ctx.deleteRange(range, anchorColumn);
+            if linewise && fromVisual {
+                this.ctx.markUndoEntryLinewise();
+            }
             // Verified against nvim: a linewise delete (from visual OR
             // via `dd`) keeps the caret COLUMN, merely clamped to the
             // line that slid into place -- 'startofline' is off.
@@ -1227,6 +1285,13 @@ export struct Vim {
         let lastY = this.ctx.lineCount() - 1;
         let endY = pos.y + count - 1;
         this.resetPending();
+        // `dd` on a buffer that is already a single EMPTY line does
+        // nothing at all in vim -- it does not even overwrite the
+        // register, so a second `dd` cannot clobber what the first one
+        // yanked.
+        if lastY == 0 && this.ctx.lineLength(0) == 0 {
+            return;
+        }
         if endY > lastY {
             if op == Operator.Change || pos.y >= lastY {
                 return;
@@ -1269,46 +1334,72 @@ export struct Vim {
                 kind: textedit_behavior.RangeKind.Linewise,
             };
         }
+        // Undo should land at the TOP of what it restores, so move the
+        // caret to the selection start before the edit opens its undo
+        // entry (which snapshots the caret as `cursorBefore`).
+        let normalizedTop = this.ctx.normalizeRange(range);
+        // A linewise delete covering the WHOLE buffer leaves a single
+        // empty line, so there is no column to preserve -- vim reports 0.
+        let wholeBuffer = range.kind == textedit_behavior.RangeKind.Linewise
+            && normalizedTop.start.y == 0
+            && normalizedTop.end.y >= this.ctx.lineCount() - 1;
+        let keepColumn = wholeBuffer ? 0 : this.visualStartColumn;
+        let topCorner: Vec2i = { x: keepColumn, y: normalizedTop.start.y };
         this.ctx.setMode(textedit_behavior.Mode.Normal);
+        // moveTo clamps to the line, so a column past the end of the
+        // line the selection started on collapses to a valid one.
+        this.ctx.moveTo(topCorner, true, false);
         this.resetPending();
         this.runOperator(op, range, false, true);
         this.clampCursorToMode();
     }
 
-    // Screen column of a byte position, expanding tabs to the next
-    // multiple of 8 (vim's default 'tabstop').
+    // Screen column of a byte position, expanding tabs to the next multiple
+    // of 8 (vim's default 'tabstop') and counting each character by its
+    // DISPLAY WIDTH -- 2 cells for CJK and emoji, 1 for Latin.
+    //
+    // Stepping per byte would make an emoji four columns wide and a CJK
+    // ideograph three, so `>>` and `<<` would restore the caret to the wrong
+    // place on any line containing them.
     fn screenColumnOf(lineIndex: int, byteColumn: int): int {
-        let line = this.ctx.line(lineIndex);
-        let len = this.ctx.lineLength(lineIndex);
+        let line = this.ctx.line(lineIndex).cloneString();
+        let len = line.length;
         let screen = 0;
         let upTo = byteColumn < len ? byteColumn : len;
-        for (let i = 0; i < upTo; i++) {
-            if line.getAt(i) == b"\t" {
+        let i = 0;
+        while i < upTo {
+            if line[i] == b"\t" {
                 screen = screen + (8 - (screen % 8));
+                i = i + 1;
             } else {
-                screen = screen + 1;
+                screen = screen + unicode.clusterColumnWidth(line, i);
+                i = unicode.nextClusterOffset(line, i);
             }
         }
         return screen;
     }
 
-    // Inverse of screenColumnOf: the byte column whose screen column is
-    // at or just past `target`, clamped to the line.
+    // Inverse of screenColumnOf: the byte column whose screen column is at or
+    // just past `target`, clamped to the line. Always returns a character
+    // boundary.
     fn byteColumnForScreenColumn(lineIndex: int, target: int): int {
-        let line = this.ctx.line(lineIndex);
-        let len = this.ctx.lineLength(lineIndex);
+        let line = this.ctx.line(lineIndex).cloneString();
+        let len = line.length;
         let screen = 0;
-        for (let i = 0; i < len; i++) {
+        let i = 0;
+        while i < len {
             if screen >= target {
                 return i;
             }
-            if line.getAt(i) == b"\t" {
+            if line[i] == b"\t" {
                 screen = screen + (8 - (screen % 8));
+                i = i + 1;
             } else {
-                screen = screen + 1;
+                screen = screen + unicode.clusterColumnWidth(line, i);
+                i = unicode.nextClusterOffset(line, i);
             }
         }
-        return len > 0 ? len - 1 : 0;
+        return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
     }
 
     mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
@@ -1420,7 +1511,14 @@ export struct Vim {
             if textedit_behavior.modeIsVisual(rx.get(this.ctx.mode)) {
                 // Extend the visual selection over the object.
                 this.ctx.setSelectionAnchor(objectRange.start);
-                let last: Vec2i = { x: objectRange.end.x > 0 ? objectRange.end.x - 1 : 0, y: objectRange.end.y };
+                // The object's end is exclusive; the caret goes on the last
+                // CHARACTER inside it.
+                let last: Vec2i = {
+                    x: objectRange.end.x > 0
+                        ? this.ctx.previousColumn(objectRange.end.y, objectRange.end.x)
+                        : 0,
+                    y: objectRange.end.y,
+                };
                 this.ctx.moveTo(last, true, true);
                 this.resetPending();
                 return;
@@ -1446,10 +1544,16 @@ export struct Vim {
     // f/F/t/T within the current line, which is all vim searches for these.
     fn findMotion(kind: str, target: str, count: int, skipAdjacent: bool = false): Motion {
         let pos = this.ctx.cursor();
-        let line = this.ctx.line(pos.y);
+        let line = this.ctx.line(pos.y).cloneString();
         let len = this.ctx.lineLength(pos.y);
-        let targetByte = String(target).getAt(0);
+        // The target is one CHARACTER, which may be several bytes -- `fé`
+        // and `f日` are legal. Comparing only its first byte would match a
+        // lead byte shared with a different character, landing the caret in
+        // the wrong place (or mid-character).
         let result = Motion {};
+        if target.length == 0 {
+            return result;
+        }
 
         let forward = kind == "f" || kind == "t";
         let till = kind == "t" || kind == "T";
@@ -1465,12 +1569,16 @@ export struct Vim {
             // is exclusive), so the two directions need different
             // origins. `t`/`T` repeated with `;` additionally step over
             // the adjacent match they are already parked next to.
-            let searchFrom = forward ? x + 1 : x;
+            // Origins step by CHARACTERS, so "one past" and "one before"
+            // clear a whole multi-byte character rather than a single byte.
+            let searchFrom = forward ? unicode.nextClusterOffset(line, x) : x;
             if till && skipAdjacent && n == 0 {
-                searchFrom = forward ? x + 2 : x - 1;
+                searchFrom = forward
+                    ? unicode.nextClusterOffset(line, unicode.nextClusterOffset(line, x))
+                    : unicode.previousClusterOffset(line, x);
             }
-            let found = forward ? indexOfByteFrom(line, targetByte, searchFrom, len)
-                                : lastIndexOfByteBefore(line, targetByte, searchFrom);
+            let found = forward ? indexOfCharacterFrom(line, target, searchFrom, len)
+                                : lastIndexOfCharacterBefore(line, target, searchFrom);
             if found < 0 {
                 return result;
             }
@@ -1478,7 +1586,9 @@ export struct Vim {
         }
 
         if till {
-            x = forward ? x - 1 : x + 1;
+            // `t` stops one CHARACTER short of the match.
+            x = forward ? unicode.previousClusterOffset(line, x)
+                        : unicode.nextClusterOffset(line, x);
         }
 
         // f/t are inclusive for operators; F/T are exclusive.
@@ -1505,26 +1615,46 @@ export struct Vim {
     // `count` left on the line the command FAILS and changes nothing --
     // `3ra` on a one-character line is a no-op.
     mut fn replaceChar(key: str, count: int) {
-        if key.length != 1 {
+        // `key` is one CHARACTER, which may be several bytes -- `r` followed
+        // by an emoji is legal. A `key.length != 1` test here would reject
+        // every non-ASCII replacement.
+        if key.length == 0 || unicode.countCharacters(key) != 1 {
             return;
         }
         let pos = this.ctx.cursor();
         let len = this.ctx.lineLength(pos.y);
-        if len == 0 || pos.x + count > len {
+        if len == 0 {
             return;
         }
+
+        // `count` counts CHARACTERS to replace, so walk that many boundaries
+        // rather than adding a byte count. Bail if the line is too short.
+        let line = this.ctx.line(pos.y).cloneString();
+        let end = pos.x;
+        for (let i = 0; i < count; i++) {
+            if end >= len {
+                return;
+            }
+            end = unicode.nextClusterOffset(line, end);
+        }
+
         let replacement = "";
         for (let i = 0; i < count; i++) {
             replacement = f"{replacement}{key}";
         }
         let r = textedit_behavior.Range {
             start: { x: pos.x, y: pos.y },
-            end: { x: pos.x + count, y: pos.y },
+            end: { x: end, y: pos.y },
             kind: textedit_behavior.RangeKind.Characterwise,
         };
         this.ctx.replaceRangeWith(r, String(replacement));
-        // `r` leaves the caret on the LAST replaced character.
-        let target: Vec2i = { x: pos.x + count - 1, y: pos.y };
+        // `r` leaves the caret on the LAST replaced character. The line has
+        // changed, so measure the caret from the replacement text itself.
+        let caret = pos.x;
+        for (let i = 0; i < count - 1; i++) {
+            caret = caret + key.length;
+        }
+        let target: Vec2i = { x: caret, y: pos.y };
         this.ctx.moveTo(target, true, false);
     }
 
@@ -1743,7 +1873,9 @@ export struct Vim {
             this.resetPending();
             let pos = this.ctx.cursor();
             if this.ctx.lineLength(pos.y) > 0 {
-                let target: Vec2i = { x: pos.x + 1, y: pos.y };
+                // Append AFTER the character under the caret -- past all of
+                // its bytes, so `a` on an emoji types after the emoji.
+                let target: Vec2i = { x: this.ctx.nextColumn(pos.y, pos.x), y: pos.y };
                 this.enterInsertMode(count);
                 this.ctx.moveTo(target, true, false);
                 return;
@@ -1942,6 +2074,10 @@ export struct Vim {
         this.insertCount = count;
         this.insertTyped = "";
         this.insertOpensLine = opensLine;
+        // The whole insert session is ONE undo step, like vim: `ihello`
+        // then <Esc> then `u` restores the line, not just the last "o".
+        this.ctx.beginUndoGroup();
+        this.insertGroupOpen = true;
         this.ctx.setMode(textedit_behavior.Mode.Insert);
     }
 
@@ -1983,9 +2119,22 @@ export struct Vim {
         let pos = this.ctx.cursor();
         let len = this.ctx.lineLength(pos.y);
         if len == 0 {
+            // `x` on an empty line deletes nothing, but vim still records
+            // an undo step for it -- so `xxu` after emptying a line undoes
+            // only the no-op and leaves the line empty. Push an explicit
+            // empty step so the undo stack stays in lockstep with vim's.
+            this.ctx.pushEmptyUndoStep();
             return;
         }
-        let endX = clampInt(pos.x + count, 0, len);
+        // `count` counts CHARACTERS: `3x` deletes three characters, which
+        // may be far more than three bytes. Adding `count` to a byte offset
+        // would cut a multi-byte character in half and leave the buffer
+        // holding invalid UTF-8.
+        let endX = pos.x;
+        for (let i = 0; i < count; i++) {
+            if endX < len { endX = this.ctx.nextColumn(pos.y, endX); }
+        }
+        endX = clampInt(endX, 0, len);
         let r = textedit_behavior.Range {
             start: { x: pos.x, y: pos.y },
             end: { x: endX, y: pos.y },
@@ -2002,7 +2151,12 @@ export struct Vim {
         if pos.x == 0 {
             return;
         }
-        let startX = clampInt(pos.x - count, 0, pos.x);
+        // `count` counts CHARACTERS -- see deleteCharsForward.
+        let startX = pos.x;
+        for (let i = 0; i < count; i++) {
+            if startX > 0 { startX = this.ctx.previousColumn(pos.y, startX); }
+        }
+        startX = clampInt(startX, 0, pos.x);
         let r = textedit_behavior.Range {
             start: { x: startX, y: pos.y },
             end: { x: pos.x, y: pos.y },
@@ -2054,7 +2208,9 @@ export struct Vim {
 
         // Characterwise
         let len = this.ctx.lineLength(pos.y);
-        let insertX = after && len > 0 ? pos.x + 1 : pos.x;
+        // `p` pastes after the character under the caret -- past all of its
+        // bytes, not just its first one.
+        let insertX = after && len > 0 ? this.ctx.nextColumn(pos.y, pos.x) : pos.x;
         insertX = clampInt(insertX, 0, len);
         let payload = "";
         for (let i = 0; i < count; i++) {
@@ -2064,9 +2220,14 @@ export struct Vim {
         let r = textedit_behavior.Range { start: at, end: at,
             kind: textedit_behavior.RangeKind.Characterwise };
         this.ctx.replaceRangeWith(r, String(payload));
-        // Vim leaves the caret on the last pasted character.
-        let payloadLen = String(payload).length();
-        let target: Vec2i = { x: insertX + payloadLen - 1, y: pos.y };
+        // Vim leaves the caret on the last pasted character -- the START of
+        // that character, so back up one CHARACTER from the end of the
+        // pasted text rather than one byte.
+        let payloadLen = payload.length;
+        let target: Vec2i = {
+            x: payloadLen > 0 ? unicode.previousClusterOffset(payload, payloadLen) + insertX : insertX,
+            y: pos.y,
+        };
         this.ctx.moveTo(target, true, false);
         this.clampCursorToMode();
         this.ctx.endTransaction();
@@ -2148,8 +2309,14 @@ export struct Vim {
             this.ctx.moveTo(at, true, false);
         } else {
             this.ctx.replaceRangeWith(range, reg.text);
+            // Land on the START of the last pasted character, so back up one
+            // CHARACTER from the end of the pasted text rather than one byte.
+            let pasted = reg.text.cloneString();
+            let lastCharOffset = pasted.length > 0
+                ? unicode.previousClusterOffset(pasted, pasted.length)
+                : 0;
             let landing: Vec2i = {
-                x: normalized.start.x + reg.text.length() - 1,
+                x: normalized.start.x + lastCharOffset,
                 y: normalized.start.y,
             };
             this.ctx.moveTo(landing, true, false);
@@ -2180,6 +2347,11 @@ export struct Vim {
             // nor when it already ends in whitespace (no double space).
             // ...and not when the line being pulled up is empty, which
             // would otherwise leave a stray trailing space.
+            // Reading the last BYTE is correct here even for a multi-byte
+            // line: every whitespace character is single-byte ASCII, and the
+            // trailing byte of a multi-byte character is a continuation byte
+            // (0b10xxxxxx), which is never whitespace. So this asks "does the
+            // line end in a blank" without needing a character boundary.
             let endsInBlank = endOfLine > 0
                 && ascii.isWhitespace(this.ctx.line(pos.y).getAt(endOfLine - 1));
             let nextIsEmpty = this.ctx.lineLength(pos.y + 1) == 0;
@@ -2203,24 +2375,47 @@ export struct Vim {
         if len == 0 {
             return;
         }
-        let endX = clampInt(pos.x + count, 0, len);
-        let line = this.ctx.line(pos.y);
-        let out = "";
-        for (let i = pos.x; i < endX; i++) {
-            let b = line.getAt(i);
-            if b >= b"a" && b <= b"z" { b = b - 32 as u8; }
-            else if b >= b"A" && b <= b"Z" { b = b + 32 as u8; }
-            let one = String("x");
-            one.setAt(0, b);
-            out = f"{out}{one.cloneString()}";
+        // `count` counts CHARACTERS -- see deleteCharsForward.
+        let endX = pos.x;
+        for (let i = 0; i < count; i++) {
+            if endX < len { endX = this.ctx.nextColumn(pos.y, endX); }
         }
+        endX = clampInt(endX, 0, len);
+
+        // Rebuild the span CHARACTER by character. ASCII letters flip case;
+        // everything else is copied through untouched. Walking bytes here
+        // would rewrite the individual bytes of a multi-byte character and
+        // turn it into mojibake -- and the ASCII case test would sometimes
+        // even match one of those bytes by accident.
+        let line = this.ctx.line(pos.y).cloneString();
+        let out = "";
+        let at = pos.x;
+        while at < endX {
+            let next = unicode.nextClusterOffset(line, at);
+            if next - at == 1 {
+                let b = line[at];
+                if b >= b"a" && b <= b"z" { b = b - 32 as u8; }
+                else if b >= b"A" && b <= b"Z" { b = b + 32 as u8; }
+                let one = String("x");
+                one.setAt(0, b);
+                out = f"{out}{one.cloneString()}";
+            } else {
+                // Multi-byte: no ASCII case mapping applies, copy verbatim.
+                out = f"{out}{line.slice(at, next)}";
+            }
+            at = next;
+        }
+
         let r = textedit_behavior.Range {
             start: { x: pos.x, y: pos.y },
             end: { x: endX, y: pos.y },
             kind: textedit_behavior.RangeKind.Characterwise,
         };
         this.ctx.replaceRangeWith(r, String(out));
-        let target: Vec2i = { x: clampInt(endX, 0, len > 0 ? len - 1 : 0), y: pos.y };
+        let target: Vec2i = {
+            x: clampInt(endX, 0, len > 0 ? unicode.previousClusterOffset(line, len) : 0),
+            y: pos.y,
+        };
         this.ctx.moveTo(target, true, false);
     }
 
@@ -2278,6 +2473,23 @@ export struct Vim {
 }
 
 
+// Whether a key string is exactly ONE printable character, as opposed to a
+// named key like "<CR>" or "<Esc>".
+//
+// This deliberately counts CHARACTERS rather than bytes: "a" is one byte,
+// "é" is two and an emoji is four, but all three are a single key the user
+// pressed. Named keys are excluded by their angle brackets, since they are
+// several ASCII characters and would otherwise pass the count test.
+export fn isSinglePrintableCharacter(key: str): bool {
+    if key.length == 0 {
+        return false;
+    }
+    if key.length > 1 && key[0] == b"<" {
+        return false;
+    }
+    return unicode.countCharacters(key) == 1;
+}
+
 export fn clampInt(value: int, low: int, high: int): int {
     if value < low { return low; }
     if value > high { return high; }
@@ -2309,6 +2521,48 @@ export fn lastIndexOfByteBefore(line: String, target: u8, before: int): int {
         }
     }
     return -1;
+}
+
+// === Character search (f/F/t/T) ===================================
+//
+// The byte variants above are still used for bracket matching, where the
+// targets are ASCII by definition. `f`/`t` take an arbitrary character the
+// user typed, so they need these instead: comparing a single byte would
+// match the lead byte of an unrelated character and land the caret inside
+// it.
+
+// First byte offset >= `startAt` (and < `limit`) where the CHARACTER
+// `target` begins, or -1. Both the scan and the comparison are per
+// character, so the result is always a cluster boundary.
+export fn indexOfCharacterFrom(line: str, target: str, startAt: int, limit: int): int {
+    let end = limit > line.length ? line.length : limit;
+    let at = startAt < 0 ? 0 : unicode.clusterStart(line, startAt);
+    while at < end {
+        let next = unicode.nextClusterOffset(line, at);
+        if next - at == target.length && line.slice(at, next) == target {
+            return at;
+        }
+        at = next;
+    }
+    return -1;
+}
+
+// Last byte offset < `before` where the CHARACTER `target` begins, or -1.
+export fn lastIndexOfCharacterBefore(line: str, target: str, before: int): int {
+    let bound = before > line.length ? line.length : before;
+    let at = 0;
+    let found = -1;
+    while at < bound {
+        let next = unicode.nextClusterOffset(line, at);
+        if next > bound {
+            return found;
+        }
+        if next - at == target.length && line.slice(at, next) == target {
+            found = at;
+        }
+        at = next;
+    }
+    return found;
 }
 
 // Scan backwards from `startAt` for the unmatched `openByte`, honoring
@@ -2548,7 +2802,12 @@ export fn parseKeys(spec: str): []str {
     let keys: []str = [];
     let i = 0;
     while i < spec.length {
-        let ch = spec.slice(i, i + 1);
+        // Advance by CHARACTERS so a mapping may contain non-ASCII (e.g.
+        // mapping "ö" to something). The keys produced here are matched
+        // against what handleTextInput feeds in, which is also split per
+        // character, so the two must agree on what "one key" is.
+        let nextChar = unicode.nextClusterOffset(spec, i);
+        let ch = spec.slice(i, nextChar);
         // A '<' starts a bracketed key name if there is a matching '>';
         // otherwise it is just a literal '<' the user wants to type.
         let close = ch == "<" ? indexOfCharFrom(spec, ">", i + 1) : -1;
@@ -2558,7 +2817,7 @@ export fn parseKeys(spec: str): []str {
             i = close + 1;
         } else {
             keys.push(ch);
-            i = i + 1;
+            i = nextChar;
         }
     }
     return keys;

@@ -1,3 +1,5 @@
+import unicode
+
 
 export inline struct ContextArgs {
     exe: str;
@@ -54,11 +56,63 @@ export struct LSPInitializeParams<TInitializationOptions> {
 
     rootUri: str;
 
-    struct Capabilities {};
-    capabilities: Capabilities;
+    // === Position encoding ========================================
+    //
+    // LSP's `Position.character` is NOT a byte offset. By default it counts
+    // UTF-16 code units, which is a third index space on top of the bytes an
+    // editor stores and the codepoints Unicode defines -- and they disagree
+    // on every line containing non-ASCII.
+    //
+    // Since LSP 3.17 a client may advertise which encodings it can handle;
+    // the server picks one and reports it back in
+    // `capabilities.positionEncoding`. We ask for `utf-8` FIRST because our
+    // columns are already byte offsets, so a server that agrees needs no
+    // conversion at all -- the offsets go on the wire exactly as stored.
+    // `utf-16` is listed second because it is mandatory to support and is
+    // what we must fall back to (see unicode.utf16UnitsBefore).
+    struct Capabilities {
+        struct General {
+            positionEncodings: []str = ["utf-8", "utf-16"];
+        };
+        general: General = {};
+    };
+    capabilities: Capabilities = {};
 
     workspaceFolders?: []WorkspaceFolder;
 };
+
+// === Position encoding ============================================
+//
+// The editor stores columns as BYTE OFFSETS. LSP's `Position.character`
+// counts UTF-16 code units unless the server agreed to `utf-8` during
+// initialize. These two functions are the ONLY place that difference is
+// handled: convert on the way out, convert back on the way in, and every
+// other layer keeps speaking bytes.
+//
+// They are free functions rather than methods on Context because Context is
+// generic: a generic's body is re-elaborated inside each consuming module,
+// where this module's own imports are not in scope. Non-generic functions
+// are compiled once, here, so the `unicode` calls resolve normally.
+
+// Convert a BYTE OFFSET in `lineText` into an LSP `Position.character`.
+// `serverUsesByteOffsets` comes from Context.usesByteOffsets().
+export fn convertByteOffsetToCharacter(lineText: str, byteOffset: int, serverUsesByteOffsets: bool): int {
+    if serverUsesByteOffsets {
+        return byteOffset;
+    }
+    return unicode.utf16UnitsBefore(lineText, byteOffset);
+}
+
+// Convert an LSP `Position.character` back into a BYTE OFFSET in `lineText`.
+export fn convertCharacterToByteOffset(lineText: str, character: int, serverUsesByteOffsets: bool): int {
+    if serverUsesByteOffsets {
+        // Even a byte offset from the server is untrusted: snap it to a
+        // character boundary so a server that miscounts cannot make us slice
+        // through the middle of a character.
+        return unicode.clusterStart(lineText, character);
+    }
+    return unicode.offsetFromUtf16Units(lineText, character);
+}
 
 export struct Context<TInitializationOptions> {
     _args: ContextArgs;
@@ -178,8 +232,41 @@ export struct Context<TInitializationOptions> {
         this.writeRequest(request);
     }
 
+    // True when the server accepted byte offsets, making position conversion
+    // a no-op. See positionEncoding on LSPInitResponse.Capabilities.
+    //
+    // Servers that predate LSP 3.17 omit the field entirely and mean utf-16.
+    fn usesByteOffsets(): bool {
+        let response = rx.get(this.initResponse);
+        if !response {
+            // Not initialized yet: assume the spec default rather than
+            // optimistically sending bytes a server never agreed to.
+            return false;
+        }
+        let encoding = response.capabilities.positionEncoding;
+        if !encoding {
+            return false;
+        }
+        return encoding == "utf-8";
+    }
+
+    // Convert a BYTE OFFSET in `lineText` into the `Position.character` this
+    // server expects. Pass the text of the line the offset belongs to.
+    fn characterFromByteOffset(lineText: str, byteOffset: int): int {
+        return convertByteOffsetToCharacter(lineText, byteOffset, this.usesByteOffsets());
+    }
+
+    // Convert a `Position.character` received FROM this server back into a
+    // byte offset in `lineText`.
+    fn byteOffsetFromCharacter(lineText: str, character: int): int {
+        return convertCharacterToByteOffset(lineText, character, this.usesByteOffsets());
+    }
+
     // Per the LSP spec, textDocument/hover resolves to `Hover | null` -- there's simply no
     // hover information at every position, and that's not an error.
+    //
+    // `character` must already be in the server's encoding -- run an editor
+    // byte offset through characterFromByteOffset() first.
     fn sendDocumentHoverRequest(filepath: str, line: int, character: int, callback: (response: Result<LSPDocumentHoverResponse | null, LSPError>) => none) {
         this.sendRequest<LSPDocumentHoverRequestParams, LSPDocumentHoverResponse | null>("textDocument/hover", {
             textDocument: {
@@ -344,6 +431,12 @@ export struct LSPInitializedNotification {}
 
 export struct LSPInitResponse {
   struct Capabilities {
+    // Which index space this server will use for `Position.character`.
+    // "utf-8" means byte offsets (what we asked for and can send as-is),
+    // "utf-16" means UTF-16 code units and requires conversion. Absent on
+    // pre-3.17 servers, which always mean "utf-16".
+    positionEncoding?: str;
+
     textDocumentSync: int;
 
     struct Workspace {

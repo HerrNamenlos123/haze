@@ -1,0 +1,258 @@
+
+// === text_document ============================================
+//
+// The document model behind the editor: an array of lines, each a
+// `String` that is mutated IN PLACE.
+//
+// The point of this module is what it does NOT do. Editing a character
+// must not:
+//   - rebuild the line array (only the touched lines change),
+//   - reassemble the whole document into one `str`,
+//   - invalidate anything that depends on untouched lines.
+//
+// The previous implementation did all three on every keystroke, which is
+// O(document) per character and made typing in a large file freeze.
+// Here a single-line edit is one `String.insert`/`String.remove` on the
+// affected line, and a multi-line edit touches only the lines it spans.
+//
+// Instead of exposing the array and hoping callers stay disciplined,
+// every mutation goes through `replaceRange` and reports precisely what
+// changed via `ChangeSet`, so consumers (syntax highlighting, the LSP,
+// a renderer's line cache) can update incrementally rather than
+// rescanning.
+
+// What a single edit did to the line array, in line-index terms.
+//
+// `startLine` is the first line whose content changed. `removedCount`
+// lines starting there were replaced by `insertedCount` new ones -- so
+// a plain within-line edit is removed == inserted == 1, splitting a line
+// with Enter is removed 1 / inserted 2, and joining is removed 2 /
+// inserted 1. Lines outside [startLine, startLine+removedCount) kept
+// their content; those after the range only shifted index.
+export struct ChangeSet {
+    startLine: int = 0;
+    removedCount: int = 0;
+    insertedCount: int = 0;
+    // The text that replaced the range, and what was there before, so a
+    // consumer that speaks ranges (LSP didChange, a highlighter) can
+    // forward the edit without re-reading the document.
+    newText: str = "";
+    // Byte offsets of the replaced span, for consumers that address text
+    // by offset rather than by line.
+    //
+    // NOT filled in by default: computing them is O(lines) (every
+    // preceding line's length has to be summed), which would put a
+    // document-sized cost on every keystroke for information no current
+    // consumer reads. Call Document.offsetOf() explicitly if you need it.
+    startOffset: int = -1;
+    removedLength: int = -1;
+}
+
+export type ChangeListener = (change: ChangeSet) => void;
+
+export struct Document {
+    // `mut` so `lines[i].insert(...)` edits in place rather than
+    // producing a copy. The array itself is only ever inserted into or
+    // removed from -- never rebuilt.
+    lines: mut []String = [];
+
+    // Bumped on every change. A renderer can compare this instead of
+    // diffing content to know whether anything happened at all.
+    version: int = 0;
+
+    _listeners: []ChangeListener = [];
+
+    fn constructor(): mut Document {
+        let doc = Document {};
+        doc.lines.push(String(""));
+        return doc;
+    }
+
+    // Replace the whole document. Used on file load; deliberately the
+    // only operation that is allowed to be O(document).
+    mut fn setText(text: str) {
+        let newLines: mut []String = [];
+        for part in text.split("\n") {
+            newLines.push(String(part));
+        }
+        if newLines.length == 0 {
+            newLines.push(String(""));
+        }
+        let removed = this.lines.length;
+        this.lines = newLines;
+        this.version = this.version + 1;
+        let change = ChangeSet {
+            startLine: 0,
+            removedCount: removed,
+            insertedCount: this.lines.length,
+            newText: text,
+            startOffset: 0,
+            removedLength: 0,
+        };
+        this._notify(change);
+    }
+
+    fn lineCount(): int {
+        return this.lines.length;
+    }
+
+    fn lineLength(index: int): int {
+        if index < 0 || index >= this.lines.length {
+            return 0;
+        }
+        return this.lines[index].length();
+    }
+
+    fn line(index: int): String {
+        return this.lines[clampIndex(index, this.lines.length)];
+    }
+
+    // Read a line as a plain `str`. NOTE: this uses cloneString(), not
+    // the String itself -- interpolating a String (f"{line}") commits its
+    // buffer and makes it permanently immutable, which would break the
+    // next edit to that line.
+    fn lineText(index: int): str {
+        return this.lines[clampIndex(index, this.lines.length)].cloneString();
+    }
+
+    // The whole document as one string.
+    //
+    // Built into a single growing buffer. The obvious
+    // `result = f"{result}{line}"` accumulation is QUADRATIC -- it
+    // reallocates and copies everything accumulated so far for every
+    // line, which measured 6.5 SECONDS on a 2000-line file. Reserving
+    // once and appending makes it linear.
+    //
+    // Still O(document), so it belongs on save and on the initial
+    // highlighter/LSP sync -- never on a per-frame or per-keystroke path.
+    fn text(): str {
+        let total = 0;
+        for line in this.lines {
+            total = total + line.length() + 1;
+        }
+        let buffer = String();
+        buffer.reserve(total);
+        for line, i in this.lines {
+            if i > 0 {
+                buffer.append("\n");
+            }
+            buffer.append(line.cloneString());
+        }
+        return buffer.cloneString();
+    }
+
+    // Byte offset of a (line, column) position, for consumers that
+    // address the document as a flat buffer.
+    fn offsetOf(line: int, column: int): int {
+        let offset = 0;
+        let target = clampIndex(line, this.lines.length);
+        for (let y = 0; y < target; y++) {
+            offset = offset + this.lines[y].length() + 1;
+        }
+        return offset + column;
+    }
+
+    mut fn addChangeListener(listener: ChangeListener) {
+        this._listeners.push(listener);
+    }
+
+    fn _notify(change: ChangeSet) {
+        for listener in this._listeners {
+            listener(change);
+        }
+    }
+
+    // === The single mutation primitive ========================
+    //
+    // Replace everything between `start` and `end` with `text`. This is
+    // what textedit_behavior.Context drives, and it is the only way the
+    // document ever changes.
+    //
+    // Cost is proportional to the edit, not the document:
+    //   - within one line  -> one String.remove + one String.insert
+    //   - spanning N lines -> those N lines, plus array insert/remove
+    //                         for the net line-count delta
+    // Untouched lines are never copied and keep their identity.
+    mut fn replaceRange(start: Vec2i, end: Vec2i, text: str) {
+        let lineCount = this.lines.length;
+        let startY = clampIndex(start.y, lineCount);
+        let endY = clampIndex(end.y, lineCount);
+        let startX = clampInt(start.x, 0, this.lines[startY].length());
+        let endX = clampInt(end.x, 0, this.lines[endY].length());
+
+        let inserted = text.split("\n");
+        let removedCount = endY - startY + 1;
+        let insertedCount = inserted.length;
+
+        if startY == endY && insertedCount == 1 {
+            // The common case by far: typing, backspace, a small replace.
+            // One line, edited in place, nothing else touched.
+            if endX > startX {
+                this.lines[startY].remove(startX, endX - startX);
+            }
+            if text.length > 0 {
+                this.lines[startY].insert(startX, text);
+            }
+        } else {
+            // The tail of the last line survives, appended to whatever
+            // the insertion ends with.
+            let tail = "";
+            let endLineLen = this.lines[endY].length();
+            if endX < endLineLen {
+                tail = this.lines[endY].cloneString().slice(endX, endLineLen);
+            }
+
+            // Truncate the first line at the edit point and append the
+            // first inserted line to it, in place.
+            let firstLen = this.lines[startY].length();
+            if firstLen > startX {
+                this.lines[startY].remove(startX, firstLen - startX);
+            }
+            if inserted[0].length > 0 {
+                this.lines[startY].insert(startX, inserted[0]);
+            }
+
+            // Drop the lines strictly between start and end -- they are
+            // fully covered by the replacement.
+            for (let i = 0; i < removedCount - 1; i++) {
+                this.lines.remove(startY + 1);
+            }
+
+            // Insert the remaining new lines after it.
+            for (let i = 1; i < insertedCount; i++) {
+                let content = inserted[i];
+                if i == insertedCount - 1 {
+                    content = f"{content}{tail}";
+                }
+                this.lines.insert(startY + i, String(content));
+            }
+
+            // A single-line replacement of a multi-line range still has
+            // to re-attach the tail.
+            if insertedCount == 1 && tail.length > 0 {
+                this.lines[startY].append(tail);
+            }
+        }
+
+        this.version = this.version + 1;
+        let change = ChangeSet {
+            startLine: startY,
+            removedCount: removedCount,
+            insertedCount: insertedCount,
+            newText: text,
+        };
+        this._notify(change);
+    }
+}
+
+export fn clampIndex(value: int, length: int): int {
+    if value < 0 { return 0; }
+    if value >= length { return length > 0 ? length - 1 : 0; }
+    return value;
+}
+
+export fn clampInt(value: int, low: int, high: int): int {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}

@@ -5,6 +5,17 @@ struct HighlightCommand {
 
 struct HighlightResult {
     tokens: []Token;
+    // The line range `tokens` covers. An incremental ("change") reply
+    // only carries the lines whose highlighting actually changed, so a
+    // consumer must REPLACE that range in its cache and keep the rest --
+    // see codeui.hz's mergeTokens.
+    firstLine: int = 0;
+    lastLine: int = 0;
+    // Total line count the engine now believes the document has, so a
+    // consumer can drop cached tokens for lines that no longer exist.
+    lineCount: int = 0;
+    // False for a full-document parse (the whole cache is replaced).
+    incremental: bool = false;
 }
 
 struct Token {
@@ -18,11 +29,23 @@ struct HighlightRequest {
     id: int;
     method: str;
     fileContent?: str;
+    // Incremental ("open"/"change") fields -- see the engine's protocol
+    // in codeeditor/syntax-engine/syntax-engine.ts.
+    uri?: str;
+    startLine?: int;
+    removedCount?: int;
+    newLines?: []str;
 }
 
 struct ResultObject {
     tokens?: []Token;
     initialized?: bool;
+    // The line range these tokens cover. A "change" reply only carries
+    // tokens for the lines whose highlighting actually changed, so the
+    // client must MERGE them into its cache rather than replacing it.
+    firstLine?: int;
+    lastLine?: int;
+    lineCount?: int;
 }
 
 struct ErrorObject {
@@ -92,6 +115,49 @@ struct HighlightEngine {
                 fmt.println(f"Syntax Highlight stderr: {stderrOutput}");
             }
         }
+    }
+
+    // Full parse, remembered under `uri` so later edits can be
+    // incremental against it. Send this once when a file is opened.
+    fn sendOpenDocument(uri: str, fileContent: str) {
+        if this.dead {
+            return;
+        }
+        let request = json.stringify(HighlightRequest {
+            id: 1,
+            method: "open",
+            uri: uri,
+            fileContent: fileContent,
+        });
+        this.highlightProcess.writeStdin("Content-Length: ");
+        this.highlightProcess.writeStdin(f"{request.length}");
+        this.highlightProcess.writeStdin("\r\n\r\n");
+        this.highlightProcess.writeStdin(request);
+    }
+
+    // Incremental edit: `removedCount` lines at `startLine` were replaced
+    // by `newLines`. The engine retokenizes from there and stops as soon
+    // as the rule stack reconverges, so the reply usually covers only a
+    // couple of lines -- 0.4ms instead of 24ms on a 5000-line file.
+    //
+    // This mirrors text_document.ChangeSet exactly, which is what makes
+    // the document model's change notifications directly forwardable.
+    fn sendDocumentChange(uri: str, startLine: int, removedCount: int, newLines: []str) {
+        if this.dead {
+            return;
+        }
+        let request = json.stringify(HighlightRequest {
+            id: 1,
+            method: "change",
+            uri: uri,
+            startLine: startLine,
+            removedCount: removedCount,
+            newLines: newLines,
+        });
+        this.highlightProcess.writeStdin("Content-Length: ");
+        this.highlightProcess.writeStdin(f"{request.length}");
+        this.highlightProcess.writeStdin("\r\n\r\n");
+        this.highlightProcess.writeStdin(request);
     }
 
     fn sendHighlightRequest(fileContent: str) {
@@ -174,6 +240,16 @@ struct HighlightEngine {
                 };
                 if (j.result.tokens) {
                     r.tokens = j.result.tokens;
+                }
+                if (j.result.firstLine) {
+                    r.firstLine = j.result.firstLine;
+                    r.incremental = true;
+                }
+                if (j.result.lastLine) {
+                    r.lastLine = j.result.lastLine;
+                }
+                if (j.result.lineCount) {
+                    r.lineCount = j.result.lineCount;
                 }
                 return r;
             }
