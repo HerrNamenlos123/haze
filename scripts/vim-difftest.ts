@@ -238,7 +238,11 @@ function compare(cases: Case[], oracle: any, haze: any): Mismatch[] {
     // the usual source of paste bugs.
     const oreg = os.registers?.unnamed;
     if (oreg && (oreg.lines?.length ?? 0) > 0) {
-      const okind = oreg.kind === "linewise" ? "linewise" : "charwise";
+      // The oracle already normalises regtype to charwise/linewise/
+      // blockwise; pass it through rather than collapsing everything
+      // that is not linewise into "charwise" (which never matched a
+      // blockwise yank).
+      const okind = oreg.kind;
       if (
         JSON.stringify(oreg.lines) !== JSON.stringify(hs.registerLines) ||
         okind !== hs.registerKind

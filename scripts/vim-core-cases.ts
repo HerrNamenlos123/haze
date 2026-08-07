@@ -46,8 +46,10 @@ const CORE_KEYS = [
   "fo", "Fo", "to", "To", "fo;", "fo,", "2fo",
   // paragraph
   "{", "}",
-  // select (visual) + line select
+  // select (visual) + line select + block select
   "v", "V", "vl", "vw", "vj", "Vj", "vlo", "viw", "vaw",
+  "Vk", "Vjd", "Vjy", "VjD", "Vj>", "Vj<", "VyjP", "Vp",
+  "<C-v>", "<C-v>jl", "<C-v>jld", "<C-v>jly", "<C-v>jjl", "<C-v>l", "<C-v>jd",
   // operators over motions
   "dw", "dW", "de", "db", "d$", "d0", "dj", "dk", "diw", "daw", "di(", 'di"',
   "yw", "ye", "yiw", "yaw", "y$", "yy", "2yy",
