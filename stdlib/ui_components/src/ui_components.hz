@@ -854,6 +854,27 @@ export opaque struct UIContext {
         return this._timeNow;
     }
 
+    // Whether a mouse button is held RIGHT NOW, independent of which
+    // element the cursor happens to be over.
+    //
+    // This is what makes browser-style pointer capture possible: once a
+    // drag has started, the dragging element keeps receiving updates from
+    // `mousePos` for as long as the button is down -- even when the
+    // cursor has moved off the element, or outside the OS window
+    // entirely. Per-element onPointerMove cannot do that, because it only
+    // fires while the cursor is actually over that element.
+    fn leftMouseHeld(): bool {
+        return this._leftHeld;
+    }
+
+    fn middleMouseHeld(): bool {
+        return this._middleHeld;
+    }
+
+    fn rightMouseHeld(): bool {
+        return this._rightHeld;
+    }
+
     // Finds whichever font family/size is currently in effect at this exact
     // point in the tree, by walking the div-ancestor chain -- renderStack,
     // innermost (top) first -- the same way ui_layout's render-time cascade

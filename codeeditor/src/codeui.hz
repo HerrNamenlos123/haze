@@ -404,6 +404,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // like a browser text area (and like vim's own mouse support).
         let mouseSelecting = rx.reactive<bool>(false);
 
+        // Top edge of the text area in window space, used to convert a
+        // global pointer position into a local one.
+        let editorOriginY = (): real => {
+            let editorEl = rx.get(editorRef);
+            if editorEl {
+                let pos = editorEl.position();
+                if pos {
+                    return pos.y;
+                }
+            }
+            return 0.0;
+        };
+
         // Pointer position (window space) -> document (column, line).
         // Rounds to the NEAREST character boundary horizontally, like a
         // browser: clicking the right half of a glyph puts the caret
@@ -720,6 +733,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // chrome's behavior, and what vim does with the mouse
                     // too (a drag puts vim into visual mode).
                     onPointerDown: (event: ui_components.PointerEvent) => {
+                        // A press that started on the scrollbar is a
+                        // scroll gesture, not a text selection.
+                        if scroll.isDragging() {
+                            return;
+                        }
                         let target = documentPositionAt(event.pos);
                         mouseSelecting := true;
                         if rx.get(vimOn) {
@@ -733,30 +751,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
                         texteditBehavior.moveTo(target, true, false);
                     },
-                    onPointerMove: (event: ui_components.PointerEvent) => {
-                        if !rx.get(mouseSelecting) {
-                            return;
-                        }
-                        let target = documentPositionAt(event.pos);
-                        if rx.get(vimOn) {
-                            // Dragging in vim selects: enter visual mode on
-                            // the first movement, then extend.
-                            let mode = rx.get(texteditBehavior.mode);
-                            if !textedit_behavior.modeIsVisual(mode) {
-                                texteditBehavior.setSelectionAnchor(texteditBehavior.cursor());
-                                texteditBehavior.setMode(textedit_behavior.Mode.Visual);
-                            }
-                            texteditBehavior.moveTo(target, true, true);
-                        } else {
-                            texteditBehavior.moveTo(target, true, true);
-                        }
-                    },
-                    onPointerUp: (event: ui_components.PointerEvent) => {
-                        // Ending a drag also settles the caret, which is
-                        // what keeps a click-drag-release selection stable.
-                        mouseSelecting := false;
-                        texteditBehavior.moveTo(documentPositionAt(event.pos), true, rx.get(mouseSelecting));
-                    },
+                    // Dragging and releasing are handled by the pointer
+                    // capture pump in the render pass, not here: element
+                    // events stop firing once the cursor leaves the
+                    // element, which would strand a selection (or a
+                    // scrollbar drag) half-finished.
                     onTextInput: (event: ui_components.TextInputEvent) => {
                         // With Vim active, printable characters are
                         // commands in normal/visual mode and literal text
@@ -865,6 +864,55 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         }
                     }
                     scroll.clampToBounds();
+
+                    // ── Pointer capture ──────────────────────────────
+                    //
+                    // Browsers capture the pointer when a drag starts, so
+                    // the dragged control keeps tracking the mouse even
+                    // once the cursor leaves it -- off the scrollbar, off
+                    // the window, anywhere. Element-scoped onPointerMove
+                    // cannot do that: it only fires while the cursor is
+                    // actually over the element, which is why dragging the
+                    // 10px-wide bar used to stop the instant the mouse
+                    // slipped sideways.
+                    //
+                    // So an in-progress drag is driven here instead, from
+                    // the global mouse position and button state, which
+                    // are polled every frame regardless of what is under
+                    // the cursor.
+                    let leftDown = ui.leftMouseHeld();
+
+                    if scroll.isDragging() {
+                        if leftDown {
+                            scroll.updateDrag(ui.mousePos.y - editorOriginY());
+                        } else {
+                            // Released -- possibly outside the window,
+                            // where no onPointerUp will ever arrive.
+                            scroll.endDrag();
+                            scroll.clampToBounds();
+                        }
+                    }
+
+                    // Text selection follows the same rule: keep extending
+                    // while the button is held, and end the moment it is
+                    // released, wherever that happens.
+                    if rx.get(mouseSelecting) {
+                        if leftDown {
+                            // In vim, dragging IS a visual selection, so
+                            // the first movement enters visual mode.
+                            if rx.get(vimOn) {
+                                let dragMode = rx.get(texteditBehavior.mode);
+                                if !textedit_behavior.modeIsVisual(dragMode) {
+                                    texteditBehavior.setSelectionAnchor(texteditBehavior.cursor());
+                                    texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                                }
+                            }
+                            texteditBehavior.moveTo(
+                                documentPositionAt(ui.mousePos), true, true);
+                        } else {
+                            mouseSelecting := false;
+                        }
+                    }
 
                     // Apply any scroll the engine asked for (vim's zz/zt/zb
                     // arrive as intents because the engine has no idea how
@@ -1027,30 +1075,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.bg(scroll.style.trackColor),
                             ],
                             onPointerDown: (event: ui_components.PointerEvent) => {
-                                let editorEl = rx.get(editorRef);
-                                let originY = 0.0;
-                                if editorEl {
-                                    let pos = editorEl.position();
-                                    if pos { originY = pos.y; }
-                                }
-                                scroll.beginDragY(event.pos.y - originY);
+                                // Stop this reaching the editor underneath,
+                                // which would otherwise start a text
+                                // selection every time you grab the bar.
+                                event.stopPropagation();
+                                scroll.beginDragY(event.pos.y - editorOriginY());
                             },
-                            onPointerMove: (event: ui_components.PointerEvent) => {
-                                if scroll.isDragging() {
-                                    let editorEl = rx.get(editorRef);
-                                    let originY = 0.0;
-                                    if editorEl {
-                                        let pos = editorEl.position();
-                                        if pos { originY = pos.y; }
-                                    }
-                                    scroll.updateDrag(event.pos.y - originY);
-                                }
-                            },
-                            onPointerUp: (event: ui_components.PointerEvent) => {
-                                scroll.endDrag();
-                                scroll.clampToBounds();
-                                lastEditAt := ui.now();
-                            },
+                            // NOTE: no onPointerMove/onPointerUp here.
+                            // Element events only fire while the cursor is
+                            // over the element, so a drag would die the
+                            // moment you moved off the 10px-wide bar. The
+                            // drag is instead driven from the per-frame
+                            // poll in the render pass (see "pointer
+                            // capture" below), which follows the mouse
+                            // anywhere -- including outside the window.
                         }, () => {
                             ui.div({
                                 id: 0,
