@@ -255,6 +255,17 @@ export opaque struct VueLspBridge {
         return this._lsp.initResponse is not none;
     }
 
+    // Whether hover() will actually produce an answer, i.e. the handshake
+    // finished AND the document has been opened with both servers. Callers
+    // that show hover UI need this to tell "there is genuinely nothing at
+    // this position" apart from "the language server isn't up yet" -- the
+    // two look identical from hover()'s callback, which simply never fires
+    // in the second case. Reactive, so a computed reading this re-runs the
+    // moment the servers come up.
+    fn hoverAvailable(): bool {
+        return rx.get(this._documentReady);
+    }
+
     // Queues `filepath` to be opened with both vue-language-server and our
     // tsserver process. Safe to call every frame with the same arguments
     // (e.g. from a reactive computed with no readiness guard of its own)
