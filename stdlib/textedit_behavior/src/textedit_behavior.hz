@@ -264,7 +264,18 @@ export struct Context {
     _undoStack: []UndoEntry = [];
     _redoStack: []UndoEntry = [];
     _txDepth: int = 0;
-    _txPending: UndoEntry | none = none;
+    // The undo entry being accumulated by the transaction in progress.
+    // `_txOpen` says whether anything has actually been edited yet, so a
+    // transaction that changes nothing leaves no undo step behind.
+    _txEntry: UndoEntry = {};
+    _txOpen: bool = false;
+    _txCursorBefore: Vec2i = {};
+    // Depth of an "undo group": everything typed between
+    // beginUndoGroup()/endUndoGroup() collapses into ONE undo step, even
+    // though each keystroke is its own transaction. Vim works the same
+    // way -- a whole insert session (`ihello<Esc>`) undoes at once, not
+    // one character at a time.
+    _undoGroupDepth: int = 0;
 
     fn constructor(args: ContextArgs): mut Context {
         let context = Context {
@@ -334,6 +345,13 @@ export struct Context {
 
     // Install an input behavior (Vim, Helix, ...). Returns the context so
     // wiring can be chained at the call site.
+    // Detach the current behavior, returning the engine to its built-in
+    // textbox handling. The document, the caret and the undo history are
+    // untouched -- switching editing models mid-session keeps your place.
+    mut fn clearBehavior() {
+        this.behavior = none;
+    }
+
     mut fn setBehavior(behavior: Behavior) {
         this.behavior = behavior;
         let attach = behavior.onAttach;
@@ -816,9 +834,39 @@ export struct Context {
     // outermost one, which lets primitives call each other freely
     // without each one creating its own undo step.
 
+    // Open an undo GROUP: nested transactions inside it all accumulate
+    // into a single undo entry, which is only pushed when the group ends.
+    // A behavior wraps an insert session in this so the whole session
+    // undoes as a unit.
+    mut fn beginUndoGroup() {
+        if this._undoGroupDepth == 0 {
+            this._txCursorBefore = this._cursorPos();
+            this._txOpen = false;
+        }
+        this._undoGroupDepth = this._undoGroupDepth + 1;
+    }
+
+    mut fn endUndoGroup() {
+        if this._undoGroupDepth == 0 {
+            return;
+        }
+        this._undoGroupDepth = this._undoGroupDepth - 1;
+        if this._undoGroupDepth > 0 {
+            return;
+        }
+        if !this._txOpen {
+            return;
+        }
+        this._txOpen = false;
+        this._txEntry.cursorAfter = this._cursorPos();
+        this._undoStack.push(this._txEntry);
+        this._redoStack = [];
+    }
+
     mut fn beginTransaction() {
-        if this._txDepth == 0 {
-            this._txPending = this._snapshot();
+        if this._txDepth == 0 && this._undoGroupDepth == 0 {
+            this._txOpen = false;
+            this._txCursorBefore = this._cursorPos();
         }
         this._txDepth = this._txDepth + 1;
     }
@@ -831,16 +879,106 @@ export struct Context {
         if this._txDepth > 0 {
             return;
         }
-        let pending = this._txPending;
-        this._txPending = none;
-        if !pending {
+        // Inside an undo group the entry stays open until the group ends.
+        if this._undoGroupDepth > 0 {
             return;
         }
-        // Nothing actually changed -> don't create a dead undo step.
-        if this._documentText() == pending.text {
+        if !this._txOpen {
+            // Nothing was edited -> no undo step.
             return;
         }
-        this._undoStack.push(pending);
+        this._txOpen = false;
+        this._txEntry.cursorAfter = this._cursorPos();
+        this._undoStack.push(this._txEntry);
+        this._redoStack = [];
+    }
+
+    // Record what a pending edit is about to overwrite. Called by
+    // _applyReplace BEFORE the host mutates anything, so the "before"
+    // lines are still readable through getLine.
+    //
+    // Within one transaction the recorded range only ever GROWS: a
+    // compound edit (delete selection, then insert) saves the union of
+    // the lines it touched, which is exactly what neovim's u_save does
+    // when several changes land in one undo block.
+    mut fn _recordEdit(startLine: int, endLine: int, insertedLines: int) {
+        if !this._txOpen {
+            let saved: []str = [];
+            for (let y = startLine; y <= endLine; y++) {
+                saved.push(this.args.getLine(y).cloneString());
+            }
+            let before = this._txCursorBefore;
+            let beforeY = clamp<int>(before.y, 0, this.args.getLineCount() - 1);
+            let clampedBefore: Vec2i = {
+                x: clamp<int>(before.x, 0, this.args.getLineLength(beforeY)),
+                y: beforeY,
+            };
+            this._txEntry = UndoEntry {
+                startLine: startLine,
+                removedCount: endLine - startLine + 1,
+                removedLines: saved,
+                insertedCount: insertedLines,
+                cursorBefore: clampedBefore,
+            };
+            this._txOpen = true;
+            return;
+        }
+
+        // Extend an already-open entry to cover this edit too.
+        let entry = this._txEntry;
+        let coveredEnd = entry.startLine + entry.insertedCount - 1;
+        if startLine < entry.startLine {
+            let prefix: []str = [];
+            for (let y = startLine; y < entry.startLine; y++) {
+                prefix.push(this.args.getLine(y).cloneString());
+            }
+            for old in entry.removedLines {
+                prefix.push(old);
+            }
+            entry.removedLines = prefix;
+            entry.removedCount = entry.removedCount + (entry.startLine - startLine);
+            entry.startLine = startLine;
+        }
+        if endLine > coveredEnd {
+            for (let y = coveredEnd + 1; y <= endLine; y++) {
+                entry.removedLines.push(this.args.getLine(y).cloneString());
+                entry.removedCount = entry.removedCount + 1;
+            }
+        }
+        let newCovered = endLine > coveredEnd ? endLine : coveredEnd;
+        entry.insertedCount = newCovered - entry.startLine + 1
+                              + (insertedLines - (endLine - startLine + 1));
+        this._txEntry = entry;
+    }
+
+    // Record an undo step that changes nothing. Some commands are no-ops
+    // on the text but still consume an undo step in vim (`x` on an empty
+    // line); without this the undo stack drifts out of step.
+    // Mark the in-progress undo entry as a whole-line replacement, so
+    // undoing it lands the caret at column 0 (see UndoEntry.linewise).
+    mut fn markUndoEntryLinewise() {
+        if this._txOpen {
+            this._txEntry.linewise = true;
+            return;
+        }
+        // The transaction may already have been committed by the time the
+        // behavior knows the edit was linewise; mark the entry it pushed.
+        if this._undoStack.length > 0 {
+            this._undoStack[this._undoStack.length - 1].linewise = true;
+        }
+    }
+
+    mut fn pushEmptyUndoStep() {
+        let pos = this._cursorPos();
+        let entry = UndoEntry {
+            startLine: pos.y,
+            removedCount: 1,
+            removedLines: [this.args.getLine(pos.y).cloneString()],
+            insertedCount: 1,
+            cursorBefore: pos,
+            cursorAfter: pos,
+        };
+        this._undoStack.push(entry);
         this._redoStack = [];
     }
 
@@ -850,8 +988,16 @@ export struct Context {
         }
         let entry = this._undoStack[this._undoStack.length - 1];
         this._undoStack.pop();
-        this._redoStack.push(this._snapshot());
-        this._restore(entry);
+        this._redoStack.push(this._applyUndoEntry(entry));
+        // Clamp against the line as it is AFTER the restore: a delete
+        // that emptied the buffer leaves nowhere for a saved column to
+        // land, and vim reports column 0 there.
+        let landing: Vec2i = {
+            x: entry.linewise ? 0 : entry.cursorBefore.x,
+            y: entry.cursorBefore.y,
+        };
+        this._moveTo(landing, true, false);
+        this.clampToLine();
     }
 
     mut fn redo() {
@@ -860,8 +1006,62 @@ export struct Context {
         }
         let entry = this._redoStack[this._redoStack.length - 1];
         this._redoStack.pop();
-        this._undoStack.push(this._snapshot());
-        this._restore(entry);
+        this._undoStack.push(this._applyUndoEntry(entry));
+        this._moveTo(entry.cursorAfter, true, false);
+        this.clampToLine();
+    }
+
+    // Swap the lines currently occupying an entry's range for the ones it
+    // saved, and return the inverse entry (what was just replaced), which
+    // is what makes undo and redo the same operation in both directions.
+    mut fn _applyUndoEntry(entry: UndoEntry): UndoEntry {
+        let lineCount = this.args.getLineCount();
+        let firstLine = clamp<int>(entry.startLine, 0, lineCount - 1);
+        let lastLine = clamp<int>(entry.startLine + entry.insertedCount - 1, firstLine, lineCount - 1);
+
+        let current: []str = [];
+        for (let y = firstLine; y <= lastLine; y++) {
+            current.push(this.args.getLine(y).cloneString());
+        }
+
+        let replacement = "";
+        for line, i in entry.removedLines {
+            if i > 0 {
+                replacement = f"{replacement}\n";
+            }
+            replacement = f"{replacement}{line}";
+        }
+
+        let start: Vec2i = { x: 0, y: firstLine };
+        let end: Vec2i = { x: this.args.getLineLength(lastLine), y: lastLine };
+        this.args.replaceRange(start, end, String(replacement));
+
+        let inverse = UndoEntry {
+            startLine: firstLine,
+            removedCount: current.length,
+            removedLines: current,
+            insertedCount: entry.removedLines.length,
+            cursorBefore: entry.cursorAfter,
+            cursorAfter: entry.cursorBefore,
+        };
+        return inverse;
+    }
+
+    // Re-clamp the caret after an undo/redo changed the line under it.
+    //
+    // The saved column is clamped against the line's length at the time
+    // of the EDIT, not after the restore: a delete that emptied the line
+    // leaves nowhere for column 3 to land, and vim reports column 0 --
+    // so the clamp has to happen before the old text comes back.
+    mut fn clampToLine() {
+        let pos = this._cursorPos();
+        let maxY = this.args.getLineCount() - 1;
+        let y = clamp<int>(pos.y, 0, maxY);
+        let x = clamp<int>(pos.x, 0, this.maxColumn(y));
+        if x != pos.x || y != pos.y {
+            let target: Vec2i = { x: x, y: y };
+            this._moveTo(target, true, false);
+        }
     }
 
     // === Selection queries, for rendering =========================
@@ -1027,6 +1227,17 @@ export struct Context {
         if standalone {
             this.beginTransaction();
         }
+        // Save what this edit is about to overwrite, while the old lines
+        // are still readable, then perform it. How many lines the new
+        // text occupies decides the range undo has to take back out.
+        let insertedLines = 1;
+        let raw = text.cloneString();
+        for (let i = 0; i < raw.length; i++) {
+            if raw[i] == b"\n" {
+                insertedLines = insertedLines + 1;
+            }
+        }
+        this._recordEdit(start.y, end.y, insertedLines);
         this.args.replaceRange(start, end, text);
         if standalone {
             this.endTransaction();
@@ -1095,7 +1306,7 @@ export struct Context {
         let startLen = this.args.getLineLength(start.y);
         let result = firstLine.cloneString().slice(clamp<int>(start.x, 0, startLen), startLen);
         for (let y = start.y + 1; y < end.y; y++) {
-            result = f"{result}\n{this.args.getLine(y)}";
+            result = f"{result}\n{this.args.getLine(y).cloneString()}";
         }
         let lastLine = this.args.getLine(end.y);
         let endLen = this.args.getLineLength(end.y);
@@ -1108,7 +1319,7 @@ export struct Context {
     fn _getLinewiseText(startY: int, endY: int): String {
         let result = "";
         for (let y = startY; y <= endY; y++) {
-            result = f"{result}{this.args.getLine(y)}\n";
+            result = f"{result}{this.args.getLine(y).cloneString()}\n";
         }
         return String(result);
     }
@@ -1120,25 +1331,9 @@ export struct Context {
             if y > 0 {
                 result = f"{result}\n";
             }
-            result = f"{result}{this.args.getLine(y)}";
+            result = f"{result}{this.args.getLine(y).cloneString()}";
         }
         return result;
-    }
-
-    fn _snapshot(): UndoEntry {
-        let pos = this._cursorPos();
-        let entry: UndoEntry = { text: this._documentText(), cursor: pos };
-        return entry;
-    }
-
-    // Restoring is a single whole-document replace so it goes through the
-    // host's one mutation primitive like every other edit.
-    mut fn _restore(entry: UndoEntry) {
-        let lastLine = this.args.getLineCount() - 1;
-        let start: Vec2i = { x: 0, y: 0 };
-        let end: Vec2i = { x: this.args.getLineLength(lastLine), y: lastLine };
-        this.args.replaceRange(start, end, String(entry.text));
-        this._moveTo(entry.cursor, true, false);
     }
 
     // Single point of truth for placing the cursor: clamps to valid
@@ -1311,9 +1506,37 @@ export struct Context {
     }
 }
 
-// A whole-document undo snapshot. See Context._undoStack for why this is
-// a snapshot rather than a diff.
+// One undo step, modelled on neovim's `u_save(lo, hi)`.
+//
+// Neovim does not snapshot the buffer; it records, for each change, the
+// LINE RANGE that is about to be replaced together with the lines that
+// were there before. Undoing swaps the current contents of that range
+// back out for the saved ones (which is itself recorded, so redo is the
+// same operation in reverse).
+//
+// That model is what keeps the engine storage-agnostic: an entry holds
+// only line strings the host handed over via `getLine`, plus indices --
+// never a copy of the document, and no assumption about how the host
+// stores it (array of lines, rope, piece table, ...). It is also O(edit)
+// rather than O(document), so typing a character in a 100k-line file
+// costs the same as in a 10-line one.
 export struct UndoEntry {
-    text: str = "";
-    cursor: Vec2i = {};
+    // The range replaced, as line indices: [startLine, startLine+removedCount).
+    startLine: int = 0;
+    // How many lines the edit removed from that position...
+    removedCount: int = 0;
+    // ...and the text of those lines, to put back on undo.
+    removedLines: []str = [];
+    // How many lines the edit put there instead (needed to find the
+    // range to take back out when undoing).
+    insertedCount: int = 0;
+    // Caret position before the edit, restored along with the text.
+    cursorBefore: Vec2i = {};
+    // Caret position after the edit, restored on redo.
+    cursorAfter: Vec2i = {};
+    // True when the edit replaced WHOLE lines (a linewise delete/change).
+    // Undoing one of those puts the caret at column 0 of the first
+    // restored line, which is what vim reports -- the saved column
+    // belonged to text that no longer exists in the same shape.
+    linewise: bool = false;
 }

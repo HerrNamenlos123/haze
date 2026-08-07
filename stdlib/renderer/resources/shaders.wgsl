@@ -14,6 +14,13 @@ struct VSOut {
     @location(11) _type: u32,
     @location(12) instSize: vec2<f32>,
     @location(13) uv: vec2<f32>,
+    // Screen-space (framebuffer pixel) scissor box for this instance:
+    // (minX, minY, maxX, maxY). A zero-area box means "no clipping".
+    // Carried per-instance rather than set as a render-pass scissor so
+    // that arbitrarily many differently-clipped elements still batch
+    // into ONE draw call -- which is what keeps a scroll container from
+    // costing a pass switch per child.
+    @location(14) clipRect: vec4<f32>,
 };
 
 struct Globals {
@@ -76,8 +83,10 @@ fn vs_main(
     @location(9) uvMax: vec2<f32>,
     @location(10) z: f32,
     @location(11) transformIndex: u32,
+    @location(12) clipRect: vec4<f32>,
 ) -> VSOut {
     var o: VSOut;
+    o.clipRect = clipRect;
 
     if (_type == 0u) { // Filled Rounded Rectangle
         let localPos = quadPos * instSize + instPos;
@@ -272,6 +281,16 @@ fn process_textured_quad(in: VSOut) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
+    // Scissor test. `in.pos` is the fragment's framebuffer position, so
+    // this clips correctly no matter how the instance was transformed.
+    // A degenerate (zero-area) rect disables clipping entirely.
+    if (in.clipRect.z > in.clipRect.x && in.clipRect.w > in.clipRect.y) {
+        if (in.pos.x < in.clipRect.x || in.pos.x > in.clipRect.z ||
+            in.pos.y < in.clipRect.y || in.pos.y > in.clipRect.w) {
+            discard;
+        }
+    }
+
     if (in._type == 0u) { // Filled Rounded Rectangle
         return process_rounded_rect_fill(in);
     }

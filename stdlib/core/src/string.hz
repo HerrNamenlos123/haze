@@ -301,8 +301,12 @@ export struct StringByteRef {
 
 namespace fmt {
     export fn format_to(writer: mut StringWriter, value: String, args: FormatArgs) {
-        let bytes = value.bytes();
-        bytes.commit();
-        format_to(writer, bytes.string(), args);
+        // Read a COPY rather than committing. Committing would freeze the
+        // String's buffer permanently, so merely interpolating a String
+        // (f"{line}") would make every later edit to it panic with
+        // "mutation was attempted on a ByteBuffer that was already
+        // committed". Formatting must not mutate what it formats -- a
+        // document line has to stay editable after being rendered.
+        format_to(writer, value.cloneString(), args);
     }
 }

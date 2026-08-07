@@ -57,6 +57,11 @@ export inline struct PrimitiveInstance {
                              // transform + viewProj + GPU depth test -- no manual depth curve
     transformIndex: u32;    // index into the canvas's transform pool (see `transforms` storage
                              // buffer); selects this instance's own translate/scale/rotate/shear
+    // Screen-space scissor box (minX, minY, maxX, maxY) in framebuffer
+    // pixels. Fragments outside it are discarded. A zero-area box (the
+    // default) means no clipping. Per-instance rather than a render-pass
+    // scissor so differently-clipped elements still batch into one draw.
+    clipRect: Vec4f = { x: 0, y: 0, z: 0, w: 0 };
 };
 
 inline struct QuadVertex {
@@ -402,6 +407,7 @@ export opaque struct Context {
                 { shaderLocation: 9, offset: 92, format: wgpu.VertexFormat.Float32x2 }, // uvMax
                 { shaderLocation: 10, offset: 100, format: wgpu.VertexFormat.Float32 },  // z
                 { shaderLocation: 11, offset: 104, format: wgpu.VertexFormat.Uint32 },   // transformIndex
+                { shaderLocation: 12, offset: 108, format: wgpu.VertexFormat.Float32x4 }, // clipRect (minX,minY,maxX,maxY)
             },
         };
 
@@ -1411,6 +1417,16 @@ export opaque struct Renderer {
     canvas: mut Canvas;
     frame: mut Frame;
     primitives: []PrimitiveInstance = [];
+
+    // Stack of screen-space scissor boxes. Every primitive emitted while
+    // the stack is non-empty carries its top entry and is clipped to it
+    // on the GPU. Pushing intersects with the current box, so nested
+    // clips compose the way nested overflow:hidden containers do.
+    //
+    // This is per-instance data rather than a render-pass scissor
+    // precisely so that clipping costs nothing in draw calls: a
+    // scrolling list with a hundred clipped children is still one batch.
+    _clipStack: []Vec4f = [];
     meshVertices: []MeshVertex = [];
     textureRuns: []TextureRun = [];
     // This frame's transform pool, shared by every draw call this Renderer
@@ -1459,6 +1475,43 @@ export opaque struct Renderer {
         return newIndex as u32;
     }
 
+    // Restrict subsequent drawing to `rect` (screen-space pixels),
+    // intersected with whatever clip is already active. Always pair with
+    // popClip().
+    mut fn pushClip(pos: Vec2, size: Vec2) {
+        let minX = pos.x as f32;
+        let minY = pos.y as f32;
+        let maxX = (pos.x + size.x) as f32;
+        let maxY = (pos.y + size.y) as f32;
+        if this._clipStack.length > 0 {
+            let parent = this._clipStack[this._clipStack.length - 1];
+            if parent.z > parent.x && parent.w > parent.y {
+                minX = minX > parent.x ? minX : parent.x;
+                minY = minY > parent.y ? minY : parent.y;
+                maxX = maxX < parent.z ? maxX : parent.z;
+                maxY = maxY < parent.w ? maxY : parent.w;
+            }
+        }
+        let box: Vec4f = { x: minX, y: minY, z: maxX, w: maxY };
+        this._clipStack.push(box);
+    }
+
+    mut fn popClip() {
+        if this._clipStack.length > 0 {
+            this._clipStack.pop();
+        }
+    }
+
+    // The scissor box every primitive should carry right now. A zero-area
+    // box means "unclipped", which is what the shader treats as disabled.
+    fn currentClip(): Vec4f {
+        if this._clipStack.length > 0 {
+            return this._clipStack[this._clipStack.length - 1];
+        }
+        let unclipped: Vec4f = { x: 0, y: 0, z: 0, w: 0 };
+        return unclipped;
+    }
+
     fn drawRect(opts: RectOpts) {
         let z = zIndexToLocalZ(opts.zIndex);
         let transformIndex = this.recordTransform(resolveTransform(opts.transform));
@@ -1487,6 +1540,7 @@ export opaque struct Renderer {
                 uvMax: { x: 0, y: 0 },
                 z: z,
                 transformIndex: transformIndex,
+                clipRect: this.currentClip(),
             });
         }
 
@@ -1522,6 +1576,7 @@ export opaque struct Renderer {
                 uvMax: { x: 0, y: 0 },
                 z: z,
                 transformIndex: transformIndex,
+                clipRect: this.currentClip(),
             });
         }
     }
@@ -1598,6 +1653,7 @@ export opaque struct Renderer {
                 uvMax: { x: glyph.s1, y: glyph.t1 },
                 z: z,
                 transformIndex: transformIndex,
+                clipRect: this.currentClip(),
             });
         }
 
@@ -1638,6 +1694,7 @@ export opaque struct Renderer {
             uvMax: { x: 1, y: 1 },
             z: zIndexToLocalZ(opts.zIndex),
             transformIndex: transformIndex,
+            clipRect: this.currentClip(),
         });
 
         this.recordTextureRun(start, 1, opts.texture);

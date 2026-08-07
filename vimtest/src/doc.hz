@@ -1,90 +1,20 @@
 
-// A plain in-memory document plus the wiring that turns it into a
-// textedit_behavior.Context. This is the same host contract the real
-// codeeditor implements (`replaceRange` + line accessors), so whatever
-// the fuzzer validates here is the behavior the editor actually gets.
+// Wires the shared `text_document.Document` into the textedit engine.
 //
-// The lines live in a struct rather than in a local array because Haze
-// closures capture arrays by value: two closures capturing the same
-// local would each see their own copy, and edits would silently not be
-// visible to the engine's subsequent reads.
+// The harness deliberately uses the SAME document model the real editor
+// uses, so the differential suite exercises the production data
+// structure (in-place line mutation, array insert/remove) rather than a
+// simplified stand-in that could hide a bug.
 
-export struct Doc {
-    lines: []String = [];
-
-    fn constructor(text: str): mut Doc {
-        let doc = Doc {};
-        doc.setText(text);
-        return doc;
-    }
-
-    mut fn setText(text: str) {
-        let newLines: []String = [];
-        for part in text.split("\n") {
-            newLines.push(String(part));
-        }
-        if newLines.length == 0 {
-            newLines.push(String(""));
-        }
-        this.lines = newLines;
-    }
-
-    fn text(): str {
-        let result = "";
-        for line, i in this.lines {
-            if i > 0 {
-                result = f"{result}\n";
-            }
-            result = f"{result}{line}";
-        }
-        return result;
-    }
-
-    // The single mutation primitive: replace [start, end) with `text`,
-    // rebuilding the line array. Mirrors codeui.hz's applyReplaceRange.
-    mut fn replaceRange(start: Vec2i, end: Vec2i, text: String) {
-        let startY = clampIdx(start.y, this.lines.length);
-        let endY = clampIdx(end.y, this.lines.length);
-        let startLine = this.lines[startY].cloneString();
-        let endLine = this.lines[endY].cloneString();
-        let before = startLine.slice(0, clampIdx(start.x, startLine.length + 1));
-        let after = endLine.slice(clampIdx(end.x, endLine.length + 1), endLine.length);
-        let inserted = text.cloneString().split("\n");
-
-        let newLines: []String = [];
-        for (let i = 0; i < startY; i++) {
-            newLines.push(this.lines[i]);
-        }
-        if inserted.length == 1 {
-            newLines.push(String(f"{before}{inserted[0]}{after}"));
-        } else {
-            newLines.push(String(f"{before}{inserted[0]}"));
-            for (let i = 1; i < inserted.length - 1; i++) {
-                newLines.push(String(inserted[i]));
-            }
-            newLines.push(String(f"{inserted[inserted.length - 1]}{after}"));
-        }
-        for (let i = endY + 1; i < this.lines.length; i++) {
-            newLines.push(this.lines[i]);
-        }
-        this.lines = newLines;
-    }
-}
-
-export fn clampIdx(value: int, length: int): int {
-    if value < 0 { return 0; }
-    if value >= length { return length > 0 ? length - 1 : 0; }
-    return value;
-}
-
-// Build an engine Context bound to `doc`.
-export fn makeContext(doc: mut Doc): mut textedit_behavior.Context {
+export fn makeContext(doc: mut text_document.Document): mut textedit_behavior.Context {
     let ctx = textedit_behavior.Context({
-        getLineLength: (lineIndex: int) => doc.lines[clampIdx(lineIndex, doc.lines.length)].length(),
-        getLine: (lineIndex: int) => doc.lines[clampIdx(lineIndex, doc.lines.length)],
-        getLineCount: () => doc.lines.length,
+        getLineLength: (lineIndex: int) => doc.lineLength(lineIndex),
+        getLine: (lineIndex: int) => doc.line(lineIndex),
+        getLineCount: () => doc.lineCount(),
         getTimeInSeconds: () => 0.0,
-        replaceRange: (start: Vec2i, end: Vec2i, text: String): void => { doc.replaceRange(start, end, text); },
+        replaceRange: (start: Vec2i, end: Vec2i, text: String): void => {
+            doc.replaceRange(start, end, text.cloneString());
+        },
         initialMode: textedit_behavior.Mode.Normal,
     });
     return ctx;

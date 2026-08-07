@@ -60,6 +60,47 @@
     }                                                                                                                  \
   })
 
+#define HZSTD_ARRAY_INSERT(array, elementType, index, element)                                                         \
+  (void)({                                                                                                             \
+    elementType __hz_temp_element = element;                                                                           \
+    hzstd_dynamic_array_t *__hz_temp_array = array;                                                                    \
+    hzstd_int_t __hz_temp_index = index;                                                                               \
+    if (__hz_temp_index < 0 || __hz_temp_index > (hzstd_int_t)hzstd_dynamic_array_size(__hz_temp_array)) {             \
+      hzstd_panic_fmt("array insert index out of range [%" PRId64 "] with length %" PRId64,                            \
+                      __hz_temp_index,                                                                                 \
+                      hzstd_dynamic_array_size(__hz_temp_array));                                                      \
+    }                                                                                                                  \
+    hzstd_dynamic_array_result_t result =                                                                              \
+        hzstd_dynamic_array_insert(__hz_temp_array, (size_t)__hz_temp_index, &__hz_temp_element);                      \
+    if (result == hzstd_dynamic_array_result_max_array_size) {                                                         \
+      hzstd_panic_fmt("max dynamic array size reached");                                                               \
+    }                                                                                                                  \
+    if (result == hzstd_dynamic_array_result_out_of_memory) {                                                          \
+      hzstd_panic_fmt("out of memory");                                                                                \
+    }                                                                                                                  \
+    if (result != hzstd_dynamic_array_result_ok) {                                                                     \
+      hzstd_unreachable(0);                                                                                            \
+    }                                                                                                                  \
+  })
+
+#define HZSTD_ARRAY_REMOVE(array, elementType, index)                                                                  \
+  ({                                                                                                                   \
+    elementType __hz_temp_element;                                                                                     \
+    hzstd_dynamic_array_t *__hz_temp_array = array;                                                                    \
+    hzstd_int_t __hz_temp_index = index;                                                                               \
+    if (__hz_temp_index < 0 || __hz_temp_index >= (hzstd_int_t)hzstd_dynamic_array_size(__hz_temp_array)) {            \
+      hzstd_panic_fmt("array remove index out of range [%" PRId64 "] with length %" PRId64,                            \
+                      __hz_temp_index,                                                                                 \
+                      hzstd_dynamic_array_size(__hz_temp_array));                                                      \
+    }                                                                                                                  \
+    hzstd_dynamic_array_result_t result =                                                                              \
+        hzstd_dynamic_array_remove(__hz_temp_array, (size_t)__hz_temp_index, &__hz_temp_element);                      \
+    if (result != hzstd_dynamic_array_result_ok) {                                                                     \
+      hzstd_unreachable(0);                                                                                            \
+    }                                                                                                                  \
+    __hz_temp_element;                                                                                                 \
+  })
+
 #define HZSTD_ARRAY_POP(array, elementType)                                                                            \
   ({                                                                                                                   \
     elementType __hz_temp_element;                                                                                     \

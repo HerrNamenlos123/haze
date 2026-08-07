@@ -134,6 +134,8 @@ export struct Vim {
     // True when insert mode was entered via o/O, so a counted repeat
     // opens a new line each time instead of repeating text in place.
     insertOpensLine: bool = false;
+    // Whether an undo group is currently open for the insert session.
+    insertGroupOpen: bool = false;
 
     // `set clipboard=unnamedplus`
     useSystemClipboard: bool = false;
@@ -382,6 +384,11 @@ export struct Vim {
         this.insertOpensLine = false;
         this.insertCount = 1;
         this.insertTyped = "";
+
+        if this.insertGroupOpen {
+            this.ctx.endUndoGroup();
+            this.insertGroupOpen = false;
+        }
 
         let pos = this.ctx.cursor();
         this.ctx.setMode(textedit_behavior.Mode.Normal);
@@ -1160,6 +1167,9 @@ export struct Vim {
             this.ctx.setRegister(text, range.kind);
             let anchorColumn = (linewise && fromVisual) ? this.visualStartColumn : -1;
             this.ctx.deleteRange(range, anchorColumn);
+            if linewise && fromVisual {
+                this.ctx.markUndoEntryLinewise();
+            }
             // Verified against nvim: a linewise delete (from visual OR
             // via `dd`) keeps the caret COLUMN, merely clamped to the
             // line that slid into place -- 'startofline' is off.
@@ -1227,6 +1237,13 @@ export struct Vim {
         let lastY = this.ctx.lineCount() - 1;
         let endY = pos.y + count - 1;
         this.resetPending();
+        // `dd` on a buffer that is already a single EMPTY line does
+        // nothing at all in vim -- it does not even overwrite the
+        // register, so a second `dd` cannot clobber what the first one
+        // yanked.
+        if lastY == 0 && this.ctx.lineLength(0) == 0 {
+            return;
+        }
         if endY > lastY {
             if op == Operator.Change || pos.y >= lastY {
                 return;
@@ -1269,7 +1286,21 @@ export struct Vim {
                 kind: textedit_behavior.RangeKind.Linewise,
             };
         }
+        // Undo should land at the TOP of what it restores, so move the
+        // caret to the selection start before the edit opens its undo
+        // entry (which snapshots the caret as `cursorBefore`).
+        let normalizedTop = this.ctx.normalizeRange(range);
+        // A linewise delete covering the WHOLE buffer leaves a single
+        // empty line, so there is no column to preserve -- vim reports 0.
+        let wholeBuffer = range.kind == textedit_behavior.RangeKind.Linewise
+            && normalizedTop.start.y == 0
+            && normalizedTop.end.y >= this.ctx.lineCount() - 1;
+        let keepColumn = wholeBuffer ? 0 : this.visualStartColumn;
+        let topCorner: Vec2i = { x: keepColumn, y: normalizedTop.start.y };
         this.ctx.setMode(textedit_behavior.Mode.Normal);
+        // moveTo clamps to the line, so a column past the end of the
+        // line the selection started on collapses to a valid one.
+        this.ctx.moveTo(topCorner, true, false);
         this.resetPending();
         this.runOperator(op, range, false, true);
         this.clampCursorToMode();
@@ -1942,6 +1973,10 @@ export struct Vim {
         this.insertCount = count;
         this.insertTyped = "";
         this.insertOpensLine = opensLine;
+        // The whole insert session is ONE undo step, like vim: `ihello`
+        // then <Esc> then `u` restores the line, not just the last "o".
+        this.ctx.beginUndoGroup();
+        this.insertGroupOpen = true;
         this.ctx.setMode(textedit_behavior.Mode.Insert);
     }
 
@@ -1983,6 +2018,11 @@ export struct Vim {
         let pos = this.ctx.cursor();
         let len = this.ctx.lineLength(pos.y);
         if len == 0 {
+            // `x` on an empty line deletes nothing, but vim still records
+            // an undo step for it -- so `xxu` after emptying a line undoes
+            // only the no-op and leaves the line empty. Push an explicit
+            // empty step so the undo stack stays in lockstep with vim's.
+            this.ctx.pushEmptyUndoStep();
             return;
         }
         let endX = clampInt(pos.x + count, 0, len);
