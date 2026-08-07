@@ -914,6 +914,34 @@ export struct Context {
         this._undoGroupDepth = this._undoGroupDepth + 1;
     }
 
+    // True when the entry's saved "before" lines are identical to what is
+    // in the buffer now -- i.e. the transaction edited something and then
+    // put it all back, leaving the text exactly as it started.
+    //
+    // `_txOpen` only says an edit was ATTEMPTED, not that it changed
+    // anything on net. An insert followed by a matching delete (vim's `jk`
+    // chord, where the `j` is shown and then taken back; or typing a
+    // character and immediately backspacing it) trips it while leaving the
+    // document untouched. Pushing that would put a step on the undo stack
+    // that restores nothing but still moves the caret to wherever it was
+    // before the session -- an undo that visibly jumps for no reason.
+    fn _entryIsNoOp(entry: UndoEntry): bool {
+        let lineCount = this.args.getLineCount();
+        let firstLine = clamp<int>(entry.startLine, 0, lineCount - 1);
+        let lastLine = clamp<int>(entry.startLine + entry.insertedCount - 1, firstLine, lineCount - 1);
+        // A differing line COUNT is a real change even if every line that
+        // survived matches (a deleted blank line, say).
+        if entry.removedLines.length != lastLine - firstLine + 1 {
+            return false;
+        }
+        for saved, i in entry.removedLines {
+            if saved != this.args.getLine(firstLine + i).cloneString() {
+                return false;
+            }
+        }
+        return true;
+    }
+
     mut fn endUndoGroup() {
         if this._undoGroupDepth == 0 {
             return;
@@ -926,6 +954,9 @@ export struct Context {
             return;
         }
         this._txOpen = false;
+        if this._entryIsNoOp(this._txEntry) {
+            return;
+        }
         this._txEntry.cursorAfter = this._cursorPos();
         this._undoStack.push(this._txEntry);
         this._redoStack = [];
