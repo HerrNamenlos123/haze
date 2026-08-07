@@ -46,6 +46,33 @@ namespace presets {
         return ui_styling.GapOp { value: computeSize(value) };
     }
 
+    // overflow-hidden / overflow-visible: clip (or don't) content larger
+    // than this element, on both axes. Clipping is painting-only -- a
+    // clipped child still takes up the space it would have, it just stops
+    // being drawn past the edge of this element.
+    export fn overflowHidden(): ui_styling.OverflowOp {
+        return ui_styling.OverflowOp {
+            x: ui_styling.Overflow.Hidden,
+            y: ui_styling.Overflow.Hidden,
+        };
+    }
+
+    export fn overflowVisible(): ui_styling.OverflowOp {
+        return ui_styling.OverflowOp {
+            x: ui_styling.Overflow.Visible,
+            y: ui_styling.Overflow.Visible,
+        };
+    }
+
+    // Single-axis forms -- CSS's overflow-x / overflow-y.
+    export fn overflowX(value: ui_styling.Overflow): ui_styling.OverflowXOp {
+        return ui_styling.OverflowXOp { value: value };
+    }
+
+    export fn overflowY(value: ui_styling.Overflow): ui_styling.OverflowYOp {
+        return ui_styling.OverflowYOp { value: value };
+    }
+
     // w-<number>/h-<number>: fixed pixel size on the Tailwind spacing scale
     // (same scale as p()/gap() above).
     export fn w(value: real): ui_styling.WidthOp {

@@ -117,6 +117,121 @@ void haze_fontstash_layout_text(void* ctx,
   }
 }
 
+/* DPI-aware layout: rasterizes glyphs at `size * scale` (so the bitmap in the
+   atlas has one texel per physical pixel and never gets upsampled) while
+   advancing the pen using the *logical* size's advances, divided back into
+   logical space on the way out.
+
+   The two have to be decoupled because fontstash quantizes independently in
+   each space. Glyph advances are rounded to whole pixels at whatever size is
+   set (fons__getGlyph stores an integer advance, and isize itself is
+   truncated to 1/10px by `(short)(size*10)`), so rounding at 21px and dividing
+   by 1.5 is NOT the same as rounding at 14px -- for JetBrains Mono at size 14
+   the difference is 11% over a single word, which is enough to overlap the
+   next element. Layout/measurement runs in logical space, so the pen has to
+   agree with logical space exactly or text overflows the box that was
+   reserved for it.
+
+   So: pen position and per-glyph advance come from the logical size (matching
+   fonsTextBounds, hence matching Clay's measurement), and only the glyph
+   *image* -- its quad extents and atlas UVs -- comes from the physical size.
+   Each glyph is then centered on its logical advance box, which keeps a
+   monospace grid exactly even and stops fractional per-glyph drift from
+   accumulating along the line. */
+void haze_fontstash_layout_text_scaled(void* ctx,
+                                       hzstd_int_t font,
+                                       float size,
+                                       float scale,
+                                       float x,
+                                       float y,
+                                       hzstd_str_t text,
+                                       hzstd_dynamic_array_t* out)
+{
+  FONScontext* fs = (FONScontext*)ctx;
+
+  if (scale <= 0.0f) {
+    scale = 1.0f;
+  }
+
+  /* Logical pass drives horizontal position: identical to what
+     fonsTextBounds/measureText reports, so the drawn run is exactly as wide
+     as the layout engine reserved. */
+  FONStextIter liter;
+  FONSquad lquad;
+  memset(&lquad, 0, sizeof(lquad));
+
+  fonsSetFont(fs, font);
+  fonsSetSize(fs, size);
+  fonsTextIterInit(fs, &liter, x, y, text.data, text.data + text.length);
+
+  while (fonsTextIterNext(fs, &liter, &lquad)) {
+    /* Advance box this glyph occupies in logical space: fonsTextIterNext
+       leaves `x` at the pen position for this glyph and `nextx` at the pen
+       position for the following one. */
+    float boxX0 = liter.x;
+    float boxX1 = liter.nextx;
+
+    /* Same untouched-quad guard as the unscaled path below -- see its comment
+       for why a zeroed quad has to be skipped rather than drawn. */
+    if (lquad.x0 == 0.0f && lquad.y0 == 0.0f && lquad.x1 == 0.0f && lquad.y1 == 0.0f) {
+      memset(&lquad, 0, sizeof(lquad));
+      continue;
+    }
+
+    /* Physical pass supplies the actual bitmap for this same codepoint. Run a
+       one-glyph iterator at the scaled size over just this glyph's bytes so
+       the atlas entry is baked at physical resolution. */
+    const char* gs = liter.str;
+    const char* ge = liter.next;
+
+    FONStextIter piter;
+    FONSquad pquad;
+    memset(&pquad, 0, sizeof(pquad));
+
+    fonsSetSize(fs, size * scale);
+    fonsTextIterInit(fs, &piter, 0.0f, y * scale, gs, ge);
+
+    int havePhysical = 0;
+    if (fonsTextIterNext(fs, &piter, &pquad)) {
+      if (!(pquad.x0 == 0.0f && pquad.y0 == 0.0f && pquad.x1 == 0.0f && pquad.y1 == 0.0f)) {
+        havePhysical = 1;
+      }
+    }
+    fonsSetSize(fs, size);
+
+    if (!havePhysical) {
+      memset(&lquad, 0, sizeof(lquad));
+      continue;
+    }
+
+    /* Physical quad -> logical space, then re-centered on the logical advance
+       box. Centering (rather than pinning to boxX0) keeps the glyph optically
+       where the logical pass put it even though the physical bitmap's
+       side bearings rounded slightly differently. */
+    float gw = (pquad.x1 - pquad.x0) / scale;
+    float gh = (pquad.y1 - pquad.y0) / scale;
+    float lw = lquad.x1 - lquad.x0;
+
+    float gx0 = boxX0 + ((boxX1 - boxX0) - lw) * 0.5f + (lw - gw) * 0.5f;
+    float gy0 = pquad.y0 / scale;
+
+    haze_fontstash_glyph_t glyph = {
+      .x0 = gx0,
+      .y0 = gy0,
+      .x1 = gx0 + gw,
+      .y1 = gy0 + gh,
+
+      .s0 = pquad.s0,
+      .t0 = pquad.t0,
+      .s1 = pquad.s1,
+      .t1 = pquad.t1,
+    };
+    HZSTD_DYNAMIC_ARRAY_PUSH(out, glyph);
+
+    memset(&lquad, 0, sizeof(lquad));
+  }
+}
+
 haze_fontstash_atlas_t haze_fontstash_get_atlas(void* ctx)
 {
   int w, hgt;

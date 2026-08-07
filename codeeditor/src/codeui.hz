@@ -1033,6 +1033,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         presets.hGrow(),
                         presets.col(),
                         presets.bg("#181818"),
+                        // Lines are absolutely positioned at a scroll-offset
+                        // top, so the ones scrolled past either edge would
+                        // otherwise paint straight over the statusline and
+                        // out past the window. Clip them to this box.
+                        presets.overflowHidden(),
                         // presets.p(8),
                     ],
                     focusable: true,

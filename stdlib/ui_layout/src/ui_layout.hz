@@ -54,6 +54,8 @@ namespace ffi {
         applyBoundingBoxUserdata: cptr;
         renderBorder: (userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: hzui_border_widths_t) -> void;
         renderBorderUserdata: cptr;
+        setClip: (userdata: cptr, elementPtr: cptr) -> void;
+        setClipUserdata: cptr;
     };
 
     extern C noemit inline struct hzui_optional_bounding_box_t {
@@ -837,20 +839,35 @@ export opaque struct Context {
         __c__("clayRenderCommandsPtr = &clayRenderCommands;");
         assert(clayRenderCommandsPtr);
 
+        // Resolve every element's clip rect before dispatching any draw
+        // command. Has to happen after Clay_EndLayout, since it reads the
+        // boxes Clay just computed -- and it never feeds anything back into
+        // Clay, so layout is entirely unaffected by overflow. Costs nothing
+        // for a tree that uses no overflow at all: the walk stops recording
+        // the moment it finds no clipping ancestor.
+        let clipEntries: mut []ClipEntry = [];
+        let unclipped: ResolvedClip = {};
+        collectClipsRecursive(element, unclipped, clipEntries);
+
+        let dispatch = DispatchState {
+            callbacks: callbacks,
+            clips: clipEntries,
+        };
+
         do unsafe {
-            // `callbacks` is already a single heap pointer -- RenderCallbacks
-            // is a plain (non-inline) struct, so the parameter itself is a
-            // reference, not a value copy. No need to box each of its five
-            // closure fields separately just to get something cptr-sized to
-            // hand to Clay: the same one pointer, reinterpreted by each
-            // trampoline (see renderFilledRectTrampoline etc.) back into
-            // RenderCallbacks and read straight off the matching field,
-            // covers all five registrations below. Safe for the GC too --
-            // `callbacks` stays reachable via this local for exactly as long
-            // as Clay_RenderClayCommands (below) can still call back into it,
+            // `dispatch` is already a single heap pointer -- DispatchState is
+            // a plain (non-inline) struct, so the local itself is a
+            // reference, not a value copy. No need to box each callback
+            // separately just to get something cptr-sized to hand to Clay:
+            // the same one pointer, reinterpreted by each trampoline (see
+            // renderFilledRectTrampoline etc.) back into DispatchState and
+            // read straight off the matching field, covers every
+            // registration below. Safe for the GC too -- `dispatch` stays
+            // reachable via this local for exactly as long as
+            // Clay_RenderClayCommands (below) can still call back into it,
             // since it's all one synchronous call stack.
             let callbacksPtr = none as cptr;
-            __c__("callbacksPtr = callbacks;");
+            __c__("callbacksPtr = dispatch;");
 
             ffi.Clay_RenderClayCommands({
                 renderFilledRect: renderFilledRectTrampoline,
@@ -863,6 +880,8 @@ export opaque struct Context {
                 applyBoundingBoxUserdata: callbacksPtr,
                 renderBorder: renderBorderTrampoline,
                 renderBorderUserdata: callbacksPtr,
+                setClip: setClipTrampoline,
+                setClipUserdata: callbacksPtr,
             }, clayRenderCommandsPtr);
         };
 
@@ -937,6 +956,176 @@ export struct RenderCallbacks {
     renderCanvas: (element: ui_elements.CanvasElement) => void;
     onBoundingBox: (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
     renderBorder: RenderBorderCB;
+    // Called immediately before each draw callback above, with the clip
+    // already resolved for that specific element -- intersected through
+    // every clipping ancestor, so the receiver just applies it verbatim
+    // rather than maintaining a stack of its own. An inactive clip
+    // (`active` false) means "draw unrestricted".
+    //
+    // Per-draw rather than a push/pop pair because Clay's render command
+    // stream is flat and z-sorted: it carries no subtree structure for a
+    // clip stack to follow.
+    setClip: (clip: ResolvedClip) => void;
+}
+
+// Half-extent used for the axis of a clip rect that doesn't actually clip
+// (overflow: hidden on only one axis). Large enough never to cut off real
+// content at any window size or scroll offset, and small enough to stay
+// exactly representable once the renderer narrows it to f32.
+const CLIP_UNBOUNDED = 10000000.0;
+
+// A resolved clip rect (screen-space min/max), already intersected with
+// every clipping ancestor's rect. `active` false means "nothing clips this
+// element", which the renderer represents as a zero-area rect.
+export inline struct ResolvedClip {
+    minX: real = 0.0;
+    minY: real = 0.0;
+    maxX: real = 0.0;
+    maxY: real = 0.0;
+    active: bool = false;
+}
+
+// One entry per element that has a non-trivial clip, keyed by the raw
+// element pointer -- the same value Clay hands back as each render command's
+// userData, so a draw callback can find its clip without any string work.
+// Safe to hold: these elements are kept alive for the whole frame by the
+// tree being rendered (see the DivElement branch of processTreeElement).
+struct ClipEntry {
+    elementPtr: cptr;
+    clip: ResolvedClip;
+}
+
+// The raw pointer Clay will hand back as a render command's userData for
+// this element -- same conversion the tree walk itself does when passing
+// elementPtr into the define_*_element calls, so the two always agree.
+fn pointerOf(element: ui_elements.DivElement): cptr :: final {
+    let ptr = none as cptr;
+    do unsafe { __c__("ptr = element;"); };
+    return ptr;
+}
+
+fn pointerOf(element: ui_elements.TextElement): cptr :: final {
+    let ptr = none as cptr;
+    do unsafe { __c__("ptr = element;"); };
+    return ptr;
+}
+
+fn pointerOf(element: ui_elements.CanvasElement): cptr :: final {
+    let ptr = none as cptr;
+    do unsafe { __c__("ptr = element;"); };
+    return ptr;
+}
+
+// The clip recorded for `elementPtr`, or an inactive clip if that element
+// isn't restricted by anything. Linear scan: `entries` only holds elements
+// that are actually clipped, which in a normal UI is a small fraction of the
+// tree (and zero when nothing uses overflow at all, making this free).
+fn lookupClip(entries: []ClipEntry, elementPtr: cptr): ResolvedClip :: final {
+    for entry in entries {
+        // Raw pointer identity -- Haze has no safe cptr comparison, and
+        // these are opaque element addresses, never dereferenced here.
+        let same = false;
+        let candidate = entry.elementPtr;
+        do unsafe { __c__("same = (candidate == elementPtr);"); };
+        if same {
+            return entry.clip;
+        }
+    }
+    let none_: ResolvedClip = {};
+    return none_;
+}
+
+// Resolves each element's clip rect by walking the tree top-down, and
+// records one entry per element whose drawing is actually restricted.
+//
+// Clay does have native scissor commands, but the only way to make it emit
+// them is to declare an element a scroll container -- and that ALSO changes
+// how Clay sizes that element's children on the clipped axis (Grow children
+// expand to the inner content size instead of the container, and overflowing
+// children stop being compressed). CSS overflow must never affect layout, so
+// that route is unusable: it visibly resized the code editor's own text area.
+// Clay's layout is therefore left completely untouched here, and boxes are
+// read back *after* layout via Clay_GetElementData, which is a pure query.
+fn collectClipsRecursive(
+    element: ui_elements.Element,
+    inherited: ResolvedClip,
+    entries: mut []ClipEntry,
+): void :: final {
+    let current = inherited;
+
+    if element is ui_elements.DivElement {
+        let style = element.style;
+        let clipsX = style.overflowX == ui_styling.Overflow.Hidden;
+        let clipsY = style.overflowY == ui_styling.Overflow.Hidden;
+
+        if clipsX || clipsY {
+            let box = ffi.hzui_clay_get_element_bounding_box(element.globalId);
+            if box.found {
+                // Only the clipping axes constrain anything; the other axis
+                // is widened back out so overflow-x:hidden alone never
+                // clips vertically.
+                let minX = clipsX ? box.bounding_box.position.x : -CLIP_UNBOUNDED;
+                let minY = clipsY ? box.bounding_box.position.y : -CLIP_UNBOUNDED;
+                let maxX = clipsX ? box.bounding_box.position.x + box.bounding_box.size.x : CLIP_UNBOUNDED;
+                let maxY = clipsY ? box.bounding_box.position.y + box.bounding_box.size.y : CLIP_UNBOUNDED;
+
+                // Intersect with whatever an ancestor already restricted, so
+                // nested clippers compose the way nested overflow:hidden
+                // containers do.
+                if current.active {
+                    minX = minX > current.minX ? minX : current.minX;
+                    minY = minY > current.minY ? minY : current.minY;
+                    maxX = maxX < current.maxX ? maxX : current.maxX;
+                    maxY = maxY < current.maxY ? maxY : current.maxY;
+                }
+
+                current = ResolvedClip {
+                    minX: minX, minY: minY, maxX: maxX, maxY: maxY, active: true,
+                };
+            }
+        }
+
+        // An element is clipped by its ancestors, but never by its own box
+        // being merely present -- `current` above already folded this
+        // element's own clip in, which is correct: CSS clips an element's
+        // own background to its own overflow box too.
+        if current.active {
+            entries.push({ elementPtr: pointerOf(element), clip: current });
+        }
+
+        for child in element.children {
+            collectClipsRecursive(child, current, entries);
+        }
+    }
+    else if element is ui_elements.TextElement {
+        if current.active {
+            entries.push({ elementPtr: pointerOf(element), clip: current });
+        }
+    }
+    else if element is ui_elements.CanvasElement {
+        if current.active {
+            entries.push({ elementPtr: pointerOf(element), clip: current });
+        }
+    }
+}
+
+// What the render-command dispatch needs on the Haze side: the user's
+// callbacks plus this frame's resolved clips. A plain (non-inline) struct, so
+// one pointer to it is all every trampoline needs -- same trick, and same
+// lifetime reasoning, as passing RenderCallbacks itself used to be.
+struct DispatchState {
+    callbacks: RenderCallbacks;
+    clips: []ClipEntry;
+}
+
+fn setClipTrampoline(userdata: cptr, elementPtr: cptr): void {
+    do unsafe {
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
+        // A command with no userData belongs to no element (e.g. a spacer)
+        // and is never clipped; lookupClip returns an inactive clip for it.
+        state.callbacks.setClip(lookupClip(state.clips, elementPtr));
+    };
 }
 
 fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
@@ -944,25 +1133,25 @@ fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, hei
         // userdata is the RenderCallbacks struct itself (already a single
         // heap pointer -- see render()'s own comment), not a box -- no
         // separate allocation needed to reinterpret it back.
-        let callbacks: RenderCallbacks = uninitialized;
-        __c__("callbacks = userdata;");
-        callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
+        state.callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
     };
 }
 
 fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
     do unsafe {
-        let callbacks: RenderCallbacks = uninitialized;
-        __c__("callbacks = userdata;");
-        callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
+        state.callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
     };
 }
 
 fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
     do unsafe {
-        let callbacks: RenderCallbacks = uninitialized;
-        __c__("callbacks = userdata;");
-        callbacks.renderText(element);
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
+        state.callbacks.renderText(element);
     };
 }
 
@@ -984,12 +1173,12 @@ fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_
 // no union/tag needed to tell it apart from Div/Text.
 fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let callbacks: RenderCallbacks = uninitialized;
-        __c__("callbacks = userdata;");
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
 
         let canvasElement: ui_elements.CanvasElement = uninitialized;
         __c__("canvasElement = elementPtr;");
-        callbacks.renderCanvas(canvasElement);
+        state.callbacks.renderCanvas(canvasElement);
     };
 }
 
@@ -1010,21 +1199,21 @@ fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w:
 // let Haze's own upcast turn that into the `Element` union `callable` wants.
 fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let callbacks: RenderCallbacks = uninitialized;
-        __c__("callbacks = userdata;");
+        let state: DispatchState = uninitialized;
+        __c__("state = userdata;");
 
         if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_div {
             let divElement: ui_elements.DivElement = uninitialized;
             __c__("divElement = elementPtr;");
-            callbacks.onBoundingBox(divElement, Vec2(x, y), Vec2(w, h));
+            state.callbacks.onBoundingBox(divElement, Vec2(x, y), Vec2(w, h));
         } else if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_text {
             let textElement: ui_elements.TextElement = uninitialized;
             __c__("textElement = elementPtr;");
-            callbacks.onBoundingBox(textElement, Vec2(x, y), Vec2(w, h));
+            state.callbacks.onBoundingBox(textElement, Vec2(x, y), Vec2(w, h));
         } else {
             let canvasElement: ui_elements.CanvasElement = uninitialized;
             __c__("canvasElement = elementPtr;");
-            callbacks.onBoundingBox(canvasElement, Vec2(x, y), Vec2(w, h));
+            state.callbacks.onBoundingBox(canvasElement, Vec2(x, y), Vec2(w, h));
         }
     };
 }
