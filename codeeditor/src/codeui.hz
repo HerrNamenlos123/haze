@@ -3,7 +3,46 @@ import renderer
 import ui_styling
 import headwind
 import textedit_behavior
+import vim_behavior
 type presets = headwind.presets;
+
+// Vim editing model on/off. The textedit engine is the same either way;
+// this only decides whether a vim_behavior.Vim is installed on top of it
+// and therefore whether keys are interpreted as vim commands.
+// TODO: surface this as a user setting rather than a compile-time
+// constant. A function rather than a global `let` because module-level
+// variables cannot hold multi-line initializers here.
+fn vimEnabled(): bool {
+    return true;
+}
+
+// Map the UI toolkit's physical Key onto the key NAMES vim_behavior
+// understands. Only the non-character keys need naming -- printable
+// characters come through onTextInput instead.
+fn keyEventName(key: ui_components.Key): str {
+    if key == ui_components.Key.Escape { return "Escape"; }
+    if key == ui_components.Key.Return { return "Return"; }
+    if key == ui_components.Key.Backspace { return "Backspace"; }
+    if key == ui_components.Key.Tab { return "Tab"; }
+    if key == ui_components.Key.Up { return "Up"; }
+    if key == ui_components.Key.Down { return "Down"; }
+    if key == ui_components.Key.Left { return "Left"; }
+    if key == ui_components.Key.Right { return "Right"; }
+    if key == ui_components.Key.Delete { return "Delete"; }
+    if key == ui_components.Key.Home { return "Home"; }
+    if key == ui_components.Key.End { return "End"; }
+    if key == ui_components.Key.PageUp { return "PageUp"; }
+    if key == ui_components.Key.PageDown { return "PageDown"; }
+    // Letters, for Ctrl-combinations like <C-d>/<C-o>/<C-r>.
+    if key == ui_components.Key.A { return "a"; }
+    if key == ui_components.Key.D { return "d"; }
+    if key == ui_components.Key.I { return "i"; }
+    if key == ui_components.Key.O { return "o"; }
+    if key == ui_components.Key.R { return "r"; }
+    if key == ui_components.Key.U { return "u"; }
+    if key == ui_components.Key.V { return "v"; }
+    return "";
+}
 
 type SizeMode = ui_components.SizeMode;
 type DivElement = ui_elements.DivElement;
@@ -304,7 +343,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 return ui.now();
             },
             replaceRange: applyReplaceRange,
+            initialMode: vimEnabled() ? textedit_behavior.Mode.Normal
+                                    : textedit_behavior.Mode.Insert,
         });
+
+        // Vim is an OPTIONAL behavior layered on the same engine: with it
+        // off, the editor keeps the plain textbox bindings below; with it
+        // on, every key goes through the Vim state machine instead. The
+        // engine itself is identical either way.
+        let vim = vim_behavior.Vim(texteditBehavior);
+        if vimEnabled() {
+            vim.install();
+            vim_behavior.applyRemaps(vim, vim_behavior.defaultVimrc());
+        }
 
         let state = getState();
         if cache.data.file {
@@ -485,13 +536,34 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     ],
                     focusable: true,
                     onTextInput: (event: ui_components.TextInputEvent) => {
-                        texteditBehavior.insertText(event.text);
+                        // With Vim active, printable characters are
+                        // commands in normal/visual mode and literal text
+                        // in insert mode -- the behavior decides which.
+                        if vimEnabled() {
+                            texteditBehavior.handleTextInput(event.text);
+                        } else {
+                            texteditBehavior.insertText(event.text);
+                        }
                         lastEditAt := ui.now();
                         hoverResult := null;
                     },
                     onKeyDown: (event: ui_components.KeyboardEvent) => {
                         let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
                         let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+                        let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
+
+                        if vimEnabled() {
+                            // Non-character keys (and modifier combos)
+                            // reach Vim here; plain characters arrive via
+                            // onTextInput above.
+                            let name = vim_behavior.namedKey(keyEventName(event.key), ctrl, alt);
+                            if name.length > 0 {
+                                texteditBehavior.handleKey(name);
+                                lastEditAt := ui.now();
+                                hoverResult := null;
+                            }
+                            return;
+                        }
 
                         if event.key == ui_components.Key.Left {
                             if ctrl { texteditBehavior.moveCursorWordLeft(shift); }
