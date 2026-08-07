@@ -122,6 +122,10 @@ export struct Vim {
     // start of a mapping are held here rather than inserted immediately.
     insertPending: []str = [];
 
+    // Column the current visual selection started at, captured before
+    // the mode is dropped so a linewise delete can restore it.
+    visualStartColumn: int = 0;
+
     // A counted insert (`3ix`, `2A!`) repeats the inserted text
     // `count` times when insert mode is left. insertTyped accumulates
     // what was typed; insertCount is the pending repeat factor.
@@ -1132,6 +1136,12 @@ export struct Vim {
             this.ctx.setRegister(text, range.kind);
             // Vim leaves the caret at the start of the yanked region.
             let normalized = this.ctx.normalizeRange(range);
+            if range.kind == textedit_behavior.RangeKind.Blockwise {
+                let left = range.start.x < range.end.x ? range.start.x : range.end.x;
+                let corner: Vec2i = { x: left, y: normalized.start.y };
+                this.ctx.moveTo(corner, true, false);
+                return;
+            }
             if linewise {
                 // A linewise yank from VISUAL mode parks the caret at
                 // column 0 of the first yanked line; `yy` in normal mode
@@ -1148,7 +1158,11 @@ export struct Vim {
         if op == Operator.Delete {
             let text = this.ctx.textInRange(range);
             this.ctx.setRegister(text, range.kind);
-            this.ctx.deleteRange(range);
+            let anchorColumn = (linewise && fromVisual) ? this.visualStartColumn : -1;
+            this.ctx.deleteRange(range, anchorColumn);
+            // Verified against nvim: a linewise delete (from visual OR
+            // via `dd`) keeps the caret COLUMN, merely clamped to the
+            // line that slid into place -- 'startofline' is off.
             this.clampCursorToMode();
             return;
         }
@@ -1195,7 +1209,7 @@ export struct Vim {
         if op == Operator.IndentRight || op == Operator.IndentLeft {
             let normalized = this.ctx.normalizeRange(range);
             this.indentLines(normalized.start.y, normalized.end.y,
-                             op == Operator.IndentRight, wholeLineForm);
+                             op == Operator.IndentRight, wholeLineForm, fromVisual);
             return;
         }
     }
@@ -1233,6 +1247,28 @@ export struct Vim {
     // to normal mode.
     mut fn applyOperatorToSelection(op: Operator) {
         let range = this.ctx.selectionAsRange();
+        // Vim leaves the caret on the column belonging to the selection's
+        // TOP corner, but the caret may currently sit at its moving end.
+        // Capture that column now, before setMode() drops the anchor.
+        // (A linewise range reports column 0 for both corners, so this
+        // has to come from the raw anchor/cursor pair, not the range.)
+        let here = this.ctx.cursor();
+        let anchorNow = this.ctx.anchorPosition();
+        this.visualStartColumn = here.x;
+        if anchorNow {
+            this.visualStartColumn = anchorNow.y <= here.y ? anchorNow.x : here.x;
+        }
+        // `>`/`<` always indent WHOLE LINES, even from a characterwise
+        // or blockwise selection -- there is no such thing as indenting
+        // half a line.
+        if op == Operator.IndentRight || op == Operator.IndentLeft {
+            let normalized = this.ctx.normalizeRange(range);
+            range = textedit_behavior.Range {
+                start: { x: 0, y: normalized.start.y },
+                end: { x: 0, y: normalized.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+        }
         this.ctx.setMode(textedit_behavior.Mode.Normal);
         this.resetPending();
         this.runOperator(op, range, false, true);
@@ -1275,7 +1311,7 @@ export struct Vim {
         return len > 0 ? len - 1 : 0;
     }
 
-    mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false) {
+    mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
         let screenColumnBefore = this.screenColumnOf(startY, this.ctx.cursor().x);
         this.ctx.beginTransaction();
         let changedAnything = false;
@@ -1330,10 +1366,20 @@ export struct Vim {
         // lands on byte column 2), but never lands left of the new first
         // non-blank -- and a caret that started inside the old indent
         // just ends up at the start of the new one.
-        if changedAnything {
+        // A visual-mode `<`/`>` always moves the caret to the start of
+        // the selection, even when there was nothing to unindent; the
+        // normal-mode forms only move if they actually changed something.
+        if changedAnything || fromVisualIndent {
             let byScreen = this.byteColumnForScreenColumn(startY, screenColumnBefore);
             let firstText = this.ctx.firstNonBlank(startY);
-            let x = keepScreenColumn ? (byScreen <= firstText ? 0 : byScreen) : 0;
+            // A visual-mode indent always keeps the caret column (vim
+            // does not reposition it the way the normal-mode forms do).
+            // Visual-mode `>` parks the caret at column 0; visual-mode
+            // `<` keeps the column the selection started at. (Verified:
+            // on "  indented text" from column 3, `Vj>` gives column 0
+            // and `Vj<` gives column 3.)
+            let x = fromVisualIndent ? (addIndent ? 0 : this.visualStartColumn)
+                  : (keepScreenColumn ? (byScreen <= firstText ? 0 : byScreen) : 0);
             let landing: Vec2i = { x: x, y: startY };
             this.ctx.moveTo(landing, true, false);
         }
@@ -1749,6 +1795,11 @@ export struct Vim {
             this.toggleVisual(textedit_behavior.Mode.VisualLine);
             return;
         }
+        if key == "<C-v>" {
+            this.resetPending();
+            this.toggleVisual(textedit_behavior.Mode.VisualBlock);
+            return;
+        }
         if key == "x" {
             this.resetPending();
             this.deleteCharsForward(count);
@@ -1759,6 +1810,31 @@ export struct Vim {
             this.deleteCharsBackward(count);
             return;
         }
+        // In visual mode D/C/X/S/Y are linewise on the whole selection,
+        // regardless of how the selection was made.
+        if visual && (key == "D" || key == "X" || key == "C" || key == "S" || key == "Y") {
+            this.resetPending();
+            let selection = this.ctx.selectionAsRange();
+            let lineRange = textedit_behavior.Range {
+                start: { x: 0, y: selection.start.y },
+                end: { x: 0, y: selection.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+            let op = (key == "C" || key == "S") ? Operator.Change
+                   : (key == "Y" ? Operator.Yank : Operator.Delete);
+            // Keep the caret column, like every other visual operator.
+            let hereNow = this.ctx.cursor();
+            let anchorHere = this.ctx.anchorPosition();
+            this.visualStartColumn = hereNow.x;
+            if anchorHere {
+                this.visualStartColumn = anchorHere.y <= hereNow.y ? anchorHere.x : hereNow.x;
+            }
+            this.ctx.setMode(textedit_behavior.Mode.Normal);
+            this.runOperator(op, lineRange, false, true);
+            this.clampCursorToMode();
+            return;
+        }
+
         if key == "D" {
             this.resetPending();
             let pos = this.ctx.cursor();
@@ -2004,16 +2080,62 @@ export struct Vim {
     // something different the second time. `P` leaves the register
     // alone. Both produce identical buffers -- only the register differs.
     mut fn putOverSelection(swapRegister: bool) {
+        // Note: unlike normal-mode `p`, an EMPTY register does not make
+        // this a no-op -- vim still deletes the selection (and the
+        // deleted text becomes the new register content).
         let reg = this.ctx.getRegister();
-        if reg.text.length() == 0 {
-            return;
-        }
         let range = this.ctx.selectionAsRange();
         let replaced = this.ctx.textInRange(range);
         let replacedKind = range.kind;
 
         this.ctx.beginTransaction();
         let normalized = this.ctx.normalizeRange(range);
+
+        // A LINEWISE selection (V) is replaced whole-lines-for-
+        // whole-lines: the selected lines go and the register's content
+        // takes their place as its own lines, whichever kind it is.
+        if range.kind == textedit_behavior.RangeKind.Linewise {
+            let payload = reg.text.cloneString();
+            if payload.length > 0 && reg.kind != textedit_behavior.RangeKind.Linewise {
+                payload = f"{payload}\n";
+            }
+            let lineCount = this.ctx.lineCount();
+            let replacing = textedit_behavior.Range {
+                start: { x: 0, y: normalized.start.y },
+                end: { x: 0, y: normalized.end.y },
+                kind: textedit_behavior.RangeKind.Linewise,
+            };
+            this.ctx.deleteRange(replacing);
+            // deleteRange collapsed the lines away; re-open them at the
+            // same index (or append, if the selection ran to the end).
+            let atEnd = normalized.start.y >= this.ctx.lineCount()
+                        || normalized.end.y >= lineCount - 1;
+            if payload.length == 0 {
+                // nothing to insert; the selection simply went away
+            } else if atEnd && this.ctx.lineCount() > 0 {
+                let lastY = this.ctx.lineCount() - 1;
+                let tail: Vec2i = { x: this.ctx.lineLength(lastY), y: lastY };
+                let insertAt = textedit_behavior.Range { start: tail, end: tail,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                let body = payload.slice(0, payload.length - 1);
+                this.ctx.replaceRangeWith(insertAt, String(f"\n{body}"));
+            } else if payload.length > 0 {
+                let head: Vec2i = { x: 0, y: normalized.start.y };
+                let insertAt = textedit_behavior.Range { start: head, end: head,
+                    kind: textedit_behavior.RangeKind.Characterwise };
+                this.ctx.replaceRangeWith(insertAt, String(payload));
+            }
+            let landingY = clampInt(normalized.start.y, 0, this.ctx.lineCount() - 1);
+            let landing: Vec2i = { x: this.ctx.firstNonBlank(landingY), y: landingY };
+            this.ctx.moveTo(landing, true, false);
+            this.ctx.setMode(textedit_behavior.Mode.Normal);
+            this.clampCursorToMode();
+            this.ctx.endTransaction();
+            if swapRegister {
+                this.ctx.setRegister(replaced, replacedKind);
+            }
+            return;
+        }
 
         if reg.kind == textedit_behavior.RangeKind.Linewise {
             // Linewise register over a charwise selection: the selection

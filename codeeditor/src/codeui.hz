@@ -624,10 +624,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     for line, i in lines {
                         let sel = texteditBehavior.selectionRangeForLine(i);
                         if sel {
+                            // A line whose selection runs through its
+                            // newline gets one extra character of
+                            // highlight, so the newline is visible as
+                            // selected -- and so an EMPTY line inside a
+                            // linewise (V) selection still shows up
+                            // instead of collapsing to zero width.
+                            let columns = (sel.endCol - sel.startCol) as real;
+                            if sel.includesLineEnd {
+                                columns = columns + 1.0;
+                            }
                             ui.div({
                                 id: lines.length + 3 + i,
                                 style: {
-                                    width: (sel.endCol - sel.startCol) as real * characterSize.x,
+                                    width: columns * characterSize.x,
                                     height: characterSize.y,
                                 },
                                 presets: [

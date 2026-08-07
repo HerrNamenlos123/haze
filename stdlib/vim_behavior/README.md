@@ -106,8 +106,8 @@ anchor and register contents (including charwise/linewise-ness).
 
 | Suite | Result |
 | --- | --- |
-| Core subset, no remaps | **2040 / 2040** |
-| Core subset, vimrc remaps | **2040 / 2040** |
+| Core subset, no remaps | **2340 / 2340** |
+| Core subset, vimrc remaps | **2340 / 2340** |
 | Random fuzz (6 seeds × 150) | ~92% |
 
 The core suite is the regression gate and must stay at 100%. The fuzzer
@@ -138,7 +138,9 @@ Deliberately not all of Vim. What is covered, and verified:
 - **Operators** `d y c > <` over any motion or text object, plus the
   doubled forms `dd yy cc >> <<` and `D C S Y`
 - **Text objects** `iw aw iW aW i( a( i[ a[ i{ a{ i" i'`
-- **Visual** `v V`, `o` to swap ends, operators over the selection
+- **Visual** `v` (charwise), `V` (linewise), `<C-v>` (blockwise), `o` to
+  swap ends, operators over the selection, `p`/`P` to paste over it, and
+  the linewise `D C X S Y` forms
 - **Edits** `x X r J ~ p P i a I A o O`
 - **Undo/redo** `u <C-r>`, with multi-step edits as single transactions
 - **Jumps** `<C-o> <C-i>`, `<C-d> <C-u>`
@@ -146,7 +148,8 @@ Deliberately not all of Vim. What is covered, and verified:
   routed through the system clipboard (`clipboard=unnamedplus`)
 
 Not implemented: named registers, macros, marks, `:` ex commands, search
-(`/`, `?`, `n`, `N`), visual block editing, `gu`/`gU`/`g~`. A count
+(`/`, `?`, `n`, `N`), blockwise INSERT (`<C-v>I`/`<C-v>A`, which types the
+same text on every row), `gu`/`gU`/`g~`. A count
 before `v`/`V` (":h v_count", reuse the last selection's size) is parsed
 but ignored.
 

@@ -119,6 +119,7 @@ fn runCase(spec: CaseSpec): ResultOut {
     if reg.text.length() > 0 {
         let regText = reg.text.cloneString();
         let isLinewise = reg.kind == textedit_behavior.RangeKind.Linewise;
+        let isBlockwise = reg.kind == textedit_behavior.RangeKind.Blockwise;
         // A linewise register carries a trailing newline; nvim reports
         // the lines without a trailing empty element.
         if isLinewise && regText.length > 0 {
@@ -129,7 +130,7 @@ fn runCase(spec: CaseSpec): ResultOut {
             regLines.push(part);
         }
         state.registerLines = regLines;
-        state.registerKind = isLinewise ? "linewise" : "charwise";
+        state.registerKind = isLinewise ? "linewise" : (isBlockwise ? "blockwise" : "charwise");
     }
 
     out.state = state;

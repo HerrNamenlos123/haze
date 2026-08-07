@@ -88,9 +88,18 @@ export struct Range {
 // Context.selectionRangeForLine() so a host can render one highlight rect
 // per visual line without having to re-derive the per-line clamping of a
 // possibly multi-line selection itself.
+//
+// `includesLineEnd` marks a line whose selection extends past its last
+// character -- i.e. the newline itself is selected, which is always true
+// for the interior of a linewise selection. On an EMPTY line that makes
+// startCol == endCol == 0, so a host that sizes its highlight purely from
+// the column span would draw nothing at all; vim instead shows a narrow
+// block there. The engine cannot pick that width (it has no idea what a
+// pixel is), so it reports the fact and lets the host render it.
 export struct LineSelectionRange {
     startCol: int;
     endCol: int;
+    includesLineEnd: bool = false;
 }
 
 // What the engine wants the viewport to do. The engine cannot scroll --
@@ -609,23 +618,80 @@ export struct Context {
         if normalized.kind == RangeKind.Linewise {
             return this._getLinewiseText(normalized.start.y, normalized.end.y);
         }
+        if normalized.kind == RangeKind.Blockwise {
+            return this._getBlockwiseText(range);
+        }
         return this._getTextInRange(normalized.start, normalized.end);
     }
 
+    // The column span of a blockwise range. normalizeRange only orders
+    // the two corners top-to-bottom; for a rectangle the LEFT column is
+    // the smaller of the two x's regardless of which corner it came
+    // from (dragging up-and-left is still a rectangle).
+    fn _blockColumns(range: Range): Vec2i {
+        let left = range.start.x < range.end.x ? range.start.x : range.end.x;
+        let right = range.start.x < range.end.x ? range.end.x : range.start.x;
+        let cols: Vec2i = { x: left, y: right };
+        return cols;
+    }
+
+    // One line per row of the rectangle, each clamped to that row's
+    // length -- a short line inside the block contributes what it has.
+    fn _getBlockwiseText(range: Range): String {
+        let normalized = this.normalizeRange(range);
+        let cols = this._blockColumns(range);
+        let result = "";
+        for (let y = normalized.start.y; y <= normalized.end.y; y++) {
+            if y > normalized.start.y {
+                result = f"{result}\n";
+            }
+            let lineLen = this.args.getLineLength(y);
+            let sliceStart = clamp<int>(cols.x, 0, lineLen);
+            let sliceEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            if sliceEnd > sliceStart {
+                result = f"{result}{this.args.getLine(y).cloneString().slice(sliceStart, sliceEnd)}";
+            }
+        }
+        return String(result);
+    }
+
     // Delete a range and place the caret where Vim would leave it.
-    mut fn deleteRange(range: Range) {
+    mut fn deleteRange(range: Range, keepColumn: int = -1) {
         if this.mode == Mode.ReadOnly {
             return;
         }
         let normalized = this.normalizeRange(range);
         this.beginTransaction();
         if normalized.kind == RangeKind.Linewise {
-            this._deleteLines(normalized.start.y, normalized.end.y);
+            this._deleteLines(normalized.start.y, normalized.end.y, keepColumn);
+        } else if normalized.kind == RangeKind.Blockwise {
+            this._deleteBlock(range);
         } else {
             this._applyReplace(normalized.start, normalized.end, String(""));
             this._moveTo(normalized.start, true, false);
         }
         this.endTransaction();
+    }
+
+    // Cut the rectangle out of each row, leaving the rows themselves in
+    // place. Rows are edited BOTTOM-UP so that each replaceRange call
+    // cannot shift the line indices of the rows still to be edited.
+    mut fn _deleteBlock(range: Range) {
+        let normalized = this.normalizeRange(range);
+        let cols = this._blockColumns(range);
+        for (let y = normalized.end.y; y >= normalized.start.y; y--) {
+            let lineLen = this.args.getLineLength(y);
+            let cutStart = clamp<int>(cols.x, 0, lineLen);
+            let cutEnd = clamp<int>(cols.y + 1, 0, lineLen);
+            if cutEnd > cutStart {
+                let a: Vec2i = { x: cutStart, y: y };
+                let b: Vec2i = { x: cutEnd, y: y };
+                this._applyReplace(a, b, String(""));
+            }
+        }
+        // The caret lands on the block's top-left corner.
+        let landing: Vec2i = { x: cols.x, y: normalized.start.y };
+        this._moveTo(landing, true, false);
     }
 
     mut fn replaceRangeWith(range: Range, text: String) {
@@ -671,13 +737,24 @@ export struct Context {
             return r;
         }
 
-        let kind = mode == Mode.VisualBlock ? RangeKind.Blockwise : RangeKind.Characterwise;
+        if mode == Mode.VisualBlock {
+            // A blockwise range keeps BOTH corners inclusive: the
+            // rectangle is defined by its corners, not by a half-open
+            // run, and _blockColumns()/_getBlockwiseText() add the +1
+            // themselves. Converting to exclusive here as well would
+            // widen every block by one column.
+            let r: Range = { start: start, end: end, kind: RangeKind.Blockwise };
+            return r;
+        }
+
         if modeIsVisual(mode) {
             // inclusive -> exclusive
             let inclusiveEnd: Vec2i = { x: end.x + 1, y: end.y };
-            let r: Range = { start: start, end: inclusiveEnd, kind: kind };
+            let r: Range = { start: start, end: inclusiveEnd, kind: RangeKind.Characterwise };
             return r;
         }
+
+        let kind = RangeKind.Characterwise;
         let r: Range = { start: start, end: end, kind: kind };
         return r;
     }
@@ -805,7 +882,12 @@ export struct Context {
         }
 
         if mode == Mode.VisualLine {
-            let full: LineSelectionRange = { startCol: 0, endCol: this.args.getLineLength(lineIndex) };
+            // Every line of a linewise selection includes its newline.
+            let full: LineSelectionRange = {
+                startCol: 0,
+                endCol: this.args.getLineLength(lineIndex),
+                includesLineEnd: true,
+            };
             return full;
         }
 
@@ -826,7 +908,13 @@ export struct Context {
         if modeIsVisual(mode) && lineIndex == end.y {
             endCol = clamp<int>(endCol + 1, 0, this.args.getLineLength(lineIndex));
         }
-        let result: LineSelectionRange = { startCol: startCol, endCol: endCol };
+        // Every line except the last one in a multi-line characterwise
+        // selection runs through its newline.
+        let result: LineSelectionRange = {
+            startCol: startCol,
+            endCol: endCol,
+            includesLineEnd: lineIndex < end.y,
+        };
         return result;
     }
 
@@ -962,8 +1050,12 @@ export struct Context {
     // Delete whole lines startY..endY inclusive, including one newline,
     // and leave the caret at the first non-blank of the line that slid
     // into place -- which is what Vim does after `dd`.
-    mut fn _deleteLines(startY: int, endY: int) {
-        let keepColumn = this._cursorPos().x;
+    // `keepColumnOverride` is the column the caret should keep; pass it
+    // when the caret is not already at the right one. In visual mode the
+    // caret sits at the selection's moving END, but vim leaves it on the
+    // column the selection STARTED at, so the caller supplies that.
+    mut fn _deleteLines(startY: int, endY: int, keepColumnOverride: int = -1) {
+        let keepColumn = keepColumnOverride >= 0 ? keepColumnOverride : this._cursorPos().x;
         let lineCount = this.args.getLineCount();
         let cutStart: Vec2i = { x: 0, y: startY };
         let cutEnd: Vec2i = {};
