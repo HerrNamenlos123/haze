@@ -135,11 +135,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // tokens are recomputed only when that line actually changes.
         let lineTokens = rx.shallowReactive<[][]HighlightToken>([]);
 
+        // The file exactly as read from disk, kept until the highlighter
+        // and the LSP have been handed their initial copy.
+        //
+        // Both of them need the whole document once at startup -- and we
+        // ALREADY have it, straight from fs.readText. Splitting it into
+        // lines and then re-joining those lines back into the identical
+        // string (which is what doc.text() does) is two pointless
+        // O(document) passes to reproduce a value we were holding all
+        // along. So keep it, use it, then drop it.
+        let initialText = rx.reactive<str | none>(none);
+
         let load = () => {
             if cache.data.file {
                 let file = fs.readText(cache.data.file as str);
                 if file {
-                    doc.setText(file as str);
+                    let text = file as str;
+                    doc.setText(text);
+                    initialText := text;
                     docVersion := rx.get(docVersion) + 1;
                 }
                 else {
@@ -449,7 +462,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let highlightUri = "buffer";
         if cache.data.file {
             highlightUri = cache.data.file as str;
-            state.highlightEngine.sendOpenDocument(highlightUri, doc.text());
+            // Reuse the text we just read rather than re-deriving it.
+            let startupText = rx.get(initialText);
+            state.highlightEngine.sendOpenDocument(
+                highlightUri, startupText ? startupText as str : doc.text());
         }
 
         doc.addChangeListener((change: text_document.ChangeSet) => {
@@ -469,6 +485,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // been still for a bit, and only if it's actually at a new position.
         let hoverDebounceSeconds = 0.2;
         let lastEditAt = rx.reactive<real>(-1000.0);
+        // Guards the one-shot LSP document open, so the per-frame loop
+        // never has to build the whole document just to discard it.
+        let lspDocumentOpened = rx.reactive<bool>(false);
         let lastHoverPos = rx.reactive<Vec2i | none>(none);
 
         // Exponentially-smoothed FPS, recomputed alongside the LSP drain
@@ -533,7 +552,21 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             drainHighlightResults();
 
             if vueBridge && cache.data.file {
-                vueBridge.openDocument(cache.data.file, "vue", 1, doc.text());
+                // openDocument() is a ONE-SHOT (it early-returns once the
+                // document is open), but the argument was still being
+                // evaluated on every frame -- and doc.text() reassembles
+                // the entire file. That alone cost seconds per frame on a
+                // large file. Send the text once, then never again, and
+                // send the copy we already read from disk.
+                if !rx.get(lspDocumentOpened) {
+                    lspDocumentOpened := true;
+                    let startupText = rx.get(initialText);
+                    vueBridge.openDocument(cache.data.file, "vue", 1,
+                        startupText ? startupText as str : doc.text());
+                    // Both consumers have their copy now; stop pinning
+                    // a second full copy of the file in memory.
+                    initialText := none;
+                }
 
                 if now - lastEditAt > hoverDebounceSeconds {
                     let cursor = texteditBehavior.cursorPosition;
