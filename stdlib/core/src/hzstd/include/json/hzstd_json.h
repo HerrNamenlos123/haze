@@ -8,8 +8,8 @@
 
 // hzstd_json_node_t is defined in hzstd_types.h.
 
-hzstd_json_node_t *hzstd_json_parse(hzstd_allocator_t allocator,
-                                    hzstd_str_t data, hzstd_str_ref_t *error);
+hzstd_json_parse_result_t hzstd_json_parse(hzstd_allocator_t allocator,
+                                           hzstd_str_t data);
 hzstd_json_node_t *hzstd_json_create_string(hzstd_allocator_t allocator,
                                             hzstd_str_t data);
 hzstd_json_node_t *hzstd_json_create_number(hzstd_allocator_t allocator,
@@ -31,8 +31,8 @@ hzstd_bool_t hzstd_json_is_number(hzstd_json_node_t *json);
 hzstd_bool_t hzstd_json_is_array(hzstd_json_node_t *json);
 hzstd_bool_t hzstd_json_is_null(hzstd_json_node_t *json);
 
-hzstd_str_ref_t *hzstd_json_get_string_value(hzstd_allocator_t allocator,
-                                             hzstd_json_node_t *json);
+hzstd_json_get_string_result_t hzstd_json_get_string_value(hzstd_allocator_t allocator,
+                                                            hzstd_json_node_t *json);
 hzstd_real_t hzstd_json_get_number_value(hzstd_allocator_t allocator,
                                          hzstd_json_node_t *json);
 
@@ -65,9 +65,9 @@ hzstd_bool_t hzstd_json_add_item_to_array(hzstd_allocator_t allocator,
 // already do.
 hzstd_usize_t hzstd_json_get_object_size(hzstd_allocator_t allocator,
                                          hzstd_json_node_t *json);
-hzstd_str_ref_t *hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
-                                              hzstd_json_node_t *json,
-                                              hzstd_usize_t index);
+hzstd_json_get_string_result_t hzstd_json_get_object_key_at(hzstd_allocator_t allocator,
+                                                             hzstd_json_node_t *json,
+                                                             hzstd_usize_t index);
 hzstd_json_node_t *hzstd_json_get_object_value_at(hzstd_allocator_t allocator,
                                                   hzstd_json_node_t *json,
                                                   hzstd_usize_t index);

@@ -118,10 +118,32 @@ export struct Vim {
     // Set while replaying the RHS of a noremap, so expansion is skipped.
     suppressRemap: bool = false;
 
-    // Vim's "insert-mode chord" support (e.g. `inoremap jk <Esc>`):
-    // keys typed in insert mode that might still turn out to be the
-    // start of a mapping are held here rather than inserted immediately.
-    insertPending: []str = [];
+    // Vim's "insert-mode chord" support (e.g. `inoremap jk <Esc>`).
+    //
+    // The problem: with `jk` mapped, typing `j` can't be resolved until the
+    // next key arrives -- it might become <Esc>, or it might just be a `j`.
+    // Buffering it invisibly (what this used to do) makes every word
+    // containing a `j` stutter: the letter doesn't appear until you type the
+    // one after it.
+    //
+    // So instead the `j` is inserted SPECULATIVELY, immediately, and taken
+    // back if the chord completes. That is vim's own `timeoutlen` model with
+    // the pending key made visible: type `jk` quickly and both vanish as the
+    // mapping fires; pause longer than timeoutlen and the `j` is committed
+    // as a real character, so `k` after that is just a `k`.
+    //
+    // These track what was speculatively inserted so it can be removed
+    // again. Empty/false whenever nothing is pending.
+    insertSpeculative: []str = [];
+    hasSpeculative: bool = false;
+    // When the pending chord started, by the engine's clock (seconds). The
+    // timeout is measured from the FIRST key of the chord, like vim.
+    speculativeStartedAt: real = 0.0;
+
+    // Vim's 'timeoutlen', in seconds (vim spells it in milliseconds and
+    // defaults to 1000). How long a partial mapping waits for its next key
+    // before giving up and committing what was typed literally.
+    timeoutLen: real = 1.0;
 
     // Column the current visual selection started at, captured before
     // the mode is dropped so a linewise delete can restore it.
@@ -246,25 +268,146 @@ export struct Vim {
 
         // An exact match is taken immediately, even when a longer mapping
         // could still extend it. Vim would wait for 'timeoutlen' and then
-        // take the short mapping; with no timer here, taking it at once
-        // is the same end state and is the only option that can't hang
-        // waiting for a key that may never arrive.
+        // take the short mapping; taking it at once is the same end state
+        // and is the only option that can't hang waiting for a key that may
+        // never arrive.
         if exact {
+            // The chord completed, so anything shown speculatively while it
+            // was being typed was never real text -- take it back before the
+            // mapping's own effect (`jk` -> <Esc>) runs.
+            this.rollbackSpeculative();
             this.remapBuffer = [];
             this.applyRemap(exact);
             return;
         }
         if hasLonger {
-            // Keep buffering; nothing to do yet.
+            // Still ambiguous. Rather than swallow the key until the next
+            // one decides (which makes typing any word containing `j`
+            // stutter), show it now and remember it can be taken back.
+            //
+            // Speculation can DECLINE (normal mode, or a non-printable key),
+            // in which case this key stays buffered and invisible exactly as
+            // it always was. insertSpeculative.length then says how many of
+            // the buffered keys actually reached the screen, which is what
+            // the flush below splits on.
+            this.speculateInsert(key);
             return;
         }
 
-        // No mapping can match. Flush the buffered keys as literal input.
+        // No mapping can match. Flush the buffered keys as literal input --
+        // except any already shown speculatively, which are in the document
+        // already; re-dispatching those would double them. Those are always
+        // a PREFIX of the buffer: speculation only ever declines for keys
+        // that can't be shown, and once one declines the run has ended.
         let buffered = this.remapBuffer;
+        let alreadyShown = this.insertSpeculative.length;
+        this.clearSpeculative();
         this.remapBuffer = [];
-        for k in buffered {
-            this.dispatch(k);
+        for (let i = alreadyShown; i < buffered.length; i++) {
+            this.dispatch(buffered[i]);
         }
+    }
+
+    // --- Speculative insert (the visible half of 'timeoutlen') ----
+    //
+    // Only insert mode speculates, and only on single printable characters.
+    // A normal-mode key is a COMMAND: `j` moves the caret, `d` starts an
+    // operator. Those have effects that deleting a character cannot undo, so
+    // outside insert mode the old buffer-and-wait behavior is still the only
+    // correct one -- and it's also not felt there, since normal-mode keys
+    // don't draw anything as you type them.
+    // Returns whether the key was actually shown. The caller relies on the
+    // shown keys forming a PREFIX of the buffer, so once this declines for
+    // one key it must not accept a later one in the same chord -- the
+    // length guard below enforces that rather than leaving it to luck.
+    mut fn speculateInsert(key: str): bool :: final {
+        let mode = rx.get(this.ctx.mode);
+        if mode != textedit_behavior.Mode.Insert {
+            return false;
+        }
+        if !isSinglePrintableCharacter(key) {
+            return false;
+        }
+        // Every earlier key of this chord must already have been shown. If
+        // one wasn't, showing this one would put a visible character after
+        // an invisible one and the flush could no longer split the buffer.
+        if this.insertSpeculative.length != this.remapBuffer.length - 1 {
+            return false;
+        }
+        // Start the clock on the FIRST key of the chord only; a chord's
+        // timeout is measured from when it began, like vim's.
+        if !this.hasSpeculative {
+            this.speculativeStartedAt = this.ctx.args.getTimeInSeconds();
+            this.hasSpeculative = true;
+        }
+        this.insertSpeculative.push(key);
+        // Straight to the engine, not through dispatchInsert: this must not
+        // touch the counted-insert recorder (insertTyped). A speculative
+        // character that gets rolled back was never typed, and one that gets
+        // committed is recorded at commit time instead -- see
+        // commitSpeculative.
+        this.ctx.insertText(String(key));
+        return true;
+    }
+
+    // Remove everything shown speculatively. Safe to call when nothing is
+    // pending. The deletes land inside the insert session's already-open
+    // undo group, so a speculative insert plus its rollback leaves no trace
+    // in the undo history -- which is right: nothing was ever really typed.
+    mut fn rollbackSpeculative(): void :: final {
+        if !this.hasSpeculative {
+            return;
+        }
+        let count = this.insertSpeculative.length;
+        this.clearSpeculative();
+        for (let i = 0; i < count; i++) {
+            this.ctx.deleteBackward(false);
+        }
+    }
+
+    // The chord timed out: what was shown speculatively is real text now.
+    // Nothing to insert (it's already in the document) -- this only hands
+    // the characters to the counted-insert recorder that speculateInsert
+    // deliberately skipped, and drops the pending state.
+    mut fn commitSpeculative(): void :: final {
+        if !this.hasSpeculative {
+            return;
+        }
+        if this.insertCount > 1 {
+            for k in this.insertSpeculative {
+                this.insertTyped = f"{this.insertTyped}{k}";
+            }
+        }
+        this.clearSpeculative();
+        this.remapBuffer = [];
+    }
+
+    mut fn clearSpeculative(): void :: final {
+        this.insertSpeculative = [];
+        this.hasSpeculative = false;
+    }
+
+    // Drives the timeout. The host calls this every frame (there is no timer
+    // in this module -- see Vim.tick's comment); once more than timeoutLen
+    // has passed since the pending chord started, the chord is abandoned and
+    // what was typed stands as literal text.
+    //
+    // Returns true if the timeout fired, so a host can tell whether anything
+    // changed without diffing the document.
+    mut fn tick(): bool :: final {
+        if !this.hasSpeculative {
+            return false;
+        }
+        let now = this.ctx.args.getTimeInSeconds();
+        let elapsed = now - this.speculativeStartedAt;
+        // A clock that doesn't advance (the test stubs return a constant)
+        // simply never times out, which leaves the pre-existing
+        // wait-for-the-next-key behavior intact.
+        if elapsed < this.timeoutLen {
+            return false;
+        }
+        this.commitSpeculative();
+        return true;
     }
 
     // True if some registered LHS in this mode is strictly longer than
@@ -354,6 +497,22 @@ export struct Vim {
             this.ctx.deleteBackward(false);
             return;
         }
+        // Host-editor conveniences, not stock Vim. Real Vim binds
+        // insert-mode <C-v> to "insert the next character literally" and
+        // has no <C-BS> at all; these take the meaning every other text
+        // box on the desktop gives them, so muscle memory from outside
+        // the editor keeps working while inserting.
+        //
+        // Deliberately insert-mode only: in normal/visual, <C-v> stays
+        // blockwise-visual, which is load-bearing Vim.
+        if key == "<C-BS>" {
+            this.ctx.deleteBackward(true);
+            return;
+        }
+        if key == "<C-v>" || key == "<C-V>" {
+            this.ctx.paste();
+            return;
+        }
         if key == "<Tab>" {
             this.ctx.insertText(String("    "));
             return;
@@ -376,6 +535,13 @@ export struct Vim {
     // insert caret sits *after* the last typed character while the normal
     // caret sits *on* a character.
     mut fn leaveInsertMode() {
+        // A speculative character is on screen and in the document, but its
+        // chord never completed -- leaving insert mode settles the question
+        // the same way the timeout would: what you typed stays. Without this
+        // the pending state would survive into normal mode and the next
+        // insert session could roll back a character typed minutes earlier.
+        this.commitSpeculative();
+
         // Replay the counted insert before the caret is fixed up.
         // `3ox` opens three lines, so the replayed unit for o/O carries
         // its own newline; `3ax` just repeats the text in place.
@@ -2710,6 +2876,11 @@ export fn namedKey(keyName: str, ctrl: bool, alt: bool): str {
     // Modifier-prefixed forms first: <C-d>, <M-Up>, ...
     if ctrl || alt {
         let prefix = ctrl ? "C" : "M";
+        // Named keys keep the same spelling they have unmodified, so
+        // <C-BS> is the modified form of <BS> -- not "<C-Backspace>",
+        // which nothing else in the key vocabulary would recognize and
+        // which `parseKeys` would never produce for a remap LHS.
+        if keyName == "Backspace" { return f"<{prefix}-BS>"; }
         return f"<{prefix}-{keyName}>";
     }
     if keyName == "Escape" { return "<Esc>"; }
@@ -2858,6 +3029,7 @@ export fn canonicalKeyName(name: str): str {
             else if restLower == "right" { rest = "Right"; }
             else if restLower == "cr" { rest = "CR"; }
             else if restLower == "esc" { rest = "Esc"; }
+            else if restLower == "bs" || restLower == "backspace" { rest = "BS"; }
         }
         return f"<{mod}-{rest}>";
     }

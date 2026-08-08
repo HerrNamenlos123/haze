@@ -112,33 +112,40 @@ static hzstd_str_t hzstd_fs_parent_dir(const char* path)
   return (hzstd_str_t) { .data = (char*)path, .length = (size_t)last_sep };
 }
 
-hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_ref_t* outputBuffer)
+hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path)
 {
-  outputBuffer->data = HZSTD_STRING(NULL, 0);
-
   char* nullTermPath = hzstd_cstr_from_str(allocator, path);
   if (!nullTermPath) {
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_out_of_memory,
-      .message = HZSTD_STRING("out of memory", 13),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_code_out_of_memory,
+        .message = HZSTD_STRING("out of memory", 13),
+      },
     };
   }
 
   FILE* f = fopen(nullTermPath, "r");
   if (!f) {
     int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_from_errno(err),
+        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
   if (fseek(f, 0, SEEK_END) != 0) {
     int err = errno;
     fclose(f);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_from_errno(err),
+        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
@@ -146,36 +153,47 @@ hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t p
   if (size < 0) {
     int err = errno;
     fclose(f);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_from_errno(err),
+        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
   if (fseek(f, 0, SEEK_SET) != 0) {
     int err = errno;
     fclose(f);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_from_errno(err),
+        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
   if (size == 0) {
     fclose(f);
-    outputBuffer->data = HZSTD_STRING(NULL, 0);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_none,
-      .message = HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_code_none,
+        .message = HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
   char* buffer = hzstd_allocate(allocator, (size_t)size, NULL);
   if (!buffer) {
     fclose(f);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_out_of_memory,
-      .message = HZSTD_STRING("out of memory", 13),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_code_out_of_memory,
+        .message = HZSTD_STRING("out of memory", 13),
+      },
     };
   }
 
@@ -183,22 +201,26 @@ hzstd_fs_error_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t p
   if (totalRead < (size_t)size && ferror(f)) {
     int err = errno;
     fclose(f);
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_io_error,
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    return (hzstd_read_file_text_result_t) {
+      .data = HZSTD_STRING(NULL, 0),
+      .error = {
+        .code = hzstd_fs_error_code_io_error,
+        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      },
     };
   }
 
   fclose(f);
 
-  outputBuffer->data = (hzstd_str_t) {
-    .data = buffer,
-    .length = totalRead,
-  };
-
-  return (hzstd_fs_error_t) {
-    .code = hzstd_fs_error_code_none,
-    .message = HZSTD_STRING(NULL, 0),
+  return (hzstd_read_file_text_result_t) {
+    .data = (hzstd_str_t) {
+      .data = buffer,
+      .length = totalRead,
+    },
+    .error = {
+      .code = hzstd_fs_error_code_none,
+      .message = HZSTD_STRING(NULL, 0),
+    },
   };
 }
 

@@ -7,7 +7,7 @@ namespace ffi {
 }
 
 namespace fmt {
-    export struct FormatArgs {
+    export inline struct FormatArgs {
         formatSpecifier: str = "";
     }
 

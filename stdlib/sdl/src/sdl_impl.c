@@ -1,6 +1,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_video.h>
 
+/* For the clipboard bridge at the bottom of this file, which hands SDL's
+   text to Haze as an owned str. */
+#include <hzstd/hzstd_types.h>
+#include <hzstd/include/hzstd_memory.h>
+#include <hzstd/include/hzstd_string.h>
+
 #define HAZE_SDL_SHOULD_CLOSE_PROPERTY "haze.should_close"
 #define HAZE_SDL_GL_CONTEXT_PROPERTY "haze.gl_context"
 #define HAZE_SDL_SIZE_CHANGED_PROPERTY "haze.size_changed"
@@ -378,3 +384,99 @@ bool haze_sdl_swapInterval(int interval) { return SDL_GL_SetSwapInterval(interva
 void* haze_sdl_getProcAddress(const char* procname) { return SDL_GL_GetProcAddress(procname); }
 
 double haze_sdl_getTime(void) { return (double)SDL_GetTicksNS() / 1000000000.0; }
+/* ---------- Clipboard ----------
+
+   SDL_GetClipboardText returns a buffer the CALLER owns and must SDL_free;
+   unlike SDL_GetError's static string, handing it straight to Haze as a
+   borrowed str would leak it on every read. Copy into GC-owned memory and
+   release SDL's copy here, so the Haze side gets an ordinary owned str with
+   no free obligation. SDL returns "" (never NULL) when the clipboard is
+   empty or holds non-text, which hzstd_cstr_dup maps to an empty str. */
+hzstd_str_t haze_sdl_getClipboardText(void)
+{
+  char* text = SDL_GetClipboardText();
+  if (!text) {
+    return hzstd_cstr_dup("");
+  }
+  hzstd_str_t owned = hzstd_cstr_dup(text);
+  SDL_free(text);
+  return owned;
+}
+
+/* Takes a Haze str (pointer + length, NOT null-terminated) rather than a
+   ccstr, so callers can pass ordinary runtime strings; SDL needs a C
+   string, so null-terminate into a temporary here and free it after. */
+bool haze_sdl_setClipboardText(hzstd_str_t text)
+{
+  if (text.length == 0) {
+    return SDL_SetClipboardText("");
+  }
+  /* GC-owned (BDWGC); there is no free-side API and none is needed --
+     SDL_SetClipboardText copies the text, so the collector may reclaim
+     this the moment the call returns. */
+  char* terminated = hzstd_cstr_from_str(hzstd_make_heap_allocator(), text);
+  return SDL_SetClipboardText(terminated);
+}
+
+/* ---------- Mouse cursors ----------
+
+   Cursor objects are created ONCE and cached: SDL_CreateSystemCursor
+   allocates, and the cursor handed to SDL_SetCursor must stay alive for as
+   long as it is in use, so creating one per frame would both leak and churn
+   the platform's cursor handle. The cache is indexed by the same integer
+   ui_styling.Cursor uses -- the Haze side casts its enum straight to an int
+   and the mapping to SDL_SystemCursor happens here, in one table.
+
+   haze_sdl_setCursor is called every frame with whatever cursor the element
+   under the pointer asks for, so it early-outs when nothing changed: SDL's
+   own SDL_SetCursor is not guaranteed to be free, and on some backends it
+   round-trips to the display server. */
+
+#define HAZE_SDL_CURSOR_COUNT 12
+
+static SDL_Cursor* g_haze_cursors[HAZE_SDL_CURSOR_COUNT] = { NULL };
+static int g_haze_current_cursor = -1;
+
+/* Index order MUST match ui_styling.Cursor's member order. */
+static SDL_SystemCursor haze_sdl_system_cursor_for(int index)
+{
+  switch (index) {
+    case 0:  return SDL_SYSTEM_CURSOR_DEFAULT;
+    case 1:  return SDL_SYSTEM_CURSOR_POINTER;
+    case 2:  return SDL_SYSTEM_CURSOR_TEXT;
+    case 3:  return SDL_SYSTEM_CURSOR_WAIT;
+    case 4:  return SDL_SYSTEM_CURSOR_PROGRESS;
+    case 5:  return SDL_SYSTEM_CURSOR_CROSSHAIR;
+    case 6:  return SDL_SYSTEM_CURSOR_MOVE;
+    case 7:  return SDL_SYSTEM_CURSOR_NOT_ALLOWED;
+    case 8:  return SDL_SYSTEM_CURSOR_NS_RESIZE;
+    case 9:  return SDL_SYSTEM_CURSOR_EW_RESIZE;
+    case 10: return SDL_SYSTEM_CURSOR_NWSE_RESIZE;
+    case 11: return SDL_SYSTEM_CURSOR_NESW_RESIZE;
+    default: return SDL_SYSTEM_CURSOR_DEFAULT;
+  }
+}
+
+void haze_sdl_setCursor(int index)
+{
+  if (index < 0 || index >= HAZE_SDL_CURSOR_COUNT) {
+    index = 0;
+  }
+  if (index == g_haze_current_cursor) {
+    return;
+  }
+
+  if (!g_haze_cursors[index]) {
+    g_haze_cursors[index] = SDL_CreateSystemCursor(haze_sdl_system_cursor_for(index));
+    /* Creation can fail (a platform without that shape). Leave the current
+       cursor alone rather than forcing the arrow -- and don't retry every
+       frame by marking this index as handled. */
+    if (!g_haze_cursors[index]) {
+      g_haze_current_cursor = index;
+      return;
+    }
+  }
+
+  SDL_SetCursor(g_haze_cursors[index]);
+  g_haze_current_cursor = index;
+}

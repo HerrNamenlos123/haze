@@ -1,6 +1,11 @@
 
 namespace ffi {
-    extern C fn hzstd_color_from_hex(hex: str, error: hzstd_str_ref_t, argbMode: bool): inline hzstd_color_t :: final;
+    export extern C noemit inline struct hzstd_color_from_hex_result_t {
+        color: inline hzstd_color_t;
+        error: str;
+    };
+
+    extern C fn hzstd_color_from_hex(hex: str, argbMode: bool): inline hzstd_color_from_hex_result_t :: final;
     extern C fn hzstd_color_to_hex(color: inline hzstd_color_t, omitAlphaIfOpaque: bool, argbMode: bool): str :: final;
 }
 
@@ -31,18 +36,17 @@ export extern C noemit inline struct hzstd_color_t {
 
     // Parses a hex color string. Returns Ok(Color) on success, Err(message) on failure.
     static fn fromHex(color: str, args: ColorArgs = {}): Result<Color, str> {
-        let error = ffi.hzstd_str_ref_t { data: "" };
-        let result = ffi.hzstd_color_from_hex(color, error, args.mode == HexMode.ARGB);
+        let result = ffi.hzstd_color_from_hex(color, args.mode == HexMode.ARGB);
 
-        if error.data.length > 0 {
-            return Result<Color, str>.Err(error.data);
+        if result.error.length > 0 {
+            return Result<Color, str>.Err(result.error);
         }
 
         return Result<Color, str>.Ok(Color {
-            r: result.r,
-            g: result.g,
-            b: result.b,
-            a: result.a,
+            r: result.color.r,
+            g: result.color.g,
+            b: result.color.b,
+            a: result.color.a,
         });
     }
 
@@ -121,18 +125,17 @@ export extern C noemit inline struct hzstd_colorf_t {
 
     // Parses a hex color string. Returns Ok(Colorf) on success, Err(message) on failure.
     static fn fromHex(color: str, args: Color.ColorArgs = {}): Result<Colorf, str> {
-        let error = ffi.hzstd_str_ref_t { data: "" };
-        let result = ffi.hzstd_color_from_hex(color, error, args.mode == Color.HexMode.ARGB);
+        let result = ffi.hzstd_color_from_hex(color, args.mode == Color.HexMode.ARGB);
 
-        if error.data.length > 0 {
-            return Result<Colorf, str>.Err(error.data);
+        if result.error.length > 0 {
+            return Result<Colorf, str>.Err(result.error);
         }
 
         return Result<Colorf, str>.Ok(Colorf {
-            r: result.r as f32,
-            g: result.g as f32,
-            b: result.b as f32,
-            a: result.a as f32,
+            r: result.color.r as f32,
+            g: result.color.g as f32,
+            b: result.color.b as f32,
+            a: result.color.a as f32,
         });
     }
 

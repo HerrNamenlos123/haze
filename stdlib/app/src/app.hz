@@ -315,3 +315,33 @@ export opaque struct App {
         sdl.terminate();
     }
 }
+
+// === System clipboard =========================================
+//
+// Free functions rather than App methods because the clipboard is a
+// process-global desktop resource in SDL, not a property of any one
+// window. Exposed here so callers get the OS clipboard without importing
+// sdl directly -- the same reason everything else in this module exists.
+
+// "" when the clipboard is empty or holds non-text (an image, say).
+export fn getClipboardText(): str {
+    return sdl.getClipboardText();
+}
+
+export fn setClipboardText(text: str): bool {
+    return sdl.setClipboardText(text);
+}
+
+// === Mouse cursor =============================================
+//
+// Also process-global, and also called every frame by the UI layer (see
+// ui_components' cursor resolution) -- the underlying SDL wrapper caches
+// and early-outs, so a per-frame call costs nothing when the shape is
+// unchanged.
+//
+// `index` is a ui_styling.Cursor cast to int. This module deliberately
+// doesn't import ui_styling to name that type: app sits below the UI layer
+// and stays ignorant of it, exactly like the sdl module below it.
+export fn setCursor(index: int): void {
+    sdl.setCursor(index);
+}

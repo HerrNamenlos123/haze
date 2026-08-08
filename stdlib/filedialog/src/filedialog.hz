@@ -2,16 +2,27 @@
 __c__("#include \"ffi/filedialog.c\"");
 
 namespace filedialog_ffi {
-    extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
-    extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
-    extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
-    extern C fn hz_filedialog_open_folder_dialog(defaultPath: str, outPath: ffi.hzstd_str_ref_t, errorMessage: ffi.hzstd_str_ref_t): hz_filedialog_result_t :: final;
-
     extern C noemit enum unscoped hz_filedialog_result_t {
         hz_filedialog_result_ok = 1,
         hz_filedialog_result_cancel = 2,
         hz_filedialog_result_error = 3,
     }
+
+    extern C noemit inline struct hz_filedialog_path_result_t {
+        result: hz_filedialog_result_t;
+        path: str;
+        error: str;
+    };
+
+    extern C noemit inline struct hz_filedialog_multiple_result_t {
+        result: hz_filedialog_result_t;
+        error: str;
+    };
+
+    extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str): inline hz_filedialog_path_result_t :: final;
+    extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str): inline hz_filedialog_multiple_result_t :: final;
+    extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str): inline hz_filedialog_path_result_t :: final;
+    extern C fn hz_filedialog_open_folder_dialog(defaultPath: str): inline hz_filedialog_path_result_t :: final;
 }
 
 export inline struct DialogOpenArgs {
@@ -46,65 +57,55 @@ export type DialogResult = DialogSuccess | DialogCancel | DialogError;
 export type DialogMultipleResult = DialogMultipleSuccess | DialogCancel | DialogError;
 
 export fn pickFile(args: DialogOpenArgs = {}): DialogResult {
-    let outPath = ffi.hzstd_str_ref_t {};
-    let errorMessage = ffi.hzstd_str_ref_t {};
-
-    let result = filedialog_ffi.hz_filedialog_open_dialog(args.filters, args.defaultPath, outPath, errorMessage);
-    if result == filedialog_ffi.hz_filedialog_result_ok {
-        return DialogSuccess { path: outPath.data };
+    let result = filedialog_ffi.hz_filedialog_open_dialog(args.filters, args.defaultPath);
+    if result.result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: result.path };
     }
-    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+    else if result.result == filedialog_ffi.hz_filedialog_result_cancel {
         return DialogCancel {};
     }
     else {
-        return DialogError { error: errorMessage.data };
+        return DialogError { error: result.error };
     }
 }
 
 export fn saveFile(args: DialogOpenArgs = {}): DialogResult {
-    let outPath = ffi.hzstd_str_ref_t {};
-    let errorMessage = ffi.hzstd_str_ref_t {};
-
-    let result = filedialog_ffi.hz_filedialog_save_dialog(args.filters, args.defaultPath, outPath, errorMessage);
-    if result == filedialog_ffi.hz_filedialog_result_ok {
-        return DialogSuccess { path: outPath.data };
+    let result = filedialog_ffi.hz_filedialog_save_dialog(args.filters, args.defaultPath);
+    if result.result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: result.path };
     }
-    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+    else if result.result == filedialog_ffi.hz_filedialog_result_cancel {
         return DialogCancel {};
     }
     else {
-        return DialogError { error: errorMessage.data };
+        return DialogError { error: result.error };
     }
 }
 
 export fn pickFilesMultiple(args: DialogOpenArgs = {}): DialogMultipleResult {
     let outPaths: []str = [];
-    let errorMessage = ffi.hzstd_str_ref_t {};
 
-    let result = filedialog_ffi.hz_filedialog_open_dialog_multiple(args.filters, args.defaultPath, outPaths, errorMessage);
-    if result == filedialog_ffi.hz_filedialog_result_ok {
+    let result = filedialog_ffi.hz_filedialog_open_dialog_multiple(args.filters, args.defaultPath, outPaths);
+    if result.result == filedialog_ffi.hz_filedialog_result_ok {
         return DialogMultipleSuccess { paths: outPaths };
     }
-    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+    else if result.result == filedialog_ffi.hz_filedialog_result_cancel {
         return DialogCancel {};
     }
     else {
-        return DialogError { error: errorMessage.data };
+        return DialogError { error: result.error };
     }
 }
 
 export fn pickFolder(args: DialogOpenFolderArgs = {}): DialogResult {
-    let outPath = ffi.hzstd_str_ref_t {};
-    let errorMessage = ffi.hzstd_str_ref_t {};
-
-    let result = filedialog_ffi.hz_filedialog_open_folder_dialog(args.defaultPath, outPath, errorMessage);
-    if result == filedialog_ffi.hz_filedialog_result_ok {
-        return DialogSuccess { path: outPath.data };
+    let result = filedialog_ffi.hz_filedialog_open_folder_dialog(args.defaultPath);
+    if result.result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: result.path };
     }
-    else if result == filedialog_ffi.hz_filedialog_result_cancel {
+    else if result.result == filedialog_ffi.hz_filedialog_result_cancel {
         return DialogCancel {};
     }
     else {
-        return DialogError { error: errorMessage.data };
+        return DialogError { error: result.error };
     }
 }

@@ -13,8 +13,10 @@ static int hex_digit(char c) {
 
 #define FAIL(msg)                                                              \
   do {                                                                         \
-    error->data = HZSTD_STRING_FROM_CSTR(msg);                                 \
-    return (hzstd_color_t){0.0, 0.0, 0.0, 0.0};                                \
+    return (hzstd_color_from_hex_result_t){                                    \
+      .color = {0.0, 0.0, 0.0, 0.0},                                           \
+      .error = HZSTD_STRING_FROM_CSTR(msg),                                    \
+    };                                                                         \
   } while (0)
 
 /* Expand a single hex nibble v to a full byte (v * 17, i.e. 0xv -> 0xvv). */
@@ -26,8 +28,8 @@ static hzstd_real_t parse_byte(int hi, int lo) {
   return (hzstd_real_t)((hi << 4) | lo) / 255.0;
 }
 
-hzstd_color_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_str_ref_t *error,
-                                    hzstd_bool_t argb_mode) {
+hzstd_color_from_hex_result_t hzstd_color_from_hex(hzstd_str_t hex,
+                                                    hzstd_bool_t argb_mode) {
   const char *s = hex.data;
   uint64_t len = hex.length;
 
@@ -109,7 +111,10 @@ hzstd_color_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_str_ref_t *error,
     }
   }
 
-  return (hzstd_color_t){.r = r, .g = g, .b = b, .a = a};
+  return (hzstd_color_from_hex_result_t){
+    .color = {.r = r, .g = g, .b = b, .a = a},
+    .error = HZSTD_STRING(NULL, 0),
+  };
 }
 
 static double clamp01(double v) { return v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v; }
