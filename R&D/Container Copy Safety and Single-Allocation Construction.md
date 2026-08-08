@@ -23,15 +23,32 @@ In practice, tracing the actual codegen and runtime (`stdlib/core/src/hzstd/src/
    working array into it — because the working array (`[]u8`) and the frozen `cptr` are two
    different allocation kinds bridged by copying.
 
-`hzstd_dynamic_array_create` itself was confirmed (`hzstd_array.c:65-93`) to always be *two*
-allocations (control struct + buffer) even in the best case — so even fixing "the array grows
-redundantly" leaves a structural 2-allocations-for-one-array baseline, on top of the
-StringWriter/ByteBuffer wrapper objects themselves.
+**Important distinction, established later in the conversation and initially conflated in an
+earlier draft of this document: allocations 1–3 are an ordinary, uninteresting inefficiency.**
+`hzstd_dynamic_array_create` being two allocations even in the best case (control struct +
+buffer, confirmed `hzstd_array.c:65-93`), and growing redundantly past the default capacity of
+4, are both fixable by straightforward improvements to the dynamic array implementation itself
+(pre-size exactly when a target length is known; fuse the control struct with a first small
+buffer) — no new language feature, no design exploration required. This is flagged in §7 as a
+worthwhile but separate fix.
+
+**The actual target of this entire document is not those 3 allocations. It is the fact that
+`StringWriter` and `ByteBuffer` are themselves each a separately heap-allocated struct
+instance**, existing purely to shepherd cursor/pointer state between the counting pass and the
+writing pass — not to hold the payload bytes at all. Even with a perfectly optimal single-
+allocation dynamic array, `StringWriter { buffer: ... }` and `ByteBuffer { data, borrowed,
+frozenPtr, ... }` would still each independently trigger `HZSTD_ALLOC_STRUCT` (confirmed via
+`src/Lower/Lower.ts`: any non-`inline` struct construction unconditionally calls the allocator,
+regardless of the struct's size or field count — see §5.2). Two wrapper-object allocations, on
+top of whatever the payload itself costs, for every single formatted string. **This is the
+allocation count every design in this document is actually trying to eliminate.**
 
 Constraint stated early and never relaxed: **exactly one allocation is fundamentally required**
 (the payload bytes, since a `str` must outlive the call and Haze forbids references to locals —
-see §2). Every other allocation in the pipeline is incidental complexity from how the code
-happens to be structured, not anything the problem actually requires.
+see §2). Every other allocation — both the fixable dynamic-array inefficiency and the
+StringWriter/ByteBuffer wrapper-object allocations — is incidental complexity from how the code
+happens to be structured, not anything the problem actually requires. The wrapper-object
+allocations are the hard, interesting part; the dynamic-array inefficiency is not.
 
 ## 2. Why this is a language-design problem, not a `ByteBuffer` bug
 
@@ -63,6 +80,43 @@ because a stack-local buffer could never safely be referenced from a returned `s
 required complexity. The question this whole document chases is how to eliminate everything
 beyond that one required allocation, without reintroducing the machinery (ownership, lifetimes,
 RAII) the language is intentionally avoiding.
+
+### 2.1 Why this is a lifetime problem specifically, and the one conditional exception
+
+Stated precisely: Haze requires string/buffer payloads to be heap-allocated and GC-tracked
+**because, and only because, it has no way to guarantee a bounded lifetime for them by any other
+means**. A stack-local buffer's lifetime is tied to its enclosing call frame; the moment a `str`
+slice into it could plausibly outlive that frame — which, absent a general escape analysis, must
+be assumed true for essentially any returned or stored value — referencing that buffer becomes a
+dangling-pointer hazard indistinguishable from the exact class of bug the language's
+no-references-to-locals invariant exists to make impossible (§2). Since Haze has deliberately
+ruled out the mechanism most languages use to make this safe *and* provably bounded at the same
+time (a borrow checker / lifetime system), heap allocation plus GC is not one option among
+several — it is **structurally required** for the general case, for as long as the compiler
+cannot itself prove a tighter bound.
+
+That "for as long as" is a real, load-bearing qualifier, not a rhetorical one. **If** the
+compiler can perform escape analysis and **prove**, for a specific call site, both (a) that the
+resulting string/buffer provably never escapes the scope it's constructed in (no reference to it
+is returned, stored in a heap object, or otherwise made reachable past the end of that scope),
+and (b) that its length is bounded at compile time and small (e.g. formatting a fixed-width
+integer or float has a known worst-case digit count) — **then nothing about the language's
+safety invariants prevents allocating a scratch buffer on the stack instead of the heap** for
+that specific, proven case. The `longjmp`-based panic recovery guarantee (§2) is not weakened by
+this either: a stack-local scratch buffer that provably cannot escape its frame is exactly the
+kind of thing that safely vanishes, with nothing left dangling, when a `longjmp` unwinds past it
+— identical in spirit to how any other local variable is already safely discarded on unwind.
+
+This is **not** a relaxation of the "exactly one heap allocation is required" conclusion reached
+above — it is a distinct, conditional optimization that only applies when the compiler can
+actually establish both preconditions for a given call site; where it cannot (the general case,
+and the case this document is otherwise concerned with), the one-heap-allocation requirement
+stands exactly as stated. This was raised as a real, worthwhile future direction — a compile-time
+escape-analysis pass is a substantial, separate piece of compiler work with its own design
+questions (how conservative must the "never escapes" proof be; how is "small enough" length
+decided; does it apply only to `format_to_sprintf`-style bounded-length primitive formatting, or
+more broadly) — and is **not** designed further in this document. It is recorded here as the one
+principled exception to the heap-allocation requirement in §2, to be picked up separately.
 
 ## 3. The real obstacle: containers are not safely copyable the way plain data is
 
@@ -193,18 +247,37 @@ constraints:
    hashmap combining several differently-typed internal regions), and relies on hand-rolled
    pointer arithmetic (`cptr` + manual offsets) rather than a language-level guarantee.
 
-7. **Higher-order function / callback**: the whole counting+writing pipeline is one function
-   that hands write-capability to a callback only as a `mut` parameter, never returned, never
-   stored, never assignable — "you can't `let b = a` a currently-being-inside-a-function-call."
-   **Rejected** on a stricter ground than copy-safety: verifying "the callback never stores its
-   `mut` parameter" requires reasoning about what the *callback body* (arbitrary, unknown,
-   possibly user-authored) does with the parameter — which requires cross-function / whole-call-graph
-   analysis. The user's standing constraint: **each function must be elaborated in isolation,
-   without knowledge of its call sites** (except future optimizations, explicitly not
-   correctness). Any design requiring cross-function reasoning to be sound is disqualified
-   outright — "that flips the compilation model on its head and turns into a borrow checker,
-   which is basically impossible to do 100%." This constraint governs every subsequent design
-   in this document.
+7. **Higher-order function / callback — first (incorrect) framing, rejected.** Initially framed
+   by the assistant as: the whole counting+writing pipeline is one function that hands
+   write-*capability* — a `mut Writer`-shaped parameter — to a callback, relying on "a `mut`
+   parameter can't be assigned to a second variable" for safety. This is a different, weaker
+   design than what the user actually meant, and was correctly rejected: verifying that the
+   callback body never copies fields out of a `mut` parameter into something durable still
+   requires reasoning about what the *callback body* (arbitrary, unknown, possibly
+   user-authored) does with the state it's handed — cross-function / whole-call-graph analysis.
+   The user's standing constraint: **each function must be elaborated in isolation, without
+   knowledge of its call sites** (except future optimizations, explicitly not correctness). Any
+   design requiring cross-function reasoning to be sound is disqualified outright — "that flips
+   the compilation model on its head and turns into a borrow checker, which is basically
+   impossible to do 100%." This constraint governs every subsequent design in this document.
+
+   **The user's actual proposal, restated afterward, is a different and stronger shape, and was
+   not properly credited in the original framing above: `format_to` is never handed any state
+   at all** — no `mut Writer`, no `mut cptr`, no cursor. It receives only a **plain closure**
+   (an ordinary function value, capturing whatever state it needs, defined once at the top-level
+   call site where the real buffer/cursor actually live) — and `format_to`'s only possible
+   interaction with that closure is to call it or not call it. There is no data handed over for
+   `format_to` to copy, alias, or stash — only an opaque call target — so there is nothing for
+   cross-function reasoning to need to prove beyond "is this identifier invoked," which is a
+   purely local, single-function property. This version is **not disqualified** by the
+   cross-function-reasoning constraint the way the first framing was. The user is explicit,
+   however, that this is a *one-off* fix specific to the `fmt.format` call shape (formatting is
+   naturally a single call tree with one natural place to define the closure) — it is not a
+   general mechanism other stdlib containers (e.g. `ByteBuffer` used interactively, outside a
+   single call tree) could be built on. It remains a live, valid candidate for fixing
+   `fmt.format` specifically, in parallel with, or instead of, the more general chunk-allocator
+   direction explored later in this document — this was not resolved before the conversation
+   was stopped (see §9).
 
 8. **Runtime generation/version marker + panic on stale use** (catch copy-divergence at the
    point of use, like a bounds check, rather than preventing it structurally). Explicitly
@@ -446,10 +519,14 @@ the last open thread before the conversation was stopped.
 - `opaque`/field access control cannot fix this class of bug — the hazard is copying the whole
   value, not reading its fields — and Haze's planned-but-not-yet-built `private` field
   visibility would not help either, for the same reason.
-- No design may rely on cross-function/whole-call-graph reasoning (rules out naive
-  callback-based capability passing) or on compile-time borrow-checking/lifetime inference —
-  both were explicitly and repeatedly ruled out as incompatible with per-function-isolated
-  elaboration and with avoiding Rust/C++-style ownership machinery.
+- No design may rely on cross-function/whole-call-graph reasoning (rules out handing a
+  callback a *stateful* `mut` parameter and trusting the callback body not to stash it — see
+  design 7 in §4) or on compile-time borrow-checking/lifetime inference — both were explicitly
+  and repeatedly ruled out as incompatible with per-function-isolated elaboration and with
+  avoiding Rust/C++-style ownership machinery. **Handing a callback no state at all — only a
+  plain closure it can call or not call, with all real state captured at the closure's
+  definition site — is not ruled out by this constraint** and remains a live, unresolved
+  candidate specifically for `fmt.format` (see design 7 and open thread 6 below).
 - `__c__`/inline-C and `do unsafe` are out of the safety threat model by design; the guarantee
   being sought is against accidental/careless misuse expressible in ordinary Haze, not against
   deliberate unsafe-block abuse.
@@ -482,5 +559,15 @@ the last open thread before the conversation was stopped.
 5. §8's content-dependent copy semantics (empty-vs-non-empty containers having different
    aliasing behavior under copy) is unresolved and was the last thing raised before stopping —
    no direction has been proposed yet, only the problem statement.
-6. The concrete rebuild of `ByteBuffer`/`StringWriter`/`fmt.format`/`print`/`println` on top of
-   whatever final primitive emerges was never written, pending the above.
+6. Whether `fmt.format` should actually be fixed with the **plain-closure, no-state-handed-to-
+   format_to** approach from design 7 in §4 — a smaller, one-off fix that sidesteps the whole
+   chunk-allocator design for this one call site — versus the general chunk-allocator mechanism,
+   was never decided. The closure approach is not disqualified by any established constraint and
+   is markedly simpler; the chunk allocator is more general (fixes `ByteBuffer` as a reusable
+   type, not just the internal `fmt.format` pipeline) but has several unresolved sub-problems
+   (threads 1–4 above). These may not be mutually exclusive — `fmt.format` could ship the
+   closure fix now while the chunk allocator is developed separately for `ByteBuffer` and other
+   containers.
+7. The concrete rebuild of `ByteBuffer`/`StringWriter`/`fmt.format`/`print`/`println` on top of
+   whatever final primitive (or primitives, per thread 6) emerges was never written, pending the
+   above.
