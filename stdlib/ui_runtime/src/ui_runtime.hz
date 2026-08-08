@@ -12,6 +12,7 @@ export inline struct RuntimeArgs {
     pointerButtons?: ui_components.PointerHeldCallbacks;
     inputExtras?: ui_components.InputExtrasCallbacks;
     keyboard?: ui_components.KeyboardCallbacks;
+    setCursor?: ui_components.CursorCallback;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -48,6 +49,7 @@ export opaque struct Runtime {
             pointerButtons: args.pointerButtons,
             inputExtras: args.inputExtras,
             keyboard: args.keyboard,
+            setCursor: args.setCursor,
             measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
                 return layout.measureText(fontFamily, fontSize, text);
             },

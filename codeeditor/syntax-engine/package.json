@@ -4,6 +4,7 @@
   "description": "",
   "main": "syntax-engine.ts",
   "scripts": {
+    "build": "bun build --compile ./syntax-engine.ts --outfile syntax-engine",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",

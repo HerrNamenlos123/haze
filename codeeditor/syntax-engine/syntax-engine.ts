@@ -488,7 +488,13 @@ async function main() {
         return {
           jsonrpc: "2.0",
           id: request.id,
-          result: await openDocument(request.uri, request.fileContent ?? ""),
+          // `version` is echoed straight back so the client can discard a
+          // reply that describes a document it has already edited past --
+          // replies are read once per frame, requests sent once per edit.
+          result: {
+            ...(await openDocument(request.uri, request.fileContent ?? "")),
+            version: request.version ?? 0,
+          },
         };
 
       // Incremental edit: replace `removedCount` lines at `startLine`
@@ -501,12 +507,15 @@ async function main() {
         return {
           jsonrpc: "2.0",
           id: request.id,
-          result: await changeDocument(
-            request.uri,
-            request.startLine ?? 0,
-            request.removedCount ?? 0,
-            request.newLines ?? []
-          ),
+          result: {
+            ...(await changeDocument(
+              request.uri,
+              request.startLine ?? 0,
+              request.removedCount ?? 0,
+              request.newLines ?? []
+            )),
+            version: request.version ?? 0,
+          },
         };
 
       default:

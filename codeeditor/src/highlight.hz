@@ -16,6 +16,18 @@ struct HighlightResult {
     lineCount: int = 0;
     // False for a full-document parse (the whole cache is replaced).
     incremental: bool = false;
+    // The document version this reply describes -- echoed back from the
+    // request that produced it.
+    //
+    // Replies are read once per frame while requests are sent once per
+    // EDIT, so several changes can be in flight at once. Every line number
+    // in a reply (including the ones inside `tokens`) is stated in the
+    // index space of the document as it was WHEN THE REQUEST WAS SENT. If
+    // the document has changed since, those numbers refer to lines that
+    // have moved, and applying them paints the wrong lines. A consumer
+    // must therefore discard any reply whose version is not the current
+    // one. See mergeHighlightResult in codeui.hz.
+    version: int = 0;
 }
 
 struct Token {
@@ -35,6 +47,10 @@ struct HighlightRequest {
     startLine?: int;
     removedCount?: int;
     newLines?: []str;
+    // Document version this request describes. Echoed back verbatim in
+    // the reply so the client can tell a current answer from one that
+    // describes a document two edits ago -- see HighlightResult.version.
+    version?: int;
 }
 
 struct ResultObject {
@@ -46,6 +62,8 @@ struct ResultObject {
     firstLine?: int;
     lastLine?: int;
     lineCount?: int;
+    // Echoed straight back from the request. See HighlightResult.version.
+    version?: int;
 }
 
 struct ErrorObject {
@@ -119,7 +137,7 @@ struct HighlightEngine {
 
     // Full parse, remembered under `uri` so later edits can be
     // incremental against it. Send this once when a file is opened.
-    fn sendOpenDocument(uri: str, fileContent: str) {
+    fn sendOpenDocument(uri: str, fileContent: str, version: int) {
         if this.dead {
             return;
         }
@@ -128,6 +146,7 @@ struct HighlightEngine {
             method: "open",
             uri: uri,
             fileContent: fileContent,
+            version: version,
         });
         this.highlightProcess.writeStdin("Content-Length: ");
         this.highlightProcess.writeStdin(f"{request.length}");
@@ -142,7 +161,7 @@ struct HighlightEngine {
     //
     // This mirrors text_document.ChangeSet exactly, which is what makes
     // the document model's change notifications directly forwardable.
-    fn sendDocumentChange(uri: str, startLine: int, removedCount: int, newLines: []str) {
+    fn sendDocumentChange(uri: str, startLine: int, removedCount: int, newLines: []str, version: int) {
         if this.dead {
             return;
         }
@@ -153,6 +172,7 @@ struct HighlightEngine {
             startLine: startLine,
             removedCount: removedCount,
             newLines: newLines,
+            version: version,
         });
         this.highlightProcess.writeStdin("Content-Length: ");
         this.highlightProcess.writeStdin(f"{request.length}");
@@ -250,6 +270,9 @@ struct HighlightEngine {
                 }
                 if (j.result.lineCount) {
                     r.lineCount = j.result.lineCount;
+                }
+                if (j.result.version) {
+                    r.version = j.result.version;
                 }
                 return r;
             }

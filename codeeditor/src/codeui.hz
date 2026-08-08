@@ -123,6 +123,18 @@ struct HighlightToken {
     color: Color;
 }
 
+// One edit, remembered until every reply that predates it has been
+// consumed. See `pendingEdits` / `rebaseLine` in UI(): a highlight reply
+// is phrased in the line numbers of the document as it was when the
+// request went out, and these are what map those numbers onto the
+// document as it is now.
+struct PendingEdit {
+    version: int = 0;
+    startLine: int = 0;
+    removedCount: int = 0;
+    insertedCount: int = 0;
+}
+
 struct TokenColorSettings {
     foreground?: str;
     fontStyle?: str;
@@ -263,41 +275,151 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let tokenCache = rx.shallowReactive<[][]Token>([]);
         let tokenCacheVersion = rx.reactive<int>(0);
 
+        // Apply an edit's STRUCTURAL change to the cache: the same
+        // splice the document and the engine both just performed.
+        //
+        // Without this the cache was resized only at its END (append or
+        // pop until the length matched), which is correct exactly when the
+        // edit was on the last line and wrong everywhere else. Inserting a
+        // line at N left every cached bucket below N sitting one index too
+        // high -- line N+1 rendered with line N's colours, all the way
+        // down -- and since the engine only ever re-sends the handful of
+        // lines whose TOKENS changed, nothing afterwards ever put them
+        // back. That is why a single blank line permanently wrecked the
+        // highlighting below it.
+        //
+        // The engine splices its own caches identically (see
+        // changeDocument in syntax-engine.ts); this keeps the two in the
+        // same index space, which is the whole premise of merging replies
+        // by line number.
+        let spliceTokenCache = (startLine: int, removedCount: int, insertedCount: int) => {
+            if removedCount == 0 && insertedCount == 0 {
+                return;
+            }
+            let buckets: [][]Token = rx.get(tokenCache);
+            if startLine > buckets.length {
+                return;
+            }
+            let removable = removedCount;
+            if startLine + removable > buckets.length {
+                removable = buckets.length - startLine;
+            }
+            for (let i = 0; i < removable; i++) {
+                buckets.remove(startLine);
+            }
+            for (let i = 0; i < insertedCount; i++) {
+                // Empty rather than absent: the engine's reply will fill
+                // these in, and until it does an uncoloured line is the
+                // correct thing to draw.
+                let empty: []Token = [];
+                buckets.insert(startLine + i, empty);
+            }
+            tokenCache := buckets;
+            tokenCacheVersion := rx.get(tokenCacheVersion) + 1;
+        };
+
+        // Edits made since a given document version, kept so a reply that
+        // is already out of date can still be used.
+        //
+        // Requests go out once per EDIT; replies are read once per FRAME.
+        // Typing therefore routinely leaves several changes in flight, and
+        // a reply that comes back describes the document as it was when
+        // its request was sent -- every line number in it, including the
+        // lineIndex on each token, is in THAT document's index space.
+        //
+        // Simply dropping such a reply does not work: the engine sends a
+        // line's tokens exactly once, when they change, so a discarded
+        // reply means those lines stay blank forever. Instead the reply is
+        // REBASED -- its line numbers are pushed through each edit that
+        // has happened since, which is precisely how the lines it refers
+        // to have moved.
+        let pendingEdits: []PendingEdit = [];
+
+        // Map a line number from `fromVersion`'s index space into the
+        // current one. Returns -1 if the line was deleted by a later edit,
+        // in which case whatever the reply says about it is meaningless.
+        let rebaseLine = (line: int, fromVersion: int): int => {
+            let result = line;
+            let deleted = false;
+            for edit in pendingEdits {
+                // Only edits made AFTER this reply's version moved it;
+                // a line at or below `result`'s own start is untouched.
+                if !deleted && edit.version > fromVersion && result >= edit.startLine {
+                    if result < edit.startLine + edit.removedCount {
+                        // Inside the replaced range -- this line is gone,
+                        // and whatever the reply says about it is moot.
+                        deleted = true;
+                    } else {
+                        result = result + edit.insertedCount - edit.removedCount;
+                    }
+                }
+            }
+            if deleted {
+                return -1;
+            }
+            return result;
+        };
+
+        // Forget edits no reply can still refer to.
+        let dropEditsUpTo = (version: int) => {
+            while pendingEdits.length > 0 && pendingEdits[0].version <= version {
+                pendingEdits.remove(0);
+            }
+        };
+
         let mergeHighlightResult = (result: HighlightResult) => {
             let buckets: [][]Token = rx.get(tokenCache);
 
             if !result.incremental {
-                // Full parse: the reply is the whole truth.
+                // A full parse is the whole truth -- but only for the
+                // version it describes. Rebasing cannot reconstruct lines
+                // that later edits inserted, so anything still in flight
+                // is applied on top by the replies that follow.
                 buckets = [];
             }
 
-            // Grow/shrink to the engine's current line count so cached
-            // tokens for deleted lines cannot linger.
-            if result.lineCount > 0 {
-                while buckets.length < result.lineCount {
-                    let empty: []Token = [];
-                    buckets.push(empty);
-                }
-                while buckets.length > result.lineCount {
-                    buckets.pop();
-                }
+            // The cache's LENGTH is owned solely by spliceTokenCache(),
+            // which runs synchronously with each edit and is therefore
+            // always in the document's current index space. A reply's
+            // `lineCount` counts the document as it was when the request
+            // was sent, so resizing from it would truncate the cache to a
+            // stale length -- popping buckets off the END and permanently
+            // deleting the highlighting of every line past it, with no
+            // later reply to restore them.
+            let lineCount = doc.lineCount();
+            while buckets.length < lineCount {
+                let empty: []Token = [];
+                buckets.push(empty);
+            }
+            while buckets.length > lineCount {
+                buckets.pop();
             }
 
-            // Clear just the range this reply covers, then refill it.
-            if result.incremental {
-                for (let i = result.firstLine; i <= result.lastLine && i < buckets.length; i++) {
+            // Rebase every token's line through the edits made since this
+            // reply's version, then clear-and-refill the lines it lands
+            // on. Two passes so a line receiving several tokens is cleared
+            // once, before any of them are added.
+            for token in result.tokens {
+                let line = rebaseLine(token.lineIndex, result.version);
+                if line >= 0 && line < buckets.length {
                     let empty: []Token = [];
-                    buckets[i] = empty;
+                    buckets[line] = empty;
                 }
             }
 
             for token in result.tokens {
-                while buckets.length <= token.lineIndex {
-                    let empty: []Token = [];
-                    buckets.push(empty);
+                let line = rebaseLine(token.lineIndex, result.version);
+                if line >= 0 && line < buckets.length {
+                    // The token's own lineIndex is left as the engine sent
+                    // it; nothing reads it once the token is filed, since
+                    // the renderer addresses buckets by position.
+                    buckets[line].push(token);
                 }
-                buckets[token.lineIndex].push(token);
             }
+
+            // This reply is consumed, so no future reply can refer to a
+            // version at or below it.
+            dropEditsUpTo(result.version);
 
             tokenCache := buckets;
             tokenCacheVersion := rx.get(tokenCacheVersion) + 1;
@@ -608,6 +730,50 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return result;
         };
 
+        // Does the pointer's own column fall within `lineIndex`'s text,
+        // ignoring the end-of-line clamp documentPositionAt() applies?
+        // Compares DISPLAY cells, since that is what pixels convert into
+        // and what the line's on-screen width is measured in.
+        let pointerColumnInsideLine = (pointer: Vec2, lineIndex: int): bool => {
+            let charSize = ui.measureText("X", editorFontFamily(), editorFontSize());
+            if charSize.x <= 0.0 {
+                return false;
+            }
+            let localX = pointer.x - editorOriginX();
+            if localX < 0.0 {
+                return false;
+            }
+            // Truncate rather than round: rounding is right for placing a
+            // caret BETWEEN characters, but here the question is which
+            // character the pixel is actually on top of.
+            let cell = (localX / charSize.x) as int;
+            return cell < unicode.displayWidth(doc.lineText(lineIndex));
+        };
+
+        // Is there a word character at this document position?
+        //
+        // Mouse hover is only meaningful over an identifier -- that is what
+        // a language server has something to say about. Whitespace, blank
+        // space past the end of a line, and punctuation all answer false.
+        // Word characters are the usual identifier set (letters, digits,
+        // `_`, `$`), plus anything non-ASCII, since a byte >= 0x80 is part
+        // of a multi-byte character which may well be an identifier in
+        // another script -- and treating those as punctuation would silently
+        // disable hover for non-English code.
+        let isWordPositionAt = (pos: Vec2i): bool => {
+            let lineText = doc.lineText(pos.y);
+            if pos.x < 0 || pos.x >= lineText.length {
+                return false;
+            }
+            let byte = lineText[pos.x];
+            if byte >= b"a" && byte <= b"z" { return true; }
+            if byte >= b"A" && byte <= b"Z" { return true; }
+            if byte >= b"0" && byte <= b"9" { return true; }
+            if byte == b"_" || byte == b"$" { return true; }
+            // Any continuation/lead byte of a multi-byte character.
+            return byte >= 0x80;
+        };
+
         // Is the pointer over the text area itself? documentPositionAt()
         // answers "which character would this pixel be", and it clamps --
         // so it happily reports a valid position for a pointer sitting in
@@ -656,7 +822,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             // Reuse the text we just read rather than re-deriving it.
             let startupText = rx.get(initialText);
             state.highlightEngine.sendOpenDocument(
-                highlightUri, startupText ? startupText as str : doc.text());
+                highlightUri, startupText ? startupText as str : doc.text(),
+                doc.version);
         }
 
         doc.addChangeListener((change: text_document.ChangeSet) => {
@@ -664,8 +831,30 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             for (let i = 0; i < change.insertedCount; i++) {
                 newLines.push(doc.lineText(change.startLine + i));
             }
+            // Shift the token cache to match the edit BEFORE the reply
+            // arrives. The reply is addressed by line number, so the cache
+            // has to already be in the document's new index space for
+            // those numbers to mean anything -- and the lines that merely
+            // MOVED keep their colours in the meantime instead of being
+            // redrawn with a neighbour's.
+            spliceTokenCache(change.startLine, change.removedCount, change.insertedCount);
+            // Remember the edit so replies still in flight -- which are
+            // phrased in an older document's line numbers -- can be
+            // rebased onto the document as it is now.
+            pendingEdits.push(PendingEdit {
+                version: doc.version,
+                startLine: change.startLine,
+                removedCount: change.removedCount,
+                insertedCount: change.insertedCount,
+            });
+            // Stamp the request with the document version it describes.
+            // Document.version is bumped BEFORE listeners run (see
+            // text_document.hz), so inside this callback it already names
+            // the state this very change produced -- which is exactly what
+            // the reply has to be checked against when it comes back.
             state.highlightEngine.sendDocumentChange(
-                highlightUri, change.startLine, change.removedCount, newLines);
+                highlightUri, change.startLine, change.removedCount, newLines,
+                doc.version);
         });
 
         // Hover used to be requested every time the cursor moved, including
@@ -771,6 +960,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 prevUpdate = now;
             }
 
+            // Drives vim's 'timeoutlen'. A pending mapping chord (the `j` of
+            // `jk`) is shown immediately and taken back if the chord
+            // completes -- but if the next key never arrives, only the clock
+            // can settle it, and vim_behavior has no timer of its own. This
+            // is the one place guaranteed to run every frame, so it is where
+            // that decision gets made.
+            //
+            // Bump docVersion when it fires: the speculative character
+            // becoming permanent is a document change as far as the render
+            // path is concerned, even though no text moved.
+            if rx.get(vimOn) {
+                if vim.tick() {
+                    docVersion := rx.get(docVersion) + 1;
+                }
+            }
+
             drainHighlightResults();
 
             if vueBridge && cache.data.file {
@@ -869,9 +1074,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // caret-anchored shift+L popup.
                     if !rx.get(hoverRequest) {
                         let target = documentPositionAt(pointer);
-                        // Past the end of a line there is no token to
-                        // describe, and asking wastes a round trip.
-                        if target.x < doc.lineText(target.y).length {
+                        // Only over an actual WORD. documentPositionAt()
+                        // clamps, so the blank area right of a line's last
+                        // character reports that character's position --
+                        // meaning without this test, resting the mouse
+                        // anywhere in the empty space beside the text
+                        // popped up a hover for whatever token happened to
+                        // end that line. Punctuation and whitespace are
+                        // excluded for the same reason VS Code ignores
+                        // them: there is no identifier there to describe.
+                        // The clamp inside documentPositionAt() is why the
+                        // raw pointer column has to be checked separately:
+                        // in vim's normal mode it pins the position to the
+                        // LAST CHARACTER of the line, so pointing at empty
+                        // space far to the right of a short line still
+                        // reports a real word position. Only the untruncated
+                        // column can tell the difference.
+                        if pointerColumnInsideLine(pointer, target.y)
+                            && isWordPositionAt(target) {
                             hoverResult := null;
                             hoverAnchor := { x: pointer.x, y: pointer.y } as Vec2;
                             hoverRequest := target;
@@ -1057,6 +1277,13 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // otherwise paint straight over the statusline and
                         // out past the window. Clip them to this box.
                         presets.overflowHidden(),
+                        // I-beam over the text, exactly like VS Code. Set on
+                        // the editor box rather than on each line so it also
+                        // covers the empty space past the last line and to
+                        // the right of short lines -- which is still text you
+                        // can click into. Inherited by the lines; the
+                        // scrollbar overrides it back to an arrow.
+                        presets.cursorText(),
                         // presets.p(8),
                     ],
                     focusable: true,
@@ -1495,6 +1722,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.top(0),
                                 presets.left(viewWidth - barWidth),
                                 presets.bg(scroll.style.trackColor),
+                                // The scrollbar sits inside the editor, so it
+                                // would inherit the I-beam; it's chrome, not
+                                // text. VS Code shows the plain arrow here.
+                                presets.cursorDefault(),
                             ],
                             onPointerDown: (event: ui_components.PointerEvent) => {
                                 // Stop this reaching the editor underneath,
@@ -1566,6 +1797,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 // Without a bound, a long signature runs off
                                 // the right edge and the text is unreadable.
                                 presets.p(4),
+                                // A popup floating over the text is chrome:
+                                // it would otherwise inherit the editor's
+                                // I-beam, implying you can select into it.
+                                presets.cursorDefault(),
                             ]
                         }, () => {
                             ui.text({

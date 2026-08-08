@@ -6,12 +6,38 @@
 // structure (in-place line mutation, array insert/remove) rather than a
 // simplified stand-in that could hide a bug.
 
+// The harness's clock. Frozen by default (nothing in the differential
+// corpus depends on time passing), but SETTABLE so a case can exercise
+// behavior that only a clock can trigger -- vim's 'timeoutlen', where a
+// pending mapping chord resolves because no key arrived in time. Without a
+// movable clock that path is simply unreachable from a test.
+// Held in a struct behind an optional global because a module-level `let`
+// can only be initialized to `none` here (a plain `= 0.0` is rejected as a
+// multi-line global initializer) -- same shape codeui.hz's g_state uses.
+struct TestClock {
+    seconds: real = 0.0;
+}
+
+extern C let g_testClock: TestClock | none = none;
+
+export fn setTestClock(seconds: real): void {
+    g_testClock = TestClock { seconds: seconds };
+}
+
+export fn getTestClock(): real {
+    let clock = g_testClock;
+    if clock {
+        return clock.seconds;
+    }
+    return 0.0;
+}
+
 export fn makeContext(doc: mut text_document.Document): mut textedit_behavior.Context {
     let ctx = textedit_behavior.Context({
         getLineLength: (lineIndex: int) => doc.lineLength(lineIndex),
         getLine: (lineIndex: int) => doc.line(lineIndex),
         getLineCount: () => doc.lineCount(),
-        getTimeInSeconds: () => 0.0,
+        getTimeInSeconds: () => getTestClock(),
         replaceRange: (start: Vec2i, end: Vec2i, text: String): void => {
             doc.replaceRange(start, end, text.cloneString());
         },

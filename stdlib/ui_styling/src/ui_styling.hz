@@ -114,6 +114,68 @@ export fn sizeEquals(a: Size, b: Size): bool {
 //     multiple simultaneous UI contexts/canvases).
 export enum Position { Static, Relative, Absolute, Fixed }
 
+// The mouse cursor shown while the pointer is over this element -- CSS's
+// `cursor` property, and the same vocabulary Tailwind's `cursor-*`
+// utilities expose.
+//
+// Named by INTENT ("this is text you can select", "this is a link"), not by
+// picture ("I-beam", "hand"): the actual bitmap is whatever the desktop
+// theme uses, which is the entire point of asking the OS for a system
+// cursor rather than drawing one.
+//
+// Like CSS, this INHERITS: an element that doesn't set a cursor shows
+// whatever its nearest ancestor that did set one asks for. That's resolved
+// at hit-test time by walking the hit path outward (see ui_components's
+// resolveCursor), not by a cascade pass over the tree -- the hit path is
+// already computed every frame, so inheritance costs nothing extra.
+//
+// Members map onto SDL3's SDL_SystemCursor, which in turn maps onto the
+// platform's native cursors. Only the subset with an unambiguous CSS
+// counterpart is exposed; SDL has more (the eight individual resize
+// corners), but CSS/Tailwind code doesn't reach for those.
+// Values are pinned EXPLICITLY (not left to auto-assignment) because they
+// cross an FFI boundary as plain ints: the host casts this to an int and the
+// C side indexes a table with it (see sdl_impl.c's
+// haze_sdl_system_cursor_for). Reordering these members, or inserting one in
+// the middle, silently repoints every cursor after it -- keep the table in
+// sdl_impl.c in sync with this list.
+export enum Cursor {
+    // `cursor: default` -- the ordinary arrow.
+    Default = 0,
+    // `cursor: pointer` -- a link or anything clickable. (CSS calls the
+    // arrow "default" and the hand "pointer"; SDL's constant of the same
+    // name means the hand too, but its older releases named it HAND -- don't
+    // be misled when cross-referencing.)
+    Pointer = 1,
+    // `cursor: text` -- selectable text. The I-beam.
+    Text = 2,
+    // `cursor: wait` / `cursor: progress`.
+    Wait = 3,
+    Progress = 4,
+    // `cursor: crosshair`.
+    Crosshair = 5,
+    // `cursor: move` -- draggable in any direction.
+    Move = 6,
+    // `cursor: not-allowed`.
+    NotAllowed = 7,
+    // `cursor: ns-resize` / `ew-resize` / `nwse-resize` / `nesw-resize`.
+    ResizeNS = 8,
+    ResizeEW = 9,
+    ResizeNWSE = 10,
+    ResizeNESW = 11,
+}
+
+// Cursor crosses to the platform as a plain int (see the enum's comment).
+// Raw C for the same reason hasButton does it: there's no language-level
+// enum-to-int conversion.
+export fn cursorToInt(cursor: Cursor): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("result = (int)cursor;");
+        return result;
+    };
+}
+
 // top/right/bottom/left offsets, CSS/Tailwind-style -- independent optional
 // edges, not Clay's corner-pair attach points (that stays an internal
 // ui_layout concern). Only one edge per axis is meaningful: if both left and
@@ -273,6 +335,11 @@ export inline struct DivStyle {
     zIndex?: int;
     anchorTarget?: AnchorTarget;
 
+    // Unset means "inherit from an ancestor" (and Default if none set one),
+    // which is why this stays optional all the way into ComputedDivStyle --
+    // see the note on ComputedDivStyle.cursor.
+    cursor?: Cursor;
+
     borderWidth: BorderWidthValues = {};
     borderColor?: Color;
 
@@ -299,6 +366,7 @@ export inline struct DivStyle {
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
+        this.cursor = other.cursor;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.fontFamily = other.fontFamily;
@@ -321,6 +389,7 @@ export inline struct DivStyle {
             this.overflowY == other.overflowY &&
             this.position == other.position &&
             this.zIndex == other.zIndex &&
+            this.cursor == other.cursor &&
             this.fontFamily == other.fontFamily &&
             this.fontSize == other.fontSize &&
             this.fontWeight == other.fontWeight &&
@@ -397,6 +466,13 @@ export inline struct ComputedDivStyle {
     zIndex: int = 0;
     anchorTarget?: AnchorTarget;
 
+    // Stays OPTIONAL after resolution, unlike overflowX/Y above, because
+    // `cursor` inherits: "unset" and "explicitly Default" are different
+    // answers. Unset lets an ancestor's cursor win; Default overrides an
+    // ancestor back to the plain arrow. Collapsing unset to Default here
+    // would make every element opt out of its parent's cursor.
+    cursor?: Cursor;
+
     borderWidth: BorderWidth = {};
     borderColor: Color = {};
 
@@ -423,6 +499,7 @@ export inline struct ComputedDivStyle {
         this.positionValues = other.positionValues;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
+        this.cursor = other.cursor;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.fontFamily = other.fontFamily;
@@ -481,6 +558,7 @@ export struct BottomOp { value: real; }
 export struct LeftOp { value: real; }
 export struct ZIndexOp { value: int; }
 export struct AnchorToOp { target: AnchorTarget; }
+export struct CursorOp { value: Cursor; }
 export struct BorderWidthOp { value: real; }
 export struct BorderTopWidthOp { value: real; }
 export struct BorderRightWidthOp { value: real; }
@@ -509,7 +587,7 @@ export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
     | OverflowOp | OverflowXOp | OverflowYOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
-    | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp
+    | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp | CursorOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
     | BorderColorOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
@@ -550,6 +628,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
             else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
             else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
             else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
+            else if op is CursorOp { if !working.cursor { working.cursor = op.value; } }
             else if op is BorderWidthOp {
                 if !working.borderWidth.top { working.borderWidth.top = op.value; }
                 if !working.borderWidth.right { working.borderWidth.right = op.value; }
@@ -574,6 +653,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
         cornerRadius: resolveCornerRadius(working.cornerRadius),
         positionValues: working.positionValues,
         anchorTarget: working.anchorTarget,
+        cursor: working.cursor,
         borderWidth: resolveBorderWidth(working.borderWidth),
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
