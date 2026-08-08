@@ -90,8 +90,23 @@ fn runCase(spec: CaseSpec): ResultOut {
     let start: Vec2i = { x: startX, y: startY };
     ctx.moveTo(start, true, false);
 
+    // Reset the clock per case, so one case's waiting can't leak into the
+    // next through the module-level test clock.
+    setTestClock(0.0);
+
     for key in vim_behavior.parseKeys(spec.keys) {
-        ctx.handleKey(key);
+        // Harness-only pseudo-key: "let 'timeoutlen' elapse here". Real vim
+        // has no such key -- this stands in for the wall-clock pause a user
+        // makes, so a test can reach the timeout branch deterministically
+        // instead of by sleeping. nvim's oracle can't express this, so cases
+        // using it are Haze-only (the differential corpus never emits it).
+        if key == "<Wait>" {
+            setTestClock(getTestClock() + 5.0);
+            vim.tick();
+        }
+        else {
+            ctx.handleKey(key);
+        }
     }
 
     let out = ResultOut { id: spec.id, ok: true };
