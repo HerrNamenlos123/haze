@@ -18,6 +18,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -104,6 +105,100 @@ const REPLACEMENTS = [
   "function f() { return 1; }",
 ];
 
+// === Model of the editor's client-side token cache =============
+//
+// A faithful port of spliceTokenCache + mergeHighlightResult from
+// codeeditor/src/codeui.hz. This is here because an engine that is
+// perfectly self-consistent can still drive a BROKEN editor: the engine
+// re-sends only the lines whose colouring changed, and the client keeps
+// every other line in a per-line cache addressed by line number. An edit
+// that inserts or removes lines renumbers that cache, so unless the
+// client applies the same splice the engine did, every line below the
+// edit keeps its neighbour's tokens -- permanently, since nothing later
+// re-sends them.
+//
+// That was a real shipped bug (one inserted blank line wrecked all
+// highlighting below it) which this suite did not catch, because its only
+// cross-check replaced every line at once -- which makes the engine
+// retokenize the whole document and so never exercises the incremental
+// path the editor actually uses. Keep this model in sync with codeui.hz.
+let clientBuckets: any[][] = [];
+
+/** The structural splice, applied when the edit happens, before any reply. */
+function clientSplice(startLine: number, removedCount: number, insertedCount: number) {
+  if (removedCount === 0 && insertedCount === 0) {
+    return;
+  }
+  if (startLine > clientBuckets.length) {
+    return;
+  }
+  let removable = removedCount;
+  if (startLine + removable > clientBuckets.length) {
+    removable = clientBuckets.length - startLine;
+  }
+  for (let k = 0; k < removable; k++) {
+    clientBuckets.splice(startLine, 1);
+  }
+  for (let k = 0; k < insertedCount; k++) {
+    clientBuckets.splice(startLine + k, 0, []);
+  }
+}
+
+/** Merge one reply into the cache. */
+function clientMerge(result: Reply["result"], incremental: boolean) {
+  if (!incremental) {
+    clientBuckets = [];
+  }
+  if (result.lineCount > 0) {
+    while (clientBuckets.length < result.lineCount) {
+      clientBuckets.push([]);
+    }
+    while (clientBuckets.length > result.lineCount) {
+      clientBuckets.pop();
+    }
+  }
+  if (incremental) {
+    for (let i = result.firstLine; i <= result.lastLine && i < clientBuckets.length; i++) {
+      clientBuckets[i] = [];
+    }
+  }
+  for (const t of result.tokens) {
+    while (clientBuckets.length <= t.lineIndex) {
+      clientBuckets.push([]);
+    }
+    clientBuckets[t.lineIndex].push(t);
+  }
+}
+
+// Fingerprint of what the client would actually RENDER.
+//
+// Deliberately keyed on the bucket a token sits in, not on the token's own
+// `lineIndex` field. The editor renders `buckets[line]` (see highlightedLine
+// in codeui.hz) and only ever reads `token.lineIndex` when filing an
+// incoming token into a bucket -- where it is always fresh from the engine.
+// A token that merely SHIFTED keeps the lineIndex it was born with, which
+// is stale and unread; comparing it would fail on a cache that renders
+// perfectly.
+function clientRenderFingerprint(): string {
+  const rows: any[] = [];
+  for (let line = 0; line < clientBuckets.length; line++) {
+    for (const t of clientBuckets[line]) {
+      rows.push([line, t.startIndex, t.endIndex, t.scopes.join("|")]);
+    }
+  }
+  return JSON.stringify(rows);
+}
+
+/** The same fingerprint, taken from a full-reparse reply. */
+function truthRenderFingerprint(tokens: any[]): string {
+  const rows: any[] = [];
+  for (const t of tokens) {
+    rows.push([t.lineIndex, t.startIndex, t.endIndex, t.scopes.join("|")]);
+  }
+  rows.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return JSON.stringify(rows);
+}
+
 function baseDocument(): string[] {
   const lines = ['<script setup lang="ts">'];
   for (let i = 0; i < 120; i++) lines.push(`const value${i} = compute(${i});`);
@@ -111,7 +206,32 @@ function baseDocument(): string[] {
   return lines;
 }
 
+/**
+ * The engine under test is a `bun build --compile` artifact, and it is
+ * untracked -- so it can silently be older than the source it was built
+ * from. That is not a harmless staleness: this suite would then be
+ * exercising a DIFFERENT engine than the editor ships, and can pass while
+ * the real protocol is broken (or fail for a fix that is actually
+ * present). Refuse to run rather than report a meaningless result.
+ */
+function assertEngineIsCurrent() {
+  const bin = join(ENGINE_DIR, "syntax-engine");
+  const src = join(ENGINE_DIR, "syntax-engine.ts");
+  if (!existsSync(bin)) {
+    console.error(`Engine binary missing: ${bin}`);
+    console.error("Build it with:  cd codeeditor/syntax-engine && bun run build");
+    process.exit(1);
+  }
+  if (statSync(bin).mtimeMs < statSync(src).mtimeMs) {
+    console.error("Engine binary is OLDER than syntax-engine.ts -- results would be meaningless.");
+    console.error("Rebuild it with:  cd codeeditor/syntax-engine && bun run build");
+    process.exit(1);
+  }
+}
+
 async function main() {
+  assertEngineIsCurrent();
+
   const argv = process.argv.slice(2);
   const arg = (n: string, d: string) => {
     const i = argv.indexOf(`--${n}`);
@@ -125,7 +245,11 @@ async function main() {
   await engine.send({ id: 0, method: "initialize" });
 
   let lines = baseDocument();
-  await engine.send({ id: 1, method: "open", uri: "doc", fileContent: lines.join("\n") });
+  const opened = await engine.send({
+    id: 1, method: "open", uri: "doc", fileContent: lines.join("\n"),
+  });
+  // Seed the modelled client cache from the full reply, as the editor does.
+  clientMerge(opened.result, false);
 
   let failures = 0;
   let totalIncrementalMs = 0;
@@ -145,6 +269,10 @@ async function main() {
     lines.splice(startLine, removedCount, ...newLines);
     if (lines.length === 0) lines = [""];
 
+    // The client renumbers its cache at EDIT time, before any reply --
+    // the same ordering as the editor's document change listener.
+    clientSplice(startLine, removedCount, insertCount);
+
     const t0 = performance.now();
     const changed = await engine.send({
       id: 1, method: "change", uri: "doc",
@@ -152,13 +280,19 @@ async function main() {
     });
     totalIncrementalMs += performance.now() - t0;
     retokenizedLines += changed.result.lastLine - changed.result.firstLine + 1;
+    clientMerge(changed.result, true);
+
+    // NOTE: no `continue` anywhere in this loop body from here on. Every
+    // iteration must reach the whole-document change and the reseed at the
+    // bottom, or the modelled client cache drifts out of step with the
+    // engine and every later iteration reports a phantom failure.
+    let clientWrong = false;
 
     if (changed.result.lineCount !== lines.length) {
       console.log(
         `edit ${n}: LINE COUNT MISMATCH engine=${changed.result.lineCount} expected=${lines.length}`,
       );
-      failures++;
-      continue;
+      clientWrong = true;
     }
 
     // The engine's incremental state must equal a from-scratch parse.
@@ -169,8 +303,18 @@ async function main() {
 
     if (fingerprint(fresh.result.tokens) !== fingerprint(truth.result.tokens)) {
       console.log(`edit ${n}: open vs highlight disagree (engine self-inconsistency)`);
-      failures++;
-      continue;
+      clientWrong = true;
+    }
+
+    // The CLIENT-side cache must ALSO equal a full reparse -- a strictly
+    // stronger claim than the engine being correct, and the one that
+    // decides whether the editor actually renders the right colours.
+    // Checked here, before the whole-document change below wipes the
+    // incremental state this cache was built against.
+    if (clientRenderFingerprint() !== truthRenderFingerprint(truth.result.tokens)) {
+      console.log(`edit ${n}: CLIENT CACHE != FULL after edit at line ${startLine}`);
+      console.log(`  removed=${removedCount} inserted=${JSON.stringify(newLines)}`);
+      clientWrong = true;
     }
 
     // Pull the incremental document's full token set back out by asking
@@ -182,8 +326,17 @@ async function main() {
     if (fingerprint(all.result.tokens) !== fingerprint(truth.result.tokens)) {
       console.log(`edit ${n}: INCREMENTAL != FULL after edit at line ${startLine}`);
       console.log(`  removed=${removedCount} inserted=${JSON.stringify(newLines)}`);
+      clientWrong = true;
+    }
+    if (clientWrong) {
       failures++;
     }
+
+    // That last request replaced every line, so the engine just re-sent
+    // the whole document. Reseed the model from it -- the client check is
+    // per-edit, and without this one failure would cascade into all the
+    // iterations after it.
+    clientMerge(all.result, false);
   }
 
   engine.kill();
