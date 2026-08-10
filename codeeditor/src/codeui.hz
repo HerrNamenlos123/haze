@@ -296,6 +296,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             if removedCount == 0 && insertedCount == 0 {
                 return;
             }
+            // A same-line edit -- one line removed, one inserted, at the
+            // same index -- is not a structural change at all; it is
+            // typing, backspace, or a small in-place replace (see the
+            // startY == endY fast path in text_document.replaceRange). No
+            // buckets actually need to move, so leave this one exactly as
+            // it is instead of clearing it to empty: the stale tokens are
+            // still a reasonable rendering of the line for however many
+            // frames it takes the engine's reply to arrive, whereas an
+            // empty bucket draws the whole line in the default colour and
+            // flashes on every keystroke.
+            if removedCount == 1 && insertedCount == 1 {
+                return;
+            }
             let buckets: [][]Token = rx.get(tokenCache);
             if startLine > buckets.length {
                 return;
