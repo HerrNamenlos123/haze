@@ -26,15 +26,12 @@ readAll(s: io.Stream): Bytes {
     let out = ByteBuffer();
     out.reserve(s.size());
 
-    let exit = false;
-    while !exit {
+    while true {
         let chunk = s.read();
-        if chunk.length == 0 { 
-            exit = true; 
+        if chunk.length == 0 {
+            break;
         }
-        else {
-            out.push(chunk);
-        }
+        out.push(chunk);
     }
 
     out.commit();

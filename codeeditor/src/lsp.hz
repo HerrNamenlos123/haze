@@ -14,13 +14,19 @@ fn exec(cmd: str, options: ExecOptions = {}): Result<none, none> {
     return Result<none, none>.Ok(none);
 }
 
-const vueLspFilePath = "./node_modules/@vue/language-server/bin/vue-language-server.js";
-
-fn lspFilePaths(): []str {
-  return [vueLspFilePath, "./node_modules/typescript/bin/tsc", "treesitter"];
-}
-
 let syntaxEngineDir = "codeeditor/syntax-engine";
+
+const vueLspFilePath = "codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js";
+
+// The files `npm install` below is expected to produce. These are resolved
+// against the process working directory (the repo root), NOT against
+// syntaxEngineDir -- only the npm/bun subprocesses run with that as their cwd.
+fn lspFilePaths(): []str {
+  return [
+      vueLspFilePath,
+      "codeeditor/syntax-engine/node_modules/typescript/bin/tsc",
+  ];
+}
 
 fn buildSyntaxEngine() {
     return exec("bun build syntax-engine.ts --compile --outfile syntax-engine", {
@@ -41,24 +47,28 @@ fn installLSP() {
         let files = lspFilePaths();
         let missing = false;
         for file in files {
-            if (!fs.exists(file)) {
-            missing = true;
-            //   break;
+            // `?!` is required: fs.exists returns Result<bool, Error>, so a bare
+            // `!fs.exists(file)` tests whether the Result itself is falsy (an
+            // Err) rather than whether the file is absent -- which reports a
+            // genuinely missing file as present.
+            if !fs.exists(file)?! {
+                missing = true;
+                break;
             }
         }
 
-        // if (!missing) {
-        //     fmt.println("All LSP files available");
-        //     return true;
-        // }
+        if !missing {
+            fmt.println("All LSP files available");
+            return true;
+        }
 
         // @catppuccin/vscode
         fmt.println("Some LSP files missing, installing...");
         exec("npm install --no-save @vue/language-server typescript @types/bun vscode-textmate vscode-oniguruma", {
-        // exec("npm install --no-save @vue/language-server typescript @types/bun vscode-textmate vscode-oniguruma tree-sitter tree-sitter-vue web-tree-sitter", {
             cwd: syntaxEngineDir,
         })?!;
         fmt.println("Some LSP files missing, installing... Done");
+        return true;
     }
     else {
         return none;

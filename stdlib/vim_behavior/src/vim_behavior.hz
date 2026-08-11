@@ -1015,16 +1015,14 @@ export struct Vim {
             x = this.ctx.previousColumn(y, x);
         }
 
-        // Skip blanks backwards, wrapping lines. `searching` replaces the
-        // break/continue this language doesn't have.
-        let searching = true;
-        while searching {
+        // Skip blanks backwards, wrapping lines.
+        while true {
             if this.ctx.lineLength(y) == 0 {
                 let empty: Vec2i = { x: 0, y: y };
                 return empty;
             }
             if this.classAt(y, x, false) != 0 {
-                searching = false;
+                break;
             } else if x == 0 {
                 if y == 0 {
                     let origin: Vec2i = { x: 0, y: 0 };
@@ -1063,8 +1061,7 @@ export struct Vim {
 
         // Always step at least one character forward.
         x = this.ctx.nextColumn(y, x);
-        let searching = true;
-        while searching {
+        while true {
             let lineLen = this.ctx.lineLength(y);
             if x >= lineLen {
                 if y >= lineCount - 1 {
@@ -1080,7 +1077,7 @@ export struct Vim {
             } else if this.classAt(y, x, false) == 0 {
                 x = this.ctx.nextColumn(y, x);
             } else {
-                searching = false;
+                break;
             }
         }
         // Advance to the end of this run, inspecting the NEXT CHARACTER
@@ -2500,12 +2497,11 @@ export struct Vim {
     mut fn joinLines(count: int) {
         let repeats = count > 1 ? count - 1 : 1;
         this.ctx.beginTransaction();
-        let joining = true;
-        for (let i = 0; i < repeats && joining; i++) {
+        for (let i = 0; i < repeats; i++) {
             let pos = this.ctx.cursor();
             if pos.y >= this.ctx.lineCount() - 1 {
-                joining = false;
-            } else {
+                break;
+            }
             let endOfLine = this.ctx.lineLength(pos.y);
             let nextStart = this.ctx.firstNonBlank(pos.y + 1);
             // Vim replaces the newline (and the next line's indent) with
@@ -2530,7 +2526,6 @@ export struct Vim {
             this.ctx.replaceRangeWith(r, String(separator));
             let target: Vec2i = { x: endOfLine, y: pos.y };
             this.ctx.moveTo(target, true, false);
-            }
         }
         this.ctx.endTransaction();
     }

@@ -1752,14 +1752,11 @@ export opaque struct UIContext {
                     // whatever's focused if there isn't one -- see
                     // DivProps.focusable and applyFocusChange.
                     let newFocusTarget: ComponentElementRuntimeData | null = null;
-                    let fi = hitPath.length - 1;
-                    while fi >= 0 {
+                    for (let fi = hitPath.length - 1; fi >= 0; fi--) {
                         let fd = runtimeDataOf(hitPath[fi]);
                         if fd.focusable {
                             newFocusTarget = fd;
-                            fi = -1;
-                        } else {
-                            fi = fi - 1;
+                            break;
                         }
                     }
                     this.applyFocusChange(tree, newFocusTarget, eventQueue);
@@ -1953,8 +1950,11 @@ export opaque struct UIContext {
             let alreadyRegistered = false;
             for n in parent.newChildComponents {
                 if n.id == id {
+                    // ids are unique within a render cycle, so the first match
+                    // is the only match.
                     child = n.component;
                     alreadyRegistered = true;
+                    break;
                 }
             }
 
@@ -2128,8 +2128,7 @@ export opaque struct UIContext {
                     for new in instance.childComponents {
                         if new.id == old.id {
                             stillExists = true;
-                            // TODO: Support "break" and use it here to optimize performance
-                            // break;
+                            break;
                         }
                     }
 

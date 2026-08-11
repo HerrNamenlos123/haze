@@ -661,22 +661,18 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // in which case whatever the reply says about it is meaningless.
         let rebaseLine = (line: int, fromVersion: int): int => {
             let result = line;
-            let deleted = false;
             for edit in pendingEdits {
                 // Only edits made AFTER this reply's version moved it;
                 // a line at or below `result`'s own start is untouched.
-                if !deleted && edit.version > fromVersion && result >= edit.startLine {
-                    if result < edit.startLine + edit.removedCount {
-                        // Inside the replaced range -- this line is gone,
-                        // and whatever the reply says about it is moot.
-                        deleted = true;
-                    } else {
-                        result = result + edit.insertedCount - edit.removedCount;
-                    }
+                if edit.version <= fromVersion || result < edit.startLine {
+                    continue;
                 }
-            }
-            if deleted {
-                return -1;
+                if result < edit.startLine + edit.removedCount {
+                    // Inside the replaced range -- this line is gone,
+                    // and whatever the reply says about it is moot.
+                    return -1;
+                }
+                result = result + edit.insertedCount - edit.removedCount;
             }
             return result;
         };
@@ -1103,15 +1099,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             let lineText = doc.lineText(lineIndex);
             let column = 0;
             let cell = 0;
-            let scanning = true;
-            while scanning && column < lineText.length {
+            while column < lineText.length {
                 let width = unicode.clusterColumnWidth(lineText, column);
                 if cell + width > displayColumn {
-                    scanning = false;
-                } else {
-                    cell = cell + width;
-                    column = unicode.nextClusterOffset(lineText, column);
+                    break;
                 }
+                cell = cell + width;
+                column = unicode.nextClusterOffset(lineText, column);
             }
 
             // Past the end of the text, the caret belongs at the line's own
