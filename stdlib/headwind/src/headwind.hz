@@ -175,6 +175,38 @@ namespace presets {
         return ui_styling.LeftOp { value: value };
     }
 
+    // translate-x-*/translate-y-*: shift this element by a fraction of ITS
+    // OWN size, after layout has already placed it -- see
+    // ui_styling.TranslateValues for the full semantics.
+    //
+    // The argument is the fraction directly: 1.0 is Tailwind's
+    // `translate-x-full` (CSS `translate: 100%`), -0.5 is
+    // `-translate-x-1/2` (CSS `-50%`). Tailwind spells the common fractions
+    // as named utilities; here they're just the number, since Haze has real
+    // literals and doesn't need `1/2` to be a class-name token.
+    //
+    // NOT on the p()/gap() spacing scale: these are multiples of the
+    // element's own size, so passing 4 would mean "four times my own width",
+    // not "16px". Use left()/top() for a pixel offset.
+    //
+    // The classic centering idiom, exactly as in CSS/Tailwind -- place the
+    // element's top-left at the middle of its container, then pull it back
+    // by half of itself so its CENTER lands there:
+    //   presets.absolute(), presets.left(w/2), presets.top(h/2),
+    //   presets.translateX(-0.5), presets.translateY(-0.5)
+    export fn translateX(value: real): ui_styling.TranslateXOp {
+        return ui_styling.TranslateXOp { value: value };
+    }
+
+    export fn translateY(value: real): ui_styling.TranslateYOp {
+        return ui_styling.TranslateYOp { value: value };
+    }
+
+    // Both axes at once -- the `translate-*` shorthand.
+    export fn translate(x: real, y: real): ui_styling.TranslateOp {
+        return ui_styling.TranslateOp { x: x, y: y };
+    }
+
     // z-<number>: stacking order among floating elements. Like CSS, only
     // affects an element that's actually taken out of flow (Absolute/Fixed/
     // anchorTo) -- Clay's zIndex lives on its floating config, so it has no

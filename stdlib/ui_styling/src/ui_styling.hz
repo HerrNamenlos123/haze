@@ -189,6 +189,39 @@ export inline struct PositionValues {
     left?: real;
 }
 
+// CSS `translate` / Tailwind `translate-*`: a post-layout shift of this
+// element by a multiple of ITS OWN size, applied after everything else has
+// placed it. This is the piece top/right/bottom/left cannot express -- those
+// offset by absolute pixels against the *containing block*, so "center this
+// box on a point" (`left: 50%` + `translate: -50%`) is impossible without a
+// term measured in the element's own dimensions.
+//
+// Units are FRACTIONS OF THE ELEMENT'S OWN SIZE, not pixels and not percent:
+// 1.0 means "one full width to the right" / "one full height down", -0.5 means
+// "half of my own width to the left". CSS writes those as `100%` and `-50%`;
+// this drops the percent so the value is directly the multiplier the layout
+// engine applies (`x * width`), with no /100 hiding in the plumbing.
+//
+// Pixel translation is deliberately NOT a second mode here: an absolute pixel
+// shift is exactly what left/top already do, so adding it would be a second
+// spelling of an existing feature. The self-relative fraction is the only
+// thing this adds.
+//
+// Like CSS, this NEVER affects layout -- it moves the element (and its
+// subtree) at placement time only. Siblings lay out as though the element
+// were untranslated, which is what makes it usable for centering and for
+// nudging a popup off its anchor without disturbing anything around it.
+//
+// Also like CSS, translate applies to any positioned element -- resolved by
+// ui_layout against Clay's floating offset, so it is only meaningful on an
+// element that is actually placed by that path (Absolute/Fixed, or anything
+// with an explicit anchorTo()). On a Static/Relative in-flow element it is
+// inert, exactly as `translate` on a non-transformable box is in CSS.
+export inline struct TranslateValues {
+    x: real = 0.0;
+    y: real = 0.0;
+}
+
 // A hollow anchor handle: created empty (see ui_components.UIContext.anchor),
 // handed to a target element's `anchor:` prop, and to any number of other
 // elements' `anchorTo()` position op -- in either order. The target element
@@ -332,6 +365,10 @@ export inline struct DivStyle {
 
     position?: Position;
     positionValues: PositionValues = {};
+    // Non-optional with a 0/0 default, like positionValues above: "no
+    // translation" and "translate by zero" are the same thing, so there is
+    // nothing for `none` to mean here that 0.0 doesn't already say.
+    translate: TranslateValues = {};
     zIndex?: int;
     anchorTarget?: AnchorTarget;
 
@@ -364,6 +401,7 @@ export inline struct DivStyle {
         this.overflowY = other.overflowY;
         this.position = other.position;
         this.positionValues = other.positionValues;
+        this.translate = other.translate;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
@@ -388,6 +426,8 @@ export inline struct DivStyle {
             this.overflowX == other.overflowX &&
             this.overflowY == other.overflowY &&
             this.position == other.position &&
+            this.translate.x == other.translate.x &&
+            this.translate.y == other.translate.y &&
             this.zIndex == other.zIndex &&
             this.cursor == other.cursor &&
             this.fontFamily == other.fontFamily &&
@@ -463,6 +503,7 @@ export inline struct ComputedDivStyle {
 
     position: Position = Position.Static;
     positionValues: PositionValues = {};
+    translate: TranslateValues = {};
     zIndex: int = 0;
     anchorTarget?: AnchorTarget;
 
@@ -497,6 +538,7 @@ export inline struct ComputedDivStyle {
         this.overflowY = other.overflowY;
         this.position = other.position;
         this.positionValues = other.positionValues;
+        this.translate = other.translate;
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
@@ -556,6 +598,14 @@ export struct TopOp { value: real; }
 export struct RightOp { value: real; }
 export struct BottomOp { value: real; }
 export struct LeftOp { value: real; }
+// Per-axis rather than one combined op, for the same reason the border-width
+// ops are split: `[presets.translateX(-0.5), presets.translateY(-1.0)]` must
+// compose within one array (mirroring Tailwind's `-translate-x-1/2
+// -translate-y-full`) instead of the second call replacing the first.
+// TranslateOp sets both axes at once -- the `translate-*` shorthand.
+export struct TranslateOp { x: real; y: real; }
+export struct TranslateXOp { value: real; }
+export struct TranslateYOp { value: real; }
 export struct ZIndexOp { value: int; }
 export struct AnchorToOp { target: AnchorTarget; }
 export struct CursorOp { value: Cursor; }
@@ -587,7 +637,9 @@ export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
     | OverflowOp | OverflowXOp | OverflowYOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
-    | PositionOp | TopOp | RightOp | BottomOp | LeftOp | ZIndexOp | AnchorToOp | CursorOp
+    | PositionOp | TopOp | RightOp | BottomOp | LeftOp
+    | TranslateOp | TranslateXOp | TranslateYOp
+    | ZIndexOp | AnchorToOp | CursorOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
     | BorderColorOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
@@ -626,6 +678,17 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
             else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
             else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
             else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
+            // "Not set by the component" is 0.0 here (the field's own
+            // default), so a preset only fills in an axis the raw style left
+            // at zero -- the same fill-the-gaps rule every other op follows.
+            // Translating by an explicit 0.0 and not translating at all are
+            // the same placement, so nothing is lost by conflating them.
+            else if op is TranslateOp {
+                if working.translate.x == 0.0 { working.translate.x = op.x; }
+                if working.translate.y == 0.0 { working.translate.y = op.y; }
+            }
+            else if op is TranslateXOp { if working.translate.x == 0.0 { working.translate.x = op.value; } }
+            else if op is TranslateYOp { if working.translate.y == 0.0 { working.translate.y = op.value; } }
             else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
             else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
             else if op is CursorOp { if !working.cursor { working.cursor = op.value; } }
@@ -652,6 +715,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
         padding: resolvePadding(working.padding),
         cornerRadius: resolveCornerRadius(working.cornerRadius),
         positionValues: working.positionValues,
+        translate: working.translate,
         anchorTarget: working.anchorTarget,
         cursor: working.cursor,
         borderWidth: resolveBorderWidth(working.borderWidth),

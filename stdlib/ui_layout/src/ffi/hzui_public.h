@@ -98,6 +98,15 @@ typedef struct {
   hzui_attach_to_t attachTo;
   hzui_attach_point_t attachPoint;
   hzstd_vec2_t offset;
+  // CSS `translate` -- a shift by a multiple of the element's OWN size (1.0 =
+  // one full width/height, -0.5 = half of itself back). Deliberately separate
+  // from `offset` above: that one is absolute pixels and is fully resolved on
+  // the Haze side, whereas this one cannot be, since it needs the element's
+  // final measured dimensions. Clay multiplies it out during layout -- see
+  // ToClayFloatingConfig in ui.c and the "HAZE LOCAL MODIFICATION" note in
+  // clay.h. Field order here must match ui_layout.hz's own
+  // hzui_floating_config_t declaration.
+  hzstd_vec2_t translate;
   int zIndex;
   // Only read when attachTo == hzui_attach_to_element -- the target's Clay
   // id string (same idPath convention as the `id` field above).

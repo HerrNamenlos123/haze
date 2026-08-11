@@ -184,6 +184,13 @@ static inline Clay_FloatingElementConfig ToClayFloatingConfig(hzui_floating_conf
   Clay_FloatingAttachPointType point = ToClayAttachPoint(config.attachPoint);
   floating.attachPoints = (Clay_FloatingAttachPoints) { .element = point, .parent = point };
   floating.offset = (Clay_Vector2) { .x = (float)config.offset.x, .y = (float)config.offset.y };
+  // CSS `translate` -- a fraction of the element's OWN size, which is why it
+  // can't be folded into .offset above (that's absolute pixels, and this
+  // element hasn't been measured yet). Clay multiplies it out against the
+  // final dimensions during layout; see the "HAZE LOCAL MODIFICATION" note in
+  // clay.h.
+  floating.selfRelativeOffset
+      = (Clay_Vector2) { .x = (float)config.translate.x, .y = (float)config.translate.y };
   floating.zIndex = (int16_t)config.zIndex;
 
   if (config.attachTo == hzui_attach_to_root) {

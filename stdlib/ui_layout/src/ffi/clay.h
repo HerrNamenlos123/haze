@@ -471,6 +471,23 @@ typedef CLAY_PACKED_ENUM {
 typedef struct {
   // Offsets this floating element by the provided x,y coordinates from its attachPoints.
   Clay_Vector2 offset;
+  // HAZE LOCAL MODIFICATION (not upstream Clay -- preserve when updating this
+  // vendored file; the matching change is in Clay__CalculateFinalLayout, search
+  // for "HAZE LOCAL MODIFICATION").
+  //
+  // Offsets this floating element by a multiple of ITS OWN final size, applied
+  // on top of .offset. This is CSS's `translate` (and Tailwind's translate-*):
+  // 1.0 means "one full width right / one full height down", -0.5 means "half
+  // my own size back". It exists because .offset alone cannot express it --
+  // .offset is in absolute pixels, whereas this term is only knowable once
+  // this element has been measured, which is why it is resolved down in the
+  // layout pass rather than by the caller.
+  //
+  // The existing .attachPoints.element enum already does exactly this maths,
+  // but only at the three fixed stops (0 / -50% / -100%); this generalises it
+  // to any fraction without disturbing that behaviour -- the two compose, and
+  // leaving this zeroed reproduces stock Clay exactly.
+  Clay_Vector2 selfRelativeOffset;
   // Expands the boundaries of the outer floating element without affecting its children.
   Clay_Dimensions expand;
   // When used in conjunction with .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID, attaches this floating element to the
@@ -2940,6 +2957,15 @@ void Clay__CalculateFinalLayout(void)
       }
       targetAttachPosition.x += config->offset.x;
       targetAttachPosition.y += config->offset.y;
+      // HAZE LOCAL MODIFICATION (not upstream Clay -- see the comment on
+      // Clay_FloatingElementConfig.selfRelativeOffset). CSS `translate`:
+      // a shift by a fraction of this element's own measured size. Applied
+      // last, so it composes on top of both the attach-point alignment and
+      // the absolute .offset, exactly as CSS's translate applies after
+      // top/left have placed the box. Zeroed by default, so an untranslated
+      // element follows the original code path unchanged.
+      targetAttachPosition.x += config->selfRelativeOffset.x * rootDimensions.width;
+      targetAttachPosition.y += config->selfRelativeOffset.y * rootDimensions.height;
       rootPosition = targetAttachPosition;
     }
     if (root->clipElementId) {

@@ -1,0 +1,300 @@
+import ui_layout
+import ui_elements
+import ui_styling
+import headwind
+
+// Drives the real Clay layout engine headlessly to verify ui_styling's
+// `translate` -- CSS `translate` / Tailwind `translate-*` -- actually reaches
+// the renderer as a shift of the element by a fraction of ITS OWN size.
+//
+// This is the part a unit test of the styling layer alone cannot see:
+// computeDivStyle can resolve `translate` perfectly while the layout/FFI
+// layer silently drops it (there are four separate places it has to survive:
+// ui_styling -> ui_layout's hzui_floating_config_t -> ui.c's
+// ToClayFloatingConfig -> Clay's own placement pass).
+//
+// The properties pinned here:
+//   1. translate moves the element by a multiple of its own measured size,
+//      NOT by pixels and NOT by a fraction of the parent.
+//   2. it composes additively with top/left rather than replacing them.
+//   3. it does NOT affect layout -- an in-flow sibling is placed exactly as
+//      if the translated element had not moved (this is the property that
+//      makes it usable at all, and the one most likely to break if the
+//      offset were ever folded in before measurement).
+//   4. it is inert on a non-positioned (Static) element, as in CSS.
+//   5. the sign convention matches CSS: positive = right/down.
+//
+// No GPU renderer is involved: the callbacks just record what they were
+// handed, so this runs anywhere.
+
+fn measureStub(fontId: int, fontSize: real, text: str): Vec2 {
+    return Vec2(text.length as real * 8.0, fontSize);
+}
+
+struct Recorder {
+    // Every rect drawn this frame, as "x,y,WxH".
+    boxes: []str = [];
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n   expected: {expected}\n   actual:   {actual}");
+        }
+    }
+
+    // Where the (unique) rect of this exact size ended up, as "x,y".
+    // "<missing>" if nothing of that size was drawn -- itself worth seeing
+    // spelled out, since a dropped element and a mispositioned one are very
+    // different bugs.
+    fn originOfSize(size: str): str {
+        for box in this.boxes {
+            let parts = box.split("|");
+            if parts[1] == size {
+                return parts[0];
+            }
+        }
+        return "<missing>";
+    }
+}
+
+// Round-half-up in both directions -- a bare (value + 0.5) truncates the
+// wrong way for negatives, and translated boxes are routinely negative.
+fn r(value: real): int {
+    return value < 0.0 ? (value - 0.5) as int : (value + 0.5) as int;
+}
+
+fn recordingCallbacks(rec: mut Recorder): ui_layout.RenderCallbacks {
+    return {
+        renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+            rec.boxes.push(f"{r(position.x)},{r(position.y)}|{r(size.x)}x{r(size.y)}");
+        },
+        renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {},
+        onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {},
+        renderCanvas: (element: ui_elements.CanvasElement): void => {},
+        renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {},
+        setClip: (clip: ui_layout.ResolvedClip): void => {},
+    };
+}
+
+fn makeContext(): ui_layout.Context {
+    return ui_layout.Context({
+        width: 800,
+        height: 600,
+        fonts: [],
+        getFontLineHeight: (fontId: int, fontSize: real): real => fontSize,
+        measureText: (fontId: int, fontSize: real, text: str): Vec2 => measureStub(fontId, fontSize, text),
+    });
+}
+
+// An absolutely-positioned 40x20 box at (100, 200) inside an 800x600 root,
+// translated by the given fractions of its own size. The box's size is
+// deliberately NOT square and NOT equal to its offsets, so a bug that
+// multiplied by the wrong dimension (height instead of width, or the
+// parent's size instead of the element's own) produces a visibly wrong
+// number rather than an accidentally-correct one.
+fn translatedTree(tx: real, ty: real, position: ui_styling.Position): ui_elements.Element {
+    let box = ui_elements.DivElement({
+        id: 0,
+        globalId: "root/box",
+        style: {
+            width: 40.0,
+            height: 20.0,
+            position: position,
+            positionValues: { left: 100.0, top: 200.0 },
+            translate: { x: tx, y: ty },
+            backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
+        },
+    });
+
+    return ui_elements.DivElement({
+        id: 0,
+        globalId: "root",
+        children: [box],
+        style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
+    });
+}
+
+fn main(): int {
+    let ctx = makeContext();
+    ctx.setLayoutSize(800, 600);
+
+    // --- no translate: the baseline every case below is measured against ---
+    let base = Recorder {};
+    ctx.render(translatedTree(0.0, 0.0, ui_styling.Position.Absolute), recordingCallbacks(base));
+    base.checkStr("baseline: box sits at its left/top offsets",
+        base.originOfSize("40x20"), "100,200");
+
+    // --- translate by a full multiple of the element's own size ----------
+    // 1x right = +40 (its WIDTH), 1x down = +20 (its HEIGHT). This is the
+    // case in the user-facing request: a box measured from its top-left
+    // corner becomes measured from another corner.
+    let full = Recorder {};
+    ctx.render(translatedTree(1.0, 1.0, ui_styling.Position.Absolute), recordingCallbacks(full));
+    full.checkStr("translate(1,1) shifts by one full width/height",
+        full.originOfSize("40x20"), "140,220");
+
+    // Only Y: proves the axes are independent and that Y uses HEIGHT (20),
+    // not width -- the exact bug a copy-paste in the multiply would cause.
+    let downOnly = Recorder {};
+    ctx.render(translatedTree(0.0, 1.0, ui_styling.Position.Absolute), recordingCallbacks(downOnly));
+    downOnly.checkStr("translateY(1) uses the element's own height, not its width",
+        downOnly.originOfSize("40x20"), "100,220");
+
+    // Only X: same, for WIDTH (40).
+    let rightOnly = Recorder {};
+    ctx.render(translatedTree(1.0, 0.0, ui_styling.Position.Absolute), recordingCallbacks(rightOnly));
+    rightOnly.checkStr("translateX(1) uses the element's own width, not its height",
+        rightOnly.originOfSize("40x20"), "140,200");
+
+    // --- negative translate: the centering idiom -------------------------
+    // CSS's `left: X; translate: -50%` -- pulls the box back by half of
+    // ITSELF so its centre, not its corner, lands on the offset point.
+    let centered = Recorder {};
+    ctx.render(translatedTree(-0.5, -0.5, ui_styling.Position.Absolute), recordingCallbacks(centered));
+    centered.checkStr("translate(-0.5,-0.5) centres the box on its offset point",
+        centered.originOfSize("40x20"), "80,190");
+
+    // --- Fixed is positioned too, so it translates identically -----------
+    let fixed = Recorder {};
+    ctx.render(translatedTree(-0.5, -0.5, ui_styling.Position.Fixed), recordingCallbacks(fixed));
+    fixed.checkStr("translate applies to Fixed as well as Absolute",
+        fixed.originOfSize("40x20"), "80,190");
+
+    // --- Static is not positioned, so translate is inert (as in CSS) -----
+    // A Static child is in normal flow at the root's origin; the translate
+    // must not move it, matching CSS, where `translate` on a box that isn't
+    // placed by the positioning path has nothing to offset from here.
+    let staticBox = Recorder {};
+    ctx.render(translatedTree(1.0, 1.0, ui_styling.Position.Static), recordingCallbacks(staticBox));
+    staticBox.checkStr("translate is inert on an in-flow Static element",
+        staticBox.originOfSize("40x20"), "0,0");
+
+    // --- translate must NOT disturb layout -------------------------------
+    // The whole point of a translate (versus just changing left/top) is that
+    // it happens after layout: a translated element still occupies its
+    // untranslated slot as far as everything else is concerned. Here a
+    // translated ABSOLUTE box sits alongside two in-flow siblings; the
+    // siblings must land exactly where they would with no translate at all.
+    let makeFlowTree = (tx: real, ty: real): ui_elements.Element => {
+        let floater = ui_elements.DivElement({
+            id: 0,
+            globalId: "root/floater",
+            style: {
+                width: 40.0,
+                height: 20.0,
+                position: ui_styling.Position.Absolute,
+                positionValues: { left: 10.0, top: 10.0 },
+                translate: { x: tx, y: ty },
+                backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
+            },
+        });
+        let first = ui_elements.DivElement({
+            id: 0,
+            globalId: "root/first",
+            style: { width: 30.0, height: 60.0, backgroundColor: Color(0.0, 1.0, 0.0, 1.0) },
+        });
+        let second = ui_elements.DivElement({
+            id: 0,
+            globalId: "root/second",
+            style: { width: 50.0, height: 70.0, backgroundColor: Color(0.0, 0.0, 1.0, 1.0) },
+        });
+        return ui_elements.DivElement({
+            id: 0,
+            globalId: "root",
+            children: [floater, first, second],
+            style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
+        });
+    };
+
+    let flowUntranslated = Recorder {};
+    ctx.render(makeFlowTree(0.0, 0.0), recordingCallbacks(flowUntranslated));
+    let firstBefore = flowUntranslated.originOfSize("30x60");
+    let secondBefore = flowUntranslated.originOfSize("50x70");
+
+    let flowTranslated = Recorder {};
+    ctx.render(makeFlowTree(3.0, -2.0), recordingCallbacks(flowTranslated));
+
+    flowTranslated.checkStr("layout unchanged: first sibling keeps its position",
+        flowTranslated.originOfSize("30x60"), firstBefore);
+    flowTranslated.checkStr("layout unchanged: second sibling keeps its position",
+        flowTranslated.originOfSize("50x70"), secondBefore);
+    // ...while the floater itself really did move: 10 + 3*40 = 130,
+    // 10 - 2*20 = -30 (off the top edge, which is legal -- translate is
+    // free to push an element outside its container, exactly as in CSS).
+    flowTranslated.checkStr("...but the translated element itself moved",
+        flowTranslated.originOfSize("40x20"), "130,-30");
+
+    // --- translate composes with the offsets rather than replacing them ---
+    // Pinned separately from the cases above because "translate wins and
+    // discards left/top" would still pass a test that only ever checked a
+    // translate against a zero offset.
+    let composed = Recorder {};
+    ctx.render(translatedTree(0.25, 0.5, ui_styling.Position.Absolute), recordingCallbacks(composed));
+    // 100 + 0.25*40 = 110, 200 + 0.5*20 = 210.
+    composed.checkStr("translate adds to left/top instead of replacing them",
+        composed.originOfSize("40x20"), "110,210");
+
+    let checks = base.checks + full.checks + downOnly.checks + rightOnly.checks
+        + centered.checks + fixed.checks + staticBox.checks + flowTranslated.checks
+        + composed.checks;
+    let failures = base.failures + full.failures + downOnly.failures + rightOnly.failures
+        + centered.failures + fixed.failures + staticBox.failures + flowTranslated.failures
+        + composed.failures;
+
+    fmt.println(f"translate-tests: {checks - failures}/{checks} checks passed");
+    if failures > 0 {
+        fmt.println(f"translate-tests: {failures} FAILURE(S)");
+        return 1;
+    }
+    fmt.println("translate-tests: OK");
+
+    return presetChecks();
+}
+
+// The cases above drive ui_styling's raw structs directly, which skips the
+// path real components actually use: headwind presets resolved through
+// computeDivStyle. This covers that half -- that the ops reach the same
+// TranslateValues, that the per-axis ops compose within one array (the reason
+// they're split per axis at all), and that an explicit style value still beats
+// a preset, the fill-the-gaps rule every other op follows.
+fn presetChecks(): int {
+    let failures = 0;
+    let check = (name: str, actual: real, expected: real): void => {
+        if actual != expected {
+            fmt.println(f"FAIL: {name}: expected {expected}, got {actual}");
+            failures = failures + 1;
+        }
+    };
+
+    let composed = ui_styling.computeDivStyle({}, [
+        headwind.presets.translateX(-0.5),
+        headwind.presets.translateY(1.0),
+    ]);
+    check("presets: translateX composes", composed.translate.x, -0.5);
+    check("presets: translateY composes", composed.translate.y, 1.0);
+
+    let both = ui_styling.computeDivStyle({}, [headwind.presets.translate(2.0, -3.0)]);
+    check("presets: translate() sets x", both.translate.x, 2.0);
+    check("presets: translate() sets y", both.translate.y, -3.0);
+
+    let explicit = ui_styling.computeDivStyle(
+        { translate: { x: 9.0, y: 0.0 } },
+        [headwind.presets.translate(1.0, 5.0)]);
+    check("presets: explicit style beats preset on x", explicit.translate.x, 9.0);
+    check("presets: preset still fills the untouched y", explicit.translate.y, 5.0);
+
+    let bare = ui_styling.computeDivStyle({}, none);
+    check("presets: default x is 0", bare.translate.x, 0.0);
+    check("presets: default y is 0", bare.translate.y, 0.0);
+
+    if failures > 0 {
+        fmt.println(f"presets-check: {failures} FAILURE(S)");
+        return 1;
+    }
+    fmt.println("presets-check: OK");
+    return 0;
+}

@@ -603,6 +603,23 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let editorRef: ui_components.ElementRef<ui_elements.DivElement> =
             rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
+        // Handle on the hover popup, so its placement can read back the size
+        // it actually measured to. Needed because "keep it inside the
+        // viewport" is not answerable from the anchor alone: whether the
+        // popup overflows depends on how big the popup is, and that is only
+        // known once it has been laid out with its real text in it.
+        //
+        // That makes the size one frame stale, which is fine and is what
+        // browsers do for the same reason: the popup is placed from last
+        // frame's measurement, and a hover's text doesn't change after it
+        // arrives, so the only frame that could ever be misplaced is the
+        // single one where it first appears with content. The vertical case
+        // doesn't even have that gap -- it uses translate (a fraction of the
+        // popup's OWN size, resolved during layout), so it is correct
+        // immediately, with no measurement involved at all.
+        let hoverPopupRef: ui_components.ElementRef<ui_elements.DivElement> =
+            rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
         // Focus the text area as soon as the app comes up, so the window
         // opens ready to type in -- without this, keyboard input goes nowhere
         // until the user clicks into the editor first (key events are only
@@ -1797,12 +1814,94 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             anchorY = anchor.y - editorOriginY();
                         }
 
+                        // ── Placement ────────────────────────────────
+                        //
+                        // The rule, same as VS Code's: sit ABOVE the hovered
+                        // token by default (below it would cover the line
+                        // you are about to read, and the next few lines of
+                        // code with it), but never leave the viewport --
+                        // a popup clipped at an edge is worse than one on
+                        // the "wrong" side, since the text simply isn't
+                        // there to read.
+                        //
+                        // Vertically this needs no measurement: `top` puts
+                        // the popup's own top edge on the line's top edge,
+                        // and translateY(-1) then lifts it by exactly its
+                        // OWN height, leaving its bottom on that line -- the
+                        // gap closes to `hoverGap` above the token. Being a
+                        // fraction of the popup's own size, it resolves
+                        // during layout, so it is right on the very first
+                        // frame no matter how tall the text turns out to be.
+                        let hoverGap = 6.0;
+                        let popupSize = none as Vec2 | none;
+                        let popupEl = rx.get(hoverPopupRef);
+                        if popupEl {
+                            popupSize = popupEl.size();
+                        }
+
+                        // Viewport to stay inside: the editor's own box, in
+                        // the same editor-local coordinates the popup is
+                        // positioned in (so its top-left is 0,0).
+                        let viewportW = 0.0;
+                        let viewportH = 0.0;
+                        let editorBox = rx.get(editorRef);
+                        if editorBox {
+                            let vp = editorBox.size();
+                            if vp {
+                                viewportW = vp.x;
+                                viewportH = vp.y;
+                            }
+                        }
+
+                        // Flip below the token when there isn't room above.
+                        // Needs the measured height, so on the frame the
+                        // popup first gets its text it stays above -- which
+                        // is the correct default anyway, and self-corrects
+                        // on the next frame if it doesn't fit.
+                        let above = true;
+                        if popupSize is Vec2 && anchorY - hoverGap < popupSize.y {
+                            // Only flip if below is genuinely roomier;
+                            // otherwise a popup taller than the viewport
+                            // would flip to a side that fits it no better.
+                            let roomBelow = viewportH - (anchorY + characterSize.y + hoverGap);
+                            if roomBelow > anchorY - hoverGap {
+                                above = false;
+                            }
+                        }
+
+                        // Horizontal clamp: keep the right edge inside the
+                        // viewport, then re-clamp the left to 0 so a popup
+                        // wider than the viewport stays anchored at the left
+                        // edge rather than being pushed off it (a negative
+                        // left would hide the START of the signature, which
+                        // is the part worth reading).
+                        let popupX = anchorX;
+                        if popupSize is Vec2 && viewportW > 0.0 {
+                            let maxX = viewportW - popupSize.x - hoverGap;
+                            if popupX > maxX { popupX = maxX; }
+                        }
+                        if popupX < 0.0 { popupX = 0.0; }
+
+                        // Above: top edge on the token's top edge, then
+                        // lifted by the popup's own full height (translate),
+                        // minus the gap. Below: straight under the token,
+                        // no translate needed.
+                        let popupY = above
+                            ? anchorY - hoverGap
+                            : anchorY + characterSize.y + hoverGap;
+
                         ui.div({
                             id: 300002,
+                            ref: hoverPopupRef,
                             presets: [
                                 presets.absolute(),
-                                presets.top(anchorY + characterSize.y + 10.0),
-                                presets.left(anchorX),
+                                presets.top(popupY),
+                                presets.left(popupX),
+                                // -1 = "up by exactly my own height", so the
+                                // popup's BOTTOM lands on popupY. Only when
+                                // sitting above; below already starts at the
+                                // right place.
+                                presets.translateY(above ? -1.0 : 0.0),
                                 presets.bg("#181818"),
                                 presets.border(1),
                                 presets.borderColor("#4F4F4F"),

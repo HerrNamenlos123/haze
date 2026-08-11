@@ -131,6 +131,14 @@ namespace ffi {
         attachTo: hzui_attach_to_t;
         attachPoint: hzui_attach_point_t;
         offset: Vec2;
+        // CSS `translate` as a fraction of the element's OWN size (see
+        // ui_styling.TranslateValues). Kept separate from `offset` rather
+        // than folded into it here because it cannot be resolved on this
+        // side at all: it needs the element's final laid-out dimensions,
+        // which only Clay knows, and only after it has measured this
+        // element. The C side multiplies it out at placement time -- see
+        // ToClayFloatingConfig in ui.c.
+        translate: Vec2;
         zIndex: int;
         parentId: str;
     }
@@ -277,6 +285,7 @@ fn noFloating(): ffi.hzui_floating_config_t :: final {
         attachTo: ffi.hzui_attach_to_t.hzui_attach_to_none,
         attachPoint: ffi.hzui_attach_point_t.hzui_attach_top_left,
         offset: Vec2(0.0, 0.0),
+        translate: Vec2(0.0, 0.0),
         zIndex: 0,
         parentId: "",
     };
@@ -346,12 +355,16 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
 
     let attachPoint = resolveAttachPoint(style.positionValues);
     let offset = resolveOffset(style.positionValues, attachPoint);
+    // Passed through untouched -- it's a multiplier of a size this side
+    // doesn't know yet, resolved into pixels by ui.c once Clay has one.
+    let translate = Vec2(style.translate.x, style.translate.y);
 
     if explicitAnchor is not none {
         return {
             attachTo: ffi.hzui_attach_to_t.hzui_attach_to_element,
             attachPoint: attachPoint,
             offset: offset,
+            translate: translate,
             zIndex: style.zIndex,
             parentId: explicitAnchor,
         };
@@ -362,6 +375,7 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
             attachTo: ffi.hzui_attach_to_t.hzui_attach_to_root,
             attachPoint: attachPoint,
             offset: offset,
+            translate: translate,
             zIndex: style.zIndex,
             parentId: "",
         };
@@ -372,6 +386,7 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
             attachTo: ffi.hzui_attach_to_t.hzui_attach_to_element,
             attachPoint: attachPoint,
             offset: offset,
+            translate: translate,
             zIndex: style.zIndex,
             parentId: positioningContext[positioningContext.length - 1],
         };
@@ -380,6 +395,7 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
         attachTo: ffi.hzui_attach_to_t.hzui_attach_to_root,
         attachPoint: attachPoint,
         offset: offset,
+        translate: translate,
         zIndex: style.zIndex,
         parentId: "",
     };
