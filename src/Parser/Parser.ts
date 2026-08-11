@@ -14,8 +14,10 @@ import {
   type ASTBinaryExpr,
   type ASTBinaryUnionTypeExpr,
   type ASTBlockScopeExpr,
+  type ASTBreakStatement,
   type ASTCallableTypeExpr,
   type ASTConstTypeExpr,
+  type ASTContinueStatement,
   type ASTDynamicArrayTypeExpr,
   type ASTEnumDefinition,
   type ASTEnumValueDefinition,
@@ -108,10 +110,12 @@ import {
   type AttemptStatementContext,
   type BooleanConstantContext,
   type BraceExprContext,
+  type BreakStatementContext,
   type CInjectDirectiveContext,
   type CInlineStatementContext,
   type ComparisonContext,
   type ComptimeIfStatementContext,
+  type ContinueStatementContext,
   type DoScopeContext,
   type DoStatementContext,
   type EnumContentContext,
@@ -2602,6 +2606,20 @@ class ASTBuilder extends HazeParserListener {
       expr: expr,
       sourceloc: this.loc(ctx),
     } satisfies ASTReturnStatement);
+  };
+
+  exitBreakStatement = (ctx: BreakStatementContext) => {
+    this.stack.push({
+      variant: "BreakStatement",
+      sourceloc: this.loc(ctx),
+    } satisfies ASTBreakStatement);
+  };
+
+  exitContinueStatement = (ctx: ContinueStatementContext) => {
+    this.stack.push({
+      variant: "ContinueStatement",
+      sourceloc: this.loc(ctx),
+    } satisfies ASTContinueStatement);
   };
 
   exitVariableCreationStatementRule = (

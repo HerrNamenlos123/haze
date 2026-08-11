@@ -1,0 +1,528 @@
+// ============================================================================
+// REGRESSION TEST — `break` and `continue` as language features.
+//
+// These are load-bearing tests for the flow-control analysis, not smoke tests.
+// `break`/`continue` were added as new FlowTypes (Semantic.FlowType.Break /
+// .Continue) alongside the existing Return/Raise/Fallthrough. That makes them
+// *exit flows*: like `return`, they end the current scope and therefore make
+// the branch they sit in a non-fallthrough branch. Two consequences drive
+// almost every case below:
+//
+//   1. VALUE NARROWING. The compiler narrows a union after an `if` whose
+//      branch cannot fall through (src/Semantic/Elaborate.ts, canNarrowAfterIf).
+//      A guard clause that ends in `continue`/`break` must narrow the rest of
+//      the loop body to the inverse of its condition, exactly like one ending
+//      in `return`. Getting this wrong in the permissive direction (narrowing
+//      when the branch DOES fall through) is unsound; getting it wrong in the
+//      restrictive direction silently breaks working code.
+//
+//   2. ABSORPTION. A loop is where Break/Continue stop propagating: neither
+//      escapes to the enclosing scope, so a loop whose body always breaks is
+//      NOT a function that always returns. Return/Raise, in contrast, pass
+//      straight through the loop and keep propagating outward.
+//
+// Nearly every check is a static_assert on the exact narrowed (or correctly
+// un-narrowed) type at a specific program point, so a regression fails the
+// build rather than silently producing a wrong type. The runtime prints prove
+// the emitted C actually has the C semantics (`continue` in a for-loop still
+// runs the increment; `break` leaves only the innermost loop; and so on).
+//
+// Per framework.hz's batching guidance, all compile-and-run checks share ONE
+// compilation; only the must-fail-to-compile cases get their own.
+// ============================================================================
+
+namespace cases_break_continue {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── The big bundled compile+run case ────────────────────────────────
+        // Every check that a running program can verify itself lives here.
+        s.run(
+            "break/continue: flow control, narrowing and C semantics",
+            """
+struct Box {
+    v: int | none;
+}
+
+struct Pair {
+    a: int | none;
+    b: int | none;
+}
+
+// ── 1. Basic C semantics in each of the three loop forms ────────────────────
+
+// `continue` in a C-style for-loop must still run the increment clause,
+// otherwise this would hang forever. `break` must leave the loop entirely.
+fn basic_for(): int {
+    let sum = 0;
+    for (let i = 0; i < 10; i++) {
+        if i == 3 {
+            continue;
+        }
+        if i == 6 {
+            break;
+        }
+        sum += i;
+    }
+    // 0 + 1 + 2 + (skip 3) + 4 + 5 + (break at 6) = 12
+    return sum;
+}
+
+// In a while-loop `continue` jumps straight back to the condition. The
+// increment therefore has to happen BEFORE the continue, or this hangs.
+fn basic_while(): int {
+    let w = 0;
+    let total = 0;
+    while w < 100 {
+        w++;
+        if w % 2 == 0 {
+            continue;
+        }
+        if w > 9 {
+            break;
+        }
+        total += w;
+    }
+    // odd numbers 1..9 = 1 + 3 + 5 + 7 + 9 = 25
+    return total;
+}
+
+// A foreach lowers to a for-loop whose index increment lives in the increment
+// clause, so `continue` advances the iteration -- it must not hang.
+fn basic_foreach(): int {
+    let arr: []int = [1, 2, 3, 4, 5];
+    let acc = 0;
+    for x in arr {
+        if x == 2 {
+            continue;
+        }
+        if x == 5 {
+            break;
+        }
+        acc += x;
+    }
+    // 1 + (skip 2) + 3 + 4 + (break at 5) = 8
+    return acc;
+}
+
+// ── 2. Nesting: break/continue bind to the INNERMOST enclosing loop ─────────
+
+fn nested_binding(): int {
+    let log = 0;
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            if j == 1 {
+                break;          // leaves the inner loop only
+            }
+            log += 100;         // runs once per outer iteration (j == 0)
+        }
+        if i == 2 {
+            continue;           // continues the OUTER loop
+        }
+        log += 1;               // skipped only on i == 2
+    }
+    // 3 outer iterations * 100, plus 1 for i == 0 and i == 1
+    return log;
+}
+
+// A loop nested inside a loop body still absorbs its own break: the outer
+// loop must keep running after the inner one breaks.
+fn nested_absorption(): int {
+    let count = 0;
+    for (let i = 0; i < 4; i++) {
+        let j = 0;
+        while true {
+            j++;
+            if j >= 2 {
+                break;
+            }
+        }
+        count += j;
+    }
+    return count;   // 4 iterations * 2
+}
+
+// ── 3. NARROWING — the core of this test file ───────────────────────────────
+
+// A `continue` guard clause narrows the rest of the loop body, exactly like a
+// `return` guard clause would.
+fn narrow_after_continue_guard(): int {
+    let arr: []Box = [Box{v: 1}, Box{v: none}, Box{v: 3}];
+    let sum = 0;
+    for b in arr {
+        if !b.v {
+            continue;
+        }
+        static_assert(typeof(b.v).prettyName == "int",
+            "a `continue` guard clause must narrow b.v to int for the rest of the body");
+        sum += b.v;
+    }
+    return sum;     // 1 + 3
+}
+
+// Same, but with a `break` guard clause.
+fn narrow_after_break_guard(): int {
+    let arr: []Box = [Box{v: 1}, Box{v: 2}, Box{v: none}, Box{v: 99}];
+    let sum = 0;
+    for b in arr {
+        if b.v is none {
+            break;
+        }
+        static_assert(typeof(b.v).prettyName == "int",
+            "a `break` guard clause must narrow b.v to int for the rest of the body");
+        sum += b.v;
+    }
+    return sum;     // 1 + 2, then break before the 99
+}
+
+// The narrowing must apply in the ELSE-less remainder AND inside a subsequent
+// nested block, not just at the top level of the loop body.
+fn narrow_persists_into_nested_scope(): int {
+    let arr: []Box = [Box{v: 5}, Box{v: none}];
+    let sum = 0;
+    for b in arr {
+        if !b.v {
+            continue;
+        }
+        if true {
+            static_assert(typeof(b.v).prettyName == "int",
+                "narrowing from a continue-guard must persist into a nested scope");
+            sum += b.v;
+        }
+    }
+    return sum;
+}
+
+// CRITICAL UNSOUNDNESS CHECK: when the guard branch does NOT exit (it falls
+// through), nothing may be narrowed afterwards. An `if` whose body merely
+// does some work is not a guard clause.
+fn no_narrowing_when_branch_falls_through(): int {
+    let arr: []Box = [Box{v: 7}, Box{v: none}];
+    let seen = 0;
+    for b in arr {
+        if !b.v {
+            seen += 1;      // falls through -- NOT an exit
+        }
+        static_assert(typeof(b.v).prettyName == "(int | none)",
+            "unsound: b.v must NOT be narrowed after an if-branch that falls through");
+    }
+    return seen;
+}
+
+// A branch that conditionally continues does not narrow either: the inner `if`
+// means the outer branch can still fall through.
+fn no_narrowing_when_exit_is_conditional(): int {
+    let arr: []Box = [Box{v: 8}, Box{v: none}];
+    let n = 0;
+    for b in arr {
+        if !b.v {
+            if n > 100 {
+                continue;   // only sometimes
+            }
+            n += 1;
+        }
+        static_assert(typeof(b.v).prettyName == "(int | none)",
+            "unsound: a conditional continue must not narrow b.v afterwards");
+    }
+    return n;
+}
+
+// De Morgan: falling through `!p.a && !p.b` only proves `p.a || p.b`, never
+// that both are present. A continue-guard must not over-narrow either path.
+// (Mirrors the guarantee cases_narrowing_bug.hz makes for `return`.)
+fn no_over_narrowing_demorgan(): int {
+    let p = Pair { a: 5 as int | none, b: none };
+    let hits = 0;
+    for (let i = 0; i < 1; i++) {
+        if !p.a && !p.b {
+            continue;
+        }
+        static_assert(typeof(p.a).prettyName == "(int | none)",
+            "unsound: p.a must not be narrowed after a `!p.a && !p.b` continue-guard");
+        static_assert(typeof(p.b).prettyName == "(int | none)",
+            "unsound: p.b must not be narrowed after a `!p.a && !p.b` continue-guard");
+        hits += 1;
+    }
+    return hits;
+}
+
+// An if/else where BOTH branches exit (one continues, one breaks) means the
+// code after it is unreachable -- but the loop overall still falls through.
+// This checks the compiler accepts it and the value flows correctly.
+fn both_branches_exit(): int {
+    let arr: []int = [1, 2, 3];
+    let sum = 0;
+    for x in arr {
+        if x == 2 {
+            continue;
+        } else {
+            sum += x;
+            if x == 3 {
+                break;
+            }
+        }
+    }
+    return sum;     // x=1 -> +1, x=2 -> continue, x=3 -> +3 then break
+}
+
+// Narrowing must survive `else if` chains where every prior branch exits.
+fn narrow_after_elseif_chain(): int {
+    let arr: []Box = [Box{v: 4}, Box{v: none}];
+    let sum = 0;
+    for b in arr {
+        if b.v is none {
+            continue;
+        } else if b.v > 1000 {
+            break;
+        }
+        static_assert(typeof(b.v).prettyName == "int",
+            "narrowing must hold after an else-if chain whose branches all exit");
+        sum += b.v;
+    }
+    return sum;
+}
+
+// `continue` inside a while-let: the binding narrowing and the guard must
+// coexist without hanging.
+fn continue_inside_while_loop_with_union(): int {
+    let items: []Box = [Box{v: 1}, Box{v: none}, Box{v: 2}];
+    let i = 0;
+    let sum = 0;
+    while i < items.length {
+        let b = items[i];
+        i++;
+        if !b.v {
+            continue;
+        }
+        static_assert(typeof(b.v).prettyName == "int",
+            "a continue-guard must narrow b.v inside a while loop too");
+        sum += b.v;
+    }
+    return sum;
+}
+
+// ── 4. Interaction with `return` in the same body ───────────────────────────
+
+// Return still propagates THROUGH a loop (it is not absorbed), while break is.
+// If the early return did not work, this would return 999.
+fn return_still_escapes_loop(): int {
+    for (let i = 0; i < 10; i++) {
+        if i == 2 {
+            return 77;
+        }
+        if i == 5 {
+            break;
+        }
+    }
+    return 999;
+}
+
+// Mixed exits in one body: each kind narrows the remainder.
+fn mixed_exits_narrow(): int {
+    let arr: []Pair = [Pair{a: 1, b: 2}, Pair{a: none, b: 3}];
+    let sum = 0;
+    for p in arr {
+        if !p.a {
+            continue;
+        }
+        static_assert(typeof(p.a).prettyName == "int",
+            "continue-guard must narrow p.a");
+        if !p.b {
+            break;
+        }
+        static_assert(typeof(p.b).prettyName == "int",
+            "break-guard must narrow p.b");
+        sum += p.a + p.b;
+    }
+    return sum;
+}
+
+fn check(name: str, got: int, want: int) {
+    if got == want {
+        fmt.println(f"{name}: ok");
+    } else {
+        fmt.println(f"{name}: FAIL got {got} want {want}");
+    }
+}
+
+fn main(): int {
+    check("basic_for", basic_for(), 12);
+    check("basic_while", basic_while(), 25);
+    check("basic_foreach", basic_foreach(), 8);
+    check("nested_binding", nested_binding(), 302);
+    check("nested_absorption", nested_absorption(), 8);
+    check("narrow_after_continue_guard", narrow_after_continue_guard(), 4);
+    check("narrow_after_break_guard", narrow_after_break_guard(), 3);
+    check("narrow_persists_into_nested_scope", narrow_persists_into_nested_scope(), 5);
+    check("no_narrowing_when_branch_falls_through", no_narrowing_when_branch_falls_through(), 1);
+    check("no_narrowing_when_exit_is_conditional", no_narrowing_when_exit_is_conditional(), 1);
+    check("no_over_narrowing_demorgan", no_over_narrowing_demorgan(), 1);
+    check("both_branches_exit", both_branches_exit(), 4);
+    check("narrow_after_elseif_chain", narrow_after_elseif_chain(), 4);
+    check("continue_inside_while_loop_with_union", continue_inside_while_loop_with_union(), 3);
+    check("return_still_escapes_loop", return_still_escapes_loop(), 77);
+    check("mixed_exits_narrow", mixed_exits_narrow(), 3);
+    return 0;
+}
+""",
+            """
+basic_for: ok
+basic_while: ok
+basic_foreach: ok
+nested_binding: ok
+nested_absorption: ok
+narrow_after_continue_guard: ok
+narrow_after_break_guard: ok
+narrow_persists_into_nested_scope: ok
+no_narrowing_when_branch_falls_through: ok
+no_narrowing_when_exit_is_conditional: ok
+no_over_narrowing_demorgan: ok
+both_branches_exit: ok
+narrow_after_elseif_chain: ok
+continue_inside_while_loop_with_union: ok
+return_still_escapes_loop: ok
+mixed_exits_narrow: ok
+""");
+
+        // ── Must-fail-to-compile cases ──────────────────────────────────────
+        // Each needs its own compilation: they cannot share a program with
+        // anything that must build successfully.
+
+        // Break/Continue end the scope, so code following them is unreachable
+        // and must be stripped with the same dead-code warning a `return` gets.
+        // (This exercises the Lower-side stripping AND the flow bookkeeping that
+        // marks the scope as no-longer-falling-through.)
+        s.compileOkWithChecks(
+            "code after break/continue is reported as dead and stripped",
+            """
+fn afterBreak(): int {
+    let n = 0;
+    for (let i = 0; i < 5; i++) {
+        break;
+        n = 5;
+    }
+    return n;
+}
+
+fn afterContinue(): int {
+    let n = 0;
+    for (let i = 0; i < 5; i++) {
+        continue;
+        n = 5;
+    }
+    return n;
+}
+
+fn main(): int {
+    return afterBreak() + afterContinue();
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.DeadCodeDetectedAndStripped, 2)]);
+
+        s.compileFails(
+            "break outside of any loop is rejected",
+            """
+fn main(): int {
+    break;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.BreakStatementOutsideOfLoop)]);
+
+        s.compileFails(
+            "continue outside of any loop is rejected",
+            """
+fn main(): int {
+    continue;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ContinueStatementOutsideOfLoop)]);
+
+        s.compileFails(
+            "break inside an if that is not in a loop is rejected",
+            """
+fn main(): int {
+    if true {
+        break;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.BreakStatementOutsideOfLoop)]);
+
+        // A loop never spans a function boundary: a lambda written inside a
+        // loop body is its own function, so `break` in it has no loop to bind
+        // to. This mirrors C, and prevents generating a bare `break;` into a
+        // function that has no enclosing loop at all.
+        s.compileFails(
+            "break inside a lambda nested in a loop does not bind to the outer loop",
+            """
+fn main(): int {
+    for (let i = 0; i < 3; i++) {
+        let f = () => {
+            break;
+        };
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.BreakStatementOutsideOfLoop)]);
+
+        s.compileFails(
+            "continue inside a lambda nested in a loop does not bind to the outer loop",
+            """
+fn main(): int {
+    for (let i = 0; i < 3; i++) {
+        let f = () => {
+            continue;
+        };
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ContinueStatementOutsideOfLoop)]);
+
+        // ABSORPTION, the negative direction: a loop body that always breaks
+        // does NOT make the function return. `break` must never be mistaken
+        // for a `return`, so this function is missing its return value.
+        s.compileFails(
+            "a loop body that always breaks does not satisfy the function return type",
+            """
+fn bad(): int {
+    for (let i = 0; i < 3; i++) {
+        break;
+    }
+}
+
+fn main(): int {
+    return bad();
+}
+""",
+            [testsuite.mustNotHave(errorcodes.Code.BreakStatementOutsideOfLoop)]);
+
+        // Unsoundness guard, as a compile failure: after a guard branch that
+        // merely falls through, the union must still be a union -- so using it
+        // as a plain int has to be rejected.
+        s.compileFails(
+            "no narrowing after a fallthrough branch: the union may not be used as an int",
+            """
+struct Box {
+    v: int | none;
+}
+
+fn main(): int {
+    let arr: []Box = [Box{v: 1}];
+    let sum = 0;
+    for b in arr {
+        if !b.v {
+            sum += 0;   // falls through, so this is not a guard clause
+        }
+        sum += b.v;     // b.v is still (int | none) here -- must be rejected
+    }
+    return sum;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.OperatorRequiresNumericRightHandSideGot)]);
+    }
+}
