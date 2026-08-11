@@ -2135,10 +2135,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 // Still waiting on the language server --
                                 // there is no content to colour yet, only
                                 // the placeholder saying so.
-                                ui.text({
+                                //
+                                // Wrapped in a div for the same reason the
+                                // blocks below are: this is the SAME id 0
+                                // that block 0 takes once the answer
+                                // arrives, and every hover makes exactly
+                                // that placeholder -> content transition,
+                                // so a bare text node here would change the
+                                // cached element's type on the very next
+                                // frame and panic.
+                                ui.div({
                                     id: 0,
-                                    text: hoverText,
-                                    presets: [presets.textColor("#9A9A9A")],
+                                    presets: [presets.col()],
+                                }, () => {
+                                    ui.text({
+                                        id: 0,
+                                        text: hoverText,
+                                        presets: [presets.textColor("#9A9A9A")],
+                                    });
                                 });
                             }
                             else {
@@ -2220,10 +2234,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                             }
                                         }
                                         else {
-                                            ui.text({
+                                            // Wrapped in a div at the same id
+                                            // a code line would take, for the
+                                            // third time and the same reason:
+                                            // block `bi` flips between code
+                                            // and prose across hovers (bare
+                                            // quickinfo is all-code, markdown
+                                            // is code-then-prose), so id 0
+                                            // inside this wrapper must be a
+                                            // div either way.
+                                            ui.div({
                                                 id: 0,
-                                                text: block.text,
-                                                presets: [presets.textColor("#9A9A9A")],
+                                                presets: [presets.row()],
+                                            }, () => {
+                                                ui.text({
+                                                    id: 0,
+                                                    text: block.text,
+                                                    presets: [presets.textColor("#9A9A9A")],
+                                                });
                                             });
                                         }
                                     });
