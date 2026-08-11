@@ -106,6 +106,12 @@ export class SemanticElaborator {
 
   inFunction: Semantic.SymbolId | null = null;
   inAttemptExpr: Semantic.ExprId | null = null;
+  // How many loop bodies (for / foreach / while) we are currently elaborating inside.
+  // `break`/`continue` are only legal when this is > 0. It is deliberately reset to 0
+  // when entering a new function body (see withContext): a lambda written inside a loop
+  // body is its own function, and a `break` in it must not bind to the enclosing
+  // function's loop -- that matches C, where a loop never spans a function boundary.
+  loopDepth: number = 0;
   functionReturnsInstanceIds?: Set<Semantic.InstanceId>;
   metaFieldStructTypeId: Semantic.TypeDefId | null = null;
   metaTypeCategoryEnumTypeId: Semantic.TypeDefId | null = null;
@@ -191,17 +197,26 @@ export class SemanticElaborator {
     const oldAttempt = this.inAttemptExpr;
     const oldReturn = this.inFunction;
     const oldReturnIds = this.functionReturnsInstanceIds;
+    const oldLoopDepth = this.loopDepth;
 
     this.prevContextStack.push(oldContext);
     this.currentContext = args.context;
     this.inAttemptExpr = args.inAttemptExpr;
     this.inFunction = args.inFunction;
     this.functionReturnsInstanceIds = args.functionReturnsInstanceIds;
+    // Crossing into a different function (e.g. elaborating a lambda body) starts a
+    // fresh loop context: loops never span a function boundary. Contexts that merely
+    // add constraints or swap scopes keep the same inFunction and must preserve the
+    // depth, otherwise a plain `if` inside a loop body would lose it.
+    if (args.inFunction !== oldReturn) {
+      this.loopDepth = 0;
+    }
 
     try {
       return fn();
     } finally {
       this.prevContextStack.pop();
+      this.loopDepth = oldLoopDepth;
       this.functionReturnsInstanceIds = oldReturnIds;
       this.inFunction = oldReturn;
       this.inAttemptExpr = oldAttempt;
@@ -5022,10 +5037,24 @@ export class SemanticElaborator {
     if (b.has(Semantic.FlowType.Return)) {
       out.add(Semantic.FlowType.Return);
     }
+    // Break and Continue are exit flows just like Return/Raise: they leave the
+    // current scope. They keep propagating outward until the innermost
+    // enclosing loop absorbs them (see the loop statements in elaborateStatement).
+    if (b.has(Semantic.FlowType.Break)) {
+      out.add(Semantic.FlowType.Break);
+    }
+    if (b.has(Semantic.FlowType.Continue)) {
+      out.add(Semantic.FlowType.Continue);
+    }
 
     if (
       b.has(Semantic.FlowType.NoReturn) &&
-      !(out.has(Semantic.FlowType.Raise) || out.has(Semantic.FlowType.Return))
+      !(
+        out.has(Semantic.FlowType.Raise) ||
+        out.has(Semantic.FlowType.Return) ||
+        out.has(Semantic.FlowType.Break) ||
+        out.has(Semantic.FlowType.Continue)
+      )
     ) {
       out.add(Semantic.FlowType.NoReturn);
     }
@@ -5036,6 +5065,53 @@ export class SemanticElaborator {
     }
 
     return out;
+  }
+
+  /**
+   * Runs fn() with the loop nesting level increased by one, so that `break` and
+   * `continue` statements elaborated inside know they have an enclosing loop to
+   * bind to. Must wrap the elaboration of a loop *body* only -- never the
+   * condition or increment expression, which sit outside the loop body in C and
+   * cannot contain a break/continue targeting this loop.
+   */
+  withinLoopBody<T>(fn: () => T): T {
+    this.loopDepth++;
+    try {
+      return fn();
+    } finally {
+      this.loopDepth--;
+    }
+  }
+
+  /**
+   * Folds the flow result of a loop body into the flow result of the loop
+   * statement itself. A loop is the absorption point for Break and Continue:
+   * both jump to a place inside/just after this very loop, so neither escapes
+   * to the enclosing scope. Return and Raise, on the other hand, do escape and
+   * are propagated as-is.
+   *
+   * The loop statement always keeps Fallthrough. That is intentional even for a
+   * body that never falls through (e.g. `while cond { return; }`) because the
+   * condition may be false on the very first evaluation, so control can always
+   * reach the statement after the loop. Deciding that an infinite loop without
+   * a reachable break is NoReturn would need proof that the condition is
+   * statically true, which this analysis does not attempt.
+   */
+  absorbLoopBodyFlow(
+    resultFlow: Semantic.FlowResult,
+    bodyFlow: Semantic.FlowResult
+  ) {
+    for (const f of bodyFlow.get()) {
+      if (
+        f === Semantic.FlowType.Break ||
+        f === Semantic.FlowType.Continue ||
+        f === Semantic.FlowType.Fallthrough
+      ) {
+        continue;
+      }
+      resultFlow.add(f);
+    }
+    resultFlow.add(Semantic.FlowType.Fallthrough);
   }
 
   makeAndElaborateBlockScope(
@@ -11927,7 +12003,9 @@ export class SemanticElaborator {
           for (const e of flow.get()) {
             if (
               e === Semantic.FlowType.Raise ||
-              e === Semantic.FlowType.Return
+              e === Semantic.FlowType.Return ||
+              e === Semantic.FlowType.Break ||
+              e === Semantic.FlowType.Continue
             ) {
               resultFlow.add(e);
             }
@@ -12138,12 +12216,14 @@ export class SemanticElaborator {
         const { flow, writes, scopeId } = this.withAdditionalConstraints(
           conditionConstraints,
           () =>
-            this.makeAndElaborateBlockScope(s.block, {
-              lastExprIsEmit: false,
-              unsafe: inference?.unsafe,
-            })
+            this.withinLoopBody(() =>
+              this.makeAndElaborateBlockScope(s.block, {
+                lastExprIsEmit: false,
+                unsafe: inference?.unsafe,
+              })
+            )
         );
-        resultFlow.addAll(flow);
+        this.absorbLoopBodyFlow(resultFlow, flow);
         resultWrites.addAll(writes);
 
         return {
@@ -12156,6 +12236,50 @@ export class SemanticElaborator {
           })[1],
           flow: resultFlow,
           writes: resultWrites,
+        };
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.BreakStatement: {
+        if (this.loopDepth === 0) {
+          throw new CompilerError(
+            `A 'break' statement may only appear inside a loop`,
+            s.sourceloc,
+            HazeErrorCode.BreakStatementOutsideOfLoop
+          );
+        }
+        return {
+          statementId: this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.BreakStatement,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: Semantic.FlowResult.break(),
+          writes: Semantic.WriteResult.empty(),
+        };
+      }
+
+      // =================================================================================================================
+      // =================================================================================================================
+      // =================================================================================================================
+
+      case Collect.ENode.ContinueStatement: {
+        if (this.loopDepth === 0) {
+          throw new CompilerError(
+            `A 'continue' statement may only appear inside a loop`,
+            s.sourceloc,
+            HazeErrorCode.ContinueStatementOutsideOfLoop
+          );
+        }
+        return {
+          statementId: this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.ContinueStatement,
+            sourceloc: s.sourceloc,
+          })[1],
+          flow: Semantic.FlowResult.continue(),
+          writes: Semantic.WriteResult.empty(),
         };
       }
 
@@ -12580,14 +12704,18 @@ export class SemanticElaborator {
           ? this.expr(s.loopIncrement, {})[1]
           : null;
 
-        const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(
-          s.body,
-          {
+        const {
+          flow: bodyFlow,
+          writes,
+          scopeId,
+        } = this.withinLoopBody(() =>
+          this.makeAndElaborateBlockScope(s.body, {
             lastExprIsEmit: false,
             unsafe: inference?.unsafe,
-          }
+          })
         );
-        flow.add(Semantic.FlowType.Fallthrough);
+        const flow = Semantic.FlowResult.empty();
+        this.absorbLoopBodyFlow(flow, bodyFlow);
 
         if (s.initStatement) {
           const {
@@ -13025,12 +13153,15 @@ export class SemanticElaborator {
         }
 
         // Step 6: Elaborate the loop body
-        const { flow, writes, scopeId } = this.makeAndElaborateBlockScope(
-          s.body,
-          {
+        const {
+          flow: bodyFlow,
+          writes,
+          scopeId,
+        } = this.withinLoopBody(() =>
+          this.makeAndElaborateBlockScope(s.body, {
             lastExprIsEmit: false,
             unsafe: inference?.unsafe,
-          }
+          })
         );
 
         // Step 7: Clean up synthetic scope
@@ -13040,8 +13171,11 @@ export class SemanticElaborator {
         }
 
         // Step 8: Emit ForEachStatement in clean semantic form
-        // Lowering will convert this to a traditional for-loop
-        flow.add(Semantic.FlowType.Fallthrough);
+        // Lowering will convert this to a traditional for-loop, where the index
+        // increment stays in the for-increment clause -- so a `continue` in the
+        // body still advances the iteration and cannot loop forever.
+        const flow = Semantic.FlowResult.empty();
+        this.absorbLoopBodyFlow(flow, bodyFlow);
 
         return {
           statementId: this.sr.b.addStatement(this.sr, {

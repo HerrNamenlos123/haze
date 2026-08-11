@@ -233,6 +233,8 @@ namespace errorcodes {
         CouldNotInferGenericParameterFunctionPleaseSpecify = 7169,
         CannotInferClosureParameterType = 7170,
         ArrayOutOfBoundsInComptimeParameterPack = 7171,
+        BreakStatementOutsideOfLoop = 7172,
+        ContinueStatementOutsideOfLoop = 7173,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

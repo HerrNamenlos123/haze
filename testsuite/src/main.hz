@@ -46,6 +46,7 @@ fn main(): int {
     cases_json_custom_struct_hooks.register(suite);
     cases_json_linear_map.register(suite);
     cases_chrome_trace_cpu_profile.register(suite);
+    cases_break_continue.register(suite);
 
     return testsuite.runAll(config, suite);
 }

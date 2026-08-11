@@ -393,6 +393,8 @@ statement
     | expr SEMI                                                                     #ExprStatement
     | RETURN expr? SEMI                                                             #ReturnStatement
     | RAISE expr? SEMI                                                              #RaiseStatement
+    | BREAK SEMI                                                                    #BreakStatement
+    | CONTINUE SEMI                                                                 #ContinueStatement
     | variableCreation                                                              #VariableCreationStatement
     | IF ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #IfStatement
     | IF COMPTIME ifCondition=ifStatementConditionImpl then=rawScope (ELSE IF COMPTIME elseIfCondition+=ifStatementConditionImpl elseIfThen+=rawScope)* (ELSE elseBlock=rawScope)? #ComptimeIfStatement

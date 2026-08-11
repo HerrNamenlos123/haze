@@ -159,6 +159,8 @@ export namespace Collect {
     WhileStatement,
     ReturnStatement,
     RaiseStatement,
+    BreakStatement,
+    ContinueStatement,
     InlineCStatement,
     BlockScopeExpr,
     VariableDefinitionStatement,
@@ -510,6 +512,14 @@ export namespace Collect {
     expr: Collect.ExprId | null;
   };
 
+  export type BreakStatement = BaseStatement & {
+    variant: ENode.BreakStatement;
+  };
+
+  export type ContinueStatement = BaseStatement & {
+    variant: ENode.ContinueStatement;
+  };
+
   export type ForStatement = BaseStatement & {
     variant: ENode.ForStatement;
     initStatement: Collect.StatementId | null;
@@ -561,6 +571,8 @@ export namespace Collect {
     | InlineCStatement
     | ReturnStatement
     | RaiseStatement
+    | BreakStatement
+    | ContinueStatement
     | IfStatement
     | ForStatement
     | ForEachStatement
@@ -572,6 +584,8 @@ export namespace Collect {
     | Omit<InlineCStatement, "owningScope">
     | Omit<ReturnStatement, "owningScope">
     | Omit<RaiseStatement, "owningScope">
+    | Omit<BreakStatement, "owningScope">
+    | Omit<ContinueStatement, "owningScope">
     | Omit<IfStatement, "owningScope">
     | Omit<ForStatement, "owningScope">
     | Omit<ForEachStatement, "owningScope">
@@ -2279,6 +2293,20 @@ function collectScope(
         });
         break;
 
+      case "BreakStatement":
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.BreakStatement,
+          sourceloc: astStatement.sourceloc,
+        });
+        break;
+
+      case "ContinueStatement":
+        addStatement(cc, blockScopeId, {
+          variant: Collect.ENode.ContinueStatement,
+          sourceloc: astStatement.sourceloc,
+        });
+        break;
+
       case "RaiseStatement":
         addStatement(cc, blockScopeId, {
           variant: Collect.ENode.RaiseStatement,
@@ -3915,6 +3943,16 @@ export const printCollectedStatement = (
       } else {
         print("return;");
       }
+      break;
+    }
+
+    case Collect.ENode.BreakStatement: {
+      print("break;");
+      break;
+    }
+
+    case Collect.ENode.ContinueStatement: {
+      print("continue;");
       break;
     }
 

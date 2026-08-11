@@ -302,6 +302,16 @@ export type ASTReturnStatement = {
   sourceloc: SourceLoc;
 };
 
+export type ASTBreakStatement = {
+  variant: "BreakStatement";
+  sourceloc: SourceLoc;
+};
+
+export type ASTContinueStatement = {
+  variant: "ContinueStatement";
+  sourceloc: SourceLoc;
+};
+
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
   mutability: EVariableMutability;
@@ -396,6 +406,8 @@ export type ASTStatement =
   | ASTForStatement
   | ASTForEachStatement
   | ASTReturnStatement
+  | ASTBreakStatement
+  | ASTContinueStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
   | ASTTypeAlias

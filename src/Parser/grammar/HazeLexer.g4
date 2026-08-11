@@ -71,6 +71,8 @@ ELSE: 'else';
 IN: 'in';
 FOR: 'for';
 WHILE: 'while';
+BREAK: 'break';
+CONTINUE: 'continue';
 COMPTIME: 'comptime';
 LET: 'let'; CONST: 'const'; MUT: 'mut';
 DOT: '.';

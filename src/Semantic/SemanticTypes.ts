@@ -109,6 +109,8 @@ export namespace Semantic {
     BlockScopeExpr,
     ReturnStatement,
     RaiseStatement,
+    BreakStatement,
+    ContinueStatement,
     // Expressions
     ParenthesisExpr,
     AttemptErrorPropagationExpr,
@@ -873,6 +875,16 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  export type BreakStatement = {
+    variant: ENode.BreakStatement;
+    sourceloc: SourceLoc;
+  };
+
+  export type ContinueStatement = {
+    variant: ENode.ContinueStatement;
+    sourceloc: SourceLoc;
+  };
+
   export type RaiseStatement = {
     variant: ENode.RaiseStatement;
     expr: ExprId;
@@ -939,6 +951,8 @@ export namespace Semantic {
     | InlineCStatement
     | ReturnStatement
     | RaiseStatement
+    | BreakStatement
+    | ContinueStatement
     | VariableStatement
     | IfStatement
     | ForStatement
@@ -3141,6 +3155,8 @@ export namespace Semantic {
     Return = 1, // Control exits the current context and returns from the containing function
     Raise = 2, // Control exits the current context and jumps to the nearest attempt/else construct
     Fallthrough = 3, // Control continues normally
+    Break = 4, // Control exits the current context and jumps past the end of the innermost enclosing loop
+    Continue = 5, // Control exits the current context and jumps to the next iteration of the innermost enclosing loop
   }
 
   export class FlowResult {
@@ -3161,6 +3177,18 @@ export namespace Semantic {
     static return() {
       const result = new FlowResult();
       result.add(FlowType.Return);
+      return result;
+    }
+
+    static break() {
+      const result = new FlowResult();
+      result.add(FlowType.Break);
+      return result;
+    }
+
+    static continue() {
+      const result = new FlowResult();
+      result.add(FlowType.Continue);
       return result;
     }
 

@@ -1265,7 +1265,13 @@ class CodeGenerator {
         continue;
       }
 
-      if (statement.variant === Lowered.ENode.ReturnStatement) {
+      if (
+        statement.variant === Lowered.ENode.ReturnStatement ||
+        statement.variant === Lowered.ENode.BreakStatement ||
+        statement.variant === Lowered.ENode.ContinueStatement
+      ) {
+        // break/continue end the scope just like a return: they jump elsewhere
+        // in the enclosing loop, so any statement after them is unreachable.
         returned = true;
       }
 
@@ -1312,6 +1318,38 @@ class CodeGenerator {
         } else {
           outWriter.writeLine("return;");
         }
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case Lowered.ENode.BreakStatement: {
+        if (
+          statement.sourceloc &&
+          this.lr.sr.cc.config.includeSourceloc &&
+          !noSourceloc
+        ) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
+          );
+        }
+        outWriter.writeLine("break;");
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case Lowered.ENode.ContinueStatement: {
+        if (
+          statement.sourceloc &&
+          this.lr.sr.cc.config.includeSourceloc &&
+          !noSourceloc
+        ) {
+          outWriter.writeLine(
+            `#line ${statement.sourceloc.start.line} ${JSON.stringify(
+              statement.sourceloc.filename
+            )}`
+          );
+        }
+        outWriter.writeLine("continue;");
         return { temp: tempWriter, out: outWriter };
       }
 

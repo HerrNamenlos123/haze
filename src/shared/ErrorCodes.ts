@@ -234,6 +234,8 @@ export enum HazeErrorCode {
   CouldNotInferGenericParameterFunctionPleaseSpecify = 7169, // Could not infer generic parameter '' for function ''. Please specify it explicitly.
   CannotInferClosureParameterType = 7170, // Cannot infer the type of closure parameter ''. Please add an explicit type annotation.
   ArrayOutOfBoundsInComptimeParameterPack = 7171, // Array out of bounds: Index '' does not name a parameter in parameter pack of length ''.
+  BreakStatementOutsideOfLoop = 7172, // A 'break' statement may only appear inside a loop
+  ContinueStatementOutsideOfLoop = 7173, // A 'continue' statement may only appear inside a loop
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

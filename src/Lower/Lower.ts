@@ -79,6 +79,8 @@ export namespace Lowered {
     ReturnStatement = 29,
     LabelJumpStatement = 30,
     LabelDefinitionStatement = 31,
+    BreakStatement = 58,
+    ContinueStatement = 59,
     // Expressions
     ParenthesisExpr = 32,
     BinaryExpr = 33,
@@ -444,6 +446,8 @@ export namespace Lowered {
   export type Statement =
     | InlineCStatement
     | ReturnStatement
+    | BreakStatement
+    | ContinueStatement
     | LabelJumpStatement
     | LabelDefinitionStatement
     | VariableStatement
@@ -471,6 +475,16 @@ export namespace Lowered {
   export type ReturnStatement = {
     variant: ENode.ReturnStatement;
     expr: ExprId | null;
+    sourceloc: SourceLoc;
+  };
+
+  export type BreakStatement = {
+    variant: ENode.BreakStatement;
+    sourceloc: SourceLoc;
+  };
+
+  export type ContinueStatement = {
+    variant: ENode.ContinueStatement;
     sourceloc: SourceLoc;
   };
 
@@ -3996,6 +4010,24 @@ function lowerStatement(
       return [...flattened, sId];
     }
 
+    case Semantic.ENode.BreakStatement: {
+      return [
+        Lowered.addStatement<Lowered.BreakStatement>(lr, {
+          variant: Lowered.ENode.BreakStatement,
+          sourceloc: statement.sourceloc,
+        })[1],
+      ];
+    }
+
+    case Semantic.ENode.ContinueStatement: {
+      return [
+        Lowered.addStatement<Lowered.ContinueStatement>(lr, {
+          variant: Lowered.ENode.ContinueStatement,
+          sourceloc: statement.sourceloc,
+        })[1],
+      ];
+    }
+
     case Semantic.ENode.InlineCStatement: {
       return [
         Lowered.addStatement<Lowered.InlineCStatement>(lr, {
@@ -4149,6 +4181,11 @@ function lowerBlockScope(
 
   // undefined = no return, null = return nothing, expr = return expr
   let returnedExpr: Lowered.ExprId | null | undefined;
+  // Set once a break/continue has been emitted in this scope. Unlike a return,
+  // these are emitted in place (they jump within the enclosing loop, so there is
+  // nothing to hoist to the end of the scope), but everything following them in
+  // the same scope is just as unreachable and gets stripped the same way.
+  let jumpedOutOfScope = false;
   let firstStrippedStatement = null as SourceLoc | null;
   let lastStrippedStatement = null as SourceLoc | null;
 
@@ -4163,13 +4200,25 @@ function lowerBlockScope(
     for (const statementId of lowerStatement(lr, s, instanceInfo)) {
       const innerStatement = lr.statementNodes.get(statementId);
 
-      if (returnedExpr !== undefined) {
-        // We have already returned, but have more stuff, so remember what code is stripped for the warning
+      if (returnedExpr !== undefined || jumpedOutOfScope) {
+        // We have already returned or jumped out of this scope, but have more stuff,
+        // so remember what code is stripped for the warning
         if (!firstStrippedStatement) {
           firstStrippedStatement = innerStatement.sourceloc;
         }
         lastStrippedStatement = innerStatement.sourceloc;
         continue; // Don't push
+      }
+
+      if (
+        innerStatement.variant === Lowered.ENode.BreakStatement ||
+        innerStatement.variant === Lowered.ENode.ContinueStatement
+      ) {
+        // Emitted in place (it is a jump inside the enclosing loop), but it ends
+        // this scope: anything after it is unreachable.
+        jumpedOutOfScope = true;
+        statements.push(statementId);
+        continue;
       }
 
       if (innerStatement.variant === Lowered.ENode.ReturnStatement) {
@@ -5020,6 +5069,14 @@ export function printStatement(
         "return" + (s.expr ? ` ${serializeLoweredExpr(lr, s.expr)}` : "") + ";",
         indent
       );
+      break;
+
+    case Lowered.ENode.BreakStatement:
+      print("break;", indent);
+      break;
+
+    case Lowered.ENode.ContinueStatement:
+      print("continue;", indent);
       break;
 
     case Lowered.ENode.VariableStatement: {
