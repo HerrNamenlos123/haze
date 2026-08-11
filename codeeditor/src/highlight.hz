@@ -7,10 +7,14 @@ struct HighlightResult {
     tokens: []Token;
     // Which document this reply describes, echoed back from the request.
     // Replies for every document share one stream, so this is the only
-    // thing that distinguishes them -- the editor buffer and the hover
-    // popup are both open at once, and merging one's tokens into the
-    // other's cache would paint each with the other's colours. Empty for
-    // a legacy whole-document "highlight" request, which predates URIs.
+    // thing that distinguishes them -- every open editor TAB, plus the
+    // hover popup, is a separate document on that one connection. Every
+    // line number in a reply (including each token's own lineIndex) is
+    // stated in ITS OWN document's index space, so merging one document's
+    // tokens into another's cache paints those lines with a different
+    // file's colours. Consumers must route on this before merging -- see
+    // EditorView's drainHighlightResults in codeui.hz. Empty for a legacy
+    // whole-document "highlight" request, which predates URIs.
     uri: str = "";
     // The line range `tokens` covers. An incremental ("change") reply
     // only carries the lines whose highlighting actually changed, so a

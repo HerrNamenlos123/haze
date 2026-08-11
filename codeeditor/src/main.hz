@@ -6,6 +6,18 @@ import filedialog
 import wgpu
 
 struct Cache {
+    // The open tabs, in order, and which one was showing. Restored on
+    // startup so the editor comes back up where it was left.
+    //
+    // Newline-delimited rather than a []str because the cache is DEEPLY
+    // reactive: a []str field becomes []rx.Reactive<str>, which cannot be
+    // assigned a plain array back. A path cannot contain a newline on any
+    // platform this targets, so it is an unambiguous separator.
+    openFiles: str = "";
+    activeFile: str | null = null;
+    // The single file the pre-tabs version stored. Kept only so an
+    // existing cache still opens something the first time this build runs;
+    // `files` takes over from then on.
     file: str | null = null;
 }
 
@@ -105,11 +117,11 @@ fn main(): int {
 
         let cache = json.CacheFile<Cache>("codeeditor.cache.json");
 
-        if !cache.data.file {
-            if let file = filedialog.pickFile(); file is filedialog.DialogSuccess {
-                cache.data.file := file.path;
-            }
-        }
+        // Which files to open is the UI shell's decision now, not this
+        // one's: it owns the tab list, restores the previous session from
+        // this same cache, and asks for a file only when that turns out to
+        // be empty. Picking one here as well would have prompted before
+        // the window even existed, and then again for the same thing.
 
         buildSyntaxEngine();
         // installLSP();
@@ -119,9 +131,25 @@ fn main(): int {
             fmt.println("Highlight engine failed to start");
             return 0;
         }
+        // One language server for the whole application, started here and
+        // shared by every editor tab -- see State.lspBridge for why this is
+        // not per-editor. The project root is only LSP workspace
+        // bookkeeping; tsserver does its own tsconfig discovery per file.
+        let vueBridge = VueLspBridge({
+            vueLanguageServerPath: "codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js",
+            tsdk: "codeeditor/syntax-engine/node_modules/typescript/lib",
+            nodeModulesDir: "codeeditor/syntax-engine/node_modules",
+            projectRoot: "/home/fzachs/Projects/technicalsketcher.web",
+            projectName: "technicalsketcher.web",
+        });
+        if !vueBridge {
+            fmt.println("Vue language server failed to start: ", vueBridge.message);
+        }
+
         initState({
             highlightEngine: highlightEngine,
             reactiveCounter: rx.reactive<int>(0),
+            lspBridge: vueBridge ? vueBridge : none,
         });
         // let engine = installLSP();
         // if !engine {

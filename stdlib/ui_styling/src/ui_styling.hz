@@ -57,6 +57,23 @@ export enum CrossAlign { Start, Center, End, Stretch }
 // this to decide whether a *scrollbar* is drawn).
 export enum Overflow { Visible, Hidden }
 
+// CSS `display`, restricted to the distinction that actually matters here:
+// is this element part of the layout at all?
+//
+//   - Flex: the default. The element is laid out, painted, hit-tested and
+//     focusable, exactly as before this enum existed.
+//   - None: the element and its whole subtree are removed from layout (they
+//     occupy no space and do not affect siblings), are not painted, and are
+//     invisible to hit-testing, hover tracking, focus and event dispatch --
+//     CSS `display: none`.
+//
+// The point of None is that it is a STYLE, not an absence: the elements (and
+// therefore the components that own them, along with all their state) stay
+// alive and keep being declared every frame. That is what makes it the
+// equivalent of Vue's `v-show` rather than `v-if` -- see
+// headwind.presets.hidden() and ui_components' hidden-subtree skipping.
+export enum Display { Flex, None }
+
 // How an element's width/height is determined along one axis.
 //   - Fit: wraps tightly to the size of the element's contents. The default
 //     when unset, on both axes -- an element with no sized content shrinks
@@ -358,6 +375,11 @@ export inline struct DivStyle {
     gap?: real;
     backgroundColor?: Color;
 
+    // Unset means Flex (laid out normally); see Display. Setting None takes
+    // this element and its subtree out of layout, painting and input while
+    // keeping them mounted.
+    display?: Display;
+
     // Per-axis clipping of overflowing content -- see Overflow. Unset means
     // Visible, matching CSS's own default.
     overflowX?: Overflow;
@@ -397,6 +419,7 @@ export inline struct DivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.display = other.display;
         this.overflowX = other.overflowX;
         this.overflowY = other.overflowY;
         this.position = other.position;
@@ -423,6 +446,7 @@ export inline struct DivStyle {
             this.packing == other.packing &&
             this.crossAlign == other.crossAlign &&
             this.gap == other.gap &&
+            this.display == other.display &&
             this.overflowX == other.overflowX &&
             this.overflowY == other.overflowY &&
             this.position == other.position &&
@@ -495,6 +519,11 @@ export inline struct ComputedDivStyle {
     gap: real = 0.0;
     backgroundColor: Color = {};
 
+    // Resolved from DivStyle.display -- unset there becomes Flex here, so
+    // consumers (layout, painting, hit-testing) always get a concrete answer
+    // to "does this element participate at all". See Display.
+    display: Display = Display.Flex;
+
     // Resolved from DivStyle.overflowX/Y -- unset there becomes Visible
     // here, so this pair is always a concrete answer to "does this element
     // clip on that axis".
@@ -534,6 +563,7 @@ export inline struct ComputedDivStyle {
         this.cornerRadius = other.cornerRadius;
         this.gap = other.gap;
         this.backgroundColor = other.backgroundColor;
+        this.display = other.display;
         this.overflowX = other.overflowX;
         this.overflowY = other.overflowY;
         this.position = other.position;
@@ -582,6 +612,7 @@ export struct BackgroundColorOp { color: Color; }
 export struct TextColorOp { color: Color; }
 export struct PaddingOp { padding: StylePadding; }
 export struct GapOp { value: real; }
+export struct DisplayOp { value: Display; }
 // Both axes at once (the CSS `overflow` shorthand); OverflowXOp/OverflowYOp
 // are the per-axis longhands.
 export struct OverflowOp { x: Overflow; y: Overflow; }
@@ -635,6 +666,7 @@ export type TextStyleOp =
 // `TextStyleOp | ...` here wouldn't actually include its variants.
 export type DivStyleOp =
     BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
+    | DisplayOp
     | OverflowOp | OverflowXOp | OverflowYOp
     | DirectionOp | CornerRadiusOp | WidthOp | HeightOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp
@@ -661,6 +693,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
             else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
             else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
             else if op is GapOp { if !working.gap { working.gap = op.value; } }
+            else if op is DisplayOp { if !working.display { working.display = op.value; } }
             else if op is OverflowOp {
                 if !working.overflowX { working.overflowX = op.x; }
                 if !working.overflowY { working.overflowY = op.y; }
@@ -733,6 +766,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
     if working.crossAlign { result.crossAlign = working.crossAlign; }
     if working.gap { result.gap = working.gap; }
     if working.backgroundColor { result.backgroundColor = working.backgroundColor; }
+    if working.display { result.display = working.display; }
     if working.overflowX { result.overflowX = working.overflowX; }
     if working.overflowY { result.overflowY = working.overflowY; }
     if working.position { result.position = working.position; }

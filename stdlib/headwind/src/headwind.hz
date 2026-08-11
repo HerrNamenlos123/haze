@@ -46,6 +46,34 @@ namespace presets {
         return ui_styling.GapOp { value: computeSize(value) };
     }
 
+    // hidden / block: CSS `display: none` and back again.
+    //
+    // A hidden element and its whole subtree take no space, are not painted,
+    // and cannot be hovered, clicked or focused -- but they stay MOUNTED,
+    // keeping every bit of their component state (scroll position, undo
+    // history, caret, ...) alive. That is the distinction between Vue's
+    // `v-show` (this) and `v-if` (simply not declaring the element), and the
+    // reason tab contents can be switched away from and back to without
+    // losing where you were.
+    //
+    // Prefer the `show()` helper below when the condition is a variable --
+    // `presets.show(isActive)` reads better than a ternary between these two.
+    export fn hidden(): ui_styling.DisplayOp {
+        return ui_styling.DisplayOp { value: ui_styling.Display.None };
+    }
+
+    export fn block(): ui_styling.DisplayOp {
+        return ui_styling.DisplayOp { value: ui_styling.Display.Flex };
+    }
+
+    // v-show as a preset: laid out normally when `visible`, `display: none`
+    // when not. The element stays mounted either way.
+    export fn show(visible: bool): ui_styling.DisplayOp {
+        return ui_styling.DisplayOp {
+            value: visible ? ui_styling.Display.Flex : ui_styling.Display.None,
+        };
+    }
+
     // overflow-hidden / overflow-visible: clip (or don't) content larger
     // than this element, on both axes. Clipping is painting-only -- a
     // clipped child still takes up the space it would have, it just stops

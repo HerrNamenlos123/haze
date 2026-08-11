@@ -603,15 +603,32 @@ fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int, parentPath: st
 // be methods on the element structs themselves; now they're free functions
 // over the runtime data this module owns, since ui_elements holds neither
 // the data nor the concept.
+// A hidden element (`display: none`) reports NO geometry, rather than the
+// geometry it had when it was last visible.
+//
+// Nothing clears render feedback when an element stops being laid out -- the
+// layout pass simply never mentions it again -- so the stored box would
+// otherwise persist indefinitely and read as a real, current position. That
+// is a stale value dressed up as a live one: a caller measuring a hidden
+// element (an inactive tab's viewport, say) would size or place something
+// against coordinates from an arbitrary earlier frame. `none` is the honest
+// answer and the one callers already handle, since it is what any element
+// that has not been laid out yet returns.
 export fn ui_position(element: ui_elements.Element): Vec2 | none {
     let data = runtimeDataOf(element);
     rx.get(data.renderFeedbackVersion);
+    if ui_elements.isDisplayNone(element) {
+        return none;
+    }
     return data.renderFeedback ? data.renderFeedback.position : none;
 }
 
 export fn ui_size(element: ui_elements.Element): Vec2 | none {
     let data = runtimeDataOf(element);
     rx.get(data.renderFeedbackVersion);
+    if ui_elements.isDisplayNone(element) {
+        return none;
+    }
     return data.renderFeedback ? data.renderFeedback.size : none;
 }
 
@@ -1019,6 +1036,20 @@ export opaque struct UIContext {
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.
     // Returns empty array when mousePos misses element entirely.
     fn buildHitPath(element: ui_elements.Element, mousePos: Vec2): []ui_elements.Element :: final {
+        // `display: none` removes the element and its subtree from hit
+        // testing entirely, exactly as in CSS.
+        //
+        // This test cannot be left to the bounding box below. An element
+        // that stops being declared to the layout engine KEEPS the last box
+        // it was given (nothing clears render feedback), so a hidden
+        // element would otherwise still answer "yes, the pointer is inside
+        // me" using coordinates from whenever it was last visible -- an
+        // invisible click target sitting over whatever replaced it. The
+        // note below about missing boxes not stopping the walk is what
+        // makes an explicit check necessary rather than merely tidy.
+        if ui_elements.isDisplayNone(element) {
+            return [];
+        }
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
         let hit = false;
@@ -1122,6 +1153,44 @@ export opaque struct UIContext {
         return [];
     }
 
+    // Is any element on `path` inside a `display: none` subtree?
+    //
+    // A focus path is ordered root -> focused element, so a hidden ancestor
+    // anywhere along it hides the target too -- which is why this tests the
+    // whole path rather than just its last element.
+    fn pathIsHidden(path: []ui_elements.Element): bool :: final {
+        for element in path {
+            if ui_elements.isDisplayNone(element) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Releases input state held by elements that have since been hidden.
+    //
+    // Everything else in this module derives state by FINDING an element
+    // during a walk, which means simply not visiting it any more freezes its
+    // last known state instead of clearing it. For focus that is a real bug
+    // rather than an inefficiency: the focused flag would stay set on a
+    // hidden element, ui_focused() would keep reporting true, onBlur would
+    // never fire, and the element would still be sitting there claiming
+    // focus when it came back. Browsers blur an element when it (or an
+    // ancestor) becomes display:none, so this does the same.
+    //
+    // Runs before input is dispatched, so a keystroke in the same frame that
+    // hid the focused element already goes nowhere. Hover is handled by
+    // updateHoverState's own `hidden` parameter instead -- see its comment.
+    fn releaseHiddenInputState(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        let focusPath = this.buildFocusPath(tree);
+        if focusPath.length > 0 && this.pathIsHidden(focusPath) {
+            // Blur by the same route a click uses (null target = "focus
+            // nothing"), so onBlur fires and the focusVersion bump wakes
+            // anything watching -- no separate teardown path to drift.
+            this.applyFocusChange(tree, null, eventQueue);
+        }
+    }
+
     // Focuses `newTarget` (a click landed on it, or a descendant, and it's
     // the nearest focusable ancestor -- see process()'s Down handling), or
     // just blurs whatever's currently focused if `newTarget` is null (the
@@ -1220,11 +1289,26 @@ export opaque struct UIContext {
     // Returns whether mousePos is over this element's own bounds *or* any
     // descendant's (recursively) -- used by the caller (a parent frame of
     // this same recursion) to know whether it's disqualified from "hit".
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void)): bool :: final {
+    // `hidden` -- this element is inside a `display: none` subtree (either
+    // it is hidden itself or an ancestor is). Such an element is NOT simply
+    // skipped: the walk still descends into it, but with every hit forced
+    // to false. That distinction matters, because "stop visiting it" and
+    // "it is not hovered" are different things here -- hover/hit state is
+    // persistent per element, so an element that was hovered at the moment
+    // it got hidden would keep `hover: true` forever if the walk just
+    // stopped coming, and its onHoverLeave/onHitLeave would never fire.
+    // Descending with false lets the ordinary transition code below notice
+    // the change and fire those leave callbacks exactly once, which is what
+    // a browser does when you hide an element out from under the cursor.
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void), hidden: bool = false): bool :: final {
+        let subtreeHidden = hidden || ui_elements.isDisplayNone(element);
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
         let selfHit = false;
-        if elementPos && elementSize {
+        // A hidden element keeps the bounding box it had when it was last
+        // visible, so the geometry test would still pass -- it has to be
+        // suppressed explicitly rather than relying on the box being gone.
+        if !subtreeHidden && elementPos && elementSize {
             selfHit =
                 (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
                 (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
@@ -1236,7 +1320,7 @@ export opaque struct UIContext {
         let childHover = false;
         if element is ui_elements.DivElement {
             for child in element.children {
-                if this.updateHoverState(child, mousePos, buttons, eventQueue) {
+                if this.updateHoverState(child, mousePos, buttons, eventQueue, subtreeHidden) {
                     childHover = true;
                 }
             }
@@ -1588,6 +1672,12 @@ export opaque struct UIContext {
         if this.rootComponent {
             let tree = this.rootComponent.rootElement;
 
+            // Anything hidden since the last frame gives up the input state
+            // it was holding (focus in particular) before this frame's input
+            // is looked at, so a hidden element neither keeps claiming focus
+            // nor receives the keystrokes that follow.
+            this.releaseHiddenInputState(tree, eventQueue);
+
             // Hover state + enter/leave events (no bubbling) reflect where
             // the pointer physically is *right now* -- always this frame's
             // current position, regardless of where any of pendingEvents
@@ -1750,7 +1840,13 @@ export opaque struct UIContext {
 
             if keyEdges.length > 0 || textChunks.length > 0 {
                 let focusPath = this.buildFocusPath(tree);
-                if focusPath.length > 0 {
+                // A focused element that got hidden this frame must not keep
+                // receiving keystrokes. releaseHiddenInputState() below
+                // normally blurs it before we ever get here (that is what
+                // fires onBlur and stops ui_focused() from lying); this is
+                // the belt-and-braces check for the one frame where a
+                // handler hides an element after that pass has already run.
+                if focusPath.length > 0 && !this.pathIsHidden(focusPath) {
                     for ke in keyEdges {
                         let keyEvent = KeyboardEvent {
                             key: ke.key,
@@ -2109,6 +2205,27 @@ export opaque struct UIContext {
                 return setupFn(instanceData);
             });
         };
+    }
+
+    // Sizing for THIS component's own wrapper root -- the invisible div the
+    // component system puts around every component (see createChild).
+    //
+    // That wrapper defaults to Grow/Grow so it is a transparent pass-through
+    // and an ancestor's Grow still reaches a descendant that wants it. But
+    // Grow is not transparent when the component should shrink-wrap: a
+    // component whose content is Fit still had a Grow wrapper around it, so
+    // several of them side by side each took an equal share of the parent
+    // instead of only the width they needed. A tab strip is the obvious
+    // case -- three tabs, each a third of the window wide, labels marooned
+    // in the middle -- and no preset on the component's own inner div could
+    // fix it, because the wrapper is outside that div.
+    //
+    // Call this from setup, e.g.:
+    //     ui.componentSize(SizeMode.Fit, SizeMode.Grow);
+    fn componentSize(width: ui_styling.Size, height: ui_styling.Size) {
+        let component = this.getCurrentComponent();
+        component.rootElement.style.width = width;
+        component.rootElement.style.height = height;
     }
 
     fn onMounted(callback: () => none) {

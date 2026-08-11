@@ -92,3 +92,25 @@ export struct CanvasElement {
 }
 
 export type Element = DivElement | TextElement | CanvasElement;
+
+// Is this element hidden by CSS `display: none` (see ui_styling.Display)?
+//
+// Lives here, next to the element definitions themselves, because every
+// stage of the pipeline has to agree on the answer: layout skips these
+// subtrees entirely, and hit-testing/event dispatch must skip them too --
+// a hidden element keeps whatever bounding box it had when it was last
+// visible, so anything that trusts that box without asking this first would
+// happily keep clicking an invisible element.
+//
+// Only Div and Canvas carry a ComputedDivStyle. A TextElement has no display
+// of its own and is hidden via the div that wraps it, which matches CSS:
+// `display` isn't inherited, but a hidden box takes its whole subtree with it.
+export fn isDisplayNone(element: Element): bool {
+    if element is DivElement {
+        return element.style.display == ui_styling.Display.None;
+    }
+    if element is CanvasElement {
+        return element.style.display == ui_styling.Display.None;
+    }
+    return false;
+}

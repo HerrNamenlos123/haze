@@ -164,6 +164,19 @@ export opaque struct VueLspBridge {
     }
     _quickInfoPendingRequests: []PendingQuickInfoRequest = [];
 
+    // One file registered with both servers. `sent` distinguishes a
+    // document that has actually been announced from one that is still
+    // waiting for the LSP handshake to finish -- openDocument() is allowed
+    // to be called before the servers are up, and loop() flushes the
+    // backlog once they are.
+    struct OpenDocument {
+        filepath: str;
+        languageId: str;
+        version: int;
+        content: str;
+        sent: bool = false;
+    }
+
     // Open-document lifecycle: openDocument() may be called before the LSP
     // handshake finishes (application code shouldn't have to care), so a
     // premature call is stashed here and actually performed by loop() once
@@ -171,13 +184,22 @@ export opaque struct VueLspBridge {
     // hover() gates on -- reactive, so hover() called from inside an
     // rx.computed() automatically re-fires the moment it flips, with no
     // extra bookkeeping required from the caller.
-    _opened: bool = false;
-    _filepath: str = "";
+    //
+    // MANY documents, not one. This bridge is shared by every editor tab
+    // (one language server for the whole application -- see State.lspBridge
+    // in codeui.hz), so it has to keep them all open at once and answer
+    // each request against the file that asked. It also happens to be what
+    // the servers themselves want: LSP is document-oriented by design, and
+    // tsserver resolves imports across the whole project, so having every
+    // open file registered makes each individual answer better.
+    //
+    // Getting this wrong is not subtle: while this held a single
+    // `_filepath`, every tab's hover was answered against whichever file
+    // was opened FIRST, so hovering in one tab returned another file's
+    // symbols.
+    _openDocuments: []OpenDocument = [];
     _projectRootPath: str = "";
     _documentReady: rx.Reactive<bool>;
-    _pendingOpenContent: str | null = null;
-    _pendingOpenLanguageId: str = "";
-    _pendingOpenVersion: int = 0;
 
     // Spawns both vue-language-server (over LSP) and tsserver (with
     // `@vue/typescript-plugin` loaded globally, so it understands `.vue`
@@ -272,18 +294,43 @@ export opaque struct VueLspBridge {
     // -- actually opens exactly once, deferring automatically until
     // isReady() if called before the LSP handshake finishes.
     fn openDocument(filepath: str, languageId: str, version: int, fileContent: str) {
-        if this._opened {
-            return;
+        // Idempotent PER FILE. Every editor calls this from a per-frame
+        // reactive path, so it is hit constantly with the same arguments;
+        // re-announcing an already-open document would reset the servers'
+        // view of it (and re-send the whole file) on every frame.
+        for doc in this._openDocuments {
+            if doc.filepath == filepath {
+                return;
+            }
         }
-        this._opened = true;
-        this._filepath = filepath;
+        this._openDocuments.push(OpenDocument {
+            filepath: filepath,
+            languageId: languageId,
+            version: version,
+            content: fileContent,
+        });
         if !this.isReady() {
-            this._pendingOpenContent = fileContent;
-            this._pendingOpenLanguageId = languageId;
-            this._pendingOpenVersion = version;
+            // Announced by loop() once the handshake completes. Opening a
+            // file before the servers are up is normal -- the tabs are
+            // restored at startup, well before either process is ready.
             return;
         }
-        this._doOpenDocument(filepath, languageId, version, fileContent);
+        this._flushPendingOpens();
+    }
+
+    // Announce every document that has not been sent yet. Called both when
+    // a file is opened while the servers are already up, and by loop() the
+    // moment they come up, which is what drains a startup backlog of tabs.
+    fn _flushPendingOpens() {
+        for doc in this._openDocuments {
+            if !doc.sent {
+                doc.sent = true;
+                this._doOpenDocument(doc.filepath, doc.languageId, doc.version, doc.content);
+                // The content was only held to be able to send it; a second
+                // copy of every open file is not worth keeping around.
+                doc.content = "";
+            }
+        }
     }
 
     fn _doOpenDocument(filepath: str, languageId: str, version: int, fileContent: str) {
@@ -321,8 +368,26 @@ export opaque struct VueLspBridge {
     //
     // `lineText` must be the text of line `line`; without it neither
     // conversion is possible, since both depend on what precedes the offset.
-    fn hover(line: int, byteColumn: int, lineText: str, callback: (text: str | null) => none) {
+    // `filepath` names the document being asked about, and is required:
+    // several files are open at once (one per editor tab) and a position
+    // means nothing without saying which file it is in. Passing the wrong
+    // one, or defaulting it, silently returns another file's symbols for
+    // the position -- which is exactly what happened while this bridge
+    // tracked a single document.
+    fn hover(filepath: str, line: int, byteColumn: int, lineText: str, callback: (text: str | null) => none) {
         if !rx.get(this._documentReady) {
+            return;
+        }
+        // Asking about a file the servers have not been told about yields a
+        // confident answer computed from nothing. Better to say nothing.
+        let known = false;
+        for doc in this._openDocuments {
+            if doc.filepath == filepath && doc.sent {
+                known = true;
+                break;
+            }
+        }
+        if !known {
             return;
         }
 
@@ -343,7 +408,7 @@ export opaque struct VueLspBridge {
             callback(quickInfoText ? quickInfoText : lspHoverText);
         };
 
-        this._sendQuickInfoRequest(line, tsserverOffset, (body: QuickInfoBody | none) => {
+        this._sendQuickInfoRequest(filepath, line, tsserverOffset, (body: QuickInfoBody | none) => {
             if body && body.displayString {
                 quickInfoText = body.displayString;
             }
@@ -351,7 +416,7 @@ export opaque struct VueLspBridge {
             tryEmit();
         });
 
-        this._lsp.sendDocumentHoverRequest(this._filepath, line, lspCharacter, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
+        this._lsp.sendDocumentHoverRequest(filepath, line, lspCharacter, (response: Result<language_server_protocol.LSPDocumentHoverResponse | null, language_server_protocol.LSPError>) => {
             if response {
                 let hover = response;
                 if hover {
@@ -371,8 +436,8 @@ export opaque struct VueLspBridge {
     // `utf16Offset` is a 0-based UTF-16 code unit index into the line; the
     // +1 below converts it to tsserver's 1-based `offset`. It is NOT a byte
     // offset -- see hover() for where the conversion happens.
-    fn _sendQuickInfoRequest(line: int, utf16Offset: int, callback: (body: QuickInfoBody | none) => none) {
-        let argsNode = json.encodeToJsonNode<QuickInfoArgs>({ file: this._filepath, line: line + 1, offset: utf16Offset + 1 });
+    fn _sendQuickInfoRequest(filepath: str, line: int, utf16Offset: int, callback: (body: QuickInfoBody | none) => none) {
+        let argsNode = json.encodeToJsonNode<QuickInfoArgs>({ file: filepath, line: line + 1, offset: utf16Offset + 1 });
         if !argsNode {
             sys.panic("vue_lsp_bridge: failed to encode tsserver 'quickinfo' arguments");
         }
@@ -426,12 +491,11 @@ export opaque struct VueLspBridge {
     fn loop() {
         this._lsp.loop();
 
-        if this._pendingOpenContent is not null && this.isReady() {
-            let content = this._pendingOpenContent;
-            let languageId = this._pendingOpenLanguageId;
-            let version = this._pendingOpenVersion;
-            this._pendingOpenContent = null;
-            this._doOpenDocument(this._filepath, languageId, version, content);
+        // Announce anything opened before the servers were up. Several
+        // files can be waiting here at once: the tabs are restored at
+        // startup, long before the handshake finishes.
+        if this.isReady() {
+            this._flushPendingOpens();
         }
 
         let stderr = this._tsserverProcess.readStderr();
