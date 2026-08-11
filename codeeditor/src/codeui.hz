@@ -320,6 +320,157 @@ struct CompiledTokenColor {
     settings: TokenColorSettings;
 }
 
+// ── Scope colour memo ────────────────────────────────────────────────────
+//
+// Resolving one TextMate scope to a colour means scanning every selector
+// of every theme entry (~465 prefix-compares for the bundled theme) with
+// no early exit. That answer depends only on the scope string and the
+// loaded theme, yet it used to be recomputed for every coloured run of
+// every visible line on every frame -- profiling put it at ~23% of all
+// non-profiler CPU time, the largest single cost in the idle editor.
+//
+// Open addressing with linear probing, same shape as chrome-trace.hz's
+// ChildTable (there is no hash map in the stdlib). Sized for the few dozen
+// distinct scopes a real file yields, and rebuilt wholesale when the theme
+// changes rather than being invalidated entry by entry.
+
+// A resolved lookup. `hasColor` is what distinguishes "this scope has no
+// theme rule" (a real, cacheable answer) from "not in the table yet" --
+// without it a miss and a colourless hit are indistinguishable, and every
+// unstyled scope would rescan the whole theme on every frame, which is
+// exactly the cost this table exists to remove.
+struct ScopeColorHit {
+    color: Color;
+    hasColor: bool;
+}
+
+// Base-31 polynomial string hash, kept bounded by reducing mod a modulus
+// small enough that `h * base + 255` cannot overflow -- the same
+// arrangement, and for the same reason, as chrome-trace.hz's hashStrInto.
+fn hashScope(s: str): int {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+        h = (h * 31 + (s[i] as int)) % 1000000007;
+    }
+    return h;
+}
+
+struct ScopeColorCache {
+    // Parallel arrays indexed by bucket. `used[b]` is what makes a bucket
+    // occupied; keys[b] is only meaningful when it is set.
+    used: []bool = [];
+    keys: []str = [];
+    colors: []Color = [];
+    hasColors: []bool = [];
+    count: int = 0;
+
+    // Which themeGeneration these entries were resolved against; a
+    // mismatch means the whole table is stale (see getScopeColor).
+    generation: int = -1;
+
+    fn constructor() {
+        let cache = ScopeColorCache {};
+        cache.reset(64);
+        return cache;
+    }
+
+    // Drops every entry, keeping the current capacity -- a theme reload
+    // replaces the answers, not the number of distinct scopes.
+    mut fn clear(): void {
+        this.reset(this.used.length > 0 ? this.used.length : 64);
+    }
+
+    mut fn reset(capacity: int): void {
+        let used: []bool = [];
+        let keys: []str = [];
+        let colors: []Color = [];
+        let hasColors: []bool = [];
+        used.reserve(capacity);
+        keys.reserve(capacity);
+        colors.reserve(capacity);
+        hasColors.reserve(capacity);
+        for (let i = 0; i < capacity; i++) {
+            used.push(false);
+            keys.push("");
+            colors.push(Color(0.0, 0.0, 0.0, 0.0));
+            hasColors.push(false);
+        }
+        this.used = used;
+        this.keys = keys;
+        this.colors = colors;
+        this.hasColors = hasColors;
+        this.count = 0;
+    }
+
+    // Bucket for `scope`, probing forward past collisions. Returns the
+    // index of either the matching entry or the first free slot, so both
+    // lookup and insert can share one walk. The table is never allowed to
+    // fill (see insert), so this always terminates.
+    fn slotFor(scope: str, hash: int): int {
+        let capacity = this.used.length;
+        let slot = hash % capacity;
+        while this.used[slot] && this.keys[slot] != scope {
+            slot = (slot + 1) % capacity;
+        }
+        return slot;
+    }
+
+    fn lookup(scope: str): ScopeColorHit | none {
+        if this.used.length == 0 {
+            return none;
+        }
+        let slot = this.slotFor(scope, hashScope(scope));
+        if !this.used[slot] {
+            return none;
+        }
+        return ScopeColorHit { color: this.colors[slot], hasColor: this.hasColors[slot] };
+    }
+
+    mut fn insert(scope: str, color: Color | none): void {
+        // Keep the load factor under ~70% so probe chains stay short, and
+        // so slotFor always finds a free slot to stop on.
+        if (this.count + 1) * 10 >= this.used.length * 7 {
+            this.grow();
+        }
+
+        let slot = this.slotFor(scope, hashScope(scope));
+        if !this.used[slot] {
+            this.used[slot] = true;
+            this.keys[slot] = scope;
+            this.count = this.count + 1;
+        }
+        if color {
+            this.colors[slot] = color;
+            this.hasColors[slot] = true;
+        }
+        else {
+            this.hasColors[slot] = false;
+        }
+    }
+
+    // Doubles the table and re-seats every entry -- a bucket depends on
+    // capacity, so the old positions mean nothing in the new table.
+    mut fn grow(): void {
+        let oldUsed = this.used;
+        let oldKeys = this.keys;
+        let oldColors = this.colors;
+        let oldHasColors = this.hasColors;
+
+        this.reset(oldUsed.length * 2);
+
+        for (let i = 0; i < oldUsed.length; i++) {
+            if oldUsed[i] {
+                let slot = this.slotFor(oldKeys[i], hashScope(oldKeys[i]));
+                this.used[slot] = true;
+                this.keys[slot] = oldKeys[i];
+                this.colors[slot] = oldColors[i];
+                this.hasColors[slot] = oldHasColors[i];
+                this.count = this.count + 1;
+            }
+        }
+    }
+}
+
 // One open file: its document, its editing engine, its syntax token cache,
 // its scroll position, its caret, its undo history and its language-server
 // state. Everything that makes a tab a tab lives in here.
@@ -790,6 +941,15 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         };
 
         let theme = rx.reactive<VscodeTheme | none>(none);
+
+        // Bumped on every successful theme load. getScopeColor's memo is
+        // keyed on this, so a reloaded theme invalidates every cached
+        // colour without anything having to walk the table. A plain int
+        // rather than a reactive: it is only ever read from inside
+        // getScopeColor, which must NOT re-run its callers when the theme
+        // changes -- the render pass already re-reads colours every frame.
+        let themeGeneration = 0;
+
         let loadTheme = () => {
             let file = fs.readText("codeeditor/resources/obsidian-radiance-dark.json");
             // let file = fs.readText("codeeditor/resources/catppuccin-mocha.json");
@@ -805,6 +965,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
 
             theme := result;
+            themeGeneration = themeGeneration + 1;
         };
         let compiledTokenColors = rx.computed<[]CompiledTokenColor>(() => {
             if !theme {
@@ -832,7 +993,23 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
             return result;
         });
-        let getScopeColor = (scope: str): Color | none => {
+        // Memo for getScopeColor, keyed on the scope string.
+        //
+        // The uncached lookup is a full scan of every selector of every
+        // theme entry -- ~465 string prefix-compares for this theme, with
+        // no early exit (a longer selector later in the list can always
+        // win, see bestLength). That ran once per scope in a token's scope
+        // stack, for every coloured run, on every visible line, EVERY
+        // frame, which made it the single most expensive thing the idle
+        // editor did.
+        //
+        // The result depends only on (scope, theme), and the set of
+        // distinct scopes a real file produces is tiny (dozens), so the
+        // whole thing collapses to one hash lookup after first sight. The
+        // table is cleared whenever the theme is recompiled, below.
+        let scopeColorCache = ScopeColorCache();
+
+        let getScopeColorUncached = (scope: str): Color | none => {
             let bestForeground: str | none = none;
             let bestLength = -1;
 
@@ -849,6 +1026,29 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
 
             return bestForeground ? Color(bestForeground) : none;
+        };
+
+        let getScopeColor = (scope: str): Color | none => {
+            // Every cached answer was resolved against one particular
+            // theme, so a load since then invalidates all of them at once
+            // -- cheaper to notice here, once per lookup, than to hunt
+            // down every place a theme could change and purge from there.
+            if scopeColorCache.generation != themeGeneration {
+                scopeColorCache.clear();
+                scopeColorCache.generation = themeGeneration;
+            }
+
+            let hit = scopeColorCache.lookup(scope);
+            if hit {
+                // A cached "no theme rule matches this scope" is a real
+                // answer worth keeping -- it costs the same full scan to
+                // rediscover as a hit does.
+                return hit.hasColor ? hit.color : none;
+            }
+
+            let color = getScopeColorUncached(scope);
+            scopeColorCache.insert(scope, color);
+            return color;
         };
 
 
