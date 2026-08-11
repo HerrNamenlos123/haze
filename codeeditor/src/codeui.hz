@@ -1444,7 +1444,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // geometry at all (see ui_components.ui_position) -- but
                 // saying so here keeps the dwell timer from advancing in
                 // the background and makes the intent legible.
+                // A pointer we have never located cannot be dwelling. Until
+                // the platform reports it, ui.mousePos reads (0,0) and
+                // never changes -- which looks exactly like a pointer held
+                // perfectly still, so the dwell timer would mature and pop
+                // a hover open for whatever sits in the corner, without the
+                // mouse ever having touched the window.
                 let busy = !instance.props().active
+                    || !ui.mousePosKnown
                     || rx.get(mouseSelecting) || scroll.isDragging();
                 let restedFor = now - rx.get(mouseRestSince);
                 if busy || moved {

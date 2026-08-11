@@ -9,6 +9,10 @@ export inline struct RuntimeArgs {
     windowState: renderer.gfx.CanvasSize;
     fonts: []ui_layout.FontEntry;
     mousePos: () => Vec2;
+    // Optional: whether mousePos() is meaningful yet. See
+    // ui_components.UIContext.mousePosKnown -- omitting it means the
+    // pointer position is always trusted, which is the old behavior.
+    mousePosKnown?: ui_components.MousePosKnownCallback;
     pointerButtons?: ui_components.PointerHeldCallbacks;
     inputExtras?: ui_components.InputExtrasCallbacks;
     keyboard?: ui_components.KeyboardCallbacks;
@@ -46,6 +50,7 @@ export opaque struct Runtime {
         let ui = ui_components.UIContext({
             ui: args.ui,
             mousePos: args.mousePos,
+            mousePosKnown: args.mousePosKnown,
             pointerButtons: args.pointerButtons,
             inputExtras: args.inputExtras,
             keyboard: args.keyboard,

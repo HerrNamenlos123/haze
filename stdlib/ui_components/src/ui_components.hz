@@ -874,6 +874,18 @@ export struct InputExtrasCallbacks {
 // early-outs.
 export type CursorCallback = (index: int) => void;
 
+// Reports whether the pointer position is known yet -- see
+// UIContext.mousePosKnown.
+//
+// The `:: final, pure` is load-bearing, not decoration. A trivial getter
+// lambda like `() => a.mousePosKnown()` is INFERRED final+pure, and that
+// inferred type does not unify with a plainly-declared `() => bool` once
+// the field is optional (`none | Callback`) -- the conversion is simply
+// not found. Spelling the attributes here makes the declared type match
+// what the call site actually produces. CursorCallback next door gets
+// away without them only because it returns void.
+export type MousePosKnownCallback = () => (bool) :: final, pure;
+
 // Internal pending pointer event before it is dispatched to elements.
 struct PendingPointerEvent {
     kind: PointerEventKind;
@@ -884,6 +896,11 @@ struct PendingPointerEvent {
 
 export opaque struct UIContext {
     _mousePosCb: (() => Vec2);
+    // Optional: when supplied, says whether _mousePosCb's answer is
+    // meaningful yet (see mousePosKnown below). Omitted means "always
+    // meaningful", which is what a headless/test context wants and what
+    // every existing caller got before this existed.
+    _mousePosKnownCb?: MousePosKnownCallback;
     _pointerButtons?: PointerHeldCallbacks;
     _inputExtras?: InputExtrasCallbacks;
     _keyboard?: KeyboardCallbacks;
@@ -917,10 +934,16 @@ export opaque struct UIContext {
     mousePos: Vec2 = {};
     pmousePos: Vec2 = {};
     dmousePos: Vec2 = {};
+    // Whether mousePos above is a real position yet. Sampled once per
+    // frame alongside it, so everything in one frame agrees.
+    mousePosKnown: bool = true;
 
     inline struct UIContextArgs {
         ui: ((ui: UIContext) => none);
         mousePos: () => Vec2;
+        // See UIContext._mousePosKnownCb. Optional; omitting it means the
+        // pointer position is always trusted.
+        mousePosKnown?: MousePosKnownCallback;
         pointerButtons?: PointerHeldCallbacks;
         inputExtras?: InputExtrasCallbacks;
         keyboard?: KeyboardCallbacks;
@@ -936,6 +959,7 @@ export opaque struct UIContext {
             _timeNow: rx.reactive<real>(0),
             _prevTime: time.now(),
             _mousePosCb: args.mousePos,
+            _mousePosKnownCb: args.mousePosKnown,
             _pointerButtons: args.pointerButtons,
             _inputExtras: args.inputExtras,
             _keyboard: args.keyboard,
@@ -1596,6 +1620,9 @@ export opaque struct UIContext {
 
         this.pmousePos = this.mousePos;
         this.mousePos = this._mousePosCb();
+        // Sampled with the position, so every consumer this frame agrees
+        // on whether it means anything. No callback = always trusted.
+        this.mousePosKnown = this._mousePosKnownCb ? this._mousePosKnownCb() : true;
         this.dmousePos = {
             x: this.mousePos.x - this.pmousePos.x,
             y: this.mousePos.y - this.pmousePos.y,
@@ -1682,8 +1709,27 @@ export opaque struct UIContext {
             // the pointer physically is *right now* -- always this frame's
             // current position, regardless of where any of pendingEvents
             // below happened.
-            let finalHitPath = this.buildHitPath(tree, this.mousePos);
-            this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
+            //
+            // Unless we do not yet know where the pointer is. Until the
+            // platform has reported it even once, mousePos is (0,0) -- not
+            // as a signal, but simply because that is what an unset Vec2
+            // holds -- and (0,0) is a real place: the top-left corner. So
+            // hit-testing it hovers whatever is in that corner from the
+            // very first frame, before the pointer has ever been over the
+            // window. That is a claim we have no evidence for, and it is
+            // visible: the first tab lit up on startup and stayed lit
+            // until you moved the mouse.
+            //
+            // An UNKNOWN pointer hovers nothing. Passing an empty hit path
+            // and skipping the hover walk entirely is exactly the same
+            // state as a pointer sitting outside the window, which is the
+            // honest description of what we know.
+            let pointerLocated = this.mousePosKnown;
+            let finalHitPath: []ui_elements.Element = [];
+            if pointerLocated {
+                finalHitPath = this.buildHitPath(tree, this.mousePos);
+                this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
+            }
 
             // The pointer's shape follows whatever it is currently over, so
             // it is resolved from this frame's hit path -- the same path the

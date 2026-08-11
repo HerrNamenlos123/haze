@@ -95,6 +95,10 @@ fn main(): int {
                 { name: "default", id: font },
             ],
             mousePos: () => a.mousePos(),
+            // Lets the UI tell "pointer at the window's top-left" apart
+            // from "the pointer has never been over this window", which
+            // are the same (0,0) otherwise -- see UIContext.mousePosKnown.
+            mousePosKnown: () => a.mousePosKnown(),
             pointerButtons: ui_components.PointerHeldCallbacks {
                 leftHeld: () => a.pointerLeftHeld(),
                 middleHeld: () => a.pointerMiddleHeld(),
