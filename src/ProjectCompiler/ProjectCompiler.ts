@@ -765,8 +765,42 @@ export class ProjectCompiler {
         // (verified: it makes `./configure` receive garbled arguments and
         // produce no Makefile, while `execInherit` still sees exit code 0).
         // A second single-token assignment doesn't have this problem.
+        // --disable-block-signals removes the pthread_sigmask() pair that
+        // libunwind's lock_acquire/lock_release otherwise wrap around EVERY
+        // mutex operation (SIGPROCMASK in include/libunwind_i.h, gated on
+        // CONFIG_BLOCK_SIGNALS, which configure.ac defaults to ON).
+        //
+        // The hot one is the unwind-rule cache lock: get_rs_cache/
+        // put_rs_cache (src/dwarf/Gparser.c) take it around every single
+        // rs_lookup, i.e. once per frame of every unwind. That is two real
+        // syscalls per frame, and it dominates everything else the profiler
+        // does -- pthread_sigmask was 30.1% of ALL samples in a 15s
+        // codeeditor trace (72366 of 240123, 98% of them from
+        // get_rs_cache/put_rs_cache), MORE than the DWARF CFI interpretation
+        // (apply_reg_state, 14.2%) that the cache exists to avoid repeating.
+        //
+        // Only the SIGPROCMASK calls go: lock_acquire still does its
+        // mutex_lock, so the cache stays just as thread-safe as before.
+        // (libunwind's other option, UNW_CACHE_PER_THREAD, would drop the
+        // lock entirely, but HAVE___CACHE_PER_THREAD is not defined in this
+        // build, so that path isn't compiled in.)
+        //
+        // What it protects against is a signal handler running mid-unwind on
+        // the same thread and re-entering libunwind on a lock it already
+        // holds. That cannot happen here: this profiler deliberately does not
+        // deliver signals to profiled threads at all. CPU sampling is
+        // perf_event_open-based -- the kernel writes samples into an mmap'd
+        // ring buffer from interrupt context and a separate reader thread
+        // unwinds a captured register/stack snapshot (see the big comment on
+        // the perf_event_open backend above, which chose that design
+        // precisely to stop hijacking profiled threads). Allocation captures
+        // unwind the calling thread's own healthy, live stack inline, not
+        // from a handler (see hzstd_trace_memory_impl). The one signal
+        // handler that does exist here -- the SIGSEGV/SIGBUS guard around
+        // perf-sample unwinding -- siglongjmps straight out and never
+        // re-enters libunwind.
         execInherit(
-          `cd ${builddir} && CFLAGS="-fPIC" CPPFLAGS="-DDWARF_DEFAULT_LOG_UNW_CACHE_SIZE=15" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared`
+          `cd ${builddir} && CFLAGS="-fPIC" CPPFLAGS="-DDWARF_DEFAULT_LOG_UNW_CACHE_SIZE=15" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared --disable-block-signals`
         );
         execInherit(`cd ${builddir} && make -j`);
         execInherit(`cd ${builddir} && make install`);
