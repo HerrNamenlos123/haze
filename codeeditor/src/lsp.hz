@@ -42,11 +42,16 @@ fn installLSP() {
         let missing = false;
         for file in files {
             if (!fs.exists(file)) {
-            missing = true;
-            //   break;
+                missing = true;
+                break;
             }
         }
 
+        // NOTE: `missing` is computed but deliberately not acted on yet: the
+        // early-out below stays disabled because lspFilePaths() lists
+        // "treesitter", which is not a real path and so always reports missing.
+        // Enabling this without fixing that entry would never skip the install
+        // anyway.
         // if (!missing) {
         //     fmt.println("All LSP files available");
         //     return true;

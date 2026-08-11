@@ -806,6 +806,7 @@ fn generateBindings(args: GenArgs): Result<none, fs.Error> {
         for (let j = 0; j < functionsReturnNullable.length; j++) {
             if functionsReturnNullable[j] == f.name {
                 nullable = " | none";
+                break;
             }
         }
         file = file + f"    export extern C noemit fn {f.name}({params}): {parseType(args, f.returnType)}{nullable} :: final;\n";

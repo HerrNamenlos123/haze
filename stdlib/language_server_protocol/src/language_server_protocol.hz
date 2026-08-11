@@ -333,6 +333,7 @@ export struct Context<TInitializationOptions> {
         for entry in this._pendingRequests {
             if entry.requestId == requestId {
                 found = true;
+                break;
             }
         }
 

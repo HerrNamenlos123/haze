@@ -209,8 +209,7 @@ export opaque struct String {
             for (let j = 0; j < needle.length; j++) {
                 if bytes.getAt(start + j) != needle[j] {
                     matches = false;
-                    // TODO: Support break and enable it here to not waste CPU
-                    // break;
+                    break;
                 }
             }
 

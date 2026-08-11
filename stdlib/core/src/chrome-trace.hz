@@ -344,10 +344,11 @@ namespace ChromeTrace {
             // actual identity check is still the real FrameRef `==` below,
             // so this can never return a wrong match.
             let probed = 0;
-            while childNode == -1 && probed < capacity && table.buckets[slot] != 0 {
+            while probed < capacity && table.buckets[slot] != 0 {
                 let candidate = children[table.buckets[slot] - 1] - 1; // node id -> array index
                 if this.nodeFrameRefs[candidate] == frame {
                     childNode = candidate;
+                    break;
                 }
                 slot = (slot + 1) % capacity;
                 probed += 1;
