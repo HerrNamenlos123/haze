@@ -512,11 +512,21 @@ export class ProjectCompiler {
     return { exitCode: result.status ?? -1, output: output };
   }
 
+  /**
+   * `extraEnv` is merged over the inherited environment for the spawned program
+   * only -- it carries the whole-program profiling configuration from
+   * `--profile` & friends (see main.ts's profilingEnvFromArgs). It is
+   * deliberately applied here rather than via setEnv/process.env: these
+   * variables configure the *profiled program's* startup
+   * (profiling.beginAutoProfiling reads them), and must not leak into the
+   * compiler's own process or into any other tool spawned from it.
+   */
   async run(
     singleFilename?: string,
     explicitDir?: string,
     sourceloc?: boolean,
-    args?: string[]
+    args?: string[],
+    extraEnv?: Record<string, string>
   ): Promise<number> {
     try {
       const config = await this.getConfig(
@@ -545,7 +555,7 @@ export class ProjectCompiler {
       process.stdout.write("\n");
       child_process.execSync(`"${moduleExecutable}" ${args?.join(" ")}`, {
         stdio: "inherit",
-        env: process.env,
+        env: { ...process.env, ...extraEnv },
       });
       return 0;
     } catch (e: any) {

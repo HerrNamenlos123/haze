@@ -328,3 +328,178 @@ export struct Profiler {
         return r;
     }
 }
+
+namespace profiling {
+
+    // ── scoped profiling ─────────────────────────────────────────────────────
+    //
+    // The wrap-a-closure form of the manual API: everything the closure does is
+    // profiled, nothing before or after it is. This is the same Profiler +
+    // stopAndSave pair a caller would otherwise write by hand -- the point is
+    // that the stop/save half can't be forgotten or skipped, which matters
+    // because a still-running session makes the *next* Profiler() panic (only
+    // one session can be active at a time, see hzstd_profiling_start).
+    //
+    // Settings come from the same Profiler.Args as the manual API, so a scoped
+    // profile can be tuned exactly like a hand-written one:
+    //
+    //     profiling.profile(() => { hotLoop(); });
+    //     profiling.profile(() => { hotLoop(); }, "loop.trace.json");
+    //     profiling.profile(() => { hotLoop(); }, "loop.trace.json", { samplingRate: 1000 });
+    //
+    // Deliberately returns void rather than forwarding the closure's own return
+    // value: a generic `TRet` here would force every call site that profiles a
+    // plain statement block to pin down a return type it doesn't have.
+    export fn profile(body: () => void, path: str = "trace.json", args: Profiler.Args = {}): void {
+        let profiler = Profiler(args);
+        body();
+        profiler.stopAndSave(path);
+    }
+
+    // ── automatic whole-program profiling ────────────────────────────────────
+    //
+    // Called by compiler-generated `main` (see CodeGenerator.ts) around the
+    // user's own main function, on EVERY build -- so this must stay cheap and
+    // completely invisible unless profiling was actually requested. The only
+    // work done in the common case is one getenv.
+    //
+    // Configuration is by environment variable rather than by compiled-in
+    // constants on purpose: an already-compiled binary must be profilable
+    // without rebuilding it (`HAZE_PROFILE=1 ./myapp`), and `haze run --profile`
+    // is then just the compiler setting the same variables before spawning that
+    // same binary (ProjectCompiler.run). One mechanism, two entry points.
+    //
+    //   HAZE_PROFILE                        enable ("0"/"false"/"" disables)
+    //   HAZE_PROFILE_OUT                    output path (default "trace.json")
+    //   HAZE_PROFILE_SAMPLING_RATE          sampling rate in Hz (default 10000, 0 = unlimited)
+    //   HAZE_PROFILE_MEMORY                 memory instrumentation (default on)
+    //   HAZE_PROFILE_MEMORY_STACKTRACES     stacktraces for allocations (default on)
+    export fn autoProfileEnabled(): bool {
+        return envFlag("HAZE_PROFILE", false);
+    }
+
+    // ASCII-case-insensitive equality. The stdlib has no case helpers on `str`
+    // (String's own buffer API is the only case-conversion path, see
+    // vim_behavior.toLowerStr), and building a lowercased copy just to compare
+    // it against four short literals would allocate on a path that runs during
+    // startup of every profiled process -- so the fold happens per byte, inline.
+    fn equalsIgnoreCase(value: str, lower: str): bool {
+        if value.length != lower.length {
+            return false;
+        }
+        for (let i = 0; i < value.length; i++) {
+            let b = value[i];
+            if b >= b"A" && b <= b"Z" {
+                b = b + 32 as u8;
+            }
+            if b != lower[i] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // "0"/"false"/"no"/"off", and a variable that's set but empty, all read as
+    // off; any other value reads as on. This is what makes `HAZE_PROFILE=0
+    // ./myapp` mean what it looks like it means, instead of the bare-presence
+    // check that would treat it as enabled.
+    fn envFlag(name: str, fallback: bool): bool {
+        let value = env.get(name);
+        if !value {
+            return fallback;
+        }
+        if value.length == 0 {
+            return false;
+        }
+        if equalsIgnoreCase(value, "0") || equalsIgnoreCase(value, "false")
+            || equalsIgnoreCase(value, "no") || equalsIgnoreCase(value, "off") {
+            return false;
+        }
+        return true;
+    }
+
+    // Plain non-negative decimal parse. Anything unparseable (empty, a stray
+    // sign, trailing junk) falls back rather than panicking: a malformed
+    // sampling rate in the environment should degrade to the default, not take
+    // down a program that was merely asked to profile itself.
+    fn envInt(name: str, fallback: int): int {
+        let value = env.get(name);
+        if !value {
+            return fallback;
+        }
+        if value.length == 0 {
+            return fallback;
+        }
+        let parsed = 0;
+        for (let i = 0; i < value.length; i++) {
+            let b = value[i];
+            if !ascii.isDigit(b) {
+                return fallback;
+            }
+            parsed = parsed * 10 + ((b - b"0") as int);
+        }
+        return parsed;
+    }
+
+    export fn autoProfileArgs(): Profiler.Args {
+        return Profiler.Args {
+            samplingRate: envInt("HAZE_PROFILE_SAMPLING_RATE", 10000),
+            memoryInstrumentation: envFlag("HAZE_PROFILE_MEMORY", true),
+            memoryInstrumentationStacktraces: envFlag("HAZE_PROFILE_MEMORY_STACKTRACES", true),
+        };
+    }
+
+    export fn autoProfileOutputPath(): str {
+        let path = env.get("HAZE_PROFILE_OUT");
+        if path {
+            return path;
+        }
+        return "trace.json";
+    }
+
+    // ── the two hooks compiler-generated `main` calls ────────────────────────
+    //
+    // Generated `main` brackets the call to the user's own main with these (see
+    // CodeGenerator.ts), so the profiled region is exactly "the entire program"
+    // -- startup through termination -- which is what an unmodified binary asked
+    // to profile itself can meaningfully mean.
+    //
+    // Deliberately a begin/end PAIR of zero-argument functions rather than the
+    // one closure-taking wrapper this otherwise wants to be: generated `main` is
+    // emitted as raw C text that calls Haze symbols by hand-built mangled name
+    // (the same `_HN...Ev` pattern already used for the user's main itself), and
+    // a zero-argument, non-generic, namespace-level function is the one shape
+    // that pattern can spell without the compiler resolving a real symbol. A
+    // closure parameter would additionally mean constructing a Haze closure
+    // value in C, which has no stable hand-writable representation at all.
+    //
+    // The session handle is module-level state rather than something threaded
+    // between the two calls for the same reason -- generated `main` has nowhere
+    // to put a Haze-typed local. Only one profiling session can be active at a
+    // time anyway (hzstd_profiling_start panics otherwise), so there is nothing
+    // a second concurrent auto-session could have meant.
+    //
+    // When profiling wasn't requested, beginAutoProfiling is a single getenv and
+    // endAutoProfiling does nothing at all: an instrumented-but-not-profiling
+    // build must behave identically to one without these hooks.
+    //
+    // Note this cannot catch a program that exits via sys.exit() rather than by
+    // returning from main -- that terminates the process immediately, so
+    // endAutoProfiling never runs and no trace is written. Returning from main
+    // is the supported shape for whole-program profiling.
+    let autoProfiler: Profiler | none = none;
+
+    export fn beginAutoProfiling(): void {
+        if !autoProfileEnabled() {
+            return;
+        }
+        autoProfiler = Profiler(autoProfileArgs());
+    }
+
+    export fn endAutoProfiling(): void {
+        if autoProfiler is Profiler {
+            autoProfiler.stopAndSave(autoProfileOutputPath());
+            autoProfiler = none;
+        }
+    }
+}

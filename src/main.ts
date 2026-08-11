@@ -9,6 +9,64 @@ import { GeneralError, SilentError } from "./shared/Errors";
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
 
+// Whole-program profiling flags, shared by `run` and `exec` (the two commands
+// that actually launch the program -- `build` has nothing to profile, and an
+// already-built binary is profiled by setting these same variables directly,
+// see profiling.beginAutoProfiling). `--profile`/`--perf` are aliases so either
+// spelling works, matching how bun/node expose this.
+function addProfilingArguments(subparser: ArgumentParser) {
+  subparser.add_argument("--profile", "--perf", {
+    action: "store_true",
+    dest: "profile",
+    help: "Profile the whole program and write a Chrome trace on exit",
+  });
+  subparser.add_argument("--profile-out", {
+    dest: "profileOut",
+    help: "Path for the profiling output (default 'trace.json'; a '.cpuprofile' extension writes a Chrome DevTools CPU profile instead of a trace)",
+  });
+  subparser.add_argument("--profile-sampling-rate", {
+    dest: "profileSamplingRate",
+    help: "Profiling sampling rate in Hz (default 10000; 0 means the maximum rate the kernel allows)",
+  });
+  subparser.add_argument("--no-profile-memory", {
+    action: "store_false",
+    dest: "profileMemory",
+    help: "Disable memory-allocation instrumentation while profiling",
+  });
+  subparser.add_argument("--no-profile-memory-stacktraces", {
+    action: "store_false",
+    dest: "profileMemoryStacktraces",
+    help: "Disable stack traces for instrumented allocations (cheaper than --no-profile-memory, still records sizes)",
+  });
+}
+
+// Translates the CLI flags into the environment the profiled process reads on
+// startup. Same variables a user can set by hand on an already-built binary --
+// the flags are a convenience over this, not a second mechanism.
+function profilingEnvFromArgs(args: any): Record<string, string> {
+  if (!args.profile) {
+    return {};
+  }
+  const env: Record<string, string> = { HAZE_PROFILE: "1" };
+  if (args.profileOut) {
+    env["HAZE_PROFILE_OUT"] = String(args.profileOut);
+  }
+  if (
+    args.profileSamplingRate !== undefined &&
+    args.profileSamplingRate !== null
+  ) {
+    env["HAZE_PROFILE_SAMPLING_RATE"] = String(args.profileSamplingRate);
+  }
+  // store_false dests default to true, so these only ever turn things off.
+  if (args.profileMemory === false) {
+    env["HAZE_PROFILE_MEMORY"] = "0";
+  }
+  if (args.profileMemoryStacktraces === false) {
+    env["HAZE_PROFILE_MEMORY_STACKTRACES"] = "0";
+  }
+  return env;
+}
+
 async function main(): Promise<number> {
   const parser = new ArgumentParser({ add_help: false });
   parser.add_argument("--version", { action: "version", version: "1.0.0" });
@@ -116,6 +174,7 @@ async function main(): Promise<number> {
     dest: "quiet",
     help: "Suppress progress bars; only print diagnostics",
   });
+  addProfilingArguments(run_parser);
 
   const exec_parser = subparsers.add_parser("exec", {
     help: "Run a single file immediately as a script",
@@ -159,6 +218,7 @@ async function main(): Promise<number> {
     dest: "quiet",
     help: "Suppress progress bars; only print diagnostics",
   });
+  addProfilingArguments(exec_parser);
   exec_parser.add_argument("filename", {
     nargs: "?",
     help: "File to run",
@@ -212,7 +272,8 @@ async function main(): Promise<number> {
           args.filename,
           args.explicitDir,
           args.sourceloc,
-          args.args
+          args.args,
+          profilingEnvFromArgs(args)
         );
         return exitCode;
       }

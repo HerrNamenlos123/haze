@@ -1,0 +1,170 @@
+// Coverage for the profiling entry points added alongside whole-program
+// profiling (stdlib/core/src/profiling.hz):
+//
+//   - profiling.profile(closure)  -- the scoped, wrap-what-you-want-measured
+//     form of the manual API.
+//   - profiling.beginAutoProfiling / endAutoProfiling -- the pair that
+//     compiler-generated `main` brackets the user's main with on every
+//     executable build (see CodeGenerator.ts).
+//
+// The point of the auto-profiling cases below is the DEFAULT path: those two
+// hooks are now emitted into the `main` of every single Haze executable, so
+// "profiling was not requested" has to stay completely inert -- no trace file,
+// no session, no change to the program's exit code. That is the behavior every
+// existing program depends on, and it's what these pin down.
+//
+// runExitCode rather than run: a live profiling session prints its own
+// postprocessing progress to stdout (sample counts, symbol-resolution timings
+// -- see Profiler.stop), so there is no stable expected stdout to match
+// against here. Every check below is therefore an assert, and the exit code is
+// the whole verdict: assert failures abort with a non-zero status.
+//
+// What deliberately ISN'T covered here: an actual HAZE_PROFILE=1 end-to-end
+// run. The harness runs each case's program as a plain subprocess with no way
+// to inject environment variables into it (see framework.hz's RunnerConfig /
+// Suite.run -- there is no per-case env), and the enable decision is read from
+// the environment by design, so there is no in-program way to flip it. That
+// path was verified by hand instead (HAZE_PROFILE=1 on a compiled binary, and
+// `haze run --profile`, both producing a valid trace).
+//
+// Sampling rates here are kept low and the profiled regions tiny on purpose:
+// these cases assert on structure and side effects, not on profile quality,
+// and every sample taken has to be symbolized during postprocessing, which is
+// by far the slowest part of a profiling session.
+
+namespace cases_profiling {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.runExitCode(
+            "profiling: scoped profile() wraps only its closure, and auto-profiling hooks are inert by default",
+            """
+fn fileExists(path: str): bool {
+    if let e = fs.exists(path) {
+        return e;
+    }
+    return false;
+}
+
+// profiling.profile() must actually run the closure it was given, exactly
+// once, and must leave a trace file behind at the requested path. This is
+// the whole contract of the scoped form: the caller writes no start/stop
+// pair and cannot forget the stop half.
+fn checkScopedProfileRunsBodyAndWritesTrace(): void {
+    let ran = 0;
+    profiling.profile(() => {
+        ran = ran + 1;
+    }, "scoped_case.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
+
+    assert(ran == 1, f"expected profiled closure to run exactly once, ran {ran} time(s)");
+    assert(fileExists("scoped_case.trace.json"), "expected profile() to write its trace file");
+
+    // A trace is JSON with a traceEvents array -- enough of a shape check to
+    // catch "wrote an empty/garbage file" without re-testing ChromeTrace's own
+    // serialization, which cases_chrome_trace_cpu_profile.hz already owns.
+    if let contents = fs.readText("scoped_case.trace.json") {
+        assert(contents.contains("traceEvents"), "expected the written trace to contain traceEvents");
+    }
+    else {
+        assert(false, "expected the written trace to be readable");
+    }
+}
+
+// Mutations made inside the closure must be visible afterward, and the
+// closure must be able to read what was in scope before it -- i.e. profile()
+// takes a real closure, not a detached function.
+fn checkScopedProfileClosesOverEnclosingScope(): void {
+    let total = 0;
+    let addend = 21;
+    profiling.profile(() => {
+        total = total + addend + addend;
+    }, "scoped_case2.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
+
+    assert(total == 42, f"expected closure mutation to be visible after profile(), got {total}");
+}
+
+// Sessions must be properly torn down: hzstd_profiling_start panics if a
+// session is already active, so a second profile() call completing at all is
+// itself the assertion that the first one ended.
+fn checkScopedProfilesCanRepeat(): void {
+    for (let i = 0; i < 3; i++) {
+        profiling.profile(() => {
+            let x = 0;
+            x = x + 1;
+        }, "scoped_repeat.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
+    }
+}
+
+// The default (unrequested) auto-profiling path. This is the exact call
+// compiler-generated main makes around every program's main, so calling it
+// here reproduces what every non-profiled build does: with HAZE_PROFILE unset
+// -- which is the case under the test harness -- begin must not start a
+// session and end must be a no-op.
+//
+// The strongest available signal that no session was started is that a
+// *scoped* profile immediately afterward still works: if beginAutoProfiling
+// had wrongly started one, the Profiler() inside profile() would panic on the
+// already-active session and this program would die rather than fail an
+// assertion.
+fn checkAutoProfilingHooksAreInertWhenNotRequested(): void {
+    assert(!profiling.autoProfileEnabled(), "expected auto-profiling to be disabled when HAZE_PROFILE is unset");
+
+    profiling.beginAutoProfiling();
+    profiling.endAutoProfiling();
+
+    // No trace at the default path -- an inert begin/end pair must not write one.
+    assert(!fileExists("trace.json"), "expected no trace.json when auto-profiling was not requested");
+
+    let ran = 0;
+    profiling.profile(() => {
+        ran = ran + 1;
+    }, "after_auto.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
+    assert(ran == 1, "expected scoped profiling to still work after inert auto-profiling hooks");
+}
+
+// endAutoProfiling must tolerate being called without a matching begin, and
+// begin/end must tolerate repetition -- generated main only ever calls them
+// in a matched pair, but neither may panic or write a trace on its own.
+fn checkAutoProfilingHooksAreIdempotent(): void {
+    profiling.endAutoProfiling();
+    profiling.endAutoProfiling();
+    profiling.beginAutoProfiling();
+    profiling.beginAutoProfiling();
+    profiling.endAutoProfiling();
+    profiling.endAutoProfiling();
+
+    assert(!fileExists("trace.json"), "expected no trace.json from repeated inert auto-profiling hooks");
+}
+
+// The default output path is what an unconfigured HAZE_PROFILE=1 run writes,
+// and it must stay "trace.json" -- `haze run --profile` with no --profile-out
+// documents exactly this name.
+fn checkDefaultOutputPath(): void {
+    let path = profiling.autoProfileOutputPath();
+    assert(path == "trace.json", f"expected default output path 'trace.json', got '{path}'");
+}
+
+// Unset profiling variables must fall back to the documented defaults rather
+// than to zero/empty -- a 0 sampling rate is a real, different setting
+// (unlimited), so a fallback bug here would silently change behavior.
+fn checkDefaultArgs(): void {
+    let args = profiling.autoProfileArgs();
+    assert(args.samplingRate == 10000, f"expected default sampling rate 10000, got {args.samplingRate}");
+    assert(args.memoryInstrumentation, "expected memory instrumentation on by default");
+    assert(args.memoryInstrumentationStacktraces, "expected memory instrumentation stacktraces on by default");
+}
+
+fn main(): int {
+    checkScopedProfileRunsBodyAndWritesTrace();
+    checkScopedProfileClosesOverEnclosingScope();
+    checkScopedProfilesCanRepeat();
+    checkAutoProfilingHooksAreInertWhenNotRequested();
+    checkAutoProfilingHooksAreIdempotent();
+    checkDefaultOutputPath();
+    checkDefaultArgs();
+    return 0;
+}
+""",
+            0
+        );
+    }
+}

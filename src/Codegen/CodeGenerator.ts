@@ -172,8 +172,38 @@ class CodeGenerator {
         config.version,
         config.id
       );
+
+      // Whole-program profiling (`haze run --profile`, or HAZE_PROFILE=1 on an
+      // already-built binary): the user's main gets bracketed by the stdlib's
+      // two profiling hooks, so the profiled region is startup-through-exit
+      // without the program itself being modified. Both hooks decide at runtime
+      // whether anything actually happens -- see profiling.beginAutoProfiling
+      // for why this is a begin/end pair of zero-argument functions rather than
+      // one wrapper taking main as a closure, and why the enable check lives
+      // there rather than being compiled in here.
+      //
+      // These are stdlib symbols, so a `std = "none"` build (which has no
+      // `profiling` namespace to call into) keeps the original direct call.
+      // Their mangled names are hand-built the same way the user's own main is
+      // just above: `profiling` is a plain top-level namespace, so it needs no
+      // module segment, and both hooks are zero-argument (`Ev`) by design.
+      const canAutoProfile = !config.nostdlib;
+      if (canAutoProfile) {
+        // Declared by hand for the same reason the names are built by hand:
+        // these live in the stdlib's translation unit, not this module's, so
+        // they never show up in this module's own lowered-function declarations.
+        this.out.function_declarations
+          .writeLine("hzstd_void_t _HN9profiling18beginAutoProfilingEv();")
+          .writeLine("hzstd_void_t _HN9profiling16endAutoProfilingEv();");
+        this.out.function_definitions
+          .writeLine("_HN9profiling18beginAutoProfilingEv();")
+          .writeLine(`int32_t __hz_exit_code = _HN${nsSeg}4mainEv();`)
+          .writeLine("_HN9profiling16endAutoProfilingEv();")
+          .writeLine("return __hz_exit_code;");
+      } else {
+        this.out.function_definitions.writeLine(`return _HN${nsSeg}4mainEv();`);
+      }
       this.out.function_definitions
-        .writeLine(`return _HN${nsSeg}4mainEv();`)
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
         // .writeLine(`return __hz_result;`)
         .popIndent()
