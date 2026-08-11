@@ -1908,7 +1908,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 presets.rounded(2),
                                 // Without a bound, a long signature runs off
                                 // the right edge and the text is unreadable.
-                                presets.p(4),
+                                presets.p(2),
                                 // A popup floating over the text is chrome:
                                 // it would otherwise inherit the editor's
                                 // I-beam, implying you can select into it.
