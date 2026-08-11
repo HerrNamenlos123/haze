@@ -172,6 +172,15 @@ namespace profiling {
     // pid 2 rather than requiring these ids to be renumbered.
     const hazeProcessPid = 1;
     const mainThreadTid = 1; // owns the "Profile"/"RunTask" stream, like Chrome's CrRendererMain
+    // Allocations get their own track rather than sharing the main thread's:
+    // they are a separate profile with its own call tree and its own time
+    // axis, and interleaving two profiles' samples on one tid would make
+    // DevTools merge them into a single, meaningless flame chart. The name is
+    // not one DevTools recognizes, so this lands in ThreadType.OTHER and
+    // sorts below the main thread (see the note on the Timings track below) --
+    // which is the correct place for it now that it is a profile rather than
+    // a marker stream.
+    const allocationThreadTid = 2;
 
     // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) -- kept as a plain int on
     // the FFI struct (see ffi.hzstd_memory_instrumentation_frame_t) rather than a real enum type,
@@ -236,16 +245,94 @@ namespace profiling {
         // event is attached to -- our addInstantMarker calls already emit exactly that category
         // (see ChromeTrace.TraceEventInstantMarker), so putting them on the main thread's own tid
         // is enough for them to land in the always-first Timings track; no second thread needed.
-        for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
-            let frame = result.memoryInstrumentationFrames[i];
-            builder.addInstantMarker(
-                mainThreadTid,
-                frame.timestamp * 1000000.0,
-                allocationMarkerName(frame),
-                frameRefsForStacktrace(frame.stacktrace),
-                frame.dataType.length > 0 ? frame.dataType : none,
-                frame.sizeBytes,
+        // ── Allocations: a deduplicated call tree, not one marker each ──────
+        //
+        // This used to emit one PerformanceMark per allocation, each with its
+        // ENTIRE stack inlined into the event (DevTools resolves neither `sf`
+        // nor the stackFrames dictionary for that event shape -- see
+        // TraceEventInstantMarker -- so the frames genuinely have to be
+        // inline, and there is no way to make that shape small).
+        //
+        // The problem is not the frames, it is emitting them per allocation.
+        // Measured on a real 15-second capture: 80,339 allocations, ~63
+        // frames deep on average, producing 965 MB of stackTrace -- while the
+        // whole session only ever visited 1,908 DISTINCT stacks. The same
+        // ~1,900 call paths were written out tens of thousands of times each.
+        // 5.4 million frames, of which 5.0 million were repeats. That is what
+        // made a 10-second capture produce a 1.1 GB file that DevTools
+        // refuses to load, take minutes to postprocess, and need >10 GB of
+        // RAM to serialize.
+        //
+        // Chrome does not do this, and neither does the CPU half of this very
+        // file. A V8 SamplingHeapProfile is a TREE: each unique call path is
+        // one node, written once, and every sample is just
+        // {size, nodeId, ordinal}. CpuProfileBuilder below already implements
+        // exactly that structure -- the same dedup hash index, the same
+        // parent links -- which is why 2,597 CPU chunks covering the same 15
+        // seconds cost 19 MB while the allocations cost 965 MB. The encoding
+        // was the entire difference.
+        //
+        // So allocations now go through the same builder, as their own
+        // profile on their own tid. Every allocation is still recorded, with
+        // its full stack and its size; the stack is simply stored once and
+        // referenced by id thereafter. Estimated on that same capture: ~106k
+        // nodes + 80k samples, roughly 12 MB instead of 965 MB.
+        if result.memoryInstrumentationFrames.length > 0 {
+            builder.addThread(allocationThreadTid, "HeapAllocations");
+
+            let allocBuilder = ChromeTrace.CpuProfileBuilder();
+            allocBuilder.reserveSamples(result.memoryInstrumentationFrames.length);
+
+            for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
+                let frame = result.memoryInstrumentationFrames[i];
+                let frames = frameRefsForStacktrace(frame.stacktrace);
+
+                // A CpuProfile sample carries no size/type of its own (V8's
+                // SamplingHeapProfileNode has selfSize for exactly this; the
+                // CPU shape has nowhere to put it). Rather than lose the two
+                // things that make an allocation profile useful, they become
+                // the LEAF frame of the stack -- "Heap alloc struct mut Foo
+                // (8 bytes)" sits where the allocating function's callee
+                // would be.
+                //
+                // That keeps every byte of information the old per-allocation
+                // markers carried, and it dedups on exactly the right key:
+                // two allocations of the same type and size from the same
+                // call path collapse to one node (which is what makes this
+                // small), while differing in type OR size keeps them apart
+                // and separately countable. The flame chart then reads as
+                // "this call path allocated N of these", which is the
+                // question an allocation profile exists to answer.
+                //
+                // frameRefsForStacktrace returns the capture's own order,
+                // which is innermost-first -- but CpuProfileBuilder.addSample
+                // walks its input front-to-back descending the call tree, so
+                // it wants OUTERMOST-first (see addSamplesToProfile above,
+                // which reverses for exactly this reason). Reverse here too,
+                // then put the synthetic size/type frame LAST so it lands
+                // deepest, as the leaf.
+                let outermostFirst: []ChromeTrace.FrameRef = [];
+                outermostFirst.reserve(frames.length + 1);
+                for (let f = frames.length - 1; f >= 0; f--) {
+                    outermostFirst.push(frames[f]);
+                }
+                outermostFirst.push(ChromeTrace.FrameRef {
+                    name: allocationMarkerName(frame),
+                    url: "",
+                    line: 0,
+                    column: 0,
+                });
+
+                allocBuilder.addSample(frame.timestamp * 1000000.0, outermostFirst);
+            }
+
+            let allocProfile = allocBuilder.build();
+            builder.addTask(
+                allocationThreadTid,
+                allocProfile.startTime,
+                allocProfile.endTime - allocProfile.startTime,
             );
+            builder.addCpuProfileSamples(allocationThreadTid, allocProfile.startTime, allocProfile);
         }
 
         return builder.build();
@@ -277,8 +364,11 @@ namespace profiling {
         result.frames = [];
         result.samples = [];
         result.memoryInstrumentationFrames = [];
-        let json = ChromeTrace.traceToJson(trace);
-        return fs.writeText(path, json);
+        // Streams event-by-event rather than materializing the whole file as
+        // one string first (see ChromeTrace.writeTrace) -- that string used to
+        // be the single largest allocation a profiling session made, and it
+        // was live at the same time as everything it was built from.
+        return ChromeTrace.writeTrace(trace, path);
     }
 }
 

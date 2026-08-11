@@ -32,6 +32,10 @@ namespace ffi {
     extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
     extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
 
+    extern C fn hzstd_file_open_write(allocator: Allocator, path: str, out_handle: cptr): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_append_text(allocator: Allocator, handle: cptr, input: str): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_close(allocator: Allocator, handle: cptr): inline hzstd_fs_error_t :: final;
+
     extern C fn hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
 
     extern C noemit struct hzstd_fs_exists_result_t {
@@ -223,6 +227,125 @@ export namespace fs {
         else {
             return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
+    }
+
+    // ── Streaming writes ────────────────────────────────────────────────────
+    //
+    // writeText() above needs the whole file as one string, so producing a
+    // large generated file means holding all of it in memory at once (and,
+    // usually, the intermediate representations it was built from as well).
+    // A FileWriter emits it incrementally instead: peak memory is whatever
+    // the caller chooses to buffer, not the size of the output.
+    //
+    // Usage is open / write* / close, and close() must be called -- it is
+    // what flushes the last partial buffer and surfaces any write error that
+    // only appears at flush time (a full disk, typically). Writing after
+    // close, or closing twice, is a bug and is rejected rather than silently
+    // ignored.
+    export opaque struct FileWriter {
+        handle: cptr;
+        closed: bool = false;
+
+        // Bytes buffered on the Haze side before being handed to C. The C
+        // layer already sets a 1 MB stdio buffer, so this is not about
+        // syscalls -- it is about FFI call count: a caller emitting one small
+        // string per event would otherwise cross the language boundary
+        // millions of times. Batching here makes that per-chunk instead.
+        //
+        // A ByteBuffer rather than a String: this file is compiled before
+        // string.hz in the core module's own ordering, so String is not a
+        // usable type here, while ByteBuffer (memory.hz) already is -- see
+        // readBinary above, which uses one.
+        pending: mut ByteBuffer;
+        pendingBytes: int = 0;
+
+        // Opaque, so literals are only legal in here -- openWrite() below
+        // goes through this rather than constructing one directly.
+        fn constructor(handle: cptr): mut FileWriter {
+            return FileWriter { handle: handle, pending: ByteBuffer() };
+        }
+
+        // Queues `text`, flushing to disk once enough has accumulated.
+        mut fn write(text: str): Error {
+            if this.closed {
+                return Error.IOError;
+            }
+            this.pending.push(text);
+            this.pendingBytes = this.pendingBytes + text.length;
+            if this.pendingBytes >= 262144 {
+                return this.flush();
+            }
+            return Error.None;
+        }
+
+        mut fn flush(): Error {
+            if this.pendingBytes == 0 {
+                return Error.None;
+            }
+            this.pending.commit();
+            let err = ffi.hzstd_file_append_text(Alloc.heap(), this.handle, this.pending.string());
+            // Reset to a FRESH buffer rather than reusing this one: a buffer
+            // that has grown to the flush threshold keeps that capacity, and
+            // the whole point here is to not hold large buffers alive.
+            this.pending = ByteBuffer();
+            this.pendingBytes = 0;
+            if err.code != ffi.hzstd_fs_error_code_none {
+                return mapErrorEnum(err.code);
+            }
+            return Error.None;
+        }
+
+        mut fn close(): Error {
+            if this.closed {
+                return Error.None;
+            }
+            let flushErr = this.flush();
+            this.closed = true;
+            let err = ffi.hzstd_file_close(Alloc.heap(), this.handle);
+            if flushErr != Error.None {
+                return flushErr;
+            }
+            if err.code != ffi.hzstd_fs_error_code_none {
+                return mapErrorEnum(err.code);
+            }
+            return Error.None;
+        }
+    }
+
+    // Forces the compiler to elaborate FileWriter's methods.
+    //
+    // A struct's methods are only exported to dependent modules once they
+    // have actually been elaborated, and elaboration is demand-driven: a
+    // method nobody calls inside this module is never instantiated, and so
+    // never appears in the generated import.hz -- leaving callers with a
+    // FileWriter whose methods do not exist. openWrite() alone only pulls in
+    // the constructor, which is why write/flush/close went missing.
+    //
+    // Referencing them here is what makes them real. Never called (the guard
+    // is unsatisfiable); it exists purely so the elaborator sees the calls.
+    fn forceFileWriterElaboration(w: mut FileWriter): void {
+        if w.closed && !w.closed {
+            w.write("");
+            w.flush();
+            w.close();
+        }
+    }
+
+    // Opens `path` for streaming writes, truncating any existing file and
+    // creating parent directories, exactly as writeText() would. A plain
+    // function rather than a FileWriter constructor because opening can fail
+    // and a constructor cannot report that as a union.
+    export fn openWrite(path: str): mut FileWriter | Error {
+        let handle = none as cptr;
+        let err = do unsafe {
+            let out = none as cptr;
+            __c__("out = &handle;");
+            ffi.hzstd_file_open_write(Alloc.heap(), path, out);
+        };
+        if err.code != ffi.hzstd_fs_error_code_none {
+            return mapErrorEnum(err.code);
+        }
+        return FileWriter(handle);
     }
 
     export fn exists(path: str): Result<bool, Error> {

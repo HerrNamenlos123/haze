@@ -317,6 +317,117 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
   };
 }
 
+// ── Streaming writes ────────────────────────────────────────────────────────
+//
+// See the block comment on these in hzstd_filesystem.h for why they exist.
+// Same fopen/mkdir-parent/errno-mapping behavior as hzstd_write_file_text, just
+// split across three calls so the caller never has to hold the whole file.
+
+hzstd_fs_error_t hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t path, void* out_handle_raw)
+{
+  if (!out_handle_raw) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_invalid_path,
+      .message = HZSTD_STRING("out_handle must not be null", 27),
+    };
+  }
+  void** out_handle = (void**)out_handle_raw;
+  *out_handle = NULL;
+
+  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_out_of_memory,
+      .message = HZSTD_STRING("out of memory", 13),
+    };
+  }
+
+  // Create parent directory, not the file path itself -- same as
+  // hzstd_write_file_text, so a streamed write can target a fresh directory.
+  hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
+  hzstd_mkdir_recursive(parent);
+
+  FILE* f = fopen(nullTermPath, "wb");
+  if (!f) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  // A big stdio buffer is what keeps this from becoming a syscall per append:
+  // the caller emits many small chunks (one JSON event at a time), and the
+  // default BUFSIZ (typically 4-8 KB) would turn that into millions of tiny
+  // write()s. 1 MB is small enough to be irrelevant next to what streaming
+  // saves, and large enough that the syscall count stops mattering.
+  setvbuf(f, NULL, _IOFBF, 1024 * 1024);
+
+  *out_handle = (void*)f;
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
+hzstd_fs_error_t hzstd_file_append_text(hzstd_allocator_t allocator, void* handle, hzstd_str_t input)
+{
+  if (!handle) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_io_error,
+      .message = HZSTD_STRING("append to a closed or unopened file", 35),
+    };
+  }
+
+  if (input.length <= 0) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_none,
+      .message = HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  FILE* f = (FILE*)handle;
+  size_t written = fwrite(input.data, 1, (size_t)input.length, f);
+  if (written < (size_t)input.length) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_io_error,
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
+hzstd_fs_error_t hzstd_file_close(hzstd_allocator_t allocator, void* handle)
+{
+  if (!handle) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_none,
+      .message = HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  // fclose flushes first, so a write error that only surfaces at flush time
+  // (a full disk being the usual one) is reported here rather than silently
+  // truncating the file.
+  if (fclose((FILE*)handle) != 0) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
 hzstd_fs_error_t
 hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length)
 {

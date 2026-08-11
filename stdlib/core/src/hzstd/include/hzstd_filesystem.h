@@ -17,6 +17,30 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
 hzstd_fs_error_t
 hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 
+// ── Streaming writes ────────────────────────────────────────────────────────
+//
+// hzstd_write_file_text above takes the ENTIRE file contents as one already-
+// built string, which means the caller must materialize the whole thing in
+// memory first. That is fine for a config file and ruinous for anything
+// generated: the profiler's trace writer had to hold a ~1 GB JSON string
+// (plus the intermediate representations it was built from) live at once,
+// which is what made writing a trace need many gigabytes of RAM.
+//
+// These three let a caller emit a file incrementally instead, so peak memory
+// is one small buffer rather than the whole output. Deliberately a raw
+// open/append/close triple rather than a handle struct: hzstd_types.h stays
+// freestanding, and the FILE* is opaque to Haze either way.
+//
+// Ownership: a successful hzstd_file_open_write MUST be paired with exactly
+// one hzstd_file_close, which flushes and releases the handle. Append after
+// close, or close twice, is undefined.
+// `out_handle` is a void** in spirit -- it receives the FILE* -- but is typed
+// void* to match what Haze's `cptr` lowers to at the FFI boundary.
+hzstd_fs_error_t
+hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t path, void* out_handle);
+hzstd_fs_error_t hzstd_file_append_text(hzstd_allocator_t allocator, void* handle, hzstd_str_t input);
+hzstd_fs_error_t hzstd_file_close(hzstd_allocator_t allocator, void* handle);
+
 hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path);
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path);
