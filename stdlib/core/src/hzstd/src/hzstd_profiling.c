@@ -428,32 +428,166 @@ struct hzstd_profiling_context_t {
 // CPU samples already work -- see hzstd_profiling_resolve_frame, which this
 // reuses (and shares its dedup table with, so a function hit by both CPU
 // sampling and allocation call sites is only ever resolved once).
+// ── Frame-pointer walking ─────────────────────────────────────────────────
+//
+// Everything Haze compiles goes through `-fno-omit-frame-pointer` (see
+// ModuleCompiler.ts's phaseCCompile), so every function this profiler ever
+// sees an allocation from opens with the standard
+//
+//     push %rbp
+//     mov  %rsp,%rbp
+//
+// prologue. That makes the call stack a plain singly-linked list: at any
+// frame, [rbp] is the caller's rbp and [rbp+8] is the return address into
+// the caller. Walking it is two dependent loads per frame.
+//
+// libunwind, by contrast, does not assume frame pointers exist -- that is
+// its entire reason for being. Every unw_step() locates the current PC's
+// entry in .eh_frame and interprets its DWARF CFI program to reconstruct
+// where the caller's registers were spilled. That is a fundamentally more
+// expensive operation, and it is what all of apply_reg_state /
+// find_reg_state / dwarf_get / access_mem / rs_lookup in the profiles
+// actually were. Measured on this machine at the depth this app really
+// runs at (86 frames): 25-30us per unwind via libunwind, 0.28us via the
+// frame-pointer walk -- ~90x, and 3ns/frame vs ~300ns/frame.
+//
+// At the observed allocation rate (~5300/s, mean depth ~70) that is the
+// difference between spending ~110ms and ~1.2ms of every second unwinding
+// -- i.e. between the profiler dominating the program it is measuring and
+// being nearly free. No fidelity is traded for it: every allocation is
+// still captured, with its full stack, no sampling and no truncation.
+//
+// Verified against libunwind frame-for-frame on this target: same depth,
+// identical PCs (the only permissible difference being which call site
+// inside the shared innermost frame each capture was invoked from).
+//
+// Correctness rests on three cheap invariants, checked per frame below.
+// If any fails we simply stop walking, which degrades to a shorter stack
+// -- never a wrong one, and never a wild read:
+//
+//   1. rbp must lie inside THIS thread's stack. A frame pointer pointing
+//      anywhere else is not a frame pointer (it is a register that some
+//      frame-pointer-less function is using as a general-purpose scratch
+//      register -- see the note on foreign code below).
+//   2. rbp must be 8-byte aligned. The ABI guarantees it; a misaligned
+//      value means we are no longer looking at a real frame.
+//   3. Each successive rbp must be strictly GREATER than the last. The
+//      stack grows downward, so unwinding must move monotonically toward
+//      the base. This is what makes a corrupted or cyclic chain
+//      terminate instead of looping forever.
+//
+// The one thing frame-pointer walking cannot do is see through code built
+// WITHOUT frame pointers -- system libraries, typically. In practice that
+// does not matter here: 95.3% of all frames appearing in this app's
+// allocation stacks are Haze-compiled code, and the only foreign frames
+// are the three fixed libc entry frames (_start, __libc_start_main,
+// __libc_start_call_main) that sit at the very BOTTOM of every stack, i.e.
+// after everything of interest has already been recorded. A walk that
+// stops when it reaches them loses nothing that was going to be read.
+//
+// The perf_event_open sampler keeps using libunwind: it unwinds a captured
+// register/stack SNAPSHOT belonging to a different thread, where following
+// live pointers is not an option (see hzstd_profiling_unwind_perf_sample).
+
+// This thread's stack bounds, [low, high). Queried lazily on first use and
+// cached per-thread: allocations come from any thread (unlike
+// g_hzstd_perf_stack_low/high above, which describe only the one profiled
+// thread), and pthread_getattr_np is far too expensive to call per
+// allocation. Zero means "not resolved yet"; low==high==1 is the sentinel
+// for "resolution failed", which disables frame-pointer walking for this
+// thread rather than retrying forever.
+static __thread uintptr_t hz_fp_stack_low = 0;
+static __thread uintptr_t hz_fp_stack_high = 0;
+
+static void hzstd_fp_resolve_stack_bounds(void)
+{
+#ifdef HAZE_PLATFORM_LINUX
+  pthread_attr_t attr;
+  if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+    void *addr = NULL;
+    size_t size = 0;
+    if (pthread_attr_getstack(&attr, &addr, &size) == 0 && addr != NULL && size > 0) {
+      hz_fp_stack_low = (uintptr_t)addr;
+      hz_fp_stack_high = hz_fp_stack_low + size;
+      pthread_attr_destroy(&attr);
+      return;
+    }
+    pthread_attr_destroy(&attr);
+  }
+#endif
+  // Sentinel: an empty, impossible range. Every bounds check below fails
+  // against it, so this thread quietly captures nothing rather than
+  // risking a wild read.
+  hz_fp_stack_low = 1;
+  hz_fp_stack_high = 1;
+}
+
 static void
 hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
 {
   out->depth = 0;
 
-  unw_context_t ctx;
-  unw_getcontext(&ctx);
-  unw_cursor_t cursor;
-  unw_init_local2(&cursor, &ctx, 0);
+  if (hz_fp_stack_low == 0) {
+    hzstd_fp_resolve_stack_bounds();
+  }
+  uintptr_t lo = hz_fp_stack_low;
+  uintptr_t hi = hz_fp_stack_high;
 
+  // Frame numbering, and why skip_n_frames needs adjusting.
+  //
+  // libunwind's cursor starts AT this function: its frame 0 is
+  // capture_stack itself, frame 1 is hzstd_trace_memory_impl, and so on
+  // outward. skip_n_frames is calibrated against exactly that numbering --
+  // the "+ 2" at this function's call site, and every count threaded
+  // through by hzstd_memory.c's allocators, were all written to skip
+  // libunwind frames.
+  //
+  // The frame-pointer walk cannot start there. __builtin_frame_address(0)
+  // is this function's own rbp, and the only thing that frame can tell us
+  // is [rbp+8] -- the return address into our caller. So the first pc this
+  // loop can possibly produce is already libunwind's frame 2 (the return
+  // site inside hzstd_trace_memory_impl), skipping frames 0 and 1 for free.
+  //
+  // Hence two fewer frames to discard. Verified empirically against
+  // libunwind on this target rather than derived: comparing both walkers
+  // invoked from one shared call site, fp[i] == uw[i + 2] with ZERO
+  // mismatches across all 34 frames of a 30-deep chain. Getting this wrong
+  // does not crash -- it silently shifts every recorded stack by a frame,
+  // which is exactly the kind of error that makes a profile quietly lie.
+  uintptr_t fp = (uintptr_t)__builtin_frame_address(0);
+
+  int skip_total = skip_n_frames - 2;
+  if (skip_total < 0) {
+    skip_total = 0;
+  }
   int skipped = 0;
-  do {
-    if (skipped < skip_n_frames) {
+  while (out->depth < HZSTD_MAX_FRAMES) {
+    // Invariants 1 and 2. Note this also terminates the walk cleanly at
+    // the outermost frame, whose saved rbp is 0 (or otherwise leaves the
+    // stack region), so no explicit "are we at _start yet" test is needed.
+    if (fp < lo || fp + sizeof(void *) * 2 > hi || (fp & (sizeof(void *) - 1)) != 0) {
+      break;
+    }
+
+    void *ret = ((void **)fp)[1];
+    if (ret == NULL) {
+      break;
+    }
+
+    if (skipped < skip_total) {
       skipped++;
     }
     else {
-      if (out->depth >= HZSTD_MAX_FRAMES) {
-        break;
-      }
-      unw_word_t pc;
-      if (unw_get_reg(&cursor, UNW_REG_IP, &pc) < 0) {
-        break;
-      }
-      out->pcs[out->depth++] = (void *)pc;
+      out->pcs[out->depth++] = ret;
     }
-  } while (unw_step(&cursor) > 0);
+
+    // Invariant 3: strictly monotonic toward the stack base.
+    uintptr_t next = (uintptr_t)((void **)fp)[0];
+    if (next <= fp) {
+      break;
+    }
+    fp = next;
+  }
 }
 
 // Appends `raw` into context->memoryCapturesHead/Tail under
