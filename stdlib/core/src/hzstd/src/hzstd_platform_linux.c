@@ -754,11 +754,46 @@ void hzstd_setup_panic_handler(void)
   sa.sa_sigaction = hzstd_panic_handler;
   sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&sa.sa_mask);
-  if (sigaction(SIGSEGV, &sa, NULL) != 0) {
-    hzstd_panic("Failed to register the panic handler (SIGSEGV)");
+
+  // Install only if nothing else already owns SIGSEGV/SIGFPE.
+  //
+  // Signal disposition is process-wide, but this function runs once per
+  // *thread* (every thread in the runtime calls it at startup, and threads
+  // are created throughout the process's life -- notably the profiling reader
+  // thread, spawned by hzstd_profiling_start). An unconditional sigaction()
+  // here therefore doesn't just re-register the same handler harmlessly: it
+  // silently rips out any *other* SIGSEGV handler that was legitimately
+  // installed in the meantime, for the whole process, from an unrelated
+  // thread's startup path.
+  //
+  // That is a real, observed race, not a hypothetical. hzstd_profiling_start
+  // installs hzstd_perf_unwind_crash_handler (which makes a segfault while
+  // remote-unwinding a sample recoverable via siglongjmp, so one bad address
+  // truncates that sample instead of killing the process) and only *then*
+  // creates the reader thread -- whose first action is to call this function.
+  // Whether the guard survived came down to whether that thread got here
+  // before postprocessing hit a bad address, which is exactly why the
+  // resulting crash was intermittent: with the guard clobbered, a routine
+  // unwinding segfault in hzstd_perf_access_mem escaped to hzstd_panic_handler
+  // and took the process down instead of being absorbed.
+  //
+  // Querying first (act only when the current disposition is still the
+  // default) keeps this idempotent across threads while leaving any
+  // deliberately-installed handler alone. The panic handler is installed once,
+  // by whichever thread gets here first -- normally the main thread from
+  // hzstd_initialize, long before any of this matters.
+  struct sigaction existing;
+  if (sigaction(SIGSEGV, NULL, &existing) == 0
+      && (existing.sa_flags & SA_SIGINFO ? (void *)existing.sa_sigaction : (void *)existing.sa_handler) == NULL) {
+    if (sigaction(SIGSEGV, &sa, NULL) != 0) {
+      hzstd_panic("Failed to register the panic handler (SIGSEGV)");
+    }
   }
-  if (sigaction(SIGFPE, &sa, NULL) != 0) {
-    hzstd_panic("Failed to register the panic handler (SIGFPE)");
+  if (sigaction(SIGFPE, NULL, &existing) == 0
+      && (existing.sa_flags & SA_SIGINFO ? (void *)existing.sa_sigaction : (void *)existing.sa_handler) == NULL) {
+    if (sigaction(SIGFPE, &sa, NULL) != 0) {
+      hzstd_panic("Failed to register the panic handler (SIGFPE)");
+    }
   }
 }
 

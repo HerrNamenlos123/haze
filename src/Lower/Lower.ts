@@ -2864,6 +2864,28 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             sourceloc: expr.sourceloc,
           })[1]
         );
+        // This `goto` leaves the HAZE_ATTEMPT macro's do{}while(0) from
+        // *inside* its body, so the trailing hzstd_pop_panic_recovery_frame()
+        // at the end of the macro is skipped entirely. Without popping here,
+        // every successful attempt-with-recover leaks one recovery frame for
+        // the life of the thread. That is not merely a slow leak: the panic
+        // machinery picks the *topmost* frame as its longjmp target, so a
+        // later, unrelated crash jumps into a leaked frame whose setjmp stack
+        // frame has long since returned -- resurrecting a dead stack frame and
+        // reading garbage locals out of it. Confirmed from a core dump: 13
+        // leaked frames from component rendering, and a segfault during
+        // profiler postprocessing longjmping into one of them (saved SP ~10 KB
+        // *above* the live SP), which is what produced the
+        // "[recovery-frame corruption] frame (run_cleanup)" abort.
+        if (hasRecover) {
+          enclosingBlockScope.statements.push(
+            Lowered.addStatement(lr, {
+              variant: Lowered.ENode.InlineCStatement,
+              value: `hzstd_pop_panic_recovery_frame();`,
+              sourceloc: expr.sourceloc,
+            })[1]
+          );
+        }
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.LabelJumpStatement,
