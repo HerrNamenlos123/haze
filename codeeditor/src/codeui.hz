@@ -277,6 +277,22 @@ fn parseHoverBlocks(payload: str): []HoverBlock {
 // is phrased in the line numbers of the document as it was when the
 // request went out, and these are what map those numbers onto the
 // document as it is now.
+// Where a hover popup sits, decided ONCE per popup.
+//
+// Placement depends on the popup's own measured size (to flip above/below
+// and to keep its right edge in view), and moving the popup re-measures it
+// -- so recomputing this every frame is a feedback loop that oscillates
+// forever. It is computed on the first frame the size is known and then
+// held: the content and the anchor are both fixed for as long as the popup
+// is open, so there is nothing for a later frame to legitimately change.
+struct HoverPlacement {
+    x: real = 0.0;
+    y: real = 0.0;
+    // Sitting above the token (the default) rather than below it. Drives
+    // the -1 translateY that lifts the popup by its own height.
+    above: bool = true;
+}
+
 struct PendingEdit {
     version: int = 0;
     startLine: int = 0;
@@ -464,6 +480,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // popup belongs at the pointer, which may be nowhere near the caret.
         let hoverAnchor = rx.reactive<Vec2 | none>(none);
 
+        // Where the current popup sits, resolved once from its measured
+        // size -- see HoverPlacement. `none` means "not measured yet", in
+        // which case the popup is laid out but not drawn.
+        let hoverPlacement = rx.reactive<HoverPlacement | none>(none);
+
         // Drops whatever hover is on screen and cancels any pending one.
         // Called from every input path that invalidates it: typing, moving
         // the caret, scrolling, or moving the mouse away.
@@ -471,6 +492,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             hoverRequest := none;
             hoverResult := null;
             hoverAnchor := none;
+            // Must be cleared with the rest: a stale placement is one
+            // computed for the PREVIOUS popup's size and anchor, so keeping
+            // it would flash the next hover at the old one's position for a
+            // frame before it re-resolves.
+            hoverPlacement := none;
         };
 
         // ── Hover popup contents ─────────────────────────────────────────
@@ -1519,6 +1545,15 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 return;
                             }
                             hoverResult := text ? text : "(no hover info at this position)";
+                            // The popup was sized around "Loading..." and is
+                            // about to be sized around the real signature,
+                            // which is a different shape entirely. Drop the
+                            // placement so it is resolved again from the new
+                            // measurement -- and, because an unresolved
+                            // placement is not drawn, the popup simply does
+                            // not appear at the wrong size for a frame on
+                            // the way there.
+                            hoverPlacement := none;
                         });
                     }
                 }
@@ -2232,56 +2267,109 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                             popupSize = popupEl.size();
                         }
 
-                        // Viewport to stay inside: the editor's own box, in
-                        // the same editor-local coordinates the popup is
-                        // positioned in (so its top-left is 0,0).
-                        let viewportW = 0.0;
-                        let viewportH = 0.0;
-                        let editorBox = rx.get(editorRef);
-                        if editorBox {
-                            let vp = editorBox.size();
-                            if vp {
-                                viewportW = vp.x;
-                                viewportH = vp.y;
+                        // ── Why the placement is FROZEN once decided ─────
+                        //
+                        // Both decisions below (flip above/below, clamp the
+                        // right edge) read the popup's own measured size --
+                        // and a popup that moves is a popup that gets
+                        // re-measured, whose new measurement can flip the
+                        // decision straight back. That is a feedback loop
+                        // with no fixed point, and it ran once per frame:
+                        // the popup visibly vibrated between two positions
+                        // the entire time it was open.
+                        //
+                        // A hover's content never changes after it arrives
+                        // and its anchor never moves while it is open (any
+                        // pointer movement dismisses it outright -- see the
+                        // dwell branch), so its correct position is a
+                        // CONSTANT. It only has to be computed once, on the
+                        // first frame where the size is actually known, and
+                        // then left alone. Recomputing it every frame was
+                        // never buying anything; it was only ever able to
+                        // do harm.
+                        let placement = rx.get(hoverPlacement);
+                        if !placement && popupSize is Vec2 {
+
+                            // Viewport to stay inside: the editor's own box,
+                            // in the same editor-local coordinates the popup
+                            // is positioned in (so its top-left is 0,0).
+                            let viewportW = 0.0;
+                            let viewportH = 0.0;
+                            let editorBox = rx.get(editorRef);
+                            if editorBox {
+                                let vp = editorBox.size();
+                                if vp {
+                                    viewportW = vp.x;
+                                    viewportH = vp.y;
+                                }
                             }
-                        }
 
-                        // Flip below the token when there isn't room above.
-                        // Needs the measured height, so on the frame the
-                        // popup first gets its text it stays above -- which
-                        // is the correct default anyway, and self-corrects
-                        // on the next frame if it doesn't fit.
-                        let above = true;
-                        if popupSize is Vec2 && anchorY - hoverGap < popupSize.y {
-                            // Only flip if below is genuinely roomier;
-                            // otherwise a popup taller than the viewport
-                            // would flip to a side that fits it no better.
-                            let roomBelow = viewportH - (anchorY + characterSize.y + hoverGap);
-                            if roomBelow > anchorY - hoverGap {
-                                above = false;
+                            // Flip below the token when there isn't room
+                            // above.
+                            let above = true;
+                            if anchorY - hoverGap < popupSize.y {
+                                // Only flip if below is genuinely roomier;
+                                // otherwise a popup taller than the viewport
+                                // would flip to a side that fits it no better.
+                                let roomBelow = viewportH - (anchorY + characterSize.y + hoverGap);
+                                if roomBelow > anchorY - hoverGap {
+                                    above = false;
+                                }
                             }
+
+                            // Horizontal clamp: keep the right edge inside
+                            // the viewport, then re-clamp the left to 0 so a
+                            // popup wider than the viewport stays anchored at
+                            // the left edge rather than being pushed off it
+                            // (a negative left would hide the START of the
+                            // signature, which is the part worth reading).
+                            let x = anchorX;
+                            if viewportW > 0.0 {
+                                let maxX = viewportW - popupSize.x - hoverGap;
+                                if x > maxX { x = maxX; }
+                            }
+                            if x < 0.0 { x = 0.0; }
+
+                            // Above: top edge on the token's top edge, then
+                            // lifted by the popup's own full height
+                            // (translate), minus the gap. Below: straight
+                            // under the token, no translate needed.
+                            let y = above
+                                ? anchorY - hoverGap
+                                : anchorY + characterSize.y + hoverGap;
+
+                            hoverPlacement := HoverPlacement { x: x, y: y, above: above };
                         }
 
-                        // Horizontal clamp: keep the right edge inside the
-                        // viewport, then re-clamp the left to 0 so a popup
-                        // wider than the viewport stays anchored at the left
-                        // edge rather than being pushed off it (a negative
-                        // left would hide the START of the signature, which
-                        // is the part worth reading).
-                        let popupX = anchorX;
-                        if popupSize is Vec2 && viewportW > 0.0 {
-                            let maxX = viewportW - popupSize.x - hoverGap;
-                            if popupX > maxX { popupX = maxX; }
-                        }
-                        if popupX < 0.0 { popupX = 0.0; }
-
-                        // Above: top edge on the token's top edge, then
-                        // lifted by the popup's own full height (translate),
-                        // minus the gap. Below: straight under the token,
-                        // no translate needed.
-                        let popupY = above
-                            ? anchorY - hoverGap
-                            : anchorY + characterSize.y + hoverGap;
+                        // Until the popup has been measured there is nowhere
+                        // correct to put it, so for that one frame it is
+                        // laid out but not VISIBLE. Drawing it at a
+                        // provisional position is exactly the "appears, then
+                        // jumps" flash this exists to avoid; one frame of
+                        // nothing is imperceptible, a jump is not.
+                        //
+                        // Deliberately NOT display:none: that removes the
+                        // element from layout entirely, so it would never be
+                        // measured, so the placement would never resolve and
+                        // the popup would never appear at all. It has to be
+                        // laid out to be measured -- it just must not be
+                        // painted yet. Transparent colours are how you say
+                        // "occupy space, show nothing"; the text inside is
+                        // covered by the same treatment below.
+                        let resolved = rx.get(hoverPlacement);
+                        let measuring = !resolved;
+                        let popupX = resolved ? resolved.x : 0.0;
+                        let popupY = resolved ? resolved.y : 0.0;
+                        let above = resolved ? resolved.above : true;
+                        // Applied to every run of text in the popup, so the
+                        // measuring frame lays the real text out (that is
+                        // what gives the box its size) while showing none of
+                        // it. Text colour does not inherit far enough to do
+                        // this from the container alone -- each run sets its
+                        // own colour from the theme.
+                        let hoverInk = (color: Color): Color => {
+                            return measuring ? "#00000000" as Color : color;
+                        };
 
                         ui.div({
                             id: 300002,
@@ -2298,9 +2386,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 // Blocks (and code lines within them) stack
                                 // vertically, like the editor's own lines.
                                 presets.col(),
-                                presets.bg("#181818"),
+                                // Fully transparent on the measuring frame
+                                // -- see `measuring` above. Same box, same
+                                // size, simply not painted yet.
+                                presets.bg(measuring ? "#00000000" : "#181818"),
                                 presets.border(1),
-                                presets.borderColor("#4F4F4F"),
+                                presets.borderColor(measuring ? "#00000000" : "#4F4F4F"),
                                 presets.rounded(2),
                                 // Without a bound, a long signature runs off
                                 // the right edge and the text is unreadable.
@@ -2333,7 +2424,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 ui.text({
                                     id: hoverPlaceholderId,
                                     text: hoverText,
-                                    presets: [presets.textColor("#9A9A9A")],
+                                    presets: [presets.textColor(hoverInk("#9A9A9A"))],
                                 });
                             }
                             else {
@@ -2395,7 +2486,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                                             ui.text({
                                                                 id: ri,
                                                                 text: run.text,
-                                                                presets: [presets.textColor(run.color)],
+                                                                presets: [presets.textColor(hoverInk(run.color))],
                                                             });
                                                         }
                                                     }
@@ -2408,7 +2499,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                                         ui.text({
                                                             id: 0,
                                                             text: lineText,
-                                                            presets: [presets.textColor(defaultTextColor())],
+                                                            presets: [presets.textColor(hoverInk(defaultTextColor()))],
                                                         });
                                                     }
                                                 });
@@ -2430,7 +2521,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                             ui.text({
                                                 id: hoverProseId,
                                                 text: block.text,
-                                                presets: [presets.textColor("#9A9A9A")],
+                                                presets: [presets.textColor(hoverInk("#9A9A9A"))],
                                             });
                                         }
                                     });
