@@ -35,11 +35,27 @@ function errorMessage(error: Error) {
 // and every grammar JSON was re-parsed. That dominated the cost of
 // highlighting and is why re-highlighting on each keystroke was not
 // viable. Now it is done once, lazily, and reused.
-let grammarPromise: Promise<vsctm.IGrammar | undefined> | null = null;
+//
+// The registry is separate from the grammars it produces, because a
+// document is not always Vue: an editor buffer is, but a hover popup's
+// contents are a TypeScript signature, a JSON file is JSON, and so on.
+// Each top-level scope is loaded on first use and cached under its own
+// name, all sharing the one registry (and therefore the one oniguruma
+// WASM instance and the one parsed copy of each embedded grammar).
+let registryPromise: vsctm.Registry | null = null;
+const grammarPromises = new Map<
+  string,
+  Promise<vsctm.IGrammar | undefined>
+>();
 
-function getGrammar(): Promise<vsctm.IGrammar | undefined> {
-  if (grammarPromise) {
-    return grammarPromise;
+// The scope a document is parsed with when the client doesn't name one.
+// Vue, because that is what this editor is for and what every previously
+// existing caller expected before `scopeName` was a parameter at all.
+const DEFAULT_SCOPE = "source.vue";
+
+function getRegistry(): vsctm.Registry {
+  if (registryPromise) {
+    return registryPromise;
   }
   const wasmBin = fs.readFileSync(onigWasmPath).buffer;
   const vscodeOnigurumaLib = oniguruma.loadWASM(wasmBin).then(() => {
@@ -192,13 +208,32 @@ function getGrammar(): Promise<vsctm.IGrammar | undefined> {
     },
   });
 
-  grammarPromise = registry.loadGrammar("source.vue");
-  return grammarPromise;
+  registryPromise = registry;
+  return registry;
+}
+
+// The grammar for one top-level scope, loaded on first use and cached
+// under its own name. Everything the registry's own loadGrammar() knows
+// about is reachable here, so a caller naming e.g. "source.ts" gets a
+// TypeScript grammar rather than a Vue one that would treat a bare
+// signature as malformed SFC markup.
+function getGrammar(
+  scopeName: string = DEFAULT_SCOPE
+): Promise<vsctm.IGrammar | undefined> {
+  const cached = grammarPromises.get(scopeName);
+  if (cached) {
+    return cached;
+  }
+  const loaded = getRegistry().loadGrammar(scopeName);
+  grammarPromises.set(scopeName, loaded);
+  return loaded;
 }
 
 function initialize() {
   // Warm the grammar so the first real request isn't the one that pays
-  // for loading it.
+  // for loading it. Only the default (editor buffer) scope is warmed --
+  // any other is loaded on first use, since which ones a session needs
+  // isn't known up front.
   void getGrammar();
 }
 
@@ -317,6 +352,12 @@ type DocState = {
   ruleStacks: vsctm.StateStack[];
   // tokensByLine[i] are the tokens of line i.
   tokensByLine: Token[][];
+  // The top-level grammar this document was opened with. Remembered so a
+  // later incremental "change" retokenizes with the SAME grammar it was
+  // originally parsed by -- re-deriving it per request would silently
+  // reparse the document under a different language the moment a caller
+  // omitted the scope.
+  scopeName: string;
 };
 
 const documents = new Map<string, DocState>();
@@ -380,8 +421,12 @@ function collectTokens(state: DocState, firstLine: number, lastLine: number): To
 
 // Full (re)tokenize of a document -- used on open, and as the fallback
 // whenever a client sends a change for a document we do not know.
-async function openDocument(uri: string, text: string) {
-  const grammar = await getGrammar();
+async function openDocument(
+  uri: string,
+  text: string,
+  scopeName: string = DEFAULT_SCOPE
+) {
+  const grammar = await getGrammar(scopeName);
   if (!grammar) {
     return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
   }
@@ -390,6 +435,7 @@ async function openDocument(uri: string, text: string) {
     lines: lines,
     ruleStacks: new Array(lines.length),
     tokensByLine: new Array(lines.length),
+    scopeName: scopeName,
   };
   documents.set(uri, state);
   const range = retokenizeFrom(grammar, state, 0, lines.length);
@@ -411,15 +457,20 @@ async function changeDocument(
   removedCount: number,
   newLines: string[]
 ) {
-  const grammar = await getGrammar();
-  if (!grammar) {
-    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
-  }
   const state = documents.get(uri);
   if (!state) {
     // Never opened (or the engine restarted): nothing to be incremental
-    // against, so fall back to a full parse of what we were given.
+    // against, so fall back to a full parse of what we were given. No
+    // scope to inherit either, so this takes the default -- a client that
+    // opened with a non-default scope is expected to have done so via
+    // "open", which is what records it.
     return openDocument(uri, newLines.join("\n"));
+  }
+  // The grammar this document was OPENED with, not the default: a change
+  // must never silently reparse a TypeScript buffer as Vue.
+  const grammar = await getGrammar(state.scopeName);
+  if (!grammar) {
+    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
   }
 
   state.lines.splice(startLine, removedCount, ...newLines);
@@ -443,8 +494,8 @@ async function changeDocument(
 }
 
 // Backwards-compatible whole-document highlight.
-async function highlight(file: string) {
-  return openDocument("__default__", file);
+async function highlight(file: string, scopeName: string = DEFAULT_SCOPE) {
+  return openDocument("__default__", file, scopeName);
 }
 
 async function main() {
@@ -476,7 +527,7 @@ async function main() {
           jsonrpc: "2.0",
           id: request.id,
           // id: 2,
-          result: await highlight(request.fileContent),
+          result: await highlight(request.fileContent, request.scopeName),
         };
 
       // Full parse of a document, remembered under `uri` so later
@@ -491,8 +542,17 @@ async function main() {
           // `version` is echoed straight back so the client can discard a
           // reply that describes a document it has already edited past --
           // replies are read once per frame, requests sent once per edit.
+          // `uri` likewise: replies arrive on one shared stream, so it is
+          // the only thing that says WHICH document a reply describes --
+          // without it a client juggling more than one (an editor buffer
+          // and a hover popup, say) cannot tell them apart.
           result: {
-            ...(await openDocument(request.uri, request.fileContent ?? "")),
+            ...(await openDocument(
+              request.uri,
+              request.fileContent ?? "",
+              request.scopeName ?? DEFAULT_SCOPE
+            )),
+            uri: request.uri ?? "",
             version: request.version ?? 0,
           },
         };
@@ -514,6 +574,8 @@ async function main() {
               request.removedCount ?? 0,
               request.newLines ?? []
             )),
+            // See the "open" case above for why the uri is echoed.
+            uri: request.uri ?? "",
             version: request.version ?? 0,
           },
         };

@@ -5,6 +5,13 @@ struct HighlightCommand {
 
 struct HighlightResult {
     tokens: []Token;
+    // Which document this reply describes, echoed back from the request.
+    // Replies for every document share one stream, so this is the only
+    // thing that distinguishes them -- the editor buffer and the hover
+    // popup are both open at once, and merging one's tokens into the
+    // other's cache would paint each with the other's colours. Empty for
+    // a legacy whole-document "highlight" request, which predates URIs.
+    uri: str = "";
     // The line range `tokens` covers. An incremental ("change") reply
     // only carries the lines whose highlighting actually changed, so a
     // consumer must REPLACE that range in its cache and keep the rest --
@@ -51,6 +58,12 @@ struct HighlightRequest {
     // the reply so the client can tell a current answer from one that
     // describes a document two edits ago -- see HighlightResult.version.
     version?: int;
+    // TextMate top-level scope to parse this document with, e.g.
+    // "source.vue" or "source.ts". Omitted means the engine's default
+    // (source.vue), so existing editor-buffer callers are unaffected.
+    // A document remembers the scope it was OPENED with, so incremental
+    // "change" requests don't need to repeat it.
+    scopeName?: str;
 }
 
 struct ResultObject {
@@ -64,6 +77,8 @@ struct ResultObject {
     lineCount?: int;
     // Echoed straight back from the request. See HighlightResult.version.
     version?: int;
+    // Echoed straight back from the request. See HighlightResult.uri.
+    uri?: str;
 }
 
 struct ErrorObject {
@@ -137,7 +152,13 @@ struct HighlightEngine {
 
     // Full parse, remembered under `uri` so later edits can be
     // incremental against it. Send this once when a file is opened.
-    fn sendOpenDocument(uri: str, fileContent: str, version: int) {
+    //
+    // `scopeName` is the TextMate grammar to parse it with. It is not
+    // limited to editor buffers: any text that should be coloured the way
+    // the editor colours code goes through here under its own uri and its
+    // own scope -- the hover popup opens "__hover__" as "source.ts", for
+    // instance. Pass "" to take the engine's default (source.vue).
+    fn sendOpenDocument(uri: str, fileContent: str, version: int, scopeName: str) {
         if this.dead {
             return;
         }
@@ -147,6 +168,7 @@ struct HighlightEngine {
             uri: uri,
             fileContent: fileContent,
             version: version,
+            scopeName: scopeName.length > 0 ? scopeName : none,
         });
         this.highlightProcess.writeStdin("Content-Length: ");
         this.highlightProcess.writeStdin(f"{request.length}");
@@ -273,6 +295,9 @@ struct HighlightEngine {
                 }
                 if (j.result.version) {
                     r.version = j.result.version;
+                }
+                if (j.result.uri) {
+                    r.uri = j.result.uri;
                 }
                 return r;
             }
