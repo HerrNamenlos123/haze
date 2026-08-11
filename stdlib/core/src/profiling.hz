@@ -298,7 +298,7 @@ export struct Profiler {
         memoryInstrumentationStacktraces: bool = true;
     }
 
-    fn constructor(args: Args) {
+    fn constructor(args: Args = {}) {
         fmt.println(f"Profiling started @ {args.samplingRate > 0 ? args.samplingRate : "any"} Hz");
         let context = ffi.hzstd_profiling_start(args.samplingRate, args.memoryInstrumentation, args.memoryInstrumentationStacktraces);
         return Profiler {

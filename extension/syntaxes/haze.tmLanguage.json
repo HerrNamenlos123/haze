@@ -1378,7 +1378,7 @@
         },
         {
           "name": "keyword.control.loop.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(for|while|in)\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(for|while|in|break|continue)\\b"
         },
         {
           "name": "keyword.control.trycatch.haze",
