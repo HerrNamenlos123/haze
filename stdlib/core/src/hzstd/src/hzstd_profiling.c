@@ -2337,8 +2337,19 @@ static _Thread_local bool g_profiling_resolving_active = false;
 // swapped in its own -- normally hzstd_perf_unwind_crash_handler (installed
 // for the whole session by hzstd_profiling_start) or, if profiling isn't
 // running, hzstd_panic_handler itself.
-static struct sigaction g_profiling_resolve_prev_segv;
-static struct sigaction g_profiling_resolve_prev_bus;
+//
+// _Thread_local for the same reason as the recovery buffer above: signal
+// disposition is process-wide, so two threads resolving concurrently would
+// otherwise save into (and restore from) the same pair of slots. The second
+// saver overwrites the first's record of the *original* handler with "the
+// resolve handler" -- and when they restore in the other order, the resolve
+// handler is left permanently installed with no thread inside a guarded
+// call. Every later crash then reaches a handler whose
+// g_profiling_resolving_active is false, which chains to what it believes was
+// previous... itself. Keeping the saved pair per-thread makes each
+// save/restore self-consistent regardless of interleaving.
+static _Thread_local struct sigaction g_profiling_resolve_prev_segv;
+static _Thread_local struct sigaction g_profiling_resolve_prev_bus;
 
 static void hzstd_profiling_resolve_crash_handler(int sig, siginfo_t *info, void *ucontext)
 {
@@ -2371,21 +2382,15 @@ static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf, si
   struct sigaction newAction;
   memset(&newAction, 0, sizeof(newAction));
   newAction.sa_sigaction = hzstd_profiling_resolve_crash_handler;
-  // SA_ONSTACK is load-bearing, not cosmetic. The handler this one displaces
-  // is (directly or by chaining) hzstd_panic_handler, which is deliberately
-  // installed with SA_ONSTACK so it runs on the 64 KiB altstack -- see
-  // hzstd_setup_panic_handler. Installing a replacement *without* the flag
-  // silently revokes that for the whole window: a genuine SIGSEGV arriving
-  // here then runs the panic handler on the ordinary thread stack, whose
-  // signal frame sits in the middle of the very stack the subsequent
-  // HZSTD_LONGJMP to the recovery point unwinds through. The recovery frame
-  // pointer read back on the other side is then a *stack* address rather
-  // than the GC-heap frame that was pushed -- which is precisely the
-  // "[recovery-frame corruption] frame (run_cleanup): frame=0x7ffe... is NOT
-  // a GC heap pointer" report, and why it only ever showed up on large
-  // profiling sessions: postprocessing calls this once per unresolved
-  // frame, so thousands of unique frames means a correspondingly wide
-  // window in which the altstack guarantee is off.
+  // SA_ONSTACK, because the handler this one displaces is (directly or by
+  // chaining) hzstd_panic_handler, which is deliberately installed with
+  // SA_ONSTACK so it runs on the 64 KiB altstack -- see
+  // hzstd_setup_panic_handler. Installing a replacement without the flag
+  // silently revokes that guarantee for the whole window, leaving the panic
+  // handler to run on the ordinary thread stack. See the longer note on the
+  // matching flag in hzstd_profiling_start for why the old
+  // "deliberately *not* SA_ONSTACK" rationale does not apply to crash
+  // handlers like this one.
   newAction.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&newAction.sa_mask);
 
