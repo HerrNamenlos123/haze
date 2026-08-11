@@ -652,6 +652,25 @@ export opaque struct Context {
     // crossAlign is Stretch, so this element knows whether *it* should
     // stretch to fill the parent's cross-extent -- see effectiveSize().
     fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
+        // CSS `display: none`: the element and its whole subtree are not
+        // declared to Clay at all. Returning here (rather than declaring a
+        // zero-sized box) is what makes it a true removal from layout --
+        // nothing is measured, nothing is painted, no gap is contributed
+        // between siblings, and no render command is emitted, so the
+        // element cannot be drawn or picked up by anything downstream of
+        // the layout pass either.
+        //
+        // The element object itself stays in the tree and keeps being
+        // declared every frame, so its component's state stays alive: this
+        // is v-show, not v-if. See ui_styling.Display.
+        //
+        // Only Div and Canvas carry a ComputedDivStyle; a TextElement has
+        // no display of its own and is hidden by hiding the div that wraps
+        // it, exactly as in CSS where display is not inherited but the
+        // subtree of a hidden box is still gone.
+        if ui_elements.isDisplayNone(element) {
+            return;
+        }
         if element is ui_elements.DivElement {
             this.pushCascadingStack(ctx, element);
             // The raw pointer to this already-heap-allocated element --
@@ -952,6 +971,13 @@ type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) 
 // queried here are guaranteed to match what Clay actually has without
 // re-deriving or re-allocating them.
 fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingBoxCB): void :: final {
+    // A hidden subtree has no boxes to hand back (it was never declared to
+    // Clay), and must not be given any: feeding it stale geometry is exactly
+    // what would make an invisible element look laid out. ui_position/
+    // ui_size refuse to report a hidden element's box for the same reason.
+    if ui_elements.isDisplayNone(element) {
+        return;
+    }
     if element is ui_elements.DivElement {
         if element.style.backgroundColor.a == 0.0 {
             let result = ffi.hzui_clay_get_element_bounding_box(element.globalId);
@@ -1067,6 +1093,12 @@ fn collectClipsRecursive(
     inherited: ResolvedClip,
     entries: mut []ClipEntry,
 ): void :: final {
+    // Hidden subtrees were never declared to Clay, so there are no boxes to
+    // look up and nothing in them will be drawn -- no clip entry can apply
+    // to anything. Stop rather than walking a dead subtree every frame.
+    if ui_elements.isDisplayNone(element) {
+        return;
+    }
     let current = inherited;
 
     if element is ui_elements.DivElement {

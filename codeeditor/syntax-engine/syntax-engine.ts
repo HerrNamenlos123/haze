@@ -544,8 +544,8 @@ async function main() {
           // replies are read once per frame, requests sent once per edit.
           // `uri` likewise: replies arrive on one shared stream, so it is
           // the only thing that says WHICH document a reply describes --
-          // without it a client juggling more than one (an editor buffer
-          // and a hover popup, say) cannot tell them apart.
+          // without it a client juggling more than one (several editor
+          // tabs, plus a hover popup) cannot tell them apart.
           result: {
             ...(await openDocument(
               request.uri,

@@ -10,7 +10,12 @@ import unicode
 import ui_elements
 import ui_components
 import unicode
+import filedialog
+import tabs
 type presets = headwind.presets;
+// Aliased because this file also has local things called "tabs" (the open
+// tab list in UI()), and the module name would shadow confusingly.
+type tabs_lib = tabs;
 
 // Vim editing model on/off. The textedit engine is the same either way;
 // this only decides whether a vim_behavior.Vim is installed on top of it
@@ -86,6 +91,24 @@ struct RootArgs {
     }
 }
 
+struct EditorViewArgs {
+    // Doubles as the tab's key -- see EditorView's own comment. Stable for
+    // the life of the tab.
+    id: int;
+    filePath: str;
+    // Whether this editor is the one the user is looking at. An inactive
+    // editor is still fully mounted and still drains its own highlight
+    // replies; it just must not act on input, since keyboard focus and the
+    // mouse belong to the visible tab (see the guards in the render pass).
+    active: bool = true;
+
+    fn operator!=(other: EditorViewArgs) {
+        return this.id != other.id
+            || this.filePath != other.filePath
+            || this.active != other.active;
+    }
+}
+
 // A TextMate scope selector matches a token's scope if it is the whole
 // scope, or a dot-separated prefix of it (e.g. "string" matches
 // "string.quoted.double", but not "stringify").
@@ -104,6 +127,50 @@ struct State {
     highlightCommands: []HighlightCommand = [];
     highlightResults: []HighlightResult = [];
     reactiveCounter: rx.Reactive<int>;
+
+    // ONE language server for the whole application, shared by every tab.
+    //
+    // Emphatically not per-editor. A VueLspBridge owns a vue-language-server
+    // process AND a tsserver behind it, which together are hundreds of
+    // megabytes and take seconds to warm up -- so one per open file would
+    // multiply the editor's entire memory footprint and startup cost by the
+    // number of tabs, for no benefit whatsoever. It is also simply the wrong
+    // model: LSP is inherently multi-document (every request names its file
+    // by uri) and tsserver wants the whole PROJECT open at once to resolve
+    // imports across files, which is exactly what several tabs of one
+    // project are.
+    lspBridge: VueLspBridge | none = none;
+
+    // Take every reply addressed to `uri`, leaving the rest queued.
+    //
+    // Draining is DESTRUCTIVE, so with more than one editor open it cannot
+    // be done globally: whichever consumer ran first would empty the queue
+    // and silently swallow every other document's replies, leaving those
+    // tabs permanently uncoloured (the engine sends a line's tokens exactly
+    // once, when they change, so a dropped reply is never resent).
+    //
+    // Each editor therefore takes only what is addressed to it, and the
+    // hover popup -- another document on the same connection -- does the
+    // same with its own uri. A reply for a uri nobody claims stays in the
+    // queue rather than being dropped, so a tab whose editor has not yet
+    // mounted still gets the reply to the `open` it just sent.
+    fn takeResultsFor(uri: str): []HighlightResult {
+        let mine: []HighlightResult = [];
+        let rest: []HighlightResult = [];
+        for result in this.highlightResults {
+            if result.uri == uri {
+                mine.push(result);
+            } else {
+                rest.push(result);
+            }
+        }
+        // Only pay for the rebuild when something was actually taken --
+        // this runs once per editor per frame.
+        if mine.length > 0 {
+            this.highlightResults = rest;
+        }
+        return mine;
+    }
 }
 
 extern C let g_state: State | none = none;
@@ -210,6 +277,22 @@ fn parseHoverBlocks(payload: str): []HoverBlock {
 // is phrased in the line numbers of the document as it was when the
 // request went out, and these are what map those numbers onto the
 // document as it is now.
+// Where a hover popup sits, decided ONCE per popup.
+//
+// Placement depends on the popup's own measured size (to flip above/below
+// and to keep its right edge in view), and moving the popup re-measures it
+// -- so recomputing this every frame is a feedback loop that oscillates
+// forever. It is computed on the first frame the size is known and then
+// held: the content and the anchor are both fixed for as long as the popup
+// is open, so there is nothing for a later frame to legitimately change.
+struct HoverPlacement {
+    x: real = 0.0;
+    y: real = 0.0;
+    // Sitting above the token (the default) rather than below it. Drives
+    // the -1 translateY that lifts the popup by its own height.
+    above: bool = true;
+}
+
 struct PendingEdit {
     version: int = 0;
     startLine: int = 0;
@@ -237,10 +320,35 @@ struct CompiledTokenColor {
     settings: TokenColorSettings;
 }
 
-export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
-    ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+// One open file: its document, its editing engine, its syntax token cache,
+// its scroll position, its caret, its undo history and its language-server
+// state. Everything that makes a tab a tab lives in here.
+//
+// This is deliberately a COMPONENT rather than a function the root calls
+// with some state passed in, because the component system is what gives it
+// a lifetime: one instance per open file, created when the file is opened
+// and kept alive -- setup closure and all -- for exactly as long as that
+// tab exists. Switching tabs merely hides it (`display: none`, see
+// stdlib/tabs), so its scroll offset and caret are still there when you
+// come back, without any of that state having to be lifted out and stored
+// somewhere central.
+//
+// `filePath` is fixed for the instance's whole life. It is read once during
+// setup to load the file and to open the document with the highlighter, and
+// it doubles as the uri every reply for this tab is routed by -- which is
+// what keeps one tab's tokens out of another's cache.
+export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<EditorViewArgs>) => {
 
-        let cache = json.CacheFile<Cache>("codeeditor.cache.json");
+        // Captured ONCE, not read from props on each render. The path is
+        // this instance's identity: the highlighter document, the caches
+        // keyed by it and the loaded text all belong to this exact file,
+        // so a path that changed underneath would leave every one of them
+        // describing the previous file. The tab system never does that (a
+        // different file is a different key, hence a different instance),
+        // and pinning it here means nothing downstream has to defend
+        // against it.
+        let filePath = args.filePath;
 
         // The document. Lines are mutated IN PLACE (see
         // stdlib/text_document): typing a character is one String.insert
@@ -272,7 +380,21 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // no colouring at all. The editor buffer keeps the Vue grammar,
         // which embeds source.ts for <script> blocks anyway.
         let editorScopeName = "source.vue";
-        let hoverHighlightUri = "__hover__";
+        // This editor's document uri with the highlight engine. The file
+        // path IS the uri, which is what keeps every open tab a separate
+        // document on the one connection: replies come back stamped with
+        // it and are routed by it (see State.takeResultsFor), so two tabs
+        // can be edited in the same frame without either one's tokens
+        // landing in the other's cache. A buffer with no path on disk gets
+        // a name derived from its tab id, for the same reason -- it still
+        // has to be distinguishable from every other open document.
+        let highlightUri = filePath.length > 0 ? filePath : f"buffer://{args.id}";
+        // Per-EDITOR, not a single global name: every open tab has its own
+        // hover popup, and they are all documents on the one engine
+        // connection. Sharing one "__hover__" uri across tabs would make
+        // each tab's hover overwrite the parse state of every other's and
+        // send the replies to whichever editor drained first.
+        let hoverHighlightUri = f"__hover__/{args.id}";
         let hoverScopeName = "source.ts";
 
         // Element ids inside the hover popup that must never collide with
@@ -307,17 +429,18 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let initialText = rx.reactive<str | none>(none);
 
         let load = () => {
-            if cache.data.file {
-                let file = fs.readText(cache.data.file as str);
-                if file {
-                    let text = file as str;
-                    doc.setText(text);
-                    initialText := text;
-                    docVersion := rx.get(docVersion) + 1;
-                }
-                else {
-                    fmt.println("Failed loading file");
-                }
+            if filePath.length == 0 {
+                return;
+            }
+            let file = fs.readText(filePath);
+            if file {
+                let text = file as str;
+                doc.setText(text);
+                initialText := text;
+                docVersion := rx.get(docVersion) + 1;
+            }
+            else {
+                fmt.println(f"Failed loading file: {filePath}");
             }
         };
 
@@ -329,24 +452,12 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             docVersion := rx.get(docVersion) + 1;
         };
 
-        // The project currently being edited. Vue's language server doesn't actually need
-        // this to be precise (tsserver does its own tsconfig discovery once a file is
-        // `open`ed), it's only used for the LSP-level workspace/rootUri bookkeeping.
-        let projectRoot = "/home/fzachs/Projects/technicalsketcher.web";
-
-        // Owns the entire Vue/TypeScript language support lifecycle (LSP
-        // connection, tsserver process, hybrid-mode plumbing) -- see
-        // vue_lsp_bridge.hz's module doc comment for the architecture.
-        let vueBridge = VueLspBridge({
-            vueLanguageServerPath: "codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js",
-            tsdk: "codeeditor/syntax-engine/node_modules/typescript/lib",
-            nodeModulesDir: "codeeditor/syntax-engine/node_modules",
-            projectRoot: projectRoot,
-            projectName: "technicalsketcher.web",
-        });
-        if !vueBridge {
-            fmt.println("Vue language server failed to start: ", vueBridge.message);
-        }
+        // The application's one language server, not this editor's -- see
+        // State.lspBridge. Every tab talks to the same connection and is
+        // told apart by the uri on each request, which is how LSP is meant
+        // to be used and what keeps one vue-language-server + tsserver pair
+        // serving the whole project instead of one pair per open file.
+        let vueBridge = getState().lspBridge;
 
         // ── Hover state ──────────────────────────────────────────────
         //
@@ -369,6 +480,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // popup belongs at the pointer, which may be nowhere near the caret.
         let hoverAnchor = rx.reactive<Vec2 | none>(none);
 
+        // Where the current popup sits, resolved once from its measured
+        // size -- see HoverPlacement. `none` means "not measured yet", in
+        // which case the popup is laid out but not drawn.
+        let hoverPlacement = rx.reactive<HoverPlacement | none>(none);
+
         // Drops whatever hover is on screen and cancels any pending one.
         // Called from every input path that invalidates it: typing, moving
         // the caret, scrolling, or moving the mouse away.
@@ -376,6 +492,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             hoverRequest := none;
             hoverResult := null;
             hoverAnchor := none;
+            // Must be cleared with the rest: a stale placement is one
+            // computed for the PREVIOUS popup's size and anchor, so keeping
+            // it would flash the next hover at the old one's position for a
+            // frame before it re-resolves.
+            hoverPlacement := none;
         };
 
         // ── Hover popup contents ─────────────────────────────────────────
@@ -437,12 +558,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             return 0;
         });
 
+        // This editor's replies, and only its own. The queue is shared by
+        // every open tab plus every hover popup, so taking the whole thing
+        // (which is what this used to do) meant the first editor to drain
+        // swallowed all the others' replies -- and the engine never resends
+        // a line's tokens, so those tabs would simply stay uncoloured.
         let highlights = rx.computed(() => {
             let state = getState();
             rx.get(state.reactiveCounter);
-            let results = state.highlightResults;
-            state.highlightResults = [];
-            return results;
+            let mine = state.takeResultsFor(highlightUri);
+            let hover = state.takeResultsFor(hoverHighlightUri);
+            for result in hover {
+                mine.push(result);
+            }
+            return mine;
         });
 
         // Persistent per-line token cache.
@@ -830,18 +959,40 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let hoverPopupRef: ui_components.ElementRef<ui_elements.DivElement> =
             rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
-        // Focus the text area as soon as the app comes up, so the window
-        // opens ready to type in -- without this, keyboard input goes nowhere
-        // until the user clicks into the editor first (key events are only
-        // delivered along the focused element's chain). onMounted runs after
-        // the first build, so editorRef is populated by the time this fires;
-        // the request itself is applied at the start of the next frame's
-        // input processing, before any keystrokes are dispatched.
-        ui.onMounted(() => {
-            let editorEl = rx.get(editorRef);
-            if editorEl {
-                editorEl.focus();
+        // Keep keyboard focus on whichever tab is showing.
+        //
+        // Two jobs in one, because they are the same job. At startup it is
+        // the old "focus the text area so the window opens ready to type
+        // in" -- without it, keystrokes go nowhere until you click into the
+        // editor, since key events are only delivered along the focused
+        // element's chain. And on every tab switch it moves focus to the
+        // newly revealed editor, which is what makes switching tabs leave
+        // you able to type immediately rather than having to click first.
+        //
+        // A watch rather than onMounted because mounting is not the moment
+        // that matters: every tab mounts once, up front, including the ones
+        // that are hidden. Becoming ACTIVE is the event to react to.
+        // Focusing a hidden editor would be worse than useless -- the
+        // component system blurs anything inside a `display: none` subtree
+        // (see releaseHiddenInputState) -- hence the guard.
+        //
+        // The request is applied at the start of the next frame's input
+        // processing, before any keystrokes are dispatched, so no input is
+        // dropped in the switch.
+        // A computed rather than ui.watch(), matching how every other
+        // cross-frame reaction in this file is written: it re-runs exactly
+        // when `active` changes, and the render pass reads it once per
+        // frame (see `rx.get(followActiveFocus)` in the template) to keep
+        // it live.
+        let followActiveFocus = rx.computed(() => {
+            let active = instance.props().active;
+            if active {
+                let editorEl = rx.get(editorRef);
+                if editorEl {
+                    editorEl.focus();
+                }
             }
+            return active;
         });
 
         // Set after anything that moves the caret, so the next frame
@@ -1054,9 +1205,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // Opening a block comment (which genuinely does recolour
         // everything below it) still cascades correctly -- the engine
         // simply keeps going until the rule stack matches again.
-        let highlightUri = "buffer";
-        if cache.data.file {
-            highlightUri = cache.data.file as str;
+        if filePath.length > 0 {
             // Reuse the text we just read rather than re-deriving it.
             let startupText = rx.get(initialText);
             state.highlightEngine.sendOpenDocument(
@@ -1135,6 +1284,33 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let mouseRestX = rx.reactive<real>(-1.0);
         let mouseRestY = rx.reactive<real>(-1.0);
         let mouseRestSince = rx.reactive<real>(-1.0);
+
+        // Has the keyboard taken over from the mouse?
+        //
+        // Set by any keystroke, cleared only when the pointer PHYSICALLY
+        // MOVES again. While it is set, mouse dwell cannot fire at all.
+        //
+        // A timeout is not enough here, and that was the bug: suppressing
+        // the dwell for hoverDwellSeconds after the last keystroke means
+        // the moment you stop to think, the still-stationary mouse re-arms
+        // and pops open a hover for whatever it happens to be sitting on.
+        // While you are navigating with the keyboard the mouse is not
+        // pointing at anything -- it is just where you last left it -- so
+        // the text under it means nothing and a popup there is noise that
+        // covers the code you are actually reading.
+        //
+        // This is VS Code's behaviour: type or move the caret and the
+        // mouse stops being a hover source until you move it again. Only
+        // real motion (see `moved` in the dwell branch) rearms it, which
+        // is exactly the gesture that means "I am pointing at this now".
+        let keyboardTookOver = rx.reactive<bool>(false);
+
+        // Called by every keyboard path: the keyboard is now driving, so
+        // the mouse stops being a hover source until it moves again.
+        let noteKeyboardActivity = () => {
+            lastEditAt := ui.now();
+            keyboardTookOver := true;
+        };
         // Set by the vim keybinding; consumed by the loop below, which is
         // where the document text needed to build the request is in scope.
         let hoverKeyPressed = rx.reactive<bool>(false);
@@ -1223,7 +1399,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             // frame, since a computed nobody reads never runs at all.
             rx.get(hoverHighlightRequester);
 
-            if vueBridge && cache.data.file {
+            if vueBridge && filePath.length > 0 {
                 // openDocument() is a ONE-SHOT (it early-returns once the
                 // document is open), but the argument was still being
                 // evaluated on every frame -- and doc.text() reassembles
@@ -1233,7 +1409,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 if !rx.get(lspDocumentOpened) {
                     lspDocumentOpened := true;
                     let startupText = rx.get(initialText);
-                    vueBridge.openDocument(cache.data.file, "vue", 1,
+                    vueBridge.openDocument(filePath, "vue", 1,
                         startupText ? startupText as str : doc.text());
                     // Both consumers have their copy now; stop pinning
                     // a second full copy of the file in memory.
@@ -1287,9 +1463,31 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     mouseRestX := pointer.x;
                     mouseRestY := pointer.y;
                     mouseRestSince := now;
+                    // Physically moving the mouse is the gesture that means
+                    // "I am pointing at something now", and it is the ONLY
+                    // thing that gives the mouse back its say after the
+                    // keyboard took over -- see keyboardTookOver.
+                    keyboardTookOver := false;
                 }
 
-                let busy = rx.get(mouseSelecting) || scroll.isDragging();
+                // A hidden tab must never open a hover popup. This is
+                // already true without the guard -- pointerInsideEditor()
+                // asks for the editor box, and a hidden element reports no
+                // geometry at all (see ui_components.ui_position) -- but
+                // saying so here keeps the dwell timer from advancing in
+                // the background and makes the intent legible.
+                // A pointer we have never located cannot be dwelling. Until
+                // the platform reports it, ui.mousePos reads (0,0) and
+                // never changes -- which looks exactly like a pointer held
+                // perfectly still, so the dwell timer would mature and pop
+                // a hover open for whatever sits in the corner, without the
+                // mouse ever having touched the window.
+                let busy = !instance.props().active
+                    || !ui.mousePosKnown
+                    // The keyboard is driving; the mouse is just parked
+                    // somewhere -- see keyboardTookOver.
+                    || rx.get(keyboardTookOver)
+                    || rx.get(mouseSelecting) || scroll.isDragging();
                 let restedFor = now - rx.get(mouseRestSince);
                 if busy || moved {
                     // Moving the pointer at all takes the popup away, and
@@ -1367,7 +1565,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         // space each language server actually counts in.
                         let hoverLine = doc.lineText(wanted.y);
                         let requestedFor: Vec2i = { x: wanted.x, y: wanted.y };
-                        vueBridge.hover(wanted.y, wanted.x, hoverLine, (text: str | null) => {
+                        // THIS tab's file. The bridge serves every open tab,
+                        // so a hover that did not name its own document
+                        // would be answered against another one's.
+                        vueBridge.hover(filePath, wanted.y, wanted.x, hoverLine, (text: str | null) => {
                             // The answer may arrive after the user has
                             // moved on or dismissed the popup; a reply for
                             // a position we are no longer asking about must
@@ -1380,11 +1581,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 return;
                             }
                             hoverResult := text ? text : "(no hover info at this position)";
+                            // The popup was sized around "Loading..." and is
+                            // about to be sized around the real signature,
+                            // which is a different shape entirely. Drop the
+                            // placement so it is resolved again from the new
+                            // measurement -- and, because an unresolved
+                            // placement is not drawn, the popup simply does
+                            // not appear at the wrong size for a frame on
+                            // the way there.
+                            hoverPlacement := none;
                         });
                     }
                 }
-
-                vueBridge.loop();
+                // NOTE: no vueBridge.loop() here. The bridge is shared by
+                // every tab (see State.lspBridge), so pumping it from each
+                // editor would drain the same connection N times per frame
+                // -- and a reply is consumed by whoever reads it first, so
+                // the other tabs' callbacks would simply never fire. The
+                // shell pumps it exactly once per frame instead.
             }
         });
 
@@ -1478,15 +1692,25 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.wGrow(),
                     presets.hGrow(),
                     presets.textColor("#FFF"),
-                    presets.p(4),
                     presets.gap(2),
                 ]
             }, () => {
+                // Per-tab status line. It stays inside the editor rather
+                // than being lifted to the app shell because everything on
+                // it -- the vim mode, the caret's own frame timing -- is a
+                // property of THIS document, and each tab has its own.
                 ui.div({
                     id: 0,
                     presets: [
                         presets.row(),
                         presets.gap(8),
+                        presets.p(1),
+                        // Explicitly shrink-wrap the row's height, so the
+                        // editor box below it (hGrow) takes ALL the
+                        // remaining space instead of the two of them
+                        // splitting the column between them.
+                        presets.wGrow(),
+                        presets.hFit(),
                     ]
                 }, () => {
                     ui.text({
@@ -1513,6 +1737,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 });
 
                 rx.get(runLspLoop);
+                // Moves keyboard focus onto this editor when its tab
+                // becomes the visible one -- see followActiveFocus.
+                rx.get(followActiveFocus);
 
                 ui.div({
                     id: 1,
@@ -1617,7 +1844,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             texteditBehavior.insertText(event.text);
                         }
                         caretFollow := true;
-                        lastEditAt := ui.now();
+                        noteKeyboardActivity();
                         dismissHover();
                     },
                     onKeyDown: (event: ui_components.KeyboardEvent) => {
@@ -1644,7 +1871,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             let name = vim_behavior.namedKey(keyEventName(event.key), ctrl, alt);
                             if name.length > 0 {
                                 texteditBehavior.handleKey(name);
-                                lastEditAt := ui.now();
+                                noteKeyboardActivity();
                                 // neovim's hover float closes on the next
                                 // keypress; so does this one.
                                 dismissHover();
@@ -1696,7 +1923,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             texteditBehavior.paste();
                         }
 
-                        lastEditAt := ui.now();
+                        noteKeyboardActivity();
                         dismissHover();
                     },
                 }, () => {
@@ -1735,7 +1962,17 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // the global mouse position and button state, which
                     // are polled every frame regardless of what is under
                     // the cursor.
-                    let leftDown = ui.leftMouseHeld();
+                    //
+                    // Which is exactly why it has to be gated on this tab
+                    // being the visible one. These are GLOBAL inputs: they
+                    // say nothing about which editor the mouse is over, so
+                    // an inactive tab polling them would track a drag
+                    // happening in the active tab and scroll or select in
+                    // lockstep with it, invisibly, until you switched back
+                    // and found it moved. Element events do not have this
+                    // problem (a hidden element is not hit-tested at all --
+                    // see ui_styling.Display); only this per-frame poll does.
+                    let leftDown = instance.props().active && ui.leftMouseHeld();
 
                     if scroll.isDragging() {
                         if leftDown {
@@ -2066,56 +2303,109 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             popupSize = popupEl.size();
                         }
 
-                        // Viewport to stay inside: the editor's own box, in
-                        // the same editor-local coordinates the popup is
-                        // positioned in (so its top-left is 0,0).
-                        let viewportW = 0.0;
-                        let viewportH = 0.0;
-                        let editorBox = rx.get(editorRef);
-                        if editorBox {
-                            let vp = editorBox.size();
-                            if vp {
-                                viewportW = vp.x;
-                                viewportH = vp.y;
+                        // ── Why the placement is FROZEN once decided ─────
+                        //
+                        // Both decisions below (flip above/below, clamp the
+                        // right edge) read the popup's own measured size --
+                        // and a popup that moves is a popup that gets
+                        // re-measured, whose new measurement can flip the
+                        // decision straight back. That is a feedback loop
+                        // with no fixed point, and it ran once per frame:
+                        // the popup visibly vibrated between two positions
+                        // the entire time it was open.
+                        //
+                        // A hover's content never changes after it arrives
+                        // and its anchor never moves while it is open (any
+                        // pointer movement dismisses it outright -- see the
+                        // dwell branch), so its correct position is a
+                        // CONSTANT. It only has to be computed once, on the
+                        // first frame where the size is actually known, and
+                        // then left alone. Recomputing it every frame was
+                        // never buying anything; it was only ever able to
+                        // do harm.
+                        let placement = rx.get(hoverPlacement);
+                        if !placement && popupSize is Vec2 {
+
+                            // Viewport to stay inside: the editor's own box,
+                            // in the same editor-local coordinates the popup
+                            // is positioned in (so its top-left is 0,0).
+                            let viewportW = 0.0;
+                            let viewportH = 0.0;
+                            let editorBox = rx.get(editorRef);
+                            if editorBox {
+                                let vp = editorBox.size();
+                                if vp {
+                                    viewportW = vp.x;
+                                    viewportH = vp.y;
+                                }
                             }
-                        }
 
-                        // Flip below the token when there isn't room above.
-                        // Needs the measured height, so on the frame the
-                        // popup first gets its text it stays above -- which
-                        // is the correct default anyway, and self-corrects
-                        // on the next frame if it doesn't fit.
-                        let above = true;
-                        if popupSize is Vec2 && anchorY - hoverGap < popupSize.y {
-                            // Only flip if below is genuinely roomier;
-                            // otherwise a popup taller than the viewport
-                            // would flip to a side that fits it no better.
-                            let roomBelow = viewportH - (anchorY + characterSize.y + hoverGap);
-                            if roomBelow > anchorY - hoverGap {
-                                above = false;
+                            // Flip below the token when there isn't room
+                            // above.
+                            let above = true;
+                            if anchorY - hoverGap < popupSize.y {
+                                // Only flip if below is genuinely roomier;
+                                // otherwise a popup taller than the viewport
+                                // would flip to a side that fits it no better.
+                                let roomBelow = viewportH - (anchorY + characterSize.y + hoverGap);
+                                if roomBelow > anchorY - hoverGap {
+                                    above = false;
+                                }
                             }
+
+                            // Horizontal clamp: keep the right edge inside
+                            // the viewport, then re-clamp the left to 0 so a
+                            // popup wider than the viewport stays anchored at
+                            // the left edge rather than being pushed off it
+                            // (a negative left would hide the START of the
+                            // signature, which is the part worth reading).
+                            let x = anchorX;
+                            if viewportW > 0.0 {
+                                let maxX = viewportW - popupSize.x - hoverGap;
+                                if x > maxX { x = maxX; }
+                            }
+                            if x < 0.0 { x = 0.0; }
+
+                            // Above: top edge on the token's top edge, then
+                            // lifted by the popup's own full height
+                            // (translate), minus the gap. Below: straight
+                            // under the token, no translate needed.
+                            let y = above
+                                ? anchorY - hoverGap
+                                : anchorY + characterSize.y + hoverGap;
+
+                            hoverPlacement := HoverPlacement { x: x, y: y, above: above };
                         }
 
-                        // Horizontal clamp: keep the right edge inside the
-                        // viewport, then re-clamp the left to 0 so a popup
-                        // wider than the viewport stays anchored at the left
-                        // edge rather than being pushed off it (a negative
-                        // left would hide the START of the signature, which
-                        // is the part worth reading).
-                        let popupX = anchorX;
-                        if popupSize is Vec2 && viewportW > 0.0 {
-                            let maxX = viewportW - popupSize.x - hoverGap;
-                            if popupX > maxX { popupX = maxX; }
-                        }
-                        if popupX < 0.0 { popupX = 0.0; }
-
-                        // Above: top edge on the token's top edge, then
-                        // lifted by the popup's own full height (translate),
-                        // minus the gap. Below: straight under the token,
-                        // no translate needed.
-                        let popupY = above
-                            ? anchorY - hoverGap
-                            : anchorY + characterSize.y + hoverGap;
+                        // Until the popup has been measured there is nowhere
+                        // correct to put it, so for that one frame it is
+                        // laid out but not VISIBLE. Drawing it at a
+                        // provisional position is exactly the "appears, then
+                        // jumps" flash this exists to avoid; one frame of
+                        // nothing is imperceptible, a jump is not.
+                        //
+                        // Deliberately NOT display:none: that removes the
+                        // element from layout entirely, so it would never be
+                        // measured, so the placement would never resolve and
+                        // the popup would never appear at all. It has to be
+                        // laid out to be measured -- it just must not be
+                        // painted yet. Transparent colours are how you say
+                        // "occupy space, show nothing"; the text inside is
+                        // covered by the same treatment below.
+                        let resolved = rx.get(hoverPlacement);
+                        let measuring = !resolved;
+                        let popupX = resolved ? resolved.x : 0.0;
+                        let popupY = resolved ? resolved.y : 0.0;
+                        let above = resolved ? resolved.above : true;
+                        // Applied to every run of text in the popup, so the
+                        // measuring frame lays the real text out (that is
+                        // what gives the box its size) while showing none of
+                        // it. Text colour does not inherit far enough to do
+                        // this from the container alone -- each run sets its
+                        // own colour from the theme.
+                        let hoverInk = (color: Color): Color => {
+                            return measuring ? "#00000000" as Color : color;
+                        };
 
                         ui.div({
                             id: 300002,
@@ -2132,9 +2422,12 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 // Blocks (and code lines within them) stack
                                 // vertically, like the editor's own lines.
                                 presets.col(),
-                                presets.bg("#181818"),
+                                // Fully transparent on the measuring frame
+                                // -- see `measuring` above. Same box, same
+                                // size, simply not painted yet.
+                                presets.bg(measuring ? "#00000000" : "#181818"),
                                 presets.border(1),
-                                presets.borderColor("#4F4F4F"),
+                                presets.borderColor(measuring ? "#00000000" : "#4F4F4F"),
                                 presets.rounded(2),
                                 // Without a bound, a long signature runs off
                                 // the right edge and the text is unreadable.
@@ -2167,7 +2460,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 ui.text({
                                     id: hoverPlaceholderId,
                                     text: hoverText,
-                                    presets: [presets.textColor("#9A9A9A")],
+                                    presets: [presets.textColor(hoverInk("#9A9A9A"))],
                                 });
                             }
                             else {
@@ -2229,7 +2522,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                                             ui.text({
                                                                 id: ri,
                                                                 text: run.text,
-                                                                presets: [presets.textColor(run.color)],
+                                                                presets: [presets.textColor(hoverInk(run.color))],
                                                             });
                                                         }
                                                     }
@@ -2242,7 +2535,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                                         ui.text({
                                                             id: 0,
                                                             text: lineText,
-                                                            presets: [presets.textColor(defaultTextColor())],
+                                                            presets: [presets.textColor(hoverInk(defaultTextColor()))],
                                                         });
                                                     }
                                                 });
@@ -2264,7 +2557,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                             ui.text({
                                                 id: hoverProseId,
                                                 text: block.text,
-                                                presets: [presets.textColor("#9A9A9A")],
+                                                presets: [presets.textColor(hoverInk("#9A9A9A"))],
                                             });
                                         }
                                     });
@@ -2272,6 +2565,312 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             }
                         });
                     }
+                });
+            });
+        };
+    });
+}
+
+// Last path segment, for the tab label. A tab strip has room for a name,
+// not for a path, and the name is what identifies the file to a reader.
+fn fileNameOf(path: str): str {
+    let start = 0;
+    for (let i = 0; i < path.length; i++) {
+        if path[i] == b"/" || path[i] == b"\\" {
+            start = i + 1;
+        }
+    }
+    if start >= path.length {
+        return path;
+    }
+    return path.slice(start, path.length);
+}
+
+// The application shell: the set of open files, which one is showing, and
+// the commands that change either. It owns no editing state of its own --
+// that all lives inside the per-file EditorView instances, which is what
+// lets this stay small and lets a tab keep its place when you leave it.
+export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
+    ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+
+        let cache = json.CacheFile<Cache>("codeeditor.cache.json");
+
+        // The open tabs, and which one is showing.
+        //
+        // `tabs` is shallow-reactive and mutated in place: the array is a
+        // list of small descriptors, and rebuilding it wholesale on every
+        // open/close would be both wasteful and beside the point, since
+        // what actually matters (the editors) is keyed by tab id and
+        // untouched by any of this.
+        let tabs = rx.shallowReactive<[]tabs_lib.TabItem>([]);
+        let activeKey = rx.reactive<int>(-1);
+        // Tab keys must be unique for the life of the tab and must never
+        // be reused, because a key IS a component identity: hand a new tab
+        // the key of a closed one and the component system would recognise
+        // it as the same component and hand back the dead tab's editor,
+        // document and all. A counter that only ever goes up cannot do
+        // that. An index would be exactly the wrong choice -- closing a
+        // tab renumbers every tab after it.
+        let nextKey = rx.reactive<int>(0);
+        // Paths, parallel to `tabs` by position. Kept out of TabItem
+        // because that is the generic component's own type, which has no
+        // business knowing this application stores files.
+        //
+        // A plain array rather than a reactive one: it is only ever read
+        // from inside code that has already depended on `tabs` (they are
+        // mutated together, in the same functions), so `tabs` is the single
+        // reactive trigger for both and a second one would add nothing but
+        // a wrapper around every element.
+        let paths: []str = [];
+
+        let pathForKey = (key: int): str => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            for (let i = 0; i < items.length && i < paths.length; i++) {
+                if items[i].key == key {
+                    return paths[i];
+                }
+            }
+            return "";
+        };
+
+        let isOpen = (path: str): int => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            for (let i = 0; i < items.length && i < paths.length; i++) {
+                if paths[i] == path {
+                    return items[i].key;
+                }
+            }
+            return -1;
+        };
+
+        // Remember the open set across restarts, so the editor comes back
+        // up where it was left rather than empty.
+        let persist = () => {
+            let saved = "";
+            for p in paths {
+                saved = saved.length > 0 ? saved + "\n" + p : p;
+            }
+            cache.data.openFiles := saved;
+            cache.data.activeFile := pathForKey(rx.get(activeKey));
+        };
+
+        let openFile = (path: str) => {
+            if path.length == 0 {
+                return;
+            }
+            // Focusing an already-open file rather than opening a second
+            // copy of it: two tabs on one path would be two editors on one
+            // highlighter document, fighting over the same uri.
+            let existing = isOpen(path);
+            if existing >= 0 {
+                activeKey := existing;
+                persist();
+                return;
+            }
+            let key = rx.get(nextKey);
+            nextKey := key + 1;
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            items.push(tabs_lib.TabItem {
+                key: key,
+                title: fileNameOf(path),
+            });
+            tabs := items;
+            paths.push(path);
+            activeKey := key;
+            persist();
+        };
+
+        let closeTab = (key: int) => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let index = -1;
+            for (let i = 0; i < items.length; i++) {
+                if items[i].key == key {
+                    index = i;
+                    break;
+                }
+            }
+            if index < 0 {
+                return;
+            }
+            items.remove(index);
+            if index < paths.length {
+                paths.remove(index);
+            }
+            tabs := items;
+
+            // Closing the tab you were looking at moves you to its
+            // neighbour -- the one to the left, or the first one if it was
+            // already leftmost -- which is what every editor does. Closing
+            // any other tab must not move you at all.
+            if rx.get(activeKey) == key {
+                if items.length == 0 {
+                    activeKey := -1;
+                } else {
+                    let next = index - 1;
+                    if next < 0 { next = 0; }
+                    if next >= items.length { next = items.length - 1; }
+                    activeKey := items[next].key;
+                }
+            }
+            persist();
+        };
+
+        // Restore the previous session, falling back to asking for a file
+        // when there is nothing to restore.
+        let restored = false;
+        let savedFiles = cache.data.openFiles as str;
+        if savedFiles.length > 0 {
+            for path in savedFiles.split("\n") {
+                if path.length > 0 {
+                    openFile(path);
+                    restored = true;
+                }
+            }
+        }
+        if cache.data.activeFile {
+            let key = isOpen(cache.data.activeFile as str);
+            if key >= 0 {
+                activeKey := key;
+            }
+        }
+        // Migration path for a cache written by the single-file version,
+        // which stored one `file` and knew nothing about a tab list.
+        if !restored && cache.data.file {
+            openFile(cache.data.file as str);
+        }
+
+        let promptForFile = () => {
+            if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
+                openFile(picked.path);
+            }
+        };
+
+        // Pump the shared language server once per frame, here rather than
+        // in each editor: the connection is one, and a reply is consumed by
+        // whoever reads it first, so N tabs pumping it would race for each
+        // other's answers. Reading ui.now() is what makes this re-run every
+        // frame -- see runLspLoop in EditorView, which is driven the same way.
+        let runSharedLspLoop = rx.computed(() => {
+            ui.now();
+            let bridge = getState().lspBridge;
+            if bridge {
+                bridge.loop();
+            }
+            return none;
+        });
+
+        if rx.get(tabs).length == 0 {
+            promptForFile();
+        }
+
+        return () => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let current = rx.get(activeKey);
+            rx.get(runSharedLspLoop);
+
+            ui.div({
+                id: 0,
+                presets: [
+                    presets.col(),
+                    presets.wGrow(),
+                    presets.hGrow(),
+                    presets.bg("#181818"),
+                    presets.textColor("#FFF"),
+                ],
+                focusable: true,
+                onKeyDown: (event: ui_components.KeyboardEvent) => {
+                    let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
+                    if !ctrl {
+                        return;
+                    }
+                    // ctrl+O opens a file, ctrl+W closes the current tab,
+                    // ctrl+Tab cycles -- the bindings these gestures have
+                    // everywhere. Handled on the shell rather than in the
+                    // editor because they are about the SET of tabs, which
+                    // no individual editor knows anything about.
+                    //
+                    // This runs in the bubble phase, so an editor that
+                    // wanted one of these for itself would have already had
+                    // its chance at it.
+                    if event.key == ui_components.Key.O {
+                        event.stopPropagation();
+                        promptForFile();
+                    }
+                    else if event.key == ui_components.Key.W {
+                        event.stopPropagation();
+                        let key = rx.get(activeKey);
+                        if key >= 0 {
+                            closeTab(key);
+                        }
+                    }
+                    else if event.key == ui_components.Key.Tab {
+                        event.stopPropagation();
+                        let all: []tabs_lib.TabItem = rx.get(tabs);
+                        if all.length > 1 {
+                            let key = rx.get(activeKey);
+                            let index = 0;
+                            for (let i = 0; i < all.length; i++) {
+                                if all[i].key == key {
+                                    index = i;
+                                    break;
+                                }
+                            }
+                            let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+                            let next = shift ? index - 1 : index + 1;
+                            if next < 0 { next = all.length - 1; }
+                            if next >= all.length { next = 0; }
+                            activeKey := all[next].key;
+                            persist();
+                        }
+                    }
+                },
+            }, () => {
+                if items.length == 0 {
+                    // Nothing open. Say so, rather than showing an empty
+                    // grey rectangle that looks like a failure to start.
+                    ui.div({
+                        id: 1,
+                        presets: [
+                            presets.col(),
+                            presets.wGrow(),
+                            presets.hGrow(),
+                            presets.packing(ui_styling.Packing.Center),
+                            presets.crossAlign(ui_styling.CrossAlign.Center),
+                        ],
+                    }, () => {
+                        ui.text({
+                            id: 0,
+                            text: "No file open  --  Ctrl+O to open one",
+                            presets: [presets.textColor("#7A7A7A")],
+                        });
+                    });
+                    return;
+                }
+
+                tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
+                    id: 2,
+                    tabs: items,
+                    activeKey: current,
+                    onSelect: (key: int) => {
+                        activeKey := key;
+                        persist();
+                    },
+                    onClose: (key: int) => {
+                        closeTab(key);
+                    },
+                    // Called for EVERY tab each frame, not just the active
+                    // one -- that is the whole point (see stdlib/tabs).
+                    // Each editor is keyed by the tab's own key, so every
+                    // open file keeps one long-lived EditorView instance
+                    // holding its document, caret, scroll offset and undo
+                    // history for as long as the tab is open.
+                    renderTab: (key: int) => {
+                        EditorView(ui, EditorViewArgs {
+                            id: key,
+                            filePath: pathForKey(key),
+                            active: key == rx.get(activeKey),
+                        });
+                    },
                 });
             });
         };

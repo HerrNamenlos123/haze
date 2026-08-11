@@ -105,6 +105,19 @@ export opaque struct App {
     frame: mut renderer.gfx.Frame;
     windowState: renderer.gfx.CanvasSize;
     mousePosition: Vec2 = {};
+    // Has the pointer ever actually been located?
+    //
+    // mousePosition starts at (0,0), which is not a neutral value -- it is
+    // the window's top-left corner, a perfectly ordinary place for a real
+    // pointer to be. So until the platform has told us where the mouse
+    // is, "the mouse is at 0,0" and "we have no idea where the mouse is"
+    // are indistinguishable, and everything downstream reads the first
+    // one: the element in the corner comes up hovered, before the pointer
+    // has ever been over the window at all.
+    //
+    // This is what tells the two apart. Nothing sets it but a real
+    // platform mouse event.
+    mousePositionKnown: bool = false;
     resized: bool = false;
     _pointerButtons: AppPointerButtons = {};
     _pointerEdgeQueue: []PointerEdge = [];
@@ -187,12 +200,22 @@ export opaque struct App {
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
             app.mousePosition.x = e.pos.x;
             app.mousePosition.y = e.pos.y;
+            // First real word on where the pointer is -- see
+            // mousePositionKnown.
+            app.mousePositionKnown = true;
             return false;
         });
         window.onMouseDown((e: sdl.MouseButtonEvent) => {
             if e.button == 0 { pointerButtons.leftHeld = true; }
             if e.button == 1 { pointerButtons.middleHeld = true; }
             if e.button == 2 { pointerButtons.rightHeld = true; }
+            // A click carries a position too, and can legitimately be the
+            // FIRST thing we hear about the pointer: click into an
+            // unfocused window without moving first and the press may
+            // arrive before any motion event.
+            app.mousePosition.x = e.pos.x;
+            app.mousePosition.y = e.pos.y;
+            app.mousePositionKnown = true;
             app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Pressed, pos: e.pos });
             return false;
         });
@@ -227,6 +250,13 @@ export opaque struct App {
 
     fn mousePos(): Vec2 {
         return this.mousePosition;
+    }
+
+    // Whether mousePos() means anything yet -- see mousePositionKnown.
+    // False from startup until the platform first reports the pointer, so
+    // a UI can tell "pointer at the origin" from "no pointer yet".
+    fn mousePosKnown(): bool {
+        return this.mousePositionKnown;
     }
 
     fn pointerLeftHeld(): bool {
