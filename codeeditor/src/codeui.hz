@@ -1499,11 +1499,22 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     // comparing document positions: the reset of
                     // lastHoverPos is what makes the re-ask happen.
                     //
-                    // This also dismisses a shift+L popup as soon as the
-                    // mouse is moved, which is the right call: it is the
-                    // same "you did something else now" signal that a
-                    // keystroke gives.
-                    if rx.get(hoverRequest) {
+                    // Moving the mouse also dismisses a shift+L popup,
+                    // which is right: it is the same "you did something
+                    // else now" signal that a keystroke gives.
+                    //
+                    // But only MOVING may do that. `busy` on its own must
+                    // not, because the keyboard taking over is itself one
+                    // of the things that makes this branch true -- and the
+                    // shift+L popup IS the keyboard's own popup, created
+                    // by the block a few lines above. Tearing it down here
+                    // would mean the keyboard hover appeared and vanished
+                    // within the same frame, i.e. never appeared at all.
+                    // A caret-anchored popup (hoverAnchor == none) is the
+                    // keyboard's; only the mouse's own is the mouse's to
+                    // dismiss.
+                    let mouseOwnsPopup = rx.get(hoverAnchor) is Vec2;
+                    if rx.get(hoverRequest) && (moved || mouseOwnsPopup) {
                         dismissHover();
                         lastHoverPos := none;
                     }
