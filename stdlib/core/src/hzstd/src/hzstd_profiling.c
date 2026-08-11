@@ -1844,7 +1844,30 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   struct sigaction crashGuardAction;
   memset(&crashGuardAction, 0, sizeof(crashGuardAction));
   crashGuardAction.sa_sigaction = hzstd_perf_unwind_crash_handler;
-  crashGuardAction.sa_flags = SA_SIGINFO;
+  // SA_ONSTACK: this handler chains to hzstd_panic_handler for any crash
+  // that isn't our own unwind, and that handler *requires* the altstack (see
+  // hzstd_setup_panic_handler, and the longer writeup on the identical flag
+  // in hzstd_profiling_safe_get_proc_name_by_ip). Since this disposition
+  // stays installed for the entire profiling session, omitting the flag left
+  // the altstack guarantee revoked for that whole duration -- every genuine
+  // crash occurring at any point while profiling ran would have run the
+  // panic handler on the ordinary stack and corrupted the recovery-frame
+  // pointer it longjmps with.
+  //
+  // NOTE, since this flag has been added and removed here more than once:
+  // the old "Deliberately *not* SA_ONSTACK" rationale does NOT apply to this
+  // handler and must not be used to remove it again. That comment belonged
+  // to the old SIGUSR1 *sampling tick* handler (deleted when profiling moved
+  // to kernel perf events), which fired constantly and returned normally --
+  // so a BDWGC stop-the-world routinely caught the thread with an
+  // altstack-resident stack pointer and computed a nonsense scan range. Two
+  // things make that irrelevant here: this is a rare crash handler that
+  // never returns normally (it siglongjmps or chains into a handler that
+  // parks forever), and the GC mismatch itself was since fixed at its root
+  // by the GC_register_altstack call in hzstd_setup_panic_handler. The
+  // deciding question for this flag is always "does the handler return
+  // normally?", not "is it in the profiler?".
+  crashGuardAction.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&crashGuardAction.sa_mask);
   sigaction(SIGSEGV, &crashGuardAction, &g_hzstd_perf_prev_segv_action);
   sigaction(SIGBUS, &crashGuardAction, &g_hzstd_perf_prev_bus_action);
@@ -2289,34 +2312,98 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void *address)
 // it, so this temporarily installs a recovery handler around the call and
 // treats a crash the same as "no symbol info found" for that one address --
 // exactly like a real symbolizer/profiler has to.
-static sigjmp_buf g_profiling_resolve_recovery;
+// _Thread_local, and paired with g_profiling_resolving_active below, for the
+// same reason g_hzstd_perf_unwind_recovery/g_hzstd_perf_unwinding_active are:
+// signal *disposition* is process-wide, but a sigjmp_buf is inherently
+// per-thread -- it records one specific thread's stack pointer. This used to
+// be a plain global written by whichever thread happened to be resolving,
+// while the sigaction() below simultaneously redirected SIGSEGV for *every*
+// thread in the process. A genuine, unrelated crash on any other thread
+// during that window was therefore delivered to this handler, which
+// siglongjmp'd it into a jmp_buf belonging to the resolving thread's stack --
+// restoring a stack pointer that is meaningless (and long since overwritten)
+// on the thread actually doing the jump.
+static _Thread_local sigjmp_buf g_profiling_resolve_recovery;
 
-static void hzstd_profiling_resolve_crash_handler(int sig)
+// Only true while *this* thread is actually inside unw_get_proc_name_by_ip
+// below. Lets the handler tell "the resolve call we guarded crashed" apart
+// from "an unrelated crash landed on some other thread (or on this thread
+// outside the guarded call) while our disposition happened to be installed"
+// -- the latter must be chained onward, never swallowed by a siglongjmp into
+// a foreign stack.
+static _Thread_local bool g_profiling_resolving_active = false;
+
+// Whatever SIGSEGV/SIGBUS disposition was in place before this function
+// swapped in its own -- normally hzstd_perf_unwind_crash_handler (installed
+// for the whole session by hzstd_profiling_start) or, if profiling isn't
+// running, hzstd_panic_handler itself.
+static struct sigaction g_profiling_resolve_prev_segv;
+static struct sigaction g_profiling_resolve_prev_bus;
+
+static void hzstd_profiling_resolve_crash_handler(int sig, siginfo_t *info, void *ucontext)
 {
-  (void)sig;
-  siglongjmp(g_profiling_resolve_recovery, 1);
+  if (g_profiling_resolving_active) {
+    g_profiling_resolving_active = false;
+    siglongjmp(g_profiling_resolve_recovery, 1);
+  }
+
+  // Not the crash we're guarding against -- chain to whatever was installed
+  // before us, exactly as hzstd_perf_unwind_crash_handler does. Without
+  // this, an unrelated crash arriving during the resolve window was
+  // siglongjmp'd into another thread's jmp_buf instead of being reported.
+  struct sigaction *prev = (sig == SIGBUS) ? &g_profiling_resolve_prev_bus : &g_profiling_resolve_prev_segv;
+  if (prev->sa_flags & SA_SIGINFO) {
+    if (prev->sa_sigaction) {
+      prev->sa_sigaction(sig, info, ucontext);
+    }
+  }
+  else if (prev->sa_handler == SIG_DFL) {
+    signal(sig, SIG_DFL);
+    raise(sig);
+  }
+  else if (prev->sa_handler != SIG_IGN && prev->sa_handler != NULL) {
+    prev->sa_handler(sig);
+  }
 }
 
 static int hzstd_profiling_safe_get_proc_name_by_ip(unw_word_t ip, char *buf, size_t buf_len, unw_word_t *offp)
 {
-  struct sigaction newAction, oldSegvAction, oldBusAction;
+  struct sigaction newAction;
   memset(&newAction, 0, sizeof(newAction));
-  newAction.sa_handler = hzstd_profiling_resolve_crash_handler;
+  newAction.sa_sigaction = hzstd_profiling_resolve_crash_handler;
+  // SA_ONSTACK is load-bearing, not cosmetic. The handler this one displaces
+  // is (directly or by chaining) hzstd_panic_handler, which is deliberately
+  // installed with SA_ONSTACK so it runs on the 64 KiB altstack -- see
+  // hzstd_setup_panic_handler. Installing a replacement *without* the flag
+  // silently revokes that for the whole window: a genuine SIGSEGV arriving
+  // here then runs the panic handler on the ordinary thread stack, whose
+  // signal frame sits in the middle of the very stack the subsequent
+  // HZSTD_LONGJMP to the recovery point unwinds through. The recovery frame
+  // pointer read back on the other side is then a *stack* address rather
+  // than the GC-heap frame that was pushed -- which is precisely the
+  // "[recovery-frame corruption] frame (run_cleanup): frame=0x7ffe... is NOT
+  // a GC heap pointer" report, and why it only ever showed up on large
+  // profiling sessions: postprocessing calls this once per unresolved
+  // frame, so thousands of unique frames means a correspondingly wide
+  // window in which the altstack guarantee is off.
+  newAction.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigemptyset(&newAction.sa_mask);
 
-  sigaction(SIGSEGV, &newAction, &oldSegvAction);
-  sigaction(SIGBUS, &newAction, &oldBusAction);
+  sigaction(SIGSEGV, &newAction, &g_profiling_resolve_prev_segv);
+  sigaction(SIGBUS, &newAction, &g_profiling_resolve_prev_bus);
 
   int result;
   if (sigsetjmp(g_profiling_resolve_recovery, 1) == 0) {
+    g_profiling_resolving_active = true;
     result = unw_get_proc_name_by_ip(unw_local_addr_space, ip, buf, buf_len, offp, NULL);
   }
   else {
     result = -1; // crashed partway through -- treat like libunwind's own "not found"
   }
+  g_profiling_resolving_active = false;
 
-  sigaction(SIGSEGV, &oldSegvAction, NULL);
-  sigaction(SIGBUS, &oldBusAction, NULL);
+  sigaction(SIGSEGV, &g_profiling_resolve_prev_segv, NULL);
+  sigaction(SIGBUS, &g_profiling_resolve_prev_bus, NULL);
   return result;
 }
 
