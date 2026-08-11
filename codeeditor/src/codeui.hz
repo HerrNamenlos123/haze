@@ -275,6 +275,26 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let hoverHighlightUri = "__hover__";
         let hoverScopeName = "source.ts";
 
+        // Element ids inside the hover popup that must never collide with
+        // the sequential ones (0..n) used for blocks and for code lines.
+        //
+        // The component system caches a parent's children by plain id and
+        // FIXES each one's element type the first time it is seen (see
+        // getOrCreateDiv in ui_components.hz, which hard-asserts on a type
+        // change). Two things in the popup are structurally different from
+        // a code line -- the "Loading..." placeholder and a prose block are
+        // single text nodes, whereas a code block is a div per line -- and
+        // both would otherwise land on id 0, the same id block 0 / line 0
+        // takes. Every hover goes placeholder -> content, so that clash is
+        // hit immediately and every time.
+        //
+        // Sharing an id would force the two shapes to agree at every depth
+        // forever; giving them ids no block or line can ever reach makes
+        // the subtrees independent instead, so each is free to have its
+        // own shape. Far from the 0..n range for exactly that reason.
+        let hoverPlaceholderId = 900001;
+        let hoverProseId = 900002;
+
         // The file exactly as read from disk, kept until the highlighter
         // and the LSP have been handed their initial copy.
         //
@@ -2136,23 +2156,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                 // there is no content to colour yet, only
                                 // the placeholder saying so.
                                 //
-                                // Wrapped in a div for the same reason the
-                                // blocks below are: this is the SAME id 0
-                                // that block 0 takes once the answer
-                                // arrives, and every hover makes exactly
-                                // that placeholder -> content transition,
-                                // so a bare text node here would change the
-                                // cached element's type on the very next
-                                // frame and panic.
-                                ui.div({
-                                    id: 0,
-                                    presets: [presets.col()],
-                                }, () => {
-                                    ui.text({
-                                        id: 0,
-                                        text: hoverText,
-                                        presets: [presets.textColor("#9A9A9A")],
-                                    });
+                                // On its OWN id, disjoint from the block
+                                // ids below (which are 0..n). The child
+                                // cache is keyed by id per parent and an
+                                // element's type is fixed the first time
+                                // that id is seen -- so sharing id 0 with
+                                // block 0 means the whole subtree under it
+                                // has to agree on every element's type at
+                                // every depth, forever. It doesn't and
+                                // can't: the placeholder is one line of
+                                // prose, a code block is a div per line.
+                                // Giving the placeholder an id no block
+                                // will ever take makes the two subtrees
+                                // independent, so neither constrains the
+                                // other's shape.
+                                ui.text({
+                                    id: hoverPlaceholderId,
+                                    text: hoverText,
+                                    presets: [presets.textColor("#9A9A9A")],
                                 });
                             }
                             else {
@@ -2234,24 +2255,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                                             }
                                         }
                                         else {
-                                            // Wrapped in a div at the same id
-                                            // a code line would take, for the
-                                            // third time and the same reason:
-                                            // block `bi` flips between code
-                                            // and prose across hovers (bare
-                                            // quickinfo is all-code, markdown
-                                            // is code-then-prose), so id 0
-                                            // inside this wrapper must be a
-                                            // div either way.
-                                            ui.div({
-                                                id: 0,
-                                                presets: [presets.row()],
-                                            }, () => {
-                                                ui.text({
-                                                    id: 0,
-                                                    text: block.text,
-                                                    presets: [presets.textColor("#9A9A9A")],
-                                                });
+                                            // Prose gets an id disjoint from
+                                            // the code lines' (0..n), for the
+                                            // same reason the placeholder
+                                            // does: block `bi` flips between
+                                            // code and prose across hovers
+                                            // (bare quickinfo is all-code,
+                                            // markdown is code-then-prose),
+                                            // and the two shapes are a text
+                                            // node versus a div-per-line.
+                                            // Disjoint ids let each keep its
+                                            // own shape instead of forcing a
+                                            // common one.
+                                            ui.text({
+                                                id: hoverProseId,
+                                                text: block.text,
+                                                presets: [presets.textColor("#9A9A9A")],
                                             });
                                         }
                                     });
