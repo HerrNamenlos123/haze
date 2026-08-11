@@ -938,9 +938,13 @@
       ]
     },
     "html-stuff": {
+      "hazeLocalModification": "HAZE LOCAL MODIFICATION (not upstream shikijs): the '#vue-interpolations' include below. Upstream defines the vue-interpolations rule in this repository but never includes it anywhere, so `{{ ... }}` in a template body fell through to text.html.derivative (which has no interpolation rule of its own) and was emitted as one plain-text token -- rendering entirely uncoloured. It must stay ordered BEFORE text.html.derivative / text.html.basic, which would otherwise consume the braces as ordinary text. Preserve this include when updating this vendored grammar.",
       "patterns": [
         {
           "include": "#template-tag"
+        },
+        {
+          "include": "#vue-interpolations"
         },
         {
           "include": "text.html.derivative"
