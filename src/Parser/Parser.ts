@@ -8,6 +8,7 @@ import {
 } from "antlr4ng";
 import {
   type ASTAggregateLiteralElement,
+  type ASTRoot,
   type ASTAggregateLiteralExpr,
   type ASTArraySubscriptExpr,
   type ASTAttemptExpr,
@@ -196,6 +197,7 @@ import {
   getParserMode,
   getParserRepoRoot,
   nativeParserAvailable,
+  parseTextNativeAsync,
 } from "./ParserMode";
 
 type IfStatementCondition =
@@ -303,6 +305,38 @@ export namespace Parser {
     // assert: both parsers must agree, on every single file.
     const reference = parseWithANTLR(config, text, filename);
     const candidate = parseTextNativeSync(getParserRepoRoot(), text, filename);
+    assertASTsEqual(filename, reference, candidate);
+    return reference;
+  }
+
+  /**
+   * Async form of parseTextToAST, used by the collection phase.
+   *
+   * This is the path worth taking wherever the caller can await: it talks to a
+   * single long-lived parser process instead of spawning one per file, which
+   * removes a process spawn (~5ms) and the runtime's start-up cost from every
+   * file in the build.
+   *
+   * Callers that cannot await (synchronous CTFE, via collectImmediate) keep
+   * using parseTextToAST above.
+   */
+  export async function parseTextToASTAsync(
+    config: ModuleConfig,
+    text: string,
+    filename: string
+  ): Promise<ASTRoot> {
+    const mode = getParserMode();
+
+    if (mode === "antlr" || !nativeParserAvailable()) {
+      return parseWithANTLR(config, text, filename);
+    }
+
+    if (mode === "native") {
+      return await parseTextNativeAsync(text, filename);
+    }
+
+    const reference = parseWithANTLR(config, text, filename);
+    const candidate = await parseTextNativeAsync(text, filename);
     assertASTsEqual(filename, reference, candidate);
     return reference;
   }

@@ -9,9 +9,10 @@
 // `realloc` when it runs out of room. Appends become memory-bandwidth bound
 // instead of per-byte bound.
 //
-// Note the buffer intentionally exposes raw offsets: the parser splices
-// captured sub-trees by copying ranges of this same buffer, so a "capture" is a
-// pair of offsets rather than an owned string.
+// `hzob_slice` materialises a range as a Haze `str`; the parser uses it to lift
+// a captured sub-tree out before rewinding the buffer with `hzob_truncate`.
+// (Referencing captures by raw offsets instead would avoid that copy, but does
+// not work here -- see the note on captureWith in parser.hz.)
 
 __c__("#include <stdlib.h>");
 __c__("#include <string.h>");
@@ -23,8 +24,6 @@ extern C fn hzob_clear(handle: cptr): void :: final;
 extern C fn hzob_push_str(handle: cptr, value: str): void :: final;
 extern C fn hzob_push_byte(handle: cptr, value: int): void :: final;
 extern C fn hzob_push_int(handle: cptr, value: int): void :: final;
-// Append a range of this same buffer onto its end (used to splice captures).
-extern C fn hzob_push_range(handle: cptr, start: int, end: int): void :: final;
 // Materialise [start, end) as a Haze `str`.
 extern C fn hzob_slice(handle: cptr, start: int, end: int): str :: final;
 extern C fn hzob_truncate(handle: cptr, length: int): void :: final;
@@ -91,21 +90,13 @@ hzstd_void_t hzob_push_int(hzstd_cptr_t handle, hzstd_int_t value) {
     while (i > 0) b->data[b->len++] = tmp[--i];
 }
 
-hzstd_void_t hzob_push_range(hzstd_cptr_t handle, hzstd_int_t start, hzstd_int_t end) {
-    hzob_t* b = (hzob_t*)handle;
-    if (end <= start) return;
-    size_t n = (size_t)(end - start);
-    hzob_grow(b, n);
-    // The source is inside the same allocation, which realloc may have moved,
-    // so the offset is resolved AFTER growing.
-    memmove(b->data + b->len, b->data + start, n);
-    b->len += n;
-}
-
 hzstd_str_t hzob_slice(hzstd_cptr_t handle, hzstd_int_t start, hzstd_int_t end) {
     hzob_t* b = (hzob_t*)handle;
     hzstd_str_t s;
-    if (end <= start) { s.data = b->data; s.length = 0; return s; }
+    // An empty slice must NOT point into the buffer: the buffer is rewound and
+    // rewritten immediately afterwards, so the pointer would dangle and the
+    // zero length is not always respected downstream. Point at a literal.
+    if (end <= start) { s.data = \"\"; s.length = 0; return s; }
     // Copy out so the result survives further appends (which may realloc).
     // GC-allocated because the returned `str` is handed to Haze code.
     size_t n = (size_t)(end - start);

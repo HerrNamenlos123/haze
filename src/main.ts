@@ -5,7 +5,11 @@ import { startLsp } from "./lsp";
 import { getFile } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
 import { GeneralError, SilentError } from "./shared/Errors";
-import { type ParserMode, setParserMode } from "./Parser/ParserMode";
+import {
+  type ParserMode,
+  setParserMode,
+  shutdownNativeParser,
+} from "./Parser/ParserMode";
 
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
@@ -315,6 +319,9 @@ async function main(): Promise<number> {
       console.error(err);
     }
     return 1;
+  } finally {
+    // The long-lived native parser must not outlive the command.
+    shutdownNativeParser();
   }
 
   return 0;

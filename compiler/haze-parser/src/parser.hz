@@ -113,41 +113,40 @@ export struct Parser {
     // reference parser (ANTLR's stop-token position). A single-token node
     // therefore has start == end.
 
+    // Emit a node's source location in the COMPACT wire form.
+    //
+    // The AST shape the compiler consumes is
+    //   {filename, start:{line,column}, end:{line,column}}
+    // which costs ~130 bytes per node. It is 58% of the payload, and the
+    // filename alone repeated over 10,000 times in a generated import file.
+    //
+    // On the wire it becomes  "L":[startLine,startCol,endLine,endCol]  with the
+    // filename omitted whenever it is the file being parsed (the overwhelmingly
+    // common case); a `#source` override emits "F" alongside. The TS bridge
+    // expands this back during the revive walk it already performs.
     mut fn writeLoc(startTok: Token, endTok: Token) {
         if this.sourcelocOverride {
-            this.w.key("sourceloc");
-            this.w.beginObject();
-            this.w.keyString("filename", this.overrideFile);
-            this.w.key("start");
-            this.w.beginObject();
-            this.w.keyInt("line", this.overrideStartLine);
-            this.w.keyInt("column", this.overrideStartCol);
-            this.w.endObject();
+            this.w.key("L");
+            this.w.beginArray();
+            this.w.intValue(this.overrideStartLine);
+            this.w.intValue(this.overrideStartCol);
             if this.overrideHasEnd {
-                this.w.key("end");
-                this.w.beginObject();
-                this.w.keyInt("line", this.overrideEndLine);
-                this.w.keyInt("column", this.overrideEndCol);
-                this.w.endObject();
+                this.w.intValue(this.overrideEndLine);
+                this.w.intValue(this.overrideEndCol);
             }
-            this.w.endObject();
+            this.w.endArray();
+            // A #source block points at a different file, so it must be named.
+            this.w.keyString("F", this.overrideFile);
             return;
         }
 
-        this.w.key("sourceloc");
-        this.w.beginObject();
-        this.w.keyString("filename", this.filename);
-        this.w.key("start");
-        this.w.beginObject();
-        this.w.keyInt("line", startTok.line);
-        this.w.keyInt("column", startTok.col);
-        this.w.endObject();
-        this.w.key("end");
-        this.w.beginObject();
-        this.w.keyInt("line", endTok.line);
-        this.w.keyInt("column", endTok.col);
-        this.w.endObject();
-        this.w.endObject();
+        this.w.key("L");
+        this.w.beginArray();
+        this.w.intValue(startTok.line);
+        this.w.intValue(startTok.col);
+        this.w.intValue(endTok.line);
+        this.w.intValue(endTok.col);
+        this.w.endArray();
     }
 
     // Span from `startTok` through the last consumed token.
@@ -186,13 +185,24 @@ export struct Parser {
         return this.captureWith(() => { this.expr(); });
     }
 
+    // Parse into the SAME output buffer and materialise the produced text.
+    //
+    // The capture is written at the tail of the shared buffer, copied out, and
+    // the buffer rewound. The rewind is essential: captures are spliced into
+    // their parent by copying, so without it the originals accumulate and the
+    // buffer grows without bound (measured 1.35 GB for a 10 KB source).
+    //
+    // Returning raw offsets instead would avoid this copy, but is NOT possible
+    // with the current writer: binaryLevel holds every operand of a chain as a
+    // live capture at once, so a capture is not necessarily at the tail when it
+    // is consumed, and rewinding would invalidate the others' offsets.
     mut fn captureWith(f: () => void): str :: final {
         let mark = this.w.beginCapture();
         f();
         let end = this.w.endCapture();
-        let out = hzob_slice(this.w.buf, mark, end);
+        let text = hzob_slice(this.w.buf, mark, end);
         this.w.truncate(mark);
-        return out;
+        return text;
     }
 
     mut fn expr(): void :: final {
@@ -609,10 +619,7 @@ export struct Parser {
                     this.w.keyString("variant", variant);
                     this.w.keyRaw("expr", acc);
                     this.w.keyString("member", member);
-                    this.w.key("generics");
-                    this.w.beginArray();
-                    for g in generics { this.w.rawValue(g); }
-                    this.w.endArray();
+                    this.writeGenericArgs(generics);
                     this.locHere(start);
                     this.w.endObject();
                 });
@@ -677,7 +684,7 @@ export struct Parser {
             if this.at(TK.Colon) {
                 this.advance();
                 let hasEnd = !(this.at(TK.RBracket) || this.at(TK.Comma));
-                let endStr = "";
+                let endStr = emptyCapture();
                 if hasEnd { endStr = this.captureExpr(); }
                 this.w.beginObject();
                 this.w.keyString("type", "slice");
@@ -691,7 +698,7 @@ export struct Parser {
             if this.at(TK.Colon) {
                 this.advance();
                 let hasEnd = !(this.at(TK.RBracket) || this.at(TK.Comma));
-                let endStr = "";
+                let endStr = emptyCapture();
                 if hasEnd { endStr = this.captureExpr(); }
                 this.w.beginObject();
                 this.w.keyString("type", "slice");
@@ -708,6 +715,7 @@ export struct Parser {
         });
     }
 
+    // Emit `name: <capture>`, or `name: null` when the capture is empty.
     mut fn writeOptionalRaw(name: str, value: str) {
         this.w.key(name);
         if value.length == 0 { this.w.nullValue(); }
@@ -720,11 +728,21 @@ export struct Parser {
         else { this.w.nullValue(); }
     }
 
-    // withAllocator: WITH expr — returns "" when absent.
+    // withAllocator: WITH expr — an empty capture when absent.
     mut fn tryWithAllocator(): str :: final {
-        if !this.at(TK.With) { return ""; }
+        if !this.at(TK.With) { return emptyCapture(); }
         this.advance();
         return this.captureExpr();
+    }
+
+    // Generic arguments, omitted entirely when empty (`"generics":[]` appeared
+    // 4,384 times in one file). The bridge defaults a missing key to [].
+    mut fn writeGenericArgs(generics: mut []str) {
+        if generics.length == 0 { return; }
+        this.w.key("generics");
+        this.w.beginArray();
+        for g in generics { this.w.rawValue(g); }
+        this.w.endArray();
     }
 
     // A member name may be an identifier or the `type` keyword (memberNameId).
@@ -867,7 +885,7 @@ export struct Parser {
 
         // Anonymous struct literal `{ ... }`.
         if k == TK.LCurly {
-            this.braceExpr("", start);
+            this.braceExpr(emptyCapture(), start);
             return;
         }
 
@@ -1197,10 +1215,7 @@ export struct Parser {
             this.w.beginObject();
             this.w.keyString("variant", "SymbolValueExpr");
             this.w.keyString("name", name);
-            this.w.key("generics");
-            this.w.beginArray();
-            for g in generics { this.w.rawValue(g); }
-            this.w.endArray();
+            this.writeGenericArgs(generics);
             this.locHere(start);
             this.w.endObject();
         });
@@ -1220,10 +1235,7 @@ export struct Parser {
                 this.w.keyString("variant", "ExprMemberAccess");
                 this.w.keyRaw("expr", acc);
                 this.w.keyString("member", member);
-                this.w.key("generics");
-                this.w.beginArray();
-                for g in segGenerics { this.w.rawValue(g); }
-                this.w.endArray();
+                this.writeGenericArgs(segGenerics);
                 this.locHere(segStart);
                 this.w.endObject();
             });
@@ -1477,10 +1489,7 @@ export struct Parser {
                     this.w.keyString("variant", variant);
                     this.w.keyRaw("expr", acc);
                     this.w.keyString("member", member);
-                    this.w.key("generics");
-                    this.w.beginArray();
-                    for g in generics { this.w.rawValue(g); }
-                    this.w.endArray();
+                    this.writeGenericArgs(generics);
                     this.locHere(segStart);
                     this.w.endObject();
                 });
@@ -1548,10 +1557,7 @@ export struct Parser {
         this.w.beginObject();
         this.w.keyString("variant", "SymbolValueExpr");
         this.w.keyString("name", name);
-        this.w.key("generics");
-        this.w.beginArray();
-        for g in generics { this.w.rawValue(g); }
-        this.w.endArray();
+        this.writeGenericArgs(generics);
         this.locHere(start);
         this.w.endObject();
     }
@@ -1577,7 +1583,7 @@ export struct Parser {
             let name = this.text(nameTok);
             let isOptional = this.accept(TK.Question);
 
-            let datatype = "";
+            let datatype = emptyCapture();
             let isPack = false;
             if this.accept(TK.Colon) {
                 if this.at(TK.Ellipsis) {
@@ -1592,7 +1598,7 @@ export struct Parser {
                 this.errorAt(this.cur(), "expected ':' and a parameter type");
             }
 
-            let defaultValue = "";
+            let defaultValue = emptyCapture();
             if this.accept(TK.Equals) {
                 defaultValue = this.captureExpr();
             }
@@ -1638,7 +1644,7 @@ export struct Parser {
         let isFinal = false;
         let isPure = false;
         let isNoreturn = false;
-        let noreturnIf = "";
+        let noreturnIf = emptyCapture();
 
         if this.accept(TK.DoubleColon) {
             while true {
@@ -1744,9 +1750,9 @@ export struct Parser {
         let start = this.expect(TK.Attempt);
         let attemptScope = this.captureScope();
 
-        let elseScope = "";
+        let elseScope = emptyCapture();
         let elseVar = "";
-        let recoverScope = "";
+        let recoverScope = emptyCapture();
         let recoverVar = "";
 
         while true {
@@ -1778,6 +1784,7 @@ export struct Parser {
         this.w.endObject();
     }
 
+    // Emit `name: "value"`, or `name: null` for the empty string.
     mut fn writeOptionalString(name: str, value: str) {
         this.w.key(name);
         if value.length == 0 { this.w.nullValue(); }
@@ -1790,7 +1797,7 @@ export struct Parser {
         let params = this.paramList(true);
         this.expect(TK.RParen);
 
-        let returnType = "";
+        let returnType = emptyCapture();
         if this.accept(TK.Colon) { returnType = this.captureType(); }
         let requiresJson = this.captureRequiresBlock();
 
@@ -1859,7 +1866,7 @@ export struct Parser {
         if k == TK.Return {
             this.advance();
             let hasExpr = !this.at(TK.Semi);
-            let e = "";
+            let e = emptyCapture();
             if hasExpr { e = this.captureExpr(); }
             this.expect(TK.Semi);
             this.w.beginObject();
@@ -1873,7 +1880,7 @@ export struct Parser {
         if k == TK.Raise {
             this.advance();
             let hasExpr = !this.at(TK.Semi);
-            let e = "";
+            let e = emptyCapture();
             if hasExpr { e = this.captureExpr(); }
             this.expect(TK.Semi);
             this.w.beginObject();
@@ -1912,7 +1919,7 @@ export struct Parser {
         if k == TK.Type {
             // `type X = T;` alias — but `type` can also start an expression.
             if this.peekKind(1) == TK.Ident {
-                this.typeAlias(this.cur(), false, 0, "");
+                this.typeAlias(this.cur(), false, 0, emptyCapture());
                 this.accept(TK.Semi);
                 return;
             }
@@ -1981,10 +1988,10 @@ export struct Parser {
         let nameTok = this.expect(TK.Ident);
         let name = this.text(nameTok);
 
-        let datatype = "";
+        let datatype = emptyCapture();
         if this.accept(TK.Colon) { datatype = this.captureType(); }
 
-        let value = "";
+        let value = emptyCapture();
         let hasValue = false;
         if this.accept(TK.Equals) {
             value = this.captureExpr();
@@ -2015,7 +2022,13 @@ export struct Parser {
     // isOptional `; guard`. Brace literals are disabled so `if x { }` parses the
     // brace as the body rather than a struct literal.
     mut fn conditionInto(letName: str): Condition :: final {
-        let c = Condition { isLet: false, name: "", datatype: "", expr: "", guard: "" };
+        let c = Condition {
+            isLet: false,
+            name: "",
+            datatype: emptyCapture(),
+            expr: emptyCapture(),
+            guard: emptyCapture(),
+        };
 
         let savedAllow = this.allowBraceLiteral;
         this.allowBraceLiteral = false;
@@ -2063,7 +2076,7 @@ export struct Parser {
         let thenScope = this.captureScope();
 
         let elseIfs: mut []str = [];
-        let elseScope = "";
+        let elseScope = emptyCapture();
 
         while this.at(TK.Else) {
             this.advance();
@@ -2122,7 +2135,7 @@ export struct Parser {
         if this.at(TK.LParen) {
             this.advance();
 
-            let initStmt = "";
+            let initStmt = emptyCapture();
             if !this.at(TK.Semi) {
                 // In `for (init; cond; incr)` the separating `;` belongs to the
                 // for rule, not to the init statement, so the statement's span
@@ -2134,11 +2147,11 @@ export struct Parser {
             }
             this.expect(TK.Semi);
 
-            let condition = "";
+            let condition = emptyCapture();
             if !this.at(TK.Semi) { condition = this.captureExpr(); }
             this.expect(TK.Semi);
 
-            let incr = "";
+            let incr = emptyCapture();
             if !this.at(TK.RParen) { incr = this.captureExpr(); }
             this.expect(TK.RParen);
 
@@ -2189,7 +2202,15 @@ export struct Parser {
     // -----------------------------------------------------------------------
 
     // prog: (importStatements | globalDeclaration)* EOF
+    // The output is an envelope, not a bare array:
+    //   {"f":"<filename>","d":[ ...declarations... ]}
+    // so the filename is transmitted ONCE instead of on every node (it was
+    // repeated 10,405 times in one generated import file, a third of the
+    // payload). The bridge unwraps this and fills the name back in.
     mut fn parseProgram(): void :: final {
+        this.w.beginObject();
+        this.w.keyString("f", this.filename);
+        this.w.key("d");
         this.w.beginArray();
         while !this.atEnd() {
             let before = this.pos;
@@ -2200,6 +2221,7 @@ export struct Parser {
             }
         }
         this.w.endArray();
+        this.w.endObject();
     }
 
     mut fn topLevelDeclaration(): void :: final {
@@ -2367,7 +2389,7 @@ export struct Parser {
 
     // metaAnnotation: [[ item (, item)* ,? ]]
     mut fn captureMetaAnnotation(): str :: final {
-        if !(this.at(TK.LBracket) && this.peekKind(1) == TK.LBracket) { return ""; }
+        if !(this.at(TK.LBracket) && this.peekKind(1) == TK.LBracket) { return emptyCapture(); }
         this.advance();
         this.advance();
 
@@ -2384,7 +2406,7 @@ export struct Parser {
             }
             let keyStr = key.cloneString();
 
-            let value = "";
+            let value = emptyCapture();
             if this.accept(TK.Equals) {
                 // The annotation value is a bare LiteralValue, not an expression.
                 value = this.captureWith(() => { this.literalValueOnly(); });
@@ -2411,7 +2433,14 @@ export struct Parser {
 
     // Emit only the inner LiteralValue of a literal token (no LiteralExpr wrapper).
     mut fn literalValueOnly(): void :: final {
-        let full = this.captureWith(() => { this.literalExpr(); });
+        // An annotation value is a bare LiteralValue, so the emitted
+        // LiteralExpr wrapper is parsed back off and only its "literal" member
+        // is kept. captureWith already materialised the text and rewound the
+        // buffer, so no further slicing or truncation may happen here -- doing
+        // so once wiped the whole buffer, because the capture's offsets are
+        // stale the moment captureWith returns.
+        let cap = this.captureWith(() => { this.literalExpr(); });
+        let full = cap;
         // Extract the "literal" member from the emitted LiteralExpr object.
         let marker = "\"literal\":";
         let idx = indexOf(full, marker);
@@ -2603,10 +2632,10 @@ export struct Parser {
         let nameTok = this.expect(TK.Ident);
         let name = this.text(nameTok);
 
-        let datatype = "";
+        let datatype = emptyCapture();
         if this.accept(TK.Colon) { datatype = this.captureType(); }
 
-        let value = "";
+        let value = emptyCapture();
         let hasValue = false;
         if this.accept(TK.Equals) {
             value = this.captureExpr();
@@ -2668,6 +2697,8 @@ export struct Parser {
 
     // Generic parameters carry the whole declaration's sourceloc.
     mut fn writeGenerics(names: mut []str, start: Token) {
+        // Omitted when empty; the bridge defaults a missing key to [].
+        if names.length == 0 { return; }
         this.w.key("generics");
         this.w.beginArray();
         let endTok = this.lastToken();
@@ -2708,13 +2739,13 @@ export struct Parser {
         let params = this.paramList(false);
         this.expect(TK.RParen);
 
-        let returnType = "";
+        let returnType = emptyCapture();
         if this.accept(TK.Colon) { returnType = this.captureType(); }
 
         let requiresJson = this.captureRequiresBlock();
         this.accept(TK.DoubleArrow);
 
-        let body = "";
+        let body = emptyCapture();
         let hasBody = false;
         if this.at(TK.LCurly) {
             body = this.captureScope();
@@ -2888,7 +2919,7 @@ export struct Parser {
         this.expect(TK.Colon);
         let datatype = this.captureType();
 
-        let defaultValue = "";
+        let defaultValue = emptyCapture();
         if this.accept(TK.Equals) { defaultValue = this.captureExpr(); }
         this.accept(TK.Semi);
 
@@ -2943,7 +2974,7 @@ export struct Parser {
             let vStart = this.cur();
             let vNameTok = this.expect(TK.Ident);
             let vName = this.text(vNameTok);
-            let vValue = "";
+            let vValue = emptyCapture();
             if this.accept(TK.Equals) { vValue = this.captureExpr(); }
 
             values.push(this.captureWith(() => {
@@ -3045,6 +3076,11 @@ fn unescapeFStringText(raw: str): str {
     return unescapeString(collapsed.cloneString());
 }
 
+
+// An absent capture: start == end means "nothing was written".
+fn emptyCapture(): str {
+    return "";
+}
 
 // Collected parameters plus the trailing `...` flag.
 export struct ParamList {

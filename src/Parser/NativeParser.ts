@@ -37,7 +37,19 @@ const PARSER_BINARY = path.join(
  * that recursion risks a stack overflow on generated files.
  */
 export function reviveAST(root: unknown): ASTRoot {
-  const stack: unknown[] = [root];
+  // The parser emits an envelope {f: filename, d: [...]} so the filename is
+  // sent once rather than on all ~10k nodes.
+  let declarations: unknown = root;
+  let filename = "";
+  if (root !== null && typeof root === "object" && !Array.isArray(root)) {
+    const envelope = root as { f?: unknown; d?: unknown };
+    if (typeof envelope.f === "string" && Array.isArray(envelope.d)) {
+      filename = envelope.f;
+      declarations = envelope.d;
+    }
+  }
+
+  const stack: unknown[] = [declarations];
 
   while (stack.length > 0) {
     const node = stack.pop();
@@ -54,14 +66,47 @@ export function reviveAST(root: unknown): ASTRoot {
       continue;
     }
 
-    // A LiteralValue is the only place these encodings appear.
     const obj = node as {
       type?: unknown;
       value?: unknown;
       flags?: unknown;
+      L?: unknown;
+      F?: unknown;
+      variant?: unknown;
+      generics?: unknown;
+      sourceloc?: unknown;
       [key: string]: unknown;
     };
 
+    // Expand the compact source location: L = [startLine, startCol, endLine,
+    // endCol], with the end pair omitted when the node has no end, and F set
+    // only when a `#source` block redirects to another file.
+    if (Array.isArray(obj.L)) {
+      const l = obj.L as number[];
+      const loc: {
+        filename: string;
+        start: { line: number; column: number };
+        end?: { line: number; column: number };
+      } = {
+        filename: typeof obj.F === "string" ? obj.F : filename,
+        start: { line: l[0] ?? 0, column: l[1] ?? 0 },
+      };
+      if (l.length >= 4) {
+        loc.end = { line: l[2] ?? 0, column: l[3] ?? 0 };
+      }
+      obj.sourceloc = loc;
+      delete obj.L;
+      delete obj.F;
+    }
+
+    // `generics` is omitted when empty; every consumer expects an array.
+    if (typeof obj.variant === "string" && obj.generics === undefined) {
+      if (NODES_WITH_GENERICS.has(obj.variant)) {
+        obj.generics = [];
+      }
+    }
+
+    // A LiteralValue is the only place these encodings appear.
     if (typeof obj.type === "number") {
       if (isIntegerPrimitive(obj.type) && typeof obj.value === "string") {
         obj.value = BigInt(obj.value);
@@ -78,8 +123,18 @@ export function reviveAST(root: unknown): ASTRoot {
     }
   }
 
-  return root as ASTRoot;
+  return declarations as ASTRoot;
 }
+
+/** AST variants whose `generics` field is non-optional in shared/AST.ts. */
+const NODES_WITH_GENERICS = new Set([
+  "SymbolValueExpr",
+  "ExprMemberAccess",
+  "OptionalChainingExprMemberAccess",
+  "FunctionDefinition",
+  "StructDefinition",
+  "TypeAlias",
+]);
 
 function isIntegerPrimitive(type: number): boolean {
   return (
@@ -196,6 +251,10 @@ export class NativeParserServer {
       { cwd: this.repoRoot, stdio: ["pipe", "pipe", "pipe"] }
     );
 
+    // The parser must never keep the compiler process alive on its own; it is
+    // shut down explicitly when the command finishes (see main.ts).
+    this.proc.unref();
+
     this.proc.stdout.on("data", (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       this.drain();
@@ -261,14 +320,37 @@ export class NativeParserServer {
     }
   }
 
+  /** Parse source text the caller already holds, via the TEXT request. */
+  parseTextRaw(text: string, filename: string): Promise<string> {
+    const payload = Buffer.from(text, "utf8");
+    return this.request(
+      Buffer.concat([
+        Buffer.from(`TEXT ${payload.length} ${filename}\n`, "utf8"),
+        payload,
+      ])
+    );
+  }
+
+  async parseText(text: string, filename: string): Promise<ASTRoot> {
+    return reviveAST(JSON.parse(await this.parseTextRaw(text, filename)));
+  }
+
   /** Parse one file, returning the raw (un-revived) JSON text. */
   parseRaw(filepath: string): Promise<string> {
+    return this.request(Buffer.from(`${filepath}\n`, "utf8"));
+  }
+
+  /**
+   * Send one request and await its response. Requests are serialised: the
+   * protocol has no request ids, so only one may be in flight at a time.
+   */
+  private request(payload: Buffer): Promise<string> {
     this.start();
 
     return new Promise<string>((resolve, reject) => {
       const run = () => {
         this.pending = { resolve: resolve, reject: reject };
-        this.proc?.stdin.write(`${filepath}\n`);
+        this.proc?.stdin.write(payload);
         // A previous response may already be buffered.
         this.drain();
       };

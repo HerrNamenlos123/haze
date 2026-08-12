@@ -93,15 +93,11 @@ export struct JsonWriter {
         this.sepState[this.sepState.length - 1] = SEP_VALUE;
     }
 
+    // Emit already-formatted JSON text (a canonicalised number, say). Distinct
+    // from captureValue, which splices a range of this buffer.
     mut fn rawValue(text: str) {
         this.sep();
         hzob_push_str(this.buf, text);
-    }
-
-    // Splice a range of this same buffer (a capture) at the current position.
-    mut fn rangeValue(start: int, end: int) {
-        this.sep();
-        hzob_push_range(this.buf, start, end);
     }
 
     // --- Capturing ---------------------------------------------------------

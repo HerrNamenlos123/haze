@@ -117,3 +117,11 @@ export function assertASTsEqual(
 export async function parseFileWithNative(filepath: string): Promise<ASTRoot> {
   return await getServer().parse(filepath);
 }
+
+/** Parse in-memory source through the long-lived server. */
+export async function parseTextNativeAsync(
+  text: string,
+  filename: string
+): Promise<ASTRoot> {
+  return await getServer().parseText(text, filename);
+}
