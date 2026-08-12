@@ -1,0 +1,163 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a union built out of two members that name the SAME type, one of them
+// spelled through a `type` alias and one not, kept both members instead of
+// collapsing them. The resulting bogus two-member union then failed to
+// convert back to the type it was really made of:
+//
+//   type Alias = Point;
+//
+//   fn pick(c: Alias | none, fallback: Alias): Alias {
+//       return c ? c : fallback;
+//       // BUG: H4001 No suitable conversion from (Point | Alias) to Alias
+//       // (a.k.a Point) is known
+//   }
+//
+// The two spellings meet here because narrowing `Alias | none` down to its
+// non-none member yields the alias's TARGET (`Point`), while the other
+// branch is still the parameter, typed `Alias`. Both name one type, so the
+// ternary's type is that type — never a union of it with itself.
+//
+// This is not a ternary bug: the ternary is simply the most common way for
+// the two spellings to end up in one union. `if c { return c; } return
+// fallback;` — the same narrowing, no union built — always worked, and
+// variation G below pins that down.
+//
+// Why it mattered: it makes any alias-typed value hostile to the ordinary
+// `maybe ? maybe : fallback` idiom, and the standard library aliases freely
+// (`type Color = mut hzstd_color_t`), so this fired on plain application
+// code that never mentions an alias by name.
+//
+// Root cause (src/Semantic/SemanticBuilder.ts, untaggedUnionTypeUse): the
+// canonicalization step deduplicated members with a `Set` keyed on the raw
+// TypeUseId. An alias and its target are different TypeUseIds, so they both
+// survived. Fixed by deduplicating on the alias-RESOLVED id while keeping
+// the first-seen spelling, so an alias-typed union still reports itself in
+// terms of the alias.
+//
+// An untagged union carries no tag, so this is a soundness statement and not
+// a nicety: two members of the same type are indistinguishable at runtime,
+// and nothing could ever decide which one a value inhabits.
+//
+// Variation F is the guard in the other direction — genuinely different
+// member types must still produce a real two-member union. A dedup that
+// over-merged would be far worse than the bug it replaced.
+// ============================================================================
+
+namespace cases_union_alias_dedup {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "a union deduplicates members that differ only by a type alias",
+            """
+struct Point { x: int; }
+struct Other { y: int; }
+
+// One level of aliasing -- the exact shape from the bug report.
+type Alias = Point;
+// Two levels, so the fix has to resolve a CHAIN, not just one hop.
+type AliasChain = Alias;
+// An alias over a primitive, so the fix is not struct-specific.
+type Meters = int;
+
+// Variation A -- THE REPORTED BUG. `c` narrows out of `Alias | none` to
+// `Point`; `fallback` is still spelled `Alias`. Same type, so the ternary
+// is that type and converts to the declared return type.
+fn variation_a(c: Alias | none, fallback: Alias): Alias {
+    return c ? c : fallback;
+}
+
+// Variation B -- the same two spellings in the opposite order, so the
+// dedup cannot depend on which one happens to be seen first.
+fn variation_b(c: Alias | none, fallback: Alias): Alias {
+    return !c ? fallback : c;
+}
+
+// Variation C -- a two-hop alias chain. Resolving only one hop would leave
+// `Alias` and `Point` looking distinct again.
+fn variation_c(c: AliasChain | none, fallback: AliasChain): AliasChain {
+    return c ? c : fallback;
+}
+
+// Variation D -- an alias over a primitive rather than a struct, since the
+// two travel through different parts of the type machinery.
+fn variation_d(c: Meters | none, fallback: Meters): Meters {
+    return c ? c : fallback;
+}
+
+// Variation E -- control. No alias anywhere. This always worked and must
+// keep working; it is what proves the fix did not simply disable the
+// union-building path.
+fn variation_e(c: Point | none, fallback: Point): Point {
+    return c ? c : fallback;
+}
+
+// Variation F -- THE GUARD IN THE OTHER DIRECTION. Two genuinely different
+// types must still build a real two-member union that `is` can discriminate.
+fn variation_f(flag: bool, a: Point, b: Other): Point | Other {
+    return flag ? a : b;
+}
+
+// Variation G -- the same narrowing WITHOUT a union ever being built.
+// This path was never broken; kept so a future change to alias resolution
+// that breaks plain narrowing is caught here too.
+fn variation_g(c: Alias | none, fallback: Alias): Alias {
+    if c {
+        return c;
+    }
+    return fallback;
+}
+
+fn main(): int {
+    let miss = Point { x: -1 };
+
+    let a1 = variation_a(Point { x: 7 }, miss);
+    let a2 = variation_a(none, miss);
+    fmt.println(f"variation_a: {a1.x} {a2.x}");
+
+    let b1 = variation_b(Point { x: 8 }, miss);
+    let b2 = variation_b(none, miss);
+    fmt.println(f"variation_b: {b1.x} {b2.x}");
+
+    let c1 = variation_c(Point { x: 9 }, miss);
+    let c2 = variation_c(none, miss);
+    fmt.println(f"variation_c: {c1.x} {c2.x}");
+
+    let d1 = variation_d(42, 0);
+    let d2 = variation_d(none, 0);
+    fmt.println(f"variation_d: {d1} {d2}");
+
+    let e1 = variation_e(Point { x: 5 }, miss);
+    let e2 = variation_e(none, miss);
+    fmt.println(f"variation_e: {e1.x} {e2.x}");
+
+    let f1 = variation_f(true, Point { x: 1 }, Other { y: 2 });
+    if f1 is Point {
+        fmt.println("variation_f: Point branch, union kept two members");
+    }
+    let f2 = variation_f(false, Point { x: 1 }, Other { y: 2 });
+    if f2 is Other {
+        fmt.println("variation_f: Other branch, union kept two members");
+    }
+
+    let g1 = variation_g(Point { x: 3 }, miss);
+    let g2 = variation_g(none, miss);
+    fmt.println(f"variation_g: {g1.x} {g2.x}");
+
+    return 0;
+}
+""",
+            """
+variation_a: 7 -1
+variation_b: 8 -1
+variation_c: 9 -1
+variation_d: 42 0
+variation_e: 5 -1
+variation_f: Point branch, union kept two members
+variation_f: Other branch, union kept two members
+variation_g: 3 -1
+"""
+        );
+    }
+}

@@ -111,6 +111,174 @@ struct QuickInfoBody {
     documentation?: str;
 }
 
+// --- Incremental document sync ----------------------------------------
+//
+// tsserver's own edit shape (protocol.CodeEdit): 1-BASED line and offset,
+// unlike LSP's 0-based Position right next to it. The +1s live in
+// changeDocument() rather than in callers.
+struct TsServerLocation {
+    line: int;
+    offset: int;
+}
+
+struct TsServerCodeEdit {
+    start: TsServerLocation;
+    end: TsServerLocation;
+    newText: str;
+}
+
+struct TsServerFileCodeEdits {
+    fileName: str;
+    textChanges: []TsServerCodeEdit;
+}
+
+struct UpdateOpenArgs {
+    changedFiles: []TsServerFileCodeEdits;
+}
+
+// One edit, phrased the way BOTH servers want it.
+//
+// The range always starts at column 0 of `startLine`, because every edit
+// this editor forwards is line-granular: whole lines are replaced by whole
+// lines, which is exactly what text_document.ChangeSet reports. That
+// matters more than it looks -- column 0 means the same thing in every
+// position encoding there is, so no line has to be scanned to convert it.
+//
+// `endColumn` is the ONE exception, and it is only ever non-zero for an
+// edit whose replaced range ran to the end of the document: there is no
+// "line after the last line" to point at, so the range has to end at the
+// last line's end instead. It is a BYTE offset, sent verbatim.
+export inline struct DocumentChange {
+    // First replaced line, 0-based. The range starts at its column 0.
+    startLine: int;
+    // Line the range ends on, 0-based. Normally the line one PAST the last
+    // replaced one (with endColumn 0), so the trailing newline is part of
+    // what gets replaced.
+    endLine: int;
+    endColumn: int = 0;
+    // What the range was replaced with. Ends with a newline whenever the
+    // range ended at column 0 of a following line.
+    newText: str;
+}
+
+// --- Semantic classification -------------------------------------------
+
+struct SemanticClassificationsArgs {
+    file: str;
+    // Byte offsets into the whole file. tsserver counts UTF-16 code units
+    // here; this editor deliberately treats those as bytes -- see
+    // semanticTokens() for what that does and does not cost.
+    start: int;
+    length: int;
+    // "2020" is the packed encoding decoded by decodeSemanticSpans below.
+    // The alternative, "original", is a different and much coarser scheme.
+    format: str;
+}
+
+struct SemanticClassificationsBody {
+    spans?: []int;
+    endOfLineState?: int;
+}
+
+// One classified span of a document.
+export inline struct SemanticSpan {
+    start: int;
+    length: int;
+    // Index into semanticTokenTypeName().
+    tokenType: int;
+    // Bit set over semanticTokenModifierName()'s indices.
+    tokenModifiers: int;
+}
+
+// tsserver's semantic token types, in ITS OWN index order -- the number
+// packed into a classification is an index into exactly this list, so the
+// order is part of the wire format and must not be sorted or extended.
+//
+// Mirrors the table in
+// volar-service-typescript/lib/semanticFeatures/semanticTokens.js, which
+// is what VS Code's TypeScript and Vue support decode with.
+export fn semanticTokenTypeName(index: int): str {
+    if index == 0 { return "class"; }
+    if index == 1 { return "enum"; }
+    if index == 2 { return "interface"; }
+    if index == 3 { return "namespace"; }
+    if index == 4 { return "typeParameter"; }
+    if index == 5 { return "type"; }
+    if index == 6 { return "parameter"; }
+    if index == 7 { return "variable"; }
+    if index == 8 { return "enumMember"; }
+    if index == 9 { return "property"; }
+    if index == 10 { return "function"; }
+    if index == 11 { return "method"; }
+    return "";
+}
+
+// Modifier BIT positions, again in tsserver's own order.
+export fn semanticTokenModifierName(index: int): str {
+    if index == 0 { return "declaration"; }
+    if index == 1 { return "static"; }
+    if index == 2 { return "async"; }
+    if index == 3 { return "readonly"; }
+    if index == 4 { return "defaultLibrary"; }
+    if index == 5 { return "local"; }
+    return "";
+}
+
+// Whether a SemanticSpan's modifier set contains bit `index`.
+//
+// Written as repeated halving rather than `modifiers & (1 << index)`
+// because Haze reserves `&` for reference-of and has no bitwise-and.
+export fn hasSemanticModifier(modifiers: int, index: int): bool {
+    let shifted = modifiers;
+    for (let i = 0; i < index; i++) {
+        shifted = shifted / 2;
+    }
+    return shifted % 2 == 1;
+}
+
+// Decode tsserver's "2020"-format classification array.
+//
+// The wire form is a FLAT list of triples -- start, length, encoded --
+// where `encoded` packs both facts about the token into one number: the
+// low 8 bits are the modifier set, and the rest, minus one, is the type
+// index. A value that fits entirely in those low 8 bits therefore carries
+// no type at all and is dropped, exactly as VS Code's own decoder does.
+//
+// Division and modulo stand in for the shift and mask the encoding is
+// really made of; see hasSemanticModifier for why.
+fn decodeSemanticSpans(body: json.Node | none): []SemanticSpan {
+    let spans: []SemanticSpan = [];
+    if !body {
+        return spans;
+    }
+    let parsed = json.parse<SemanticClassificationsBody>(body);
+    if !parsed {
+        fmt.println(f"vue_lsp_bridge: failed to parse semantic classifications: {parsed.error()}");
+        return spans;
+    }
+    if !parsed.spans {
+        return spans;
+    }
+    let values: []int = parsed.spans;
+    let tripleCount = values.length / 3;
+    for (let t = 0; t < tripleCount; t++) {
+        let i = t * 3;
+        let encoded = values[i + 2];
+        // 256 is one past the modifier mask: anything below it is
+        // modifiers only, with no type to colour by.
+        if encoded < 256 {
+            continue;
+        }
+        spans.push(SemanticSpan {
+            start: values[i],
+            length: values[i + 1],
+            tokenType: (encoded / 256) - 1,
+            tokenModifiers: encoded % 256,
+        });
+    }
+    return spans;
+}
+
 struct OpenArgs {
     file: str;
     fileContent: str;
@@ -163,6 +331,12 @@ export opaque struct VueLspBridge {
         callback: (body: QuickInfoBody | none) => none;
     }
     _quickInfoPendingRequests: []PendingQuickInfoRequest = [];
+
+    struct PendingSemanticTokensRequest {
+        seq: int;
+        callback: (spans: []SemanticSpan) => none;
+    }
+    _semanticTokensPendingRequests: []PendingSemanticTokensRequest = [];
 
     // One file registered with both servers. `sent` distinguishes a
     // document that has actually been announced from one that is still
@@ -344,6 +518,121 @@ export opaque struct VueLspBridge {
         this._sendTsServerCommand(this._tsserverNextSeq, "open", argsNode);
 
         this._documentReady := true;
+    }
+
+    fn _findOpenDocument(filepath: str): OpenDocument | none {
+        for doc in this._openDocuments {
+            if doc.filepath == filepath {
+                return doc;
+            }
+        }
+        return none;
+    }
+
+    // Forward one edit to BOTH servers, keeping their copies of `filepath`
+    // in step with the editor's.
+    //
+    // Without this everything position-based -- hover, and every semantic
+    // token below -- is answered against the file as it was on disk when
+    // the tab opened, and is therefore wrong from the first keystroke.
+    //
+    // `version` names the document AFTER the edit and must increase; pass
+    // text_document.Document.version, which is bumped before the change
+    // listeners run and is what the highlight engine is already stamped
+    // with.
+    //
+    // A change for a document that has not actually been announced yet is
+    // DROPPED rather than queued. An incremental edit is meaningless
+    // without the base it applies to, and the caller is expected to defer
+    // the open until it can send the document's current text (see
+    // codeui.hz, which waits for isReady() for exactly this reason) -- so
+    // by the time the open happens, this edit is already in it.
+    fn changeDocument(filepath: str, change: DocumentChange, version: int) {
+        let doc = this._findOpenDocument(filepath);
+        if !doc {
+            return;
+        }
+        if !doc.sent {
+            return;
+        }
+        doc.version = version;
+
+        this._lsp.sendDocumentChangeNotification(filepath, version, {
+            start: { line: change.startLine, character: 0 },
+            end: { line: change.endLine, character: change.endColumn },
+        }, change.newText);
+
+        let argsNode = json.encodeToJsonNode<UpdateOpenArgs>({
+            changedFiles: [
+                {
+                    fileName: filepath,
+                    textChanges: [
+                        {
+                            start: { line: change.startLine + 1, offset: 1 },
+                            end: { line: change.endLine + 1, offset: change.endColumn + 1 },
+                            newText: change.newText,
+                        },
+                    ],
+                },
+            ],
+        });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'updateOpen' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        this._sendTsServerCommand(this._tsserverNextSeq, "updateOpen", argsNode);
+    }
+
+    // Ask what every symbol in a byte range of `filepath` actually IS --
+    // class, parameter, readonly property, default-library function -- as
+    // opposed to what it merely looks like to a regular-expression grammar.
+    //
+    // This goes straight to tsserver (channel 3 in the module comment at
+    // the top of this file), not through vue-language-server, and that is
+    // what makes ONE implementation cover both languages: `.ts` files are
+    // tsserver's native subject, and for a `.vue` file
+    // `@vue/typescript-plugin` maps the spans of the virtual TypeScript it
+    // compiles the SFC into back onto positions in the `.vue` source
+    // before we ever see them. vue-language-server cannot answer this for
+    // a plain `.ts` file at all, since it only knows how to look inside
+    // documents that have embedded code.
+    //
+    // POSITIONS ARE TREATED AS BYTES. tsserver counts UTF-16 code units,
+    // and the editor counts bytes; they agree exactly on ASCII, which is
+    // all of any real source file except string literals and comments. On
+    // a line containing non-ASCII text, spans after it on that line are
+    // reported shifted -- the colour lands slightly off, and nothing else,
+    // because the render path snaps every offset to a character boundary
+    // before slicing (see splitLineTokens in codeui.hz).
+    //
+    // Answers nothing at all until the document has been opened: a
+    // classification computed for a file tsserver has never been told
+    // about describes an empty file.
+    fn semanticTokens(filepath: str, start: int, length: int, callback: (spans: []SemanticSpan) => none) {
+        if !rx.get(this._documentReady) {
+            return;
+        }
+        let doc = this._findOpenDocument(filepath);
+        if !doc {
+            return;
+        }
+        if !doc.sent {
+            return;
+        }
+
+        let argsNode = json.encodeToJsonNode<SemanticClassificationsArgs>({
+            file: filepath,
+            start: start,
+            length: length,
+            format: "2020",
+        });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'encodedSemanticClassifications-full' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._semanticTokensPendingRequests.push({ seq: seq, callback: callback });
+        this._sendTsServerCommand(seq, "encodedSemanticClassifications-full", argsNode);
     }
 
     // The one thing hover UI needs: position in, best-available hover text
@@ -588,6 +877,29 @@ export opaque struct VueLspBridge {
             else {
                 matchedQuickInfoCallback(none);
             }
+            return;
+        }
+
+        // Semantic classifications we asked for directly, matched the same
+        // way and for the same reason as quickinfo above: one shared seq
+        // counter means a given requestSeq belongs to exactly one list.
+        let matchedSemanticCallback: ((spans: []SemanticSpan) => none) | none = none;
+        let remainingSemantic: []PendingSemanticTokensRequest = [];
+        for entry in this._semanticTokensPendingRequests {
+            if entry.seq == requestSeq {
+                matchedSemanticCallback = entry.callback;
+            }
+            else {
+                remainingSemantic.push(entry);
+            }
+        }
+        this._semanticTokensPendingRequests = remainingSemantic;
+        if matchedSemanticCallback is not none {
+            // A failed command (already logged above) has no body, which
+            // decodes to no spans -- the right answer, since "we could not
+            // classify this" and "nothing here is classified" both mean
+            // the TextMate layer stands on its own.
+            matchedSemanticCallback(decodeSemanticSpans(result.body));
             return;
         }
 
