@@ -304,6 +304,35 @@ export struct Context<TInitializationOptions> {
         });
     }
 
+    // Incremental textDocument/didChange: the text in `range` was replaced
+    // by `text`.
+    //
+    // `range` describes the document as it was BEFORE the edit, while
+    // `version` must name it as it is AFTER -- a server is entitled to
+    // ignore a change whose version does not advance, and to stop trusting
+    // its copy of the file entirely if one is skipped. A document that has
+    // not been announced with sendDocumentOpenNotification first has no
+    // base for the edit to be relative to, and the server will say so.
+    //
+    // Both `character` fields are whatever this server's position encoding
+    // says (see usesByteOffsets) -- run a mid-line byte offset through
+    // characterFromByteOffset() first. Column 0 needs no conversion at all,
+    // which is why a line-granular edit can be sent as-is.
+    fn sendDocumentChangeNotification(filepath: str, version: int, range: LSPRange, text: str) {
+        this.sendNotification<LSPChangeDocumentRequestParams>("textDocument/didChange", {
+            textDocument: {
+                uri: f"file://{filepath}",
+                version: version,
+            },
+            contentChanges: [
+                {
+                    range: range,
+                    text: text,
+                },
+            ],
+        });
+    }
+
     fn _processStdout(stdout: str) {
         this._inputBuffer = this._inputBuffer + stdout;
 
@@ -520,6 +549,33 @@ export struct LSPOpenDocumentRequestParams {
 }
 
 export struct LSPOpenDocumentResponseResult {
+}
+
+export struct LSPPosition {
+    line: int;
+    character: int;
+}
+
+export struct LSPRange {
+    start: LSPPosition;
+    end: LSPPosition;
+}
+
+// One incremental edit in a textDocument/didChange. Omitting `range`
+// entirely is how the spec spells "the whole document was replaced"; this
+// client always sends a range, so the field is required here.
+export struct LSPContentChange {
+    range: LSPRange;
+    text: str;
+}
+
+export struct LSPChangeDocumentRequestParams {
+    struct TextDocument {
+      uri: str;
+      version: int;
+    };
+    textDocument: TextDocument;
+    contentChanges: []LSPContentChange;
 }
 
 // Extracts one "Content-Length: N\r\n\r\n<N bytes>" framed message from the front of

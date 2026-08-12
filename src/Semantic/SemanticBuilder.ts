@@ -1812,6 +1812,19 @@ export class SemanticBuilder {
 
   untaggedUnionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
     const canonicalMemberSet = new Set<Semantic.TypeUseId>();
+    // Which members have already been taken, compared with type aliases
+    // resolved away.
+    //
+    // An untagged union carries no tag, so two members that name the SAME
+    // type are not just redundant, they are indistinguishable: nothing at
+    // runtime could ever tell them apart. Deduplicating by raw TypeUseId
+    // alone missed exactly that case whenever one member was spelled
+    // through a `type` alias and the other was not -- and those two
+    // spellings routinely meet, because narrowing a `Alias | none` yields
+    // the alias's TARGET type. A ternary between a narrowed value and a
+    // plainly-typed one therefore produced a bogus two-member union
+    // `(Target | Alias)`, which then failed to convert back to `Alias`.
+    const takenResolvedMembers = new Set<Semantic.TypeUseId>();
 
     const processMember = (mId: Semantic.TypeUseId) => {
       const mUse = this.sr.typeUseNodes.get(mId);
@@ -1822,6 +1835,14 @@ export class SemanticBuilder {
           processMember(i);
         }
       } else {
+        const resolved = this.sr.e.resolveAlias(mId);
+        if (takenResolvedMembers.has(resolved)) {
+          // Keep the spelling seen FIRST rather than the resolved one, so
+          // a union written in terms of an alias still reports itself that
+          // way; the two are the same type either way.
+          return;
+        }
+        takenResolvedMembers.add(resolved);
         canonicalMemberSet.add(mId);
       }
     };

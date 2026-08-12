@@ -181,6 +181,98 @@ fn scopeSelectorMatches(selector: str, scope: str): bool {
     return selector.length == scope.length || scope[selector.length] == b".";
 }
 
+// One semantically classified run of a single line, already resolved to
+// the TextMate scope it should be coloured as.
+//
+// Deliberately carries a scope rather than the token type it came from:
+// once the mapping below has run, a semantic token is exactly as
+// colourable as a TextMate one, so the render path treats them alike and
+// there is only ever one way a colour gets chosen.
+//
+// Offsets are BYTE offsets within the line, like everything else the
+// editor stores.
+struct SemanticToken {
+    startIndex: int;
+    endIndex: int;
+    scope: str;
+}
+
+// The TextMate scope a semantic token is coloured as.
+//
+// The two systems name different things. A semantic token says what a
+// symbol IS -- this identifier is a parameter, that one is a readonly
+// property, this call is into the default library -- which is precisely
+// what a regular-expression grammar cannot know. A theme, meanwhile,
+// names colours by TextMate scope and nothing else: the editor's own
+// default theme (obsidian-radiance-dark.json) has no `semanticTokenColors`
+// block at all, so a mapping that went looking for one would silently
+// colour nothing.
+//
+// Mapping onto scopes instead means semantic colours come out of the SAME
+// theme entries the TextMate tokens already use -- so every theme works,
+// the two layers cannot disagree about what a "constant" looks like, and
+// the whole feature costs the render path one extra scope lookup. This is
+// also what VS Code itself falls back to, and the scope names below are
+// its table.
+//
+// An unrecognised type returns "", which the caller drops -- leaving the
+// TextMate colour in place, which is the honest answer for a
+// classification we have no opinion about.
+fn semanticScopeFor(tokenType: str, tokenModifiers: int): str {
+    let isStatic = hasSemanticModifier(tokenModifiers, 1);
+    let isAsync = hasSemanticModifier(tokenModifiers, 2);
+    let isReadonly = hasSemanticModifier(tokenModifiers, 3);
+    let isDefaultLibrary = hasSemanticModifier(tokenModifiers, 4);
+
+    if tokenType == "namespace" { return "entity.name.namespace"; }
+    if tokenType == "class" {
+        return isDefaultLibrary ? "support.class" : "entity.name.type.class";
+    }
+    if tokenType == "enum" { return "entity.name.type.enum"; }
+    if tokenType == "interface" { return "entity.name.type.interface"; }
+    if tokenType == "typeParameter" { return "entity.name.type.parameter"; }
+    if tokenType == "type" {
+        return isDefaultLibrary ? "support.type" : "entity.name.type";
+    }
+    if tokenType == "parameter" { return "variable.parameter"; }
+    if tokenType == "variable" {
+        if isDefaultLibrary { return "support.variable"; }
+        return isReadonly ? "variable.other.constant" : "variable.other.readwrite";
+    }
+    if tokenType == "property" {
+        if isDefaultLibrary { return "support.variable.property"; }
+        return isReadonly ? "variable.other.constant.property" : "variable.other.property";
+    }
+    if tokenType == "enumMember" { return "variable.other.enummember"; }
+    if tokenType == "function" {
+        if isDefaultLibrary { return "support.function"; }
+        return isAsync ? "entity.name.function.async" : "entity.name.function";
+    }
+    if tokenType == "method" {
+        return isStatic ? "entity.name.function.member.static" : "entity.name.function.member";
+    }
+    return "";
+}
+
+// Total byte length of a document -- every line, plus the newline that
+// separates each from the next.
+//
+// The same number doc.text().length would give, without building the
+// string: this is only ever needed to tell a language server how much of
+// the file to look at, and reassembling a whole file to count its bytes
+// is what made the old per-frame open cost seconds.
+fn documentByteLength(doc: text_document.Document): int {
+    let count = doc.lineCount();
+    if count == 0 {
+        return 0;
+    }
+    let total = 0;
+    for (let i = 0; i < count; i++) {
+        total = total + doc.lineLength(i);
+    }
+    return total + count - 1;
+}
+
 struct State {
     highlightEngine: HighlightEngine;
     highlightCommands: []HighlightCommand = [];
@@ -987,6 +1079,116 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             hoverTokensVersion := rx.get(hoverTokensVersion) + 1;
         };
 
+        // ── Semantic tokens ──────────────────────────────────────────────
+        //
+        // The second highlighting layer. Everything above knows what a
+        // token LOOKS like -- a regular-expression grammar can tell an
+        // identifier from a keyword and nothing more. This layer knows
+        // what one IS: a parameter, a readonly property, a call into the
+        // default library, a type as opposed to a value. That needs a real
+        // type checker, so it comes from tsserver (see
+        // VueLspBridge.semanticTokens), arrives whole-file at a time, and
+        // is bucketed by line so the render path can read it exactly the
+        // way it reads the TextMate tokens.
+        let semanticCache = rx.shallowReactive<[][]SemanticToken>([]);
+        let semanticCacheVersion = rx.reactive<int>(0);
+
+        // The document version a request has already been sent for, so the
+        // per-frame pump asks once per quiet document instead of once per
+        // frame. -1 is "never asked", which no real version can be.
+        let semanticRequestedVersion = rx.reactive<int>(-1);
+
+        // Turn one reply's whole-file byte offsets into per-line tokens.
+        //
+        // A reply is only usable against the exact document it was
+        // computed for. Every offset in it is counted from the start of
+        // the FILE, so one character typed anywhere above shifts all of
+        // them -- there is nothing here to rebase the way an incremental
+        // TextMate reply is rebased, because that one is phrased in line
+        // numbers and a line number survives an edit somewhere else.
+        // A stale reply is therefore dropped outright, and the pump below
+        // simply asks again once the document is quiet.
+        let applySemanticSpans = (spans: []SemanticSpan, requestVersion: int) => {
+            if requestVersion != doc.version {
+                return;
+            }
+
+            let lineCount = doc.lineCount();
+            let buckets: [][]SemanticToken = [];
+            for (let i = 0; i < lineCount; i++) {
+                let empty: []SemanticToken = [];
+                buckets.push(empty);
+            }
+
+            // ONE forward walk over the lines for the whole reply, rather
+            // than a search per span: tsserver emits spans in source
+            // order, so each one begins at or after where the previous
+            // walk stopped. That is what lets this convert file offsets to
+            // line/column without a line-offset table -- and therefore
+            // without one more structure that has to be kept in step with
+            // every edit.
+            //
+            // `lineEnd` is the offset of the line's terminating newline,
+            // i.e. one past its last character.
+            let line = 0;
+            let lineStart = 0;
+            let lineEnd = lineCount > 0 ? doc.lineLength(0) : 0;
+
+            for span in spans {
+                if span.length <= 0 {
+                    continue;
+                }
+                let scope = semanticScopeFor(
+                    semanticTokenTypeName(span.tokenType), span.tokenModifiers);
+                // A classification this editor has no scope for leaves the
+                // TextMate colour alone, which is the honest result.
+                if scope.length == 0 {
+                    continue;
+                }
+
+                while line + 1 < lineCount && span.start > lineEnd {
+                    line = line + 1;
+                    lineStart = lineEnd + 1;
+                    lineEnd = lineStart + doc.lineLength(line);
+                }
+                // Behind the walk. Unreachable while tsserver emits in
+                // source order; if it ever stops, dropping the span beats
+                // colouring some earlier line with it.
+                if span.start < lineStart {
+                    continue;
+                }
+
+                // A span can cross lines -- a multi-line type annotation,
+                // a template literal. Clip it to one token per line, since
+                // the render path only ever draws a single line at a time
+                // and addresses it by column.
+                let spanEnd = span.start + span.length;
+                let clipLine = line;
+                let clipStart = lineStart;
+                let clipEnd = lineEnd;
+                while clipLine < lineCount {
+                    let startInLine = span.start > clipStart ? span.start - clipStart : 0;
+                    let endInLine = spanEnd < clipEnd ? spanEnd - clipStart : clipEnd - clipStart;
+                    if endInLine > startInLine {
+                        buckets[clipLine].push(SemanticToken {
+                            startIndex: startInLine,
+                            endIndex: endInLine,
+                            scope: scope,
+                        });
+                    }
+                    if spanEnd <= clipEnd || clipLine + 1 >= lineCount {
+                        break;
+                    }
+                    clipLine = clipLine + 1;
+                    clipStart = clipEnd + 1;
+                    clipEnd = clipStart + doc.lineLength(clipLine);
+                }
+            }
+
+            semanticCache := buckets;
+            semanticCacheVersion := rx.get(semanticCacheVersion) + 1;
+        };
+
         // Drain replies and merge them. Called once per frame from the
         // render pass rather than from inside a computed, because merging
         // is a side effect and a computed may be skipped or re-run at the
@@ -1481,11 +1683,92 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 doc.version, editorScopeName);
         }
 
+        // Guards the one-shot LSP document open, so the per-frame loop
+        // never has to build the whole document just to discard it.
+        //
+        // Declared up here rather than beside the rest of the hover state
+        // because the change listener below reads it: an edit may only be
+        // forwarded to the language servers once they have actually been
+        // told about the file.
+        let lspDocumentOpened = rx.reactive<bool>(false);
+
+        // Byte length of the document's LAST line, as it was before the
+        // edit currently being processed.
+        //
+        // Needed for exactly one case, and unrecoverable once the edit has
+        // happened. An edit is forwarded as "replace lines [start, end)",
+        // which is expressed as a range running from column 0 of `start`
+        // to column 0 of `end` -- column 0 needs no encoding conversion,
+        // so nothing has to be scanned to build it. But when the edit runs
+        // to the end of the file there is no line after `end` to point at,
+        // and the range has to end at the last line's END instead. This is
+        // that length, kept current so it is still the OLD one when the
+        // listener runs.
+        let lspLastLineLength = rx.reactive<int>(
+            doc.lineCount() > 0 ? doc.lineLength(doc.lineCount() - 1) : 0);
+
         doc.addChangeListener((change: text_document.ChangeSet) => {
             let newLines: []str = [];
             for (let i = 0; i < change.insertedCount; i++) {
                 newLines.push(doc.lineText(change.startLine + i));
             }
+
+            // ── Forward the edit to the language servers ──────────────
+            //
+            // Without this they answer every position-based question --
+            // hover, and every semantic token -- against the file as it
+            // was on disk when the tab opened, which stops being true at
+            // the first keystroke.
+            //
+            // The document is described by LINES here, so the edit is
+            // forwarded as a line-granular range replacement even when the
+            // user only typed one character: the servers reconstruct the
+            // same text either way, and this needs no column arithmetic.
+
+            // The copy read from disk no longer describes this document,
+            // so whoever has yet to be handed it must reassemble instead.
+            // Matters when the servers are still starting up: the open
+            // they eventually perform has to carry the CURRENT text.
+            initialText := none;
+
+            let oldLineCount = doc.lineCount() - change.insertedCount + change.removedCount;
+            let oldLastLineLength = rx.get(lspLastLineLength);
+            if doc.lineCount() > 0 {
+                lspLastLineLength := doc.lineLength(doc.lineCount() - 1);
+            }
+
+            if vueBridge && rx.get(lspDocumentOpened) && lspLanguageId.length > 0 {
+                let replacement = "";
+                for (let i = 0; i < change.insertedCount; i++) {
+                    replacement = replacement + newLines[i];
+                    // Every replaced line keeps its newline EXCEPT when
+                    // the range ran to the end of the file, where there
+                    // was no trailing newline to replace in the first
+                    // place.
+                    if change.startLine + change.removedCount < oldLineCount
+                        || i + 1 < change.insertedCount {
+                        replacement = replacement + "\n";
+                    }
+                }
+
+                let endLine = change.startLine + change.removedCount;
+                let endColumn = 0;
+                if endLine >= oldLineCount {
+                    // Ran to the end of the document: point at the end of
+                    // the last line that actually exists, since there is
+                    // no line after it to start at.
+                    endLine = oldLineCount > 0 ? oldLineCount - 1 : 0;
+                    endColumn = oldLastLineLength;
+                }
+
+                vueBridge.changeDocument(filePath, {
+                    startLine: change.startLine,
+                    endLine: endLine,
+                    endColumn: endColumn,
+                    newText: replacement,
+                }, doc.version);
+            }
+
             // Shift the token cache to match the edit BEFORE the reply
             // arrives. The reply is addressed by line number, so the cache
             // has to already be in the document's new index space for
@@ -1534,10 +1817,10 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         //             editor's binding it is shift+L rather than K (see
         //             hoverKeyPressed).
         let hoverDwellSeconds = 0.3;
+        // How long the document must have been left alone before its
+        // semantic tokens are asked for. See the pump in the render pass.
+        let semanticQuietSeconds = 0.25;
         let lastEditAt = rx.reactive<real>(-1000.0);
-        // Guards the one-shot LSP document open, so the per-frame loop
-        // never has to build the whole document just to discard it.
-        let lspDocumentOpened = rx.reactive<bool>(false);
         // The position a request was last SENT for, so re-running the loop
         // (which happens every frame) doesn't re-send the same query.
         let lastHoverPos = rx.reactive<Vec2i | none>(none);
@@ -1680,14 +1963,54 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // the entire file. That alone cost seconds per frame on a
                 // large file. Send the text once, then never again, and
                 // send the copy we already read from disk.
-                if !rx.get(lspDocumentOpened) {
+                //
+                // Deliberately held back until isReady(). openDocument()
+                // would happily queue it, but what got queued would be the
+                // text as it was BEFORE anything typed while the servers
+                // were starting -- and every edit forwarded afterwards is
+                // relative to whatever was opened, so a stale base would
+                // stay stale for the life of the tab. Waiting costs one
+                // reassembly of a file that was edited in the meantime; a
+                // file that was not still uses the copy read from disk.
+                if !rx.get(lspDocumentOpened) && vueBridge.isReady() {
                     lspDocumentOpened := true;
                     let startupText = rx.get(initialText);
-                    vueBridge.openDocument(filePath, lspLanguageId, 1,
+                    // The version the servers are told about here is the
+                    // base every later didChange counts up from, so it has
+                    // to be the document's own -- not a literal 1, which
+                    // an edit made while the servers were starting has
+                    // already moved past.
+                    vueBridge.openDocument(filePath, lspLanguageId, doc.version,
                         startupText ? startupText as str : doc.text());
                     // Both consumers have their copy now; stop pinning
                     // a second full copy of the file in memory.
                     initialText := none;
+                }
+
+                // ── Semantic tokens ──────────────────────────────────
+                //
+                // Asked for once the document has been left alone for a
+                // moment, never on the keystroke itself. A classification
+                // is a real type-check across the project -- orders of
+                // magnitude more expensive than the TextMate pass -- and
+                // its answer is phrased in whole-file offsets that the
+                // very next keystroke invalidates, so asking mid-typing
+                // buys a reply that is already stale by the time it lands
+                // (see applySemanticSpans, which drops exactly those).
+                //
+                // The version guard is what makes this once per quiet
+                // document rather than once per frame, and it is also what
+                // re-asks after each burst of typing: an edit moves
+                // doc.version, so the guard opens again on its own.
+                if rx.get(lspDocumentOpened)
+                    && rx.get(semanticRequestedVersion) != doc.version
+                    && ui.now() - rx.get(lastEditAt) >= semanticQuietSeconds {
+                    semanticRequestedVersion := doc.version;
+                    let requestVersion = doc.version;
+                    vueBridge.semanticTokens(filePath, 0, documentByteLength(doc),
+                        (spans: []SemanticSpan) => {
+                            applySemanticSpans(spans, requestVersion);
+                        });
                 }
 
                 // ── Deciding whether a hover is wanted ───────────────
@@ -1895,13 +2218,73 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
         });
 
+        // Emit one run of a line, split wherever a semantic token covers
+        // part of it.
+        //
+        // This is where the two highlighting layers meet, and the order is
+        // the whole point: the TextMate colour is the BASE, and semantic
+        // tokens are painted over the parts of it they have an opinion
+        // about. That way punctuation, keywords, strings and comments keep
+        // the colours the grammar gives them -- semantic tokens say
+        // nothing about those -- while an identifier the type checker
+        // recognises is recoloured for what it actually is. It also means
+        // the editor looks right before the language server is up, and
+        // degrades back to exactly that if it dies.
+        //
+        // `semantic` is a single line's tokens, sorted and non-overlapping
+        // (see applySemanticSpans, which clips them per line).
+        let pushColouredRun = (parts: []HighlightToken, lineText: str,
+            start: int, end: int, baseColor: Color, semantic: []SemanticToken) => {
+            let position = start;
+            for token in semantic {
+                if token.endIndex <= position || token.startIndex >= end {
+                    continue;
+                }
+                // Snapped for the same reason the TextMate offsets are:
+                // slicing into the middle of a character produces bytes
+                // the text renderer cannot decode into a glyph.
+                let tokenStart = unicode.clusterStart(lineText,
+                    token.startIndex > position ? token.startIndex : position);
+                let tokenEnd = unicode.clusterStart(lineText,
+                    token.endIndex < end ? token.endIndex : end);
+                if tokenStart > position {
+                    parts.push({
+                        text: lineText.slice(position, tokenStart),
+                        color: baseColor,
+                    });
+                }
+                if tokenEnd > tokenStart {
+                    let color: Color | none = getScopeColor(token.scope);
+                    parts.push({
+                        text: lineText.slice(tokenStart, tokenEnd),
+                        // A scope this theme has no rule for leaves the
+                        // TextMate colour standing, rather than falling
+                        // back to plain white and making the line worse
+                        // than it was without semantic tokens at all.
+                        color: color ? color : baseColor,
+                    });
+                    position = tokenEnd;
+                }
+            }
+            if position < end {
+                parts.push({
+                    text: lineText.slice(position, end),
+                    color: baseColor,
+                });
+            }
+        };
+
         // Split ONE line's text into coloured runs, given only the tokens
         // that belong to that line. The old version scanned the whole
         // document's token list for every line, which is O(lines x tokens)
         // -- quadratic, re-run on every keystroke, and the main reason
         // typing froze. Tokens are bucketed by line once (see
         // `tokensByLine`) so this only ever walks its own line's tokens.
-        let splitLineTokens = (lineText: str, tokens: []Token): []HighlightToken => {
+        //
+        // `semantic` is that same line's semantic tokens, painted over the
+        // TextMate ones by pushColouredRun above; pass an empty array for
+        // text that has no language server behind it.
+        let splitLineTokens = (lineText: str, tokens: []Token, semantic: []SemanticToken): []HighlightToken => {
             let parts: []HighlightToken = [];
             let position = 0;
 
@@ -1918,27 +2301,21 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // highlighter sends.
                 let tokenStart = unicode.clusterStart(lineText, token.startIndex);
                 if position < tokenStart && tokenStart <= lineText.length {
-                    parts.push({
-                        text: lineText.slice(position, tokenStart),
-                        color: defaultTextColor(),
-                    });
+                    pushColouredRun(parts, lineText, position, tokenStart,
+                        defaultTextColor(), semantic);
                 }
                 let rawEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
                 let tokenEnd = unicode.clusterStart(lineText, rawEnd);
                 if tokenEnd > tokenStart {
-                    parts.push({
-                        text: lineText.slice(tokenStart, tokenEnd),
-                        color: getFirstScopeColor(token.scopes),
-                    });
+                    pushColouredRun(parts, lineText, tokenStart, tokenEnd,
+                        getFirstScopeColor(token.scopes), semantic);
                     position = tokenEnd;
                 }
             }
 
             if position < lineText.length {
-                parts.push({
-                    text: lineText.slice(position, lineText.length),
-                    color: defaultTextColor(),
-                });
+                pushColouredRun(parts, lineText, position, lineText.length,
+                    defaultTextColor(), semantic);
             }
             return parts;
         };
@@ -1962,7 +2339,20 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
-            return splitLineTokens(lineText, tokensForLine);
+            // Read so this re-runs when a semantic reply lands: the cache
+            // is replaced wholesale, and without the version nothing would
+            // notice until the next edit moved the TextMate tokens.
+            rx.get(semanticCacheVersion);
+            let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
+            let semanticForLine: []SemanticToken = [];
+            // The semantic cache is only as long as the document was when
+            // its reply arrived, so a line typed since then simply has no
+            // bucket -- and draws with the TextMate layer alone until the
+            // next reply.
+            if lineIndex < semanticBuckets.length {
+                semanticForLine = semanticBuckets[lineIndex];
+            }
+            return splitLineTokens(lineText, tokensForLine, semanticForLine);
         };
 
         // Coloured runs for one line of the popup's code, mirroring
@@ -1974,7 +2364,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
-            return splitLineTokens(lineText, tokensForLine);
+            // No semantic layer for the hover popup: its text is a bare
+            // signature the language server produced, not a position in
+            // any document, so there is nothing to classify it against.
+            let noSemantic: []SemanticToken = [];
+            return splitLineTokens(lineText, tokensForLine, noSemantic);
         };
 
         return () => {
