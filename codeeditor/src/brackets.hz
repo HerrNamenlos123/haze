@@ -26,15 +26,82 @@
 //     text: the scope stack is the only thing that knows a `{` is inside a
 //     string literal.
 //
-//   - Only (), [] and {} take part -- TypeScript's own
-//     `colorizedBracketPairs` in VS Code. `<`/`>` are deliberately excluded:
-//     colouring those would rainbow every comparison and every generic
-//     argument list.
+//   - WHICH characters are brackets is a per-language setting, not a
+//     constant. Code uses TypeScript's own `colorizedBracketPairs`, (),
+//     [] and {} -- `<`/`>` deliberately excluded, since colouring those
+//     would rainbow every comparison and every generic argument list. A
+//     Vue template uses `{{`/`}}` and nothing else. See BracketRegion.
+
+// Which bracket pairs are colourised at a given point in a file.
+//
+// This is a per-LANGUAGE setting in VS Code (`colorizedBracketPairs` in a
+// language configuration), and a `.vue` file is three languages at once,
+// so one file needs all three answers. Taken verbatim from the Vue
+// extension's own configurations:
+//
+//   vue-language-configuration.json          colorizedBracketPairs: []
+//   sfc-template-language-configuration.json colorizedBracketPairs: [["{{","}}"]]
+//
+// plus TypeScript's `[["(",")"],["[","]"],["{","}"]]` for the script
+// block. So the SFC scaffolding colours nothing, a template colours only
+// interpolation delimiters, and only real code gets the full rainbow.
+// Bare top-level consts rather than a `namespace BracketRegion { ... }`:
+// referencing a `const comptime` VALUE declared inside a namespace from
+// outside it crashes this compiler outright (an internal assertion in
+// elaborateSymbolInNamespace, whose switch handles only overload groups
+// and nested typedefs). Calling a FUNCTION in a namespace is fine; reading
+// a constant out of one is not.
+
+// Between the SFC blocks: the <template>/<script>/<style> tags themselves.
+// Nothing is colourised.
+const comptime BracketRegionNone = 0;
+// Inside <template>: `{{` and `}}` only. Notably NOT the parens of
+// `$t('x')` or the braces of an inline object in a binding.
+const comptime BracketRegionInterpolation = 1;
+// Real code -- a whole .ts/.js file, or an SFC's <script>/<style>.
+const comptime BracketRegionCode = 2;
+
+// Where the line AFTER `trimmed` sits, and where `trimmed` itself sits.
+//
+// Returned as a pair packed into one int (`lineRegion * 4 + nextRegion`)
+// only because a two-field return would need a struct for something with
+// exactly one caller; see sfcLineRegion/sfcNextRegion below.
+//
+// A block tag belongs to NEITHER side: `<script>` is SFC scaffolding, not
+// script content, so the tag line colours nothing and the region starts on
+// the line after it. That matches how VS Code splits a `.vue` into
+// embedded documents.
+fn advanceSfcRegion(region: int, trimmed: str): int {
+    if region == BracketRegionNone {
+        if trimmed.startsWith("<template") {
+            return BracketRegionNone * 4 + BracketRegionInterpolation;
+        }
+        if trimmed.startsWith("<script") || trimmed.startsWith("<style") {
+            return BracketRegionNone * 4 + BracketRegionCode;
+        }
+        return BracketRegionNone * 4 + BracketRegionNone;
+    }
+    if trimmed.startsWith("</template") || trimmed.startsWith("</script")
+        || trimmed.startsWith("</style") {
+        return BracketRegionNone * 4 + BracketRegionNone;
+    }
+    return region * 4 + region;
+}
+
+fn sfcLineRegion(packed: int): int {
+    return packed / 4;
+}
+
+fn sfcNextRegion(packed: int): int {
+    return packed % 4;
+}
 
 // One bracket character and the depth it should be drawn at.
 struct BracketToken {
     // Byte offsets within the line, like every other offset the editor
-    // stores. Always one byte apart -- every bracket is ASCII.
+    // stores. Usually one byte apart, but not always: `{{` is a single
+    // two-byte bracket, which is what keeps an interpolation's delimiter
+    // one colour instead of two nested ones.
     startIndex: int;
     endIndex: int;
     // Nesting depth, 0 for the outermost pair. -1 marks a closing bracket
@@ -151,7 +218,14 @@ fn resolveBracketPalette(themeType: str, colors: json.Node | none): BracketPalet
 // this is the entire algorithm, and it depends on nothing but a line and
 // its tokens -- so it can be exercised directly instead of only through a
 // running window.
-fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketToken) {
+// `region` says WHICH bracket pairs count here -- see BracketRegion. It is
+// not a refinement: which characters are brackets is a per-language
+// setting in VS Code, and inside one `.vue` file three different answers
+// apply.
+fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketToken, region: int) {
+    if region == BracketRegionNone {
+        return;
+    }
     // Walks alongside the character scan rather than being searched per
     // bracket: both are sorted by offset.
     let tokenIndex = 0;
@@ -160,16 +234,38 @@ fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketT
     for (let i = 0; i < length; i++) {
         let ch = line.getAt(i);
         // Comparing raw bytes is safe for the same reason the rest of the
-        // editor can: all six characters are ASCII, and no byte of a
+        // editor can: every bracket character is ASCII, and no byte of a
         // multi-byte UTF-8 character ever collides with an ASCII one.
         let opening = -1;
-        if ch == b"(" { opening = 0; }
-        else if ch == b"[" { opening = 1; }
-        else if ch == b"{" { opening = 2; }
         let closing = -1;
-        if ch == b")" { closing = 0; }
-        else if ch == b"]" { closing = 1; }
-        else if ch == b"}" { closing = 2; }
+        // How many BYTES this bracket is. `{{` is one bracket two bytes
+        // long, not two nested ones -- matching it greedily is the whole
+        // reason an interpolation comes out in a single colour.
+        let width = 1;
+
+        if region == BracketRegionInterpolation {
+            // A Vue template colourises `{{`/`}}` and NOTHING else -- not
+            // the parens of `$t('x')`, not the braces of an inline object.
+            // That is verbatim what the Vue extension ships as the SFC
+            // template's `colorizedBracketPairs`.
+            if i + 1 < length && ch == b"{" && line.getAt(i + 1) == b"{" {
+                opening = 3;
+                width = 2;
+            }
+            else if i + 1 < length && ch == b"}" && line.getAt(i + 1) == b"}" {
+                closing = 3;
+                width = 2;
+            }
+        }
+        else {
+            if ch == b"(" { opening = 0; }
+            else if ch == b"[" { opening = 1; }
+            else if ch == b"{" { opening = 2; }
+            if ch == b")" { closing = 0; }
+            else if ch == b"]" { closing = 1; }
+            else if ch == b"}" { closing = 2; }
+        }
+
         if opening < 0 && closing < 0 {
             continue;
         }
@@ -190,10 +286,15 @@ fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketT
         if opening >= 0 {
             out.push(BracketToken {
                 startIndex: i,
-                endIndex: i + 1,
+                endIndex: i + width,
                 level: stack.length,
             });
             stack.push(opening);
+            // Step over the rest of a multi-byte bracket so its second
+            // half is not then read as a bracket of its own -- which is
+            // exactly what made `{{` come out as two nested pairs in two
+            // different colours.
+            i = i + width - 1;
             continue;
         }
 
@@ -213,9 +314,10 @@ fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketT
             // the stack is left alone.
             out.push(BracketToken {
                 startIndex: i,
-                endIndex: i + 1,
+                endIndex: i + width,
                 level: -1,
             });
+            i = i + width - 1;
             continue;
         }
         while stack.length > matched {
@@ -223,8 +325,9 @@ fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketT
         }
         out.push(BracketToken {
             startIndex: i,
-            endIndex: i + 1,
+            endIndex: i + width,
             level: matched,
         });
+        i = i + width - 1;
     }
 }

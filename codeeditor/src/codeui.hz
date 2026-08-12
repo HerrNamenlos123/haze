@@ -477,12 +477,35 @@ struct VscodeTheme {
   // "dark" or "light". VS Code picks a different set of built-in default
   // colours per theme type, so this decides what a theme that defines no
   // bracket colours falls back to -- see defaultBracketColorHex.
-  type: str = "dark";
+  // OPTIONAL, not defaulted. A field with a default is still REQUIRED by
+  // json.parse -- an absent one fails the whole parse ("JSON missing
+  // field"), which for a theme means no colours at all rather than a
+  // theme with one field missing. Every optional key below is spelled `?`
+  // for that reason, and a theme is entitled to omit any of them.
+  type?: str;
   // The theme's whole `colors` block, kept as a raw node rather than a
   // struct: its keys are dotted names like
   // "editorBracketHighlight.foreground1", which are not field names, and
   // only a handful of the ~200 entries are ever read. See themeColorValue.
   colors?: json.Node;
+  // Whether this theme OPTS IN to semantic highlighting.
+  //
+  // Defaulting to false is not a guess, it is VS Code's rule:
+  // `editor.semanticHighlighting.enabled` defaults to
+  // "configuredByTheme", which means semantic tokens are applied only when
+  // the theme asks for them with `"semanticHighlighting": true`. A theme
+  // that says nothing gets none.
+  //
+  // This matters far more than it sounds. A theme's tokenColors are tuned
+  // against what the GRAMMAR produces, so painting semantic tokens over a
+  // theme that never asked for them repaints things the theme deliberately
+  // styled -- object literal keys stop being `meta.object-literal.key` and
+  // become `variable.other.property`, `const` bindings stop being plain
+  // variables and become constants, and the file stops looking like the
+  // theme's author intended. obsidian-radiance-dark.json does not opt in
+  // (catppuccin-mocha.json does), which is exactly why this editor looked
+  // wrong against VS Code showing the same file in the same theme.
+  semanticHighlighting?: bool;
   tokenColors: []TokenColor = [];
 };
 
@@ -938,6 +961,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let bracketTokens = rx.shallowReactive<[][]BracketToken>([]);
         let bracketCacheVersion = rx.reactive<int>(0);
         let bracketStacks: [][]int = [];
+        // The SFC region each line STARTS in, carried alongside the stack
+        // for the same reason: which characters even count as brackets
+        // changes between a .vue file's <template> and its <script>, so a
+        // rescan cannot be said to have reconverged until BOTH match.
+        let bracketRegions: []int = [];
+        // A file that is not an SFC is all code, so its region never moves.
+        let bracketRootRegion = lspLanguageId == "vue"
+            ? BracketRegionNone : BracketRegionCode;
 
         // Scratch space for the bracket rescan's running stack, kept for
         // the life of the editor rather than allocated per rescan. See
@@ -1020,6 +1051,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
             for (let i = 0; i < removableStacks; i++) {
                 bracketStacks.remove(startLine);
+                if startLine < bracketRegions.length {
+                    bracketRegions.remove(startLine);
+                }
             }
             for (let i = 0; i < insertedCount; i++) {
                 // A placeholder stack, immediately overwritten by the
@@ -1027,6 +1061,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // the array stays as long as the document.
                 let empty: []int = [];
                 bracketStacks.insert(startLine + i, empty);
+                bracketRegions.insert(startLine + i, bracketRootRegion);
             }
         };
 
@@ -1311,19 +1346,69 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 buckets.pop();
             }
 
-            // ONE forward walk over the lines for the whole reply, rather
-            // than a search per span: tsserver emits spans in source
-            // order, so each one begins at or after where the previous
-            // walk stopped. That is what lets this convert file offsets to
-            // line/column without a line-offset table -- and therefore
-            // without one more structure that has to be kept in step with
-            // every edit.
+            // Byte offset of every line's first character.
             //
-            // `lineEnd` is the offset of the line's terminating newline,
-            // i.e. one past its last character.
-            let line = 0;
-            let lineStart = 0;
-            let lineEnd = lineCount > 0 ? doc.lineLength(0) : 0;
+            // Built up front and searched per span rather than walked
+            // alongside them, because tsserver DOES NOT emit spans in
+            // source order. It mostly does, which is what made a forward
+            // walk look sufficient -- but a `defineProps<{...}>()` call
+            // reports the type argument's members before the `props`
+            // variable they are attached to, and for a `.vue` file the
+            // whole template is mapped back out of virtual TypeScript that
+            // sits after the script block. A walk that only moves forward
+            // silently DROPS every span behind it, which is why `props`
+            // and `defineProps` came out uncoloured.
+            //
+            // Costs one integer per line and no text scanning at all,
+            // since a line's byte length is already known.
+            let lineStarts: []int = [];
+            let offset = 0;
+            for (let i = 0; i < lineCount; i++) {
+                lineStarts.push(offset);
+                offset = offset + doc.lineLength(i) + 1;
+            }
+
+            // Which byte ranges of the file semantic tokens may touch.
+            //
+            // For a `.vue` file that is the <script> blocks and nothing
+            // else, mirroring VS Code: its TypeScript semantic-token
+            // provider bails unless the code it is asked about is the
+            // script block (see typescript-semantic-tokens.js, which
+            // requires the embedded code id to be `main`), so a template
+            // is coloured by the grammar alone.
+            //
+            // That is not a detail. Volar compiles a template into virtual
+            // TypeScript that reaches every binding through the component
+            // instance, so tsserver classifies `panelVisible` in
+            // `v-if="panelVisible"` as a PROPERTY rather than the variable
+            // the grammar correctly calls it -- repainting half the
+            // template in property colours. Anything that is not a `.vue`
+            // file is all script, and is not restricted at all.
+            let scriptOnly = lspLanguageId == "vue";
+            let scriptRangeStarts: []int = [];
+            let scriptRangeEnds: []int = [];
+            if scriptOnly {
+                let openLine = -1;
+                for (let i = 0; i < lineCount; i++) {
+                    // SFC block tags sit on their own line in every Vue
+                    // file there is; anything else is not an SFC.
+                    let trimmed = doc.lineText(i).trim();
+                    if openLine < 0 && trimmed.startsWith("<script") {
+                        openLine = i;
+                    }
+                    else if openLine >= 0 && trimmed.startsWith("</script") {
+                        scriptRangeStarts.push(lineStarts[openLine + 1]);
+                        scriptRangeEnds.push(lineStarts[i]);
+                        openLine = -1;
+                    }
+                }
+                if openLine >= 0 && openLine + 1 < lineCount {
+                    // Unterminated block: take it as running to the end,
+                    // which is what it looks like while one is being typed.
+                    scriptRangeStarts.push(lineStarts[openLine + 1]);
+                    scriptRangeEnds.push(offset);
+                }
+            }
 
             for span in spans {
                 if span.length <= 0 {
@@ -1337,17 +1422,33 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     continue;
                 }
 
-                while line + 1 < lineCount && span.start > lineEnd {
-                    line = line + 1;
-                    lineStart = lineEnd + 1;
-                    lineEnd = lineStart + doc.lineLength(line);
+                if scriptOnly {
+                    let inScript = false;
+                    for (let r = 0; r < scriptRangeStarts.length; r++) {
+                        if span.start >= scriptRangeStarts[r] && span.start < scriptRangeEnds[r] {
+                            inScript = true;
+                            break;
+                        }
+                    }
+                    if !inScript {
+                        continue;
+                    }
                 }
-                // Behind the walk. Unreachable while tsserver emits in
-                // source order; if it ever stops, dropping the span beats
-                // colouring some earlier line with it.
-                if span.start < lineStart {
-                    continue;
+
+                // Binary search for the line this span begins on.
+                let line = 0;
+                let lo = 0;
+                let hi = lineCount - 1;
+                while lo < hi {
+                    let mid = (lo + hi + 1) / 2;
+                    if lineStarts[mid] <= span.start {
+                        lo = mid;
+                    }
+                    else {
+                        hi = mid - 1;
+                    }
                 }
+                line = lo;
 
                 // A span can cross lines -- a multi-line type annotation,
                 // a template literal. Clip it to one token per line, since
@@ -1355,8 +1456,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // and addresses it by column.
                 let spanEnd = span.start + span.length;
                 let clipLine = line;
-                let clipStart = lineStart;
-                let clipEnd = lineEnd;
+                let clipStart = lineStarts[line];
+                let clipEnd = clipStart + doc.lineLength(line);
                 while clipLine < lineCount {
                     let startInLine = span.start > clipStart ? span.start - clipStart : 0;
                     let endInLine = spanEnd < clipEnd ? spanEnd - clipStart : clipEnd - clipStart;
@@ -1440,6 +1541,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             while bracketStacks.length > lineCount {
                 bracketStacks.pop();
             }
+            while bracketRegions.length < lineCount {
+                bracketRegions.push(bracketRootRegion);
+            }
+            while bracketRegions.length > lineCount {
+                bracketRegions.pop();
+            }
 
             let tokenBuckets: [][]Token = rx.get(tokenCache);
 
@@ -1456,10 +1563,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             for kind in bracketStacks[start] {
                 stack.push(kind);
             }
+            let region = bracketRegions[start];
 
             for (let lineIndex = start; lineIndex < lineCount; lineIndex++) {
                 if lineIndex > start {
-                    if lineIndex > dirtyThrough && bracketStacksEqual(bracketStacks[lineIndex], stack) {
+                    if lineIndex > dirtyThrough && bracketRegions[lineIndex] == region
+                        && bracketStacksEqual(bracketStacks[lineIndex], stack) {
                         // Converged: this line already began exactly here,
                         // so it and everything below it are unchanged.
                         break;
@@ -1475,6 +1584,10 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     for kind in stack {
                         saved.push(kind);
                     }
+                    // `saved` IS bracketStacks[lineIndex] -- refilled in
+                    // place, so there is nothing to store back. The region
+                    // is a plain int and still has to be.
+                    bracketRegions[lineIndex] = region;
                 }
 
                 // Likewise the bucket: refilled in place, so a rescan
@@ -1491,7 +1604,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 if lineIndex < tokenBuckets.length {
                     tokens = tokenBuckets[lineIndex];
                 }
-                scanLineBrackets(doc.line(lineIndex), tokens, stack, out);
+                // A .vue file changes language partway down, so the
+                // region has to be recomputed per line; anything else is
+                // code from the first line to the last.
+                let lineRegion = region;
+                if bracketRootRegion == BracketRegionNone {
+                    let packed = advanceSfcRegion(region, doc.lineText(lineIndex).trim());
+                    lineRegion = sfcLineRegion(packed);
+                    let nextRegion = sfcNextRegion(packed);
+                    if nextRegion != region {
+                        // Crossing into or out of a block: bracket pairs
+                        // never span two embedded documents, so nothing
+                        // opened on the other side may be matched here.
+                        while stack.length > 0 {
+                            stack.pop();
+                        }
+                    }
+                    region = nextRegion;
+                }
+                scanLineBrackets(doc.line(lineIndex), tokens, stack, out, lineRegion);
             }
 
             bracketTokens := buckets;
@@ -1662,6 +1793,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
         let defaultTextColor = (): Color => "#FFF";
 
+        // Whether the loaded theme wants semantic tokens at all.
+        //
+        // VS Code's "configuredByTheme" default, mirrored -- see
+        // VscodeTheme.semanticHighlighting. False until a theme has loaded,
+        // so nothing is ever painted with a rule no theme has agreed to.
+        let semanticHighlightingEnabled = rx.computed<bool>(() => {
+            let loaded = rx.get(theme);
+            if !loaded {
+                return false;
+            }
+            let flag = loaded.semanticHighlighting;
+            if flag is bool {
+                return flag;
+            }
+            // Absent means "this theme has no opinion", which VS Code
+            // reads as no.
+            return false;
+        });
+
         // The bracket colour cycle for the loaded theme, resolved once and
         // recomputed only when the theme itself changes.
         let bracketPalette = rx.computed<BracketPalette>(() => {
@@ -1671,7 +1821,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // rest of the editor draws with until one loads too.
                 return resolveBracketPalette("dark", none);
             }
-            return resolveBracketPalette(loaded.type, loaded.colors);
+            let themeType = loaded.type;
+            return resolveBracketPalette(themeType is str ? themeType : "dark", loaded.colors);
         });
 
         // The colour a bracket at `level` is drawn in, or none when this
@@ -2391,7 +2542,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // document rather than once per frame, and it is also what
                 // re-asks after each burst of typing: an edit moves
                 // doc.version, so the guard opens again on its own.
-                if rx.get(lspDocumentOpened)
+                // Not asked for at all when the theme has not opted in --
+                // the answer would be thrown away, and it is a real
+                // type-check across the project to produce.
+                if rx.get(semanticHighlightingEnabled)
+                    && rx.get(lspDocumentOpened)
                     && rx.get(semanticRequestedVersion) != doc.version
                     && ui.now() - rx.get(lastEditAt) >= semanticQuietSeconds {
                     semanticRequestedVersion := doc.version;
@@ -2739,12 +2894,18 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             rx.get(bracketCacheVersion);
 
             let semantic: []SemanticToken = noSemanticTokens;
-            let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
-            // A cache is only as long as the document was when its reply
-            // arrived, so a line typed since then simply has no bucket --
-            // and draws with the layers that do until the next reply.
-            if lineIndex < semanticBuckets.length {
-                semantic = semanticBuckets[lineIndex];
+            // Gated on the theme, not merely on having an answer: a theme
+            // that did not opt in is drawn by the grammar alone, cache or
+            // no cache.
+            if rx.get(semanticHighlightingEnabled) {
+                let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
+                // A cache is only as long as the document was when its
+                // reply arrived, so a line typed since then simply has no
+                // bucket -- and draws with the layers that do until the
+                // next reply.
+                if lineIndex < semanticBuckets.length {
+                    semantic = semanticBuckets[lineIndex];
+                }
             }
 
             let brackets: []BracketToken = noBracketTokens;

@@ -1,0 +1,6 @@
+{
+  "_comment": "Injection grammar for Vue directives (v-if, :prop, @click, #slot). The rules themselves already live in vue.tmLanguage.json's repository, but they are only reachable from the SFC root there -- a template BODY is delegated to text.html.derivative, which knows nothing about Vue. VS Code ships these same rules as a separate grammar contributed with injectTo; this is that grammar, pointed at the rules we already have.",
+  "scopeName": "vue.directives",
+  "injectionSelector": "L:meta.tag -meta.attribute",
+  "patterns": [{ "include": "source.vue#vue-directives" }]
+}

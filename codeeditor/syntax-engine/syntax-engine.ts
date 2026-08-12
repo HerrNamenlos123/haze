@@ -67,9 +67,46 @@ function getRegistry(): vsctm.Registry {
 
   const registry = new vsctm.Registry({
     onigLib: vscodeOnigurumaLib,
+    // Grammars that INJECT into another one rather than owning a document.
+    //
+    // Without this, a Vue template body is coloured by the plain HTML
+    // grammar and nothing else: `v-if="a && b.c"` comes back as an
+    // unrecognized attribute whose whole value is one flat
+    // `string.quoted.double.html` run, so every expression in every
+    // directive and every {{ }} is a single uniform colour. The Vue
+    // grammar does contain the rules for these -- but only reachable from
+    // the SFC root, and the template body is delegated to
+    // text.html.derivative long before that.
+    //
+    // VS Code solves this by contributing the directive and interpolation
+    // rules as separate grammars with `injectTo`; vscode-textmate's
+    // equivalent is this hook, which is why it has to be answered for
+    // every scope a template body can end up being tokenized by.
+    getInjections: (scopeName: string): string[] | undefined => {
+      if (
+        scopeName === "source.vue" ||
+        scopeName === "text.html.derivative" ||
+        scopeName === "text.html.basic"
+      ) {
+        return ["vue.directives", "vue.interpolations"];
+      }
+    },
     loadGrammar: async (
       scopeName: string
     ): Promise<IRawGrammar | undefined> => {
+      if (scopeName === "vue.directives") {
+        const data = await import("./languages/vue-directives.tmLanguage.json", {
+          with: { type: "json" },
+        });
+        return { ...data.default } as any;
+      }
+      if (scopeName === "vue.interpolations") {
+        const data = await import(
+          "./languages/vue-interpolations.tmLanguage.json",
+          { with: { type: "json" } }
+        );
+        return { ...data.default } as any;
+      }
       if (scopeName === "source.vue") {
         const data = await import("./languages/vue.tmLanguage.json", {
           with: { type: "json" },
