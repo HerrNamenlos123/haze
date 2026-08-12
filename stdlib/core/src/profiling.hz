@@ -167,18 +167,91 @@ namespace profiling {
     // timeDelta then spans the whole gap on its own). Lost samples are different: the kernel
     // (PERF_RECORD_LOST) reports a hard fact that real code definitely ran there, so that still
     // gets its own marker via addLostSamplesMarker.
+    // Emits both kinds of sample this profiler produces into ONE profile, walked in
+    // timestamp order: the CPU sampler's stacks, and -- when `allocationLeaves` is non-empty
+    // -- one sample per instrumented allocation whose stack is the capture's own, with the
+    // allocation itself as the leaf frame.
+    //
+    // They belong on one timeline because they ARE one timeline: hzstd_profiling.c
+    // deliberately derives both timestamps from the same CLOCK_MONOTONIC reference (see the
+    // comment on perf_time_ref_ns/memoryInstrumentationTimeRef there), precisely so the two
+    // can be related to each other. Emitting them as two separate profiles on two thread
+    // tracks -- which is what this used to do -- threw that away: it produced two flame
+    // charts of the same thread that could not be read against each other, at wildly
+    // different densities, neither of which was the whole story.
+    //
+    // The two are not the same KIND of measurement, and the merged chart shows that honestly
+    // rather than hiding it: CPU frames are sampled, so their widths are statistical, while
+    // allocations are instrumented, so each one is an exact event. A burst of allocations
+    // inside one sampled call renders as exactly that -- many precise leaves under one
+    // approximate parent.
     fn addSamplesToProfile(
         builder: mut ChromeTrace.CpuProfileBuilder,
         result: ProfilingResult,
         frameRefs: []ChromeTrace.FrameRef,
+        allocationLeaves: []str,
     ): void {
         let nominalIntervalUs = 1000000.0 / (result.sampling_rate_hz as real);
         let offCpuThresholdUs = nominalIntervalUs * 4.0;
 
+        // Built once, reused for every gap below -- see the off-CPU branch.
+        let idleFrames: []ChromeTrace.FrameRef = [];
+        idleFrames.push(ChromeTrace.FrameRef { name: "(idle)", url: "", line: 0, column: 0 });
+
+        // Timestamps handed to addSample must never go backwards (it turns them into
+        // timeDeltas, and a negative delta corrupts every timestamp a viewer reconstructs
+        // after it). Merging two independently-ordered streams -- and allocation captures
+        // are timestamped before they take the append lock, so captures from different
+        // threads can land slightly out of order -- makes that a real possibility rather
+        // than a theoretical one, so every emitted timestamp is clamped to the last one.
+        let lastEmittedUs = 0.0;
+
+        let cpuIndex = 0;
+        let allocIndex = 0;
         let lastTimeUs = 0.0;
-        for (let s = 0; s < result.samples.length; s++) {
+        while cpuIndex < result.samples.length || allocIndex < allocationLeaves.length {
+            // Whichever stream's next entry is older goes first.
+            let takeCpuSample = true;
+            if cpuIndex >= result.samples.length {
+                takeCpuSample = false;
+            } else if allocIndex < allocationLeaves.length {
+                takeCpuSample = result.samples[cpuIndex].timestamp
+                    <= result.memoryInstrumentationFrames[allocIndex].timestamp;
+            }
+
+            if !takeCpuSample {
+                let capture = result.memoryInstrumentationFrames[allocIndex];
+                let allocTimeUs = capture.timestamp * 1000000.0;
+                if allocTimeUs < lastEmittedUs {
+                    allocTimeUs = lastEmittedUs;
+                }
+                // A CpuProfile sample carries no size/type of its own (V8's
+                // SamplingHeapProfileNode has selfSize for exactly this; the CPU shape has
+                // nowhere to put it), so they become the LEAF frame instead -- "Heap alloc
+                // struct mut Foo (8 bytes)" sits where the allocating function's callee
+                // would be. That also dedups on exactly the right key: same type, same size,
+                // same call path collapses to one node, while differing in either keeps them
+                // apart and separately countable.
+                builder.addSample(
+                    allocTimeUs,
+                    sampleFrameRefsForStacktrace(
+                        capture.stacktrace,
+                        frameRefs,
+                        ChromeTrace.FrameRef { name: allocationLeaves[allocIndex], url: "", line: 0, column: 0 },
+                    ),
+                );
+                lastEmittedUs = allocTimeUs;
+                allocIndex = allocIndex + 1;
+                continue;
+            }
+
+            let s = cpuIndex;
+            cpuIndex = cpuIndex + 1;
             let sample = result.samples[s];
             let timeUs = sample.timestamp * 1000000.0;
+            if timeUs < lastEmittedUs {
+                timeUs = lastEmittedUs;
+            }
 
             if s > 0 {
                 let delta = timeUs - lastTimeUs;
@@ -190,8 +263,30 @@ namespace profiling {
                     // conclusion the off-cpu heuristic would otherwise draw from the same gap.
                     builder.addLostSamplesMarker(lastTimeUs + nominalIntervalUs, delta - nominalIntervalUs);
                 } else if delta > offCpuThresholdUs {
-                    // Off-CPU: the thread wasn't running for (most of) this gap. Emit nothing --
-                    // no sample, no marker -- so the trace shows empty space here, per feedback.
+                    // Off-CPU: the thread wasn't running for (most of) this gap.
+                    //
+                    // Emitting NOTHING here (what this used to do, intending to leave the trace
+                    // blank) does not produce blank space -- it produces a lie. Every flame chart
+                    // derives sample i's on-screen width from timestamp[i+1] - timestamp[i], so a
+                    // skipped gap is silently absorbed by the sample BEFORE it: whatever happened
+                    // to be on the CPU when the thread went to sleep gets drawn as though it ran
+                    // for the entire pause. Measured on a real session: a sample sitting in
+                    // GC_pause, followed by a 2.94s wait, rendered as a single 2.94-second-wide
+                    // GC_pause block -- and 3.35s of a 4.95s timeline was gaps drawn this way.
+                    // That also erases exactly the pattern a frame-paced app should show: every
+                    // vsync wait gets charged to the last function that ran before it, so a
+                    // perfectly idle 60fps loop reads as 100% busy.
+                    //
+                    // So the gap gets its own explicit sample instead, starting one nominal
+                    // interval after the last real one (which therefore keeps its normal width).
+                    // "(idle)" is V8's own name for this in a .cpuprofile, so DevTools already
+                    // understands what it is rather than showing it as a mystery function.
+                    let idleStartUs = lastTimeUs + nominalIntervalUs;
+                    if idleStartUs < lastEmittedUs {
+                        idleStartUs = lastEmittedUs;
+                    }
+                    builder.addSample(idleStartUs, idleFrames);
+                    lastEmittedUs = idleStartUs;
                 }
             }
 
@@ -205,6 +300,7 @@ namespace profiling {
             }
             builder.addSample(timeUs, frames, sample.truncated);
 
+            lastEmittedUs = timeUs;
             lastTimeUs = timeUs;
         }
     }
@@ -217,9 +313,13 @@ namespace profiling {
     // profile out of the same result (buildTrace builds both a CPU and an allocation profile)
     // pays for it once rather than once per profile.
     fn buildCpuProfile(result: ProfilingResult, frameRefs: []ChromeTrace.FrameRef): ChromeTrace.CpuProfile {
+        // No allocation leaves: the legacy .cpuprofile shape is a pure CPU profile, and
+        // nothing reading it expects instrumented events mixed in. buildTrace passes real
+        // leaves (see there); this path passes none.
+        let noAllocationLeaves: []str = [];
         let builder = ChromeTrace.CpuProfileBuilder();
         builder.reserveSamples(result.samples.length);
-        addSamplesToProfile(builder, result, frameRefs);
+        addSamplesToProfile(builder, result, frameRefs, noAllocationLeaves);
         return builder.build();
     }
 
@@ -233,16 +333,11 @@ namespace profiling {
     // and leaves room to grow -- e.g. a future second Haze process (worker/subprocess) would get
     // pid 2 rather than requiring these ids to be renumbered.
     const hazeProcessPid = 1;
-    const mainThreadTid = 1; // owns the "Profile"/"RunTask" stream, like Chrome's CrRendererMain
-    // Allocations get their own track rather than sharing the main thread's:
-    // they are a separate profile with its own call tree and its own time
-    // axis, and interleaving two profiles' samples on one tid would make
-    // DevTools merge them into a single, meaningless flame chart. The name is
-    // not one DevTools recognizes, so this lands in ThreadType.OTHER and
-    // sorts below the main thread (see the note on the Timings track below) --
-    // which is the correct place for it now that it is a profile rather than
-    // a marker stream.
-    const allocationThreadTid = 2;
+    // Owns everything: the "Profile"/"RunTask" stream (like Chrome's CrRendererMain), the
+    // allocation leaves merged into that same profile, and the allocation marker events that
+    // DevTools lifts into its Timings track. There is deliberately no second tid -- see the
+    // long note in buildTrace for why a second thread track could only ever be worse.
+    const mainThreadTid = 1;
 
     // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) -- kept as a plain int on
     // the FFI struct (see ffi.hzstd_memory_instrumentation_frame_t) rather than a real enum type,
@@ -304,167 +399,101 @@ namespace profiling {
         builder.addThread(mainThreadTid, "CrRendererMain", true);
         builder.addFrame(mainThreadTid, "HZFRAME0", "file:///haze");
 
-        // Built once and shared by both profiles below -- see buildFrameRefTable.
+        // Built once and shared by everything below -- see buildFrameRefTable.
         let frameRefs = buildFrameRefTable(result);
 
-        let profile = buildCpuProfile(result, frameRefs);
-        // This "task" block is what gives the CPU flame chart somewhere to render into (see
+        // ── Allocations appear TWICE, each time carrying a different half ───
+        //
+        // 1. As leaf frames in the main flame chart (see addSamplesToProfile), where each
+        //    allocation hangs under the call path that made it. This is the "where did my
+        //    allocations come from" view, deduplicated into a call tree so a call path that
+        //    allocated the same thing a hundred thousand times is one node, not a hundred
+        //    thousand copies of a 60-frame stack. (Emitting the full stack per allocation
+        //    instead, which this once did, produced 965 MB of stackTrace for 80k allocations
+        //    over ~1,900 distinct paths -- the same paths written out tens of thousands of
+        //    times each.)
+        //
+        // 2. As stackless PerformanceMark events, which is what puts them in DevTools'
+        //    Timings track. That track is appended before any thread track at all
+        //    (CompatibilityTracksAppender's constructor), so it always renders above the
+        //    main thread, and it is populated by UserTimingsHandler scanning the whole trace
+        //    for cat: "blink.user_timing" regardless of tid -- so these ride along on the
+        //    main thread's own tid and need no thread of their own. They carry WHEN, WHAT and
+        //    HOW BIG, and deliberately no stack: the stack was ~99% of such an event's bytes,
+        //    and it is already in the flame chart above.
+        //
+        // What is deliberately NOT done any more is giving allocations their own thread
+        // track. DevTools classifies thread tracks by NAME
+        // (devtools-frontend's Threads.ts/getThreadTypeForRendererThread), any unrecognized
+        // name lands in ThreadType.OTHER, and threadTrackOrder sorts OTHER below MAIN_THREAD
+        // unconditionally -- tid, registration order and thread_sort_index were all tried and
+        // none of them change it. So that track could only ever appear below the main thread,
+        // collapsed by default, as a second flame chart of the same thread that could not be
+        // read against the first one. Both halves now live on the main thread's own timeline,
+        // which is the only place they can actually be compared.
+        let allocationLeaves: []str = [];
+        if allocationCount > 0 {
+            allocationLeaves.reserve(allocationCount);
+            let lastProgressAt = time.now();
+            for (let i = 0; i < allocationCount; i++) {
+                allocationLeaves.push(allocationMarkerName(result.memoryInstrumentationFrames[i]));
+
+                // Naming every capture is the longest silent stretch of a large session, so
+                // report progress -- but on a time cadence, not per capture: at this call
+                // volume an unconditional print per iteration costs far more than the work
+                // being reported on (and time.now() itself is only worth asking a few
+                // thousand times, hence the cheap index test guarding it).
+                if i % progressCheckInterval == 0 {
+                    let nowSeconds = time.now();
+                    if nowSeconds - lastProgressAt >= progressIntervalSeconds {
+                        fmt.print(f"\r  naming allocations {i} / {allocationCount}");
+                        lastProgressAt = nowSeconds;
+                    }
+                }
+            }
+            fmt.print(f"\r  naming allocations {allocationCount} / {allocationCount}\n");
+        }
+
+        // ONE profile on ONE thread, carrying the CPU samples and the allocations together.
+        let profileBuilder = ChromeTrace.CpuProfileBuilder();
+        profileBuilder.reserveSamples(result.samples.length + allocationLeaves.length);
+        addSamplesToProfile(profileBuilder, result, frameRefs, allocationLeaves);
+        let profile = profileBuilder.build();
+
+        // This "task" block is what gives the flame chart somewhere to render into (see
         // ChromeTrace's file header) and anchors the sample ordering invariant; the profiled
         // session is represented as a single task spanning its whole duration.
         builder.addTask(mainThreadTid, profile.startTime, profile.endTime - profile.startTime);
         builder.addCpuProfileSamples(mainThreadTid, profile.startTime, profile);
 
-        // Deliberately NOT a separate "Heap Allocations" thread (that was the previous
-        // approach): DevTools hardcodes thread-track order by thread TYPE, classified purely
-        // from the thread's NAME (devtools-frontend's Threads.ts/getThreadTypeForRendererThread)
-        // -- an unrecognized name always lands in ThreadType.OTHER, which
-        // CompatibilityTracksAppender's threadTrackOrder always sorts below MAIN_THREAD (priority
-        // 7 vs 0), unconditionally, regardless of tid, registration order, or thread_sort_index
-        // (all three were tried and confirmed to have no effect on this specific decision -- see
-        // git history). There is no trace.json-level way to outrank MAIN_THREAD via a second
-        // thread.
-        //
-        // The actual fix: DevTools' Timings track (TimingsTrackAppender) is appended before any
-        // thread tracks at all in CompatibilityTracksAppender's constructor -- it always renders
-        // above every thread, main included, unconditionally. It's populated by UserTimingsHandler
-        // scanning the WHOLE trace for cat: "blink.user_timing" events (see
-        // Types.Events.isPerformanceMark / UserTimingsHandler.ts), independent of which tid an
-        // event is attached to -- our addInstantMarker calls already emit exactly that category
-        // (see ChromeTrace.TraceEventInstantMarker), so putting them on the main thread's own tid
-        // is enough for them to land in the always-first Timings track; no second thread needed.
-        // ── Allocations: a deduplicated call tree, not one marker each ──────
-        //
-        // This used to emit one PerformanceMark per allocation, each with its
-        // ENTIRE stack inlined into the event (DevTools resolves neither `sf`
-        // nor the stackFrames dictionary for that event shape -- see
-        // TraceEventInstantMarker -- so the frames genuinely have to be
-        // inline, and there is no way to make that shape small).
-        //
-        // The problem is not the frames, it is emitting them per allocation.
-        // Measured on a real 15-second capture: 80,339 allocations, ~63
-        // frames deep on average, producing 965 MB of stackTrace -- while the
-        // whole session only ever visited 1,908 DISTINCT stacks. The same
-        // ~1,900 call paths were written out tens of thousands of times each.
-        // 5.4 million frames, of which 5.0 million were repeats. That is what
-        // made a 10-second capture produce a 1.1 GB file that DevTools
-        // refuses to load, take minutes to postprocess, and need >10 GB of
-        // RAM to serialize.
-        //
-        // Chrome does not do this, and neither does the CPU half of this very
-        // file. A V8 SamplingHeapProfile is a TREE: each unique call path is
-        // one node, written once, and every sample is just
-        // {size, nodeId, ordinal}. CpuProfileBuilder below already implements
-        // exactly that structure -- the same dedup hash index, the same
-        // parent links -- which is why 2,597 CPU chunks covering the same 15
-        // seconds cost 19 MB while the allocations cost 965 MB. The encoding
-        // was the entire difference.
-        //
-        // So the stacks now go through the same builder, as a call tree.
-        //
-        // But the tree ALONE is not a replacement, and shipping only the tree
-        // was a regression: it put allocations on a second thread track, which
-        // (per the long note just above) DevTools sorts below the main thread
-        // and collapses by default, turning the allocation timeline into a
-        // second, hidden flame chart instead of the marker timeline it used to
-        // be. The Timings track is the only place that renders above every
-        // thread, and only PerformanceMark-shaped events land in it.
-        //
-        // Hence both, each carrying the half it encodes efficiently:
-        //
-        //   markers (Timings track) -- one per allocation, carrying WHEN it
-        //     happened, its type and its size, and NO stackTrace. Stackless is
-        //     what makes them affordable: the stack was 99% of a marker's
-        //     bytes (~12,000 of ~12,200), so dropping it takes the marker
-        //     stream from 965 MB to ~16 MB while keeping the timeline, the
-        //     labels, and the click-to-inspect args intact.
-        //
-        //   tree (its own track) -- every allocation's FULL stack, deduplicated
-        //     so each distinct call path is stored exactly once.
-        //
-        // Nothing is lost relative to the original: the same per-allocation
-        // timeline, and the same stacks, just no longer written out five
-        // million times.
-        if result.memoryInstrumentationFrames.length > 0 {
-            let allocBuilder = ChromeTrace.CpuProfileBuilder();
-            allocBuilder.reserveSamples(result.memoryInstrumentationFrames.length);
-
-            // One empty list shared by every marker below rather than one built per
-            // capture: addInstantMarker only ever reads it, and an empty array
-            // literal inside this loop would be hundreds of thousands of
-            // allocations that exist purely to be observed as empty.
+        // The Timings-track half (2. above). Stackless, so this is just one small event per
+        // capture, reusing the name already computed for the flame-chart leaf.
+        if allocationCount > 0 {
+            // One empty list shared by every marker rather than one built per capture:
+            // addInstantMarker only ever reads it, and an empty array literal inside this
+            // loop would be hundreds of thousands of allocations that exist purely to be
+            // observed as empty.
             let noFrames: []ChromeTrace.FrameRef = [];
-
-            // Marker stream and allocation profile are built in ONE pass over the
-            // captures, not two. They feed different builders, so the interleaving
-            // changes nothing about either one's contents or ordering -- but the two
-            // passes each independently recomputed allocationMarkerName(frame) (two
-            // formatted strings per capture, thrown away immediately), and each
-            // independently re-read the capture. Once through, computing the name
-            // once, does the same work for half the string formatting.
             let lastProgressAt = time.now();
-            for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
+            for (let i = 0; i < allocationCount; i++) {
                 let frame = result.memoryInstrumentationFrames[i];
-                let markerName = allocationMarkerName(frame);
-                let tsUs = frame.timestamp * 1000000.0;
-
                 builder.addInstantMarker(
                     mainThreadTid,
-                    tsUs,
-                    markerName,
+                    frame.timestamp * 1000000.0,
+                    allocationLeaves[i],
                     noFrames,
                     frame.dataType.length > 0 ? frame.dataType : none,
                     frame.sizeBytes,
                 );
-
-                // A CpuProfile sample carries no size/type of its own (V8's
-                // SamplingHeapProfileNode has selfSize for exactly this; the
-                // CPU shape has nowhere to put it). Rather than lose the two
-                // things that make an allocation profile useful, they become
-                // the LEAF frame of the stack -- "Heap alloc struct mut Foo
-                // (8 bytes)" sits where the allocating function's callee
-                // would be.
-                //
-                // That keeps every byte of information the old per-allocation
-                // markers carried, and it dedups on exactly the right key:
-                // two allocations of the same type and size from the same
-                // call path collapse to one node (which is what makes this
-                // small), while differing in type OR size keeps them apart
-                // and separately countable. The flame chart then reads as
-                // "this call path allocated N of these", which is the
-                // question an allocation profile exists to answer.
-                allocBuilder.addSample(
-                    tsUs,
-                    sampleFrameRefsForStacktrace(
-                        frame.stacktrace,
-                        frameRefs,
-                        ChromeTrace.FrameRef { name: markerName, url: "", line: 0, column: 0 },
-                    ),
-                );
-
-                // Turning captures into events is the longest silent stretch of a large
-                // session, so report progress -- but on a time cadence, not per capture: at
-                // this call volume an unconditional print per iteration costs far more than
-                // the work being reported on (and time.now() itself is only worth asking a
-                // few thousand times, hence the cheap index test guarding it).
                 if i % progressCheckInterval == 0 {
                     let nowSeconds = time.now();
                     if nowSeconds - lastProgressAt >= progressIntervalSeconds {
-                        fmt.print(f"\r  building allocation events {i} / {allocationCount}");
+                        fmt.print(f"\r  building allocation markers {i} / {allocationCount}");
                         lastProgressAt = nowSeconds;
                     }
                 }
             }
-            fmt.print(f"\r  building allocation events {allocationCount} / {allocationCount}\n");
-
-            builder.addThread(allocationThreadTid, "HeapAllocations");
-
-            let allocProfile = allocBuilder.build();
-            builder.addTask(
-                allocationThreadTid,
-                allocProfile.startTime,
-                allocProfile.endTime - allocProfile.startTime,
-            );
-            builder.addCpuProfileSamples(allocationThreadTid, allocProfile.startTime, allocProfile);
+            fmt.print(f"\r  building allocation markers {allocationCount} / {allocationCount}\n");
         }
 
         return builder.build();
