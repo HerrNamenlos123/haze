@@ -1,0 +1,230 @@
+// ── Bracket pair colourisation ──────────────────────────────────────────
+//
+// VS Code's "rainbow brackets", mirrored. Each bracket is coloured by the
+// NESTING DEPTH of the pair it belongs to, cycling through the theme's
+// `editorBracketHighlight.foreground1..6`; a closing bracket that matches
+// nothing is painted with
+// `editorBracketHighlight.unexpectedBracket.foreground` instead.
+//
+// The details that make this match VS Code rather than merely resemble it:
+//
+//   - Colours come from the theme's `colors` block, and a theme that does
+//     not define them falls back to VS Code's own built-in defaults for
+//     the theme's `type`. That fallback is not a nicety: the editor's
+//     default theme (obsidian-radiance-dark.json) defines no bracket
+//     colours at all, so without it there would be nothing to draw with.
+//
+//   - Fully TRANSPARENT colours are dropped from the cycle rather than
+//     drawn with. VS Code's defaults fill only three slots and leave 4-6 at
+//     #00000000, so the default cycle is three colours long, not six. A
+//     theme that defines all six (catppuccin-mocha.json does) cycles
+//     through six. This single rule is the difference between matching VS
+//     Code and painting every fourth nesting level invisible.
+//
+//   - Brackets inside comments and strings are NOT coloured. That is why
+//     this layer is built from the TextMate tokens rather than from raw
+//     text: the scope stack is the only thing that knows a `{` is inside a
+//     string literal.
+//
+//   - Only (), [] and {} take part -- TypeScript's own
+//     `colorizedBracketPairs` in VS Code. `<`/`>` are deliberately excluded:
+//     colouring those would rainbow every comparison and every generic
+//     argument list.
+
+// One bracket character and the depth it should be drawn at.
+struct BracketToken {
+    // Byte offsets within the line, like every other offset the editor
+    // stores. Always one byte apart -- every bracket is ASCII.
+    startIndex: int;
+    endIndex: int;
+    // Nesting depth, 0 for the outermost pair. -1 marks a closing bracket
+    // that matched nothing, which takes the unexpected-bracket colour.
+    level: int;
+}
+
+// The colours a theme cycles through, already filtered and resolved.
+struct BracketPalette {
+    levelColors: []Color = [];
+    unexpectedColor: Color;
+}
+
+// Whether a TextMate scope stack puts a token inside a comment or a string,
+// where VS Code leaves brackets alone.
+//
+// VS Code decides this from its tokenizer's standard token type, which for
+// a TextMate grammar is derived from exactly these two scope prefixes
+// (`string` covers `string.regexp` and friends along with it).
+fn scopeStackIsCommentOrString(scopes: []str): bool {
+    for scope in scopes {
+        if scope == "comment" || scope.startsWith("comment.") {
+            return true;
+        }
+        if scope == "string" || scope.startsWith("string.") {
+            return true;
+        }
+    }
+    return false;
+}
+
+// VS Code's own built-in defaults for editorBracketHighlight.foreground1..6.
+//
+// Slots 4-6 being fully transparent is not an omission -- it is what makes
+// the default cycle three colours long. See resolveBracketPalette.
+fn defaultBracketColorHex(index: int, isLight: bool): str {
+    if index == 0 { return isLight ? "#0431FA" : "#FFD700"; }
+    if index == 1 { return isLight ? "#319331" : "#DA70D6"; }
+    if index == 2 { return isLight ? "#7B3814" : "#179FFF"; }
+    return "#00000000";
+}
+
+// Look one key up in a theme's `colors` block.
+//
+// Enumerated rather than indexed because json.Node's own operator[] panics
+// on a key that is not present, and "this theme does not define that
+// colour" is the normal case here, not an error.
+fn themeColorValue(colors: json.Node | none, key: str): str | none {
+    if !colors {
+        return none;
+    }
+    let node: json.Node = colors;
+    let count = node.objectEntryCount();
+    for (let i = 0 as usize; i < count; i++) {
+        if node.objectKeyAt(i) == key {
+            let value = json.parse<str>(node.objectValueAt(i));
+            if value {
+                return value;
+            }
+            return none;
+        }
+    }
+    return none;
+}
+
+// `themeType` is the theme's own "type" field ("dark" or "light"), which
+// decides which built-in defaults apply, and `colors` is its `colors`
+// block. Taken as the two raw values rather than as a parsed theme so that
+// nothing in this file depends on the editor's theme struct -- everything
+// here is a pure function of a line, its tokens, and a palette.
+fn resolveBracketPalette(themeType: str, colors: json.Node | none): BracketPalette {
+    let isLight = themeType == "light";
+
+    let levelColors: []Color = [];
+    for (let i = 0; i < 6; i++) {
+        let resolved = defaultBracketColorHex(i, isLight);
+        let fromTheme = themeColorValue(colors, f"editorBracketHighlight.foreground{i + 1}");
+        if fromTheme is str {
+            resolved = fromTheme;
+        }
+        let parsed = Color.fromHex(resolved);
+        if !parsed {
+            continue;
+        }
+        // The transparency filter, and the reason the default theme gets a
+        // three-colour cycle rather than six invisible levels.
+        if parsed.a == 0.0 {
+            continue;
+        }
+        levelColors.push(parsed);
+    }
+
+    let unexpectedHex = "#FF1212CC";
+    let fromTheme = themeColorValue(colors, "editorBracketHighlight.unexpectedBracket.foreground");
+    if fromTheme is str {
+        unexpectedHex = fromTheme;
+    }
+
+    return BracketPalette {
+        levelColors: levelColors,
+        unexpectedColor: Color.fromHexOrDefault(unexpectedHex, "#FF1212CC"),
+    };
+}
+
+// Scan one line for colourable brackets.
+//
+// `stack` holds the KINDS of the brackets still open at this point in the
+// document (0 round, 1 square, 2 curly) and is carried from line to line by
+// the caller; `out` receives this line's brackets. Both are updated in
+// place, which is what lets the caller walk a whole document with one
+// stack and stop early once it reconverges.
+//
+// A top-level function rather than a closure inside the editor because
+// this is the entire algorithm, and it depends on nothing but a line and
+// its tokens -- so it can be exercised directly instead of only through a
+// running window.
+fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketToken) {
+    // Walks alongside the character scan rather than being searched per
+    // bracket: both are sorted by offset.
+    let tokenIndex = 0;
+    let length = line.length();
+
+    for (let i = 0; i < length; i++) {
+        let ch = line.getAt(i);
+        // Comparing raw bytes is safe for the same reason the rest of the
+        // editor can: all six characters are ASCII, and no byte of a
+        // multi-byte UTF-8 character ever collides with an ASCII one.
+        let opening = -1;
+        if ch == b"(" { opening = 0; }
+        else if ch == b"[" { opening = 1; }
+        else if ch == b"{" { opening = 2; }
+        let closing = -1;
+        if ch == b")" { closing = 0; }
+        else if ch == b"]" { closing = 1; }
+        else if ch == b"}" { closing = 2; }
+        if opening < 0 && closing < 0 {
+            continue;
+        }
+
+        while tokenIndex < tokens.length && tokens[tokenIndex].endIndex <= i {
+            tokenIndex = tokenIndex + 1;
+        }
+        if tokenIndex < tokens.length && tokens[tokenIndex].startIndex <= i {
+            // Inside a comment or a string: not a bracket as far as VS Code
+            // is concerned, and crucially not one for the STACK either -- a
+            // `{` in a string must not shift the depth of the real code
+            // around it.
+            if scopeStackIsCommentOrString(tokens[tokenIndex].scopes) {
+                continue;
+            }
+        }
+
+        if opening >= 0 {
+            out.push(BracketToken {
+                startIndex: i,
+                endIndex: i + 1,
+                level: stack.length,
+            });
+            stack.push(opening);
+            continue;
+        }
+
+        // A closing bracket matches the INNERMOST open bracket of its own
+        // kind, not merely the top of the stack. Anything still open inside
+        // it is abandoned, keeping whatever depth it was already drawn at
+        // -- which is what VS Code does with `( [ )`.
+        let matched = -1;
+        for (let s = stack.length - 1; s >= 0; s--) {
+            if stack[s] == closing {
+                matched = s;
+                break;
+            }
+        }
+        if matched < 0 {
+            // Matches nothing at all: the unexpected-bracket colour, and
+            // the stack is left alone.
+            out.push(BracketToken {
+                startIndex: i,
+                endIndex: i + 1,
+                level: -1,
+            });
+            continue;
+        }
+        while stack.length > matched {
+            stack.pop();
+        }
+        out.push(BracketToken {
+            startIndex: i,
+            endIndex: i + 1,
+            level: matched,
+        });
+    }
+}

@@ -273,6 +273,17 @@ fn documentByteLength(doc: text_document.Document): int {
     return total + count - 1;
 }
 
+
+// One resolved colour override for part of a line, ready to paint over
+// whatever the TextMate layer put there. Both the semantic tokens and the
+// bracket colours funnel into this one shape, so the render path has a
+// single kind of overlay to apply rather than one per feature.
+struct ColourOverride {
+    startIndex: int;
+    endIndex: int;
+    color: Color;
+}
+
 struct State {
     highlightEngine: HighlightEngine;
     highlightCommands: []HighlightCommand = [];
@@ -463,6 +474,15 @@ struct TokenColor {
 };
 
 struct VscodeTheme {
+  // "dark" or "light". VS Code picks a different set of built-in default
+  // colours per theme type, so this decides what a theme that defines no
+  // bracket colours falls back to -- see defaultBracketColorHex.
+  type: str = "dark";
+  // The theme's whole `colors` block, kept as a raw node rather than a
+  // struct: its keys are dotted names like
+  // "editorBracketHighlight.foreground1", which are not field names, and
+  // only a handful of the ~200 entries are ever read. See themeColorValue.
+  colors?: json.Node;
   tokenColors: []TokenColor = [];
 };
 
@@ -894,6 +914,98 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let tokenCache = rx.shallowReactive<[][]Token>([]);
         let tokenCacheVersion = rx.reactive<int>(0);
 
+        // ── Bracket pair colourisation state ─────────────────────────────
+        //
+        // VS Code has this on by default (`editor.bracketPairColorization
+        // .enabled`), and so does this.
+        let bracketColorizationEnabled = true;
+
+        // Per-line bracket tokens, and the stack of OPEN bracket kinds at
+        // the START of each line.
+        //
+        // The stack is what makes rescanning incremental, and it is the
+        // same trick the syntax engine already uses with its per-line rule
+        // stack: after an edit, rescanning can stop as soon as a line's
+        // starting stack matches what was recorded there before, because
+        // every line below then produces exactly what it produced last
+        // time. Without it, one keystroke would rescan the whole file.
+        let bracketTokens = rx.shallowReactive<[][]BracketToken>([]);
+        let bracketCacheVersion = rx.reactive<int>(0);
+        let bracketStacks: [][]int = [];
+
+        // The line range whose bracket INPUT changed and so must be
+        // rescanned no matter what: `from` is where rescanning starts, and
+        // `through` is the last line that may not take the convergence
+        // shortcut above.
+        //
+        // Both are needed, and conflating them is a real bug rather than a
+        // simplification. Tokens change over a RANGE (opening a block
+        // comment retokenizes every line it swallows), and inside that
+        // range a line's brackets can change while the starting stack does
+        // not -- a comment that swallows a balanced `{ ... }` leaves the
+        // stack identical on both sides of it. Converging early there
+        // would leave those brackets painted as code.
+        let bracketCleanLine = 1000000000;
+        let bracketDirtyFrom = rx.reactive<int>(0);
+        let bracketDirtyThrough = rx.reactive<int>(1000000000);
+
+        let markBracketsDirty = (fromLine: int, throughLine: int) => {
+            if !bracketColorizationEnabled {
+                return;
+            }
+            let firstLine = fromLine < 0 ? 0 : fromLine;
+            if firstLine < rx.get(bracketDirtyFrom) {
+                bracketDirtyFrom := firstLine;
+            }
+            if throughLine > rx.get(bracketDirtyThrough) {
+                bracketDirtyThrough := throughLine;
+            }
+        };
+
+        // Mirror an edit's structural change into the bracket caches, for
+        // the same reason spliceTokenCache does it for the TextMate ones:
+        // both are addressed by line number, so they have to already be in
+        // the document's new index space before anything reads them.
+        let spliceBracketCaches = (startLine: int, removedCount: int, insertedCount: int) => {
+            if removedCount == insertedCount {
+                // Nothing moved -- the common case (typing, backspace, an
+                // in-place replace). The lines themselves are rescanned
+                // anyway; only their POSITIONS would need fixing here.
+                return;
+            }
+            let buckets: [][]BracketToken = rx.get(bracketTokens);
+            if startLine > buckets.length || startLine > bracketStacks.length {
+                return;
+            }
+            let removableTokens = removedCount;
+            if startLine + removableTokens > buckets.length {
+                removableTokens = buckets.length - startLine;
+            }
+            for (let i = 0; i < removableTokens; i++) {
+                buckets.remove(startLine);
+            }
+            for (let i = 0; i < insertedCount; i++) {
+                let empty: []BracketToken = [];
+                buckets.insert(startLine + i, empty);
+            }
+            bracketTokens := buckets;
+
+            let removableStacks = removedCount;
+            if startLine + removableStacks > bracketStacks.length {
+                removableStacks = bracketStacks.length - startLine;
+            }
+            for (let i = 0; i < removableStacks; i++) {
+                bracketStacks.remove(startLine);
+            }
+            for (let i = 0; i < insertedCount; i++) {
+                // A placeholder stack, immediately overwritten by the
+                // rescan the edit also schedules. It only has to exist so
+                // the array stays as long as the document.
+                let empty: []int = [];
+                bracketStacks.insert(startLine + i, empty);
+            }
+        };
+
         // Apply an edit's STRUCTURAL change to the cache: the same
         // splice the document and the engine both just performed.
         //
@@ -1045,6 +1157,35 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 }
             }
 
+            // Brackets are read off these very tokens (a `{` inside a
+            // comment is not a bracket), so a reply that repaints a line
+            // can change its brackets even though its text never moved --
+            // typing `/*` is exactly that. Marked as a RANGE, since every
+            // line the reply touched must be rescanned rather than the
+            // rescan being allowed to converge inside it.
+            if !result.incremental {
+                markBracketsDirty(0, bracketCleanLine);
+            }
+            else {
+                let firstDirty = -1;
+                let lastDirty = -1;
+                for token in result.tokens {
+                    let line = rebaseLine(token.lineIndex, result.version);
+                    if line < 0 {
+                        continue;
+                    }
+                    if firstDirty < 0 || line < firstDirty {
+                        firstDirty = line;
+                    }
+                    if line > lastDirty {
+                        lastDirty = line;
+                    }
+                }
+                if firstDirty >= 0 {
+                    markBracketsDirty(firstDirty, lastDirty);
+                }
+            }
+
             // This reply is consumed, so no future reply can refer to a
             // version at or below it.
             dropEditsUpTo(result.version);
@@ -1189,6 +1330,100 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             semanticCacheVersion := rx.get(semanticCacheVersion) + 1;
         };
 
+        let bracketStacksEqual = (a: []int, b: []int): bool => {
+            if a.length != b.length {
+                return false;
+            }
+            for (let i = 0; i < a.length; i++) {
+                if a[i] != b[i] {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        // Rescan brackets over whatever range is currently dirty.
+        //
+        // Walks the document forward from the first dirty line carrying a
+        // stack of open brackets, assigning each bracket the depth of the
+        // pair it belongs to, and stops as soon as it reaches a line that
+        // already began with the very same stack (see bracketDirtyThrough
+        // for why that is only allowed past the changed range). Typing a
+        // character that is not a bracket therefore costs one line.
+        let refreshBrackets = () => {
+            if !bracketColorizationEnabled {
+                return;
+            }
+            let start: int = rx.get(bracketDirtyFrom);
+            let dirtyThrough: int = rx.get(bracketDirtyThrough);
+            let lineCount = doc.lineCount();
+            if start >= lineCount {
+                bracketDirtyFrom := bracketCleanLine;
+                bracketDirtyThrough := -1;
+                return;
+            }
+
+            let buckets: [][]BracketToken = rx.get(bracketTokens);
+            // Both caches are spliced on every edit, so this only has to
+            // fix up the tail after a file load or a reload.
+            while buckets.length < lineCount {
+                let empty: []BracketToken = [];
+                buckets.push(empty);
+            }
+            while buckets.length > lineCount {
+                buckets.pop();
+            }
+            while bracketStacks.length < lineCount {
+                let empty: []int = [];
+                bracketStacks.push(empty);
+            }
+            while bracketStacks.length > lineCount {
+                bracketStacks.pop();
+            }
+
+            let tokenBuckets: [][]Token = rx.get(tokenCache);
+
+            // The state at the start of `start`, which the edit that
+            // dirtied it cannot have changed -- an edit on a line never
+            // moves the brackets that were already open before it.
+            let stack: []int = [];
+            for kind in bracketStacks[start] {
+                stack.push(kind);
+            }
+
+            for (let lineIndex = start; lineIndex < lineCount; lineIndex++) {
+                if lineIndex > start {
+                    if lineIndex > dirtyThrough && bracketStacksEqual(bracketStacks[lineIndex], stack) {
+                        // Converged: this line already began exactly here,
+                        // so it and everything below it are unchanged.
+                        break;
+                    }
+                    let saved: []int = [];
+                    for kind in stack {
+                        saved.push(kind);
+                    }
+                    bracketStacks[lineIndex] = saved;
+                }
+
+                let out: []BracketToken = [];
+                // doc.line() rather than doc.lineText(): the latter clones
+                // the line into a fresh str, and a full-document rescan
+                // would then allocate one string per line for nothing.
+                let tokens: []Token = [];
+                if lineIndex < tokenBuckets.length {
+                    tokens = tokenBuckets[lineIndex];
+                }
+                scanLineBrackets(doc.line(lineIndex), tokens, stack, out);
+
+                buckets[lineIndex] = out;
+            }
+
+            bracketTokens := buckets;
+            bracketCacheVersion := rx.get(bracketCacheVersion) + 1;
+            bracketDirtyFrom := bracketCleanLine;
+            bracketDirtyThrough := -1;
+        };
+
         // Drain replies and merge them. Called once per frame from the
         // render pass rather than from inside a computed, because merging
         // is a side effect and a computed may be skipped or re-run at the
@@ -1329,6 +1564,40 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         loadTheme();
 
         let defaultTextColor = (): Color => "#FFF";
+
+        // The bracket colour cycle for the loaded theme, resolved once and
+        // recomputed only when the theme itself changes.
+        let bracketPalette = rx.computed<BracketPalette>(() => {
+            let loaded = rx.get(theme);
+            if !loaded {
+                // No theme yet: VS Code's dark defaults, which is what the
+                // rest of the editor draws with until one loads too.
+                return resolveBracketPalette("dark", none);
+            }
+            return resolveBracketPalette(loaded.type, loaded.colors);
+        });
+
+        // The colour a bracket at `level` is drawn in, or none when this
+        // theme leaves the cycle empty (every slot transparent) and nothing
+        // should be recoloured at all.
+        //
+        // The modulo IS the rainbow: depth 0 takes the first colour, and
+        // once the colours run out it starts over, so deeply nested code
+        // repeats rather than running out of colours. VS Code spells the
+        // same thing `level % 30` into a table of 30 CSS classes, 30 being
+        // the lowest common multiple of 1..6 so that the cycle comes out
+        // right for any palette size -- with the palette in hand directly,
+        // one modulo does it.
+        let bracketColorFor = (level: int): Color | none => {
+            let palette: BracketPalette = rx.get(bracketPalette);
+            if level < 0 {
+                return palette.unexpectedColor;
+            }
+            if palette.levelColors.length == 0 {
+                return none;
+            }
+            return palette.levelColors[level % palette.levelColors.length];
+        };
 
         // TextMate scope stacks go from least specific to most specific
         // (e.g. ["source.ts", "meta.block.ts", "keyword.control.ts"]), and
@@ -1776,6 +2045,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // MOVED keep their colours in the meantime instead of being
             // redrawn with a neighbour's.
             spliceTokenCache(change.startLine, change.removedCount, change.insertedCount);
+            // The same shift for the bracket caches, then a rescan of
+            // exactly the lines whose text changed. Everything below them
+            // is reached only if the edit actually altered the bracket
+            // balance, which the rescan discovers for itself.
+            spliceBracketCaches(change.startLine, change.removedCount, change.insertedCount);
+            let bracketDirtyLast = change.startLine + change.insertedCount - 1;
+            markBracketsDirty(change.startLine,
+                bracketDirtyLast < change.startLine ? change.startLine : bracketDirtyLast);
             // Remember the edit so replies still in flight -- which are
             // phrased in an older document's line numbers -- can be
             // rebased onto the document as it is now.
@@ -1942,6 +2219,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
 
             drainHighlightResults();
+
+            // After draining, never before: brackets are derived from the
+            // tokens those replies just merged, so rescanning first would
+            // read the previous frame's view of which `{` are inside
+            // comments. Cheap when nothing is dirty, which is most frames.
+            refreshBrackets();
 
             // Reading the computed is what evaluates it, and evaluating it
             // is what sends a hover's code to the highlight engine. It
@@ -2221,22 +2504,29 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // Emit one run of a line, split wherever a semantic token covers
         // part of it.
         //
-        // This is where the two highlighting layers meet, and the order is
-        // the whole point: the TextMate colour is the BASE, and semantic
-        // tokens are painted over the parts of it they have an opinion
-        // about. That way punctuation, keywords, strings and comments keep
-        // the colours the grammar gives them -- semantic tokens say
-        // nothing about those -- while an identifier the type checker
-        // recognises is recoloured for what it actually is. It also means
-        // the editor looks right before the language server is up, and
-        // degrades back to exactly that if it dies.
+        // This is where the highlighting layers meet, and the order is the
+        // whole point: the TextMate colour is the BASE, and the overrides
+        // are painted over the parts of it they have an opinion about. That
+        // way punctuation, keywords, strings and comments keep the colours
+        // the grammar gives them, while an identifier the type checker
+        // recognises is recoloured for what it actually is, and a bracket
+        // is recoloured for how deeply it nests. It also means the editor
+        // looks right before the language server is up, and degrades back
+        // to exactly that if it dies.
         //
-        // `semantic` is a single line's tokens, sorted and non-overlapping
-        // (see applySemanticSpans, which clips them per line).
+        // `overrides` is one line's worth, sorted by offset -- see
+        // lineColourOverrides, which is the only thing that builds them.
         let pushColouredRun = (parts: []HighlightToken, lineText: str,
-            start: int, end: int, baseColor: Color, semantic: []SemanticToken) => {
+            start: int, end: int, baseColor: Color, overrides: []ColourOverride) => {
             let position = start;
-            for token in semantic {
+            for token in overrides {
+                // Already behind the cursor, or beyond this run. The first
+                // half is also what resolves any overlap BETWEEN overrides:
+                // whichever one starts earlier wins the bytes they share,
+                // and the loser is dropped rather than splitting the run in
+                // two. Semantic tokens cover identifiers and bracket
+                // colours cover single punctuation characters, so the two
+                // never actually meet.
                 if token.endIndex <= position || token.startIndex >= end {
                     continue;
                 }
@@ -2254,14 +2544,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     });
                 }
                 if tokenEnd > tokenStart {
-                    let color: Color | none = getScopeColor(token.scope);
                     parts.push({
                         text: lineText.slice(tokenStart, tokenEnd),
-                        // A scope this theme has no rule for leaves the
-                        // TextMate colour standing, rather than falling
-                        // back to plain white and making the line worse
-                        // than it was without semantic tokens at all.
-                        color: color ? color : baseColor,
+                        color: token.color,
                     });
                     position = tokenEnd;
                 }
@@ -2281,10 +2566,10 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // typing froze. Tokens are bucketed by line once (see
         // `tokensByLine`) so this only ever walks its own line's tokens.
         //
-        // `semantic` is that same line's semantic tokens, painted over the
-        // TextMate ones by pushColouredRun above; pass an empty array for
-        // text that has no language server behind it.
-        let splitLineTokens = (lineText: str, tokens: []Token, semantic: []SemanticToken): []HighlightToken => {
+        // `overrides` is that same line's semantic and bracket colours,
+        // painted over the TextMate ones by pushColouredRun above; pass an
+        // empty array for text that has neither.
+        let splitLineTokens = (lineText: str, tokens: []Token, overrides: []ColourOverride): []HighlightToken => {
             let parts: []HighlightToken = [];
             let position = 0;
 
@@ -2302,20 +2587,20 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 let tokenStart = unicode.clusterStart(lineText, token.startIndex);
                 if position < tokenStart && tokenStart <= lineText.length {
                     pushColouredRun(parts, lineText, position, tokenStart,
-                        defaultTextColor(), semantic);
+                        defaultTextColor(), overrides);
                 }
                 let rawEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
                 let tokenEnd = unicode.clusterStart(lineText, rawEnd);
                 if tokenEnd > tokenStart {
                     pushColouredRun(parts, lineText, tokenStart, tokenEnd,
-                        getFirstScopeColor(token.scopes), semantic);
+                        getFirstScopeColor(token.scopes), overrides);
                     position = tokenEnd;
                 }
             }
 
             if position < lineText.length {
                 pushColouredRun(parts, lineText, position, lineText.length,
-                    defaultTextColor(), semantic);
+                    defaultTextColor(), overrides);
             }
             return parts;
         };
@@ -2332,6 +2617,76 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // VISIBLE lines are ever asked for (see the render loop's use of
         // scroll.visibleRange), so frame cost is O(lines on screen) rather
         // than O(lines in file).
+        // Everything that recolours part of a line, merged into one list in
+        // offset order.
+        //
+        // The two sources are independent and never overlap in practice --
+        // semantic tokens land on identifiers, bracket colours on single
+        // punctuation characters -- so merging them here means the painter
+        // below stays a single pass over a single list, whatever ends up
+        // feeding it.
+        let lineColourOverrides = (lineIndex: int): []ColourOverride => {
+            // Read so this re-runs when either cache is replaced. Both are
+            // swapped wholesale, and without the versions nothing would
+            // notice until the next edit moved the TextMate tokens.
+            rx.get(semanticCacheVersion);
+            rx.get(bracketCacheVersion);
+
+            let semantic: []SemanticToken = [];
+            let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
+            // A cache is only as long as the document was when its reply
+            // arrived, so a line typed since then simply has no bucket --
+            // and draws with the layers that do until the next reply.
+            if lineIndex < semanticBuckets.length {
+                semantic = semanticBuckets[lineIndex];
+            }
+
+            let brackets: []BracketToken = [];
+            if bracketColorizationEnabled {
+                let bracketBuckets: [][]BracketToken = rx.get(bracketTokens);
+                if lineIndex < bracketBuckets.length {
+                    brackets = bracketBuckets[lineIndex];
+                }
+            }
+
+            let overrides: []ColourOverride = [];
+            let si = 0;
+            let bi = 0;
+            while si < semantic.length || bi < brackets.length {
+                let takeBracket = si >= semantic.length;
+                if !takeBracket && bi < brackets.length {
+                    takeBracket = brackets[bi].startIndex <= semantic[si].startIndex;
+                }
+                if takeBracket {
+                    let color = bracketColorFor(brackets[bi].level);
+                    if color {
+                        overrides.push({
+                            startIndex: brackets[bi].startIndex,
+                            endIndex: brackets[bi].endIndex,
+                            color: color,
+                        });
+                    }
+                    bi = bi + 1;
+                }
+                else {
+                    // A scope this theme has no rule for is dropped rather
+                    // than forced to some default, leaving the TextMate
+                    // colour standing -- which is better than the line was
+                    // without semantic tokens at all.
+                    let color = getScopeColor(semantic[si].scope);
+                    if color {
+                        overrides.push({
+                            startIndex: semantic[si].startIndex,
+                            endIndex: semantic[si].endIndex,
+                            color: color,
+                        });
+                    }
+                    si = si + 1;
+                }
+            }
+            return overrides;
+        };
+
         let highlightedLine = (lineIndex: int): []HighlightToken => {
             let lineText = doc.lineText(lineIndex);
             let buckets: [][]Token = rx.get(tokensByLine);
@@ -2339,20 +2694,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
-            // Read so this re-runs when a semantic reply lands: the cache
-            // is replaced wholesale, and without the version nothing would
-            // notice until the next edit moved the TextMate tokens.
-            rx.get(semanticCacheVersion);
-            let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
-            let semanticForLine: []SemanticToken = [];
-            // The semantic cache is only as long as the document was when
-            // its reply arrived, so a line typed since then simply has no
-            // bucket -- and draws with the TextMate layer alone until the
-            // next reply.
-            if lineIndex < semanticBuckets.length {
-                semanticForLine = semanticBuckets[lineIndex];
-            }
-            return splitLineTokens(lineText, tokensForLine, semanticForLine);
+            return splitLineTokens(lineText, tokensForLine, lineColourOverrides(lineIndex));
         };
 
         // Coloured runs for one line of the popup's code, mirroring
@@ -2364,11 +2706,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
-            // No semantic layer for the hover popup: its text is a bare
-            // signature the language server produced, not a position in
-            // any document, so there is nothing to classify it against.
-            let noSemantic: []SemanticToken = [];
-            return splitLineTokens(lineText, tokensForLine, noSemantic);
+            // No overrides for the hover popup: its text is a bare
+            // signature the language server produced, not a position in any
+            // document, so there is nothing to classify it against -- and
+            // its brackets are part of a rendered signature rather than
+            // code being edited, which VS Code does not rainbow either.
+            let noOverrides: []ColourOverride = [];
+            return splitLineTokens(lineText, tokensForLine, noOverrides);
         };
 
         return () => {
