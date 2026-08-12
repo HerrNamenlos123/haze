@@ -66,6 +66,29 @@ namespace profiling {
         return frameRefForNameAndLoc(frame.name, frame.sourceloc);
     }
 
+    // One FrameRef per entry of the profile's frame table, hashed once, ready to be handed
+    // out by index.
+    //
+    // Both sample kinds address their frames by exactly this index already: a CPU sample's
+    // `frames` are indices into result.frames outright, and a memory capture's
+    // sys.StackFrame carries the same index as its `id` (hzstd_profiling.c sets it from the
+    // frame-table index when it resolves the capture). So neither of them ever needs to
+    // build a FrameRef -- or re-resolve a source location, or re-hash a function name --
+    // more than once for a given frame, no matter how many samples land on it.
+    //
+    // That matters because the two are wildly different magnitudes: a large session has a
+    // few thousand distinct frames but tens of millions of (sample, depth) pairs referring
+    // to them. Building the FrameRef at each pair, as this used to, meant re-doing all of
+    // that work millions of times over the same few thousand frames.
+    fn buildFrameRefTable(result: ProfilingResult): []ChromeTrace.FrameRef {
+        let frameRefs: []ChromeTrace.FrameRef = [];
+        frameRefs.reserve(result.frames.length);
+        for (let i = 0; i < result.frames.length; i++) {
+            frameRefs.push(ChromeTrace.frameRefWithHash(frameRefForFrame(result.frames[i])));
+        }
+        return frameRefs;
+    }
+
     fn frameRefForNameAndLoc(name: str, sourceloc: SourceLocation): ChromeTrace.FrameRef {
         let filename = sourceloc.filename();
         let line = sourceloc.line();
@@ -90,13 +113,38 @@ namespace profiling {
     // Boehm's own heap-growth-triggered collection over and over -- 16 GC-marker threads
     // pegged at 100% CPU each, for tens of seconds, entirely inside this one array's growth.
     // The exact final size is already known up front (stacktrace.frames.length minus the
-    // skipped internal frames), so there's no reason to pay for incremental growth at all.
-    fn frameRefsForStacktrace(stacktrace: sys.Stacktrace): []ChromeTrace.FrameRef {
+    // skipped internal frames, plus the leaf), so there's no reason to pay for incremental
+    // growth at all.
+    //
+    // Produces the order CpuProfileBuilder.addSample wants -- OUTERMOST-first, since it
+    // walks its input front-to-back descending the call tree (see addSamplesToProfile
+    // above, which reverses for the same reason) -- with `leaf` appended last so it lands
+    // deepest. A capture's own frames are innermost-first, so the reversal happens here,
+    // written straight into the final array. Building the natural-order list first and
+    // reversing it into a second array (which is what this used to do, from the call site)
+    // cost an extra array and an extra full copy on every one of hundreds of thousands of
+    // captures, for an intermediate that was discarded a line later.
+    fn sampleFrameRefsForStacktrace(
+        stacktrace: sys.Stacktrace,
+        frameRefs: []ChromeTrace.FrameRef,
+        leaf: ChromeTrace.FrameRef,
+    ): []ChromeTrace.FrameRef {
         let frames: []ChromeTrace.FrameRef = [];
-        frames.reserve(stacktrace.frames.length - stacktrace.skip_n_frames);
-        for (let i = stacktrace.skip_n_frames; i < stacktrace.frames.length; i++) {
-            frames.push(frameRefForStackFrame(stacktrace.frames[i]));
+        frames.reserve(stacktrace.frames.length - stacktrace.skip_n_frames + 1);
+        for (let i = stacktrace.frames.length - 1; i >= stacktrace.skip_n_frames; i--) {
+            let stackframe = stacktrace.frames[i];
+            // Normal path: the capture's frame index into the shared frame table (see
+            // buildFrameRefTable). The range check is not expected to fail for anything this
+            // profiler produces -- it exists so a stacktrace from some other source, whose
+            // `id` means something else or nothing at all, degrades to the old build-it-here
+            // behavior instead of panicking on an out-of-range index.
+            if stackframe.id >= 0 && stackframe.id < frameRefs.length {
+                frames.push(frameRefs[stackframe.id]);
+            } else {
+                frames.push(frameRefForStackFrame(stackframe));
+            }
         }
+        frames.push(leaf);
         return frames;
     }
 
@@ -119,7 +167,11 @@ namespace profiling {
     // timeDelta then spans the whole gap on its own). Lost samples are different: the kernel
     // (PERF_RECORD_LOST) reports a hard fact that real code definitely ran there, so that still
     // gets its own marker via addLostSamplesMarker.
-    fn addSamplesToProfile(builder: mut ChromeTrace.CpuProfileBuilder, result: ProfilingResult): void {
+    fn addSamplesToProfile(
+        builder: mut ChromeTrace.CpuProfileBuilder,
+        result: ProfilingResult,
+        frameRefs: []ChromeTrace.FrameRef,
+    ): void {
         let nominalIntervalUs = 1000000.0 / (result.sampling_rate_hz as real);
         let offCpuThresholdUs = nominalIntervalUs * 4.0;
 
@@ -144,9 +196,12 @@ namespace profiling {
             }
 
             let frames: []ChromeTrace.FrameRef = [];
+            frames.reserve(sample.frames.length);
             // sample.frames is innermost-first; CpuProfileBuilder.addSample wants outermost-first.
+            // Each entry is already a frame-table index, so this is a lookup into the shared
+            // table (see buildFrameRefTable) rather than a fresh FrameRef per sample per depth.
             for (let depth = sample.frames.length - 1; depth >= 0; depth--) {
-                frames.push(frameRefForFrame(result.frames[sample.frames[depth]]));
+                frames.push(frameRefs[sample.frames[depth]]);
             }
             builder.addSample(timeUs, frames, sample.truncated);
 
@@ -155,9 +210,16 @@ namespace profiling {
     }
 
     export fn buildCpuProfile(result: ProfilingResult): ChromeTrace.CpuProfile {
+        return buildCpuProfile(result, buildFrameRefTable(result));
+    }
+
+    // Overload taking an already-built frame-ref table, so a caller that builds more than one
+    // profile out of the same result (buildTrace builds both a CPU and an allocation profile)
+    // pays for it once rather than once per profile.
+    fn buildCpuProfile(result: ProfilingResult, frameRefs: []ChromeTrace.FrameRef): ChromeTrace.CpuProfile {
         let builder = ChromeTrace.CpuProfileBuilder();
         builder.reserveSamples(result.samples.length);
-        addSamplesToProfile(builder, result);
+        addSamplesToProfile(builder, result, frameRefs);
         return builder.build();
     }
 
@@ -210,17 +272,42 @@ namespace profiling {
         return f"{kind} ({frame.sizeBytes} bytes)";
     }
 
+    // Progress reporting cadence for the long per-capture loops below. Time-based rather
+    // than count-based so the output rate stays the same whether a session has ten thousand
+    // captures or ten million; the index test is only there to keep the clock read itself
+    // off the innermost path.
+    const progressIntervalSeconds = 0.1;
+    const progressCheckInterval = 4096;
+
     export fn buildTrace(result: ProfilingResult): ChromeTrace.Trace {
         let builder = ChromeTrace.TraceBuilder(hazeProcessPid);
-        // +1 for the addInstantMarker below is an underestimate of the real total (addTask/
-        // addCpuProfileSamples add more), but getting close in one shot avoids most of the
-        // doubling-regrowth copies a large memoryInstrumentationFrames count would otherwise
-        // cause -- see TraceBuilder.reserveEvents.
-        builder.reserveEvents(result.memoryInstrumentationFrames.length + 8);
+        // Sized for the real total, not just the addInstantMarker calls below: both
+        // profiles also expand into one ProfileChunk event per chunkSampleCount samples,
+        // and on a large session that tail is thousands of events. Reserving only for the
+        // markers left those chunks to trigger one final doubling of an array that is
+        // already hundreds of megabytes -- an allocate-and-copy of the whole thing, plus
+        // the "very large block" GC warning that comes with it. See
+        // TraceBuilder.reserveEvents.
+        //
+        // Mirrors ChromeTrace's own chunk granularity rather than reading it from there
+        // (it is an unexported implementation detail of that namespace). This only ever
+        // feeds a reserve(), so the two drifting apart costs at worst a slightly-off
+        // estimate, never a wrong trace.
+        const samplesPerProfileChunk = 100;
+        let allocationCount = result.memoryInstrumentationFrames.length;
+        builder.reserveEvents(
+            allocationCount
+                + allocationCount / samplesPerProfileChunk
+                + result.samples.length / samplesPerProfileChunk
+                + 16,
+        );
         builder.addThread(mainThreadTid, "CrRendererMain", true);
         builder.addFrame(mainThreadTid, "HZFRAME0", "file:///haze");
 
-        let profile = buildCpuProfile(result);
+        // Built once and shared by both profiles below -- see buildFrameRefTable.
+        let frameRefs = buildFrameRefTable(result);
+
+        let profile = buildCpuProfile(result, frameRefs);
         // This "task" block is what gives the CPU flame chart somewhere to render into (see
         // ChromeTrace's file header) and anchors the sample ordering invariant; the profiled
         // session is represented as a single task spanning its whole duration.
@@ -298,27 +385,36 @@ namespace profiling {
         // timeline, and the same stacks, just no longer written out five
         // million times.
         if result.memoryInstrumentationFrames.length > 0 {
+            let allocBuilder = ChromeTrace.CpuProfileBuilder();
+            allocBuilder.reserveSamples(result.memoryInstrumentationFrames.length);
+
+            // One empty list shared by every marker below rather than one built per
+            // capture: addInstantMarker only ever reads it, and an empty array
+            // literal inside this loop would be hundreds of thousands of
+            // allocations that exist purely to be observed as empty.
+            let noFrames: []ChromeTrace.FrameRef = [];
+
+            // Marker stream and allocation profile are built in ONE pass over the
+            // captures, not two. They feed different builders, so the interleaving
+            // changes nothing about either one's contents or ordering -- but the two
+            // passes each independently recomputed allocationMarkerName(frame) (two
+            // formatted strings per capture, thrown away immediately), and each
+            // independently re-read the capture. Once through, computing the name
+            // once, does the same work for half the string formatting.
+            let lastProgressAt = time.now();
             for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
                 let frame = result.memoryInstrumentationFrames[i];
-                let noFrames: []ChromeTrace.FrameRef = [];
+                let markerName = allocationMarkerName(frame);
+                let tsUs = frame.timestamp * 1000000.0;
+
                 builder.addInstantMarker(
                     mainThreadTid,
-                    frame.timestamp * 1000000.0,
-                    allocationMarkerName(frame),
+                    tsUs,
+                    markerName,
                     noFrames,
                     frame.dataType.length > 0 ? frame.dataType : none,
                     frame.sizeBytes,
                 );
-            }
-
-            builder.addThread(allocationThreadTid, "HeapAllocations");
-
-            let allocBuilder = ChromeTrace.CpuProfileBuilder();
-            allocBuilder.reserveSamples(result.memoryInstrumentationFrames.length);
-
-            for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
-                let frame = result.memoryInstrumentationFrames[i];
-                let frames = frameRefsForStacktrace(frame.stacktrace);
 
                 // A CpuProfile sample carries no size/type of its own (V8's
                 // SamplingHeapProfileNode has selfSize for exactly this; the
@@ -336,28 +432,31 @@ namespace profiling {
                 // and separately countable. The flame chart then reads as
                 // "this call path allocated N of these", which is the
                 // question an allocation profile exists to answer.
-                //
-                // frameRefsForStacktrace returns the capture's own order,
-                // which is innermost-first -- but CpuProfileBuilder.addSample
-                // walks its input front-to-back descending the call tree, so
-                // it wants OUTERMOST-first (see addSamplesToProfile above,
-                // which reverses for exactly this reason). Reverse here too,
-                // then put the synthetic size/type frame LAST so it lands
-                // deepest, as the leaf.
-                let outermostFirst: []ChromeTrace.FrameRef = [];
-                outermostFirst.reserve(frames.length + 1);
-                for (let f = frames.length - 1; f >= 0; f--) {
-                    outermostFirst.push(frames[f]);
-                }
-                outermostFirst.push(ChromeTrace.FrameRef {
-                    name: allocationMarkerName(frame),
-                    url: "",
-                    line: 0,
-                    column: 0,
-                });
+                allocBuilder.addSample(
+                    tsUs,
+                    sampleFrameRefsForStacktrace(
+                        frame.stacktrace,
+                        frameRefs,
+                        ChromeTrace.FrameRef { name: markerName, url: "", line: 0, column: 0 },
+                    ),
+                );
 
-                allocBuilder.addSample(frame.timestamp * 1000000.0, outermostFirst);
+                // Turning captures into events is the longest silent stretch of a large
+                // session, so report progress -- but on a time cadence, not per capture: at
+                // this call volume an unconditional print per iteration costs far more than
+                // the work being reported on (and time.now() itself is only worth asking a
+                // few thousand times, hence the cheap index test guarding it).
+                if i % progressCheckInterval == 0 {
+                    let nowSeconds = time.now();
+                    if nowSeconds - lastProgressAt >= progressIntervalSeconds {
+                        fmt.print(f"\r  building allocation events {i} / {allocationCount}");
+                        lastProgressAt = nowSeconds;
+                    }
+                }
             }
+            fmt.print(f"\r  building allocation events {allocationCount} / {allocationCount}\n");
+
+            builder.addThread(allocationThreadTid, "HeapAllocations");
 
             let allocProfile = allocBuilder.build();
             builder.addTask(

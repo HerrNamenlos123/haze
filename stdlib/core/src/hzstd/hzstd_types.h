@@ -349,6 +349,16 @@ typedef struct {
   // the only way a "Grow ..." instrumentation event can report what it's
   // growing. NULL if the array was created with no metadata available.
   const char *elementTypeName;
+  // true when `buffer` is storage this array does NOT own -- a slice of some
+  // larger block handed in by hzstd_dynamic_array_init_borrowed rather than
+  // something obtained from hzstd_heap_allocate. Such a pointer must never
+  // reach hzstd_heap_realloc (it isn't the base of a GC object, and growing
+  // in place would scribble over whatever shares the block), so the first
+  // mutation that outgrows the borrowed region copies out into a real owned
+  // buffer instead and clears this -- see
+  // hzstd_dynamic_array_realloc_buffer. Reading, in-place writes, and
+  // shrinking all stay on the borrowed storage.
+  bool borrowed_buffer;
 } hzstd_dynamic_array_t;
 
 // This type is to be used for encoding the actual type in the code, so we know

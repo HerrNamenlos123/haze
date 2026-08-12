@@ -26,6 +26,9 @@
       "name": "Launch CodeEditor",
       "program": "${workspaceFolder}/__haze__/codeeditor/bin/codeeditor",
       "args": [],
+      "env": {
+        "HAZE_PROFILE": "TRUE"
+      },
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build Code Editor",
       // SIGPWR/SIGXCPU are Boehm GC's internal stop-the-world signals (fire on every GC cycle);

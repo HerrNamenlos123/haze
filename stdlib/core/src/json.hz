@@ -713,12 +713,35 @@ namespace json {
         pretty: bool = false;
     }
 
-    export fn stringify<T>(value: T, args: EncodeArgs = {}): str {
-        let node = encodeToJsonNode<T>(Alloc.arena(), value);
+    // Encodes into `allocator` rather than into a private, single-use arena.
+    //
+    // The default overload below is the right thing for a one-off stringify: the
+    // arena it creates holds the intermediate node tree AND the returned string,
+    // and becomes collectible as a whole the moment the caller drops that string.
+    // But a fresh arena is not free -- its first allocation commits a full
+    // HZSTD_DEFAULT_ARENA_CHUNK_SIZE chunk (64 KiB), regardless of how few bytes
+    // the value actually needs. Stringifying one small value at a time in a long
+    // loop therefore burns 64 KiB of garbage per iteration, which at hundreds of
+    // thousands of iterations is gigabytes of pure allocator churn for a few tens
+    // of megabytes of output.
+    //
+    // This overload lets such a caller amortize that: hand in one arena, reuse it
+    // for a batch of values, and drop it for a fresh one once the batch's peak
+    // memory is high enough to matter. The returned string is allocated from
+    // `allocator`, so it stays valid exactly as long as `allocator` does -- a
+    // caller that recycles arenas must be done with (or have copied) the string
+    // before it lets go of the arena it came from. See ChromeTrace.writeTrace for
+    // the motivating use.
+    export fn stringify<T>(allocator: Allocator, value: T, args: EncodeArgs = {}): str {
+        let node = encodeToJsonNode<T>(allocator, value);
         if !node {
             return "";
         }
         return node.print({ pretty: args.pretty });
+    }
+
+    export fn stringify<T>(value: T, args: EncodeArgs = {}): str {
+        return stringify<T>(Alloc.arena(), value, args);
     }
 }
 

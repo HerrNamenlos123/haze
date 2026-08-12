@@ -356,6 +356,13 @@ static void *hzstd_panic_handler_thread(void *_)
     frameArray->elem_size = sizeof(hzstd_stackframe_t);
     frameArray->size = 0;
     frameArray->capacity = HZSTD_PANIC_MAX_FRAMES;
+    // Hand-built means every field has to be set here explicitly -- these two
+    // are only ever read on a growth path this array never takes (capacity is
+    // fixed above and hzstd_panic_frame_array_push never grows), but leaving
+    // them as whatever the allocator handed back would make that a silent
+    // trap for anyone who later does grow it.
+    frameArray->elementTypeName = "hzstd_stackframe_t";
+    frameArray->borrowed_buffer = false;
 
     hzstd_panic_build_frames(allocator, frameArray);
 

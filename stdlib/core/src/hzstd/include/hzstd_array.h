@@ -125,6 +125,32 @@
 
 hzstd_dynamic_array_t *hzstd_dynamic_array_create(
     hzstd_allocator_t allocator, size_t elem_size, size_t initial_capacity, const char *elementTypeName);
+
+// Turns storage the caller already has into a ready-to-use array of `count`
+// elements, allocating nothing at all: neither the control struct (the
+// caller supplies `da`) nor the elements (the caller supplies `buffer`).
+//
+// This exists for building a large number of small arrays at once. The
+// normal path costs two GC allocations per array (control struct + backing
+// buffer, the latter rounded up to HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY), so
+// N tiny arrays means 2N small, individually-tracked, long-lived GC objects
+// -- the shape conservative mark-and-sweep handles worst. Carving all N out
+// of one control-struct block and one element block instead makes that two
+// allocations total. See hzstd_profiling_end's per-allocation stack traces
+// for the motivating case.
+//
+// The caller must keep the underlying blocks alive for as long as any array
+// carved out of them is reachable, and must not hand the same elements to
+// two arrays. Everything else behaves exactly like a normal array: reads,
+// in-place writes, pop/remove/clear all work on the borrowed storage, and
+// the first push/insert/reserve that outgrows `count` transparently copies
+// out into an owned GC buffer (see hzstd_dynamic_array_realloc_buffer), so
+// nothing downstream has to know the array started out borrowed.
+//
+// `count == 0` is allowed and yields a plain empty array; `buffer` is
+// ignored in that case.
+void hzstd_dynamic_array_init_borrowed(
+    hzstd_dynamic_array_t *da, size_t elem_size, void *buffer, size_t count, const char *elementTypeName);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_reserve(hzstd_dynamic_array_t *da, size_t new_capacity);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_shrink_to_fit(hzstd_dynamic_array_t *da);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_push(hzstd_dynamic_array_t *da, const void *elem);

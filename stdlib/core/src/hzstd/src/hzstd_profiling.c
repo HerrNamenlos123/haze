@@ -522,8 +522,7 @@ static void hzstd_fp_resolve_stack_bounds(void)
   hz_fp_stack_high = 1;
 }
 
-static void
-hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
+static void hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
 {
   out->depth = 0;
 
@@ -601,10 +600,11 @@ hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_fram
 // the unwind itself (the actually expensive part) always happens before
 // this is called, fully outside the lock.
 static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *context,
-                                                    hzstd_memory_instrumentation_raw_frame_t raw)
+                                                   hzstd_memory_instrumentation_raw_frame_t raw)
 {
   pthread_mutex_lock(&context->memoryCapturesMutex);
-  if (!context->memoryCapturesTail || context->memoryCapturesTail->count == HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY) {
+  if (!context->memoryCapturesTail
+      || context->memoryCapturesTail->count == HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY) {
     // Same GC-scanning hazard as hzstd_profiling_sample_chunk_t's entries --
     // pcs[] values are opaque historical addresses, never real object
     // pointers the GC should trace, so they live in their own atomic
@@ -624,7 +624,8 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
     // it's now per-thread (see hzstd_memory.c) -- suppressing it here can't
     // affect any other thread concurrently allocating for real.
     hzstd_memory_instrumentation_state_t prevState = hzstd_temporarily_disable_memory_instrumentation();
-    hzstd_profiling_memory_capture_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_memory_capture_chunk_t), NULL);
+    hzstd_profiling_memory_capture_chunk_t *chunk
+        = hzstd_heap_allocate(sizeof(hzstd_profiling_memory_capture_chunk_t), NULL);
     chunk->next = NULL;
     chunk->count = 0;
     chunk->entries = hzstd_heap_allocate_atomic(
@@ -657,13 +658,17 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
 // for how badly wrong that can look (internal hzstd plumbing frames like
 // "hzstd_allocate"/"heap_allocator_impl" leaking into the trace as if they
 // were the user's own code).
-static void hzstd_trace_memory_impl(
-    hz_profiler_instrument_allocation_type type, size_t size, const char *dataType, int skip_n_frames, void *data)
+static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
+                                    size_t size,
+                                    const char *dataType,
+                                    int skip_n_frames,
+                                    void *data)
 {
   hzstd_profiling_context_t *context = data;
 
   if (!context->memoryInstrumentationRecordStacktraces) {
-    hzstd_memory_instrumentation_raw_frame_t raw = { .depth = 0, .sizeBytes = size, .allocationType = type, .dataType = dataType };
+    hzstd_memory_instrumentation_raw_frame_t raw
+        = { .depth = 0, .sizeBytes = size, .allocationType = type, .dataType = dataType };
     raw.timestamp = hzstd_time_now() - context->memoryInstrumentationTimeRef;
     hzstd_profiling_memory_captures_append(context, raw);
     return;
@@ -740,8 +745,8 @@ static void hzstd_profiling_samples_append(hzstd_profiling_context_t *context, h
     hzstd_profiling_sample_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t), NULL);
     chunk->next = NULL;
     chunk->count = 0;
-    chunk->entries
-        = hzstd_heap_allocate_atomic(HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t), NULL);
+    chunk->entries = hzstd_heap_allocate_atomic(
+        HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t), NULL);
     if (context->samples_tail) {
       context->samples_tail->next = chunk;
     }
@@ -1874,8 +1879,8 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   newContext.pid = hzstd_profiling_get_current_process_id();
 #endif
 
-  hzstd_profiling_context_t *context
-      = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext, "hzstd_profiling_context_t");
+  hzstd_profiling_context_t *context = HZSTD_ALLOC_STRUCT(
+      hzstd_make_heap_allocator(), hzstd_profiling_context_t, newContext, "hzstd_profiling_context_t");
   atomic_store(&context->sample_in_progress, 0);
 #ifdef HAZE_PLATFORM_LINUX
   int effectiveRateHz;
@@ -2278,7 +2283,8 @@ static void hzstd_profiling_dwarf_build_line_table(void)
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   size_t capacity = 1024;
   size_t count = 0;
-  hzstd_profiling_dwarf_line_t *lines = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
+  hzstd_profiling_dwarf_line_t *lines
+      = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
 
   Dwarf_Unsigned cuHeaderLength, abbrevOffset, typeOffset, nextCuHeaderOffset;
   Dwarf_Half versionStamp, addressSize, lengthSize, extensionSize, headerCuType;
@@ -3174,7 +3180,8 @@ static hzstd_profiling_sample_t hzstd_profiling_build_sample(hzstd_profiling_fra
                                                              hzstd_profiling_frame_index_t *frameIndex,
                                                              hzstd_profiling_raw_sample_t raw)
 {
-  hzstd_dynamic_array_t *frameIndices = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth, NULL);
+  hzstd_dynamic_array_t *frameIndices
+      = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth, NULL);
 
   for (uint16_t i = 0; i < raw.depth; i++) {
     hzstd_int_t index = (hzstd_int_t)hzstd_profiling_intern_frame(resultFrames, frameIndex, raw.pcs[i], i == 0);
@@ -3359,8 +3366,8 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   hzstd_profiling_frame_table_t frameTable = { 0 };
   hzstd_profiling_frame_index_t frameIndex;
   hzstd_profiling_frame_index_init(&frameIndex, 64);
-  hzstd_dynamic_array_t *samples
-      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_sample_t, context->sample_count, "hzstd_profiling_sample_t");
+  hzstd_dynamic_array_t *samples = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_profiling_sample_t, context->sample_count, "hzstd_profiling_sample_t");
 
   size_t processedCount = 0;
   double lastProgressPrintTime = 0.0;
@@ -3496,12 +3503,18 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     hz_profiler_instrument_allocation_type allocationType;
     const char *dataType;
   } hzstd_profiling_memory_capture_interned_t;
-  hzstd_arena_t *scratchArena = context->memoryCaptureCount > 0 ? hzstd_arena_create("Profiling postprocess scratch arena") : NULL;
-  hzstd_profiling_memory_capture_interned_t *internedMemoryCaptures
-      = context->memoryCaptureCount > 0
-      ? hzstd_arena_allocate(scratchArena, context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
+  hzstd_arena_t *scratchArena
+      = context->memoryCaptureCount > 0 ? hzstd_arena_create("Profiling postprocess scratch arena") : NULL;
+  hzstd_profiling_memory_capture_interned_t *internedMemoryCaptures = context->memoryCaptureCount > 0
+      ? hzstd_arena_allocate(scratchArena,
+                             context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
       : NULL;
   size_t memoryFramesProcessed = 0;
+  // Running total of every capture's depth, i.e. exactly how many
+  // hzstd_stackframe_t the second pass below will produce in total -- knowing
+  // it up front is what lets that pass carve all of them out of one block
+  // instead of allocating per capture.
+  size_t totalStackframeCount = 0;
   for (hzstd_profiling_memory_capture_chunk_t *chunk = context->memoryCapturesHead; chunk != NULL;
        chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
@@ -3518,6 +3531,7 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
       internedMemoryCaptures[memoryFramesProcessed].allocationType = raw.allocationType;
       internedMemoryCaptures[memoryFramesProcessed].dataType = raw.dataType;
       memoryFramesProcessed++;
+      totalStackframeCount += raw.depth;
     }
   }
 
@@ -3542,7 +3556,8 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // Convert the frame chunk-list into one exactly-sized contiguous array --
   // see the big comment on hzstd_profiling_frame_chunk_t for why this avoids
   // the doubling-growth GC warning a plain dynamic array would trip here.
-  hzstd_dynamic_array_t *frames = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, frameTable.count, "hzstd_profiling_frame_t");
+  hzstd_dynamic_array_t *frames
+      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_profiling_frame_t, frameTable.count, "hzstd_profiling_frame_t");
   for (hzstd_profiling_frame_chunk_t *chunk = frameTable.head; chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
       HZSTD_DYNAMIC_ARRAY_PUSH(frames, chunk->entries[i]);
@@ -3552,32 +3567,83 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // Second pass: turn each interned allocation capture into a real
   // hzstd_memory_instrumentation_frame_t, reading resolved frames straight
   // out of the now-finished `frames` array.
-  hzstd_dynamic_array_t *memoryInstrumentationFrames
-      = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_memory_instrumentation_frame_t, memoryFramesProcessed, "hzstd_memory_instrumentation_frame_t");
+  //
+  // Every capture needs its own hzstd_stacktrace_t, and a hzstd_stacktrace_t
+  // holds a hzstd_dynamic_array_t of frames -- which, built the normal way,
+  // is two GC allocations per capture (the control struct, plus a backing
+  // buffer rounded up to HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY even for a
+  // one-frame trace). At hundreds of thousands of captures that's the exact
+  // "very large number of small, long-lived objects" workload called out in
+  // hzstd_init_gc's GC_set_free_space_divisor comment: not just slow to
+  // allocate, but slow *forever after*, because every subsequent collection
+  // has to mark all of them individually.
+  //
+  // So all of it is carved out of two blocks instead -- one for every
+  // stacktrace's control struct, one for every stackframe of every trace,
+  // both sized exactly (totalStackframeCount was summed in the first pass
+  // above) -- and each trace gets a borrowed view over its own slice via
+  // hzstd_dynamic_array_init_borrowed. Two GC allocations for the whole
+  // result rather than two per capture, less total memory than before (no
+  // per-array minimum-capacity rounding), and the arrays still behave like
+  // ordinary arrays to everything downstream, Haze included: should anything
+  // ever push to one, it quietly copies itself out into an owned buffer
+  // first (see hzstd_dynamic_array_realloc_buffer).
+  //
+  // Both blocks stay reachable for exactly as long as they must: every
+  // element of the control-struct block is referenced by a
+  // hzstd_stacktrace_t inside memoryInstrumentationFrames, and every slice of
+  // the stackframe block is referenced by one of those control structs, so
+  // the two die precisely when the returned result does. They must be
+  // GC-scanned (plain hzstd_allocate, NOT the atomic variant): stackframes
+  // carry hzstd_str_t name/sourceloc pointers, and the control structs carry
+  // buffer pointers.
+  hzstd_stackframe_t *sharedStackframes = totalStackframeCount > 0
+      ? hzstd_allocate(allocator, totalStackframeCount * sizeof(hzstd_stackframe_t), "hzstd_stackframe_t")
+      : NULL;
+  hzstd_dynamic_array_t *sharedStacktraceArrays = memoryFramesProcessed > 0
+      ? hzstd_allocate(allocator, memoryFramesProcessed * sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t")
+      : NULL;
+  size_t stackframeCursor = 0;
+
+  hzstd_dynamic_array_t *memoryInstrumentationFrames = HZSTD_DYNAMIC_ARRAY_CREATE(
+      allocator, hzstd_memory_instrumentation_frame_t, memoryFramesProcessed, "hzstd_memory_instrumentation_frame_t");
   for (size_t i = 0; i < memoryFramesProcessed; i++) {
     hzstd_profiling_memory_capture_interned_t interned = internedMemoryCaptures[i];
     size_t depth = (size_t)interned.frameIndexCount;
-    hzstd_dynamic_array_t *stackframes = HZSTD_DYNAMIC_ARRAY_CREATE(allocator, hzstd_stackframe_t, depth, "hzstd_stackframe_t");
+    // NULL only when stack-trace recording was turned off for this session
+    // (HAZE_PROFILE_MEMORY_STACKTRACES=0 -- see hzstd_trace_memory_impl),
+    // which makes every capture depth 0 and the shared block unnecessary.
+    // Spelled out rather than left to `sharedStackframes + 0` so it never
+    // does arithmetic on a null pointer.
+    hzstd_stackframe_t *traceStackframes = sharedStackframes ? sharedStackframes + stackframeCursor : NULL;
     for (size_t d = 0; d < depth; d++) {
       hzstd_int_t frameTableIndex = interned.frameIndices[d];
-      hzstd_profiling_frame_t resolved = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, (size_t)frameTableIndex);
-      hzstd_stackframe_t sf = {
+      hzstd_profiling_frame_t resolved
+          = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_profiling_frame_t, (size_t)frameTableIndex);
+      traceStackframes[d] = (hzstd_stackframe_t) {
         .id = (size_t)frameTableIndex,
         .instructionPointer = resolved.address,
         .name = resolved.name,
         .sourceloc = resolved.sourceloc,
       };
-      HZSTD_DYNAMIC_ARRAY_PUSH(stackframes, sf);
     }
+    stackframeCursor += depth;
+
+    hzstd_dynamic_array_t *stackframes = &sharedStacktraceArrays[i];
+    hzstd_dynamic_array_init_borrowed(
+        stackframes, sizeof(hzstd_stackframe_t), traceStackframes, depth, "hzstd_stackframe_t");
+
     hzstd_memory_instrumentation_frame_t memFrame = {
       .stacktrace = (hzstd_stacktrace_t) { .frames = stackframes, .skip_n_frames = 0 },
       .timestamp = interned.timestamp,
       .sizeBytes = (hzstd_int_t)interned.sizeBytes,
       .allocationType = (hzstd_int_t)interned.allocationType,
-      .dataType = interned.dataType ? HZSTD_STRING_FROM_CSTR(interned.dataType) : (hzstd_str_t) { .data = "", .length = 0 },
+      .dataType
+      = interned.dataType ? HZSTD_STRING_FROM_CSTR(interned.dataType) : (hzstd_str_t) { .data = "", .length = 0 },
     };
     HZSTD_DYNAMIC_ARRAY_PUSH(memoryInstrumentationFrames, memFrame);
   }
+  hzstd_assert(stackframeCursor == totalStackframeCount);
   if (context->memoryCaptureCount > 0) {
     fprintf(stdout,
             "Resolved %zu memory allocation stack trace(s) (%zu unique frame(s) total across CPU samples and "
