@@ -573,12 +573,47 @@ async function highlight(file: string, scopeName: string = DEFAULT_SCOPE) {
   return openDocument("__default__", file, scopeName);
 }
 
+// Byte offset of the "\r\n\r\n" that ends a message header, or -1.
+//
+// Searched over BYTES rather than over a decoded string: see main().
+function indexOfHeaderSeparator(buffer: Uint8Array): number {
+  for (let i = 0; i + 3 < buffer.length; i++) {
+    if (
+      buffer[i] === 13 &&
+      buffer[i + 1] === 10 &&
+      buffer[i + 2] === 13 &&
+      buffer[i + 3] === 10
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 async function main() {
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   const stdin = Bun.stdin.stream();
   const reader = stdin.getReader();
 
-  let buffer = "";
+  // The unread tail of stdin, as BYTES.
+  //
+  // This has to be bytes, and getting it wrong is not subtle. `Content-
+  // Length` counts bytes -- that is what the protocol says, and it is
+  // what the client sends, since a Haze `str`'s length is its byte length.
+  // Buffering a decoded STRING instead and slicing it by index means
+  // slicing by UTF-16 code units, which agree with bytes only while every
+  // character is ASCII. One `ä`, one `→`, one emoji anywhere in a file and
+  // every subsequent slice is cut in the wrong place: the JSON comes out
+  // truncated or with the next message's header glued to its end, and the
+  // engine dies on `JSON.parse` -- taking the highlighting of every open
+  // tab with it, since there is only one engine process.
+  //
+  // Decoding is therefore done per COMPLETE MESSAGE, below, never on the
+  // stream. That also removes a second failure of its own: a multi-byte
+  // character split across two stdin reads decodes to replacement
+  // characters if each chunk is decoded on its own.
+  let buffer = new Uint8Array(0);
 
   let initialized = false;
 
@@ -673,36 +708,49 @@ async function main() {
       break;
     }
 
-    buffer += decoder.decode(value);
+    const combined = new Uint8Array(buffer.length + value.length);
+    combined.set(buffer, 0);
+    combined.set(value, buffer.length);
+    buffer = combined;
 
     const contentLengthText = "Content-Length: ";
-    const separator = "\r\n\r\n";
-    while (
-      buffer.startsWith(contentLengthText) &&
-      buffer.indexOf(separator) !== -1
-    ) {
-      // separator found
-      const frontHeaderLength = buffer.indexOf(separator);
+    while (true) {
+      const headerEnd = indexOfHeaderSeparator(buffer);
+      if (headerEnd === -1) {
+        break;
+      }
+      // The header is ASCII by definition, so decoding it alone is safe
+      // regardless of what the body turns out to contain.
+      const header = decoder.decode(buffer.subarray(0, headerEnd));
+      if (!header.startsWith(contentLengthText)) {
+        break;
+      }
       const contentLength = Number.parseInt(
-        buffer.slice(contentLengthText.length, frontHeaderLength)
+        header.slice(contentLengthText.length),
+        10
       );
 
-      const totalPacketLength =
-        frontHeaderLength + separator.length + contentLength;
-      if (buffer.length < totalPacketLength) {
+      const bodyStart = headerEnd + 4;
+      if (buffer.length < bodyStart + contentLength) {
+        // The rest of this message has not arrived yet.
         break;
       }
 
-      const packetContent = buffer.slice(
-        frontHeaderLength + separator.length,
-        totalPacketLength
+      // Decoded here, as one complete message, which is the only point at
+      // which a byte run is guaranteed to be whole UTF-8.
+      const packetContent = decoder.decode(
+        buffer.subarray(bodyStart, bodyStart + contentLength)
       );
-      buffer = buffer.slice(totalPacketLength);
+      buffer = buffer.slice(bodyStart + contentLength);
+
       const response = await handleRequest(JSON.parse(packetContent));
-      const result = JSON.stringify(response);
-      process.stdout.write(
-        `Content-Length: ${result.length}\r\n\r\n${result}`
-      );
+      // Encoded before measuring, so the length announced is the length
+      // actually written. The client reads bytes too, so a character
+      // count here would desynchronise it exactly the way a character
+      // count desynchronised this side.
+      const result = encoder.encode(JSON.stringify(response));
+      process.stdout.write(`Content-Length: ${result.length}\r\n\r\n`);
+      process.stdout.write(result);
     }
   }
 }
