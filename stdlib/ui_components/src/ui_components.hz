@@ -534,17 +534,17 @@ fn childGlobalId(parent: ui_elements.DivElement, id: int): str {
     return parent.globalId + "/" + f"{id}";
 }
 
-struct DivLookup {
+inline struct DivLookup {
     element: mut ui_elements.DivElement;
     path: str;
 }
 
-struct TextLookup {
+inline struct TextLookup {
     element: mut ui_elements.TextElement;
     path: str;
 }
 
-struct CanvasLookup {
+inline struct CanvasLookup {
     element: mut ui_elements.CanvasElement;
     path: str;
 }
@@ -1059,7 +1059,32 @@ export opaque struct UIContext {
 
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.
     // Returns empty array when mousePos misses element entirely.
+    //
+    // ONE array for the whole walk, filled by collectHitPath below. Written
+    // the obvious way instead -- every level returning a list of its own and
+    // each parent copying its child's into a fresh one -- this allocated an
+    // array per element VISITED, the great majority of them the empty
+    // "missed" list of a subtree the pointer is nowhere near. That made it
+    // the single largest allocation site in an idle frame: it runs over the
+    // whole element tree once per frame for the cursor, again in
+    // updateHoverState's sibling walk, and once more per pointer event.
     fn buildHitPath(element: ui_elements.Element, mousePos: Vec2): []ui_elements.Element :: final {
+        let path: []ui_elements.Element = [];
+        this.collectHitPath(element, mousePos, path);
+        return path;
+    }
+
+    // Appends this element's own contribution to `out` and reports whether
+    // anything at or under it was hit.
+    //
+    // An element only ever writes to `out` on a path that returns true, and
+    // a true return propagates all the way up, so a subtree that misses
+    // leaves `out` exactly as it found it -- which is what lets every level
+    // share the caller's one array. The deepest hit element pushes itself
+    // and each ancestor then inserts itself at the FRONT as the recursion
+    // unwinds, so the result comes out root-first with no second pass.
+    fn collectHitPath(element: ui_elements.Element, mousePos: Vec2,
+        out: []ui_elements.Element): bool :: final {
         // `display: none` removes the element and its subtree from hit
         // testing entirely, exactly as in CSS.
         //
@@ -1072,7 +1097,7 @@ export opaque struct UIContext {
         // note below about missing boxes not stopping the walk is what
         // makes an explicit check necessary rather than merely tidy.
         if ui_elements.isDisplayNone(element) {
-            return [];
+            return false;
         }
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
@@ -1091,22 +1116,18 @@ export opaque struct UIContext {
         if element is ui_elements.DivElement {
             let i = element.children.length - 1;
             while i >= 0 {
-                let childPath = this.buildHitPath(element.children[i], mousePos);
-                if childPath.length > 0 {
-                    let path: []ui_elements.Element = [];
-                    if hit { path.push(element); }
-                    for c in childPath { path.push(c); }
-                    return path;
+                if this.collectHitPath(element.children[i], mousePos, out) {
+                    if hit { out.insert(0, element); }
+                    return true;
                 }
                 i = i - 1;
             }
         }
         if !hit {
-            return [];
+            return false;
         }
-        let path: []ui_elements.Element = [];
-        path.push(element);
-        return path;
+        out.push(element);
+        return true;
     }
 
     // CSS `cursor` resolution for the element under the pointer.
@@ -1154,27 +1175,37 @@ export opaque struct UIContext {
     // didn't get rendered this frame (e.g. its branch was conditionally
     // unmounted) -- both cases naturally fall out of not finding the flag
     // during the walk, no explicit cleanup needed.
+    //
+    // Filled through one shared array, exactly like buildHitPath above and
+    // for the same reason: this is a FULL-TREE walk on every frame, so a
+    // list per visited element meant one heap allocation per element in the
+    // UI, per frame, almost all of them empty.
     fn buildFocusPath(element: ui_elements.Element): []ui_elements.Element :: final {
+        let path: []ui_elements.Element = [];
+        this.collectFocusPath(element, path);
+        return path;
+    }
+
+    // See collectHitPath: writes to `out` only on the branch that finds the
+    // focused element, and inserts each ancestor at the front on the way
+    // back up so the path reads root-first.
+    fn collectFocusPath(element: ui_elements.Element, out: []ui_elements.Element): bool :: final {
         if element is ui_elements.DivElement {
             let i = 0;
             while i < element.children.length {
-                let childPath = this.buildFocusPath(element.children[i]);
-                if childPath.length > 0 {
-                    let path: []ui_elements.Element = [];
-                    path.push(element);
-                    for c in childPath { path.push(c); }
-                    return path;
+                if this.collectFocusPath(element.children[i], out) {
+                    out.insert(0, element);
+                    return true;
                 }
                 i = i + 1;
             }
         }
         let data = runtimeDataOf(element);
         if data.focused {
-            let path: []ui_elements.Element = [];
-            path.push(element);
-            return path;
+            out.push(element);
+            return true;
         }
-        return [];
+        return false;
     }
 
     // Is any element on `path` inside a `display: none` subtree?
