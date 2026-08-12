@@ -505,15 +505,11 @@ struct CompiledTokenColor {
 // distinct scopes a real file yields, and rebuilt wholesale when the theme
 // changes rather than being invalidated entry by entry.
 
-// A resolved lookup. `hasColor` is what distinguishes "this scope has no
-// theme rule" (a real, cacheable answer) from "not in the table yet" --
-// without it a miss and a colourless hit are indistinguishable, and every
-// unstyled scope would rescan the whole theme on every frame, which is
+// An occupied slot's `hasColors` entry is what distinguishes "this scope
+// has no theme rule" (a real, cacheable answer) from "not in the table yet"
+// -- without it a miss and a colourless hit would be indistinguishable, and
+// every unstyled scope would rescan the whole theme on every frame, which is
 // exactly the cost this table exists to remove.
-struct ScopeColorHit {
-    color: Color;
-    hasColor: bool;
-}
 
 // Base-31 polynomial string hash, kept bounded by reducing mod a modulus
 // small enough that `h * base + 255` cannot overflow -- the same
@@ -586,15 +582,25 @@ struct ScopeColorCache {
         return slot;
     }
 
-    fn lookup(scope: str): ScopeColorHit | none {
+    // The slot holding `scope`, or -1 if the table has never resolved it.
+    //
+    // Deliberately an INDEX rather than a `ScopeColorHit | none`. A struct
+    // inside a union is heap-boxed, so the old shape allocated one object
+    // per lookup -- and a lookup happens for every scope of every token of
+    // every visible line, on every frame. That made this single line one
+    // of the largest allocation sites in the whole editor (~10k
+    // allocations a second at rest), for a value the caller reads twice
+    // and throws away. An int answers the same question and allocates
+    // nothing; `colors`/`hasColors` are read directly at the slot.
+    fn find(scope: str): int {
         if this.used.length == 0 {
-            return none;
+            return -1;
         }
         let slot = this.slotFor(scope, hashScope(scope));
         if !this.used[slot] {
-            return none;
+            return -1;
         }
-        return ScopeColorHit { color: this.colors[slot], hasColor: this.hasColors[slot] };
+        return slot;
     }
 
     mut fn insert(scope: str, color: Color | none): void {
@@ -933,6 +939,24 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let bracketCacheVersion = rx.reactive<int>(0);
         let bracketStacks: [][]int = [];
 
+        // Scratch space for the bracket rescan's running stack, kept for
+        // the life of the editor rather than allocated per rescan. See
+        // refreshBrackets.
+        let bracketScanStack: []int = [];
+
+        // ── Shared empty lists ───────────────────────────────────────────
+        //
+        // "This line has no tokens / no overrides" is answered thousands of
+        // times a second (once per line per frame, on every layer), and
+        // writing `[]` for it each time is a real heap allocation each
+        // time. These stand in for all of them. Nothing may ever push into
+        // one: they are handed out by reference, so a single push would be
+        // visible everywhere at once. Every consumer below only reads.
+        let noTokens: []Token = [];
+        let noSemanticTokens: []SemanticToken = [];
+        let noBracketTokens: []BracketToken = [];
+        let noOverrides: []ColourOverride = [];
+
         // The line range whose bracket INPUT changed and so must be
         // rescanned no matter what: `from` is where rescanning starts, and
         // `through` is the last line that may not take the convergence
@@ -1115,7 +1139,17 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // version it describes. Rebasing cannot reconstruct lines
                 // that later edits inserted, so anything still in flight
                 // is applied on top by the replies that follow.
-                buckets = [];
+                //
+                // Emptied in place rather than thrown away: dropping the
+                // array only means allocating a fresh bucket for every line
+                // of the file again in the resize below, and the buckets
+                // sitting here are already the right shape and the right
+                // length. `clear()` keeps each one's buffer, so a reparse
+                // of a big file refills storage it already owns instead of
+                // taking thousands of allocations to rebuild it.
+                for (let i = 0; i < buckets.length; i++) {
+                    buckets[i].clear();
+                }
             }
 
             // The cache's LENGTH is owned solely by spliceTokenCache(),
@@ -1142,8 +1176,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             for token in result.tokens {
                 let line = rebaseLine(token.lineIndex, result.version);
                 if line >= 0 && line < buckets.length {
-                    let empty: []Token = [];
-                    buckets[line] = empty;
+                    // Emptied, not replaced -- same reason as above. A
+                    // reply carries every token of every line it repaints,
+                    // so this ran once per token: a heap allocation each
+                    // time, for a bucket whose storage was about to be
+                    // refilled with almost exactly what it just held.
+                    buckets[line].clear();
                 }
             }
 
@@ -1255,10 +1293,22 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
 
             let lineCount = doc.lineCount();
-            let buckets: [][]SemanticToken = [];
-            for (let i = 0; i < lineCount; i++) {
+            // Reuses the buckets already in the cache -- one reply carries
+            // the whole file, so building a fresh list of fresh per-line
+            // arrays meant one heap allocation per line of the document
+            // every time the file went quiet. Emptied and refilled instead;
+            // this is a whole-file answer either way, so every bucket is
+            // written before anything reads it again.
+            let buckets: [][]SemanticToken = rx.get(semanticCache);
+            for (let i = 0; i < buckets.length; i++) {
+                buckets[i].clear();
+            }
+            while buckets.length < lineCount {
                 let empty: []SemanticToken = [];
                 buckets.push(empty);
+            }
+            while buckets.length > lineCount {
+                buckets.pop();
             }
 
             // ONE forward walk over the lines for the whole reply, rather
@@ -1355,6 +1405,16 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 return;
             }
             let start: int = rx.get(bracketDirtyFrom);
+            // Nothing is dirty -- what every idle frame looks like. Bail
+            // out BEFORE the resize loops and before touching either
+            // reactive: `:=` notifies its dependents unconditionally,
+            // without ever comparing the new value to the old one, so
+            // writing bracketDirtyFrom back to the value it already holds
+            // would re-dirty this loop (and everything else reading it) on
+            // every single frame.
+            if start >= bracketCleanLine {
+                return;
+            }
             let dirtyThrough: int = rx.get(bracketDirtyThrough);
             let lineCount = doc.lineCount();
             if start >= lineCount {
@@ -1386,7 +1446,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // The state at the start of `start`, which the edit that
             // dirtied it cannot have changed -- an edit on a line never
             // moves the brackets that were already open before it.
-            let stack: []int = [];
+            //
+            // Refilled rather than re-created, like everything else in this
+            // loop: `clear()` keeps the buffer it grew to last time, so a
+            // rescan reuses one allocation for the life of the editor
+            // instead of taking a fresh one every time it runs.
+            let stack: []int = bracketScanStack;
+            stack.clear();
             for kind in bracketStacks[start] {
                 stack.push(kind);
             }
@@ -1398,24 +1464,34 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         // so it and everything below it are unchanged.
                         break;
                     }
-                    let saved: []int = [];
+                    // Overwrite the stack already stored for this line
+                    // instead of swapping in a new array. A rescan walks
+                    // every line of the dirty range, so a fresh []int per
+                    // line was one heap allocation per line -- for a
+                    // handful of ints that the array sitting there already
+                    // has room for.
+                    let saved: []int = bracketStacks[lineIndex];
+                    saved.clear();
                     for kind in stack {
                         saved.push(kind);
                     }
-                    bracketStacks[lineIndex] = saved;
                 }
 
-                let out: []BracketToken = [];
+                // Likewise the bucket: refilled in place, so a rescan
+                // costs nothing per line once each line has been scanned
+                // once. Safe because nothing reads a bucket between here
+                // and the `bracketTokens :=` below -- this whole pass runs
+                // inside one frame's pump, before anything renders.
+                let out: []BracketToken = buckets[lineIndex];
+                out.clear();
                 // doc.line() rather than doc.lineText(): the latter clones
                 // the line into a fresh str, and a full-document rescan
                 // would then allocate one string per line for nothing.
-                let tokens: []Token = [];
+                let tokens: []Token = noTokens;
                 if lineIndex < tokenBuckets.length {
                     tokens = tokenBuckets[lineIndex];
                 }
                 scanLineBrackets(doc.line(lineIndex), tokens, stack, out);
-
-                buckets[lineIndex] = out;
             }
 
             bracketTokens := buckets;
@@ -1433,7 +1509,26 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // Routed by the uri the engine echoes back: several documents are
         // open at once (the buffer and the hover popup), and each reply
         // must land in its own cache.
+        //
+        // Draining is ONCE PER ARRIVING REPLY, which is what the counter
+        // guard below enforces. `highlights` is a computed keyed on that
+        // counter, so on a frame where nothing arrived it does not re-run
+        // and simply hands back the very same list it returned when it
+        // last did -- the replies it already gave us, not an empty one.
+        // Merging that list again re-files every token in it, re-marks the
+        // lines it covers as bracket-dirty, and so drags a full token
+        // merge AND a bracket rescan through every idle frame, allocating
+        // a fresh bucket per line each time. The queue itself was already
+        // emptied by the first drain, so a second one cannot even add
+        // information.
+        let lastDrainedCounter = -1;
         let drainHighlightResults = () => {
+            let counter: int = rx.get(getState().reactiveCounter);
+            if counter == lastDrainedCounter {
+                return;
+            }
+            lastDrainedCounter = counter;
+
             let hh: []HighlightResult = rx.get(highlights);
             for result in hh {
                 if result.uri == hoverHighlightUri {
@@ -1543,12 +1638,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 scopeColorCache.generation = themeGeneration;
             }
 
-            let hit = scopeColorCache.lookup(scope);
-            if hit {
+            let slot = scopeColorCache.find(scope);
+            if slot >= 0 {
                 // A cached "no theme rule matches this scope" is a real
                 // answer worth keeping -- it costs the same full scan to
                 // rediscover as a hit does.
-                return hit.hasColor ? hit.color : none;
+                return scopeColorCache.hasColors[slot]
+                    ? scopeColorCache.colors[slot]
+                    : none;
             }
 
             let color = getScopeColorUncached(scope);
@@ -2146,9 +2243,17 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // Exponentially-smoothed FPS, recomputed alongside the LSP drain
         // below since that's already the one thing guaranteed to re-run
         // every frame (it depends on ui.now()).
-        let lastFrameAt = rx.reactive<real>(0.0);
+        //
+        // The smoothing accumulates in PLAIN variables and only the
+        // published number is reactive, updated a couple of times a second
+        // beside the other status-bar stats. Writing the reactive every
+        // frame would re-run fpsText every frame, and formatting a string
+        // is a heap allocation -- one per frame, forever, for a label that
+        // is unreadable if it changes faster than this anyway.
+        let lastFrameAt = 0.0;
+        let smoothedFps = 0.0;
         let fps = rx.reactive<real>(0.0);
-        let fpsText = rx.computed(() => f"{fps as int} FPS");
+        let fpsText = rx.computed(() => f"{rx.get(fps) as int} FPS");
 
         // Status-bar label for the active editing model / vim mode.
         let modeLabel = rx.computed(() => {
@@ -2192,12 +2297,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             let now = ui.now();
 
             let dt = now - lastFrameAt;
-            lastFrameAt := now;
+            lastFrameAt = now;
             if dt > 0.0 {
-                fps := fps * 0.9 + (1.0 / dt) * 0.1;
+                smoothedFps = smoothedFps * 0.9 + (1.0 / dt) * 0.1;
             }
 
             if now - prevUpdate > 0.5 {
+                fps := smoothedFps;
                 updateStats();
                 prevUpdate = now;
             }
@@ -2632,7 +2738,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             rx.get(semanticCacheVersion);
             rx.get(bracketCacheVersion);
 
-            let semantic: []SemanticToken = [];
+            let semantic: []SemanticToken = noSemanticTokens;
             let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
             // A cache is only as long as the document was when its reply
             // arrived, so a line typed since then simply has no bucket --
@@ -2641,12 +2747,20 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 semantic = semanticBuckets[lineIndex];
             }
 
-            let brackets: []BracketToken = [];
+            let brackets: []BracketToken = noBracketTokens;
             if bracketColorizationEnabled {
                 let bracketBuckets: [][]BracketToken = rx.get(bracketTokens);
                 if lineIndex < bracketBuckets.length {
                     brackets = bracketBuckets[lineIndex];
                 }
+            }
+
+            // Nothing recolours this line -- a comment, a blank line, plain
+            // prose. Common enough to be worth answering with the shared
+            // empty list rather than a new one nobody will ever put
+            // anything into.
+            if semantic.length == 0 && brackets.length == 0 {
+                return noOverrides;
             }
 
             let overrides: []ColourOverride = [];
@@ -2687,14 +2801,64 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return overrides;
         };
 
+        // ── Per-line run cache ───────────────────────────────────────────
+        //
+        // The render pass asks every VISIBLE line for its coloured runs on
+        // every frame, and producing them is far from free: one clone of
+        // the line's text, one overrides list, one run list, and one string
+        // slice per run. Over a screenful of lines at 60fps that was
+        // thousands of heap allocations per second -- to rebuild output
+        // that is byte-for-byte what the previous frame already built,
+        // since an idle editor changes none of the inputs.
+        //
+        // So the answer is memoised per line and thrown away when -- and
+        // only when -- something it was derived from moves. There are five
+        // such inputs (the text, the TextMate tokens, the semantic tokens,
+        // the bracket colours, the theme), every one of them already
+        // carries a version that only ever counts UP, and their sum is
+        // therefore itself monotonic and changes exactly when one of them
+        // does. That makes a single int a complete description of "what
+        // these runs were built from", with no per-input bookkeeping.
+        //
+        // Reading all five here also keeps the render pass subscribed to
+        // all five, which is what it was already doing through the
+        // individual layers.
+        let lineRuns: [][]HighlightToken = [];
+        let lineRunStamps: []int = [];
+
+        let renderStamp = (): int => {
+            return rx.get(docVersion)
+                + rx.get(tokenCacheVersion)
+                + rx.get(semanticCacheVersion)
+                + rx.get(bracketCacheVersion)
+                + themeGeneration;
+        };
+
         let highlightedLine = (lineIndex: int): []HighlightToken => {
+            let stamp = renderStamp();
+            // Entries are only ever created for lines that have actually
+            // been on screen, so this grows to the scrolled-through part of
+            // the file and no further.
+            while lineRunStamps.length <= lineIndex {
+                let empty: []HighlightToken = [];
+                lineRuns.push(empty);
+                lineRunStamps.push(-1);
+            }
+            if lineRunStamps[lineIndex] == stamp {
+                return lineRuns[lineIndex];
+            }
+
             let lineText = doc.lineText(lineIndex);
             let buckets: [][]Token = rx.get(tokensByLine);
-            let tokensForLine: []Token = [];
+            let tokensForLine: []Token = noTokens;
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
-            return splitLineTokens(lineText, tokensForLine, lineColourOverrides(lineIndex));
+            let runs = splitLineTokens(lineText, tokensForLine,
+                lineColourOverrides(lineIndex));
+            lineRuns[lineIndex] = runs;
+            lineRunStamps[lineIndex] = stamp;
+            return runs;
         };
 
         // Coloured runs for one line of the popup's code, mirroring
@@ -2702,7 +2866,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let highlightedHoverLine = (lineText: str, lineIndex: int): []HighlightToken => {
             rx.get(hoverTokensVersion);
             let buckets: [][]Token = rx.get(hoverTokens);
-            let tokensForLine: []Token = [];
+            let tokensForLine: []Token = noTokens;
             if lineIndex < buckets.length {
                 tokensForLine = buckets[lineIndex];
             }
@@ -2711,7 +2875,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // document, so there is nothing to classify it against -- and
             // its brackets are part of a rendered signature rather than
             // code being edited, which VS Code does not rainbow either.
-            let noOverrides: []ColourOverride = [];
             return splitLineTokens(lineText, tokensForLine, noOverrides);
         };
 
