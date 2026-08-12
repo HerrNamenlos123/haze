@@ -1,0 +1,6 @@
+{
+  "_comment": "Injection grammar for Vue's {{ }} interpolations. Same story as vue-directives: the rules exist in vue.tmLanguage.json but nothing reaches them once the template body is handed to text.html.derivative.",
+  "scopeName": "vue.interpolations",
+  "injectionSelector": "L:text.html -comment -meta.tag -meta.embedded",
+  "patterns": [{ "include": "source.vue#vue-interpolations" }]
+}

@@ -1261,19 +1261,69 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 buckets.push(empty);
             }
 
-            // ONE forward walk over the lines for the whole reply, rather
-            // than a search per span: tsserver emits spans in source
-            // order, so each one begins at or after where the previous
-            // walk stopped. That is what lets this convert file offsets to
-            // line/column without a line-offset table -- and therefore
-            // without one more structure that has to be kept in step with
-            // every edit.
+            // Byte offset of every line's first character.
             //
-            // `lineEnd` is the offset of the line's terminating newline,
-            // i.e. one past its last character.
-            let line = 0;
-            let lineStart = 0;
-            let lineEnd = lineCount > 0 ? doc.lineLength(0) : 0;
+            // Built up front and searched per span rather than walked
+            // alongside them, because tsserver DOES NOT emit spans in
+            // source order. It mostly does, which is what made a forward
+            // walk look sufficient -- but a `defineProps<{...}>()` call
+            // reports the type argument's members before the `props`
+            // variable they are attached to, and for a `.vue` file the
+            // whole template is mapped back out of virtual TypeScript that
+            // sits after the script block. A walk that only moves forward
+            // silently DROPS every span behind it, which is why `props`
+            // and `defineProps` came out uncoloured.
+            //
+            // Costs one integer per line and no text scanning at all,
+            // since a line's byte length is already known.
+            let lineStarts: []int = [];
+            let offset = 0;
+            for (let i = 0; i < lineCount; i++) {
+                lineStarts.push(offset);
+                offset = offset + doc.lineLength(i) + 1;
+            }
+
+            // Which byte ranges of the file semantic tokens may touch.
+            //
+            // For a `.vue` file that is the <script> blocks and nothing
+            // else, mirroring VS Code: its TypeScript semantic-token
+            // provider bails unless the code it is asked about is the
+            // script block (see typescript-semantic-tokens.js, which
+            // requires the embedded code id to be `main`), so a template
+            // is coloured by the grammar alone.
+            //
+            // That is not a detail. Volar compiles a template into virtual
+            // TypeScript that reaches every binding through the component
+            // instance, so tsserver classifies `panelVisible` in
+            // `v-if="panelVisible"` as a PROPERTY rather than the variable
+            // the grammar correctly calls it -- repainting half the
+            // template in property colours. Anything that is not a `.vue`
+            // file is all script, and is not restricted at all.
+            let scriptOnly = lspLanguageId == "vue";
+            let scriptRangeStarts: []int = [];
+            let scriptRangeEnds: []int = [];
+            if scriptOnly {
+                let openLine = -1;
+                for (let i = 0; i < lineCount; i++) {
+                    // SFC block tags sit on their own line in every Vue
+                    // file there is; anything else is not an SFC.
+                    let trimmed = doc.lineText(i).trim();
+                    if openLine < 0 && trimmed.startsWith("<script") {
+                        openLine = i;
+                    }
+                    else if openLine >= 0 && trimmed.startsWith("</script") {
+                        scriptRangeStarts.push(lineStarts[openLine + 1]);
+                        scriptRangeEnds.push(lineStarts[i]);
+                        openLine = -1;
+                    }
+                }
+                if openLine >= 0 && openLine + 1 < lineCount {
+                    // Unterminated block: take it as running to the end,
+                    // which is what it looks like while one is being typed.
+                    scriptRangeStarts.push(lineStarts[openLine + 1]);
+                    scriptRangeEnds.push(offset);
+                }
+            }
 
             for span in spans {
                 if span.length <= 0 {
@@ -1287,17 +1337,33 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     continue;
                 }
 
-                while line + 1 < lineCount && span.start > lineEnd {
-                    line = line + 1;
-                    lineStart = lineEnd + 1;
-                    lineEnd = lineStart + doc.lineLength(line);
+                if scriptOnly {
+                    let inScript = false;
+                    for (let r = 0; r < scriptRangeStarts.length; r++) {
+                        if span.start >= scriptRangeStarts[r] && span.start < scriptRangeEnds[r] {
+                            inScript = true;
+                            break;
+                        }
+                    }
+                    if !inScript {
+                        continue;
+                    }
                 }
-                // Behind the walk. Unreachable while tsserver emits in
-                // source order; if it ever stops, dropping the span beats
-                // colouring some earlier line with it.
-                if span.start < lineStart {
-                    continue;
+
+                // Binary search for the line this span begins on.
+                let line = 0;
+                let lo = 0;
+                let hi = lineCount - 1;
+                while lo < hi {
+                    let mid = (lo + hi + 1) / 2;
+                    if lineStarts[mid] <= span.start {
+                        lo = mid;
+                    }
+                    else {
+                        hi = mid - 1;
+                    }
                 }
+                line = lo;
 
                 // A span can cross lines -- a multi-line type annotation,
                 // a template literal. Clip it to one token per line, since
@@ -1305,8 +1371,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // and addresses it by column.
                 let spanEnd = span.start + span.length;
                 let clipLine = line;
-                let clipStart = lineStart;
-                let clipEnd = lineEnd;
+                let clipStart = lineStarts[line];
+                let clipEnd = clipStart + doc.lineLength(line);
                 while clipLine < lineCount {
                     let startInLine = span.start > clipStart ? span.start - clipStart : 0;
                     let endInLine = spanEnd < clipEnd ? spanEnd - clipStart : clipEnd - clipStart;
