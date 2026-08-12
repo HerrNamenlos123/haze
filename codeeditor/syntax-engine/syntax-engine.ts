@@ -574,11 +574,69 @@ async function highlight(file: string, scopeName: string = DEFAULT_SCOPE) {
 }
 
 async function main() {
+  // ── Framing is counted in BYTES, not in characters ──────────────────
+  //
+  // `Content-Length` is a byte count -- that is what LSP framing means by
+  // it, and it is what the Haze client sends, since a Haze `str.length`
+  // IS its UTF-8 byte length. So the loop below buffers raw bytes and
+  // slices them at byte offsets, decoding only once a whole payload is in
+  // hand.
+  //
+  // Doing this on a decoded JavaScript string instead -- which is what it
+  // used to do -- is wrong twice over, and silently:
+  //
+  //   * a JS string is measured in UTF-16 code units, so every `─` in a
+  //     comment makes the string TWO units shorter than the byte count the
+  //     header announced. `buffer.length < totalPacketLength` then never
+  //     stops being true, the request is never dispatched, and the engine
+  //     just goes quiet -- alive, never crashing, simply never answering.
+  //     Every source file in this repository has box-drawing characters in
+  //     its comments, so "open this file" meant "no tokens, ever" for all
+  //     of them, while a pure-ASCII file highlighted perfectly.
+  //
+  //   * decoding each chunk as it arrives cuts multi-byte characters in
+  //     half at chunk boundaries, turning them into replacement characters
+  //     in payloads that were otherwise intact.
+  //
+  // The reply is framed the same way and for the same reason: the client
+  // reads its byte count straight off the wire.
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   const stdin = Bun.stdin.stream();
   const reader = stdin.getReader();
 
-  let buffer = "";
+  const header = encoder.encode("Content-Length: ");
+  const separator = encoder.encode("\r\n\r\n");
+
+  const startsWithHeader = (bytes: Uint8Array): boolean => {
+    if (bytes.length < header.length) {
+      return false;
+    }
+    for (let i = 0; i < header.length; i++) {
+      if (bytes[i] !== header[i]) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const indexOfSeparator = (bytes: Uint8Array): number => {
+    for (let i = 0; i + separator.length <= bytes.length; i++) {
+      let matched = true;
+      for (let j = 0; j < separator.length; j++) {
+        if (bytes[i + j] !== separator[j]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        return i;
+      }
+    }
+    return -1;
+  };
+
+  let buffer = new Uint8Array(0);
 
   let initialized = false;
 
@@ -673,18 +731,19 @@ async function main() {
       break;
     }
 
-    buffer += decoder.decode(value);
+    const merged = new Uint8Array(buffer.length + value.length);
+    merged.set(buffer, 0);
+    merged.set(value, buffer.length);
+    buffer = merged;
 
-    const contentLengthText = "Content-Length: ";
-    const separator = "\r\n\r\n";
-    while (
-      buffer.startsWith(contentLengthText) &&
-      buffer.indexOf(separator) !== -1
-    ) {
-      // separator found
-      const frontHeaderLength = buffer.indexOf(separator);
+    while (startsWithHeader(buffer)) {
+      const frontHeaderLength = indexOfSeparator(buffer);
+      if (frontHeaderLength === -1) {
+        // Header not complete yet.
+        break;
+      }
       const contentLength = Number.parseInt(
-        buffer.slice(contentLengthText.length, frontHeaderLength)
+        decoder.decode(buffer.subarray(header.length, frontHeaderLength))
       );
 
       const totalPacketLength =
@@ -693,16 +752,16 @@ async function main() {
         break;
       }
 
-      const packetContent = buffer.slice(
-        frontHeaderLength + separator.length,
-        totalPacketLength
+      // Decoded only now that the whole payload is present, so no
+      // character can be split across two reads.
+      const packetContent = decoder.decode(
+        buffer.subarray(frontHeaderLength + separator.length, totalPacketLength)
       );
       buffer = buffer.slice(totalPacketLength);
       const response = await handleRequest(JSON.parse(packetContent));
-      const result = JSON.stringify(response);
-      process.stdout.write(
-        `Content-Length: ${result.length}\r\n\r\n${result}`
-      );
+      const result = encoder.encode(JSON.stringify(response));
+      process.stdout.write(`Content-Length: ${result.length}\r\n\r\n`);
+      process.stdout.write(result);
     }
   }
 }
