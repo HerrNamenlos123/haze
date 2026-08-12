@@ -1,0 +1,3207 @@
+// Recursive-descent parser for Haze.
+//
+// Structure mirrors HazeParser.g4 one function per rule, so the grammar stays
+// the readable specification and this file stays a direct transcription of it.
+// To extend the language: add the token in tokens.hz, lex it in lexer.hz, and
+// add/extend the matching parse function here.
+//
+// The parser writes JSON directly into a JsonWriter as it recognises the input
+// (see json.hz). There is no intermediate AST: each parse function emits its
+// own node inline. This is what makes the whole pipeline single-pass.
+//
+// Because the output is written as we go, a node's `sourceloc` — which must
+// cover the node's full token span — cannot be emitted until the node is
+// finished. We therefore parse the node body into a nested writer only where
+// unavoidable; everywhere else the grammar lets us know the start token up
+// front and we patch nothing.
+
+export struct ParseError {
+    message: str = "";
+    line: int = 0;
+    col: int = 0;
+}
+
+export struct Parser {
+    src: str = "";
+    filename: str = "";
+    toks: mut []Token = [];
+    pos: int = 0;
+
+    w: mut JsonWriter;
+    errors: mut []ParseError = [];
+
+    // Set by a `#source "file:line:col[-endcol][.endline]"` block. While
+    // active, EVERY node inside reports this location instead of its real one,
+    // which is how generated import files point back at their original source.
+    sourcelocOverride: bool = false;
+    overrideFile: str = "";
+    overrideStartLine: int = 0;
+    overrideStartCol: int = 0;
+    overrideEndLine: int = 0;
+    overrideEndCol: int = 0;
+    overrideHasEnd: bool = false;
+
+    static fn create(src: str, filename: str, toks: mut []Token): mut Parser {
+        let p = Parser {
+            src: src,
+            filename: filename,
+            toks: toks,
+            // The JSON is considerably larger than the source; this estimate
+            // avoids most regrowth for typical files.
+            w: JsonWriter.create(src.length * 8 + 1024),
+        };
+        return p;
+    }
+
+    // --- Token cursor ------------------------------------------------------
+
+    fn cur(): Token { return this.toks[this.pos]; }
+
+    fn kind(): TK { return this.toks[this.pos].kind; }
+
+    fn peekKind(offset: int): TK {
+        let p = this.pos + offset;
+        if p >= this.toks.length { return TK.EOF; }
+        return this.toks[p].kind;
+    }
+
+    fn at(k: TK): bool { return this.toks[this.pos].kind == k; }
+
+    fn atEnd(): bool { return this.toks[this.pos].kind == TK.EOF; }
+
+    mut fn advance(): Token {
+        let t = this.toks[this.pos];
+        if this.pos < this.toks.length - 1 { this.pos++; }
+        return t;
+    }
+
+    mut fn accept(k: TK): bool {
+        if this.toks[this.pos].kind == k {
+            this.advance();
+            return true;
+        }
+        return false;
+    }
+
+    mut fn expect(k: TK): Token {
+        if this.toks[this.pos].kind == k {
+            return this.advance();
+        }
+        let t = this.toks[this.pos];
+        let want = tokenName(k);
+        let got = tokenName(t.kind);
+        this.errorAt(t, f"expected {want} but found {got}");
+        return t;
+    }
+
+    mut fn errorAt(t: Token, message: str) {
+        this.errors.push(ParseError { message: message, line: t.line, col: t.col });
+    }
+
+    // Text of a token, zero-copy.
+    fn text(t: Token): str { return this.src.slice(t.start, t.end); }
+
+    // The token most recently consumed — the `end` anchor for a node span.
+    fn lastToken(): Token {
+        if this.pos == 0 { return this.toks[0]; }
+        return this.toks[this.pos - 1];
+    }
+
+    // --- sourceloc ---------------------------------------------------------
+    //
+    // `end` is the START position of the node's last token, matching the
+    // reference parser (ANTLR's stop-token position). A single-token node
+    // therefore has start == end.
+
+    // Emit a node's source location in the COMPACT wire form.
+    //
+    // The AST shape the compiler consumes is
+    //   {filename, start:{line,column}, end:{line,column}}
+    // which costs ~130 bytes per node. It is 58% of the payload, and the
+    // filename alone repeated over 10,000 times in a generated import file.
+    //
+    // On the wire it becomes  "L":[startLine,startCol,endLine,endCol]  with the
+    // filename omitted whenever it is the file being parsed (the overwhelmingly
+    // common case); a `#source` override emits "F" alongside. The TS bridge
+    // expands this back during the revive walk it already performs.
+    mut fn writeLoc(startTok: Token, endTok: Token) {
+        if this.sourcelocOverride {
+            this.w.key("L");
+            this.w.beginArray();
+            this.w.intValue(this.overrideStartLine);
+            this.w.intValue(this.overrideStartCol);
+            if this.overrideHasEnd {
+                this.w.intValue(this.overrideEndLine);
+                this.w.intValue(this.overrideEndCol);
+            }
+            this.w.endArray();
+            // A #source block points at a different file, so it must be named.
+            this.w.keyString("F", this.overrideFile);
+            return;
+        }
+
+        this.w.key("L");
+        this.w.beginArray();
+        this.w.intValue(startTok.line);
+        this.w.intValue(startTok.col);
+        this.w.intValue(endTok.line);
+        this.w.intValue(endTok.col);
+        this.w.endArray();
+    }
+
+    // Span from `startTok` through the last consumed token.
+    mut fn locHere(startTok: Token) {
+        this.writeLoc(startTok, this.lastToken());
+    }
+
+    // -----------------------------------------------------------------------
+    // Expressions.
+    //
+    // Precedence, loosest to tightest, straight from the grammar:
+    //   assignment -> ternary -> logical -> equality -> comparison
+    //   -> additive -> multiplicative -> prefix -> postfix -> primary
+    //
+    // The binary levels are all left-associative and share one helper shape:
+    // parse the tighter level, then while an operator of this level follows,
+    // wrap what we have so far in a BinaryExpr.
+    //
+    // Because JSON is written in one forward pass, a left-associative chain
+    // cannot be emitted directly: `a + b` must write the BinaryExpr header
+    // BEFORE `a`, but we only know it is a BinaryExpr after parsing `a`. We
+    // therefore parse operands into a detached sub-writer and splice the text
+    // in. Sub-writers are pooled per level, so a chain of N operands costs one
+    // buffer, not N.
+    // -----------------------------------------------------------------------
+
+    // Parse an expression and return its JSON text rather than writing it.
+    // Used wherever the shape of the enclosing node is not yet known.
+    // Parse into the SAME output buffer and return the produced text.
+    //
+    // Previously each capture allocated a fresh JsonWriter and cloned its buffer
+    // into a new string. Since every expression passes through ~10 precedence
+    // levels, its JSON was copied ten times over. Now the value is written at
+    // the end of the one buffer, sliced out, and the buffer rewound.
+    mut fn captureExpr(): str :: final {
+        return this.captureWith(() => { this.expr(); });
+    }
+
+    // Parse into the SAME output buffer and materialise the produced text.
+    //
+    // The capture is written at the tail of the shared buffer, copied out, and
+    // the buffer rewound. The rewind is essential: captures are spliced into
+    // their parent by copying, so without it the originals accumulate and the
+    // buffer grows without bound (measured 1.35 GB for a 10 KB source).
+    //
+    // Returning raw offsets instead would avoid this copy, but is NOT possible
+    // with the current writer: binaryLevel holds every operand of a chain as a
+    // live capture at once, so a capture is not necessarily at the tail when it
+    // is consumed, and rewinding would invalidate the others' offsets.
+    mut fn captureWith(f: () => void): str :: final {
+        let mark = this.w.beginCapture();
+        f();
+        let end = this.w.endCapture();
+        let text = hzob_slice(this.w.buf, mark, end);
+        this.w.truncate(mark);
+        return text;
+    }
+
+    mut fn expr(): void :: final {
+        this.assignment();
+    }
+
+    // assignment: ternary (assignOp assignment)?
+    mut fn assignment(): void :: final {
+        let start = this.cur();
+        let lhs = this.captureWith(() => { this.ternary(); });
+
+        let op = this.assignOpOf(this.kind());
+        if op < 0 {
+            this.w.rawValue(lhs);
+            return;
+        }
+        this.advance();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "ExprAssignmentExpr");
+        this.w.keyRaw("target", lhs);
+        this.w.key("value");
+        this.assignment();
+        this.w.keyInt("operation", op);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // EAssignmentOperation in shared/AST.ts
+    fn assignOpOf(k: TK): int {
+        if k == TK.Equals { return 0; }       // Rebind
+        if k == TK.ColonEquals { return 1; }  // Assign
+        if k == TK.PlusEq { return 2; }
+        if k == TK.MinusEq { return 3; }
+        if k == TK.MulEq { return 4; }
+        if k == TK.DivEq { return 5; }
+        if k == TK.ModEq { return 6; }
+        return -1;
+    }
+
+    // ternary: logical (QUESTIONMARK expr COLON ternary)? | ATTEMPT ...
+    mut fn ternary(): void :: final {
+        if this.at(TK.Attempt) {
+            this.attemptExpr();
+            return;
+        }
+
+        let start = this.cur();
+        let cond = this.captureWith(() => { this.logical(); });
+
+        if !this.at(TK.Question) {
+            this.w.rawValue(cond);
+            return;
+        }
+        this.advance();
+
+        let thenExpr = this.captureExpr();
+        this.expect(TK.Colon);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "TernaryExpr");
+        this.w.keyRaw("condition", cond);
+        this.w.keyRaw("thenExpr", thenExpr);
+        this.w.key("else");
+        this.ternary();
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // Is there an operator accepted by `opOf` at nesting depth 0 before the end
+    // of the current expression?
+    //
+    // Used to skip the capture buffer on precedence levels that do not apply.
+    // It only has to be correct in the negative direction: a false positive
+    // costs one needless capture (the caller re-checks), a false negative would
+    // drop an operator, so anything ambiguous stops the scan and returns true.
+    fn hasOperatorAhead(opOf: (k: TK) => int): bool :: final {
+        let paren = 0;
+        let bracket = 0;
+        let curly = 0;
+        let i = this.pos;
+        let limit = this.toks.length;
+
+        while i < limit {
+            let k = this.toks[i].kind;
+
+            if k == TK.LParen { paren++; }
+            else if k == TK.LBracket { bracket++; }
+            else if k == TK.LCurly { curly++; }
+            else if k == TK.RParen {
+                if paren == 0 { return false; }
+                paren--;
+            }
+            else if k == TK.RBracket {
+                if bracket == 0 { return false; }
+                bracket--;
+            }
+            else if k == TK.RCurly {
+                if curly == 0 { return false; }
+                curly--;
+            }
+            else if paren == 0 && bracket == 0 && curly == 0 {
+                if opOf(k) >= 0 { return true; }
+
+                // Tokens that always end the expression.
+                if k == TK.Semi || k == TK.Comma || k == TK.EOF { return false; }
+
+                // A `?` ternary, an assignment or a `:` all bind looser than any
+                // binary level, so the operand ends here.
+                if k == TK.Question || k == TK.Colon { return false; }
+                if this.assignOpOf(k) >= 0 { return false; }
+
+                // Anything that could introduce a nested expression whose extent
+                // we cannot cheaply predict: be conservative.
+                if k == TK.Attempt || k == TK.Do || k == TK.FStringStart
+                   || k == TK.FTripleStringStart {
+                    return true;
+                }
+            }
+            i++;
+        }
+        return false;
+    }
+
+    // Shared driver for the left-associative binary levels.
+    // `next` parses the tighter level; `opOf` maps a token to an
+    // EBinaryOperation or -1.
+    mut fn binaryLevel(next: () => void, opOf: (k: TK) => int): void :: final {
+        let start = this.cur();
+
+        // Fast path: an expression passes through all ~10 precedence levels, and
+        // capturing at every one would copy its JSON ten times over. Scan ahead
+        // for an operator of this level FIRST; when there is none (the common
+        // case) the operand is written straight to the output with no capture
+        // buffer and no copy at all.
+        if !this.hasOperatorAhead(opOf) {
+            next();
+            return;
+        }
+
+        let first = this.captureWith(next);
+
+        // The lookahead can be conservative, so re-check after parsing.
+        let firstOp = opOf(this.kind());
+        if firstOp < 0 {
+            this.w.rawValue(first);
+            return;
+        }
+
+        // Collect the whole left-associative chain before emitting anything.
+        //
+        // Each precedence level is ONE flat grammar rule
+        // (`additive: multiplicative ((PLUS|MINUS) multiplicative)*`), and the
+        // reference parser stamps every node it builds from that rule with the
+        // rule's own span. So in `a + b + c` the inner `a + b` node reports the
+        // span of the entire chain, not just of `a + b`. Emitting as we go would
+        // give the inner node the shorter span, so the operands and operators
+        // are buffered and the nodes are built once the end is known.
+        let operands: mut []str = [];
+        let ops: mut []int = [];
+        operands.push(first);
+
+        while true {
+            let op = opOf(this.kind());
+            if op < 0 { break; }
+            this.advance();
+            ops.push(op);
+            operands.push(this.captureWith(next));
+        }
+
+        let endTok = this.lastToken();
+
+        // Emit the left-nested chain directly instead of wrapping repeatedly.
+        //
+        // Folding with a capture buffer per step would re-copy everything
+        // accumulated so far on each iteration, making a chain of N operands
+        // O(N^2) in bytes copied -- a 400-term `a + b + ...` measured 2.6
+        // SECONDS that way. `a + b + c` nests as ((a+b)+c), so all N-1 object
+        // headers and their `"a":` keys come first, then operand 0, then each
+        // remaining operand followed by the tail of its enclosing object. Every
+        // byte is written exactly once.
+        // Open one object per operator. The outermost object is the LAST
+        // operator, so after all the headers the innermost `"a"` slot is where
+        // operand 0 goes.
+        for (let i = 0; i < ops.length; i++) {
+            this.w.beginObject();
+            this.w.keyString("variant", "BinaryExpr");
+            this.w.key("a");
+        }
+
+        this.w.rawValue(operands[0]);
+
+        // Close from the inside out: the innermost object pairs operand 1 with
+        // ops[0], and so on outwards.
+        for (let i = 0; i < ops.length; i++) {
+            this.w.keyRaw("b", operands[i + 1]);
+            this.w.keyInt("operation", ops[i]);
+            this.writeLoc(start, endTok);
+            this.w.endObject();
+        }
+    }
+
+    // logical: equality ((&& || |) equality)*
+    mut fn logical(): void :: final {
+        this.binaryLevel(() => { this.equality(); }, (k: TK) => {
+            if k == TK.DoubleAnd { return 11; }  // BoolAnd
+            if k == TK.DoubleOr { return 12; }   // BoolOr
+            if k == TK.Or { return 13; }         // BitwiseOr
+            return -1;
+        });
+    }
+
+    // equality: comparison ((== !=) comparison)*
+    mut fn equality(): void :: final {
+        this.binaryLevel(() => { this.comparison(); }, (k: TK) => {
+            if k == TK.DoubleEquals { return 9; }  // Equal
+            if k == TK.NotEquals { return 10; }    // NotEqual
+            return -1;
+        });
+    }
+
+    // comparison: additive ((< > <= >=) additive)*
+    mut fn comparison(): void :: final {
+        this.binaryLevel(() => { this.additive(); }, (k: TK) => {
+            if k == TK.LAngle { return 5; }  // LessThan
+            if k == TK.Leq { return 6; }     // LessEqual
+            if k == TK.RAngle { return 7; }  // GreaterThan
+            if k == TK.Geq { return 8; }     // GreaterEqual
+            return -1;
+        });
+    }
+
+    // additive: multiplicative ((+ -) multiplicative)*
+    mut fn additive(): void :: final {
+        this.binaryLevel(() => { this.multiplicative(); }, (k: TK) => {
+            if k == TK.Plus { return 3; }   // Add
+            if k == TK.Minus { return 4; }  // Subtract
+            return -1;
+        });
+    }
+
+    // multiplicative: prefixExpr ((* / %) prefixExpr)*
+    mut fn multiplicative(): void :: final {
+        this.binaryLevel(() => { this.prefixExpr(); }, (k: TK) => {
+            if k == TK.Mul { return 0; }  // Multiply
+            if k == TK.Div { return 1; }  // Divide
+            if k == TK.Mod { return 2; }  // Modulo
+            return -1;
+        });
+    }
+
+    // prefixExpr: preUnaryOp prefixExpr | postfixExpr
+    mut fn prefixExpr(): void :: final {
+        let start = this.cur();
+        let k = this.kind();
+
+        // ++x / --x produce PreIncrExpr; + - ! produce UnaryExpr.
+        if k == TK.PlusPlus || k == TK.MinusMinus {
+            this.advance();
+            this.w.beginObject();
+            this.w.keyString("variant", "PreIncrExpr");
+            this.w.key("expr");
+            this.prefixExpr();
+            let op = 0;
+            if k == TK.MinusMinus { op = 1; }
+            this.w.keyInt("operation", op);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Plus || k == TK.Minus || k == TK.Not {
+            this.advance();
+            this.w.beginObject();
+            this.w.keyString("variant", "UnaryExpr");
+            this.w.key("expr");
+            this.prefixExpr();
+            let op = 0;                          // Plus
+            if k == TK.Minus { op = 1; }         // Minus
+            else if k == TK.Not { op = 2; }      // Negate
+            this.w.keyInt("operation", op);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        this.postfixExpr();
+    }
+
+    // -----------------------------------------------------------------------
+    // Postfix chain: calls, indexing, member access, casts, type tests.
+    // Each postfix wraps the expression built so far, so we accumulate into a
+    // capture buffer exactly like the binary levels do.
+    // -----------------------------------------------------------------------
+
+    mut fn postfixExpr(): void :: final {
+        let acc = this.captureWith(() => { this.primaryExpr(); });
+
+        while true {
+            // Each postfix node is stamped with the span of the postfix rule
+            // itself, which begins at the operator token (`(`, `[`, `.`, `as`,
+            // ...), not at the start of the chain. So `a.b.c()` gives the call
+            // node the span of `(...)` and the member node the span of `.c`.
+            let start = this.cur();
+            let k = this.kind();
+
+            if k == TK.PlusPlus || k == TK.MinusMinus {
+                this.advance();
+                let op = 0;
+                if k == TK.MinusMinus { op = 1; }
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "PostIncrExpr");
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyInt("operation", op);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // Call: `f(args)` with isOptional `with allocator`.
+            if k == TK.LParen {
+                this.advance();
+                // Inside the parentheses a `{` cannot be a block body, so brace
+                // literals are allowed again even within an `if`/`while`
+                // condition: `if f(T {})`.
+                let savedAllow = this.allowBraceLiteral;
+                this.allowBraceLiteral = true;
+                let args: mut []str = [];
+                if !this.at(TK.RParen) {
+                    args.push(this.captureExpr());
+                    while this.accept(TK.Comma) {
+                        if this.at(TK.RParen) { break; }  // trailing comma
+                        args.push(this.captureExpr());
+                    }
+                }
+                this.allowBraceLiteral = savedAllow;
+                this.expect(TK.RParen);
+                let alloc = this.tryWithAllocator();
+
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ExprCallExpr");
+                    this.w.keyRaw("calledExpr", acc);
+                    this.w.key("arguments");
+                    this.w.beginArray();
+                    for a in args { this.w.rawValue(a); }
+                    this.w.endArray();
+                    this.writeOptionalRaw("allocator", alloc);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // Subscript: `a[i]`, `a[i, j]`, slices `a[s:e]`.
+            if k == TK.LBracket {
+                this.advance();
+                let indices: mut []str = [];
+                indices.push(this.subscriptIndex());
+                while this.accept(TK.Comma) {
+                    if this.at(TK.RBracket) { break; }
+                    indices.push(this.subscriptIndex());
+                }
+                this.expect(TK.RBracket);
+
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ArraySubscriptExpr");
+                    this.w.keyRaw("expr", acc);
+                    this.w.key("indices");
+                    this.w.beginArray();
+                    for idx in indices { this.w.rawValue(idx); }
+                    this.w.endArray();
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // Comptime member access: `a.[expr]`
+            if k == TK.Dot && this.peekKind(1) == TK.LBracket {
+                this.advance();
+                this.advance();
+                let member = this.captureExpr();
+                this.expect(TK.RBracket);
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ExprComptimeMemberAccess");
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyRaw("memberExpr", member);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // Member access: `a.b<T>` / optional chaining `a?.b`
+            if k == TK.Dot || k == TK.QuestionDot {
+                // The grammar rule here is `(DOT | QUESTIONDOT) nameSegment`,
+                // which INCLUDES the dot, so the span starts at the dot (unlike
+                // `nameExpr`, whose rule is a bare `nameSegment` and therefore
+                // starts at the name). `start` is already the dot token.
+                this.advance();
+                let nameTok = this.memberName();
+                let generics = this.tryGenericArgs();
+                let variant = "ExprMemberAccess";
+                if k == TK.QuestionDot { variant = "OptionalChainingExprMemberAccess"; }
+                let member = this.text(nameTok);
+
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", variant);
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyString("member", member);
+                    this.writeGenericArgs(generics);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // Error propagation `expr?!`
+            if k == TK.QuestionExcl {
+                this.advance();
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ErrorPropagationExpr");
+                    this.w.keyRaw("expr", acc);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // `expr as T`
+            if k == TK.As {
+                this.advance();
+                let target = this.captureType();
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ExplicitCastExpr");
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyRaw("castedTo", target);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            // `expr is T` / `expr is not T`
+            if k == TK.Is || k == TK.IsNot {
+                this.advance();
+                let inverted = k == TK.IsNot;
+                let target = this.captureType();
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ExprIsTypeExpr");
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyRaw("comparisonType", target);
+                    this.w.keyBool("inverted", inverted);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            break;
+        }
+
+        this.w.rawValue(acc);
+    }
+
+    // subscriptExpr: expr | start=expr? COLON end=expr?
+    mut fn subscriptIndex(): str :: final {
+        return this.captureWith(() => {
+            // Leading `:` -> slice with no start.
+            if this.at(TK.Colon) {
+                this.advance();
+                let hasEnd = !(this.at(TK.RBracket) || this.at(TK.Comma));
+                let endStr = emptyCapture();
+                if hasEnd { endStr = this.captureExpr(); }
+                this.w.beginObject();
+                this.w.keyString("type", "slice");
+                this.w.keyNull("start");
+                this.writeOptionalRawOrNull("end", endStr, hasEnd);
+                this.w.endObject();
+                return;
+            }
+
+            let first = this.captureExpr();
+            if this.at(TK.Colon) {
+                this.advance();
+                let hasEnd = !(this.at(TK.RBracket) || this.at(TK.Comma));
+                let endStr = emptyCapture();
+                if hasEnd { endStr = this.captureExpr(); }
+                this.w.beginObject();
+                this.w.keyString("type", "slice");
+                this.w.keyRaw("start", first);
+                this.writeOptionalRawOrNull("end", endStr, hasEnd);
+                this.w.endObject();
+                return;
+            }
+
+            this.w.beginObject();
+            this.w.keyString("type", "index");
+            this.w.keyRaw("value", first);
+            this.w.endObject();
+        });
+    }
+
+    // Emit `name: <capture>`, or `name: null` when the capture is empty.
+    mut fn writeOptionalRaw(name: str, value: str) {
+        this.w.key(name);
+        if value.length == 0 { this.w.nullValue(); }
+        else { this.w.rawValue(value); }
+    }
+
+    mut fn writeOptionalRawOrNull(name: str, value: str, present: bool) {
+        this.w.key(name);
+        if present { this.w.rawValue(value); }
+        else { this.w.nullValue(); }
+    }
+
+    // withAllocator: WITH expr — an empty capture when absent.
+    mut fn tryWithAllocator(): str :: final {
+        if !this.at(TK.With) { return emptyCapture(); }
+        this.advance();
+        return this.captureExpr();
+    }
+
+    // Generic arguments, omitted entirely when empty (`"generics":[]` appeared
+    // 4,384 times in one file). The bridge defaults a missing key to [].
+    mut fn writeGenericArgs(generics: mut []str) {
+        if generics.length == 0 { return; }
+        this.w.key("generics");
+        this.w.beginArray();
+        for g in generics { this.w.rawValue(g); }
+        this.w.endArray();
+    }
+
+    // A member name may be an identifier or the `type` keyword (memberNameId).
+    mut fn memberName(): Token {
+        if this.at(TK.Type) { return this.advance(); }
+        return this.expect(TK.Ident);
+    }
+
+    // genericArgs: LANGLE genericLiteral (COMMA genericLiteral)* RANGLE
+    // Returns [] when there are none. Only consumes `<` when the contents parse
+    // as a generic argument list, so `a < b` stays a comparison.
+    mut fn tryGenericArgs(): mut []str :: final {
+        let out: mut []str = [];
+        if !this.at(TK.LAngle) { return out; }
+        if !this.looksLikeGenericArgs() { return out; }
+
+        this.advance();
+        out.push(this.captureType());
+        while this.accept(TK.Comma) {
+            out.push(this.captureType());
+        }
+        this.expect(TK.RAngle);
+        return out;
+    }
+
+    // Decide whether a `<` opens a generic argument list or is a less-than.
+    // Scans ahead for a matching `>` without crossing tokens that cannot appear
+    // in a type argument list.
+    fn looksLikeGenericArgs(): bool {
+        let angle = 0;
+        let paren = 0;
+        let bracket = 0;
+        let i = this.pos;
+        let limit = this.toks.length;
+
+        while i < limit {
+            let k = this.toks[i].kind;
+
+            // Generic arguments are types, and a type may contain balanced
+            // parentheses and brackets: `Result<[]DirEntry, Error>` and
+            // `Foo<typeof(x.[y])>` are both valid. Only an UNBALANCED closer
+            // means the `<` was a comparison.
+            if k == TK.LParen { paren++; }
+            else if k == TK.LBracket { bracket++; }
+            else if k == TK.RParen {
+                if paren == 0 { return false; }
+                paren--;
+            }
+            else if k == TK.RBracket {
+                if bracket == 0 { return false; }
+                bracket--;
+            }
+            else if k == TK.LAngle { angle++; }
+            else if k == TK.RAngle {
+                angle--;
+                if angle == 0 { return paren == 0 && bracket == 0; }
+            }
+            else if k == TK.Semi || k == TK.LCurly || k == TK.RCurly || k == TK.EOF
+                 || k == TK.DoubleEquals || k == TK.NotEquals
+                 || k == TK.DoubleAnd || k == TK.DoubleOr
+                 || k == TK.Leq || k == TK.Geq
+                 || k == TK.Plus || k == TK.Minus || k == TK.Div || k == TK.Mod {
+                // These cannot appear in a type argument list (at depth 0).
+                if paren == 0 && bracket == 0 { return false; }
+            }
+            i++;
+        }
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Primary expressions.
+    // -----------------------------------------------------------------------
+
+    mut fn primaryExpr(): void :: final {
+        let k = this.kind();
+        let start = this.cur();
+
+        // A lambda must be tried before a parenthesised expression: `(x)` is a
+        // prefix of both, and only the arrow after `)` disambiguates them.
+        if k == TK.LParen {
+            if this.looksLikeLambda() {
+                this.lambdaExpr();
+                return;
+            }
+            this.advance();
+            let savedParen = this.allowBraceLiteral;
+            this.allowBraceLiteral = true;
+            let inner = this.captureExpr();
+            this.allowBraceLiteral = savedParen;
+            this.expect(TK.RParen);
+            this.w.beginObject();
+            this.w.keyString("variant", "ParenthesisExpr");
+            this.w.keyRaw("expr", inner);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Do {
+            this.doScopeExpr();
+            return;
+        }
+
+        if k == TK.Attempt {
+            this.attemptExpr();
+            return;
+        }
+
+        // `type <typeExpr>` switches into type syntax.
+        if k == TK.Type {
+            this.advance();
+            let t = this.captureType();
+            this.w.beginObject();
+            this.w.keyString("variant", "TypeValueExpr");
+            this.w.keyRaw("datatype", t);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Typeof {
+            this.advance();
+            this.expect(TK.LParen);
+            let inner = this.captureExpr();
+            this.expect(TK.RParen);
+            this.w.beginObject();
+            this.w.keyString("variant", "TypeOfExpr");
+            this.w.keyRaw("expr", inner);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        // Array literal.
+        if k == TK.LBracket {
+            this.arrayExpr();
+            return;
+        }
+
+        // Anonymous struct literal `{ ... }`.
+        if k == TK.LCurly {
+            this.braceExpr(emptyCapture(), start);
+            return;
+        }
+
+        if this.isLiteralStart(k) {
+            this.literalExpr();
+            return;
+        }
+
+        if k == TK.FStringStart || k == TK.FTripleStringStart {
+            this.interpolatedString();
+            return;
+        }
+
+        // Name, possibly followed by a brace literal (`Foo { ... }`).
+        if k == TK.Ident || k == TK.Type {
+            let nameJson = this.captureWith(() => { this.nameExpr(); });
+            if this.at(TK.LCurly) && this.allowBraceLiteral {
+                // The literal spans from the type name, not from `{`.
+                this.braceExpr(nameJson, start);
+                return;
+            }
+            this.w.rawValue(nameJson);
+            return;
+        }
+
+        this.errorAt(start, f"unexpected token in expression: {tokenName(k)}");
+        this.advance();
+        this.w.nullValue();
+    }
+
+    // `Foo { ... }` is ambiguous with `if cond { ... }`, so the statement
+    // parser clears this while parsing a control-flow condition.
+    allowBraceLiteral: bool = true;
+
+    // Set while parsing the init clause of a C-style `for`, where the trailing
+    // `;` belongs to the for rule rather than to the statement.
+    noSemiInStatement: bool = false;
+
+    fn isLiteralStart(k: TK): bool {
+        return k == TK.True || k == TK.False || k == TK.IntLit || k == TK.HexIntLit
+            || k == TK.FloatLit || k == TK.UnitIntLit || k == TK.UnitFloatLit
+            || k == TK.StringLit || k == TK.TripleStringLit || k == TK.RegexLit;
+    }
+
+    // Does a `(` start a lambda? Scan to the matching `)` and look for `=>`/`->`,
+    // or a return-type annotation / requiresJson block introducing one.
+    fn looksLikeLambda(): bool {
+        let depth = 0;
+        let i = this.pos;
+        let limit = this.toks.length;
+
+        while i < limit {
+            let k = this.toks[i].kind;
+            if k == TK.LParen { depth++; }
+            else if k == TK.RParen {
+                depth--;
+                if depth == 0 {
+                    let after = this.toks[i + 1].kind;
+                    if after == TK.DoubleArrow || after == TK.SingleArrow { return true; }
+                    // `(a): T => ...` and `(a) :: final => ...`
+                    if after == TK.Colon || after == TK.DoubleColon {
+                        let j = i + 2;
+                        while j < limit {
+                            let kk = this.toks[j].kind;
+                            if kk == TK.DoubleArrow || kk == TK.SingleArrow { return true; }
+                            if kk == TK.Semi || kk == TK.LCurly || kk == TK.RParen
+                               || kk == TK.Comma || kk == TK.EOF { return false; }
+                            j++;
+                        }
+                    }
+                    return false;
+                }
+            }
+            else if k == TK.EOF { return false; }
+            i++;
+        }
+        return false;
+    }
+
+    // literal -> ASTLiteralExpr wrapping a LiteralValue.
+    // EPrimitive: str=1 int=5 real=15 bool=18 Regex=22
+    mut fn literalExpr(): void :: final {
+        let t = this.advance();
+        let k = t.kind;
+        let raw = this.text(t);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "LiteralExpr");
+        this.w.key("literal");
+        this.w.beginObject();
+
+        if k == TK.True || k == TK.False {
+            this.w.keyInt("type", 18);
+            this.w.keyBool("value", k == TK.True);
+        }
+        else if k == TK.IntLit {
+            this.w.keyInt("type", 5);
+            // Integer values are emitted as strings and revived to BigInt.
+            this.w.key("value");
+            this.w.stringValue(normalizeDecimal(raw));
+            this.w.keyNull("unit");
+        }
+        else if k == TK.HexIntLit {
+            this.w.keyInt("type", 5);
+            this.w.key("value");
+            this.w.stringValue(hexToDecimal(raw.slice(2)));
+            this.w.keyNull("unit");
+        }
+        else if k == TK.UnitIntLit {
+            let split = this.splitUnit(raw);
+            this.w.keyInt("type", 5);
+            this.w.key("value");
+            this.w.stringValue(normalizeDecimal(raw.slice(0, split)));
+            this.w.keyInt("unit", unitCode(raw.slice(split)));
+        }
+        else if k == TK.FloatLit {
+            this.w.keyInt("type", 15);
+            this.w.keyRaw("value", canonicalFloat(raw));
+            this.w.keyNull("unit");
+        }
+        else if k == TK.UnitFloatLit {
+            let split = this.splitUnit(raw);
+            this.w.keyInt("type", 15);
+            this.w.keyRaw("value", canonicalFloat(raw.slice(0, split)));
+            this.w.keyInt("unit", unitCode(raw.slice(split)));
+        }
+        else if k == TK.StringLit {
+            this.w.keyInt("type", 1);
+            if raw.length > 0 && raw[0] == b"b" {
+                this.w.keyString("prefix", "b");
+                this.w.key("value");
+                this.w.stringValue(stringLiteralValue(raw.slice(1), 1));
+            }
+            else {
+                this.w.keyNull("prefix");
+                this.w.key("value");
+                this.w.stringValue(stringLiteralValue(raw, 1));
+            }
+        }
+        else if k == TK.TripleStringLit {
+            this.w.keyInt("type", 1);
+            this.w.keyNull("prefix");
+            this.w.key("value");
+            this.w.stringValue(stringLiteralValue(raw, 3));
+        }
+        else if k == TK.RegexLit {
+            // r"pattern"flags
+            let closing = raw.length - 1;
+            while closing > 1 && raw[closing] != b"\"" { closing--; }
+            this.w.keyInt("type", 22);
+            this.w.key("pattern");
+            this.w.stringValue(raw.slice(2, closing));
+            this.w.key("flags");
+            this.w.beginArray();
+            for (let i = closing + 1; i < raw.length; i++) {
+                this.w.stringValue(raw.slice(i, i + 1));
+            }
+            this.w.endArray();
+            this.w.keyNull("id");
+        }
+
+        this.w.endObject();
+        this.locHere(t);
+        this.w.endObject();
+    }
+
+    // Index of the first byte of the unit suffix in a unit literal.
+    fn splitUnit(raw: str): int {
+        let i = raw.length;
+        while i > 0 {
+            let c = raw[i - 1];
+            if (c >= b"0" && c <= b"9") || c == b"." { break; }
+            i--;
+        }
+        return i;
+    }
+
+    // interpolatedString: FSTRING_START fragment* FSTRING_END (WITH expr)?
+    mut fn interpolatedString(): void :: final {
+        let start = this.advance();   // FStringStart / FTripleStringStart
+        let triple = start.kind == TK.FTripleStringStart;
+
+        let fragments: mut []str = [];
+        while true {
+            let k = this.kind();
+
+            if k == TK.FStringText {
+                let t = this.advance();
+                let value = unescapeFStringText(this.text(t));
+                fragments.push(this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("type", "text");
+                    this.w.keyString("value", value);
+                    this.w.endObject();
+                }));
+                continue;
+            }
+
+            if k == TK.LCurly {
+                this.advance();
+                let inner = this.captureExpr();
+                this.expect(TK.RCurly);
+                fragments.push(this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("type", "expr");
+                    this.w.keyRaw("value", inner);
+                    this.w.endObject();
+                }));
+                continue;
+            }
+
+            if k == TK.FStringEnd || k == TK.FTripleStringEnd {
+                this.advance();
+                break;
+            }
+
+            this.errorAt(this.cur(), "unterminated f-string");
+            break;
+        }
+
+        let alloc = this.tryWithAllocator();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "FStringExpr");
+        this.w.key("fragments");
+        this.w.beginArray();
+        for f in fragments { this.w.rawValue(f); }
+        this.w.endArray();
+        this.writeOptionalRaw("allocator", alloc);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // arrayExpr: LBRACKET aggregateBody RBRACKET withAllocator?
+    mut fn arrayExpr(): void :: final {
+        let start = this.expect(TK.LBracket);
+        let savedAllow = this.allowBraceLiteral;
+        this.allowBraceLiteral = true;
+        let elements = this.aggregateBody(TK.RBracket);
+        this.allowBraceLiteral = savedAllow;
+        this.expect(TK.RBracket);
+        let alloc = this.tryWithAllocator();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "AggregateLiteralExpr");
+        this.w.keyNull("datatype");
+        this.w.key("elements");
+        this.w.beginArray();
+        for e in elements { this.w.rawValue(e); }
+        this.w.endArray();
+        this.writeOptionalRaw("allocator", alloc);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // braceExpr: nameExpr? LCURLY aggregateBody RCURLY withAllocator?
+    // `datatypeJson` is "" for an anonymous literal.
+    mut fn braceExpr(datatypeJson: str, start: Token): void :: final {
+        this.expect(TK.LCurly);
+        let savedAllow = this.allowBraceLiteral;
+        this.allowBraceLiteral = true;
+        let elements = this.aggregateBody(TK.RCurly);
+        this.allowBraceLiteral = savedAllow;
+        this.expect(TK.RCurly);
+        let alloc = this.tryWithAllocator();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "AggregateLiteralExpr");
+        this.writeOptionalRaw("datatype", datatypeJson);
+        this.w.key("elements");
+        this.w.beginArray();
+        for e in elements { this.w.rawValue(e); }
+        this.w.endArray();
+        this.writeOptionalRaw("allocator", alloc);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // aggregateBody: (key: value | value) list with isOptional trailing comma.
+    mut fn aggregateBody(terminator: TK): mut []str :: final {
+        let out: mut []str = [];
+        if this.at(terminator) { return out; }
+
+        while true {
+            if this.at(terminator) { break; }
+            out.push(this.aggregateElement());
+            if !this.accept(TK.Comma) { break; }
+        }
+        return out;
+    }
+
+    mut fn aggregateElement(): str :: final {
+        return this.captureWith(() => {
+            let start = this.cur();
+            let key = "";
+            let hasKey = false;
+
+            // `name:` introduces a keyed element, but `a ? b : c` and plain
+            // expressions must not be mistaken for one.
+            if (this.at(TK.Ident) || this.at(TK.Type)) && this.peekKind(1) == TK.Colon {
+                let t = this.advance();
+                key = this.text(t);
+                hasKey = true;
+                this.advance();
+            }
+
+            let value = this.captureExpr();
+
+            this.w.beginObject();
+            if hasKey { this.w.keyString("key", key); }
+            else { this.w.keyNull("key"); }
+            this.w.keyRaw("value", value);
+            this.locHere(start);
+            this.w.endObject();
+        });
+    }
+
+    // nameExpr: nameSegment (DOT nameSegment)*
+    // Emits SymbolValueExpr, wrapped in ExprMemberAccess for each extra segment.
+    mut fn nameExpr(): void :: final {
+        let start = this.cur();
+        let nameTok = this.memberName();
+        let generics = this.tryGenericArgs();
+        let name = this.text(nameTok);
+
+        let acc = this.captureWith(() => {
+            this.w.beginObject();
+            this.w.keyString("variant", "SymbolValueExpr");
+            this.w.keyString("name", name);
+            this.writeGenericArgs(generics);
+            this.locHere(start);
+            this.w.endObject();
+        });
+
+        // Only continue the dotted chain while it stays a plain name; anything
+        // else (calls, indexing) is handled by postfixExpr.
+        while this.at(TK.Dot) && (this.peekKind(1) == TK.Ident || this.peekKind(1) == TK.Type) {
+            // Like postfixExpr, each segment is anchored at its own name
+            // token, after the `.`.
+            this.advance();
+            let segStart = this.cur();
+            let segTok = this.memberName();
+            let segGenerics = this.tryGenericArgs();
+            let member = this.text(segTok);
+            acc = this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "ExprMemberAccess");
+                this.w.keyRaw("expr", acc);
+                this.w.keyString("member", member);
+                this.writeGenericArgs(segGenerics);
+                this.locHere(segStart);
+                this.w.endObject();
+            });
+        }
+
+        this.w.rawValue(acc);
+    }
+
+    // -----------------------------------------------------------------------
+    // Type expressions.
+    //
+    //   typeExpr        -> union of modified types, or a tagged `union { ... }`
+    //   typeExprModified-> inline/mut/const/[]T/[N]T/(params)=>T prefixes
+    //   typeExprSimple  -> primary with .member / .[expr] postfixes
+    //
+    // Types and value expressions share the SymbolValueExpr/ExprMemberAccess
+    // node shapes, so name parsing is reused directly.
+    // -----------------------------------------------------------------------
+
+    mut fn captureType(): str :: final {
+        return this.captureWith(() => { this.typeExpr(); });
+    }
+
+    // typeExpr: typeExprUnion | NODISCARD? UNION LCURLY (id COLON typeExprUnion COMMA)+ ... RCURLY
+    mut fn typeExpr(): void :: final {
+        let start = this.cur();
+
+        if this.at(TK.Nodiscard) || this.at(TK.Union) {
+            let hasNodiscard = this.accept(TK.Nodiscard);
+            if this.at(TK.Union) && this.peekKind(1) == TK.LCurly {
+                this.advance();
+                this.expect(TK.LCurly);
+
+                let tags: mut []str = [];
+                let types: mut []str = [];
+                while !this.at(TK.RCurly) && !this.atEnd() {
+                    let tagTok = this.memberName();
+                    tags.push(this.text(tagTok));
+                    this.expect(TK.Colon);
+                    types.push(this.captureWith(() => { this.typeExprUnion(); }));
+                    if !this.accept(TK.Comma) { break; }
+                }
+                this.expect(TK.RCurly);
+
+                let inner = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "TaggedUnionTypeExpr");
+                    this.w.key("members");
+                    this.w.beginArray();
+                    for (let i = 0; i < tags.length; i++) {
+                        this.w.beginObject();
+                        this.w.keyString("tag", tags[i]);
+                        this.w.keyRaw("type", types[i]);
+                        this.w.endObject();
+                    }
+                    this.w.endArray();
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+
+                if hasNodiscard {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "NodiscardTypeExpr");
+                    this.w.keyRaw("type", inner);
+                    this.locHere(start);
+                    this.w.endObject();
+                    return;
+                }
+                this.w.rawValue(inner);
+                return;
+            }
+
+            // `nodiscard T` without a tagged union body.
+            if hasNodiscard {
+                let inner = this.captureWith(() => { this.typeExprUnion(); });
+                this.w.beginObject();
+                this.w.keyString("variant", "NodiscardTypeExpr");
+                this.w.keyRaw("type", inner);
+                this.locHere(start);
+                this.w.endObject();
+                return;
+            }
+        }
+
+        this.typeExprUnion();
+    }
+
+    // typeExprUnion: typeExprModified (SINGLEOR typeExprModified)*
+    mut fn typeExprUnion(): void :: final {
+        let start = this.cur();
+        let first = this.captureWith(() => { this.typeExprModified(); });
+
+        if !this.at(TK.Or) {
+            this.w.rawValue(first);
+            return;
+        }
+
+        let parts: mut []str = [];
+        parts.push(first);
+        while this.accept(TK.Or) {
+            parts.push(this.captureWith(() => { this.typeExprModified(); }));
+        }
+
+        this.w.beginObject();
+        this.w.keyString("variant", "BinaryUnionTypeExpr");
+        this.w.key("types");
+        this.w.beginArray();
+        for p in parts { this.w.rawValue(p); }
+        this.w.endArray();
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    mut fn typeExprModified(): void :: final {
+        let start = this.cur();
+        let k = this.kind();
+
+        if k == TK.Inline || k == TK.Mut || k == TK.Const {
+            this.advance();
+            let variant = "InlineTypeExpr";
+            if k == TK.Mut { variant = "MutTypeExpr"; }
+            else if k == TK.Const { variant = "ConstTypeExpr"; }
+
+            this.w.beginObject();
+            this.w.keyString("variant", variant);
+            this.w.key("type");
+            this.typeExprModified();
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        // `[]T` dynamic array, `[N]T` isStaticFlag array.
+        if k == TK.LBracket {
+            this.advance();
+            if this.accept(TK.RBracket) {
+                this.w.beginObject();
+                this.w.keyString("variant", "DynamicArrayTypeExpr");
+                this.w.key("type");
+                this.typeExprModified();
+                this.locHere(start);
+                this.w.endObject();
+                return;
+            }
+            let size = this.captureExpr();
+            this.expect(TK.RBracket);
+            this.w.beginObject();
+            this.w.keyString("variant", "StaticArrayTypeExpr");
+            this.w.key("type");
+            this.typeExprModified();
+            this.w.keyRaw("arraySize", size);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        // Function type: `(params) => T` (closure) or `-> T` (function).
+        // A parenthesised type such as `[](inline Foo)` also starts with `(`,
+        // so only commit to a function type when an arrow follows the `)`.
+        if k == TK.LParen && this.parenIsFunctionType() {
+            this.advance();
+            let params = this.paramList(false);
+            this.expect(TK.RParen);
+
+            let arrow = this.kind();
+            if arrow == TK.DoubleArrow || arrow == TK.SingleArrow {
+                this.advance();
+                let ret = this.captureType();
+                let requiresJson = this.captureRequiresBlock();
+                let variant = "CallableTypeExpr";
+                if arrow == TK.SingleArrow { variant = "FunctionTypeExpr"; }
+
+                this.w.beginObject();
+                this.w.keyString("variant", variant);
+                this.writeParams(params);
+                this.w.keyBool("ellipsis", params.ellipsis);
+                this.w.keyRaw("returnType", ret);
+                this.w.keyRaw("requires", requiresJson);
+                this.w.keyInt("mutability", 1);   // EDatatypeMutability.Default
+                this.locHere(start);
+                this.w.endObject();
+                return;
+            }
+
+            this.errorAt(this.cur(), "expected '=>' or '->' in function type");
+            this.w.nullValue();
+            return;
+        }
+
+        this.typeExprSimple();
+    }
+
+    // Does the `(` at the cursor open a function type's parameter list, rather
+    // than simply parenthesising a type?
+    fn parenIsFunctionType(): bool {
+        let depth = 0;
+        let i = this.pos;
+        let limit = this.toks.length;
+        while i < limit {
+            let k = this.toks[i].kind;
+            if k == TK.LParen { depth++; }
+            else if k == TK.RParen {
+                depth--;
+                if depth == 0 {
+                    let after = this.toks[i + 1].kind;
+                    return after == TK.DoubleArrow || after == TK.SingleArrow;
+                }
+            }
+            else if k == TK.EOF { return false; }
+            i++;
+        }
+        return false;
+    }
+
+    // typeExprSimple: typeExprPrimary typeExprPostfix*
+    mut fn typeExprSimple(): void :: final {
+        let start = this.cur();
+        let acc = this.captureWith(() => { this.typeExprPrimary(); });
+
+        while true {
+            // `.[expr]` isComptime member access
+            if this.at(TK.Dot) && this.peekKind(1) == TK.LBracket {
+                this.advance();
+                this.advance();
+                let member = this.captureExpr();
+                this.expect(TK.RBracket);
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", "ExprComptimeMemberAccess");
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyRaw("memberExpr", member);
+                    this.locHere(start);
+                    this.w.endObject();
+                });
+                continue;
+            }
+
+            let segStart = this.cur();
+            let k = this.kind();
+            if k == TK.Dot || k == TK.QuestionDot {
+                // `typeExprPostfix : (DOT | QUESTIONDOT) nameSegment` INCLUDES
+                // the dot, so the span starts there.
+                this.advance();
+                let segTok = this.memberName();
+                let generics = this.tryGenericArgs();
+                let member = this.text(segTok);
+                let variant = "ExprMemberAccess";
+                if k == TK.QuestionDot { variant = "OptionalChainingExprMemberAccess"; }
+                acc = this.captureWith(() => {
+                    this.w.beginObject();
+                    this.w.keyString("variant", variant);
+                    this.w.keyRaw("expr", acc);
+                    this.w.keyString("member", member);
+                    this.writeGenericArgs(generics);
+                    this.locHere(segStart);
+                    this.w.endObject();
+                });
+                continue;
+            }
+            break;
+        }
+
+        this.w.rawValue(acc);
+    }
+
+    mut fn typeExprPrimary(): void :: final {
+        let start = this.cur();
+        let k = this.kind();
+
+        if k == TK.Typeof {
+            this.advance();
+            this.expect(TK.LParen);
+            let inner = this.captureExpr();
+            this.expect(TK.RParen);
+            this.w.beginObject();
+            this.w.keyString("variant", "TypeOfExpr");
+            this.w.keyRaw("expr", inner);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.LParen {
+            this.advance();
+            let inner = this.captureType();
+            this.expect(TK.RParen);
+            this.w.rawValue(inner);
+            return;
+        }
+
+        // Literal types such as 5, true or "Foo".
+        if this.isLiteralStart(k) {
+            this.literalExpr();
+            return;
+        }
+
+        if k == TK.Ident || k == TK.Type {
+            // A bare dotted type name is a `nameExpr`, whose segments are
+            // anchored at the NAME. Anything else (typeof(...), parens) is
+            // followed by `typeExprPostfix`, which includes the dot -- see
+            // typeExprSimple.
+            this.nameExpr();
+            return;
+        }
+
+        this.errorAt(start, f"unexpected token in type: {tokenName(k)}");
+        this.advance();
+        this.w.nullValue();
+    }
+
+    // A single name segment; the dotted chain is handled by typeExprSimple so
+    // that generics bind to the right segment.
+    mut fn nameExprSingle(): void :: final {
+        let start = this.cur();
+        let nameTok = this.memberName();
+        let generics = this.tryGenericArgs();
+        let name = this.text(nameTok);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "SymbolValueExpr");
+        this.w.keyString("name", name);
+        this.writeGenericArgs(generics);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // -----------------------------------------------------------------------
+    // Parameters.
+    // -----------------------------------------------------------------------
+
+    // Collected parameter list. `ellipsis` is the trailing `...` of a variadic.
+    mut fn paramList(typesOptional: bool): ParamList :: final {
+        let result = ParamList { params: [], ellipsis: false };
+
+        while !this.at(TK.RParen) && !this.atEnd() {
+            if this.at(TK.Ellipsis) {
+                this.advance();
+                result.ellipsis = true;
+                this.accept(TK.Comma);
+                continue;
+            }
+
+            let start = this.cur();
+            let nameTok = this.expect(TK.Ident);
+            let name = this.text(nameTok);
+            let isOptional = this.accept(TK.Question);
+
+            let datatype = emptyCapture();
+            let isPack = false;
+            if this.accept(TK.Colon) {
+                if this.at(TK.Ellipsis) {
+                    this.advance();
+                    isPack = true;
+                }
+                else {
+                    datatype = this.captureType();
+                }
+            }
+            else if !typesOptional {
+                this.errorAt(this.cur(), "expected ':' and a parameter type");
+            }
+
+            let defaultValue = emptyCapture();
+            if this.accept(TK.Equals) {
+                defaultValue = this.captureExpr();
+            }
+
+            let endTok = this.lastToken();
+            result.params.push(this.captureWith(() => {
+                this.w.beginObject();
+                if isPack {
+                    this.w.keyString("kind", "param-pack");
+                    this.w.keyString("name", name);
+                    this.writeLoc(start, endTok);
+                    this.w.endObject();
+                    return;
+                }
+                this.w.keyString("kind", "normal");
+                this.w.keyString("name", name);
+                this.writeOptionalRaw("datatype", datatype);
+                this.w.keyBool("optional", isOptional);
+                this.writeOptionalRaw("defaultValue", defaultValue);
+                this.writeLoc(start, endTok);
+                this.w.endObject();
+            }));
+
+            if !this.accept(TK.Comma) { break; }
+        }
+
+        return result;
+    }
+
+    mut fn writeParams(list: ParamList) {
+        this.w.key("params");
+        this.w.beginArray();
+        for p in list.params { this.w.rawValue(p); }
+        this.w.endArray();
+    }
+
+    // -----------------------------------------------------------------------
+    // requiresJson blocks: `:: final, pure, noreturn, noreturn_if(expr)`
+    // Always emitted (the AST field is non-isOptional).
+    // -----------------------------------------------------------------------
+
+    mut fn captureRequiresBlock(): str :: final {
+        let isFinal = false;
+        let isPure = false;
+        let isNoreturn = false;
+        let noreturnIf = emptyCapture();
+
+        if this.accept(TK.DoubleColon) {
+            while true {
+                // Parts may be parenthesised.
+                let opened = this.accept(TK.LParen);
+                let k = this.kind();
+
+                if k == TK.Final { this.advance(); isFinal = true; }
+                else if k == TK.Pure { this.advance(); isPure = true; }
+                else if k == TK.Noreturn { this.advance(); isNoreturn = true; }
+                else if k == TK.NoreturnIf {
+                    this.advance();
+                    this.expect(TK.LParen);
+                    noreturnIf = this.captureExpr();
+                    this.expect(TK.RParen);
+                }
+                else {
+                    this.errorAt(this.cur(), "expected a requiresJson specifier");
+                    if opened { this.accept(TK.RParen); }
+                    break;
+                }
+
+                if opened { this.expect(TK.RParen); }
+                if !this.accept(TK.Comma) { break; }
+            }
+        }
+
+        return this.captureWith(() => {
+            this.w.beginObject();
+            this.w.keyBool("final", isFinal);
+            this.w.keyBool("pure", isPure);
+            this.w.keyBool("noreturn", isNoreturn);
+            this.w.key("noreturnIf");
+            if noreturnIf.length == 0 { this.w.nullValue(); }
+            else {
+                this.w.beginObject();
+                this.w.keyRaw("expr", noreturnIf);
+                this.w.endObject();
+            }
+            this.w.endObject();
+        });
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Scopes, lambdas, do/attempt.
+    // -----------------------------------------------------------------------
+
+    // rawScope: LCURLY statement* RCURLY
+    mut fn rawScope(isUnsafe: bool): void :: final {
+        this.rawScopeFrom(isUnsafe, this.cur());
+    }
+
+    // As rawScope, but with an explicit span start (see doScopeExpr).
+    mut fn rawScopeFrom(isUnsafe: bool, start: Token): void :: final {
+        this.expect(TK.LCurly);
+
+        let stmts: mut []str = [];
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let before = this.pos;
+            stmts.push(this.captureWith(() => { this.statement(); }));
+            // Guarantee forward progress even if a statement failed to parse.
+            if this.pos == before { this.advance(); }
+        }
+        this.expect(TK.RCurly);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "Scope");
+        this.w.key("statements");
+        this.w.beginArray();
+        for s in stmts { this.w.rawValue(s); }
+        this.w.endArray();
+        this.w.keyBool("unsafe", isUnsafe);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    mut fn captureScope(): str :: final {
+        return this.captureWith(() => { this.rawScope(false); });
+    }
+
+    // doScope: DO UNSAFE? LCURLY statement* RCURLY
+    mut fn doScopeExpr(): void :: final {
+        let start = this.expect(TK.Do);
+        let isUnsafe = this.accept(TK.Unsafe);
+        // `doScope` is one rule, so the Scope node it builds spans from `do`,
+        // not from the opening brace.
+        let scope = this.captureWith(() => { this.rawScopeFrom(isUnsafe, start); });
+
+        this.w.beginObject();
+        this.w.keyString("variant", "BlockScopeExpr");
+        this.w.keyRaw("scope", scope);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // attempt rawScope (else id? rawScope | recover id? rawScope)*
+    mut fn attemptExpr(): void :: final {
+        this.attemptExprImpl(false);
+    }
+
+    mut fn attemptExprImpl(takeSemi: bool): void :: final {
+        let start = this.expect(TK.Attempt);
+        let attemptScope = this.captureScope();
+
+        let elseScope = emptyCapture();
+        let elseVar = "";
+        let recoverScope = emptyCapture();
+        let recoverVar = "";
+
+        while true {
+            if this.at(TK.Else) {
+                this.advance();
+                if this.at(TK.Ident) { elseVar = this.text(this.advance()); }
+                elseScope = this.captureScope();
+                continue;
+            }
+            if this.at(TK.Recover) {
+                this.advance();
+                if this.at(TK.Ident) { recoverVar = this.text(this.advance()); }
+                recoverScope = this.captureScope();
+                continue;
+            }
+            break;
+        }
+
+        if takeSemi { this.accept(TK.Semi); }
+
+        this.w.beginObject();
+        this.w.keyString("variant", "AttemptExpr");
+        this.w.keyRaw("attemptScope", attemptScope);
+        this.writeOptionalRaw("elseScope", elseScope);
+        this.writeOptionalString("elseVar", elseVar);
+        this.writeOptionalRaw("recoverScope", recoverScope);
+        this.writeOptionalString("recoverVar", recoverVar);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // Emit `name: "value"`, or `name: null` for the empty string.
+    mut fn writeOptionalString(name: str, value: str) {
+        this.w.key(name);
+        if value.length == 0 { this.w.nullValue(); }
+        else { this.w.stringValue(value); }
+    }
+
+    // lambda: LB lambdaParams RB (COLON typeExpr)? requiresBlock? (=> | ->) funcbody
+    mut fn lambdaExpr(): void :: final {
+        let start = this.expect(TK.LParen);
+        let params = this.paramList(true);
+        this.expect(TK.RParen);
+
+        let returnType = emptyCapture();
+        if this.accept(TK.Colon) { returnType = this.captureType(); }
+        let requiresJson = this.captureRequiresBlock();
+
+        let arrow = this.kind();
+        let kind = "closure";
+        if arrow == TK.SingleArrow { kind = "function"; }
+        if arrow == TK.DoubleArrow || arrow == TK.SingleArrow { this.advance(); }
+        else { this.errorAt(this.cur(), "expected '=>' or '->' in lambda"); }
+
+        let body = this.captureFuncBody();
+
+        let lambda = this.captureWith(() => {
+            this.w.beginObject();
+            this.w.keyString("variant", "Lambda");
+            this.w.keyString("kind", kind);
+            this.writeParams(params);
+            this.w.keyBool("ellipsis", params.ellipsis);
+            if returnType.length > 0 { this.w.keyRaw("returnType", returnType); }
+            this.w.keyRaw("scope", body);
+            this.w.keyRaw("requires", requiresJson);
+            this.locHere(start);
+            this.w.endObject();
+        });
+
+        this.w.beginObject();
+        this.w.keyString("variant", "LambdaExpr");
+        this.w.keyRaw("lambda", lambda);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // funcbody: rawScope | expr
+    mut fn captureFuncBody(): str :: final {
+        if this.at(TK.LCurly) { return this.captureScope(); }
+        return this.captureWith(() => {
+            let e = this.captureExpr();
+            this.w.beginObject();
+            this.w.keyString("variant", "ExprAsFuncBody");
+            this.w.keyRaw("expr", e);
+            this.w.endObject();
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Statements.
+    // -----------------------------------------------------------------------
+
+    mut fn statement(): void :: final {
+        let start = this.cur();
+        let k = this.kind();
+
+        if k == TK.InlineC {
+            this.advance();
+            this.expect(TK.LParen);
+            let e = this.captureExpr();
+            this.expect(TK.RParen);
+            this.accept(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "InlineCStatement");
+            this.w.keyRaw("expr", e);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Return {
+            this.advance();
+            let hasExpr = !this.at(TK.Semi);
+            let e = emptyCapture();
+            if hasExpr { e = this.captureExpr(); }
+            this.expect(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "ReturnStatement");
+            if hasExpr { this.w.keyRaw("expr", e); }
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Raise {
+            this.advance();
+            let hasExpr = !this.at(TK.Semi);
+            let e = emptyCapture();
+            if hasExpr { e = this.captureExpr(); }
+            this.expect(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "RaiseStatement");
+            this.writeOptionalRaw("expr", e);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Break {
+            this.advance();
+            this.expect(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "BreakStatement");
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Continue {
+            this.advance();
+            this.expect(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "ContinueStatement");
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Let || k == TK.Const {
+            this.variableCreation();
+            return;
+        }
+
+        if k == TK.Type {
+            // `type X = T;` alias — but `type` can also start an expression.
+            if this.peekKind(1) == TK.Ident {
+                this.typeAlias(this.cur(), false, 0, emptyCapture());
+                this.accept(TK.Semi);
+                return;
+            }
+        }
+
+        if k == TK.If {
+            this.ifStatement();
+            return;
+        }
+
+        if k == TK.While {
+            this.whileStatement();
+            return;
+        }
+
+        if k == TK.For {
+            this.forStatement();
+            return;
+        }
+
+        // `do { }` and `attempt { }` as statements: the trailing semicolon is
+        // isOptional, which is why they are matched before the generic
+        // expression-statement rule.
+        if k == TK.Do {
+            // `doScope SEMI?` is one statement rule: the optional `;` is part
+            // of the statement's span (but not of the inner expression's).
+            let e = this.captureWith(() => { this.doScopeExpr(); });
+            this.accept(TK.Semi);
+            this.w.beginObject();
+            this.w.keyString("variant", "ExprStatement");
+            this.w.keyRaw("expr", e);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if k == TK.Attempt {
+            // `ATTEMPT rawScope attemptBody* SEMI?` is a single statement rule
+            // and the AttemptExpr node is built from it, so the optional `;`
+            // falls inside the EXPRESSION's span too (unlike `do`, where the
+            // expression comes from the separate doScope rule).
+            let e = this.captureWith(() => { this.attemptExprImpl(true); });
+            this.w.beginObject();
+            this.w.keyString("variant", "ExprStatement");
+            this.w.keyRaw("expr", e);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        // Expression statement.
+        let e = this.captureExpr();
+        if !this.noSemiInStatement { this.expect(TK.Semi); }
+        this.w.beginObject();
+        this.w.keyString("variant", "ExprStatement");
+        this.w.keyRaw("expr", e);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // variableCreation: (let|const) isComptime? id ((: T)? = expr | : T) SEMI?
+    mut fn variableCreation(): void :: final {
+        let start = this.cur();
+        let mutability = this.variableMutability();
+        let isComptime = this.accept(TK.Comptime);
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+
+        let datatype = emptyCapture();
+        if this.accept(TK.Colon) { datatype = this.captureType(); }
+
+        let value = emptyCapture();
+        let hasValue = false;
+        if this.accept(TK.Equals) {
+            value = this.captureExpr();
+            hasValue = true;
+        }
+        if !this.noSemiInStatement { this.accept(TK.Semi); }
+
+        this.w.beginObject();
+        this.w.keyString("variant", "VariableDefinitionStatement");
+        this.w.keyInt("mutability", mutability);
+        this.w.keyBool("comptime", isComptime);
+        this.w.keyString("name", name);
+        if datatype.length > 0 { this.w.keyRaw("datatype", datatype); }
+        if hasValue { this.w.keyRaw("expr", value); }
+        this.w.keyInt("variableContext", 1);   // EVariableContext.FunctionLocal
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // EVariableMutability: Const=1 Let=2 Default=3
+    mut fn variableMutability(): int {
+        if this.accept(TK.Const) { return 1; }
+        if this.accept(TK.Let) { return 2; }
+        return 3;
+    }
+
+    // Condition of if/while: either an expression or `let x = expr` with an
+    // isOptional `; guard`. Brace literals are disabled so `if x { }` parses the
+    // brace as the body rather than a struct literal.
+    mut fn conditionInto(letName: str): Condition :: final {
+        let c = Condition {
+            isLet: false,
+            name: "",
+            datatype: emptyCapture(),
+            expr: emptyCapture(),
+            guard: emptyCapture(),
+        };
+
+        let savedAllow = this.allowBraceLiteral;
+        this.allowBraceLiteral = false;
+
+        if this.at(TK.Let) {
+            this.advance();
+            c.isLet = true;
+            let nameTok = this.expect(TK.Ident);
+            c.name = this.text(nameTok);
+            if this.accept(TK.Colon) { c.datatype = this.captureType(); }
+            this.expect(TK.Equals);
+            c.expr = this.captureExpr();
+            if this.accept(TK.Semi) { c.guard = this.captureExpr(); }
+        }
+        else {
+            c.expr = this.captureExpr();
+        }
+
+        this.allowBraceLiteral = savedAllow;
+        return c;
+    }
+
+    // Write the `condition` / `letCondition` pair shared by if and while.
+    mut fn writeCondition(c: Condition) {
+        if c.isLet {
+            // A `let` condition may still carry a guard expression, which is
+            // reported as the plain `condition`.
+            this.writeOptionalRaw("condition", c.guard);
+            this.w.key("letCondition");
+            this.w.beginObject();
+            this.w.keyString("name", c.name);
+            this.writeOptionalRaw("type", c.datatype);
+            this.w.keyRaw("expr", c.expr);
+            this.w.endObject();
+            return;
+        }
+        this.w.keyRaw("condition", c.expr);
+        this.w.keyNull("letCondition");
+    }
+
+    mut fn ifStatement(): void :: final {
+        let start = this.expect(TK.If);
+        let isComptime = this.accept(TK.Comptime);
+        let cond = this.conditionInto("");
+        let thenScope = this.captureScope();
+
+        let elseIfs: mut []str = [];
+        let elseScope = emptyCapture();
+
+        while this.at(TK.Else) {
+            this.advance();
+            if this.at(TK.If) {
+                this.advance();
+                this.accept(TK.Comptime);
+                let c = this.conditionInto("");
+                let s = this.captureScope();
+                elseIfs.push(this.captureWith(() => {
+                    this.w.beginObject();
+                    this.writeCondition(c);
+                    this.w.keyRaw("thenScope", s);
+                    this.w.endObject();
+                }));
+                continue;
+            }
+            elseScope = this.captureScope();
+            break;
+        }
+
+        this.w.beginObject();
+        this.w.keyString("variant", "IfStatement");
+        this.writeCondition(cond);
+        this.w.keyRaw("thenScope", thenScope);
+        this.w.keyBool("comptime", isComptime);
+        this.w.key("elseIfs");
+        this.w.beginArray();
+        for e in elseIfs { this.w.rawValue(e); }
+        this.w.endArray();
+        if elseScope.length > 0 { this.w.keyRaw("else", elseScope); }
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    mut fn whileStatement(): void :: final {
+        let start = this.expect(TK.While);
+        let cond = this.conditionInto("");
+        let body = this.captureScope();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "WhileStatement");
+        this.writeCondition(cond);
+        this.w.keyRaw("body", body);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // `while let x = e; guard { }` and `if let x = e; guard { }` keep the guard
+    // in `condition` alongside the binding in `letCondition`.
+
+    // for: `for x in expr { }` / `for x, i in expr { }` / C-style `for (a; b; c)`
+    mut fn forStatement(): void :: final {
+        let start = this.expect(TK.For);
+        let isComptime = this.accept(TK.Comptime);
+
+        if this.at(TK.LParen) {
+            this.advance();
+
+            let initStmt = emptyCapture();
+            if !this.at(TK.Semi) {
+                // In `for (init; cond; incr)` the separating `;` belongs to the
+                // for rule, not to the init statement, so the statement's span
+                // must stop before it. `noSemiInStatement` makes the statement
+                // parser leave the `;` for us to consume here.
+                this.noSemiInStatement = true;
+                initStmt = this.captureWith(() => { this.statement(); });
+                this.noSemiInStatement = false;
+            }
+            this.expect(TK.Semi);
+
+            let condition = emptyCapture();
+            if !this.at(TK.Semi) { condition = this.captureExpr(); }
+            this.expect(TK.Semi);
+
+            let incr = emptyCapture();
+            if !this.at(TK.RParen) { incr = this.captureExpr(); }
+            this.expect(TK.RParen);
+
+            let body = this.captureScope();
+
+            this.w.beginObject();
+            this.w.keyString("variant", "ForStatement");
+            this.writeOptionalRaw("initStatement", initStmt);
+            this.writeOptionalRaw("loopCondition", condition);
+            this.writeOptionalRaw("loopIncrement", incr);
+            this.w.keyBool("comptime", isComptime);
+            this.w.keyRaw("body", body);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        let loopVarTok = this.expect(TK.Ident);
+        let loopVar = this.text(loopVarTok);
+        let indexVar = "";
+        if this.accept(TK.Comma) {
+            let idxTok = this.expect(TK.Ident);
+            indexVar = this.text(idxTok);
+        }
+        this.expect(TK.In);
+
+        let savedAllow = this.allowBraceLiteral;
+        this.allowBraceLiteral = false;
+        let value = this.captureExpr();
+        this.allowBraceLiteral = savedAllow;
+
+        let body = this.captureScope();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "ForEachStatement");
+        this.w.keyString("loopVariable", loopVar);
+        this.writeOptionalString("indexVariable", indexVar);
+        this.w.keyRaw("value", value);
+        this.w.keyBool("comptime", isComptime);
+        this.w.keyRaw("body", body);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Top level.
+    // -----------------------------------------------------------------------
+
+    // prog: (importStatements | globalDeclaration)* EOF
+    // The output is an envelope, not a bare array:
+    //   {"f":"<filename>","d":[ ...declarations... ]}
+    // so the filename is transmitted ONCE instead of on every node (it was
+    // repeated 10,405 times in one generated import file, a third of the
+    // payload). The bridge unwraps this and fills the name back in.
+    mut fn parseProgram(): void :: final {
+        this.w.beginObject();
+        this.w.keyString("f", this.filename);
+        this.w.key("d");
+        this.w.beginArray();
+        while !this.atEnd() {
+            let before = this.pos;
+            this.topLevelDeclaration();
+            if this.pos == before {
+                this.errorAt(this.cur(), f"unexpected token: {tokenName(this.kind())}");
+                this.advance();
+            }
+        }
+        this.w.endArray();
+        this.w.endObject();
+    }
+
+    mut fn topLevelDeclaration(): void :: final {
+        let k = this.kind();
+
+        if k == TK.Import { this.importStatement(); return; }
+        if k == TK.From { this.fromImportStatement(); return; }
+        if k == TK.Semi { this.advance(); return; }
+
+        this.globalDeclaration();
+    }
+
+    // import (id | STRING) (as id)? SEMI?
+    mut fn importStatement(): void :: final {
+        let start = this.expect(TK.Import);
+
+        let mode = "module";
+        let name = "";
+        if this.at(TK.StringLit) {
+            let t = this.advance();
+            mode = "path";
+            name = stringLiteralValue(this.text(t), 1);
+        }
+        else {
+            let t = this.expect(TK.Ident);
+            name = this.text(t);
+        }
+
+        let alias = "";
+        if this.accept(TK.As) {
+            let t = this.expect(TK.Ident);
+            alias = this.text(t);
+        }
+        this.accept(TK.Semi);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "ModuleImport");
+        this.w.keyString("mode", mode);
+        this.w.keyString("name", name);
+        this.writeOptionalString("alias", alias);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // from (id | STRING) import importAs (, importAs)* SEMI?
+    mut fn fromImportStatement(): void :: final {
+        let start = this.expect(TK.From);
+
+        let mode = "module";
+        let name = "";
+        if this.at(TK.StringLit) {
+            let t = this.advance();
+            mode = "path";
+            name = stringLiteralValue(this.text(t), 1);
+        }
+        else {
+            let t = this.expect(TK.Ident);
+            name = this.text(t);
+        }
+
+        this.expect(TK.Import);
+
+        let symbols: mut []str = [];
+        while true {
+            let symTok = this.expect(TK.Ident);
+            let symbol = this.text(symTok);
+            let alias = "";
+            if this.accept(TK.As) {
+                let aliasTok = this.expect(TK.Ident);
+                alias = this.text(aliasTok);
+            }
+            symbols.push(this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("symbol", symbol);
+                this.writeOptionalString("alias", alias);
+                this.w.endObject();
+            }));
+            if !this.accept(TK.Comma) { break; }
+        }
+        this.accept(TK.Semi);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "SymbolImport");
+        this.w.keyString("mode", mode);
+        this.w.keyString("name", name);
+        this.w.key("symbols");
+        this.w.beginArray();
+        for s in symbols { this.w.rawValue(s); }
+        this.w.endArray();
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // A global declaration, with all the leading modifiers the grammar allows.
+    mut fn globalDeclaration(): void :: final {
+        // The declaration's sourceloc and originalSourcecode start at the first
+        // modifier (`export`, `extern C noemit`, ...), not at the `fn`/`struct`
+        // keyword, so remember it before any of them are consumed.
+        let declStart = this.cur();
+        let annotations = this.captureMetaAnnotation();
+        let isExport = this.accept(TK.Export);
+
+        // `__c__("...")` injection.
+        if this.at(TK.InlineC) {
+            let start = this.lastToken();
+            if !isExport { start = this.cur(); }
+            this.advance();
+            this.expect(TK.LParen);
+            let e = this.captureExpr();
+            this.expect(TK.RParen);
+            this.accept(TK.Semi);
+
+            this.w.beginObject();
+            this.w.keyString("variant", "CInjectDirective");
+            this.w.keyRaw("expr", e);
+            this.w.keyBool("export", isExport);
+            this.locHere(start);
+            this.w.endObject();
+            return;
+        }
+
+        if this.at(TK.Namespace) { this.namespaceDefinition(declStart, isExport); return; }
+        if this.at(TK.ModuleNamespace) { this.moduleNamespaceDefinition(declStart, isExport); return; }
+        if this.at(TK.SourceDirective) { this.sourceLocationBlock(); return; }
+
+        // extern / pub / noemit / opaque / plain / inline modifiers.
+        let mods = this.declModifiers();
+
+        if this.at(TK.Fn) { this.functionDefinition(declStart, isExport, mods, false, 0); return; }
+        if this.at(TK.Struct) { this.structDefinition(declStart, isExport, mods, annotations); return; }
+        if this.at(TK.Enum) { this.enumDefinition(declStart, isExport, mods); return; }
+        if this.at(TK.Type) { this.typeAlias(declStart, isExport, mods.externLang, annotations); this.accept(TK.Semi); return; }
+        if this.at(TK.Let) || this.at(TK.Const) { this.globalVariable(declStart, isExport, mods); return; }
+
+        this.errorAt(this.cur(), f"unexpected token at top level: {tokenName(this.kind())}");
+        this.advance();
+    }
+
+    // extern [lang] pub? noemit? opaque? plain? inline?
+    mut fn declModifiers(): Modifiers :: final {
+        let m = Modifiers {
+            externLang: 0, isPub: false, isNoemit: false,
+            isOpaque: false, isPlain: false, inlineByDefault: false,
+        };
+
+        if this.accept(TK.Extern) {
+            // EExternLanguage: None=0 Extern=1 Extern_C=2
+            m.externLang = 1;
+            if this.at(TK.Ident) {
+                let langTok = this.advance();
+                if this.text(langTok) == "C" { m.externLang = 2; }
+            }
+        }
+
+        while true {
+            if this.at(TK.Pub) { this.advance(); m.isPub = true; continue; }
+            if this.at(TK.Noemit) { this.advance(); m.isNoemit = true; continue; }
+            if this.at(TK.Opaque) { this.advance(); m.isOpaque = true; continue; }
+            if this.at(TK.Plain) { this.advance(); m.isPlain = true; continue; }
+            if this.at(TK.Inline) { this.advance(); m.inlineByDefault = true; continue; }
+            break;
+        }
+        return m;
+    }
+
+    // metaAnnotation: [[ item (, item)* ,? ]]
+    mut fn captureMetaAnnotation(): str :: final {
+        if !(this.at(TK.LBracket) && this.peekKind(1) == TK.LBracket) { return emptyCapture(); }
+        this.advance();
+        this.advance();
+
+        let items: mut []str = [];
+        while !this.at(TK.RBracket) && !this.atEnd() {
+            let key = String();
+            let first = this.expect(TK.Ident);
+            key.append(this.text(first));
+            while this.at(TK.Dot) {
+                this.advance();
+                let seg = this.expect(TK.Ident);
+                key.append(".");
+                key.append(this.text(seg));
+            }
+            let keyStr = key.cloneString();
+
+            let value = emptyCapture();
+            if this.accept(TK.Equals) {
+                // The annotation value is a bare LiteralValue, not an expression.
+                value = this.captureWith(() => { this.literalValueOnly(); });
+            }
+
+            items.push(this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("key", keyStr);
+                this.writeOptionalRaw("value", value);
+                this.w.endObject();
+            }));
+
+            if !this.accept(TK.Comma) { break; }
+        }
+        this.expect(TK.RBracket);
+        this.expect(TK.RBracket);
+
+        return this.captureWith(() => {
+            this.w.beginArray();
+            for i in items { this.w.rawValue(i); }
+            this.w.endArray();
+        });
+    }
+
+    // Emit only the inner LiteralValue of a literal token (no LiteralExpr wrapper).
+    mut fn literalValueOnly(): void :: final {
+        // An annotation value is a bare LiteralValue, so the emitted
+        // LiteralExpr wrapper is parsed back off and only its "literal" member
+        // is kept. captureWith already materialised the text and rewound the
+        // buffer, so no further slicing or truncation may happen here -- doing
+        // so once wiped the whole buffer, because the capture's offsets are
+        // stale the moment captureWith returns.
+        let cap = this.captureWith(() => { this.literalExpr(); });
+        let full = cap;
+        // Extract the "literal" member from the emitted LiteralExpr object.
+        let marker = "\"literal\":";
+        let idx = indexOf(full, marker);
+        if idx < 0 { this.w.nullValue(); return; }
+        let startIdx = idx + marker.length;
+        let endIdx = matchingBraceEnd(full, startIdx);
+        this.w.rawValue(full.slice(startIdx, endIdx));
+    }
+
+    mut fn writeAnnotations(annotations: str) {
+        this.w.key("annotations");
+        if annotations.length == 0 {
+            this.w.beginArray();
+            this.w.endArray();
+            return;
+        }
+        this.w.rawValue(annotations);
+    }
+
+    // namespace id (. id)* { globalDeclaration* }
+    mut fn namespaceDefinition(start: Token, isExport: bool): void :: final {
+        this.expect(TK.Namespace);
+
+        let names: mut []str = [];
+        let firstTok = this.expect(TK.Ident);
+        names.push(this.text(firstTok));
+        while this.accept(TK.Dot) {
+            let t = this.expect(TK.Ident);
+            names.push(this.text(t));
+        }
+
+        this.expect(TK.LCurly);
+        let decls: mut []str = [];
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let before = this.pos;
+            decls.push(this.captureWith(() => { this.globalDeclaration(); }));
+            if this.pos == before { this.advance(); }
+        }
+        this.expect(TK.RCurly);
+
+        // `namespace a.b { X }` nests: a contains b, b contains X.
+        let inner = this.captureWith(() => {
+            this.w.beginArray();
+            for d in decls { this.w.rawValue(d); }
+            this.w.endArray();
+        });
+
+        for (let i = names.length - 1; i >= 0; i--) {
+            let name = names[i];
+            let body = inner;
+            inner = this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "NamespaceDefinition");
+                this.w.keyBool("export", isExport);
+                this.w.keyString("name", name);
+                this.w.keyRaw("declarations", body);
+                this.locHere(start);
+                this.w.endObject();
+            });
+            if i > 0 {
+                let single = inner;
+                inner = this.captureWith(() => {
+                    this.w.beginArray();
+                    this.w.rawValue(single);
+                    this.w.endArray();
+                });
+            }
+        }
+
+        this.w.rawValue(inner);
+    }
+
+    // module_namespace name "version" "id" { globalDeclaration* }
+    mut fn moduleNamespaceDefinition(start: Token, isExport: bool): void :: final {
+        this.expect(TK.ModuleNamespace);
+
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+        let versionTok = this.expect(TK.StringLit);
+        let version = stringLiteralValue(this.text(versionTok), 1);
+        let idTok = this.expect(TK.StringLit);
+        let id = stringLiteralValue(this.text(idTok), 1);
+
+        this.expect(TK.LCurly);
+        let decls: mut []str = [];
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let before = this.pos;
+            decls.push(this.captureWith(() => { this.globalDeclaration(); }));
+            if this.pos == before { this.advance(); }
+        }
+        this.expect(TK.RCurly);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "ModuleNamespaceDefinition");
+        this.w.keyBool("export", isExport);
+        this.w.keyString("moduleName", name);
+        this.w.keyString("moduleId", id);
+        this.w.keyString("moduleVersion", version);
+        this.w.key("declarations");
+        this.w.beginArray();
+        for d in decls { this.w.rawValue(d); }
+        this.w.endArray();
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // #source "file:line:col" { globalDeclaration* }
+    // The directive overrides the sourceloc of everything inside it.
+    mut fn sourceLocationBlock(): void :: final {
+        this.expect(TK.SourceDirective);
+        let pathTok = this.expect(TK.StringLit);
+        let spec = stringLiteralValue(this.text(pathTok), 1);
+
+        this.expect(TK.LCurly);
+
+        // Save the enclosing override so blocks can nest.
+        let savedActive = this.sourcelocOverride;
+        let savedFile = this.overrideFile;
+        let savedStartLine = this.overrideStartLine;
+        let savedStartCol = this.overrideStartCol;
+        let savedEndLine = this.overrideEndLine;
+        let savedEndCol = this.overrideEndCol;
+        let savedHasEnd = this.overrideHasEnd;
+
+        this.applySourceSpec(spec);
+
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let before = this.pos;
+            this.globalDeclaration();
+            if this.pos == before { this.advance(); }
+        }
+
+        this.sourcelocOverride = savedActive;
+        this.overrideFile = savedFile;
+        this.overrideStartLine = savedStartLine;
+        this.overrideStartCol = savedStartCol;
+        this.overrideEndLine = savedEndLine;
+        this.overrideEndCol = savedEndCol;
+        this.overrideHasEnd = savedHasEnd;
+
+        this.expect(TK.RCurly);
+    }
+
+    // Parse `"/path/to/file.hz:line:col[-endcol][.endline]"`. The path itself may
+    // contain colons on some platforms, so the numeric suffix is found by
+    // scanning back from the end rather than splitting on the first colon.
+    mut fn applySourceSpec(spec: str) {
+        // Find the two colons that introduce line and column.
+        let lastColon = -1;
+        let prevColon = -1;
+        for (let i = spec.length - 1; i >= 0; i--) {
+            if spec[i] == b":" {
+                if lastColon < 0 { lastColon = i; }
+                else { prevColon = i; return this.finishSourceSpec(spec, prevColon, lastColon); }
+            }
+        }
+        // Malformed: leave the real locations in place.
+    }
+
+    mut fn finishSourceSpec(spec: str, prevColon: int, lastColon: int) {
+        this.overrideFile = spec.slice(0, prevColon);
+        this.overrideStartLine = parseIntPrefix(spec.slice(prevColon + 1, lastColon));
+
+        let tail = spec.slice(lastColon + 1);
+        this.overrideStartCol = parseIntPrefix(tail);
+        this.overrideHasEnd = false;
+        this.overrideEndLine = this.overrideStartLine;
+        this.overrideEndCol = this.overrideStartCol;
+
+        // Optional `-endcol` and `.endline`.
+        let dash = indexOf(tail, "-");
+        if dash >= 0 {
+            let rest = tail.slice(dash + 1);
+            this.overrideEndCol = parseIntPrefix(rest);
+            this.overrideHasEnd = true;
+            let dot = indexOf(rest, ".");
+            if dot >= 0 {
+                this.overrideEndLine = parseIntPrefix(rest.slice(dot + 1));
+            }
+        }
+
+        this.sourcelocOverride = true;
+    }
+
+    // globalVariableDef
+    mut fn globalVariable(start: Token, isExport: bool, mods: Modifiers): void :: final {
+        let mutability = this.variableMutability();
+        let isComptime = this.accept(TK.Comptime);
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+
+        let datatype = emptyCapture();
+        if this.accept(TK.Colon) { datatype = this.captureType(); }
+
+        let value = emptyCapture();
+        let hasValue = false;
+        if this.accept(TK.Equals) {
+            value = this.captureExpr();
+            hasValue = true;
+        }
+        this.accept(TK.Semi);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "GlobalVariableDefinition");
+        this.w.keyBool("export", isExport);
+        this.w.keyBool("comptime", isComptime);
+        this.w.keyBool("pub", mods.isPub);
+        this.w.keyInt("extern", mods.externLang);
+        this.w.keyInt("mutability", mutability);
+        this.w.keyString("name", name);
+        if datatype.length > 0 { this.w.keyRaw("datatype", datatype); }
+        if hasValue { this.w.keyRaw("expr", value); }
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // typeDef: type name (<generics>)? = typeExpr
+    mut fn typeAlias(start: Token, isExport: bool, externLang: int, annotations: str): void :: final {
+        this.expect(TK.Type);
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+
+        let generics = this.genericParamList();
+
+        this.expect(TK.Equals);
+        let datatype = this.captureType();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "TypeAlias");
+        this.w.keyString("name", name);
+        this.w.keyRaw("datatype", datatype);
+        this.writeGenerics(generics, start);
+        this.w.keyBool("export", isExport);
+        this.w.keyBool("pub", false);
+        this.w.keyInt("extern", externLang);
+        this.writeAnnotations(annotations);
+        this.locHere(start);
+        this.w.endObject();
+    }
+
+    // <A, B, C> generic parameter names, or [] when absent.
+    mut fn genericParamList(): mut []str :: final {
+        let out: mut []str = [];
+        if !this.at(TK.LAngle) { return out; }
+        this.advance();
+        while !this.at(TK.RAngle) && !this.atEnd() {
+            let t = this.expect(TK.Ident);
+            out.push(this.text(t));
+            if !this.accept(TK.Comma) { break; }
+        }
+        this.expect(TK.RAngle);
+        return out;
+    }
+
+    // Generic parameters carry the whole declaration's sourceloc.
+    mut fn writeGenerics(names: mut []str, start: Token) {
+        // Omitted when empty; the bridge defaults a missing key to [].
+        if names.length == 0 { return; }
+        this.w.key("generics");
+        this.w.beginArray();
+        let endTok = this.lastToken();
+        for n in names {
+            this.w.beginObject();
+            this.w.keyString("name", n);
+            this.writeLoc(start, endTok);
+            this.w.endObject();
+        }
+        this.w.endArray();
+    }
+
+
+    // functionDefinition / struct method.
+    //
+    // `methodType` (EMethodType) and `isStaticFlag` only matter inside a struct;
+    // `operatorId` is the EOverloadedOperator for `operator+` style names.
+    mut fn functionDefinition(start: Token, isExport: bool, mods: Modifiers, isMethod: bool, methodType: int): void :: final {
+        this.expect(TK.Fn);
+        let isComptime = this.accept(TK.Comptime);
+
+        let nameTok = this.cur();
+        let name = "";
+        let operatorId = operatorIdOf(nameTok.kind);
+        if operatorId > 0 {
+            this.advance();
+            // The AST stores the mangled name, not the source spelling.
+            name = operatorMethodName(nameTok.kind);
+        }
+        else {
+            nameTok = this.memberName();
+            name = this.text(nameTok);
+        }
+
+        let generics = this.genericParamList();
+
+        this.expect(TK.LParen);
+        let params = this.paramList(false);
+        this.expect(TK.RParen);
+
+        let returnType = emptyCapture();
+        if this.accept(TK.Colon) { returnType = this.captureType(); }
+
+        let requiresJson = this.captureRequiresBlock();
+        this.accept(TK.DoubleArrow);
+
+        let body = emptyCapture();
+        let hasBody = false;
+        if this.at(TK.LCurly) {
+            body = this.captureScope();
+            hasBody = true;
+        }
+        else if !this.at(TK.Semi) && !this.atEnd() && this.canStartExpr(this.kind()) {
+            body = this.captureFuncBody();
+            hasBody = true;
+            this.accept(TK.Semi);
+        }
+        else {
+            this.accept(TK.Semi);
+        }
+
+        let sourceEnd = this.lastToken();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "FunctionDefinition");
+        this.w.keyBool("export", isExport);
+        this.w.keyBool("comptime", isComptime);
+        this.w.keyBool("pub", mods.isPub);
+        this.w.keyInt("externLanguage", mods.externLang);
+        if operatorId > 0 {
+            this.w.key("operatorOverloading");
+            this.w.beginObject();
+            this.w.keyInt("operator", operatorId);
+            this.w.endObject();
+        }
+        this.writeGenerics(generics, start);
+        this.w.keyRaw("requires", requiresJson);
+        this.w.keyString("name", name);
+        this.w.keyBool("noemit", mods.isNoemit);
+        this.w.keyBool("static", mods.isStatic);
+        this.writeParams(params);
+        this.w.keyBool("ellipsis", params.ellipsis);
+        if returnType.length > 0 { this.w.keyRaw("returnType", returnType); }
+        this.w.keyInt("methodType", methodType);
+        if mods.methodMutability == 0 { this.w.keyNull("methodRequiredMutability"); }
+        else { this.w.keyInt("methodRequiredMutability", mods.methodMutability); }
+        if hasBody { this.w.keyRaw("funcbody", body); }
+        this.locHere(start);
+        this.w.keyString("originalSourcecode", this.sourceSpan(start, sourceEnd));
+        this.w.endObject();
+    }
+
+    fn canStartExpr(k: TK): bool {
+        return k == TK.Ident || k == TK.Type || k == TK.LParen || k == TK.LBracket
+            || k == TK.Do || k == TK.Attempt || k == TK.Typeof
+            || k == TK.FStringStart || k == TK.FTripleStringStart
+            || k == TK.Minus || k == TK.Plus || k == TK.Not
+            || k == TK.PlusPlus || k == TK.MinusMinus
+            || this.isLiteralStart(k);
+    }
+
+    // Raw source text spanning two tokens, used for `originalSourcecode`.
+    fn sourceSpan(a: Token, b: Token): str {
+        if b.end <= a.start { return this.src.slice(a.start, a.end); }
+        return this.src.slice(a.start, b.end);
+    }
+
+    // structDefinition
+    mut fn structDefinition(start: Token, isExport: bool, mods: Modifiers, annotations: str): void :: final {
+        this.expect(TK.Struct);
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+        let generics = this.genericParamList();
+        this.captureRequiresBlock();
+
+        this.expect(TK.LCurly);
+
+        let members: mut []str = [];
+        let methods: mut []str = [];
+        let nested: mut []str = [];
+
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let before = this.pos;
+            this.structContent(members, methods, nested);
+            if this.pos == before { this.advance(); }
+        }
+        this.expect(TK.RCurly);
+        this.accept(TK.Semi);
+        let sourceEnd = this.lastToken();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "StructDefinition");
+        this.w.keyBool("export", isExport);
+        this.w.keyInt("extern", mods.externLang);
+        this.w.keyString("name", name);
+        this.w.keyBool("noemit", mods.isNoemit);
+        this.w.keyBool("opaque", mods.isOpaque);
+        this.w.keyBool("plain", mods.isPlain);
+        this.w.keyBool("inlineByDefault", mods.inlineByDefault);
+        this.w.keyBool("pub", mods.isPub);
+        this.writeGenerics(generics, start);
+        this.w.key("members");
+        this.w.beginArray();
+        for m in members { this.w.rawValue(m); }
+        this.w.endArray();
+        this.w.key("methods");
+        this.w.beginArray();
+        for m in methods { this.w.rawValue(m); }
+        this.w.endArray();
+        this.w.key("nestedStructs");
+        this.w.beginArray();
+        for n in nested { this.w.rawValue(n); }
+        this.w.endArray();
+        this.writeAnnotations(annotations);
+        this.locHere(start);
+        this.w.keyString("originalSourcecode", this.sourceSpan(start, sourceEnd));
+        this.w.endObject();
+    }
+
+    // One item inside a struct body: a member, a method, or a nested type.
+    mut fn structContent(members: mut []str, methods: mut []str, nested: mut []str): void :: final {
+        let declStart = this.cur();
+        let annotations = this.captureMetaAnnotation();
+
+        // Nested struct / enum definitions, possibly behind modifiers such as
+        // `inline struct Args { ... }`.
+        if this.at(TK.Struct) || this.at(TK.Enum)
+           || ((this.at(TK.Export) || this.at(TK.Extern) || this.at(TK.Pub)
+                || this.at(TK.Opaque) || this.at(TK.Plain) || this.at(TK.Noemit)
+                || this.at(TK.Inline))
+               && this.declAheadIsType()) {
+            let isExport = this.accept(TK.Export);
+            let mods = this.declModifiers();
+            if this.at(TK.Struct) {
+                nested.push(this.captureWith(() => { this.structDefinition(declStart, isExport, mods, annotations); }));
+                return;
+            }
+            nested.push(this.captureWith(() => { this.enumDefinition(declStart, isExport, mods); }));
+            return;
+        }
+
+        // Methods: [isStaticFlag] [mut|const] fn name(...)
+        let mods = Modifiers {
+            externLang: 0, isPub: false, isNoemit: false,
+            isOpaque: false, isPlain: false, inlineByDefault: false,
+        };
+        mods.isStatic = this.accept(TK.Static);
+
+        // EDatatypeMutability: Default=1 Mut=2 Const=3; null when unspecified.
+        if this.at(TK.Mut) && this.peekKind(1) == TK.Fn { this.advance(); mods.methodMutability = 2; }
+        else if this.at(TK.Const) && this.peekKind(1) == TK.Fn { this.advance(); mods.methodMutability = 3; }
+
+        if this.at(TK.Fn) {
+            // EMethodType (common.ts): Constructor=2 for a method literally
+            // named `constructor`, otherwise Method=1. `static` does NOT make
+            // it a constructor.
+            let methodType = 1;
+            if this.peekKind(1) == TK.Ident && this.text(this.toks[this.pos + 1]) == "constructor" {
+                methodType = 2;
+            }
+            methods.push(this.captureWith(() => {
+                this.functionDefinition(declStart, false, mods, true, methodType);
+            }));
+            return;
+        }
+
+        // Otherwise a data member: [let|const] name?: T (= expr)? ;
+        // The span starts at the `[[...]]` annotation when there is one, since
+        // it is part of the same structContent rule.
+        let start = declStart;
+        let mutability = 3;   // EVariableMutability.Default
+        if this.at(TK.Let) { this.advance(); mutability = 2; }
+        else if this.at(TK.Const) { this.advance(); mutability = 1; }
+
+        let nameTok = this.memberName();
+        let name = this.text(nameTok);
+        let isOptional = this.accept(TK.Question);
+        this.expect(TK.Colon);
+        let datatype = this.captureType();
+
+        let defaultValue = emptyCapture();
+        if this.accept(TK.Equals) { defaultValue = this.captureExpr(); }
+        this.accept(TK.Semi);
+
+        members.push(this.captureWith(() => {
+            this.w.beginObject();
+            this.w.keyString("variant", "StructMember");
+            this.w.keyString("name", name);
+            this.w.keyRaw("type", datatype);
+            this.writeOptionalRaw("defaultValue", defaultValue);
+            this.w.keyBool("optional", isOptional);
+            this.w.keyInt("mutability", mutability);
+            this.writeAnnotations(annotations);
+            this.locHere(start);
+            this.w.endObject();
+        }));
+    }
+
+    // Look past modifiers to see whether a struct/enum keyword follows.
+    fn declAheadIsType(): bool {
+        let i = this.pos;
+        let limit = this.toks.length;
+        while i < limit {
+            let k = this.toks[i].kind;
+            if k == TK.Struct || k == TK.Enum { return true; }
+            if k == TK.Export || k == TK.Extern || k == TK.Pub || k == TK.Noemit
+               || k == TK.Opaque || k == TK.Plain || k == TK.Inline {
+                i++;
+                continue;
+            }
+            // `extern C struct` — the language name is a bare identifier.
+            if k == TK.Ident && i > this.pos && this.toks[i - 1].kind == TK.Extern {
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    // enumDefinition
+    mut fn enumDefinition(start: Token, isExport: bool, mods: Modifiers): void :: final {
+        this.expect(TK.Enum);
+        let isBitflag = this.accept(TK.Bitflag);
+        let isUnscoped = this.accept(TK.Unscoped);
+        let nameTok = this.expect(TK.Ident);
+        let name = this.text(nameTok);
+        this.captureRequiresBlock();
+
+        this.expect(TK.LCurly);
+        let values: mut []str = [];
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let vStart = this.cur();
+            let vNameTok = this.expect(TK.Ident);
+            let vName = this.text(vNameTok);
+            let vValue = emptyCapture();
+            if this.accept(TK.Equals) { vValue = this.captureExpr(); }
+
+            values.push(this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "EnumValue");
+                this.w.keyString("name", vName);
+                this.writeOptionalRaw("value", vValue);
+                this.locHere(vStart);
+                this.w.endObject();
+            }));
+
+            if !this.accept(TK.Comma) { break; }
+        }
+        this.expect(TK.RCurly);
+        this.accept(TK.Semi);
+        let sourceEnd = this.lastToken();
+
+        this.w.beginObject();
+        this.w.keyString("variant", "EnumDefinition");
+        this.w.keyBool("export", isExport);
+        this.w.keyInt("extern", mods.externLang);
+        this.w.keyString("name", name);
+        this.w.keyBool("noemit", mods.isNoemit);
+        this.w.keyBool("pub", mods.isPub);
+        this.w.keyBool("bitflag", isBitflag);
+        this.w.keyBool("unscoped", isUnscoped);
+        this.w.key("values");
+        this.w.beginArray();
+        for v in values { this.w.rawValue(v); }
+        this.w.endArray();
+        this.locHere(start);
+        this.w.keyString("originalSourcecode", this.sourceSpan(start, sourceEnd));
+        this.w.endObject();
+    }
+
+}
+
+// Unit suffix -> ELiteralUnit (s=0 ms=1 us=2 ns=3 m=4 h=5 d=6)
+fn unitCode(unit: str): int {
+    if unit == "s" { return 0; }
+    if unit == "ms" { return 1; }
+    if unit == "us" { return 2; }
+    if unit == "ns" { return 3; }
+    if unit == "m" { return 4; }
+    if unit == "h" { return 5; }
+    if unit == "d" { return 6; }
+    return 0;
+}
+
+// Render a float literal the way JSON.stringify(Number(x)) would, so that
+// `1.50` and `100.0` match the reference's `1.5` and `100`.
+fn canonicalFloat(raw: str): str {
+    let intPart = raw;
+    let fracPart = "";
+    for (let i = 0; i < raw.length; i++) {
+        if raw[i] == b"." {
+            intPart = raw.slice(0, i);
+            fracPart = raw.slice(i + 1);
+            break;
+        }
+    }
+
+    // Strip trailing zeros of the fraction.
+    let end = fracPart.length;
+    while end > 0 && fracPart[end - 1] == b"0" { end--; }
+    let frac = fracPart.slice(0, end);
+
+    let head = normalizeDecimal(intPart);
+    if frac.length == 0 { return head; }
+    return f"{head}.{frac}";
+}
+
+// f-string text fragments go through the SAME trim+unescape as whole string
+// literals, just with no delimiters to strip (stripQuotes = 0 in the reference).
+// The `{{` / `}}` escapes are collapsed first: the lexer keeps them verbatim in
+// the token so the raw text stays a zero-copy slice.
+fn unescapeFStringText(raw: str): str {
+    let hasBrace = false;
+    for (let i = 0; i + 1 < raw.length; i++) {
+        if (raw[i] == b"{" && raw[i + 1] == b"{") || (raw[i] == b"}" && raw[i + 1] == b"}") {
+            hasBrace = true;
+            break;
+        }
+    }
+    if !hasBrace { return unescapeString(raw); }
+
+    let collapsed = String();
+    collapsed.reserve(raw.length);
+    let i = 0;
+    while i < raw.length {
+        if i + 1 < raw.length && ((raw[i] == b"{" && raw[i + 1] == b"{") || (raw[i] == b"}" && raw[i + 1] == b"}")) {
+            collapsed.append(raw.slice(i, i + 1));
+            i += 2;
+            continue;
+        }
+        collapsed.append(raw.slice(i, i + 1));
+        i++;
+    }
+    return unescapeString(collapsed.cloneString());
+}
+
+
+// An absent capture: start == end means "nothing was written".
+fn emptyCapture(): str {
+    return "";
+}
+
+// Collected parameters plus the trailing `...` flag.
+export struct ParamList {
+    params: mut []str = [];
+    ellipsis: bool = false;
+}
+
+// Leading modifiers shared by all declaration forms.
+export struct Modifiers {
+    externLang: int = 0;         // EExternLanguage
+    isPub: bool = false;
+    isNoemit: bool = false;
+    isOpaque: bool = false;
+    isPlain: bool = false;
+    inlineByDefault: bool = false;
+    isStatic: bool = false;
+    methodMutability: int = 0;   // 0 = unspecified, else EDatatypeMutability
+}
+
+// An if/while condition: either a plain expression or a `let` binding.
+export struct Condition {
+    isLet: bool = false;
+    name: str = "";
+    datatype: str = "";
+    expr: str = "";
+    guard: str = "";
+}
+
+// EOverloadedOperator for the `operator...` method names; 0 when not one.
+fn operatorIdOf(k: TK): int {
+    if k == TK.OpPlus { return 1; }
+    if k == TK.OpMinus { return 2; }
+    if k == TK.OpMul { return 3; }
+    if k == TK.OpDiv { return 4; }
+    if k == TK.OpMod { return 5; }
+    if k == TK.OpRebind { return 6; }
+    if k == TK.OpAssign { return 7; }
+    if k == TK.OpSubscript { return 8; }
+    if k == TK.OpAs { return 9; }
+    if k == TK.OpEq { return 10; }
+    if k == TK.OpNeq { return 11; }
+    if k == TK.OpLt { return 12; }
+    if k == TK.OpGt { return 13; }
+    if k == TK.OpLte { return 14; }
+    if k == TK.OpGte { return 15; }
+    return 0;
+}
+
+// Index of `needle` in `haystack`, or -1.
+fn indexOf(haystack: str, needle: str): int {
+    if needle.length == 0 { return 0; }
+    let limit = haystack.length - needle.length;
+    for (let i = 0; i <= limit; i++) {
+        if haystack.startsWith(needle, i) { return i; }
+    }
+    return -1;
+}
+
+// End index (exclusive) of the JSON object starting at `start`, respecting
+// nesting and string literals.
+fn matchingBraceEnd(s: str, start: int): int {
+    let depth = 0;
+    let inString = false;
+    let i = start;
+    while i < s.length {
+        let c = s[i];
+        if inString {
+            if c == b"\\" { i += 2; continue; }
+            if c == b"\"" { inString = false; }
+            i++;
+            continue;
+        }
+        if c == b"\"" { inString = true; i++; continue; }
+        if c == b"{" { depth++; }
+        else if c == b"}" {
+            depth--;
+            if depth == 0 { return i + 1; }
+        }
+        i++;
+    }
+    return s.length;
+}
+
+// Parse a whole source file into AST JSON.
+export fn parseToJson(src: str, filename: str): mut Parser {
+    let lexer = tokenize(src);
+    let p = Parser.create(src, filename, lexer.tokens);
+    for e in lexer.errors {
+        p.errors.push(ParseError { message: e.message, line: e.line, col: e.col });
+    }
+    p.parseProgram();
+    return p;
+}
+
+// Operator methods are stored under a mangled name in the AST.
+fn operatorMethodName(k: TK): str {
+    if k == TK.OpPlus { return "__operator_add"; }
+    if k == TK.OpMinus { return "__operator_sub"; }
+    if k == TK.OpMul { return "__operator_mul"; }
+    if k == TK.OpDiv { return "__operator_div"; }
+    if k == TK.OpMod { return "__operator_mod"; }
+    if k == TK.OpRebind { return "__operator_assign"; }
+    if k == TK.OpAssign { return "__operator_assign"; }
+    if k == TK.OpAs { return "__operator_cast"; }
+    if k == TK.OpSubscript { return "__operator_subscript"; }
+    if k == TK.OpEq { return "__operator_eq"; }
+    if k == TK.OpNeq { return "__operator_neq"; }
+    if k == TK.OpLt { return "__operator_lt"; }
+    if k == TK.OpGt { return "__operator_gt"; }
+    if k == TK.OpLte { return "__operator_lte"; }
+    if k == TK.OpGte { return "__operator_gte"; }
+    return "";
+}
+
+// Leading decimal digits of `s` as an int (0 when there are none).
+fn parseIntPrefix(s: str): int {
+    let v = 0;
+    for (let i = 0; i < s.length; i++) {
+        let c = s[i];
+        if c < b"0" || c > b"9" { break; }
+        v = v * 10 + ((c as int) - 48);
+    }
+    return v;
+}

@@ -1,0 +1,217 @@
+// Streaming JSON writer.
+//
+// The parser writes the AST straight into one growing byte buffer as it goes:
+// there is no intermediate object tree to allocate, walk and free. That makes
+// serialisation essentially free compared to building a DOM and stringifying it.
+//
+// Conventions agreed with the TypeScript bridge (see Bridge.ts):
+//   * Integer literal values are emitted as decimal STRINGS and revived to
+//     BigInt on the other side. They routinely exceed 2^53 and can exceed 64
+//     bits, so a JSON number would silently corrupt them.
+//   * Regex flags are emitted as an array and revived to a Set.
+//   * Fields whose value is `undefined` in the reference AST are simply omitted;
+//     `null` is emitted explicitly.
+
+const SEP_FIRST: int = 0;
+const SEP_NEED: int = 1;
+const SEP_VALUE: int = 2;
+
+export struct JsonWriter {
+    // Raw byte buffer from outbuf.hz rather than a stdlib String: String and
+    // ByteBuffer append ONE BYTE PER CALL (~15 MB/s measured, a single 910KB
+    // append took 61ms), which would dominate the parser's runtime.
+    buf: cptr;
+
+    // Comma state for the innermost container, one entry per open container:
+    //   SEP_FIRST   nothing written yet -> no comma
+    //   SEP_NEED    an item was written -> next item needs a comma
+    //   SEP_VALUE   a key was written   -> its value must NOT emit a comma
+    //
+    // `key()` sets SEP_VALUE so the value that follows writes nothing, and the
+    // value then restores SEP_NEED. Arrays only ever use FIRST/NEED.
+    sepState: mut []int = [];
+
+    static fn create(sizeHint: int): mut JsonWriter {
+        return JsonWriter {
+            buf: hzob_new(sizeHint),
+        };
+    }
+
+    fn length(): int { return hzob_len(this.buf); }
+
+    // Release the underlying allocation (not GC-managed).
+    fn dispose() { hzob_free(this.buf); }
+
+    // Emit a separating comma when required, then mark the container as having
+    // content.
+    mut fn sep() {
+        if this.sepState.length == 0 { return; }
+        let top = this.sepState.length - 1;
+        let s = this.sepState[top];
+        if s == SEP_VALUE {
+            // Directly after a key: the colon already separates us.
+            this.sepState[top] = SEP_NEED;
+            return;
+        }
+        if s == SEP_NEED {
+            hzob_push_byte(this.buf, 44);
+        }
+        this.sepState[top] = SEP_NEED;
+    }
+
+    mut fn beginObject() {
+        this.sep();
+        hzob_push_byte(this.buf, 123);
+        this.sepState.push(SEP_FIRST);
+    }
+
+    mut fn endObject() {
+        hzob_push_byte(this.buf, 125);
+        this.sepState.pop();
+    }
+
+    mut fn beginArray() {
+        this.sep();
+        hzob_push_byte(this.buf, 91);
+        this.sepState.push(SEP_FIRST);
+    }
+
+    mut fn endArray() {
+        hzob_push_byte(this.buf, 93);
+        this.sepState.pop();
+    }
+
+    // Emit a key. Keys here are always compile-time constants from the AST
+    // schema, so they never need escaping.
+    mut fn key(name: str) {
+        this.sep();
+        hzob_push_byte(this.buf, 34);
+        hzob_push_str(this.buf, name);
+        hzob_push_byte(this.buf, 34);
+        hzob_push_byte(this.buf, 58);
+        // The value that follows belongs to this key: suppress its comma.
+        this.sepState[this.sepState.length - 1] = SEP_VALUE;
+    }
+
+    // Emit already-formatted JSON text (a canonicalised number, say). Distinct
+    // from captureValue, which splices a range of this buffer.
+    mut fn rawValue(text: str) {
+        this.sep();
+        hzob_push_str(this.buf, text);
+    }
+
+    // --- Capturing ---------------------------------------------------------
+    //
+    // A capture is written to the END of this buffer like any other value; the
+    // caller keeps its offsets and later splices it in with rangeValue(), then
+    // truncates. That turns "parse into a detached writer and clone the string"
+    // into a pair of memcpys inside one allocation.
+
+    mut fn beginCapture(): int {
+        this.sepState.push(SEP_FIRST);
+        return hzob_len(this.buf);
+    }
+
+    mut fn endCapture(): int {
+        this.sepState.pop();
+        return hzob_len(this.buf);
+    }
+
+    mut fn truncate(mark: int) { hzob_truncate(this.buf, mark); }
+
+    mut fn boolValue(v: bool) {
+        this.sep();
+        if v { hzob_push_str(this.buf, "true"); }
+        else { hzob_push_str(this.buf, "false"); }
+    }
+
+    mut fn nullValue() {
+        this.sep();
+        hzob_push_str(this.buf, "null");
+    }
+
+    mut fn intValue(v: int) {
+        this.sep();
+        hzob_push_int(this.buf, v);
+    }
+
+    mut fn stringValue(v: str) {
+        this.sep();
+        this.writeEscaped(v);
+    }
+
+    // --- Convenience: key + value in one call -------------------------------
+
+    mut fn keyBool(name: str, v: bool) { this.key(name); this.boolValue(v); }
+    mut fn keyInt(name: str, v: int) { this.key(name); this.intValue(v); }
+    mut fn keyString(name: str, v: str) { this.key(name); this.stringValue(v); }
+    mut fn keyNull(name: str) { this.key(name); this.nullValue(); }
+    mut fn keyRaw(name: str, v: str) { this.key(name); this.rawValue(v); }
+
+    // -----------------------------------------------------------------------
+    // String escaping.
+    //
+    // Fast path: scan for the first byte that needs escaping. Most AST strings
+    // (identifiers, keywords, file paths) need none at all, so they are copied
+    // in a single append with no per-character work.
+    // -----------------------------------------------------------------------
+
+    mut fn writeEscaped(v: str) {
+        hzob_push_byte(this.buf, 34);
+
+        let n = v.length;
+        let chunkStart = 0;
+        for (let i = 0; i < n; i++) {
+            let c = v[i];
+            // Everything >= 0x20 except '"' and '\' passes through untouched.
+            if c >= 32 && c != 34 && c != 92 { continue; }
+
+            if i > chunkStart {
+                hzob_push_str(this.buf, v.slice(chunkStart, i));
+            }
+
+            if c == 34 { hzob_push_str(this.buf, "\\\""); }
+            else if c == 92 { hzob_push_str(this.buf, "\\\\"); }
+            else if c == 10 { hzob_push_str(this.buf, "\\n"); }
+            else if c == 9 { hzob_push_str(this.buf, "\\t"); }
+            else if c == 13 { hzob_push_str(this.buf, "\\r"); }
+            else if c == 8 { hzob_push_str(this.buf, "\\b"); }
+            else if c == 12 { hzob_push_str(this.buf, "\\f"); }
+            else {
+                // Other control characters -> \u00XX
+                hzob_push_str(this.buf, "\\u00");
+                hzob_push_str(this.buf, hexNibble((c as int) / 16));
+                hzob_push_str(this.buf, hexNibble((c as int) % 16));
+            }
+            chunkStart = i + 1;
+        }
+
+        if n > chunkStart {
+            hzob_push_str(this.buf, v.slice(chunkStart, n));
+        }
+        hzob_push_byte(this.buf, 34);
+    }
+
+    mut fn result(): str {
+        return hzob_slice(this.buf, 0, hzob_len(this.buf));
+    }
+}
+
+fn hexNibble(v: int): str {
+    if v == 0 { return "0"; }
+    if v == 1 { return "1"; }
+    if v == 2 { return "2"; }
+    if v == 3 { return "3"; }
+    if v == 4 { return "4"; }
+    if v == 5 { return "5"; }
+    if v == 6 { return "6"; }
+    if v == 7 { return "7"; }
+    if v == 8 { return "8"; }
+    if v == 9 { return "9"; }
+    if v == 10 { return "a"; }
+    if v == 11 { return "b"; }
+    if v == 12 { return "c"; }
+    if v == 13 { return "d"; }
+    if v == 14 { return "e"; }
+    return "f";
+}

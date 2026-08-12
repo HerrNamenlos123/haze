@@ -983,7 +983,11 @@ export class ModuleCompiler {
 
   async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
     const fileText = await readFile(filepath, "utf-8");
-    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    const ast = await Parser.parseTextToASTAsync(
+      this.config,
+      fileText,
+      filepath
+    );
     CollectFile(
       this.cc,
       ast,
@@ -998,7 +1002,11 @@ export class ModuleCompiler {
 
   async collectFile(filepath: string, collectionMode: ECollectionMode) {
     const fileText = await readFile(filepath, "utf-8");
-    const ast = Parser.parseTextToAST(this.config, fileText, filepath);
+    const ast = await Parser.parseTextToASTAsync(
+      this.config,
+      fileText,
+      filepath
+    );
 
     // Determine parent scope based on collection mode
     let parentScopeId: Collect.ScopeId;
@@ -1084,7 +1092,11 @@ export class ModuleCompiler {
       ast = cached;
     } else {
       const fileText = await readFile(filepath, "utf-8");
-      ast = Parser.parseTextToAST(this.config, fileText, filepath);
+      ast = await Parser.parseTextToASTAsync(
+        this.config,
+        fileText,
+        filepath
+      );
       this.importASTCache?.set(depName, libMtimeMs, relPath, ast);
     }
 

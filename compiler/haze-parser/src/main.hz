@@ -1,133 +1,208 @@
+// haze-parser CLI.
+//
+// Two modes:
+//
+//   haze-parser <file.hz>     Parse one file and print its AST JSON to stdout.
+//   haze-parser --server      Read file paths on stdin, stream JSON on stdout.
+//
+// The compiler uses server mode: a build parses hundreds of files, and paying a
+// process spawn per file would eat most of the speedup.
+//
+// Server protocol, line oriented so no framing library is needed:
+//   Request   one line containing a file path (or `__quit__` to exit).
+//   Response  `OK <byteLength>\n` followed by exactly that many bytes of JSON,
+//             or `ERR <message>\n`.
+// Counting bytes means the JSON payload never has to be escaped or scanned.
 
-enum ETokenType {
-    Identifier,
-    Integer,
-    Float,
-    String,
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
 
-    LParen, RParen,
-    LBrace, RBrace,
-    Comma, Dot, Semicolon,
-    Plus, Minus, Asterisk, Slash, Percent,
-    Equals,
+// argv/stdin are not exposed by the standard library, so they come straight
+// from C. The buffer is static and reused: paths are short and this runs on the
+// hot path once per file.
+extern C fn hz_arg_count(): int :: final;
+extern C fn hz_arg_at(index: int): ccstr :: final;
+extern C fn hz_read_line(): ccstr :: final;
+extern C fn hz_write_all(data: str): void :: final;
+extern C fn hz_flush(): void :: final;
+extern C fn hz_write_err(data: str): void :: final;
+// Read exactly n bytes of source from stdin (used by the TEXT request).
+extern C fn hz_read_exact(n: int): str :: final;
 
-    EqualsEquals,
-    BangEquals,
+__c__("
+static char _hz_linebuf[65536];
 
-    Let,
-    If,
-    Else,
-    While,
-    For,
-    Return,
+// The generated entry point does not stash argc/argv anywhere, so grab them
+// from a constructor that runs before main.
+static int _hz_argc = 0;
+static const char** _hz_argv = 0;
 
-    EOF,
+__attribute__((constructor))
+static void _hz_capture_args(int argc, const char** argv) {
+    _hz_argc = argc;
+    _hz_argv = argv;
 }
 
-struct IntegerToken {
-    value: int;
+hzstd_str_t hz_read_exact(hzstd_int_t n) {
+    hzstd_str_t s;
+    if (n <= 0) { s.data = \"\"; s.length = 0; return s; }
+    char* buf = (char*)hzstd_allocate(hzstd_make_heap_allocator(), (size_t)n + 1, \"str\");
+    size_t got = fread(buf, 1, (size_t)n, stdin);
+    buf[got] = 0;
+    s.data = buf;
+    s.length = (hzstd_int_t)got;
+    return s;
 }
 
-struct IdentifierToken {
-    name: str;
+hzstd_ccstr_t hz_read_line(void) {
+    if (!fgets(_hz_linebuf, sizeof(_hz_linebuf), stdin)) return 0;
+    return _hz_linebuf;
 }
 
-type Token = IntegerToken | IdentifierToken;
-
-stringify(token: Token) {
-    if token is IntegerToken {
-        return f"IntegerToken(\"{token.value}\")";
-    }
-    else if token is IdentifierToken {
-        return f"IdentifierToken(\"{token.name}\")";
-    }
-    return "";
+// Write a length-counted slice: the JSON contains newlines and its length is
+// authoritative, so puts()/printf() are not usable.
+hzstd_void_t hz_write_all(hzstd_str_t data) {
+    fwrite(data.data, 1, (size_t)data.length, stdout);
 }
 
-struct Lexer {
-    src: str;
-    cursor: int = 0;
+hzstd_void_t hz_write_err(hzstd_str_t data) {
+    fwrite(data.data, 1, (size_t)data.length, stderr);
+    fputc('\\n', stderr);
+}
 
-    peek() {
-        if this.cursor >= this.src.length { return null; }
-        return this.src[this.cursor];
-    }
+hzstd_void_t hz_flush(void) { fflush(stdout); }
 
-    advance() {
-        let chr = this.peek();
-        if chr { this.cursor++; }
-        return chr;
-    }
+hzstd_int_t hz_arg_count(void) { return (hzstd_int_t)_hz_argc; }
+hzstd_ccstr_t hz_arg_at(hzstd_int_t index) {
+    if (index < 0 || index >= (hzstd_int_t)_hz_argc) return \"\";
+    return _hz_argv[index];
+}
+");
 
-    nextToken(): Token | null {
-        while let b = this.peek(); ascii.isWhitespace(b) {
-            this.advance();
+fn parseFile(path: str): str | none {
+    if let content = fs.readText(path) {
+        let p = parseToJson(content, path);
+        if p.errors.length > 0 {
+            let first = p.errors[0];
+            let msg = first.message;
+            hz_write_err(f"{path}:{first.line}:{first.col}: {msg}");
+            return none;
         }
+        return p.w.result();
+    }
+    return none;
+}
 
-        if let b = this.peek() {
-            if ascii.isDigit(b) {
-                return this.parseInteger();
+// Strip the trailing newline fgets leaves in place, plus any stray whitespace.
+fn trimLine(s: str): str {
+    let end = s.length;
+    while end > 0 {
+        let c = s[end - 1];
+        if c == b"\n" || c == b"\r" || c == b" " || c == b"\t" { end--; }
+        else { break; }
+    }
+    return s.slice(0, end);
+}
+
+fn runServer(): int {
+    while true {
+        let raw = hz_read_line();
+        let line = trimLine(hzstd_str_from_ccstr_ref(raw));
+        if line.length == 0 { break; }
+        if line == "__quit__" { break; }
+
+        // `TEXT <byteLength> <filename>`: the next <byteLength> bytes on stdin
+        // are the source. Used for buffers the compiler already holds in memory
+        // and for synthetic sources that have no file on disk.
+        if line.startsWith("TEXT ", 0) {
+            let rest = line.slice(5);
+            let sp = 0;
+            while sp < rest.length && rest[sp] != b" " { sp++; }
+            let byteLen = parseInt(rest.slice(0, sp));
+            let name = rest.slice(sp + 1);
+            let content = hz_read_exact(byteLen);
+            let p = parseToJson(content, name);
+            if p.errors.length > 0 {
+                let first = p.errors[0];
+                let msg = first.message;
+                fmt.println(f"ERR {name}:{first.line}:{first.col}: {msg}");
             }
-            if ascii.isAlpha(b) {
-                return this.parseIdentifier();
+            else {
+                let out = p.w.result();
+                fmt.println(f"OK {out.length}");
+                hz_write_all(out);
             }
-            sys.panic("unexpected character");
+            hz_flush();
+            continue;
         }
 
-        return null;
-    }
-
-    parseInteger(): Token {
-        let start = this.cursor;
-        let value: int = 0;
-
-        while let b = this.peek(); ascii.isDigit(b) {
-            value = value * 10 + (b - b"0") as int;
-            this.advance();
-            b = this.peek();
+        let result = parseFile(line);
+        if result {
+            fmt.println(f"OK {result.length}");
+            hz_write_all(result);
         }
-
-        return IntegerToken {
-            value: value
-        };
-    }
-
-    parseIdentifier(): Token {
-        let start = this.cursor;
-
-        while let b = this.peek(); ascii.isAlpha(b) || ascii.isDigit(b) || b == b"_" {
-            this.advance();
-            b = this.peek();
+        else {
+            fmt.println(f"ERR failed to parse {line}");
         }
-
-        let name = this.src.substr(start, this.cursor);
-
-        return IdentifierToken {
-            name: name
-        };
+        hz_flush();
     }
-}
-
-extern C parse(source: str) {
-    const result = fs.read(source);
-    if result {
-        let lexer = Lexer {
-            src: result,
-        };
-
-        // fmt.println("TODO for next time: Fix the union lowering error below, and implement while let for if statements. Then, think about some graphical application for SDL.")
-
-        while let tok = lexer.nextToken() {
-            fmt.println(stringify(tok));
-            tok = lexer.nextToken()
-        }
-    }
-    else {
-        fmt.println("Failed");
-    }
-}
-
-main() {
-    parse("stdlib/core/src/String.hz");
     return 0;
+}
+
+fn main() {
+    if hz_arg_count() < 2 {
+        hz_write_err("usage: haze-parser <file.hz> | --server");
+        return 1;
+    }
+
+    let arg = hzstd_str_from_ccstr_ref(hz_arg_at(1));
+
+    if arg == "--server" {
+        return runServer();
+    }
+
+    // `--bench <file> [iterations]`: time parsing only, excluding process
+    // startup and file IO, so the number is comparable to an in-process parser.
+    if arg == "--bench" {
+        let path = hzstd_str_from_ccstr_ref(hz_arg_at(2));
+        if let content = fs.readText(path) {
+            let iters = 5;
+            // Warm up so the first allocation burst is not measured.
+            let warm = parseToJson(content, path);
+            fmt.println(f"warmup json bytes: {warm.w.result().length}");
+
+            let best = 1000000.0;
+            for (let i = 0; i < iters; i++) {
+                let t0 = time.now();
+                let p = parseToJson(content, path);
+                let t1 = time.now();
+                let ms = (t1 - t0) * 1000.0;
+                if ms < best { best = ms; }
+            }
+            let kb = (content.length as real) / 1024.0;
+            let mbs = (content.length as real) / 1000000.0 / (best / 1000.0);
+            fmt.println(f"{path}: {kb}KB  best={best}ms  {mbs}MB/s");
+            return 0;
+        }
+        return 1;
+    }
+
+    let result = parseFile(arg);
+    if result {
+        hz_write_all(result);
+        hz_flush();
+        return 0;
+    }
+    return 1;
+}
+
+// Leading decimal digits of `s` as an int.
+fn parseInt(s: str): int {
+    let v = 0;
+    for (let i = 0; i < s.length; i++) {
+        let c = s[i];
+        if c < b"0" || c > b"9" { break; }
+        v = v * 10 + ((c as int) - 48);
+    }
+    return v;
 }
