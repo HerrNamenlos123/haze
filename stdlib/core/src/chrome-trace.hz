@@ -693,7 +693,12 @@ namespace ChromeTrace {
                 // in a memory-instrumented trace, so it carries only the
                 // fields DevTools actually reads back. See
                 // TraceMarkerCallFrame's own comment for the measurements.
-                stackTrace: []TraceMarkerCallFrame;
+                // Optional so a marker with no frames omits the key entirely
+                // rather than emitting a useless `"stackTrace":[]` -- see
+                // addInstantMarker, and profiling.hz's buildTrace, which
+                // deliberately emits stackless markers and keeps the stacks in
+                // a deduplicated call tree instead.
+                stackTrace?: []TraceMarkerCallFrame;
                 // Populated from real allocation instrumentation -- see profiling.hz's
                 // buildTrace/allocationMarkerName, fed by hzstd_trace_memory_impl
                 // (hzstd_profiling.c) which now receives an allocation's kind/size/static
@@ -852,7 +857,14 @@ namespace ChromeTrace {
             }
             this.events.push(TraceEventInstantMarker {
                 pid: this.pid, tid: tid, ts: ts, name: name,
-                args: { data: { stackTrace: callFrames, dataType: dataType, sizeBytes: sizeBytes } },
+                args: { data: {
+                    // No frames -> omit the key rather than writing an empty
+                    // array. At one marker per allocation even 17 bytes of
+                    // `"stackTrace":[],` is over a megabyte of nothing.
+                    stackTrace: callFrames.length > 0 ? callFrames : none,
+                    dataType: dataType,
+                    sizeBytes: sizeBytes,
+                } },
             });
         }
 
