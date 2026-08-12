@@ -63,15 +63,42 @@ namespace ChromeTrace {
         line: int = 0;
         column: int = 0;
 
+        // Optional precomputed hashFrameRef() value; 0 means "not computed", in which case
+        // hashFrameRef falls back to computing it on the spot. Purely a cache: it is derived
+        // from the other fields, takes no part in identity (see operator== below), and a
+        // FrameRef carrying it hashes to exactly what the same FrameRef without it does.
+        //
+        // It exists because hashing is per (sample, frame depth), while the set of DISTINCT
+        // frames a profile ever sees is tiny by comparison -- one entry per resolved address.
+        // A session with hundreds of thousands of samples over stacks tens of frames deep
+        // hashes millions of times, over the same few thousand strings, and measured with
+        // perf that was ~20% of all the time this file's caller spent building a trace.
+        // A caller that already knows its frames up front (profiling.hz builds one FrameRef
+        // per frame-table entry) can hash each one once via frameRefWithHash and hand the
+        // result out repeatedly instead. Callers that don't care keep constructing FrameRefs
+        // exactly as before and pay the old cost.
+        hash: int = 0;
+
         // Structs don't get a default `==` -- this is what lets CpuProfileBuilder's dedup
         // (findOrCreateChild) compare two frames' identity directly, field by field, instead of
         // formatting both into a combined string first just to compare (see hashFrameRef's own
         // doc comment for why that string-building was the actual bottleneck it looked like it
         // shouldn't be).
+        //
+        // Deliberately does NOT compare `hash`: it is a cache of the other four fields, so two
+        // frames that differ only in whether that cache is filled in are the same frame, and
+        // must dedup to the same node.
         fn operator==(other: FrameRef): bool {
             return this.line == other.line && this.column == other.column
                 && this.url == other.url && this.name == other.name;
         }
+    }
+
+    // Returns `frame` with its `hash` cache filled in. See FrameRef.hash.
+    export fn frameRefWithHash(frame: FrameRef): FrameRef {
+        let withHash = frame;
+        withHash.hash = computeFrameRefHash(frame);
+        return withHash;
     }
 
     // ── .cpuprofile-compatible call tree (legacy CDP Profiler.Profile shape) ─
@@ -209,12 +236,24 @@ namespace ChromeTrace {
         return (h * hashBase + (v % hashModulus)) % hashModulus;
     }
 
-    fn hashFrameRef(frame: FrameRef): int {
+    fn computeFrameRefHash(frame: FrameRef): int {
         let h = hashStrInto(0, frame.url);
         h = hashIntInto(h, frame.line);
         h = hashIntInto(h, frame.column);
         h = hashStrInto(h, frame.name);
-        return h;
+        // 0 is FrameRef.hash's "not cached" marker, so never hand it back as a real hash --
+        // a frame that legitimately hashed to 0 would otherwise be rehashed on every single
+        // lookup instead of using its cache. Which bucket a frame lands in is all this value
+        // decides (identity is always confirmed with operator==, see ChildTable), so folding
+        // one value onto another is free of consequence beyond a vanishingly rare collision.
+        return h == 0 ? 1 : h;
+    }
+
+    fn hashFrameRef(frame: FrameRef): int {
+        if frame.hash != 0 {
+            return frame.hash;
+        }
+        return computeFrameRefHash(frame);
     }
 
     // Open-addressing (linear probing) index from a child's identifying FrameRef to its slot in
@@ -837,6 +876,23 @@ namespace ChromeTrace {
         // one round-trips 1-indexed all the way through because DevTools
         // itself does the decrement for this specific event shape).
         mut fn addInstantMarker(tid: int, ts: real, name: str, frames: []FrameRef, dataType?: str, sizeBytes?: int): void {
+            // Stackless markers are the hot case, not an edge case: the memory
+            // instrumentation emits one per allocation and deliberately passes no
+            // frames at all (see profiling.hz -- the stacks live on the allocation
+            // profile's own track instead). Building an empty array to then not
+            // emit it costs two GC allocations per marker, which at that call
+            // volume is hundreds of thousands of allocations producing nothing.
+            if frames.length == 0 {
+                this.events.push(TraceEventInstantMarker {
+                    pid: this.pid, tid: tid, ts: ts, name: name,
+                    args: { data: {
+                        stackTrace: none,
+                        dataType: dataType,
+                        sizeBytes: sizeBytes,
+                    } },
+                });
+                return;
+            }
             let callFrames: []TraceMarkerCallFrame = [];
             // Same reasoning as frameRefsForStacktrace (profiling.hz): this is called once per
             // memory-allocation capture, so an unpresized array here regrows from scratch on
@@ -951,6 +1007,23 @@ namespace ChromeTrace {
         return chunks;
     }
 
+    // How many events share one encoding arena before it is dropped for a fresh
+    // one (see json.stringify's allocator overload for why per-event arenas are
+    // expensive: each one commits a 64 KiB chunk no matter how small the event).
+    //
+    // The win saturates as soon as a batch's encoded bytes comfortably exceed one
+    // chunk -- past that, chunks are being filled rather than wasted, and a larger
+    // batch buys nothing but a higher peak. A few hundred events is already well
+    // past that point for any event shape this format produces, while keeping the
+    // live arena to roughly one megabyte.
+    const eventsPerEncodingArena = 256;
+
+    // Progress reporting cadence for writeTrace's per-event loop -- time-based so the output
+    // rate is independent of trace size, with a cheap index test keeping the clock read off
+    // the innermost path.
+    const writeProgressIntervalSeconds = 0.1;
+    const writeProgressCheckInterval = 4096;
+
     // json.stringify<Trace>(trace) (the obvious implementation) builds ONE json.Node DOM tree
     // for the entire `traceEvents` array before printing any of it -- on a session with
     // hundreds of thousands of memory-allocation markers, that means hundreds of thousands of
@@ -973,11 +1046,17 @@ namespace ChromeTrace {
         out.append("{\"metadata\":");
         out.append(json.stringify<TraceMetadata>(trace.metadata));
         out.append(",\"traceEvents\":[");
+        let arena = Alloc.arena();
         for (let i = 0; i < trace.traceEvents.length; i++) {
             if i > 0 {
                 out.append(",");
             }
-            out.append(json.stringify<TraceEvent>(trace.traceEvents[i]));
+            if i > 0 && i % eventsPerEncodingArena == 0 {
+                // Previous batch's nodes and printed strings are all dead by now
+                // (append copies into `out`), so let the whole arena go at once.
+                arena = Alloc.arena();
+            }
+            out.append(json.stringify<TraceEvent>(arena, trace.traceEvents[i]));
         }
         out.append("]}");
         out.commit();
@@ -1007,16 +1086,36 @@ namespace ChromeTrace {
         w.write("{\"metadata\":");
         w.write(json.stringify<TraceMetadata>(trace.metadata));
         w.write(",\"traceEvents\":[");
+        let arena = Alloc.arena();
+        // Same time-throttled reporting as profiling.hz's build loops, for the same reason:
+        // serializing a large trace is a multi-second stretch with nothing to show for it
+        // otherwise, and a print per event would cost more than the encoding does.
+        let lastProgressAt = time.now();
         for (let i = 0; i < trace.traceEvents.length; i++) {
             if i > 0 {
                 w.write(",");
+            }
+            if i % writeProgressCheckInterval == 0 {
+                let nowSeconds = time.now();
+                if nowSeconds - lastProgressAt >= writeProgressIntervalSeconds {
+                    fmt.print(f"\r  writing trace: {i} / {trace.traceEvents.length} events");
+                    lastProgressAt = nowSeconds;
+                }
+            }
+            if i > 0 && i % eventsPerEncodingArena == 0 {
+                // Safe to drop the whole previous batch here: w.write has
+                // already copied every string it produced into the writer's own
+                // pending buffer (see fs.FileWriter.write), so nothing encoded
+                // into that arena is still referenced.
+                arena = Alloc.arena();
             }
             // Each event's DOM is built, printed, and dropped before the next
             // one starts -- the same one-at-a-time discipline traceToJson
             // already used, except the printed text now goes to the file
             // instead of accumulating in a string.
-            w.write(json.stringify<TraceEvent>(trace.traceEvents[i]));
+            w.write(json.stringify<TraceEvent>(arena, trace.traceEvents[i]));
         }
+        fmt.print(f"\r  writing trace: {trace.traceEvents.length} / {trace.traceEvents.length} events\n");
         w.write("]}");
 
         return w.close();

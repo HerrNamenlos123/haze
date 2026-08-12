@@ -17,6 +17,7 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
     // GC will free
     da->buffer = NULL;
     da->capacity = 0;
+    da->borrowed_buffer = false;
     return hzstd_dynamic_array_result_ok;
   }
 
@@ -26,6 +27,33 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
   }
 
   size_t new_bytes = new_capacity * da->elem_size;
+
+  // Borrowed storage (see hzstd_dynamic_array_init_borrowed) can't be
+  // reallocated: da->buffer points into the middle of somebody else's block,
+  // so hzstd_heap_realloc would be handed a non-base pointer, and even if it
+  // could grow in place it would run straight into the next array's
+  // elements. Copy out into a real, owned GC buffer instead -- this array
+  // becomes an ordinary owning array from here on, and whoever else is using
+  // the shared block is left untouched. Every growth path
+  // (push/insert/reserve) funnels through here, so this is the only place
+  // that needs to know about it.
+  if (da->borrowed_buffer) {
+    void *p = hzstd_heap_allocate_n(new_bytes, da->elementTypeName, 1 + skip_n_frames);
+    if (!p) {
+      return hzstd_dynamic_array_result_out_of_memory; /* borrowed buffer left intact on failure */
+    }
+    size_t keptElements = da->size < new_capacity ? da->size : new_capacity;
+    if (da->buffer && keptElements > 0) {
+      memcpy(p, da->buffer, keptElements * da->elem_size);
+    }
+    da->buffer = p;
+    da->capacity = new_capacity;
+    da->borrowed_buffer = false;
+    if (da->size > da->capacity) {
+      da->size = da->capacity;
+    }
+    return hzstd_dynamic_array_result_ok;
+  }
 
   // Growth has no compiler call site of its own (unlike creation, which the
   // compiler emits directly at HZSTD_DYNAMIC_ARRAY_CREATE with the static
@@ -80,6 +108,7 @@ hzstd_dynamic_array_t *hzstd_dynamic_array_create(
   da->size = 0;
   da->capacity = 0;
   da->elementTypeName = elementTypeName;
+  da->borrowed_buffer = false;
 
   if (initial_capacity > 0) {
     /* attempt to allocate initial buffer */
@@ -90,6 +119,28 @@ hzstd_dynamic_array_t *hzstd_dynamic_array_create(
     }
   }
   return da;
+}
+
+/* Initialise a caller-provided control struct over caller-provided element
+ * storage, without allocating either. See the declaration in hzstd_array.h
+ * for what this is for and what the caller has to guarantee. */
+void hzstd_dynamic_array_init_borrowed(
+    hzstd_dynamic_array_t *da, size_t elem_size, void *buffer, size_t count, const char *elementTypeName)
+{
+  hzstd_assert(da != NULL);
+  hzstd_assert(elem_size != 0);
+  hzstd_assert(count == 0 || buffer != NULL);
+  da->elem_size = elem_size;
+  da->size = count;
+  da->capacity = count;
+  da->elementTypeName = elementTypeName;
+  // An empty borrowed array owns nothing to begin with, so leave it as a
+  // plain empty array rather than one holding a zero-length slice: that way
+  // a later push takes the ordinary "no buffer yet, allocate one" path
+  // instead of the copy-out path, and never has to care that `buffer` may
+  // have been a one-past-the-end pointer into the shared block.
+  da->buffer = count > 0 ? buffer : NULL;
+  da->borrowed_buffer = count > 0;
 }
 
 /* reserve: ensure capacity >= new_capacity */
