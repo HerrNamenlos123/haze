@@ -127,6 +127,41 @@ namespace ChromeTrace {
         columnNumber?: int;
     }
 
+    // ── The marker-stack call frame, and why it is a separate, smaller type ──
+    //
+    // A PerformanceMark's stackTrace has to be inlined into every single
+    // event (see TraceEventInstantMarker's own comment: `sf` was tried and
+    // confirmed not to work for this event category). With one allocation
+    // marker per allocation, and stacks routinely 60-90 frames deep, this
+    // struct is emitted MILLIONS of times in a single trace -- so every
+    // field it carries is multiplied by ~5 million, and a field that
+    // DevTools does not read is pure file size.
+    //
+    // Measured on a real 15-second capture (1.10 GB, 80,339 markers,
+    // 5.0M frames), as a share of the WHOLE file:
+    //   codeType      7.4%  -- not part of V8's Runtime.CallFrame at all;
+    //                          it is a CpuProfile-node extension, and the
+    //                          PerformanceMark path never looks at it.
+    //   scriptId      6.0%  -- constant (1 for real frames, 0 otherwise);
+    //                          carries no information here.
+    //   columnNumber  7.4%  -- every single value in the file was 0; Haze
+    //                          source locations are line-granular, so this
+    //                          only ever encoded "unknown".
+    //
+    // Dropping those three removes ~21% of the file and loses nothing that
+    // was ever read back. What remains is exactly what DevTools'
+    // PerformanceMark handler consumes: the function name, and the source
+    // location it renders on click.
+    //
+    // lineNumber stays 1-indexed on the way in and is decremented here, the
+    // same as cpuProfileCallFrame does -- see invariant 2 in the file header
+    // (DevTools decrements it again for this event shape specifically).
+    export struct TraceMarkerCallFrame {
+        functionName: str;
+        url?: str;
+        lineNumber?: int;
+    }
+
     export struct TraceProfileNode {
         id: int;
         callFrame: TraceCallFrame;
@@ -653,7 +688,12 @@ namespace ChromeTrace {
 
         inline struct Args {
             inline struct Data {
-                stackTrace: []TraceCallFrame;
+                // TraceMarkerCallFrame, not TraceCallFrame: this array is
+                // inlined into every marker and is by far the largest thing
+                // in a memory-instrumented trace, so it carries only the
+                // fields DevTools actually reads back. See
+                // TraceMarkerCallFrame's own comment for the measurements.
+                stackTrace: []TraceMarkerCallFrame;
                 // Populated from real allocation instrumentation -- see profiling.hz's
                 // buildTrace/allocationMarkerName, fed by hzstd_trace_memory_impl
                 // (hzstd_profiling.c) which now receives an allocation's kind/size/static
@@ -792,20 +832,22 @@ namespace ChromeTrace {
         // one round-trips 1-indexed all the way through because DevTools
         // itself does the decrement for this specific event shape).
         mut fn addInstantMarker(tid: int, ts: real, name: str, frames: []FrameRef, dataType?: str, sizeBytes?: int): void {
-            let callFrames: []TraceCallFrame = [];
+            let callFrames: []TraceMarkerCallFrame = [];
             // Same reasoning as frameRefsForStacktrace (profiling.hz): this is called once per
             // memory-allocation capture, so an unpresized array here regrows from scratch on
             // every single call at exactly the call volume where that becomes very expensive.
             callFrames.reserve(frames.length);
             for (let i = 0; i < frames.length; i++) {
                 let frame = frames[i];
-                callFrames.push(TraceCallFrame {
+                // codeType/scriptId/columnNumber are deliberately not emitted here -- see
+                // TraceMarkerCallFrame. They cost ~21% of a real trace's total size and are
+                // never read back for this event shape (DevTools' CallFrame type has
+                // codeType optional, and every columnNumber this profiler has ever produced
+                // was 0, since Haze source locations are line-granular).
+                callFrames.push(TraceMarkerCallFrame {
                     functionName: frame.name.length > 0 ? frame.name : "(unknown)",
-                    codeType: frame.url.length > 0 ? "JS" : "other",
-                    scriptId: frame.url.length > 0 ? 1 : 0,
                     url: frame.url.length > 0 ? frame.url : none,
                     lineNumber: frame.line > 0 ? frame.line : none,
-                    columnNumber: frame.url.length > 0 ? frame.column : none,
                 });
             }
             this.events.push(TraceEventInstantMarker {
@@ -930,8 +972,42 @@ namespace ChromeTrace {
         return out.string();
     }
 
-    export fn writeTrace(trace: Trace, path: str) {
-        return fs.writeText(path, traceToJson(trace));
+    // Writes the trace straight to disk, one event at a time.
+    //
+    // traceToJson above has to build the ENTIRE file as a single string first,
+    // which for a real profiling session is the largest allocation the process
+    // ever makes -- and it is live simultaneously with the event array it was
+    // built from and with each event's intermediate JSON DOM. On a big capture
+    // that combination is what pushed writing a trace into many gigabytes of
+    // RAM, on top of a String that has to keep doubling and copying itself as
+    // it grows.
+    //
+    // Streaming removes the largest of those: at no point does more than one
+    // event's worth of JSON plus a bounded output buffer exist. Same bytes,
+    // same order, same file -- only the peak memory differs.
+    export fn writeTrace(trace: Trace, path: str): fs.Error {
+        let opened = fs.openWrite(path);
+        if opened is fs.Error {
+            return opened;
+        }
+        let w = opened;
+
+        w.write("{\"metadata\":");
+        w.write(json.stringify<TraceMetadata>(trace.metadata));
+        w.write(",\"traceEvents\":[");
+        for (let i = 0; i < trace.traceEvents.length; i++) {
+            if i > 0 {
+                w.write(",");
+            }
+            // Each event's DOM is built, printed, and dropped before the next
+            // one starts -- the same one-at-a-time discipline traceToJson
+            // already used, except the printed text now goes to the file
+            // instead of accumulating in a string.
+            w.write(json.stringify<TraceEvent>(trace.traceEvents[i]));
+        }
+        w.write("]}");
+
+        return w.close();
     }
 
     // ── Throwaway smoke test ─────────────────────────────────────────────────
