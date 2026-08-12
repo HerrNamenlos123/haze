@@ -477,12 +477,35 @@ struct VscodeTheme {
   // "dark" or "light". VS Code picks a different set of built-in default
   // colours per theme type, so this decides what a theme that defines no
   // bracket colours falls back to -- see defaultBracketColorHex.
-  type: str = "dark";
+  // OPTIONAL, not defaulted. A field with a default is still REQUIRED by
+  // json.parse -- an absent one fails the whole parse ("JSON missing
+  // field"), which for a theme means no colours at all rather than a
+  // theme with one field missing. Every optional key below is spelled `?`
+  // for that reason, and a theme is entitled to omit any of them.
+  type?: str;
   // The theme's whole `colors` block, kept as a raw node rather than a
   // struct: its keys are dotted names like
   // "editorBracketHighlight.foreground1", which are not field names, and
   // only a handful of the ~200 entries are ever read. See themeColorValue.
   colors?: json.Node;
+  // Whether this theme OPTS IN to semantic highlighting.
+  //
+  // Defaulting to false is not a guess, it is VS Code's rule:
+  // `editor.semanticHighlighting.enabled` defaults to
+  // "configuredByTheme", which means semantic tokens are applied only when
+  // the theme asks for them with `"semanticHighlighting": true`. A theme
+  // that says nothing gets none.
+  //
+  // This matters far more than it sounds. A theme's tokenColors are tuned
+  // against what the GRAMMAR produces, so painting semantic tokens over a
+  // theme that never asked for them repaints things the theme deliberately
+  // styled -- object literal keys stop being `meta.object-literal.key` and
+  // become `variable.other.property`, `const` bindings stop being plain
+  // variables and become constants, and the file stops looking like the
+  // theme's author intended. obsidian-radiance-dark.json does not opt in
+  // (catppuccin-mocha.json does), which is exactly why this editor looked
+  // wrong against VS Code showing the same file in the same theme.
+  semanticHighlighting?: bool;
   tokenColors: []TokenColor = [];
 };
 
@@ -932,6 +955,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let bracketTokens = rx.shallowReactive<[][]BracketToken>([]);
         let bracketCacheVersion = rx.reactive<int>(0);
         let bracketStacks: [][]int = [];
+        // The SFC region each line STARTS in, carried alongside the stack
+        // for the same reason: which characters even count as brackets
+        // changes between a .vue file's <template> and its <script>, so a
+        // rescan cannot be said to have reconverged until BOTH match.
+        let bracketRegions: []int = [];
+        // A file that is not an SFC is all code, so its region never moves.
+        let bracketRootRegion = lspLanguageId == "vue"
+            ? BracketRegionNone : BracketRegionCode;
 
         // The line range whose bracket INPUT changed and so must be
         // rescanned no matter what: `from` is where rescanning starts, and
@@ -996,6 +1027,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
             for (let i = 0; i < removableStacks; i++) {
                 bracketStacks.remove(startLine);
+                if startLine < bracketRegions.length {
+                    bracketRegions.remove(startLine);
+                }
             }
             for (let i = 0; i < insertedCount; i++) {
                 // A placeholder stack, immediately overwritten by the
@@ -1003,6 +1037,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // the array stays as long as the document.
                 let empty: []int = [];
                 bracketStacks.insert(startLine + i, empty);
+                bracketRegions.insert(startLine + i, bracketRootRegion);
             }
         };
 
@@ -1446,6 +1481,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             while bracketStacks.length > lineCount {
                 bracketStacks.pop();
             }
+            while bracketRegions.length < lineCount {
+                bracketRegions.push(bracketRootRegion);
+            }
+            while bracketRegions.length > lineCount {
+                bracketRegions.pop();
+            }
 
             let tokenBuckets: [][]Token = rx.get(tokenCache);
 
@@ -1456,10 +1497,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             for kind in bracketStacks[start] {
                 stack.push(kind);
             }
+            let region = bracketRegions[start];
 
             for (let lineIndex = start; lineIndex < lineCount; lineIndex++) {
                 if lineIndex > start {
-                    if lineIndex > dirtyThrough && bracketStacksEqual(bracketStacks[lineIndex], stack) {
+                    if lineIndex > dirtyThrough && bracketRegions[lineIndex] == region
+                        && bracketStacksEqual(bracketStacks[lineIndex], stack) {
                         // Converged: this line already began exactly here,
                         // so it and everything below it are unchanged.
                         break;
@@ -1469,6 +1512,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         saved.push(kind);
                     }
                     bracketStacks[lineIndex] = saved;
+                    bracketRegions[lineIndex] = region;
                 }
 
                 let out: []BracketToken = [];
@@ -1479,7 +1523,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 if lineIndex < tokenBuckets.length {
                     tokens = tokenBuckets[lineIndex];
                 }
-                scanLineBrackets(doc.line(lineIndex), tokens, stack, out);
+                // A .vue file changes language partway down, so the
+                // region has to be recomputed per line; anything else is
+                // code from the first line to the last.
+                let lineRegion = region;
+                if bracketRootRegion == BracketRegionNone {
+                    let packed = advanceSfcRegion(region, doc.lineText(lineIndex).trim());
+                    lineRegion = sfcLineRegion(packed);
+                    let nextRegion = sfcNextRegion(packed);
+                    if nextRegion != region {
+                        // Crossing into or out of a block: bracket pairs
+                        // never span two embedded documents, so nothing
+                        // opened on the other side may be matched here.
+                        while stack.length > 0 {
+                            stack.pop();
+                        }
+                    }
+                    region = nextRegion;
+                }
+                scanLineBrackets(doc.line(lineIndex), tokens, stack, out, lineRegion);
 
                 buckets[lineIndex] = out;
             }
@@ -1631,6 +1693,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
         let defaultTextColor = (): Color => "#FFF";
 
+        // Whether the loaded theme wants semantic tokens at all.
+        //
+        // VS Code's "configuredByTheme" default, mirrored -- see
+        // VscodeTheme.semanticHighlighting. False until a theme has loaded,
+        // so nothing is ever painted with a rule no theme has agreed to.
+        let semanticHighlightingEnabled = rx.computed<bool>(() => {
+            let loaded = rx.get(theme);
+            if !loaded {
+                return false;
+            }
+            let flag = loaded.semanticHighlighting;
+            if flag is bool {
+                return flag;
+            }
+            // Absent means "this theme has no opinion", which VS Code
+            // reads as no.
+            return false;
+        });
+
         // The bracket colour cycle for the loaded theme, resolved once and
         // recomputed only when the theme itself changes.
         let bracketPalette = rx.computed<BracketPalette>(() => {
@@ -1640,7 +1721,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // rest of the editor draws with until one loads too.
                 return resolveBracketPalette("dark", none);
             }
-            return resolveBracketPalette(loaded.type, loaded.colors);
+            let themeType = loaded.type;
+            return resolveBracketPalette(themeType is str ? themeType : "dark", loaded.colors);
         });
 
         // The colour a bracket at `level` is drawn in, or none when this
@@ -2351,7 +2433,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // document rather than once per frame, and it is also what
                 // re-asks after each burst of typing: an edit moves
                 // doc.version, so the guard opens again on its own.
-                if rx.get(lspDocumentOpened)
+                // Not asked for at all when the theme has not opted in --
+                // the answer would be thrown away, and it is a real
+                // type-check across the project to produce.
+                if rx.get(semanticHighlightingEnabled)
+                    && rx.get(lspDocumentOpened)
                     && rx.get(semanticRequestedVersion) != doc.version
                     && ui.now() - rx.get(lastEditAt) >= semanticQuietSeconds {
                     semanticRequestedVersion := doc.version;
@@ -2699,12 +2785,18 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             rx.get(bracketCacheVersion);
 
             let semantic: []SemanticToken = [];
-            let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
-            // A cache is only as long as the document was when its reply
-            // arrived, so a line typed since then simply has no bucket --
-            // and draws with the layers that do until the next reply.
-            if lineIndex < semanticBuckets.length {
-                semantic = semanticBuckets[lineIndex];
+            // Gated on the theme, not merely on having an answer: a theme
+            // that did not opt in is drawn by the grammar alone, cache or
+            // no cache.
+            if rx.get(semanticHighlightingEnabled) {
+                let semanticBuckets: [][]SemanticToken = rx.get(semanticCache);
+                // A cache is only as long as the document was when its
+                // reply arrived, so a line typed since then simply has no
+                // bucket -- and draws with the layers that do until the
+                // next reply.
+                if lineIndex < semanticBuckets.length {
+                    semantic = semanticBuckets[lineIndex];
+                }
             }
 
             let brackets: []BracketToken = [];

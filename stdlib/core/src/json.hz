@@ -335,6 +335,38 @@ namespace json {
 
                 if !skipWithNone {
                     if !child {
+                        // TODO: a field with a DEFAULT VALUE should fall back
+                        // to it here instead of failing.
+                        //
+                        // Right now the only way to say "this key may be
+                        // absent" is `field?: T`, which forces every use
+                        // site to narrow with `is` even when the struct
+                        // already states a perfectly good fallback. A
+                        // declared default is a strictly better answer:
+                        //
+                        //     struct Theme { semanticHighlighting: bool = false; }
+                        //
+                        // reads as "absent means false", but today it means
+                        // "required", and parsing a theme without that key
+                        // fails outright.
+                        //
+                        // What makes this worth fixing rather than living
+                        // with: the failure is WHOLE-OBJECT. One absent key
+                        // does not leave that one field unset, it rejects
+                        // the entire parse -- so adding a field to a struct
+                        // fed by third-party JSON (theme files, LSP
+                        // payloads, config) silently breaks every input
+                        // that predates it, and the symptom is "no theme at
+                        // all" rather than "one missing setting". This bit
+                        // the code editor exactly that way.
+                        //
+                        // The default is already known here: `result` was
+                        // constructed above, so `result.[fieldName]`
+                        // already HOLDS the declared default at this point
+                        // for the non-inline path. Detecting "this field
+                        // has an explicit default" is the missing piece:
+                        // `T.fields` would have to expose it, which means
+                        // adding it to the compiler's reflection data.
                         return Error { error: () => f"JSON missing field: {fieldName}" };
                     }
                     let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
