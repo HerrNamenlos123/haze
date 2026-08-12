@@ -573,69 +573,56 @@ async function highlight(file: string, scopeName: string = DEFAULT_SCOPE) {
   return openDocument("__default__", file, scopeName);
 }
 
+// Byte offset of the "\r\n\r\n" that ends a message header, or -1.
+//
+// Searched over BYTES rather than over a decoded string: see main().
+function indexOfHeaderSeparator(buffer: Uint8Array): number {
+  for (let i = 0; i + 3 < buffer.length; i++) {
+    if (
+      buffer[i] === 13 &&
+      buffer[i + 1] === 10 &&
+      buffer[i + 2] === 13 &&
+      buffer[i + 3] === 10
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 async function main() {
-  // ── Framing is counted in BYTES, not in characters ──────────────────
-  //
-  // `Content-Length` is a byte count -- that is what LSP framing means by
-  // it, and it is what the Haze client sends, since a Haze `str.length`
-  // IS its UTF-8 byte length. So the loop below buffers raw bytes and
-  // slices them at byte offsets, decoding only once a whole payload is in
-  // hand.
-  //
-  // Doing this on a decoded JavaScript string instead -- which is what it
-  // used to do -- is wrong twice over, and silently:
-  //
-  //   * a JS string is measured in UTF-16 code units, so every `─` in a
-  //     comment makes the string TWO units shorter than the byte count the
-  //     header announced. `buffer.length < totalPacketLength` then never
-  //     stops being true, the request is never dispatched, and the engine
-  //     just goes quiet -- alive, never crashing, simply never answering.
-  //     Every source file in this repository has box-drawing characters in
-  //     its comments, so "open this file" meant "no tokens, ever" for all
-  //     of them, while a pure-ASCII file highlighted perfectly.
-  //
-  //   * decoding each chunk as it arrives cuts multi-byte characters in
-  //     half at chunk boundaries, turning them into replacement characters
-  //     in payloads that were otherwise intact.
-  //
-  // The reply is framed the same way and for the same reason: the client
-  // reads its byte count straight off the wire.
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const stdin = Bun.stdin.stream();
   const reader = stdin.getReader();
 
-  const header = encoder.encode("Content-Length: ");
-  const separator = encoder.encode("\r\n\r\n");
-
-  const startsWithHeader = (bytes: Uint8Array): boolean => {
-    if (bytes.length < header.length) {
-      return false;
-    }
-    for (let i = 0; i < header.length; i++) {
-      if (bytes[i] !== header[i]) {
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const indexOfSeparator = (bytes: Uint8Array): number => {
-    for (let i = 0; i + separator.length <= bytes.length; i++) {
-      let matched = true;
-      for (let j = 0; j < separator.length; j++) {
-        if (bytes[i + j] !== separator[j]) {
-          matched = false;
-          break;
-        }
-      }
-      if (matched) {
-        return i;
-      }
-    }
-    return -1;
-  };
-
+  // The unread tail of stdin, as BYTES.
+  //
+  // This has to be bytes, and getting it wrong is not subtle. `Content-
+  // Length` counts bytes -- that is what the protocol says, and it is
+  // what the client sends, since a Haze `str`'s length is its byte length.
+  // Buffering a decoded STRING instead and slicing it by index means
+  // slicing by UTF-16 code units, which agree with bytes only while every
+  // character is ASCII. One `ä`, one `→`, one emoji anywhere in a file and
+  // every subsequent slice is cut in the wrong place: the JSON comes out
+  // truncated or with the next message's header glued to its end, and the
+  // engine dies on `JSON.parse` -- taking the highlighting of every open
+  // tab with it, since there is only one engine process.
+  //
+  // Decoding is therefore done per COMPLETE MESSAGE, below, never on the
+  // stream. That also removes a second failure of its own: a multi-byte
+  // character split across two stdin reads decodes to replacement
+  // characters if each chunk is decoded on its own.
+  //
+  // The quieter half of the same bug is worth naming, since it is the one
+  // that was actually being hit: when the announced byte count is LARGER
+  // than the decoded string's length -- which is the case for every file
+  // in this repository, whose comments are full of `─` -- the "has the
+  // whole message arrived yet" test never comes true at all. The request
+  // is then never dispatched and the engine simply goes quiet: alive,
+  // never crashing, never answering, so an editor buffer full of
+  // box-drawing characters got no tokens ever while a pure-ASCII file
+  // highlighted perfectly.
   let buffer = new Uint8Array(0);
 
   let initialized = false;
@@ -731,34 +718,46 @@ async function main() {
       break;
     }
 
-    const merged = new Uint8Array(buffer.length + value.length);
-    merged.set(buffer, 0);
-    merged.set(value, buffer.length);
-    buffer = merged;
+    const combined = new Uint8Array(buffer.length + value.length);
+    combined.set(buffer, 0);
+    combined.set(value, buffer.length);
+    buffer = combined;
 
-    while (startsWithHeader(buffer)) {
-      const frontHeaderLength = indexOfSeparator(buffer);
-      if (frontHeaderLength === -1) {
-        // Header not complete yet.
+    const contentLengthText = "Content-Length: ";
+    while (true) {
+      const headerEnd = indexOfHeaderSeparator(buffer);
+      if (headerEnd === -1) {
+        break;
+      }
+      // The header is ASCII by definition, so decoding it alone is safe
+      // regardless of what the body turns out to contain.
+      const header = decoder.decode(buffer.subarray(0, headerEnd));
+      if (!header.startsWith(contentLengthText)) {
         break;
       }
       const contentLength = Number.parseInt(
-        decoder.decode(buffer.subarray(header.length, frontHeaderLength))
+        header.slice(contentLengthText.length),
+        10
       );
 
-      const totalPacketLength =
-        frontHeaderLength + separator.length + contentLength;
-      if (buffer.length < totalPacketLength) {
+      const bodyStart = headerEnd + 4;
+      if (buffer.length < bodyStart + contentLength) {
+        // The rest of this message has not arrived yet.
         break;
       }
 
-      // Decoded only now that the whole payload is present, so no
-      // character can be split across two reads.
+      // Decoded here, as one complete message, which is the only point at
+      // which a byte run is guaranteed to be whole UTF-8.
       const packetContent = decoder.decode(
-        buffer.subarray(frontHeaderLength + separator.length, totalPacketLength)
+        buffer.subarray(bodyStart, bodyStart + contentLength)
       );
-      buffer = buffer.slice(totalPacketLength);
+      buffer = buffer.slice(bodyStart + contentLength);
+
       const response = await handleRequest(JSON.parse(packetContent));
+      // Encoded before measuring, so the length announced is the length
+      // actually written. The client reads bytes too, so a character
+      // count here would desynchronise it exactly the way a character
+      // count desynchronised this side.
       const result = encoder.encode(JSON.stringify(response));
       process.stdout.write(`Content-Length: ${result.length}\r\n\r\n`);
       process.stdout.write(result);
