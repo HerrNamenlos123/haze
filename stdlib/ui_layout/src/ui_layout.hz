@@ -1032,7 +1032,7 @@ export inline struct ResolvedClip {
 // userData, so a draw callback can find its clip without any string work.
 // Safe to hold: these elements are kept alive for the whole frame by the
 // tree being rendered (see the DivElement branch of processTreeElement).
-struct ClipEntry {
+inline struct ClipEntry {
     elementPtr: cptr;
     clip: ResolvedClip;
 }

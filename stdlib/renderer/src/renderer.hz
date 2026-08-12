@@ -1387,7 +1387,7 @@ export struct RectOpts {
     transform?: mat4.Mat4f = none;
 };
 
-export struct TextOpts {
+export inline struct TextOpts {
     font: int;
     position: Vec2;
     size: real;
