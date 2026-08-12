@@ -109,6 +109,65 @@ struct EditorViewArgs {
     }
 }
 
+// The TextMate grammar a file is parsed with, chosen by its extension.
+//
+// This used to be the single constant "source.vue", which is why every
+// file -- including this editor's OWN source -- was coloured by the Vue
+// grammar, i.e. barely at all: outside an SFC's <template>/<script>, Vue
+// treats a whole file as undifferentiated body text, so a .hz or .json
+// buffer came out as one flat colour.
+//
+// The returned scope must be one the syntax engine can actually load (see
+// loadGrammar in codeeditor/syntax-engine/syntax-engine.ts); "source.hz"
+// is Haze's own grammar, the same one the VS Code extension ships.
+//
+// A file whose extension isn't listed deliberately gets a scope no
+// grammar answers to, which the engine reports as "no tokens" -- plain
+// unhighlighted text. That is the honest result for a language we have no
+// grammar for, and far better than the previous behaviour of running an
+// arbitrary file through the Vue grammar.
+fn scopeNameForFile(path: str): str {
+    if path.endsWith(".hz") { return "source.hz"; }
+    if path.endsWith(".vue") { return "source.vue"; }
+    if path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts") { return "source.ts"; }
+    if path.endsWith(".tsx") { return "source.tsx"; }
+    if path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") { return "source.js"; }
+    if path.endsWith(".jsx") { return "source.js.jsx"; }
+    // .jsonc has no grammar of its own here; the JSON one is close enough
+    // and colours everything but the comments.
+    if path.endsWith(".json") || path.endsWith(".jsonc") { return "source.json"; }
+    if path.endsWith(".json5") { return "source.json5"; }
+    if path.endsWith(".css") { return "source.css"; }
+    if path.endsWith(".scss") { return "source.css.scss"; }
+    if path.endsWith(".less") { return "source.css.less"; }
+    if path.endsWith(".sass") { return "source.sass"; }
+    if path.endsWith(".html") || path.endsWith(".htm") { return "text.html.basic"; }
+    if path.endsWith(".md") { return "text.html.markdown"; }
+    if path.endsWith(".yaml") || path.endsWith(".yml") { return "source.yaml"; }
+    if path.endsWith(".toml") { return "source.toml"; }
+    if path.endsWith(".graphql") || path.endsWith(".gql") { return "source.graphql"; }
+    return "text.plain";
+}
+
+// How a file is announced to the Vue language server, or "" for a file it
+// has no business seeing.
+//
+// The editor's one language server is vue-language-server with tsserver
+// behind it, so it understands exactly the web languages below. Haze
+// files (and anything else) are NOT among them: opening one as "vue" --
+// which is what every file was announced as before this existed -- makes
+// the server parse Haze source as an SFC and answer hovers from whatever
+// it manages to make of it. Better to not open it at all, and simply have
+// no hovers, until there is a Haze language server to ask instead.
+fn lspLanguageIdForFile(path: str): str {
+    if path.endsWith(".vue") { return "vue"; }
+    if path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts") { return "typescript"; }
+    if path.endsWith(".tsx") { return "typescriptreact"; }
+    if path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") { return "javascript"; }
+    if path.endsWith(".jsx") { return "javascriptreact"; }
+    return "";
+}
+
 // A TextMate scope selector matches a token's scope if it is the whole
 // scope, or a dot-separated prefix of it (e.g. "string" matches
 // "string.quoted.double", but not "stringify").
@@ -528,9 +587,18 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // The hover document's scope is TypeScript, not Vue: its text is a
         // bare signature (`function greet(name: string): number`), which the
         // Vue grammar treats as one undifferentiated run of SFC body text --
-        // no colouring at all. The editor buffer keeps the Vue grammar,
-        // which embeds source.ts for <script> blocks anyway.
-        let editorScopeName = "source.vue";
+        // no colouring at all.
+        //
+        // The buffer's scope comes from the file's extension (see
+        // scopeNameForFile), so a .hz file is coloured by Haze's own
+        // grammar, a .ts file by the TypeScript one, and a .vue file by the
+        // Vue one -- which embeds source.ts for its <script> blocks anyway.
+        // Fixed for the instance's life, like filePath itself.
+        let editorScopeName = scopeNameForFile(filePath);
+        // Which language, if any, this file may be announced to the Vue
+        // language server as. Empty means "none of its business" -- a Haze
+        // file, say -- and switches the LSP off for this tab entirely.
+        let lspLanguageId = lspLanguageIdForFile(filePath);
         // This editor's document uri with the highlight engine. The file
         // path IS the uri, which is what keeps every open tab a separate
         // document on the one connection: replies come back stamped with
@@ -1599,7 +1667,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // frame, since a computed nobody reads never runs at all.
             rx.get(hoverHighlightRequester);
 
-            if vueBridge && filePath.length > 0 {
+            // `lspLanguageId` is what gates a whole tab's language-server
+            // participation: the server behind this bridge speaks the web
+            // languages and nothing else, so a Haze buffer neither opens
+            // nor hovers. Skipping the open alone would be worse than
+            // skipping both -- hover requests naming a document the server
+            // was never told about are answered against nothing.
+            if vueBridge && filePath.length > 0 && lspLanguageId.length > 0 {
                 // openDocument() is a ONE-SHOT (it early-returns once the
                 // document is open), but the argument was still being
                 // evaluated on every frame -- and doc.text() reassembles
@@ -1609,7 +1683,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 if !rx.get(lspDocumentOpened) {
                     lspDocumentOpened := true;
                     let startupText = rx.get(initialText);
-                    vueBridge.openDocument(filePath, "vue", 1,
+                    vueBridge.openDocument(filePath, lspLanguageId, 1,
                         startupText ? startupText as str : doc.text());
                     // Both consumers have their copy now; stop pinning
                     // a second full copy of the file in memory.
@@ -1810,6 +1884,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // -- and a reply is consumed by whoever reads it first, so
                 // the other tabs' callbacks would simply never fire. The
                 // shell pumps it exactly once per frame instead.
+            }
+            else if rx.get(initialText) {
+                // No language server for this file, so the branch above --
+                // the only other place that lets go of the startup copy --
+                // will never run. The highlighter has had its copy since
+                // setup and nothing else wants the file as one string, so
+                // holding a second full copy of it forever is pure waste.
+                initialText := none;
             }
         });
 

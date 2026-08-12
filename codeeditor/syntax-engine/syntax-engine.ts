@@ -76,6 +76,20 @@ function getRegistry(): vsctm.Registry {
         });
         return { ...data.default } as any;
       }
+      if (scopeName === "source.hz") {
+        // Haze's own grammar, taken straight from the VS Code extension
+        // rather than copied in beside the vendored ones. It is the only
+        // first-party grammar here, so it is also the only one that
+        // changes -- a copy would be a second definition to keep in step
+        // with the language, and would drift the moment it wasn't.
+        const data = await import(
+          "../../extension/syntaxes/haze.tmLanguage.json",
+          {
+            with: { type: "json" },
+          }
+        );
+        return { ...data.default } as any;
+      }
       if (scopeName === "source.ts") {
         const data = await import("./languages/ts.tmLanguage.json", {
           with: { type: "json" },
@@ -224,7 +238,16 @@ function getGrammar(
   if (cached) {
     return cached;
   }
-  const loaded = getRegistry().loadGrammar(scopeName);
+  // A scope no grammar answers to is a normal thing for a client to ask
+  // for -- it is how "this file is in a language we cannot colour" is
+  // spelled. vscode-textmate does not see it that way: loadGrammar()
+  // REJECTS ("No grammar provided for <...>") when its loader returns
+  // undefined, and an unhandled rejection kills the whole engine process
+  // -- taking the highlighting of every other open tab with it. Turn it
+  // back into the undefined every caller here already handles.
+  const loaded = getRegistry()
+    .loadGrammar(scopeName)
+    .catch(() => undefined);
   grammarPromises.set(scopeName, loaded);
   return loaded;
 }
@@ -427,9 +450,6 @@ async function openDocument(
   scopeName: string = DEFAULT_SCOPE
 ) {
   const grammar = await getGrammar(scopeName);
-  if (!grammar) {
-    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
-  }
   const lines = text.split("\n");
   const state: DocState = {
     lines: lines,
@@ -437,7 +457,16 @@ async function openDocument(
     tokensByLine: new Array(lines.length),
     scopeName: scopeName,
   };
+  // Recorded even when no grammar matched the scope, so the document stays
+  // known and unhighlighted. Without this a file in a language we have no
+  // grammar for would be absent from `documents`, and its first edit would
+  // take changeDocument's "never opened" path -- which reparses under the
+  // DEFAULT scope, i.e. typing into a plain .txt would abruptly colour it
+  // as Vue.
   documents.set(uri, state);
+  if (!grammar) {
+    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: lines.length };
+  }
   const range = retokenizeFrom(grammar, state, 0, lines.length);
   return {
     tokens: collectTokens(state, range.firstLine, range.lastLine),
@@ -469,13 +498,22 @@ async function changeDocument(
   // The grammar this document was OPENED with, not the default: a change
   // must never silently reparse a TypeScript buffer as Vue.
   const grammar = await getGrammar(state.scopeName);
-  if (!grammar) {
-    return { tokens: [] as Token[], firstLine: 0, lastLine: 0, lineCount: 0 };
-  }
 
   state.lines.splice(startLine, removedCount, ...newLines);
   state.ruleStacks.splice(startLine, removedCount, ...new Array(newLines.length));
   state.tokensByLine.splice(startLine, removedCount, ...new Array(newLines.length));
+
+  // No grammar for this document's language. The edit has still been
+  // applied above, so the document stays a faithful copy of the buffer;
+  // there is simply nothing to colour it with.
+  if (!grammar) {
+    return {
+      tokens: [] as Token[],
+      firstLine: 0,
+      lastLine: 0,
+      lineCount: state.lines.length,
+    };
+  }
 
   // Lines from startLine to the end of the inserted block have no valid
   // cached stack, so convergence may only be tested after them.
