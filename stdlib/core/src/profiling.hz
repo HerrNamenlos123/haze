@@ -272,12 +272,45 @@ namespace profiling {
         // seconds cost 19 MB while the allocations cost 965 MB. The encoding
         // was the entire difference.
         //
-        // So allocations now go through the same builder, as their own
-        // profile on their own tid. Every allocation is still recorded, with
-        // its full stack and its size; the stack is simply stored once and
-        // referenced by id thereafter. Estimated on that same capture: ~106k
-        // nodes + 80k samples, roughly 12 MB instead of 965 MB.
+        // So the stacks now go through the same builder, as a call tree.
+        //
+        // But the tree ALONE is not a replacement, and shipping only the tree
+        // was a regression: it put allocations on a second thread track, which
+        // (per the long note just above) DevTools sorts below the main thread
+        // and collapses by default, turning the allocation timeline into a
+        // second, hidden flame chart instead of the marker timeline it used to
+        // be. The Timings track is the only place that renders above every
+        // thread, and only PerformanceMark-shaped events land in it.
+        //
+        // Hence both, each carrying the half it encodes efficiently:
+        //
+        //   markers (Timings track) -- one per allocation, carrying WHEN it
+        //     happened, its type and its size, and NO stackTrace. Stackless is
+        //     what makes them affordable: the stack was 99% of a marker's
+        //     bytes (~12,000 of ~12,200), so dropping it takes the marker
+        //     stream from 965 MB to ~16 MB while keeping the timeline, the
+        //     labels, and the click-to-inspect args intact.
+        //
+        //   tree (its own track) -- every allocation's FULL stack, deduplicated
+        //     so each distinct call path is stored exactly once.
+        //
+        // Nothing is lost relative to the original: the same per-allocation
+        // timeline, and the same stacks, just no longer written out five
+        // million times.
         if result.memoryInstrumentationFrames.length > 0 {
+            for (let i = 0; i < result.memoryInstrumentationFrames.length; i++) {
+                let frame = result.memoryInstrumentationFrames[i];
+                let noFrames: []ChromeTrace.FrameRef = [];
+                builder.addInstantMarker(
+                    mainThreadTid,
+                    frame.timestamp * 1000000.0,
+                    allocationMarkerName(frame),
+                    noFrames,
+                    frame.dataType.length > 0 ? frame.dataType : none,
+                    frame.sizeBytes,
+                );
+            }
+
             builder.addThread(allocationThreadTid, "HeapAllocations");
 
             let allocBuilder = ChromeTrace.CpuProfileBuilder();

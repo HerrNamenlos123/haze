@@ -312,25 +312,6 @@ export namespace fs {
         }
     }
 
-    // Forces the compiler to elaborate FileWriter's methods.
-    //
-    // A struct's methods are only exported to dependent modules once they
-    // have actually been elaborated, and elaboration is demand-driven: a
-    // method nobody calls inside this module is never instantiated, and so
-    // never appears in the generated import.hz -- leaving callers with a
-    // FileWriter whose methods do not exist. openWrite() alone only pulls in
-    // the constructor, which is why write/flush/close went missing.
-    //
-    // Referencing them here is what makes them real. Never called (the guard
-    // is unsatisfiable); it exists purely so the elaborator sees the calls.
-    fn forceFileWriterElaboration(w: mut FileWriter): void {
-        if w.closed && !w.closed {
-            w.write("");
-            w.flush();
-            w.close();
-        }
-    }
-
     // Opens `path` for streaming writes, truncating any existing file and
     // creating parent directories, exactly as writeText() would. A plain
     // function rather than a FileWriter constructor because opening can fail
