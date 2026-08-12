@@ -1,0 +1,833 @@
+// The Haze lexer.
+//
+// Design notes (this is a hot path — the whole point of the project):
+//
+//  * One linear pass over the source bytes. No regexes, no backtracking.
+//  * Tokens are fixed-size values holding byte offsets, appended into a single
+//    []Token that is reserved up-front from a size estimate. Token text is
+//    never copied: callers materialise it with a zero-copy `src.slice(a, b)`.
+//  * Keyword lookup dispatches on length first, then on individual bytes, so a
+//    typical identifier costs one length compare and one or two byte compares.
+//    No hashing, no allocation, no map.
+//  * Line/column are tracked incrementally as we scan, so building a SourceLoc
+//    later is free rather than an O(n) scan of the file.
+//
+// f-strings are lexed inline (see TK.FStringStart in tokens.hz). The `{ }` of an
+// interpolation re-enters normal code lexing, which can nest arbitrarily, so we
+// keep an explicit mode stack rather than recursing.
+
+// ---------------------------------------------------------------------------
+// Character classification. Plain byte compares; these all inline.
+// ---------------------------------------------------------------------------
+
+fn isDigit(b: u8): bool { return b >= b"0" && b <= b"9"; }
+fn isHexDigit(b: u8): bool {
+    return (b >= b"0" && b <= b"9") || (b >= b"a" && b <= b"f") || (b >= b"A" && b <= b"F");
+}
+fn isIdentStart(b: u8): bool {
+    return (b >= b"a" && b <= b"z") || (b >= b"A" && b <= b"Z") || b == b"_";
+}
+fn isIdentPart(b: u8): bool {
+    return (b >= b"a" && b <= b"z") || (b >= b"A" && b <= b"Z") || b == b"_" || (b >= b"0" && b <= b"9");
+}
+fn isSpace(b: u8): bool { return b == b" " || b == b"\t" || b == b"\r" || b == b"\n"; }
+
+// Narrowing helper: Haze requires a proven range to convert int -> u8.
+fn decDigit(v: int): u8 {
+    if v >= 0 && v <= 9 { return v as u8; }
+    sys.panic("decimal digit out of range");
+}
+
+// ---------------------------------------------------------------------------
+// Arbitrary-precision literal normalisation.
+//
+// This MUST match the reference parser exactly, which normalises literals
+// rather than passing the source text through:
+//     007 -> 7, 0x0f -> 15, 0XABCDEF -> 11259375
+// and values may exceed 64 bits (0xFFFFFFFFFFFFFFFFFF is 72-bit), so we cannot
+// accumulate into a u64. Digits are held most-significant-first, one decimal
+// digit per byte.
+// ---------------------------------------------------------------------------
+
+fn stripLeadingZeros(digits: mut []u8): str {
+    let first = 0;
+    while first < digits.length - 1 && digits[first] == 0 { first++; }
+    let out = String();
+    out.reserve(digits.length - first);
+    for (let i = first; i < digits.length; i++) {
+        out.append(f"{digits[i] as int}");
+    }
+    return out.cloneString();
+}
+
+// Decimal digit string -> canonical decimal (drops leading zeros).
+export fn normalizeDecimal(dec: str): str {
+    let digits: mut []u8 = [];
+    digits.reserve(dec.length);
+    for (let i = 0; i < dec.length; i++) {
+        digits.push(decDigit((dec[i] as int) - 48));
+    }
+    return stripLeadingZeros(digits);
+}
+
+// Hex digit string (no 0x prefix) -> canonical decimal. Handles >64-bit values.
+export fn hexToDecimal(hex: str): str {
+    let digits: mut []u8 = [];
+    digits.push(0);
+    for (let i = 0; i < hex.length; i++) {
+        let c = hex[i];
+        let v = 0;
+        if c >= b"0" && c <= b"9" { v = (c as int) - 48; }
+        else if c >= b"a" && c <= b"f" { v = (c as int) - 87; }
+        else if c >= b"A" && c <= b"F" { v = (c as int) - 55; }
+
+        // digits = digits * 16 + v
+        let carry = v;
+        for (let j = digits.length - 1; j >= 0; j--) {
+            let cur = (digits[j] as int) * 16 + carry;
+            digits[j] = decDigit(cur % 10);
+            carry = cur / 10;
+        }
+        while carry > 0 {
+            digits.insert(0, decDigit(carry % 10));
+            carry = carry / 10;
+        }
+    }
+    return stripLeadingZeros(digits);
+}
+
+// ---------------------------------------------------------------------------
+// Lexer modes. `{` inside an f-string re-enters code, and code can contain more
+// f-strings, so modes form a stack.
+// ---------------------------------------------------------------------------
+
+enum Mode {
+    Code,
+    FString,        // inside f"..."
+    FTripleString,  // inside f"""..."""
+}
+
+export struct LexError {
+    message: str = "";
+    line: int = 0;
+    col: int = 0;
+}
+
+export struct Lexer {
+    src: str = "";
+    pos: int = 0;
+    line: int = 1;    // 1-based, matches SourceLoc
+    col: int = 0;     // 0-based, matches SourceLoc
+
+    tokens: mut []Token = [];
+    modes: mut []Mode = [];
+    // Depth of `{}` nesting within the current interpolation, so we know which
+    // `}` closes the interpolation and returns us to f-string text.
+    braceDepth: mut []int = [];
+
+    errors: mut []LexError = [];
+
+    static fn create(src: str): mut Lexer {
+        let l = Lexer {
+            src: src,
+        };
+        // One token per ~4 source bytes is a good estimate for Haze and keeps
+        // us to a single allocation for almost every real file.
+        l.tokens.reserve(src.length / 4 + 16);
+        return l;
+    }
+
+    fn atEnd(): bool { return this.pos >= this.src.length; }
+
+    fn peek(): u8 {
+        if this.pos >= this.src.length { return 0; }
+        return this.src[this.pos];
+    }
+
+    fn peekAt(offset: int): u8 {
+        let p = this.pos + offset;
+        if p >= this.src.length { return 0; }
+        return this.src[p];
+    }
+
+    // Advance one byte, maintaining line/col.
+    //
+    // Columns count CHARACTERS, not bytes, to match the reference parser (which
+    // works on decoded text). Only the first byte of a UTF-8 sequence advances
+    // the column; continuation bytes (0b10xxxxxx) do not. Without this, any line
+    // containing a non-ASCII character — an em-dash in a string literal is
+    // enough — shifts every column after it.
+    mut fn bump() {
+        if this.pos >= this.src.length { return; }
+        let c = this.src[this.pos];
+        if c == b"\n" {
+            this.line++;
+            this.col = 0;
+        }
+        else if (c as int) < 128 || (c as int) >= 192 {
+            // Count CODEPOINTS: every byte that starts a UTF-8 sequence
+            // advances the column by one, continuation bytes (0b10xxxxxx) by
+            // none. Verified against the reference on a non-BMP case
+            // ("a🇦🇹b"), where a 4-byte codepoint still counts as ONE column.
+            this.col++;
+        }
+        this.pos++;
+    }
+
+    mut fn bumpN(n: int) {
+        for (let i = 0; i < n; i++) { this.bump(); }
+    }
+
+    mut fn error(message: str, line: int, col: int) {
+        this.errors.push(LexError { message: message, line: line, col: col });
+    }
+
+    mut fn push(kind: TK, start: int, startLine: int, startCol: int) {
+        this.tokens.push(Token {
+            kind: kind,
+            start: start,
+            end: this.pos,
+            line: startLine,
+            col: startCol,
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Whitespace and comments. Block comments do not nest (matching the
+    // reference grammar's non-greedy '/*' .*? '*/').
+    // -----------------------------------------------------------------------
+
+    mut fn skipTrivia() {
+        while !this.atEnd() {
+            let c = this.peek();
+            if isSpace(c) {
+                this.bump();
+            }
+            else if c == b"/" && this.peekAt(1) == b"/" {
+                while !this.atEnd() && this.peek() != b"\n" { this.bump(); }
+            }
+            else if c == b"/" && this.peekAt(1) == b"*" {
+                this.bumpN(2);
+                while !this.atEnd() {
+                    if this.peek() == b"*" && this.peekAt(1) == b"/" {
+                        this.bumpN(2);
+                        break;
+                    }
+                    this.bump();
+                }
+            }
+            else {
+                break;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Identifiers & keywords.
+    //
+    // Dispatch on length first, then compare bytes. Keywords are 2..16 bytes,
+    // and most identifiers fail on the length check or the first byte alone.
+    // -----------------------------------------------------------------------
+
+    fn keywordKind(start: int, end: int): TK {
+        let n = end - start;
+        let s = this.src;
+
+        if n == 2 {
+            let a = s[start];
+            let b = s[start + 1];
+            if a == b"a" && b == b"s" { return TK.As; }
+            if a == b"i" && b == b"s" { return TK.Is; }
+            if a == b"i" && b == b"n" { return TK.In; }
+            if a == b"f" && b == b"n" { return TK.Fn; }
+            if a == b"d" && b == b"o" { return TK.Do; }
+            if a == b"i" && b == b"f" { return TK.If; }
+            return TK.Ident;
+        }
+        if n == 3 {
+            if s.startsWith("let", start) { return TK.Let; }
+            if s.startsWith("mut", start) { return TK.Mut; }
+            if s.startsWith("pub", start) { return TK.Pub; }
+            if s.startsWith("for", start) { return TK.For; }
+            if s.startsWith("try", start) { return TK.Try; }
+            return TK.Ident;
+        }
+        if n == 4 {
+            if s.startsWith("type", start) { return TK.Type; }
+            if s.startsWith("else", start) { return TK.Else; }
+            if s.startsWith("enum", start) { return TK.Enum; }
+            if s.startsWith("true", start) { return TK.True; }
+            if s.startsWith("from", start) { return TK.From; }
+            if s.startsWith("with", start) { return TK.With; }
+            if s.startsWith("pure", start) { return TK.Pure; }
+            if s.startsWith("emit", start) { return TK.Emit; }
+            return TK.Ident;
+        }
+        if n == 5 {
+            if s.startsWith("const", start) { return TK.Const; }
+            if s.startsWith("false", start) { return TK.False; }
+            if s.startsWith("while", start) { return TK.While; }
+            if s.startsWith("break", start) { return TK.Break; }
+            if s.startsWith("raise", start) { return TK.Raise; }
+            if s.startsWith("yield", start) { return TK.Yield; }
+            if s.startsWith("union", start) { return TK.Union; }
+            if s.startsWith("final", start) { return TK.Final; }
+            if s.startsWith("plain", start) { return TK.Plain; }
+            if s.startsWith("__c__", start) { return TK.InlineC; }
+            return TK.Ident;
+        }
+        if n == 6 {
+            if s.startsWith("return", start) { return TK.Return; }
+            if s.startsWith("struct", start) { return TK.Struct; }
+            if s.startsWith("import", start) { return TK.Import; }
+            if s.startsWith("export", start) { return TK.Export; }
+            if s.startsWith("extern", start) { return TK.Extern; }
+            if s.startsWith("static", start) { return TK.Static; }
+            if s.startsWith("typeof", start) { return TK.Typeof; }
+            if s.startsWith("inline", start) { return TK.Inline; }
+            if s.startsWith("unsafe", start) { return TK.Unsafe; }
+            if s.startsWith("noemit", start) { return TK.Noemit; }
+            if s.startsWith("opaque", start) { return TK.Opaque; }
+            return TK.Ident;
+        }
+        if n == 7 {
+            if s.startsWith("attempt", start) { return TK.Attempt; }
+            if s.startsWith("recover", start) { return TK.Recover; }
+            if s.startsWith("bitflag", start) { return TK.Bitflag; }
+            return TK.Ident;
+        }
+        if n == 8 {
+            if s.startsWith("continue", start) { return TK.Continue; }
+            if s.startsWith("comptime", start) { return TK.Comptime; }
+            if s.startsWith("noreturn", start) { return TK.Noreturn; }
+            if s.startsWith("requires", start) { return TK.Requires; }
+            if s.startsWith("clonable", start) { return TK.Clonable; }
+            if s.startsWith("unscoped", start) { return TK.Unscoped; }
+            return TK.Ident;
+        }
+        if n == 9 {
+            if s.startsWith("namespace", start) { return TK.Namespace; }
+            if s.startsWith("nodiscard", start) { return TK.Nodiscard; }
+            return TK.Ident;
+        }
+        if n == 11 {
+            if s.startsWith("noreturn_if", start) { return TK.NoreturnIf; }
+            if s.startsWith("nonclonable", start) { return TK.Nonclonable; }
+            return TK.Ident;
+        }
+        if n == 16 {
+            if s.startsWith("module_namespace", start) { return TK.ModuleNamespace; }
+            return TK.Ident;
+        }
+        return TK.Ident;
+    }
+
+    // `is not` is a single token in the grammar (ISNOT), with arbitrary
+    // whitespace between the words. Only called when we already matched `is`.
+    fn isNotFollows(): bool {
+        let p = this.pos;
+        let n = this.src.length;
+        let seenSpace = false;
+        while p < n && isSpace(this.src[p]) {
+            seenSpace = true;
+            p++;
+        }
+        if !seenSpace { return false; }
+        if p + 3 > n { return false; }
+        if !(this.src[p] == b"n" && this.src[p + 1] == b"o" && this.src[p + 2] == b"t") { return false; }
+        // Must not be the prefix of a longer identifier, e.g. `is nothing`.
+        if p + 3 < n && isIdentPart(this.src[p + 3]) { return false; }
+        return true;
+    }
+
+    mut fn lexIdentOrKeyword() {
+        let start = this.pos;
+        let startLine = this.line;
+        let startCol = this.col;
+        while !this.atEnd() && isIdentPart(this.peek()) { this.bump(); }
+
+        let kind = this.keywordKind(start, this.pos);
+
+        if kind == TK.Is && this.isNotFollows() {
+            // Consume the whitespace and the `not`.
+            while isSpace(this.peek()) { this.bump(); }
+            this.bumpN(3);
+            this.push(TK.IsNot, start, startLine, startCol);
+            return;
+        }
+
+        this.push(kind, start, startLine, startCol);
+    }
+
+    // -----------------------------------------------------------------------
+    // `operator...` overload names. These are single tokens in the grammar.
+    // Only valid where a method name is expected, but lexing them eagerly is
+    // safe because `operator` is not otherwise a keyword and any identifier
+    // starting with `operator` (e.g. `operators`) is handled by the ident-part
+    // check below.
+    // -----------------------------------------------------------------------
+
+    mut fn tryLexOperatorName(): bool {
+        let start = this.pos;
+        if !this.src.startsWith("operator", start) { return false; }
+        let p = start + 8;
+        let n = this.src.length;
+        if p >= n { return false; }
+
+        let startLine = this.line;
+        let startCol = this.col;
+        let c = this.src[p];
+
+        // `operator as` — the only one with a space.
+        if c == b" " {
+            if this.src.startsWith("as", p + 1) {
+                let after = p + 3;
+                if after >= n || !isIdentPart(this.src[after]) {
+                    this.bumpN(11);
+                    this.push(TK.OpAs, start, startLine, startCol);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Two-character operator suffixes first (longest match wins).
+        if p + 1 < n {
+            let c2 = this.src[p + 1];
+            if c == b"[" && c2 == b"]" { this.bumpN(10); this.push(TK.OpSubscript, start, startLine, startCol); return true; }
+            if c == b":" && c2 == b"=" { this.bumpN(10); this.push(TK.OpAssign, start, startLine, startCol); return true; }
+            if c == b"=" && c2 == b"=" { this.bumpN(10); this.push(TK.OpEq, start, startLine, startCol); return true; }
+            if c == b"!" && c2 == b"=" { this.bumpN(10); this.push(TK.OpNeq, start, startLine, startCol); return true; }
+            if c == b"<" && c2 == b"=" { this.bumpN(10); this.push(TK.OpLte, start, startLine, startCol); return true; }
+            if c == b">" && c2 == b"=" { this.bumpN(10); this.push(TK.OpGte, start, startLine, startCol); return true; }
+        }
+
+        if c == b"=" { this.bumpN(9); this.push(TK.OpRebind, start, startLine, startCol); return true; }
+        if c == b"+" { this.bumpN(9); this.push(TK.OpPlus, start, startLine, startCol); return true; }
+        if c == b"-" { this.bumpN(9); this.push(TK.OpMinus, start, startLine, startCol); return true; }
+        if c == b"*" { this.bumpN(9); this.push(TK.OpMul, start, startLine, startCol); return true; }
+        if c == b"/" { this.bumpN(9); this.push(TK.OpDiv, start, startLine, startCol); return true; }
+        if c == b"%" { this.bumpN(9); this.push(TK.OpMod, start, startLine, startCol); return true; }
+        if c == b"<" { this.bumpN(9); this.push(TK.OpLt, start, startLine, startCol); return true; }
+        if c == b">" { this.bumpN(9); this.push(TK.OpGt, start, startLine, startCol); return true; }
+
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Numbers.
+    //
+    //   123      INTEGER_LITERAL
+    //   0x1F     HEX_INTEGER_LITERAL
+    //   1.5      FLOAT_LITERAL         (digits '.' digits*)
+    //   5ms      UNIT_INTEGER_LITERAL
+    //   2.5s     UNIT_FLOAT_LITERAL
+    //
+    // Units are s|ms|us|ns|m|h|d. Note a trailing `.` is part of the float
+    // (`123.`), but `1..` or `1.foo` must not swallow the dot as a float, so we
+    // only take the dot when it is followed by a digit or by a non-identifier.
+    // -----------------------------------------------------------------------
+
+    // Returns the length of a unit suffix at `p`, or 0 if there is none.
+    // The suffix must not be followed by further identifier characters, so that
+    // `5msx` lexes as `5` followed by the identifier `msx` rather than a unit.
+    fn unitLengthAt(p: int): int {
+        let n = this.src.length;
+        if p >= n { return 0; }
+        let c = this.src[p];
+        let len = 0;
+
+        if c == b"m" {
+            if p + 1 < n && this.src[p + 1] == b"s" { len = 2; }
+            else { len = 1; }
+        }
+        else if c == b"u" || c == b"n" {
+            if p + 1 < n && this.src[p + 1] == b"s" { len = 2; }
+            else { return 0; }
+        }
+        else if c == b"s" || c == b"h" || c == b"d" { len = 1; }
+        else { return 0; }
+
+        let after = p + len;
+        if after < n && isIdentPart(this.src[after]) { return 0; }
+        return len;
+    }
+
+    mut fn lexNumber() {
+        let start = this.pos;
+        let startLine = this.line;
+        let startCol = this.col;
+
+        // Hex
+        if this.peek() == b"0" && (this.peekAt(1) == b"x" || this.peekAt(1) == b"X") {
+            if isHexDigit(this.peekAt(2)) {
+                this.bumpN(2);
+                while !this.atEnd() && isHexDigit(this.peek()) { this.bump(); }
+                this.push(TK.HexIntLit, start, startLine, startCol);
+                return;
+            }
+        }
+
+        while !this.atEnd() && isDigit(this.peek()) { this.bump(); }
+
+        let isFloat = false;
+        if this.peek() == b"." {
+            // `123.` and `123.45` are floats; `123.foo` is a member access on an
+            // integer, and `1...` is an integer followed by an ellipsis.
+            let next = this.peekAt(1);
+            if isDigit(next) || !(isIdentStart(next) || next == b".") {
+                isFloat = true;
+                this.bump();
+                while !this.atEnd() && isDigit(this.peek()) { this.bump(); }
+            }
+        }
+
+        let unitLen = this.unitLengthAt(this.pos);
+        if unitLen > 0 {
+            this.bumpN(unitLen);
+            if isFloat { this.push(TK.UnitFloatLit, start, startLine, startCol); }
+            else { this.push(TK.UnitIntLit, start, startLine, startCol); }
+            return;
+        }
+
+        if isFloat { this.push(TK.FloatLit, start, startLine, startCol); }
+        else { this.push(TK.IntLit, start, startLine, startCol); }
+    }
+
+    // -----------------------------------------------------------------------
+    // Strings.
+    //
+    //   "..."     STRING_LITERAL          (escapes allowed)
+    //   b"..."    STRING_LITERAL          (byte string)
+    //   """..."""  TRIPLE_STRING_LITERAL
+    //   r"..."flags  REGEX_LITERAL
+    //   f"..."    f-string  -> emitted as a token run (see lexFString)
+    //   f"""..."""
+    // -----------------------------------------------------------------------
+
+    mut fn lexQuotedString(start: int, startLine: int, startCol: int) {
+        // Opening quote already consumed by caller.
+        while !this.atEnd() {
+            let c = this.peek();
+            if c == b"\\" {
+                this.bumpN(2);
+                continue;
+            }
+            if c == b"\"" {
+                this.bump();
+                this.push(TK.StringLit, start, startLine, startCol);
+                return;
+            }
+            // A newline is NOT a terminator: the reference grammar's
+            // STRING_LITERAL body is `(ESC | ~["\\])*`, which matches newlines,
+            // so string literals may span multiple lines (as `__c__("...")`
+            // blocks routinely do).
+            this.bump();
+        }
+        this.error("Unterminated string literal", startLine, startCol);
+        this.push(TK.StringLit, start, startLine, startCol);
+    }
+
+    mut fn lexTripleString(start: int, startLine: int, startCol: int) {
+        // Opening `"""` already consumed by caller.
+        while !this.atEnd() {
+            if this.peek() == b"\\" && this.peekAt(1) == b"\"" && this.peekAt(2) == b"\"" && this.peekAt(3) == b"\"" {
+                this.bumpN(4);
+                continue;
+            }
+            if this.peek() == b"\"" && this.peekAt(1) == b"\"" && this.peekAt(2) == b"\"" {
+                this.bumpN(3);
+                this.push(TK.TripleStringLit, start, startLine, startCol);
+                return;
+            }
+            this.bump();
+        }
+        this.error("Unterminated triple-quoted string literal", startLine, startCol);
+        this.push(TK.TripleStringLit, start, startLine, startCol);
+    }
+
+    mut fn lexRegex(start: int, startLine: int, startCol: int) {
+        // `r"` already consumed by caller. Regex bodies cannot contain a raw
+        // quote or newline (see REGEX_BODY in the lexer grammar).
+        while !this.atEnd() && this.peek() != b"\"" && this.peek() != b"\n" && this.peek() != b"\r" {
+            this.bump();
+        }
+        if this.peek() == b"\"" {
+            this.bump();
+            while !this.atEnd() && isIdentPart(this.peek()) && !isDigit(this.peek()) { this.bump(); }
+            this.push(TK.RegexLit, start, startLine, startCol);
+            return;
+        }
+        this.error("Unterminated regex literal", startLine, startCol);
+        this.push(TK.RegexLit, start, startLine, startCol);
+    }
+
+    // Emit the text run of an f-string up to the next `{` or terminator.
+    // Escapes stay in the token text; the parser unescapes when building the AST.
+    mut fn lexFStringText(triple: bool) {
+        let start = this.pos;
+        let startLine = this.line;
+        let startCol = this.col;
+
+        while !this.atEnd() {
+            let c = this.peek();
+
+            if c == b"{" {
+                if this.peekAt(1) == b"{" { this.bumpN(2); continue; }
+                break;
+            }
+            if c == b"}" && this.peekAt(1) == b"}" { this.bumpN(2); continue; }
+
+            if c == b"\\" { this.bumpN(2); continue; }
+
+            if triple {
+                if c == b"\"" && this.peekAt(1) == b"\"" && this.peekAt(2) == b"\"" { break; }
+                this.bump();
+                continue;
+            }
+
+            if c == b"\"" { break; }
+            this.bump();
+        }
+
+        if this.pos > start {
+            this.push(TK.FStringText, start, startLine, startCol);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Operators and punctuation.
+    //
+    // Ordered longest-match-first within each leading byte so that e.g. `<=`
+    // wins over `<`, and `...` over `.`.
+    // -----------------------------------------------------------------------
+
+    mut fn lexOperator() {
+        let start = this.pos;
+        let startLine = this.line;
+        let startCol = this.col;
+        let c = this.peek();
+        let c2 = this.peekAt(1);
+
+        // Three-character operators.
+        if c == b"." && c2 == b"." && this.peekAt(2) == b"." {
+            this.bumpN(3); this.push(TK.Ellipsis, start, startLine, startCol); return;
+        }
+
+        // Two-character operators.
+        if c == b"=" && c2 == b"=" { this.bumpN(2); this.push(TK.DoubleEquals, start, startLine, startCol); return; }
+        if c == b"=" && c2 == b">" { this.bumpN(2); this.push(TK.DoubleArrow, start, startLine, startCol); return; }
+        if c == b"!" && c2 == b"=" { this.bumpN(2); this.push(TK.NotEquals, start, startLine, startCol); return; }
+        if c == b"-" && c2 == b">" { this.bumpN(2); this.push(TK.SingleArrow, start, startLine, startCol); return; }
+        if c == b"-" && c2 == b"-" { this.bumpN(2); this.push(TK.MinusMinus, start, startLine, startCol); return; }
+        if c == b"-" && c2 == b"=" { this.bumpN(2); this.push(TK.MinusEq, start, startLine, startCol); return; }
+        if c == b"+" && c2 == b"+" { this.bumpN(2); this.push(TK.PlusPlus, start, startLine, startCol); return; }
+        if c == b"+" && c2 == b"=" { this.bumpN(2); this.push(TK.PlusEq, start, startLine, startCol); return; }
+        if c == b"*" && c2 == b"[" { this.bumpN(2); this.push(TK.LAsteriskBracket, start, startLine, startCol); return; }
+        if c == b"*" && c2 == b"=" { this.bumpN(2); this.push(TK.MulEq, start, startLine, startCol); return; }
+        if c == b"/" && c2 == b"=" { this.bumpN(2); this.push(TK.DivEq, start, startLine, startCol); return; }
+        if c == b"%" && c2 == b"=" { this.bumpN(2); this.push(TK.ModEq, start, startLine, startCol); return; }
+        if c == b"&" && c2 == b"[" { this.bumpN(2); this.push(TK.LAmpersandBracket, start, startLine, startCol); return; }
+        if c == b"&" && c2 == b"&" { this.bumpN(2); this.push(TK.DoubleAnd, start, startLine, startCol); return; }
+        if c == b"&" && c2 == b"?" { this.bumpN(2); this.push(TK.AmpersandQuestion, start, startLine, startCol); return; }
+        if c == b"|" && c2 == b"|" { this.bumpN(2); this.push(TK.DoubleOr, start, startLine, startCol); return; }
+        if c == b"?" && c2 == b"&" { this.bumpN(2); this.push(TK.QuestionAmpersand, start, startLine, startCol); return; }
+        if c == b"?" && c2 == b"." { this.bumpN(2); this.push(TK.QuestionDot, start, startLine, startCol); return; }
+        if c == b"?" && c2 == b"!" { this.bumpN(2); this.push(TK.QuestionExcl, start, startLine, startCol); return; }
+        if c == b"<" && c2 == b"=" { this.bumpN(2); this.push(TK.Leq, start, startLine, startCol); return; }
+        if c == b">" && c2 == b"=" { this.bumpN(2); this.push(TK.Geq, start, startLine, startCol); return; }
+        if c == b":" && c2 == b"=" { this.bumpN(2); this.push(TK.ColonEquals, start, startLine, startCol); return; }
+        if c == b":" && c2 == b":" { this.bumpN(2); this.push(TK.DoubleColon, start, startLine, startCol); return; }
+
+        // Single-character operators.
+        this.bump();
+        if c == b"." { this.push(TK.Dot, start, startLine, startCol); return; }
+        if c == b"[" { this.push(TK.LBracket, start, startLine, startCol); return; }
+        if c == b"]" { this.push(TK.RBracket, start, startLine, startCol); return; }
+        if c == b"(" { this.push(TK.LParen, start, startLine, startCol); return; }
+        if c == b")" { this.push(TK.RParen, start, startLine, startCol); return; }
+        if c == b"<" { this.push(TK.LAngle, start, startLine, startCol); return; }
+        if c == b">" { this.push(TK.RAngle, start, startLine, startCol); return; }
+        if c == b"=" { this.push(TK.Equals, start, startLine, startCol); return; }
+        if c == b";" { this.push(TK.Semi, start, startLine, startCol); return; }
+        if c == b":" { this.push(TK.Colon, start, startLine, startCol); return; }
+        if c == b"," { this.push(TK.Comma, start, startLine, startCol); return; }
+        if c == b"+" { this.push(TK.Plus, start, startLine, startCol); return; }
+        if c == b"-" { this.push(TK.Minus, start, startLine, startCol); return; }
+        if c == b"!" { this.push(TK.Not, start, startLine, startCol); return; }
+        if c == b"*" { this.push(TK.Mul, start, startLine, startCol); return; }
+        if c == b"/" { this.push(TK.Div, start, startLine, startCol); return; }
+        if c == b"%" { this.push(TK.Mod, start, startLine, startCol); return; }
+        if c == b"&" { this.push(TK.Ampersand, start, startLine, startCol); return; }
+        if c == b"?" { this.push(TK.Question, start, startLine, startCol); return; }
+        if c == b"|" { this.push(TK.Or, start, startLine, startCol); return; }
+
+        this.error("Unexpected character", startLine, startCol);
+        this.push(TK.Invalid, start, startLine, startCol);
+    }
+
+    // -----------------------------------------------------------------------
+    // Main loop.
+    //
+    // The mode stack handles f-strings: inside one we alternate between text
+    // runs and `{ ... }` interpolations. An interpolation is ordinary code, so
+    // we push Mode.Code and track brace depth to know which `}` ends it.
+    // -----------------------------------------------------------------------
+
+    mut fn currentMode(): Mode {
+        if this.modes.length == 0 { return Mode.Code; }
+        return this.modes[this.modes.length - 1];
+    }
+
+    mut fn run() {
+        while true {
+            let mode = this.currentMode();
+
+            if mode == Mode.FString || mode == Mode.FTripleString {
+                let triple = mode == Mode.FTripleString;
+                this.lexFStringText(triple);
+
+                if this.atEnd() {
+                    this.error("Unterminated f-string", this.line, this.col);
+                    break;
+                }
+
+                let c = this.peek();
+                if c == b"{" {
+                    let start = this.pos;
+                    let sl = this.line;
+                    let sc = this.col;
+                    this.bump();
+                    this.push(TK.LCurly, start, sl, sc);
+                    this.modes.push(Mode.Code);
+                    this.braceDepth.push(0);
+                    continue;
+                }
+
+                // Terminator.
+                let start = this.pos;
+                let sl = this.line;
+                let sc = this.col;
+                if triple {
+                    this.bumpN(3);
+                    this.push(TK.FTripleStringEnd, start, sl, sc);
+                }
+                else {
+                    this.bump();
+                    this.push(TK.FStringEnd, start, sl, sc);
+                }
+                this.modes.pop();
+                continue;
+            }
+
+            this.skipTrivia();
+            if this.atEnd() { break; }
+
+            let c = this.peek();
+            let start = this.pos;
+            let startLine = this.line;
+            let startCol = this.col;
+
+            // Closing brace may end an interpolation rather than a block.
+            if c == b"}" {
+                if this.modes.length > 0 && this.braceDepth.length > 0 {
+                    let depth = this.braceDepth[this.braceDepth.length - 1];
+                    if depth == 0 {
+                        this.bump();
+                        this.push(TK.RCurly, start, startLine, startCol);
+                        this.modes.pop();
+                        this.braceDepth.pop();
+                        continue;
+                    }
+                    this.braceDepth[this.braceDepth.length - 1] = depth - 1;
+                }
+                this.bump();
+                this.push(TK.RCurly, start, startLine, startCol);
+                continue;
+            }
+            if c == b"{" {
+                if this.braceDepth.length > 0 {
+                    this.braceDepth[this.braceDepth.length - 1] = this.braceDepth[this.braceDepth.length - 1] + 1;
+                }
+                this.bump();
+                this.push(TK.LCurly, start, startLine, startCol);
+                continue;
+            }
+
+            // f-strings, byte strings, regex: prefixed forms come before the
+            // generic identifier rule.
+            if c == b"f" && this.peekAt(1) == b"\"" {
+                if this.peekAt(2) == b"\"" && this.peekAt(3) == b"\"" {
+                    this.bumpN(4);
+                    this.push(TK.FTripleStringStart, start, startLine, startCol);
+                    this.modes.push(Mode.FTripleString);
+                }
+                else {
+                    this.bumpN(2);
+                    this.push(TK.FStringStart, start, startLine, startCol);
+                    this.modes.push(Mode.FString);
+                }
+                continue;
+            }
+            if c == b"b" && this.peekAt(1) == b"\"" {
+                this.bumpN(2);
+                this.lexQuotedString(start, startLine, startCol);
+                continue;
+            }
+            if c == b"r" && this.peekAt(1) == b"\"" {
+                this.bumpN(2);
+                this.lexRegex(start, startLine, startCol);
+                continue;
+            }
+            if c == b"\"" {
+                if this.peekAt(1) == b"\"" && this.peekAt(2) == b"\"" {
+                    this.bumpN(3);
+                    this.lexTripleString(start, startLine, startCol);
+                }
+                else {
+                    this.bump();
+                    this.lexQuotedString(start, startLine, startCol);
+                }
+                continue;
+            }
+
+            if c == b"#" {
+                if this.src.startsWith("#source", start) {
+                    this.bumpN(7);
+                    this.push(TK.SourceDirective, start, startLine, startCol);
+                    continue;
+                }
+            }
+
+            if isDigit(c) {
+                this.lexNumber();
+                continue;
+            }
+
+            if isIdentStart(c) {
+                if c == b"o" {
+                    if this.tryLexOperatorName() { continue; }
+                }
+                this.lexIdentOrKeyword();
+                continue;
+            }
+
+            this.lexOperator();
+        }
+
+        this.tokens.push(Token {
+            kind: TK.EOF,
+            start: this.pos,
+            end: this.pos,
+            line: this.line,
+            col: this.col,
+        });
+    }
+}
+
+// Tokenize a whole source file in one pass.
+export fn tokenize(src: str): mut Lexer {
+    let lexer = Lexer.create(src);
+    lexer.run();
+    return lexer;
+}

@@ -1,5 +1,6 @@
 
 name = "haze-parser"
+id = "0u7u0hGU"
 version = "0.0.0"
 description = "A WIP Haze Parser written in Haze"
 license = "MIT"

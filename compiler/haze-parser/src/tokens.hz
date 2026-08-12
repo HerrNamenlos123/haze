@@ -1,0 +1,313 @@
+// Token kinds for the Haze lexer.
+//
+// The numeric values are an implementation detail: nothing outside this module
+// depends on them, so new tokens may be appended freely. They are grouped to
+// make the parser's range checks (isAssignOp, isPrefixOp, ...) cheap.
+
+export enum TK {
+    EOF,
+
+    // --- Literals & identifiers -------------------------------------------
+    Ident,
+    IntLit,
+    HexIntLit,
+    FloatLit,
+    UnitIntLit,
+    UnitFloatLit,
+    StringLit,
+    TripleStringLit,
+    RegexLit,
+
+    // f-string pieces. The lexer emits these in-line so the parser never has to
+    // re-scan a string body:
+    //   f"a{x}b"  ->  FStringStart, FStringText(a), LCurly, Ident(x), RCurly,
+    //                 FStringText(b), FStringEnd
+    FStringStart,
+    FTripleStringStart,
+    FStringText,
+    FStringEnd,
+    FTripleStringEnd,
+
+    // --- Keywords ---------------------------------------------------------
+    // NOTE: keep KW_FIRST/KW_LAST (below) in sync when adding keywords.
+    Import,
+    Export,
+    As,
+    Is,
+    IsNot,
+    From,
+    Namespace,
+    ModuleNamespace,
+    Pub,
+    Noemit,
+    InlineC,
+    Extern,
+    Fn,
+    Static,
+    Struct,
+    Nodiscard,
+    Nonclonable,
+    Clonable,
+    Requires,
+    Unsafe,
+    Do,
+    Yield,
+    Raise,
+    Emit,
+    Inline,
+    Attempt,
+    Recover,
+    Noreturn,
+    NoreturnIf,
+    With,
+    Final,
+    Union,
+    Enum,
+    Bitflag,
+    Unscoped,
+    Try,
+    Opaque,
+    Plain,
+    Pure,
+    True,
+    False,
+    Type,
+    Return,
+    Typeof,
+    If,
+    Else,
+    In,
+    For,
+    While,
+    Break,
+    Continue,
+    Comptime,
+    Let,
+    Const,
+    Mut,
+
+    SourceDirective,   // #source
+
+    // --- Operator-overload names ------------------------------------------
+    // 'operator[]', 'operator+', 'operator as', ... Lexed as single tokens
+    // because the grammar only accepts them in method-name position.
+    OpSubscript,
+    OpRebind,
+    OpAssign,
+    OpPlus,
+    OpMinus,
+    OpMul,
+    OpDiv,
+    OpMod,
+    OpAs,
+    OpEq,
+    OpNeq,
+    OpLt,
+    OpGt,
+    OpLte,
+    OpGte,
+
+    // --- Punctuation & operators ------------------------------------------
+    Dot,
+    LCurly,
+    RCurly,
+    LAsteriskBracket,   // *[
+    LAmpersandBracket,  // &[
+    LBracket,
+    RBracket,
+    LParen,
+    RParen,
+    DoubleArrow,        // =>
+    SingleArrow,        // ->
+    LAngle,
+    RAngle,
+    Equals,
+    ColonEquals,
+    DoubleEquals,
+    NotEquals,
+    Semi,
+    DoubleColon,
+    Colon,
+    Comma,
+    Plus,
+    Minus,
+    Not,
+    PlusPlus,
+    MinusMinus,
+    Mul,
+    Div,
+    Mod,
+    Ellipsis,
+    Ampersand,
+    Question,
+    AmpersandQuestion,  // &?
+    QuestionAmpersand,  // ?&
+    QuestionDot,        // ?.
+    QuestionExcl,       // ?!
+    Or,                 // |
+    DoubleAnd,          // &&
+    DoubleOr,           // ||
+    Leq,
+    Geq,
+    PlusEq,
+    MulEq,
+    MinusEq,
+    DivEq,
+    ModEq,
+
+    Invalid,
+}
+
+// NOTE: TK values are not convertible to int in Haze, so classification helpers
+// compare token kinds directly rather than doing range checks.
+
+// A token is deliberately a flat, fixed-size value type: the whole token stream
+// is one contiguous []Token allocation, and a token carries only offsets into
+// the source rather than an owned string. Materialising the text is a zero-copy
+// `src.slice(start, end)` and only happens for the few tokens that need it.
+export struct Token {
+    kind: TK = TK.Invalid;
+    start: int = 0;     // byte offset of first char
+    end: int = 0;       // byte offset one past last char
+    line: int = 0;      // 1-based
+    col: int = 0;       // 0-based, matches SourceLoc convention in shared/AST.ts
+}
+
+export fn tokenName(k: TK): str {
+    if k == TK.EOF { return "end of file"; }
+    if k == TK.Ident { return "identifier"; }
+    if k == TK.IntLit { return "integer literal"; }
+    if k == TK.HexIntLit { return "hex integer literal"; }
+    if k == TK.FloatLit { return "float literal"; }
+    if k == TK.UnitIntLit { return "unit integer literal"; }
+    if k == TK.UnitFloatLit { return "unit float literal"; }
+    if k == TK.StringLit { return "string literal"; }
+    if k == TK.TripleStringLit { return "triple string literal"; }
+    if k == TK.RegexLit { return "regex literal"; }
+    if k == TK.FStringStart { return "f-string"; }
+    if k == TK.FTripleStringStart { return "f-string"; }
+    if k == TK.FStringText { return "f-string text"; }
+    if k == TK.FStringEnd { return "end of f-string"; }
+    if k == TK.FTripleStringEnd { return "end of f-string"; }
+
+    if k == TK.Import { return "import"; }
+    if k == TK.Export { return "export"; }
+    if k == TK.As { return "as"; }
+    if k == TK.Is { return "is"; }
+    if k == TK.IsNot { return "is not"; }
+    if k == TK.From { return "from"; }
+    if k == TK.Namespace { return "namespace"; }
+    if k == TK.ModuleNamespace { return "module_namespace"; }
+    if k == TK.Pub { return "pub"; }
+    if k == TK.Noemit { return "noemit"; }
+    if k == TK.InlineC { return "__c__"; }
+    if k == TK.Extern { return "extern"; }
+    if k == TK.Fn { return "fn"; }
+    if k == TK.Static { return "static"; }
+    if k == TK.Struct { return "struct"; }
+    if k == TK.Nodiscard { return "nodiscard"; }
+    if k == TK.Nonclonable { return "nonclonable"; }
+    if k == TK.Clonable { return "clonable"; }
+    if k == TK.Requires { return "requires"; }
+    if k == TK.Unsafe { return "unsafe"; }
+    if k == TK.Do { return "do"; }
+    if k == TK.Yield { return "yield"; }
+    if k == TK.Raise { return "raise"; }
+    if k == TK.Emit { return "emit"; }
+    if k == TK.Inline { return "inline"; }
+    if k == TK.Attempt { return "attempt"; }
+    if k == TK.Recover { return "recover"; }
+    if k == TK.Noreturn { return "noreturn"; }
+    if k == TK.NoreturnIf { return "noreturn_if"; }
+    if k == TK.With { return "with"; }
+    if k == TK.Final { return "final"; }
+    if k == TK.Union { return "union"; }
+    if k == TK.Enum { return "enum"; }
+    if k == TK.Bitflag { return "bitflag"; }
+    if k == TK.Unscoped { return "unscoped"; }
+    if k == TK.Try { return "try"; }
+    if k == TK.Opaque { return "opaque"; }
+    if k == TK.Plain { return "plain"; }
+    if k == TK.Pure { return "pure"; }
+    if k == TK.True { return "true"; }
+    if k == TK.False { return "false"; }
+    if k == TK.Type { return "type"; }
+    if k == TK.Return { return "return"; }
+    if k == TK.Typeof { return "typeof"; }
+    if k == TK.If { return "if"; }
+    if k == TK.Else { return "else"; }
+    if k == TK.In { return "in"; }
+    if k == TK.For { return "for"; }
+    if k == TK.While { return "while"; }
+    if k == TK.Break { return "break"; }
+    if k == TK.Continue { return "continue"; }
+    if k == TK.Comptime { return "comptime"; }
+    if k == TK.Let { return "let"; }
+    if k == TK.Const { return "const"; }
+    if k == TK.Mut { return "mut"; }
+    if k == TK.SourceDirective { return "#source"; }
+
+    if k == TK.OpSubscript { return "operator[]"; }
+    if k == TK.OpRebind { return "operator="; }
+    if k == TK.OpAssign { return "operator:="; }
+    if k == TK.OpPlus { return "operator+"; }
+    if k == TK.OpMinus { return "operator-"; }
+    if k == TK.OpMul { return "operator*"; }
+    if k == TK.OpDiv { return "operator/"; }
+    if k == TK.OpMod { return "operator%"; }
+    if k == TK.OpAs { return "operator as"; }
+    if k == TK.OpEq { return "operator=="; }
+    if k == TK.OpNeq { return "operator!="; }
+    if k == TK.OpLt { return "operator<"; }
+    if k == TK.OpGt { return "operator>"; }
+    if k == TK.OpLte { return "operator<="; }
+    if k == TK.OpGte { return "operator>="; }
+
+    if k == TK.Dot { return "."; }
+    if k == TK.LCurly { return "{"; }
+    if k == TK.RCurly { return "}"; }
+    if k == TK.LAsteriskBracket { return "*["; }
+    if k == TK.LAmpersandBracket { return "&["; }
+    if k == TK.LBracket { return "["; }
+    if k == TK.RBracket { return "]"; }
+    if k == TK.LParen { return "("; }
+    if k == TK.RParen { return ")"; }
+    if k == TK.DoubleArrow { return "=>"; }
+    if k == TK.SingleArrow { return "->"; }
+    if k == TK.LAngle { return "<"; }
+    if k == TK.RAngle { return ">"; }
+    if k == TK.Equals { return "="; }
+    if k == TK.ColonEquals { return ":="; }
+    if k == TK.DoubleEquals { return "=="; }
+    if k == TK.NotEquals { return "!="; }
+    if k == TK.Semi { return ";"; }
+    if k == TK.DoubleColon { return "::"; }
+    if k == TK.Colon { return ":"; }
+    if k == TK.Comma { return ","; }
+    if k == TK.Plus { return "+"; }
+    if k == TK.Minus { return "-"; }
+    if k == TK.Not { return "!"; }
+    if k == TK.PlusPlus { return "++"; }
+    if k == TK.MinusMinus { return "--"; }
+    if k == TK.Mul { return "*"; }
+    if k == TK.Div { return "/"; }
+    if k == TK.Mod { return "%"; }
+    if k == TK.Ellipsis { return "..."; }
+    if k == TK.Ampersand { return "&"; }
+    if k == TK.Question { return "?"; }
+    if k == TK.AmpersandQuestion { return "&?"; }
+    if k == TK.QuestionAmpersand { return "?&"; }
+    if k == TK.QuestionDot { return "?."; }
+    if k == TK.QuestionExcl { return "?!"; }
+    if k == TK.Or { return "|"; }
+    if k == TK.DoubleAnd { return "&&"; }
+    if k == TK.DoubleOr { return "||"; }
+    if k == TK.Leq { return "<="; }
+    if k == TK.Geq { return ">="; }
+    if k == TK.PlusEq { return "+="; }
+    if k == TK.MulEq { return "*="; }
+    if k == TK.MinusEq { return "-="; }
+    if k == TK.DivEq { return "/="; }
+    if k == TK.ModEq { return "%="; }
+    return "invalid token";
+}

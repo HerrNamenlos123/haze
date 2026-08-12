@@ -1,0 +1,124 @@
+// Output buffer for the JSON writer.
+//
+// The stdlib's ByteBuffer appends ONE BYTE PER CALL into a generic dynamic
+// array (hzstd_dynamic_array_push memcpy's a single element at a time), which
+// measured ~15 MB/s -- a single 910KB append took 61ms. Emitting an AST means
+// writing megabytes of JSON, so that is the dominant cost of the whole parser.
+//
+// This is a plain amortised-growth byte buffer: one `memcpy` per append and a
+// `realloc` when it runs out of room. Appends become memory-bandwidth bound
+// instead of per-byte bound.
+//
+// Note the buffer intentionally exposes raw offsets: the parser splices
+// captured sub-trees by copying ranges of this same buffer, so a "capture" is a
+// pair of offsets rather than an owned string.
+
+__c__("#include <stdlib.h>");
+__c__("#include <string.h>");
+
+extern C fn hzob_new(capacity: int): cptr :: final;
+extern C fn hzob_free(handle: cptr): void :: final;
+extern C fn hzob_len(handle: cptr): int :: final;
+extern C fn hzob_clear(handle: cptr): void :: final;
+extern C fn hzob_push_str(handle: cptr, value: str): void :: final;
+extern C fn hzob_push_byte(handle: cptr, value: int): void :: final;
+extern C fn hzob_push_int(handle: cptr, value: int): void :: final;
+// Append a range of this same buffer onto its end (used to splice captures).
+extern C fn hzob_push_range(handle: cptr, start: int, end: int): void :: final;
+// Materialise [start, end) as a Haze `str`.
+extern C fn hzob_slice(handle: cptr, start: int, end: int): str :: final;
+extern C fn hzob_truncate(handle: cptr, length: int): void :: final;
+
+__c__("
+typedef struct {
+    char*  data;
+    size_t len;
+    size_t cap;
+} hzob_t;
+
+static void hzob_grow(hzob_t* b, size_t needed) {
+    if (b->len + needed <= b->cap) return;
+    size_t cap = b->cap ? b->cap : 1024;
+    while (cap < b->len + needed) cap *= 2;
+    b->data = (char*)realloc(b->data, cap);
+    b->cap = cap;
+}
+
+hzstd_cptr_t hzob_new(hzstd_int_t capacity) {
+    hzob_t* b = (hzob_t*)malloc(sizeof(hzob_t));
+    b->cap = capacity > 0 ? (size_t)capacity : 1024;
+    b->data = (char*)malloc(b->cap);
+    b->len = 0;
+    return (hzstd_cptr_t)b;
+}
+
+hzstd_void_t hzob_free(hzstd_cptr_t handle) {
+    hzob_t* b = (hzob_t*)handle;
+    if (!b) return;
+    free(b->data);
+    free(b);
+}
+
+hzstd_int_t hzob_len(hzstd_cptr_t handle) { return (hzstd_int_t)((hzob_t*)handle)->len; }
+
+hzstd_void_t hzob_clear(hzstd_cptr_t handle) { ((hzob_t*)handle)->len = 0; }
+
+hzstd_void_t hzob_push_str(hzstd_cptr_t handle, hzstd_str_t value) {
+    hzob_t* b = (hzob_t*)handle;
+    size_t n = (size_t)value.length;
+    hzob_grow(b, n);
+    memcpy(b->data + b->len, value.data, n);
+    b->len += n;
+}
+
+hzstd_void_t hzob_push_byte(hzstd_cptr_t handle, hzstd_int_t value) {
+    hzob_t* b = (hzob_t*)handle;
+    hzob_grow(b, 1);
+    b->data[b->len++] = (char)value;
+}
+
+// Decimal formatting of a signed integer, written straight into the buffer.
+hzstd_void_t hzob_push_int(hzstd_cptr_t handle, hzstd_int_t value) {
+    hzob_t* b = (hzob_t*)handle;
+    char tmp[24];
+    int i = 0;
+    int negative = value < 0;
+    unsigned long long v = negative ? (unsigned long long)(-(value + 1)) + 1ULL : (unsigned long long)value;
+    if (v == 0) tmp[i++] = '0';
+    while (v > 0) { tmp[i++] = (char)('0' + (v % 10)); v /= 10; }
+    if (negative) tmp[i++] = '-';
+    hzob_grow(b, (size_t)i);
+    while (i > 0) b->data[b->len++] = tmp[--i];
+}
+
+hzstd_void_t hzob_push_range(hzstd_cptr_t handle, hzstd_int_t start, hzstd_int_t end) {
+    hzob_t* b = (hzob_t*)handle;
+    if (end <= start) return;
+    size_t n = (size_t)(end - start);
+    hzob_grow(b, n);
+    // The source is inside the same allocation, which realloc may have moved,
+    // so the offset is resolved AFTER growing.
+    memmove(b->data + b->len, b->data + start, n);
+    b->len += n;
+}
+
+hzstd_str_t hzob_slice(hzstd_cptr_t handle, hzstd_int_t start, hzstd_int_t end) {
+    hzob_t* b = (hzob_t*)handle;
+    hzstd_str_t s;
+    if (end <= start) { s.data = b->data; s.length = 0; return s; }
+    // Copy out so the result survives further appends (which may realloc).
+    // GC-allocated because the returned `str` is handed to Haze code.
+    size_t n = (size_t)(end - start);
+    char* out = (char*)hzstd_allocate(hzstd_make_heap_allocator(), n + 1, \"str\");
+    memcpy(out, b->data + start, n);
+    out[n] = 0;
+    s.data = out;
+    s.length = (hzstd_int_t)n;
+    return s;
+}
+
+hzstd_void_t hzob_truncate(hzstd_cptr_t handle, hzstd_int_t length) {
+    hzob_t* b = (hzob_t*)handle;
+    if ((size_t)length < b->len) b->len = (size_t)length;
+}
+");

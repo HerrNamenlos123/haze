@@ -5,6 +5,7 @@ import { startLsp } from "./lsp";
 import { getFile } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
 import { GeneralError, SilentError } from "./shared/Errors";
+import { type ParserMode, setParserMode } from "./Parser/ParserMode";
 
 const version = pkg.version;
 const isLspMode = process.argv.includes("lsp");
@@ -119,6 +120,15 @@ async function main(): Promise<number> {
     dest: "quiet",
     help: "Suppress progress bars; only print diagnostics",
   });
+  build_parser.add_argument("--parser", {
+    dest: "parser",
+    choices: ["antlr", "native", "assert"],
+    default: "antlr",
+    help:
+      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
+      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
+      "and require identical ASTs)",
+  });
   build_parser.add_argument("filename", {
     nargs: "?",
     help: "Single file to build without running it (no haze.toml needed)",
@@ -163,6 +173,15 @@ async function main(): Promise<number> {
     action: "store_true",
     dest: "strip",
     help: "Strip the final executable after building",
+  });
+  run_parser.add_argument("--parser", {
+    dest: "parser",
+    choices: ["antlr", "native", "assert"],
+    default: "antlr",
+    help:
+      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
+      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
+      "and require identical ASTs)",
   });
   run_parser.add_argument("--show-timing", {
     action: "store_true",
@@ -249,6 +268,10 @@ async function main(): Promise<number> {
       args.command === "run" ||
       args.command === "exec"
     ) {
+      // Select the parser implementation for this invocation. `assert` runs
+      // both and requires identical ASTs, which is how the two stay in sync.
+      setParserMode((args.parser ?? "antlr") as ParserMode, process.cwd());
+
       const project = new ProjectCompiler(
         Boolean(args.verbose),
         Boolean(args.ignoreLock),

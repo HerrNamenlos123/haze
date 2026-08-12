@@ -1,0 +1,166 @@
+// String literal trimming and unescaping.
+//
+// This must reproduce `trimAndUnescapeStringLiteral` in src/Parser/Parser.ts
+// exactly, or string literals differ between the two parsers. The rules are:
+//
+//   1. Strip `stripQuotes` delimiter characters from each end.
+//   2. Trim exactly one leading newline plus the indentation after it.
+//   3. Trim exactly one trailing newline plus the indentation before it.
+//   4. Unescape: \b \t \n \f \r \\ \" \xHH \uHHHH \UHHHHHHHH and octal \0-\377.
+//
+// Output is UTF-8; \u / \U escapes are encoded as UTF-8 byte sequences, which is
+// what the reference produces once its UTF-16 string is written out as JSON.
+
+fn isOctalDigit(b: u8): bool { return b >= b"0" && b <= b"7"; }
+
+fn hexValue(b: u8): int {
+    if b >= b"0" && b <= b"9" { return (b as int) - 48; }
+    if b >= b"a" && b <= b"f" { return (b as int) - 87; }
+    if b >= b"A" && b <= b"F" { return (b as int) - 55; }
+    return -1;
+}
+
+fn isHexPair(s: str, i: int): bool {
+    if i + 1 >= s.length { return false; }
+    return hexValue(s[i]) >= 0 && hexValue(s[i + 1]) >= 0;
+}
+
+fn hexRun(s: str, start: int, count: int): int {
+    if start + count > s.length { return -1; }
+    let v = 0;
+    for (let i = 0; i < count; i++) {
+        let d = hexValue(s[start + i]);
+        if d < 0 { return -1; }
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+// Append a single raw byte. `\x` and octal escapes below 0x100 denote raw bytes
+// (String.fromCharCode in the reference), not code points.
+fn appendByte(out: mut ByteBuffer, v: int) {
+    if v >= 0 && v <= 255 {
+        out.insert(out.length(), v as u8);
+    }
+}
+
+// Append a Unicode code point as UTF-8.
+fn appendCodepoint(out: mut ByteBuffer, cp: int) {
+    if cp < 0x80 {
+        appendByte(out, cp);
+        return;
+    }
+    if cp < 0x800 {
+        appendByte(out, 0xC0 + cp / 64);
+        appendByte(out, 0x80 + cp % 64);
+        return;
+    }
+    if cp < 0x10000 {
+        appendByte(out, 0xE0 + cp / 4096);
+        appendByte(out, 0x80 + (cp / 64) % 64);
+        appendByte(out, 0x80 + cp % 64);
+        return;
+    }
+    appendByte(out, 0xF0 + cp / 262144);
+    appendByte(out, 0x80 + (cp / 4096) % 64);
+    appendByte(out, 0x80 + (cp / 64) % 64);
+    appendByte(out, 0x80 + cp % 64);
+}
+
+// Strip leading/trailing newline + indentation, per the reference.
+fn trimStringBody(raw: str): str {
+    let s = raw;
+
+    if s.length > 0 && s[0] == b"\n" {
+        let i = 1;
+        while i < s.length && (s[i] == b" " || s[i] == b"\t") { i++; }
+        s = s.slice(i);
+    }
+
+    if s.length > 0 && s[s.length - 1] == b"\n" {
+        let i = s.length - 2;
+        while i >= 0 && (s[i] == b" " || s[i] == b"\t") { i--; }
+        s = s.slice(0, i + 1);
+    }
+
+    return s;
+}
+
+// Unescape a string body (delimiters already removed).
+export fn unescapeString(raw: str): str {
+    let s = trimStringBody(raw);
+
+    // Fast path: no backslash means no work at all.
+    let hasEscape = false;
+    for (let i = 0; i < s.length; i++) {
+        if s[i] == b"\\" { hasEscape = true; break; }
+    }
+    if !hasEscape { return s; }
+
+    let out = ByteBuffer();
+    out.reserve(s.length);
+
+    let i = 0;
+    let chunkStart = 0;
+    while i < s.length {
+        if s[i] != b"\\" { i++; continue; }
+
+        if i > chunkStart { out.push(s.slice(chunkStart, i)); }
+        i++;
+        if i >= s.length { break; }
+
+        let n = s[i];
+        if n == b"b" { appendByte(out, 8); i++; }
+        else if n == b"t" { appendByte(out, 9); i++; }
+        else if n == b"n" { appendByte(out, 10); i++; }
+        else if n == b"f" { appendByte(out, 12); i++; }
+        else if n == b"r" { appendByte(out, 13); i++; }
+        else if n == b"\\" { appendByte(out, 92); i++; }
+        else if n == b"\"" { appendByte(out, 34); i++; }
+        else if n == b"'" { appendByte(out, 39); i++; }
+        else if n == b"x" {
+            let v = hexRun(s, i + 1, 2);
+            if v >= 0 { appendByte(out, v); i += 3; }
+            else { appendByte(out, 92); appendByte(out, n as int); i++; }
+        }
+        else if n == b"u" {
+            let v = hexRun(s, i + 1, 4);
+            if v >= 0 { appendCodepoint(out, v); i += 5; }
+            else { appendByte(out, 92); appendByte(out, n as int); i++; }
+        }
+        else if n == b"U" {
+            let v = hexRun(s, i + 1, 8);
+            if v >= 0 { appendCodepoint(out, v); i += 9; }
+            else { appendByte(out, 92); appendByte(out, n as int); i++; }
+        }
+        else if isOctalDigit(n) {
+            // Up to three octal digits, matching \0 - \377.
+            let v = (n as int) - 48;
+            i++;
+            let taken = 1;
+            while taken < 3 && i < s.length && isOctalDigit(s[i]) {
+                v = v * 8 + ((s[i] as int) - 48);
+                i++;
+                taken++;
+            }
+            appendByte(out, v);
+        }
+        else {
+            // Unknown escape: the reference errors. We keep it verbatim so a
+            // single bad literal cannot abort the whole file.
+            appendByte(out, 92);
+            appendByte(out, n as int);
+            i++;
+        }
+        chunkStart = i;
+    }
+
+    if s.length > chunkStart { out.push(s.slice(chunkStart, s.length)); }
+    return out.cloneString();
+}
+
+// Strip `count` delimiter characters from both ends, then unescape.
+export fn stringLiteralValue(raw: str, count: int): str {
+    if raw.length < count * 2 { return ""; }
+    return unescapeString(raw.slice(count, raw.length - count));
+}

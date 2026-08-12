@@ -190,6 +190,13 @@ import {
   type WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
 import { HazeParserListener } from "./grammar/autogen/HazeParserListener";
+import { parseTextNativeSync } from "./NativeParser";
+import {
+  assertASTsEqual,
+  getParserMode,
+  getParserRepoRoot,
+  nativeParserAvailable,
+} from "./ParserMode";
 
 type IfStatementCondition =
   | {
@@ -256,16 +263,48 @@ export namespace Parser {
     }
   }
 
-  export function parseTextToAST(
+  function parseWithANTLR(
     config: ModuleConfig,
     text: string,
     filename: string
   ) {
     const listener = new ASTBuilder(config, filename);
     parse(text, listener, filename);
+    return listener.result();
+  }
 
-    const result = listener.result();
-    return result;
+  /**
+   * Parse Haze source into an AST.
+   *
+   * Which implementation runs is controlled by the parser mode (see
+   * ParserMode.ts and the --parser flag):
+   *   antlr   this file's ANTLR-based parser
+   *   native  the hand-written parser in compiler/haze-parser (much faster)
+   *   assert  both, requiring the results to be identical
+   *
+   * The native parser falls back to ANTLR if its binary is unavailable, so a
+   * missing or unbuildable parser degrades performance rather than the build.
+   */
+  export function parseTextToAST(
+    config: ModuleConfig,
+    text: string,
+    filename: string
+  ) {
+    const mode = getParserMode();
+
+    if (mode === "antlr" || !nativeParserAvailable()) {
+      return parseWithANTLR(config, text, filename);
+    }
+
+    if (mode === "native") {
+      return parseTextNativeSync(getParserRepoRoot(), text, filename);
+    }
+
+    // assert: both parsers must agree, on every single file.
+    const reference = parseWithANTLR(config, text, filename);
+    const candidate = parseTextNativeSync(getParserRepoRoot(), text, filename);
+    assertASTsEqual(filename, reference, candidate);
+    return reference;
   }
 }
 
