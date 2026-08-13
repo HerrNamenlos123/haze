@@ -571,3 +571,48 @@ the last open thread before the conversation was stopped.
 7. The concrete rebuild of `ByteBuffer`/`StringWriter`/`fmt.format`/`print`/`println` on top of
    whatever final primitive (or primitives, per thread 6) emerges was never written, pending the
    above.
+
+---
+
+## 10. Addendum: what a later conversation changed
+
+Added after the fact. Nothing above is retracted — the reasoning stands on its own premises — but
+three of its conclusions are affected by a mechanism that did not exist when it was written. See
+`Generational Stack References.md` and `Value Semantics, POD and Copy Safety.md`.
+
+**§2.1's premise is revisited, not refuted.** That section states heap allocation is structurally
+required "because, and only because, [Haze] has no way to guarantee a bounded lifetime for them by
+any other means", and names compile-time escape analysis as the one principled exception while
+noting it is substantial, conservative and unbuilt. Generational stack references reach the same
+place from the other direction: **the lifetime bound does not have to be proven, it can be
+checked** — precisely, locally, per dereference, without whole-program analysis and without ever
+rejecting a correct program. The "for as long as" qualifier in §2.1 turns out to be load-bearing
+in a way that section anticipated.
+
+This does **not** touch the firm conclusion that exactly one heap allocation is fundamentally
+required per formatted string. A returned `str` outlives its frame and must be heap. What changes
+is that everything *around* that one allocation can now be scope-resident.
+
+**§3's characterisation of the hazard is one notch too wide.** It draws the line at shared state
+plus non-shared state on a copyable value. But `Bytes` (`memory.hz:408`) has exactly that shape
+and is perfectly safe to copy, because its non-shared state is a read-only *view*. The hazard is
+specifically non-shared state that is a **mutable position into shared mutable storage** — a
+cursor, not a view. See `Value Semantics, POD and Copy Safety.md` §4.
+
+**Several rejected designs in §4 may be worth reopening**, because they were rejected against
+constraints that have moved:
+
+- Designs that failed because a controller had to be either heap-allocated or copied now have a
+  third option: scope-resident and referenced.
+- Design 7's problem — handing a callback a stateful `mut` parameter and having to *trust* the
+  callback body not to stash it — is answered directly. A generational reference is not trust; it
+  is verified at every use, and the check is local to the callee, so §9's ban on
+  cross-function/whole-call-graph reasoning is respected. The plain-closure workaround recorded as
+  open thread 6 may therefore no longer be necessary.
+- Closure environments themselves can become scope-resident, removing the
+  `hzstd_heap_allocate(sizeof(void*) * N, "Closure env")` that made every closure-based design pay
+  an allocation it was trying to avoid.
+
+**One thing §9 records that remains exactly true and is now more central:** `__c__`/inline-C and
+`do unsafe` are out of the safety threat model by design. That remains the only unclosable hole
+under the reference mechanism too, for the same reason — C is unanalysable.
