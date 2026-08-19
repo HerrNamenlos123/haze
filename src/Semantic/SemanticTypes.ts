@@ -1811,6 +1811,13 @@ export namespace Semantic {
 
     sr.e.topLevelScope(cc.moduleScopeId);
 
+    // Structs reached only as another struct's member type never get their
+    // method list built during the recursive elaboration above, which silently
+    // drops every uncalled method from the exported module interface. The
+    // elaboration stack is empty again here, so sweep up whatever was missed --
+    // see finalizeAllStructMethods for the full explanation.
+    sr.e.finalizeAllStructMethods();
+
     if (moduleName !== HAZE_STDLIB_NAME) {
       if (isLibrary) {
         if (sr.globalMainFunction) {

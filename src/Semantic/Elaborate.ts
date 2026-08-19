@@ -4468,6 +4468,85 @@ export class SemanticElaborator {
     }
   }
 
+  // Last-resort method finalization for structs that no other fixup path can
+  // reach. See the call site in SemanticallyAnalyze.
+  //
+  // instantiateAndElaborateStruct only builds a struct's method list when that
+  // struct is the *root* of an elaboration chain; anything instantiated while
+  // an outer struct is still on elaborationRecursiveStructStack deliberately
+  // takes the "if this is NOT a root struct, do NOT elaborate methods" branch.
+  // Two fixups exist for that: the CACHE HIT branch (only fires if the struct
+  // is looked up again while the stack happens to be empty) and
+  // finalizeNestedStructMethods (only walks `nestedStructs`, i.e. structs
+  // syntactically nested inside another). Neither covers a struct that is only
+  // ever reached as the *member type* of another struct, since a member is
+  // always elaborated with its owner still on the stack and a pure member type
+  // is never independently looked up at root level.
+  //
+  // Such a struct keeps an empty `methods` forever, except for the individual
+  // methods that some unrelated code happened to *call* -- every call site
+  // registers its own callee via elaborateFunctionSymbol. That makes the bug
+  // silent and highly selective: ffi.hzstd_panic_info_t exported stringify()
+  // but not print(), purely because fmt.format_to calls the former, so
+  // downstream modules parsing import.hz saw a type with a missing method.
+  //
+  // The elaboration stack is guaranteed empty here, so finish the job.
+  finalizeAllStructMethods() {
+    assert(this.currentContext.elaborationRecursiveStructStack.length === 0);
+    // Elaborating a struct's methods can instantiate further structs (return
+    // types, nested definitions), which may themselves land unfinalized, so
+    // keep sweeping until a full pass finds nothing left.
+    for (;;) {
+      const pending: Semantic.TypeDefId[] = [];
+      for (let i = 0; i < this.sr.typeDefNodes.length; i++) {
+        const id = i as Semantic.TypeDefId;
+        const node = this.sr.typeDefNodes.get(id);
+        // The backing array can hold not-yet-populated slots while a node is
+        // mid-construction; those are not structs to finalize.
+        if (!node || node.variant !== Semantic.ENode.StructDatatype) {
+          continue;
+        }
+        if (node.methodsFinalized || node.methodsInProgress) {
+          continue;
+        }
+        // Generic definitions are templates, not instantiations -- only
+        // concrete ones have a meaningful method list to build.
+        if (!node.concrete || node.generics.length !== 0) {
+          continue;
+        }
+        // Reactive clones are compiler-synthesized: they copy `methods`
+        // wholesale from the struct they wrap (see makeDeepDatatypeAvailable)
+        // and their members are rewritten to rx.Reactive<T>, so re-elaborating
+        // the original bodies against them fails on operations the wrapper
+        // does not define (e.g. unary `-` on rx.Reactive<int>). They are never
+        // part of an exported interface either.
+        if (node.reactiveClone) {
+          continue;
+        }
+        // Only the exported interface is actually at stake here. Restricting
+        // the sweep keeps it from force-elaborating internal methods that no
+        // code calls and that were therefore never type-checked before.
+        if (!node.export) {
+          continue;
+        }
+        pending.push(id);
+      }
+      if (pending.length === 0) {
+        return;
+      }
+      for (const id of pending) {
+        const struct = this.sr.typeDefNodes.get(id);
+        assert(struct.variant === Semantic.ENode.StructDatatype);
+        // A struct earlier in this batch may have finalized this one already.
+        if (struct.methodsFinalized || struct.methodsInProgress) {
+          continue;
+        }
+        struct.methodsFinalized = true;
+        this.elaborateMethodsAndTypedefsOfStruct(id);
+      }
+    }
+  }
+
   elaborateVariableSymbolInScope(variableSymbolId: Collect.SymbolId) {
     const symbol = this.sr.cc.symbolNodes.get(variableSymbolId);
     assert(symbol.variant === Collect.ENode.VariableSymbol);
