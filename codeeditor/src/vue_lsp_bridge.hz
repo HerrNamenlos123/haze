@@ -2,8 +2,6 @@
 import language_server_protocol
 import unicode
 
-__c__("#include <unistd.h>");
-
 // --- Architecture ------------------------------------------------------
 //
 // `@vue/language-server` runs in "hybrid mode": it has no semantic
@@ -47,12 +45,19 @@ __c__("#include <unistd.h>");
 
 // Duplicates a C string into an owned, GC'd Haze str -- needed because
 // SDL's SDL_TextInputEvent.text (unrelated file, same trick) and here
-// getcwd()'s buffer are both short-lived/reused; see the extern
-// declaration at its call site for the actual C signature this binds to.
+// hzstd_get_cwd()'s stack buffer are both short-lived/reused.
+//
+// hzstd_get_cwd is the platform layer's own wrapper (hzstd_platform.h, pulled
+// in by hzstd.h, so always in scope): plain getcwd() lives in <unistd.h>,
+// which the Windows toolchain does not have, while the wrapper is
+// GetCurrentDirectoryA there and getcwd() on Linux. It returns false on
+// failure and leaves the buffer unspecified, so the buffer is emptied first --
+// toAbsolutePath then produces a visibly wrong path starting with "/" instead
+// of whatever bytes happened to be on the stack.
 fn getCwdAbsolute(): str :: final {
     do unsafe {
         let result: str = uninitialized;
-        __c__("char __hz_cwd_buf[4096]; getcwd(__hz_cwd_buf, sizeof(__hz_cwd_buf)); result = hzstd_cstr_dup(__hz_cwd_buf);");
+        __c__("char __hz_cwd_buf[4096]; if (!hzstd_get_cwd(__hz_cwd_buf, sizeof(__hz_cwd_buf))) { __hz_cwd_buf[0] = 0; } result = hzstd_cstr_dup(__hz_cwd_buf);");
         return result;
     };
 }
