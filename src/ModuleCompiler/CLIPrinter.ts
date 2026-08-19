@@ -204,6 +204,20 @@ export class CLIPrinter {
     }
 
     this.refreshBar(state);
+
+    // Paint the new phase right now instead of waiting for the next tick.
+    //
+    // MultiBar forces synchronousUpdate = false, so refreshBar() only stores
+    // the payload; the terminal write happens on the multibar's own timer. The
+    // phases are not equally cooperative about letting that timer run —
+    // phaseAnalyze() and phaseLower() are long stretches of synchronous work
+    // that block the event loop from start to finish. Without an immediate
+    // flush their labels are never drawn: the bar keeps showing the last phase
+    // that happened to be painted (Collecting, which ends on an await), so
+    // analysis time reads as collection time and "Analyzing" never appears.
+    if (this.updateInterval) {
+      (this.multibar as unknown as { update(): void }).update();
+    }
   }
 
   /** Begin the animation loop. Bars only appear when beginModule() is called. */

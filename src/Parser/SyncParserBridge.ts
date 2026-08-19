@@ -173,8 +173,6 @@ function createBridge(repoRoot: string, binary: string): Bridge | null {
         cwd: repoRoot,
       },
       transferList: [channel.port2],
-      stdout: true,
-      stderr: true,
     });
 
     // Neither the worker nor the parser it owns may hold the compiler open;
