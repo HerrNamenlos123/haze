@@ -1,5 +1,5 @@
 
-test_strings() {
+fn test_strings() {
     // This is like the worst-worst case, both for the compiler and for syntax highlighting
     let singleline1 = "Result={a * \"Test {b}\"} test";
     let singleline2 = f"Result={"First:" + f"Test {b}"} test";

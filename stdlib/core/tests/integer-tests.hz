@@ -16,7 +16,7 @@
 // - No generic inference (explicit <T, U>)
 // - int and usize are treated as distinct named types
 
-cmp_all<T, U>(a: T, b: U) {
+fn cmp_all<T, U>(a: T, b: U) {
     let r_lt  = a <  b;
     let r_le  = a <= b;
     let r_gt  = a >  b;
@@ -25,7 +25,7 @@ cmp_all<T, U>(a: T, b: U) {
     let r_ne  = a != b;
 }
 
-integer_comparison_runtime_tests() {
+fn integer_comparison_runtime_tests() {
     // Unsigned values
     let u8v    : u8    = 7;
     let u16v   : u16   = 7;
@@ -169,7 +169,7 @@ integer_comparison_runtime_tests() {
     cmp_all<int, usize>(intv, usizev);
 }
 
-main(): int {
+fn main(): int {
     integer_comparison_runtime_tests();
     return 0;
 }

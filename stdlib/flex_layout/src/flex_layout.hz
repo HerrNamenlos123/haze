@@ -4,7 +4,7 @@ export namespace flex {
 
     // calculate layout of an element recursively
     // returns a Ui.Positioned tree
-    export layoutFlex(root: ui.UIElement, width: real, height: real): ui.Positioned {
+    export fn layoutFlex(root: ui.UIElement, width: real, height: real): ui.Positioned {
         // simple recursive algorithm: treat root as container with given size
         const layoutElement = (el: ui.UIElement, avail: Vec2): ui.Positioned :: final => {
             if el is ui.Div {

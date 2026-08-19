@@ -1,4 +1,4 @@
 
-export init() {
+export fn init() {
     // println("InitjKA;");
 }

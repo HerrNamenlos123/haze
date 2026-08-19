@@ -1,6 +1,6 @@
 
 
-test_match_compile_time() {
+fn test_match_compile_time() {
     let r = r"\w+";
 
     assert(regex.match(r, "hello") == true);
@@ -8,7 +8,7 @@ test_match_compile_time() {
     assert(regex.match(r, "!!!") == false);
 }
 
-test_runtime_compile() {
+fn test_runtime_compile() {
     let ok = regex.runtime("[a-z]+", "");
     assert(ok);
 
@@ -19,7 +19,7 @@ test_runtime_compile() {
     assert(!err);
 }
 
-test_find() {
+fn test_find() {
     let r = r"world";
     let text = "hello world!";
 
@@ -32,7 +32,7 @@ test_find() {
     assert(slice == "world");
 }
 
-test_find_none() {
+fn test_find_none() {
     let r = r"\d+";
     let text = "abc";
 
@@ -40,7 +40,7 @@ test_find_none() {
     assert(!m);
 }
 
-test_find_all() {
+fn test_find_all() {
     let r = r"\d+";
     let text = "a1 b22 c333";
 
@@ -53,7 +53,7 @@ test_find_all() {
     assert(text.slice(matches[2].start, matches[2].end) == "333");
 }
 
-test_zero_length() {
+fn test_zero_length() {
     let r = r"^";
     let text = "abc";
 
@@ -64,7 +64,7 @@ test_zero_length() {
     assert(matches[0].end == 0);
 }
 
-test_replace_global() {
+fn test_replace_global() {
     let r = r"\s+";
     let text = "a   b    c";
 
@@ -72,7 +72,7 @@ test_replace_global() {
     assert(out == "a b c");
 }
 
-test_replace_no_match() {
+fn test_replace_no_match() {
     let r = r"\d+";
     let text = "abc";
 
@@ -80,7 +80,7 @@ test_replace_no_match() {
     assert(out == "abc");
 }
 
-test_compile_and_runtime_mix() {
+fn test_compile_and_runtime_mix() {
     let r1 = r"[a-z]+";
     let r2 = regex.runtime("[A-Z]+", "");
     assert(r2);
@@ -91,7 +91,7 @@ test_compile_and_runtime_mix() {
     assert(regex.match(r2, text));
 }
 
-test_regex() {
+fn test_regex() {
     test_match_compile_time();
     test_runtime_compile();
     test_find();

@@ -3,12 +3,12 @@ struct A {
         a: A;
     }
 
-    make(): B {
+    fn make(): B {
         return { a: this };
     }
 }
 
-main(): int {
+fn main(): int {
     let a = A {};
     a.make();
     return 0;

@@ -8,7 +8,7 @@ struct Foo<T> {
     box: Box<T>;
 }
 
-bar() {
+fn bar() {
     const foo: Foo<i32>;
     foo.box.value = i32;
 }
