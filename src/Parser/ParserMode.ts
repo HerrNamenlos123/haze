@@ -18,7 +18,7 @@ import {
   ensureNativeParser,
   warmupNativeParserSync,
 } from "./NativeParser";
-import { shutdownSyncParser } from "./SyncParserBridge";
+import { shutdownAllBridges } from "./SyncBridge";
 
 export type ParserMode = "antlr" | "native" | "assert";
 
@@ -119,7 +119,7 @@ function getServer(): NativeParserServer {
 export function shutdownNativeParser(): void {
   server?.stop();
   server = null;
-  shutdownSyncParser();
+  shutdownAllBridges();
 }
 
 /**

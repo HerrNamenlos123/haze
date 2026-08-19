@@ -17,7 +17,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
-import { parseTextSyncViaBridge, warmupSyncParser } from "./SyncParserBridge";
+import { requestSync, warmupBridge } from "./SyncBridge";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
 // The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
@@ -425,6 +425,9 @@ export function parseFileNativeSync(
 }
 
 /** Absolute path to the parser binary, for callers outside this module. */
+/** Bridge key for the long-lived parser process. */
+const PARSER_BRIDGE = "parser";
+
 export function parserBinaryPath(repoRoot: string): string {
   return path.join(repoRoot, PARSER_BINARY);
 }
@@ -434,7 +437,7 @@ export function parserBinaryPath(repoRoot: string): string {
  * ~100ms of worker and parser start-up overlaps with the rest of the build.
  */
 export function warmupNativeParserSync(repoRoot: string): void {
-  warmupSyncParser(repoRoot, parserBinaryPath(repoRoot));
+  warmupBridge(PARSER_BRIDGE, parserBinaryPath(repoRoot), repoRoot);
 }
 
 /**
@@ -456,12 +459,27 @@ export function parseTextNativeSync(
   text: string,
   filename: string
 ): ASTRoot {
-  const viaBridge = parseTextSyncViaBridge(
-    repoRoot,
-    parserBinaryPath(repoRoot),
-    text,
-    filename
-  );
+  const payload = Buffer.from(text, "utf8");
+  const request = Buffer.concat([
+    Buffer.from(`TEXT ${payload.length} ${filename}
+`, "utf8"),
+    payload,
+  ]);
+
+  let viaBridge: string | null;
+  try {
+    viaBridge = requestSync(
+      PARSER_BRIDGE,
+      parserBinaryPath(repoRoot),
+      repoRoot,
+      request
+    );
+  } catch (e) {
+    throw new Error(
+      `native parser failed for ${filename}: ${(e as Error).message}`
+    );
+  }
+
   if (viaBridge !== null) {
     return reviveAST(JSON.parse(viaBridge));
   }
