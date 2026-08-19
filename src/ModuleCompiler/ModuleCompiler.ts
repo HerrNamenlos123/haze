@@ -1131,11 +1131,7 @@ export class ModuleCompiler {
       ast = cached;
     } else {
       const fileText = await readFile(filepath, "utf-8");
-      ast = await Parser.parseTextToASTAsync(
-        this.config,
-        fileText,
-        filepath
-      );
+      ast = await Parser.parseTextToASTAsync(this.config, fileText, filepath);
       this.importASTCache?.set(depName, libMtimeMs, relPath, ast);
     }
 

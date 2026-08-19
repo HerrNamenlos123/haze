@@ -1075,12 +1075,30 @@ export namespace Semantic {
     }[];
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
-    functionTypeCache: Semantic.TypeDefId[];
-    callableTypeCache: Semantic.TypeDefId[];
-    deferredFunctionTypeCache: Semantic.TypeDefId[];
+    // These were plain arrays walked linearly on every lookup: O(n) per
+    // call and quadratic over a build, and together the largest single cost
+    // in elaboration and lowering.
+    //
+    // They are now indexed rather than scanned. Where a lookup is a plain
+    // equality it becomes a Map; where it compares a whole signature the
+    // entries are bucketed by something cheap and exact (return type, and
+    // parameter count) and the *original* comparison still runs inside the
+    // bucket. Nothing is packed into a synthetic key, so no assumption is
+    // made about enum ranges and no key string is built per call.
+    functionTypeCache: Map<
+      Semantic.TypeUseId,
+      Map<number, Semantic.TypeDefId[]>
+    >;
+    callableTypeCache: Map<Semantic.TypeDefId, Semantic.TypeDefId>;
+    deferredFunctionTypeCache: Map<number, Semantic.TypeDefId[]>;
+    // Left as scans: both resolve aliases as they compare, so a precomputed
+    // index could go stale, and neither showed up in the profile.
     fixedArrayTypeCache: Semantic.TypeDefId[];
     dynamicArrayTypeCache: Semantic.TypeDefId[];
-    typeInstanceCache: Semantic.TypeUseId[];
+    typeInstanceCache: Map<
+      Semantic.TypeDefId,
+      Map<EDatatypeMutability, Map<boolean, Semantic.TypeUseId>>
+    >;
 
     // Structural fingerprints (see Fingerprint.ts for the full invariants
     // this depends on). Computed once, permanently memoized, never
@@ -1752,12 +1770,12 @@ export namespace Semantic {
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitionSymbols: new Set(),
       elaboratedTypeDefSymbols: [],
-      functionTypeCache: [],
-      callableTypeCache: [],
-      deferredFunctionTypeCache: [],
+      functionTypeCache: new Map(),
+      callableTypeCache: new Map(),
+      deferredFunctionTypeCache: new Map(),
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
-      typeInstanceCache: [],
+      typeInstanceCache: new Map(),
 
       typeDefFingerprints: new Map(),
       typeUseFingerprints: new Map(),
