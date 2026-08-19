@@ -3,8 +3,8 @@ inline struct ExecOptions {
     cwd?: str;
 }
 
-fn exec(cmd: str, options: ExecOptions = {}): Result<none, none> {
-    let subprocess = process.run("/bin/sh", ["-c", cmd], {
+fn exec(exe: str, args: []str, options: ExecOptions = {}): Result<none, none> {
+    let subprocess = process.run(exe, args, {
         cwd: options.cwd,
     });
     if (!subprocess) {
@@ -29,7 +29,7 @@ fn lspFilePaths(): []str {
 }
 
 fn buildSyntaxEngine() {
-    return exec("bun build syntax-engine.ts --compile --outfile syntax-engine", {
+    return exec("bun", ["build", "syntax-engine.ts", "--compile", "--outfile", "syntax-engine"], {
         cwd: syntaxEngineDir,
     });
 }
@@ -38,7 +38,7 @@ fn installLSP() {
 
     attempt {
         fmt.println("Building Syntax Engine...");
-        exec("bun install", {
+        exec("bun", ["install"], {
             cwd: syntaxEngineDir,
         })?!;
         buildSyntaxEngine()?!;
@@ -64,7 +64,7 @@ fn installLSP() {
 
         // @catppuccin/vscode
         fmt.println("Some LSP files missing, installing...");
-        exec("npm install --no-save @vue/language-server typescript @types/bun vscode-textmate vscode-oniguruma", {
+        exec("npm", ["install", "--no-save", "@vue/language-server", "typescript", "@types/bun", "vscode-textmate", "vscode-oniguruma"], {
             cwd: syntaxEngineDir,
         })?!;
         fmt.println("Some LSP files missing, installing... Done");
