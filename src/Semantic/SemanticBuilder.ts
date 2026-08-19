@@ -17,6 +17,7 @@ import {
   assert,
   CompilerError,
   InternalError,
+  printWarningMessage,
   type SourceLoc,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
@@ -1380,6 +1381,7 @@ export class SemanticBuilder {
     sourceloc: SourceLoc;
     envType: Semantic.EnvBlockType;
   }): [Semantic.FunctionSymbol, Semantic.SymbolId] {
+    const start = performance.now();
     const fType = this.sr.typeDefNodes.get(args.functionTypeId);
     assert(fType.variant === Semantic.ENode.FunctionDatatype);
     assert(args.parameterNames.length === fType.parameters.length);
@@ -1441,6 +1443,15 @@ export class SemanticBuilder {
 
     // Inject a synthetic env block
     symbol.envType = args.envType;
+
+    const end = performance.now();
+    if (end - start > 10) {
+      printWarningMessage(
+        `Slow operation 'Synthetic Function' took over ${end - start} ms`,
+        null,
+        HazeErrorCode.PerformanceBottleneck
+      );
+    }
 
     return [symbol, e.symbol];
   }

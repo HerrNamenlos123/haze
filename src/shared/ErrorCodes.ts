@@ -240,4 +240,5 @@ export enum HazeErrorCode {
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:
   ThisMutModifierWillBeOverruledByConst = 9003, // This 'mut' modifier will be overruled by the 'const' declaration and have no effect
+  PerformanceBottleneck = 9004, // Slow operation '' took over '' ms
 }
