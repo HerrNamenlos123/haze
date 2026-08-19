@@ -100,6 +100,25 @@ extern int _Ux86_64_set_caching_policy(unw_addr_space_t, unw_caching_policy_t);
 // instead of the custom libunwind+libdwarf path used on Linux.
 #endif
 
+// ── Cross-platform mutex ────────────────────────────────────────────────────
+//
+// Only ever used for memoryCapturesMutex below, whose critical section is a
+// handful of pointer/integer writes (never the unwind itself). Linux uses
+// pthreads directly; Windows uses an SRWLOCK, which -- unlike a
+// CRITICAL_SECTION -- needs no paired destroy call, matching the Linux side
+// where the mutex is likewise never destroyed.
+#ifdef HAZE_PLATFORM_LINUX
+typedef pthread_mutex_t hzstd_profiling_mutex_t;
+static inline void hzstd_profiling_mutex_init(hzstd_profiling_mutex_t *m) { pthread_mutex_init(m, NULL); }
+static inline void hzstd_profiling_mutex_lock(hzstd_profiling_mutex_t *m) { pthread_mutex_lock(m); }
+static inline void hzstd_profiling_mutex_unlock(hzstd_profiling_mutex_t *m) { pthread_mutex_unlock(m); }
+#elif defined(HAZE_PLATFORM_WIN32)
+typedef SRWLOCK hzstd_profiling_mutex_t;
+static inline void hzstd_profiling_mutex_init(hzstd_profiling_mutex_t *m) { InitializeSRWLock(m); }
+static inline void hzstd_profiling_mutex_lock(hzstd_profiling_mutex_t *m) { AcquireSRWLockExclusive(m); }
+static inline void hzstd_profiling_mutex_unlock(hzstd_profiling_mutex_t *m) { ReleaseSRWLockExclusive(m); }
+#endif
+
 // Raw, per-sample data: just addresses + timings, no symbol resolution or
 // allocation. On Linux this is built by unwinding a perf_event_open-captured
 // register/stack snapshot on the reader thread (see
@@ -402,7 +421,7 @@ struct hzstd_profiling_context_t {
   // critical section is only ever "claim the next slot" (a few pointer/
   // integer writes), never the unwind itself, which happens fully outside
   // the lock -- see hzstd_trace_memory_impl.
-  pthread_mutex_t memoryCapturesMutex;
+  hzstd_profiling_mutex_t memoryCapturesMutex;
 };
 
 // ── Memory instrumentation: cheap capture, deferred resolution ─────────────
@@ -602,7 +621,7 @@ static void hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentat
 static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *context,
                                                    hzstd_memory_instrumentation_raw_frame_t raw)
 {
-  pthread_mutex_lock(&context->memoryCapturesMutex);
+  hzstd_profiling_mutex_lock(&context->memoryCapturesMutex);
   if (!context->memoryCapturesTail
       || context->memoryCapturesTail->count == HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY) {
     // Same GC-scanning hazard as hzstd_profiling_sample_chunk_t's entries --
@@ -616,7 +635,7 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
     // instrumentation hook (see hzstd_memory.c) and, since this thread's
     // hook is very much still installed and not suppressed at this point,
     // an unguarded allocation here would re-invoke hzstd_trace_memory_impl
-    // -> this very function -> pthread_mutex_lock on a mutex this thread
+    // -> this very function -> a lock acquire on a mutex this thread
     // already holds -- an immediate self-deadlock (confirmed: an earlier
     // version of this comment claimed "no re-entrancy hazard here" without
     // actually verifying it, and every single allocation hung the whole
@@ -641,7 +660,7 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
   }
   context->memoryCapturesTail->entries[context->memoryCapturesTail->count++] = raw;
   context->memoryCaptureCount++;
-  pthread_mutex_unlock(&context->memoryCapturesMutex);
+  hzstd_profiling_mutex_unlock(&context->memoryCapturesMutex);
 }
 
 // `skip_n_frames`, as received here, already accounts for every internal
@@ -1855,7 +1874,12 @@ static void hzstd_profiling_enable_local_addr_space_caching(void)
   if (!atomic_compare_exchange_strong(&g_hzstd_local_addr_space_cache_enabled, &expected, 1)) {
     return;
   }
+#ifdef HAZE_PLATFORM_LINUX
   _Ux86_64_set_caching_policy(unw_local_addr_space, UNW_CACHE_GLOBAL);
+#endif
+  // No equivalent on Windows: symbol/CFI resolution goes through dbghelp,
+  // which maintains its own module and symbol caches internally, so there is
+  // no libunwind address space to configure here.
 }
 
 hzstd_profiling_context_t *
@@ -1913,7 +1937,7 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // allocated lazily, on the first allocation captured, by
   // hzstd_profiling_memory_captures_append -- same lazy-init shape as
   // samples_head/samples_tail above.
-  pthread_mutex_init(&context->memoryCapturesMutex, NULL);
+  hzstd_profiling_mutex_init(&context->memoryCapturesMutex);
   context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
   // NOTE: memoryInstrumentationTimeRef is set, and instrumentation actually
   // enabled (hzstd_push_memory_instrumentation), further down -- see the
@@ -3344,6 +3368,7 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // silently sit on "Profiling stopped ... postprocessing..." until this
   // function finally returned). Printed with explicit fflush calls below so
   // progress is visible as it happens instead of arriving all at once.
+#ifdef HAZE_PLATFORM_LINUX
   fprintf(stdout,
           "Postprocessing %zu sample(s) (%llu lost, %llu throttle event(s), "
           "~%d Hz achieved)...\n",
@@ -3351,15 +3376,23 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
           (unsigned long long)context->perf_lost_count,
           (unsigned long long)context->perf_throttle_count,
           achievedRateHz);
+#else
+  // There is no perf ring buffer on this platform -- samples are captured
+  // directly by the stackwalker thread -- so there is no lost/throttle
+  // count to report here.
+  fprintf(stdout, "Postprocessing %zu sample(s) (~%d Hz achieved)...\n", context->sample_count, achievedRateHz);
+#endif
   fflush(stdout);
 
   g_postprocess_read_time_total_ns = 0;
   g_postprocess_resolve_frame_time_total_ns = 0;
   g_postprocess_resolve_frame_count = 0;
+#ifdef HAZE_PLATFORM_LINUX
   g_elf_symtab_fast_hits = 0;
   g_elf_symtab_fast_misses = 0;
   g_postprocess_name_resolve_time_total_ns = 0;
   g_postprocess_sourceloc_time_total_ns = 0;
+#endif
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 

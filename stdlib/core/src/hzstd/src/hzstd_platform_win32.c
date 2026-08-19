@@ -213,7 +213,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
 
     size_t nextId = 1;
     hzstd_dynamic_array_t* frameArray
-        = hzstd_dynamic_array_create(allocator, sizeof(hzstd_stackframe_t), numberOfFrames);
+        = hzstd_dynamic_array_create(allocator, sizeof(hzstd_stackframe_t), numberOfFrames, "hzstd_stackframe_t");
 
     while (StackWalk64(
         machineType, hProcess, hThread, &sf2, &ctx2, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
@@ -746,24 +746,29 @@ typedef struct hzstd_process_t {
   int exit_code;
 } hzstd_process_t;
 
-/* Reads whatever is currently available on the pipe. Returns "" (never NULL) if
- * nothing is buffered or the pipe has no writer left. */
-static inline char* process_read_available_gc(HANDLE h)
+/* Reads whatever is currently available on the pipe. Returns an empty string
+ * if nothing is buffered or the pipe has no writer left.
+ *
+ * Returns a length-carrying hzstd_str_t rather than a NUL-terminated char*:
+ * a child's stdout/stderr is arbitrary bytes, so a NUL in the stream would
+ * silently truncate everything after it under strlen-based length recovery.
+ * Same contract the Linux implementation returns. */
+static inline hzstd_str_t process_read_available_gc(HANDLE h)
 {
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   DWORD available = 0;
   if (!h || !PeekNamedPipe(h, NULL, 0, NULL, &available, NULL) || available == 0) {
-    char* empty = hzstd_allocate(allocator, 1, NULL);
-    empty[0] = '\0';
-    return empty;
+    return HZSTD_STRING(NULL, 0);
   }
-  char* buf = hzstd_allocate(allocator, available + 1, NULL);
+  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+  char* buf = hzstd_allocate(allocator, available, NULL);
   DWORD read_bytes = 0;
   if (!ReadFile(h, buf, available, &read_bytes, NULL)) {
     read_bytes = 0;
   }
-  buf[read_bytes] = '\0';
-  return buf;
+  if (read_bytes == 0) {
+    return HZSTD_STRING(NULL, 0);
+  }
+  return HZSTD_STRING(buf, read_bytes);
 }
 
 hzstd_process_spawn_result_t
@@ -868,12 +873,12 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   return result;
 }
 
-char* hzstd_process_read_stdout(void* proc)
+hzstd_str_t hzstd_process_read_stdout(void* proc)
 {
   return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stdout_read : NULL);
 }
 
-char* hzstd_process_read_stderr(void* proc)
+hzstd_str_t hzstd_process_read_stderr(void* proc)
 {
   return process_read_available_gc(proc ? ((hzstd_process_t*)proc)->stderr_read : NULL);
 }
@@ -973,16 +978,18 @@ bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out
 
   hzstd_process_t* proc = proc_;
 
-  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, proc->pid);
-
-  if (!h) {
+  // Query through the handle CreateProcess already handed us rather than
+  // reopening by pid (the Linux struct's field, which this one never had):
+  // that handle keeps the pid reserved, so it still reports the child's final
+  // counters after it exits, where an OpenProcess by pid would fail outright
+  // or -- worse -- succeed against an unrelated process that reused the pid.
+  if (!proc->process_handle) {
     return false;
   }
 
   PROCESS_MEMORY_COUNTERS_EX pmc;
 
-  if (!GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-    CloseHandle(h);
+  if (!GetProcessMemoryInfo(proc->process_handle, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
     return false;
   }
 
@@ -990,6 +997,5 @@ bool hzstd_process_get_memory_info(void* proc_, hzstd_process_memory_info_t* out
   out->peak_resident = (int64_t)pmc.PeakWorkingSetSize;
   out->committed = (int64_t)pmc.PrivateUsage;
 
-  CloseHandle(h);
   return true;
 }
