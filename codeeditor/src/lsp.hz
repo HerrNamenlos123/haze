@@ -40,10 +40,15 @@ const vueLspFilePath = "codeeditor/syntax-engine/node_modules/@vue/language-serv
 // The files `npm install` below is expected to produce. These are resolved
 // against the process working directory (the repo root), NOT against
 // syntaxEngineDir -- only the npm/bun subprocesses run with that as their cwd.
+//
+// tsserver.js rather than bin/tsc, because bin/tsc exists in TypeScript 7 too
+// while tsserver.js does not (see the version pin below). Checking for a file
+// both trees have would report a TypeScript that cannot drive this editor as a
+// working install.
 fn lspFilePaths(): []str {
   return [
       vueLspFilePath,
-      "codeeditor/syntax-engine/node_modules/typescript/bin/tsc",
+      "codeeditor/syntax-engine/node_modules/typescript/lib/tsserver.js",
   ];
 }
 
@@ -83,7 +88,13 @@ fn installLSP() {
 
         // @catppuccin/vscode
         fmt.println("Some LSP files missing, installing...");
-        exec("npm", ["install", "--no-save", "@vue/language-server", "typescript", "@types/bun", "vscode-textmate", "vscode-oniguruma"], {
+        // typescript is pinned to 5.x on purpose. Plain `typescript` now
+        // resolves to 7.x, the native rewrite, whose lib/ ships only a
+        // launcher for the Go binary -- no typescript.js and no tsserver.js.
+        // Both of the things started below need exactly those two files:
+        // @vue/language-server require.resolve()s ./typescript.js out of the
+        // tsdk, and the bridge spawns node on lib/tsserver.js.
+        exec("npm", ["install", "--no-save", "@vue/language-server", "typescript@^5", "@types/bun", "vscode-textmate", "vscode-oniguruma"], {
             cwd: syntaxEngineDir,
         })?!;
         fmt.println("Some LSP files missing, installing... Done");
