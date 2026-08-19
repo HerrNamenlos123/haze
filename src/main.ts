@@ -127,11 +127,11 @@ async function main(): Promise<number> {
   build_parser.add_argument("--parser", {
     dest: "parser",
     choices: ["antlr", "native", "assert"],
-    default: "antlr",
+    default: "native",
     help:
-      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
-      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
-      "and require identical ASTs)",
+      "Which parser to use: 'native' (default, the hand-written parser in " +
+      "compiler/haze-parser), 'antlr' (the older, much slower one), or " +
+      "'assert' (run both and require identical ASTs)",
   });
   build_parser.add_argument("filename", {
     nargs: "?",
@@ -181,11 +181,11 @@ async function main(): Promise<number> {
   run_parser.add_argument("--parser", {
     dest: "parser",
     choices: ["antlr", "native", "assert"],
-    default: "antlr",
+    default: "native",
     help:
-      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
-      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
-      "and require identical ASTs)",
+      "Which parser to use: 'native' (default, the hand-written parser in " +
+      "compiler/haze-parser), 'antlr' (the older, much slower one), or " +
+      "'assert' (run both and require identical ASTs)",
   });
   run_parser.add_argument("--show-timing", {
     action: "store_true",
@@ -274,7 +274,7 @@ async function main(): Promise<number> {
     ) {
       // Select the parser implementation for this invocation. `assert` runs
       // both and requires identical ASTs, which is how the two stay in sync.
-      setParserMode((args.parser ?? "antlr") as ParserMode, process.cwd());
+      setParserMode((args.parser ?? "native") as ParserMode, process.cwd());
 
       const project = new ProjectCompiler(
         Boolean(args.verbose),

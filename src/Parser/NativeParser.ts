@@ -19,11 +19,15 @@ import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
+// The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
+// this path with existsSync, which does no PATHEXT resolution, so an
+// extensionless path made the check fail forever on Windows and rebuilt the
+// parser (through the slow ANTLR pipeline) on every single build.
 const PARSER_BINARY = path.join(
   "__haze__",
   "haze-parser",
   "bin",
-  "haze-parser"
+  process.platform === "win32" ? "haze-parser.exe" : "haze-parser"
 );
 
 // ---------------------------------------------------------------------------
@@ -237,7 +241,7 @@ export class NativeParserServer {
     resolve: (v: string) => void;
     reject: (e: Error) => void;
   } | null = null;
-  private queue: (() => void)[] = [];
+  private queue: { run: () => void; reject: (e: Error) => void }[] = [];
 
   constructor(private readonly repoRoot: string) {}
 
@@ -262,9 +266,20 @@ export class NativeParserServer {
 
     this.proc.on("exit", () => {
       this.proc = null;
-      this.pending?.reject(new Error("native parser exited"));
-      this.pending = null;
+      this.failAll(new Error("native parser exited"));
     });
+  }
+
+  /** Fail the in-flight request and everything still queued behind it. */
+  private failAll(error: Error): void {
+    const pending = this.pending;
+    this.pending = null;
+    pending?.reject(error);
+    const queued = this.queue;
+    this.queue = [];
+    for (const job of queued) {
+      job.reject(error);
+    }
   }
 
   /** Try to complete the in-flight request from the buffered bytes. */
@@ -290,9 +305,14 @@ export class NativeParserServer {
     }
 
     if (!header.startsWith("OK ")) {
+      // Drop the offending line and keep going. Returning here (as this used
+      // to) left the bytes in the buffer and never called next(), so one
+      // unexpected line on stdout wedged every queued parse forever.
       const pending = this.pending;
       this.pending = null;
+      this.buffer = this.buffer.subarray(newline + 1);
       pending.reject(new Error(`bad response header: ${header}`));
+      this.next();
       return;
     }
 
@@ -316,7 +336,7 @@ export class NativeParserServer {
   private next(): void {
     const job = this.queue.shift();
     if (job) {
-      job();
+      job.run();
     }
   }
 
@@ -349,14 +369,20 @@ export class NativeParserServer {
 
     return new Promise<string>((resolve, reject) => {
       const run = () => {
+        this.start();
+        if (!this.proc) {
+          reject(new Error("native parser is not running"));
+          this.next();
+          return;
+        }
         this.pending = { resolve: resolve, reject: reject };
-        this.proc?.stdin.write(payload);
+        this.proc.stdin.write(payload);
         // A previous response may already be buffered.
         this.drain();
       };
 
       if (this.pending) {
-        this.queue.push(run);
+        this.queue.push({ run: run, reject: reject });
       } else {
         run();
       }
