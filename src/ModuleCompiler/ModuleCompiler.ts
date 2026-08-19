@@ -454,6 +454,15 @@ export class FileChangeCache {
   private cacheFile: string;
   private data: Record<string, FileStamp> = {};
   private dirty = false;
+  // Keys this instance wrote since the last save. One cache file is shared by
+  // every module in the workspace, but modules build concurrently (see
+  // ProjectCompiler.buildInParallel), so writing `data` back wholesale drops
+  // whatever another module saved after this one loaded. That silently
+  // un-stamps the other module's generators, and an un-stamped generator
+  // re-runs from scratch on every build -- for sdl/wgpu that is a full cmake
+  // configure and a cargo build, every time. Merging back only the keys
+  // actually touched here keeps concurrent savers from clobbering each other.
+  private touched = new Set<string>();
 
   constructor(cacheFile: string) {
     this.cacheFile = cacheFile;
@@ -461,14 +470,36 @@ export class FileChangeCache {
 
   /* ------------------ lifecycle ------------------ */
 
-  load(): void {
+  private readFromDisk(): Record<string, FileStamp> {
     if (!fs.existsSync(this.cacheFile)) {
-      this.data = {};
-      return;
+      return {};
     }
 
-    const raw = fs.readFileSync(this.cacheFile, "utf8");
-    this.data = JSON.parse(raw);
+    try {
+      return JSON.parse(fs.readFileSync(this.cacheFile, "utf8"));
+    } catch {
+      // A truncated or corrupt cache must not break the build; an empty one
+      // just means everything looks changed and is regenerated once.
+      return {};
+    }
+  }
+
+  // Applies this instance's unsaved edits on top of `base`, so reloading to
+  // pick up another module's writes never discards our own pending stamps.
+  private mergeTouchedInto(base: Record<string, FileStamp>) {
+    for (const key of this.touched) {
+      const stamp = this.data[key];
+      if (stamp) {
+        base[key] = stamp;
+      } else {
+        delete base[key];
+      }
+    }
+    return base;
+  }
+
+  load(): void {
+    this.data = this.mergeTouchedInto(this.readFromDisk());
   }
 
   save(): void {
@@ -476,8 +507,14 @@ export class FileChangeCache {
       return;
     }
 
+    // Read-merge-write, all synchronous, so no other module's save can
+    // interleave with it.
+    const merged = this.mergeTouchedInto(this.readFromDisk());
+
     fs.mkdirSync(path.dirname(this.cacheFile), { recursive: true });
-    fs.writeFileSync(this.cacheFile, JSON.stringify(this.data, null, 2));
+    fs.writeFileSync(this.cacheFile, JSON.stringify(merged, null, 2));
+    this.data = merged;
+    this.touched.clear();
     this.dirty = false;
   }
 
@@ -502,12 +539,14 @@ export class FileChangeCache {
 
     if (!fs.existsSync(abs)) {
       delete this.data[abs];
+      this.touched.add(abs);
       this.dirty = true;
       return;
     }
 
     const stat = fs.statSync(abs);
     this.data[abs] = { mtimeMs: stat.mtimeMs };
+    this.touched.add(abs);
     this.dirty = true;
   }
 
@@ -2146,7 +2185,18 @@ export class ModuleCompiler {
             ...(await this.gatherModuleRelevantFiles()),
             ...buildCache.getModuleTrackedFiles(this.config.name),
           ];
-          const generatorsNeedRun = forceFullRebuild
+          // Generators are deliberately not forced by forceFullRebuild.
+          // A changed compiler fingerprint invalidates everything the
+          // compiler itself produced, but a generator produces native
+          // artifacts (sdl's cmake build, wgpu's cargo build) that don't
+          // depend on the compiler's source at all -- and in dev the
+          // fingerprint covers every file under src/, so tying the two
+          // together re-ran cmake and cargo on literally every compiler edit.
+          // Their own input/output stamps already catch a changed generator
+          // script or a missing output; only an explicit --full-rebuild
+          // forces them.
+          const forceGenerators = fullRebuild === true;
+          const generatorsNeedRun = forceGenerators
             ? true
             : this.generatorsNeedRun();
           const moduleChanged = forceFullRebuild
@@ -2164,7 +2214,7 @@ export class ModuleCompiler {
           }
 
           const generatorsRan = generatorsNeedRun
-            ? await this.runAllGenerators(forceFullRebuild)
+            ? await this.runAllGenerators(forceGenerators)
             : false;
 
           if (!(moduleChanged || generatorsRan)) {
