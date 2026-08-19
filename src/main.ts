@@ -9,6 +9,7 @@ import {
   type ParserMode,
   setParserMode,
   shutdownNativeParser,
+  startNativeParser,
 } from "./Parser/ParserMode";
 
 const version = pkg.version;
@@ -275,6 +276,9 @@ async function main(): Promise<number> {
       // Select the parser implementation for this invocation. `assert` runs
       // both and requires identical ASTs, which is how the two stay in sync.
       setParserMode((args.parser ?? "native") as ParserMode, process.cwd());
+      // Get the parser processes running now; they take ~100ms to come up and
+      // nothing below needs them until project loading is well under way.
+      startNativeParser();
 
       const project = new ProjectCompiler(
         Boolean(args.verbose),

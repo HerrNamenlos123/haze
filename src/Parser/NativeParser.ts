@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
+import { parseTextSyncViaBridge, warmupSyncParser } from "./SyncParserBridge";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
 // The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
@@ -423,16 +424,55 @@ export function parseFileNativeSync(
   return reviveAST(JSON.parse(result.stdout));
 }
 
+/** Absolute path to the parser binary, for callers outside this module. */
+export function parserBinaryPath(repoRoot: string): string {
+  return path.join(repoRoot, PARSER_BINARY);
+}
+
+/**
+ * Start the synchronous bridge's worker ahead of the first parse, so its
+ * ~100ms of worker and parser start-up overlaps with the rest of the build.
+ */
+export function warmupNativeParserSync(repoRoot: string): void {
+  warmupSyncParser(repoRoot, parserBinaryPath(repoRoot));
+}
+
 /**
  * Parse source text the compiler already holds.
  *
  * The compiler's parse entry point is synchronous and is called from deep
- * inside the collection phase, so this uses a one-shot process rather than the
- * async server. The text is passed on stdin (via the server protocol's TEXT
- * request) so nothing has to be written to disk, and so sources with no file at
- * all — the synthetic "internal" ones — work too.
+ * inside the collection phase, so it cannot await the async server. It goes
+ * through SyncParserBridge instead, which blocks on a worker that owns one
+ * persistent parser process. Spawning a process per call — what this used to
+ * do, and what it still falls back to if the bridge is unavailable — costs
+ * ~25ms each, which dominated synthetic function generation.
+ *
+ * The text is passed in memory (via the server protocol's TEXT request) so
+ * nothing has to be written to disk, and so sources with no file at all — the
+ * synthetic "internal" ones — work too.
  */
 export function parseTextNativeSync(
+  repoRoot: string,
+  text: string,
+  filename: string
+): ASTRoot {
+  const viaBridge = parseTextSyncViaBridge(
+    repoRoot,
+    parserBinaryPath(repoRoot),
+    text,
+    filename
+  );
+  if (viaBridge !== null) {
+    return reviveAST(JSON.parse(viaBridge));
+  }
+  return parseTextNativeSpawn(repoRoot, text, filename);
+}
+
+/**
+ * One parse, one process. The fallback for when the bridge cannot run; also
+ * what every synchronous parse used to do.
+ */
+function parseTextNativeSpawn(
   repoRoot: string,
   text: string,
   filename: string
