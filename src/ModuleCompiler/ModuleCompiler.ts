@@ -113,6 +113,21 @@ export const HAZE_DIR = os.homedir() + "/.haze";
 export const HAZE_CACHE = HAZE_DIR + "/cache";
 export const HAZE_TOOLCHAIN_INSTALLED_MARKER =
   HAZE_CACHE + "/toolchain-installed.json";
+/**
+ * Compile commands gathered so far this run, keyed by source file.
+ *
+ * Process-wide because every module writes into the one workspace
+ * compile_commands.json, and modules build concurrently.
+ */
+const accumulatedCompileCommands = new Map<
+  string,
+  CompileCommands[number]
+>();
+
+/** Wrapped around every generated module .c so clang-format leaves it alone. */
+const C_FILE_PREAMBLE = "// clang-format off\n\n";
+const C_FILE_POSTAMBLE = "\n// clang-format on\n";
+
 export const HAZE_GLOBAL_DIR = HAZE_DIR + "/global";
 export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
@@ -1845,7 +1860,14 @@ export class ModuleCompiler {
     await mkdir(join(this.moduleDir, "build/"), { recursive: true });
     await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
     const code = generateCode(this.config, this.moduleDir, allModules, lowered);
-    await writeFile(paths.moduleCFile, code);
+    // The clang-format guards are written with the file rather than prepended
+    // later. phaseCCompile used to read the whole module back and rewrite it
+    // just to wrap it in these two comments, which on 1-3MB generated sources
+    // cost more than a second across a build for no reason.
+    await writeFile(
+      paths.moduleCFile,
+      C_FILE_PREAMBLE + code + C_FILE_POSTAMBLE
+    );
   }
 
   private async phaseCCompile(
@@ -1986,13 +2008,6 @@ export class ModuleCompiler {
         ...platformLinkerFlags,
       ].join(" ");
 
-      const filePreamble = "// clang-format off\n\n";
-      const filePostamble = "\n// clang-format on\n";
-      await writeFile(
-        paths.moduleCFile,
-        filePreamble + (await readFile(paths.moduleCFile)) + filePostamble
-      );
-
       const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
 
       compileCommands.push({
@@ -2025,13 +2040,6 @@ export class ModuleCompiler {
       }
     } else {
       const flags = `${platformCompilerFlags.join(" ")}`;
-      const filePreamble = "// clang-format off\n\n";
-      const filePostamble = "\n// clang-format on\n";
-      await writeFile(
-        paths.moduleCFile,
-        filePreamble + (await readFile(paths.moduleCFile)) + filePostamble
-      );
-
       const cmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${flags}`;
 
       compileCommands.push({
@@ -2287,36 +2295,24 @@ export class ModuleCompiler {
         JSON.stringify(cleanedCommands, null, 2)
       );
     } else {
-      // Not top level module, so do a best effort of appending currently known commands, to at least get partial compile commands.
-
-      const addedFiles = new Set<string>();
-      let currentCommands: CompileCommands;
-      const cleanedCommands: CompileCommands = [];
-      try {
-        currentCommands = JSON.parse(
-          await readFile(
-            `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-            "utf-8"
-          )
-        );
-        for (const c of currentCommands) {
-          if (!addedFiles.has(c.file)) {
-            addedFiles.add(c.file);
-            cleanedCommands.push(c);
-          }
-        }
-      } catch {}
-
+      // Not top level, so this is a best effort: leave usable compile
+      // commands behind even if the build stops before the top-level module
+      // writes the clean set.
+      //
+      // The accumulated set is kept in memory rather than read back from the
+      // file each time. Re-reading and re-parsing it once per module was
+      // quadratic in module count, and -- because modules build in parallel --
+      // it was a read-modify-write race on a shared file, so entries could be
+      // dropped depending on interleaving.
       for (const c of compileCommands) {
-        if (!addedFiles.has(c.file)) {
-          addedFiles.add(c.file);
-          cleanedCommands.push(c);
+        if (!accumulatedCompileCommands.has(c.file)) {
+          accumulatedCompileCommands.set(c.file, c);
         }
       }
 
       await writeFile(
         `${this.hazeWorkspaceDirectory}/compile_commands.json`,
-        JSON.stringify(cleanedCommands, null, 2)
+        JSON.stringify([...accumulatedCompileCommands.values()], null, 2)
       );
     }
   }
