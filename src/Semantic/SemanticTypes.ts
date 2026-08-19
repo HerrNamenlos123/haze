@@ -1166,6 +1166,64 @@ export namespace Semantic {
     );
   }
 
+  /**
+   * Name index for the scope walk in tryLookupSymbol.
+   *
+   * lookupDirect used to walk every symbol in a scope and keep the ones whose
+   * name matched. Every one of its branches requires that name equality, so
+   * restricting the walk to the symbols actually carrying that name is exactly
+   * equivalent -- and buckets keep insertion order, so it still returns the
+   * same first match. Module scopes hold thousands of symbols and the walk ran
+   * once per scope in every lookup chain.
+   *
+   * Scope symbol sets are append-only (nothing in the compiler removes from
+   * one), so the index is extended rather than rebuilt: on growth only the
+   * entries past those already indexed are visited. That matters because
+   * elaboration keeps adding symbols -- every synthetic function does -- and
+   * rebuilding a module-scope index on each addition would put the quadratic
+   * behaviour straight back.
+   */
+  const scopeNameIndex = new WeakMap<
+    Set<Collect.SymbolId>,
+    { indexed: number; byName: Map<string, Collect.SymbolId[]> }
+  >();
+
+  const NO_SYMBOLS: Collect.SymbolId[] = [];
+
+  function symbolsNamed(
+    cc: Semantic.Context["cc"],
+    symbols: Set<Collect.SymbolId>,
+    name: string
+  ): Collect.SymbolId[] {
+    let index = scopeNameIndex.get(symbols);
+    if (!index) {
+      index = { indexed: 0, byName: new Map() };
+      scopeNameIndex.set(symbols, index);
+    }
+
+    if (index.indexed !== symbols.size) {
+      let seen = 0;
+      for (const id of symbols) {
+        if (seen++ < index.indexed) {
+          continue;
+        }
+        const symbolName = (cc.symbolNodes.get(id) as { name?: unknown }).name;
+        if (typeof symbolName !== "string") {
+          continue; // cannot match: every branch below compares a name
+        }
+        const bucket = index.byName.get(symbolName);
+        if (bucket) {
+          bucket.push(id);
+        } else {
+          index.byName.set(symbolName, [id]);
+        }
+      }
+      index.indexed = symbols.size;
+    }
+
+    return index.byName.get(name) ?? NO_SYMBOLS;
+  }
+
   export function tryLookupSymbol(
     sr: Semantic.Context,
     name: string,
@@ -1205,7 +1263,7 @@ export namespace Semantic {
     }
 
     const lookupDirect = (symbols: Set<Collect.SymbolId>) => {
-      for (const id of symbols) {
+      for (const id of symbolsNamed(cc, symbols, name)) {
         const s = cc.symbolNodes.get(id);
         if (
           s.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
