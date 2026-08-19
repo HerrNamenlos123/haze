@@ -105,8 +105,25 @@ struct HighlightEngine {
     // and must never be touched again.
     dead: bool = false;
 
-    fn constructor(cmdline: str, cwd: str) {
-        let p = process.spawn("/bin/bash", ["-c", cmdline], { cwd: cwd });
+    // `exePath` is the engine binary, relative to the process working
+    // directory (the repo root), without any platform suffix.
+    //
+    // The binary is spawned directly rather than through `/bin/bash -c`, which
+    // does not exist on Windows. Its working directory is deliberately left
+    // alone as well: the Linux spawn helper chdir()s inside the child before
+    // exec, so a relative exe would resolve against that new directory, while
+    // CreateProcess resolves it against ours -- inheriting our cwd is the only
+    // reading both platforms agree on. The compiled engine embeds its grammars
+    // and the oniguruma wasm (see syntax-engine.ts), so it does not need to run
+    // from its own directory.
+    fn constructor(exePath: str) {
+        let exe = exePath;
+        if sys.isWin32() {
+            // What `bun build --compile --outfile syntax-engine` actually writes.
+            exe = exePath + ".exe";
+        }
+
+        let p = process.spawn(exe, []);
         if (!p) {
             return none;
         }

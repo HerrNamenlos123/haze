@@ -3,8 +3,27 @@ inline struct ExecOptions {
     cwd?: str;
 }
 
+// Every command run here is a developer tool resolved from PATH, and on
+// Windows most of those (npm, npx, ...) are `.cmd` batch launchers rather than
+// real executables. CreateProcess appends nothing but ".exe" to a bare command
+// name and cannot execute a batch file at all, so they only ever start through
+// cmd.exe. `bun` is a genuine bun.exe and would run either way; routing all of
+// them through the shell keeps one code path instead of a per-tool guess.
 fn exec(exe: str, args: []str, options: ExecOptions = {}): Result<none, none> {
-    let subprocess = process.run(exe, args, {
+    let realExe = exe;
+    let realArgs = args;
+    if sys.isWin32() {
+        let shellArgs: []str = [];
+        shellArgs.push("/c");
+        shellArgs.push(exe);
+        for arg in args {
+            shellArgs.push(arg);
+        }
+        realExe = "cmd.exe";
+        realArgs = shellArgs;
+    }
+
+    let subprocess = process.run(realExe, realArgs, {
         cwd: options.cwd,
     });
     if (!subprocess) {
