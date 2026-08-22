@@ -104,6 +104,11 @@ struct TsServerResponseMessage {
     message?: str;
 }
 
+// tsserver's `exit` command takes no arguments; this exists only so an
+// empty arguments object can be built the same way every other command's
+// is (a json.Node cannot be default-constructed).
+struct TsServerExitArgs {}
+
 struct QuickInfoArgs {
     file: str;
     line: int;    // 1-based, per TS Server Protocol (unlike LSP's 0-based)
@@ -293,7 +298,19 @@ struct OpenArgs {
     // hover on an imported binding, both need module resolution and
     // cross-file type info that an inferred, tsconfig-less project can't
     // provide.
-    projectRootPath: str;
+    //
+    // OPTIONAL, and omitted deliberately for a file that is not inside the
+    // open workspace. It is not a hint that tsserver may ignore -- it is
+    // where tsserver STARTS looking for the tsconfig.json that will own the
+    // file, and it will not look above it. Sending the workspace root for a
+    // file somewhere else entirely therefore does not merely fail to help:
+    // it actively prevents tsserver from finding that file's OWN tsconfig,
+    // and the file lands in the wrong configured project or in a
+    // tsconfig-less inferred one. That is the "it loaded the wrong project"
+    // failure. With the field absent, tsserver walks up from the file
+    // itself, which is exactly what an editor with no folder open should do
+    // -- and what VS Code does for a loose file.
+    projectRootPath?: str;
 }
 
 export inline struct VueLspBridgeArgs {
@@ -315,6 +332,79 @@ export inline struct VueLspBridgeArgs {
 // frame. Everything else in this file (the LSP connection, the tsserver
 // process, the two different tsserver request channels, the open/ready
 // sequencing) is this struct's own implementation detail.
+// ── Retiring the servers without blocking ────────────────────────────────
+//
+// Replacing a bridge (the user opened a different folder) must not leak the
+// two node processes behind it -- together they are hundreds of megabytes.
+// But it must not block either: the only join primitive available WAITS for
+// the child, and a child that is slow to notice its closed stdin would
+// freeze the editor mid-frame, possibly forever.
+//
+// So a retired process is parked here instead, and reaped later from the
+// frame loop: isAlive() is non-blocking and reaps internally, and once it
+// has said false, join() returns immediately with the cached exit code
+// rather than waiting on anything (see hzstd_process_is_alive/_join, which
+// share an `exited` latch). A child that never exits simply stays on this
+// list; it is not worth hanging the editor over.
+// Held inside a struct rather than as a bare `[]process.Process` global:
+// a global cannot be initialized with an expression that needs more than
+// one C statement, which an empty dynamic-array literal does. This is the
+// same shape g_state uses in codeui.hz, for the same reason.
+struct RetiredProcesses {
+    items: []process.Process = [];
+}
+
+extern C let g_retiredProcesses: RetiredProcesses | none = none;
+
+fn retiredProcesses(): RetiredProcesses {
+    let existing = g_retiredProcesses;
+    if existing {
+        return existing;
+    }
+    let created = RetiredProcesses {};
+    g_retiredProcesses = created;
+    return created;
+}
+
+fn retireProcess(retired: process.Process) {
+    retiredProcesses().items.push(retired);
+}
+
+// How many retired processes have not yet been reaped. For tests and
+// diagnostics: a workspace switch that leaked its old servers would show up
+// here as a number that never comes back down.
+export fn retiredProcessCount(): int {
+    let registry = g_retiredProcesses;
+    if !registry {
+        return 0;
+    }
+    return registry.items.length;
+}
+
+// Call once per frame. Cheap: a non-blocking waitpid per still-running
+// child, and the list is empty in the normal case where no workspace has
+// been switched.
+export fn reapRetiredProcesses() {
+    let registry = g_retiredProcesses;
+    if !registry {
+        return;
+    }
+    if registry.items.length == 0 {
+        return;
+    }
+    let stillRunning: []process.Process = [];
+    for retired in registry.items {
+        if retired.isAlive() {
+            stillRunning.push(retired);
+        } else {
+            // Already exited and already reaped by isAlive(); this only
+            // releases the handle and its pipes.
+            retired.join();
+        }
+    }
+    registry.items = stillRunning;
+}
+
 export opaque struct VueLspBridge {
     _lsp: language_server_protocol.Context<VueInitializationOptions>;
     _tsserverProcess: process.Process;
@@ -379,6 +469,13 @@ export opaque struct VueLspBridge {
     _openDocuments: []OpenDocument = [];
     _projectRootPath: str = "";
     _documentReady: rx.Reactive<bool>;
+    // Set by shutdown(). Every public entry point checks it, because the
+    // process handles behind this bridge are released once reaped and
+    // touching a released handle is a use-after-free that the process
+    // wrapper turns into a panic. A caller holding a stale bridge for one
+    // more frame is normal (an editor tab captured it), so this has to be
+    // survivable rather than merely documented.
+    _shutdown: bool = false;
 
     // Spawns both vue-language-server (over LSP) and tsserver (with
     // `@vue/typescript-plugin` loaded globally, so it understands `.vue`
@@ -445,6 +542,9 @@ export opaque struct VueLspBridge {
     }
 
     fn getSystemMemoryUtilization(): MemoryUtilization {
+        if this._shutdown {
+            return MemoryUtilization {};
+        }
         return {
             vue: this._lsp.getSystemMemoryUtilization(),
             ts: this._tsserverProcess.memoryInfo().committed,
@@ -453,7 +553,62 @@ export opaque struct VueLspBridge {
 
     // Whether the LSP handshake with vue-language-server has completed.
     fn isReady(): bool {
+        if this._shutdown {
+            return false;
+        }
         return this._lsp.initResponse is not none;
+    }
+
+    // The folder both servers were initialized against. "" when the editor
+    // has no folder open, in which case every document is opened without a
+    // projectRootPath -- see OpenArgs.
+    fn projectRoot(): str {
+        return this._projectRootPath;
+    }
+
+    // Whether `filepath` is inside the open workspace, and therefore
+    // whether the workspace's tsconfig is the right one to resolve it
+    // against. See pathIsInsideFolder in workspace.hz for why this is not
+    // a plain prefix test.
+    fn ownsFile(filepath: str): bool {
+        return pathIsInsideFolder(filepath, this._projectRootPath);
+    }
+
+    // Tell both servers to exit and hand their processes to the reaper.
+    // Non-blocking; see reapRetiredProcesses above for why it has to be.
+    //
+    // The bridge is dead afterwards and must be replaced, not reused: the
+    // servers' entire notion of "the project" is fixed at initialize time
+    // (LSP has a didChangeWorkspaceFolders notification, but this client
+    // never advertised the capability, and tsserver binds a file to a
+    // project when the file is opened, not on request), so a new root
+    // means new processes.
+    fn shutdown() {
+        if this._shutdown {
+            return;
+        }
+        // tsserver has its own `exit` command, and it is the only reliable
+        // way to end it: it reads stdin as a line stream and idles at EOF
+        // rather than quitting, so closing stdin on its own leaves a
+        // multi-hundred-megabyte process sitting there forever. Sent before
+        // the flag below, because _sendTsServerCommand refuses once the
+        // bridge is marked down.
+        let exitArgs = json.encodeToJsonNode<TsServerExitArgs>({});
+        if exitArgs {
+            this._tsserverNextSeq = this._tsserverNextSeq + 1;
+            this._sendTsServerCommand(this._tsserverNextSeq, "exit", exitArgs);
+        }
+
+        this._shutdown = true;
+        if this._lsp.isRunning() {
+            // Sends the protocol's own shutdown/exit before closing stdin
+            // -- see Context.detach().
+            retireProcess(this._lsp.detach());
+        }
+        // Backstop for tsserver, matching what detach() does for the LSP.
+        this._tsserverProcess.closeStdin();
+        retireProcess(this._tsserverProcess);
+        this._documentReady := false;
     }
 
     // Whether hover() will actually produce an answer, i.e. the handshake
@@ -464,6 +619,9 @@ export opaque struct VueLspBridge {
     // in the second case. Reactive, so a computed reading this re-runs the
     // moment the servers come up.
     fn hoverAvailable(): bool {
+        if this._shutdown {
+            return false;
+        }
         return rx.get(this._documentReady);
     }
 
@@ -473,6 +631,9 @@ export opaque struct VueLspBridge {
     // -- actually opens exactly once, deferring automatically until
     // isReady() if called before the LSP handshake finishes.
     fn openDocument(filepath: str, languageId: str, version: int, fileContent: str) {
+        if this._shutdown {
+            return;
+        }
         // Idempotent PER FILE. Every editor calls this from a per-frame
         // reactive path, so it is hit constantly with the same arguments;
         // re-announcing an already-open document would reset the servers'
@@ -515,7 +676,14 @@ export opaque struct VueLspBridge {
     fn _doOpenDocument(filepath: str, languageId: str, version: int, fileContent: str) {
         this._lsp.sendDocumentOpenNotification(filepath, languageId, version, fileContent);
 
-        let argsNode = json.encodeToJsonNode<OpenArgs>({ file: filepath, fileContent: fileContent, projectRootPath: this._projectRootPath });
+        // Only claim the file for the workspace's project when it really is
+        // in the workspace -- see OpenArgs.projectRootPath for why sending
+        // it otherwise is worse than sending nothing.
+        let openArgs = OpenArgs { file: filepath, fileContent: fileContent };
+        if this.ownsFile(filepath) {
+            openArgs.projectRootPath = this._projectRootPath;
+        }
+        let argsNode = json.encodeToJsonNode<OpenArgs>(openArgs);
         if !argsNode {
             sys.panic("vue_lsp_bridge: failed to encode tsserver 'open' arguments");
         }
@@ -553,6 +721,9 @@ export opaque struct VueLspBridge {
     // codeui.hz, which waits for isReady() for exactly this reason) -- so
     // by the time the open happens, this edit is already in it.
     fn changeDocument(filepath: str, change: DocumentChange, version: int) {
+        if this._shutdown {
+            return;
+        }
         let doc = this._findOpenDocument(filepath);
         if !doc {
             return;
@@ -783,6 +954,9 @@ export opaque struct VueLspBridge {
     // openDocument() call that had to be deferred until isReady(). The one
     // thing callers need to call once per frame.
     fn loop() {
+        if this._shutdown {
+            return;
+        }
         this._lsp.loop();
 
         // Announce anything opened before the servers were up. Several

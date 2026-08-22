@@ -1,0 +1,56 @@
+// ═══ The application's persisted state ═══════════════════════════════════
+//
+// ONE CacheFile for the whole process, reached through appCache().
+//
+// This used to be two: main.hz built one and flushed it every frame, and
+// codeui.hz built a second one against the same path and wrote the open-tab
+// list into it. Two CacheFile objects over one file do not share reactive
+// state, and flush() only writes the instance whose own `data` is dirty --
+// so the instance that was written was never flushed and the instance that
+// was flushed was never written. Nothing persisted, silently: the session
+// on disk stayed frozen at whatever some earlier build had last saved.
+// That is the kind of bug that hides forever, because a stale cache still
+// restores *something* at startup.
+struct Cache {
+    // The open tabs, in order, and which one was showing. Restored on
+    // startup so the editor comes back up where it was left.
+    //
+    // Newline-delimited rather than a []str because the cache is DEEPLY
+    // reactive: a []str field becomes []rx.Reactive<str>, which cannot be
+    // assigned a plain array back. A path cannot contain a newline on any
+    // platform this targets, so it is an unambiguous separator.
+    openFiles: str = "";
+    activeFile: str | null = null;
+    // The single file the pre-tabs version stored. Kept only so an
+    // existing cache still opens something the first time this build runs;
+    // `files` takes over from then on.
+    file: str | null = null;
+
+    // ── Workspace ────────────────────────────────────────────────────────
+    //
+    // Both are OPTIONAL (`| none`) rather than defaulted, and that is load
+    // bearing. json.parse treats a key that is absent from the file as a
+    // failure of the whole object, and CacheFile responds to a failed parse
+    // by overwriting the file with a default-constructed Cache -- so adding
+    // a plain field would have thrown away every existing user's open tabs
+    // the first time this build ran. An optional field tolerates the
+    // missing key and reads back as none.
+    //
+    // The folder currently open as a workspace; none for "no folder open".
+    workspace: str | none = none;
+    // The last few workspaces, most recent first, newline-delimited for the
+    // same reason openFiles is.
+    recentWorkspaces: str | none = none;
+}
+
+extern C let g_cache: json.CacheFile<Cache> | none = none;
+
+fn appCache(): json.CacheFile<Cache> {
+    let existing = g_cache;
+    if existing {
+        return existing;
+    }
+    let created = json.CacheFile<Cache>("codeeditor.cache.json");
+    g_cache = created;
+    return created;
+}

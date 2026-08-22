@@ -54,6 +54,7 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // dispatcher until the second stroke arrives. VS Code puts most of
         // its two-stroke bindings behind this same ctrl+k prefix.
         { key: "ctrl+k ctrl+o", command: "workbench.action.files.openFolder" },
+        { key: "ctrl+r", command: "workbench.action.openRecent" },
 
         // Tabs.
         { key: "ctrl+w", command: "workbench.action.closeActiveEditor", when: "hasOpenTabs" },
@@ -111,6 +112,8 @@ fn keybindings(): mut Keybindings {
 struct WorkbenchCommands {
     openFile: CommandFn;
     openFolder: CommandFn;
+    closeFolder: CommandFn;
+    openRecent: CommandFn;
     closeActiveEditor: CommandFn;
     nextEditor: CommandFn;
     previousEditor: CommandFn;
@@ -119,6 +122,8 @@ struct WorkbenchCommands {
 fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands): void {
     keys.commands.register("workbench.action.files.openFile", handlers.openFile);
     keys.commands.register("workbench.action.files.openFolder", handlers.openFolder);
+    keys.commands.register("workbench.action.closeFolder", handlers.closeFolder);
+    keys.commands.register("workbench.action.openRecent", handlers.openRecent);
     keys.commands.register("workbench.action.closeActiveEditor", handlers.closeActiveEditor);
     keys.commands.register("workbench.action.nextEditor", handlers.nextEditor);
     keys.commands.register("workbench.action.previousEditor", handlers.previousEditor);

@@ -1,0 +1,304 @@
+import filedialog
+
+// ═══ Workspaces ══════════════════════════════════════════════════════════
+//
+// A workspace here is exactly what "Open Folder" means in VS Code: one
+// directory that the language servers are pointed at, that is remembered
+// across restarts, and that a list of recently-used ones is kept for.
+//
+// ── Why the language servers are tied to it so tightly ───────────────────
+//
+// The root is not decoration. tsserver decides which tsconfig.json owns a
+// file by searching upward from a starting point it is GIVEN, and
+// vue-language-server's whole notion of a workspace is fixed by the
+// `rootUri` of the one `initialize` request it ever receives. Neither can
+// be re-pointed afterwards: LSP does have didChangeWorkspaceFolders, but
+// this client never advertised the capability, and tsserver binds a file
+// to a project when the file is opened rather than on request.
+//
+// So changing the workspace means replacing both processes. That is what
+// applyWorkspace() does, and the sequencing matters -- see its comment.
+//
+// ── No folder open means no language servers ─────────────────────────────
+//
+// Deliberate. The alternative is to start them against SOME root -- the
+// editor's own working directory, or the folder of whichever file happened
+// to be opened first -- and that is precisely the bug this is meant to fix:
+// a server confidently resolving a file against a project that has nothing
+// to do with it, reporting missing imports and empty hovers, with no
+// indication anything is wrong. A file opened with no folder open still
+// edits, highlights (the TextMate engine is workspace-independent) and
+// saves; it just has no semantic layer, and the status bar says so.
+
+fn maxRecentWorkspaces(): int {
+    return 5;
+}
+
+// Whether `filepath` lives inside `folder`.
+//
+// A plain startsWith() is WRONG here and the difference is the whole point:
+// "/home/me/proj2/src/x.ts" starts with "/home/me/proj", so a prefix test
+// would hand a sibling checkout's file to the wrong project -- which is one
+// of the exact ways "it loaded the wrong project" happens. The separator
+// after the root has to be there too. The folder itself counts as inside.
+//
+// A free function rather than a method on VueLspBridge so it can be tested
+// without spawning two language servers; the bridge delegates to it.
+fn pathIsInsideFolder(filepath: str, folder: str): bool {
+    if folder.length == 0 || filepath.length == 0 {
+        return false;
+    }
+    let root = folder;
+    while root.length > 1 && (root.endsWith("/") || root.endsWith("\\")) {
+        root = root.slice(0, root.length - 1);
+    }
+    if !filepath.startsWith(root) {
+        return false;
+    }
+    if filepath.length == root.length {
+        return true;
+    }
+    // "/" as a root is the one case where the root already ends in the
+    // separator, so the next character is part of the name, not a boundary.
+    if root == "/" {
+        return true;
+    }
+    let next = filepath.slice(root.length, root.length + 1);
+    return next == "/" || next == "\\";
+}
+
+// Last path segment, minus any trailing separator -- "/home/me/proj/" and
+// "/home/me/proj" are both "proj". Distinct from codeui's fileNameOf(),
+// which does not have to care about trailing separators because a file
+// path never has one.
+fn folderNameOf(path: str): str {
+    let trimmed = path;
+    while trimmed.length > 1 && (trimmed.endsWith("/") || trimmed.endsWith("\\")) {
+        trimmed = trimmed.slice(0, trimmed.length - 1);
+    }
+    let start = 0;
+    for (let i = 0; i < trimmed.length; i++) {
+        if trimmed[i] == b"/" || trimmed[i] == b"\\" {
+            start = i + 1;
+        }
+    }
+    if start >= trimmed.length {
+        return trimmed;
+    }
+    return trimmed.slice(start, trimmed.length);
+}
+
+struct WorkspaceState {
+    // Absolute path of the open folder, "" when none is open.
+    path: rx.Reactive<str>;
+    // Its last segment, for the title bar. Derived, but stored rather than
+    // recomputed so the bar does not re-split a path every frame.
+    name: rx.Reactive<str>;
+    // Most recently used first. Includes the currently open workspace at
+    // index 0 whenever one is open.
+    recents: rx.ShallowReactive<[]str>;
+
+    // Bumped whenever the language servers are replaced. Every editor tab
+    // watches this and re-announces its document to the new servers -- see
+    // lspGenerationSeen in EditorView. Without it, tabs that were already
+    // open would keep believing they had told the servers about themselves
+    // and would sit there with no semantic support at all.
+    lspGeneration: rx.Reactive<int>;
+
+    fn constructor(): mut WorkspaceState {
+        let state = WorkspaceState {
+            path: rx.reactive<str>(""),
+            name: rx.reactive<str>(""),
+            recents: rx.shallowReactive<[]str>([]),
+            lspGeneration: rx.reactive<int>(0),
+        };
+        return state;
+    }
+}
+
+extern C let g_workspace: mut WorkspaceState | none = none;
+
+fn workspace(): mut WorkspaceState {
+    let existing = g_workspace;
+    if existing {
+        return existing;
+    }
+    let created = WorkspaceState();
+    g_workspace = created;
+    return created;
+}
+
+fn hasWorkspace(): bool {
+    let current: str = rx.get(workspace().path);
+    return current.length > 0;
+}
+
+// ── Persistence ──────────────────────────────────────────────────────────
+
+fn splitLines(joined: str): []str {
+    let result: []str = [];
+    for line in joined.split("\n") {
+        if line.length > 0 {
+            result.push(line);
+        }
+    }
+    return result;
+}
+
+fn joinLines(lines: []str): str {
+    let buffer = String("");
+    for (let i = 0; i < lines.length; i++) {
+        if i > 0 {
+            buffer.append(String("\n"));
+        }
+        buffer.append(String(lines[i]));
+    }
+    return buffer.cloneString();
+}
+
+fn persistWorkspace() {
+    let cache = appCache();
+    let current: str = rx.get(workspace().path);
+    cache.data.workspace := current;
+    let recents: []str = rx.get(workspace().recents);
+    cache.data.recentWorkspaces := joinLines(recents);
+}
+
+// Read the remembered workspace and recents back out of the cache. Does NOT
+// start the language servers -- main() does that once, after this, so that
+// startup takes the same path as any later workspace change.
+fn restoreWorkspaceFromCache() {
+    let cache = appCache();
+    let savedRecents = cache.data.recentWorkspaces;
+    if savedRecents {
+        workspace().recents := splitLines(savedRecents as str);
+    }
+    let savedWorkspace = cache.data.workspace;
+    if savedWorkspace {
+        let path = savedWorkspace as str;
+        if path.length > 0 {
+            // A folder that has since been deleted or unmounted must not
+            // become the open workspace: the servers would be initialized
+            // against a root that is not there, which fails in exactly the
+            // confusing way this whole file exists to avoid.
+            if fs.exists(path) {
+                workspace().path := path;
+                workspace().name := folderNameOf(path);
+            } else {
+                fmt.println("[workspace] remembered folder no longer exists, ignoring: ", path);
+            }
+        }
+    }
+}
+
+// Move `path` to the front of the recents list, dropping any duplicate and
+// trimming to the cap. Most-recent-first, like every editor's File menu.
+fn rememberRecent(path: str) {
+    if path.length == 0 {
+        return;
+    }
+    let updated: []str = [path];
+    // Bound to a typed local first: iterating the result of rx.get() on a
+    // shallow-reactive array directly does not lower (the compiler wants a
+    // plain array datatype in a for-each). Same reason codeui.hz always
+    // writes `let items: []TabItem = rx.get(tabs);`.
+    let previous: []str = rx.get(workspace().recents);
+    for existing in previous {
+        if existing != path && updated.length < maxRecentWorkspaces() {
+            updated.push(existing);
+        }
+    }
+    workspace().recents := updated;
+}
+
+// ── The language servers ─────────────────────────────────────────────────
+
+// Where this build's copy of vue-language-server and the TypeScript SDK
+// live. Repo-relative; the bridge resolves them against the working
+// directory. Unrelated to the project being EDITED, which is `projectRoot`.
+fn createLspBridge(projectRoot: str): VueLspBridge | none {
+    if projectRoot.length == 0 {
+        return none;
+    }
+    let bridge = VueLspBridge({
+        vueLanguageServerPath: "codeeditor/syntax-engine/node_modules/@vue/language-server/bin/vue-language-server.js",
+        tsdk: "codeeditor/syntax-engine/node_modules/typescript/lib",
+        nodeModulesDir: "codeeditor/syntax-engine/node_modules",
+        projectRoot: projectRoot,
+        projectName: folderNameOf(projectRoot),
+    });
+    if !bridge {
+        fmt.println("[workspace] language server failed to start: ", bridge.message);
+        return none;
+    }
+    let started: VueLspBridge = bridge;
+    return started;
+}
+
+// Replace whatever servers are running with ones rooted at the current
+// workspace. Safe to call with no workspace open, in which case it simply
+// leaves the editor with no semantic layer.
+//
+// Order matters. The OLD bridge is shut down first, so its two node
+// processes are already on their way out before the replacements are
+// spawned -- otherwise switching workspaces a few times would have four,
+// six, eight language servers alive at once, each holding a project's worth
+// of type information. Shutdown is non-blocking (see
+// VueLspBridge.shutdown), so this does not stall the frame.
+fn restartLanguageServers() {
+    let state = getState();
+    let previous = state.lspBridge;
+    if previous {
+        previous.shutdown();
+    }
+    let root: str = rx.get(workspace().path);
+    state.lspBridge = createLspBridge(root);
+    // Wakes every open editor tab: each one re-announces its document to
+    // the new servers. See lspGenerationSeen in EditorView.
+    workspace().lspGeneration := rx.get(workspace().lspGeneration) + 1;
+}
+
+// ── Commands ─────────────────────────────────────────────────────────────
+
+fn openWorkspace(path: str) {
+    if path.length == 0 {
+        return;
+    }
+    let current: str = rx.get(workspace().path);
+    if path == current {
+        // Already open. Re-rooting the servers at the folder they are
+        // already rooted at would throw away a warmed-up project for
+        // nothing.
+        return;
+    }
+    if !fs.exists(path) {
+        fmt.println("[workspace] no such folder: ", path);
+        return;
+    }
+    workspace().path := path;
+    workspace().name := folderNameOf(path);
+    rememberRecent(path);
+    persistWorkspace();
+    restartLanguageServers();
+    fmt.println("[workspace] opened ", path);
+}
+
+fn closeWorkspace() {
+    if !hasWorkspace() {
+        return;
+    }
+    workspace().path := "";
+    workspace().name := "";
+    persistWorkspace();
+    restartLanguageServers();
+}
+
+fn promptForWorkspace() {
+    // Start the dialog in the current workspace, so "open a sibling
+    // project" is two clicks rather than a walk from the home directory.
+    let current: str = rx.get(workspace().path);
+    let picked = filedialog.pickFolder({ defaultPath: current });
+    if picked is filedialog.DialogSuccess {
+        openWorkspace(picked.path);
+    }
+}

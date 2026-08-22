@@ -21,6 +21,7 @@ ui_styling = { path = "../stdlib/ui_styling" }
 ui_runtime = { path = "../stdlib/ui_runtime" }
 headwind = { path = "../stdlib/headwind" }
 tabs = { path = "../stdlib/tabs" }
+ui_widgets = { path = "../stdlib/ui_widgets" }
 renderer = { path = "../stdlib/renderer" }
 app = { path = "../stdlib/app" }
 wgpu = { path = "../stdlib/wgpu" }

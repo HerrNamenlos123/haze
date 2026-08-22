@@ -31,6 +31,13 @@ export struct LSPRequest<Params> {
     params: Params;
 }
 
+// `shutdown` takes no parameters and returns null; `exit` takes none
+// either. Both exist only so detach() can name a type for the generic
+// send helpers.
+export struct LSPShutdownParams {}
+export struct LSPShutdownResult {}
+export struct LSPExitParams {}
+
 export struct WorkspaceFolder {
     uri: str;
     name: str;
@@ -433,6 +440,48 @@ export struct Context<TInitializationOptions> {
         assert(this._running);
         this._serverProcess.join();
         this._running = false;
+    }
+
+    // Non-blocking teardown, for a server that has to be replaced while
+    // the application keeps running (e.g. the user opened a different
+    // project and the connection has to be re-established against a new
+    // root).
+    //
+    // stop() above cannot be used for that: join() BLOCKS until the child
+    // exits, and the child has not been told to exit, so it would hang the
+    // caller's frame loop indefinitely. Closing stdin is the actual exit
+    // signal -- every LSP server speaks the protocol over stdio and treats
+    // EOF as "we're done" -- and the process handle is handed back so the
+    // caller can reap it later, when it is convenient and when the child
+    // has actually gone (process.Process.isAlive() is non-blocking and
+    // reaps, after which join() returns immediately).
+    //
+    // The context must not be used afterwards: `_running` is cleared, so
+    // every send asserts.
+    fn detach(): process.Process {
+        assert(this._running);
+        // Ask the server to leave the way the protocol says to, BEFORE
+        // taking its stdin away. Closing stdin alone is not reliable: a
+        // server sitting in a read loop may simply idle at EOF rather than
+        // exiting, and then the process would hang around forever waiting
+        // for input that will never come.
+        //
+        // `shutdown` is a request whose reply is deliberately not waited
+        // for -- waiting means pumping this connection, and the caller is
+        // tearing it down precisely because it no longer wants to.
+        // `exit` is what actually ends the process, and per the spec a
+        // server must honour it whether or not the shutdown reply was
+        // read.
+        this.sendRequest<LSPShutdownParams, LSPShutdownResult>("shutdown", {}, (value: Result<LSPShutdownResult, LSPError>) => {});
+        this.sendNotification<LSPExitParams>("exit", {});
+        // Backstop, for a server that ignores `exit`.
+        this._serverProcess.closeStdin();
+        this._running = false;
+        return this._serverProcess;
+    }
+
+    fn isRunning(): bool {
+        return this._running;
     }
 }
 

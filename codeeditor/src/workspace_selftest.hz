@@ -1,0 +1,183 @@
+// ═══ Headless checks for the workspace rules ═════════════════════════════
+//
+// Run with:   CODEEDITOR_SELFTEST=1 <the codeeditor binary>
+//
+// The two things checked here are the ones whose failure mode is silent
+// rather than loud:
+//
+//   pathIsInsideFolder  decides whether a file is handed to the workspace's
+//                       TypeScript project or left to find its own. Getting
+//                       it wrong does not crash -- it produces an editor
+//                       that resolves a file against a project that has
+//                       nothing to do with it and reports confident
+//                       nonsense, which is the bug this whole change set
+//                       exists to fix.
+//
+//   rememberRecent      is the "last N workspaces" list. Off-by-one, a
+//                       missed de-duplication or a lost cap all look fine
+//                       until the menu has been used for a while.
+
+fn runWorkspaceSelfTest(run: mut KeyTestRun): void {
+    // ── folderNameOf ─────────────────────────────────────────────────────
+    run.check("folder name", folderNameOf("/home/me/proj"), "proj");
+    run.check("folder name, trailing slash", folderNameOf("/home/me/proj/"), "proj");
+    run.check("folder name, several trailing slashes", folderNameOf("/home/me/proj///"), "proj");
+    run.check("folder name, bare", folderNameOf("proj"), "proj");
+    run.check("folder name, root", folderNameOf("/"), "/");
+    run.check("folder name, windows separator", folderNameOf("C:\\code\\proj"), "proj");
+
+    // ── pathIsInsideFolder ───────────────────────────────────────────────
+    run.checkBool("file inside the folder",
+        pathIsInsideFolder("/home/me/proj/src/App.vue", "/home/me/proj"), true);
+    run.checkBool("file directly inside the folder",
+        pathIsInsideFolder("/home/me/proj/x.ts", "/home/me/proj"), true);
+    run.checkBool("the folder itself",
+        pathIsInsideFolder("/home/me/proj", "/home/me/proj"), true);
+    run.checkBool("trailing slash on the folder is ignored",
+        pathIsInsideFolder("/home/me/proj/x.ts", "/home/me/proj/"), true);
+
+    // THE case this function exists for: a sibling checkout whose name
+    // merely starts with the workspace's name. A plain startsWith() says
+    // yes here, and that is how a file ends up in the wrong project.
+    run.checkBool("sibling folder with a shared prefix is NOT inside",
+        pathIsInsideFolder("/home/me/proj2/src/App.vue", "/home/me/proj"), false);
+    run.checkBool("unrelated path is not inside",
+        pathIsInsideFolder("/etc/hosts", "/home/me/proj"), false);
+    run.checkBool("parent is not inside its child",
+        pathIsInsideFolder("/home/me", "/home/me/proj"), false);
+    run.checkBool("no workspace owns nothing",
+        pathIsInsideFolder("/home/me/proj/x.ts", ""), false);
+    run.checkBool("everything is inside the filesystem root",
+        pathIsInsideFolder("/home/me/proj/x.ts", "/"), true);
+
+    // ── recents ──────────────────────────────────────────────────────────
+    let noRecents: []str = [];
+    workspace().recents := noRecents;
+
+    rememberRecent("/a");
+    rememberRecent("/b");
+    rememberRecent("/c");
+    let afterThree: []str = rx.get(workspace().recents);
+    run.check("most recent first", joinLines(afterThree), "/c\n/b\n/a");
+
+    // Re-opening something already in the list moves it to the front
+    // instead of adding a second copy.
+    rememberRecent("/a");
+    let afterRepeat: []str = rx.get(workspace().recents);
+    run.check("re-opening promotes rather than duplicates", joinLines(afterRepeat), "/a\n/c\n/b");
+
+    // The cap holds, and it is the OLDEST that falls off.
+    rememberRecent("/d");
+    rememberRecent("/e");
+    rememberRecent("/f");
+    let afterCap: []str = rx.get(workspace().recents);
+    run.check("capped at five", f"{afterCap.length}", f"{maxRecentWorkspaces()}");
+    run.check("oldest dropped", joinLines(afterCap), "/f\n/e\n/d\n/a\n/c");
+
+    rememberRecent("");
+    let afterEmpty: []str = rx.get(workspace().recents);
+    run.check("empty path is not remembered", f"{afterEmpty.length}", f"{maxRecentWorkspaces()}");
+
+    let clearRecents: []str = [];
+    workspace().recents := clearRecents;
+
+    // ── the newline-delimited persistence format ─────────────────────────
+    let three: []str = ["/one", "/two", "/three"];
+    let roundTrip: []str = splitLines(joinLines(three));
+    run.check("round trip", joinLines(roundTrip), "/one\n/two\n/three");
+    run.check("blank lines are dropped", f"{splitLines("\n\n").length}", "0");
+    run.check("empty string is no entries", f"{splitLines("").length}", "0");
+}
+
+// ═══ The workspace switch, with real language servers ════════════════════
+//
+// Gated behind CODEEDITOR_SELFTEST=lsp because it spawns four node
+// processes and takes a few seconds. It is here because replacing a running
+// language server is the riskiest thing in this change set: the only join
+// primitive available BLOCKS, so a naive teardown freezes the editor, and a
+// teardown that simply forgets the old processes leaks two multi-hundred-
+// megabyte servers per workspace switch. Neither failure is visible from
+// inside the editor -- one looks like a hang, the other like the machine
+// slowly running out of memory -- so both are checked here.
+fn runLspRestartSelfTest(run: mut KeyTestRun): void {
+    let repoRoot = getCwdAbsolute();
+
+    // A workspace is required for the servers to start at all -- with none
+    // open the editor deliberately runs without them.
+    workspace().path := repoRoot;
+    workspace().name := folderNameOf(repoRoot);
+    restartLanguageServers();
+
+    let first = getState().lspBridge;
+    if !first {
+        run.check("language servers start for a workspace", "no bridge", "a bridge");
+        return;
+    }
+    run.check("servers are rooted at the workspace", first.projectRoot(), repoRoot);
+    run.checkBool("a file in the workspace is owned",
+        first.ownsFile(f"{repoRoot}/codeeditor/src/main.hz"), true);
+    run.checkBool("a file outside it is not",
+        first.ownsFile("/etc/hosts"), false);
+    run.check("nothing retired yet", f"{retiredProcessCount()}", "0");
+
+    // Wait until the connection is actually LIVE before switching. This is
+    // the case that matters and the one that originally failed: a server
+    // still in the middle of starting up dies from almost anything, while a
+    // fully initialized one sits in its read loop and has to be asked to
+    // leave. Testing the teardown against a half-started process would have
+    // passed without proving anything.
+    let readyWait = 0;
+    while !first.isReady() && readyWait < 300 {
+        first.loop();
+        time.sleep(0.05);
+        readyWait = readyWait + 1;
+    }
+    run.checkBool("the connection came up before the switch", first.isReady(), true);
+    fmt.println("  (language server handshake took ", readyWait, " x 50ms)");
+
+    // Switch. The OLD servers must be told to exit and handed to the
+    // reaper, and the new ones must come up against the new root.
+    let second = f"{repoRoot}/codeeditor";
+    workspace().path := second;
+    workspace().name := folderNameOf(second);
+    restartLanguageServers();
+
+    // Both of the previous bridge's processes, awaiting reaping.
+    run.check("the old servers were retired", f"{retiredProcessCount()}", "2");
+
+    let replacement = getState().lspBridge;
+    if !replacement {
+        run.check("servers restart after a switch", "no bridge", "a bridge");
+        return;
+    }
+    run.check("the new servers are rooted at the new folder", replacement.projectRoot(), second);
+
+    // Every open tab is told to re-introduce itself; without this the tabs
+    // that were already open keep believing they are known to servers that
+    // no longer exist.
+    run.checkBool("the switch bumped the LSP generation",
+        rx.get(workspace().lspGeneration) > 0, true);
+
+    // The retired processes must actually go away. This is the loop the
+    // frame pump runs; it must converge without ever blocking.
+    let waited = 0;
+    while retiredProcessCount() > 0 && waited < 100 {
+        reapRetiredProcesses();
+        time.sleep(0.1);
+        waited = waited + 1;
+    }
+    run.check("retired servers are reaped", f"{retiredProcessCount()}", "0");
+
+    // Leave nothing running behind the test.
+    let last = getState().lspBridge;
+    if last {
+        last.shutdown();
+    }
+    let drain = 0;
+    while retiredProcessCount() > 0 && drain < 100 {
+        reapRetiredProcesses();
+        time.sleep(0.1);
+        drain = drain + 1;
+    }
+    run.check("teardown leaves nothing behind", f"{retiredProcessCount()}", "0");
+}

@@ -2360,6 +2360,17 @@ export opaque struct UIContext {
         let idPath = lookup.path;
 
         if props.anchor is not none {
+            // NOTE: publishing an anchor target works, but CONSUMING one via
+            // presets.anchorTo() currently panics inside ui_layout's
+            // resolveFloating(): TypeErasedBox checks identity with
+            // T.fingerprint, and the fingerprint computed for
+            // ui_elements.DivElement where the box is written here does not
+            // match the one computed for the same type where it is read in
+            // ui_layout. The panic even names the identical type on both
+            // sides. Nothing in the repo used anchorTo(), so this had never
+            // been hit. Until that is fixed, position floating elements
+            // with presets.absolute() against a positioned ancestor -- see
+            // the editor's hover popup and ui_widgets' Dropdown.
             props.anchor := TypeErasedBox<ui_elements.DivElement>(element);
         }
 

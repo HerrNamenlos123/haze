@@ -1,0 +1,13 @@
+name = "ui_widgets"
+id = "Uw1dGe7s"
+version = "0.0.1"
+description = "Generic, reusable widgets: Button and Dropdown (controlled, with render-callback slots)"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+ui_components = { path = "../ui_components" }
+ui_elements = { path = "../ui_elements" }
+ui_styling = { path = "../ui_styling" }
+headwind = { path = "../headwind" }

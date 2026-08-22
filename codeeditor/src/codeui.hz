@@ -828,7 +828,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // told apart by the uri on each request, which is how LSP is meant
         // to be used and what keeps one vue-language-server + tsserver pair
         // serving the whole project instead of one pair per open file.
-        let vueBridge = getState().lspBridge;
+        // Deliberately NOT captured into a local here, the way it used to
+        // be. The bridge is REPLACED whenever the workspace changes (new
+        // folder, new project root, new server processes -- see
+        // restartLanguageServers in workspace.hz), and a tab holding the
+        // one it was mounted with would go on talking to a connection
+        // whose processes have exited. Every use below re-reads
+        // getState().lspBridge instead.
 
         // ── Hover state ──────────────────────────────────────────────
         //
@@ -2220,6 +2226,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // told about the file.
         let lspDocumentOpened = rx.reactive<bool>(false);
 
+        // Which set of language servers this tab has introduced itself to.
+        // Compared against workspace().lspGeneration, which is bumped every
+        // time they are replaced -- see the reset in the per-frame LSP
+        // block below.
+        let lspGenerationSeen = rx.reactive<int>(-1);
+
         // Byte length of the document's LAST line, as it was before the
         // edit currently being processed.
         //
@@ -2265,6 +2277,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 lspLastLineLength := doc.lineLength(doc.lineCount() - 1);
             }
 
+            let vueBridge = getState().lspBridge;
             if vueBridge && rx.get(lspDocumentOpened) && lspLanguageId.length > 0 {
                 let replacement = "";
                 for (let i = 0; i < change.insertedCount; i++) {
@@ -2492,7 +2505,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let lspMemStat = rx.reactive<str | none>(none);
 
         let updateStats = () => {
+            let vueBridge = getState().lspBridge;
             if !vueBridge {
+                lspMemStat := none;
                 return;
             }
             let memory = vueBridge.getSystemMemoryUtilization();
@@ -2555,6 +2570,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // nor hovers. Skipping the open alone would be worse than
             // skipping both -- hover requests naming a document the server
             // was never told about are answered against nothing.
+            let vueBridge = getState().lspBridge;
+
+            // A workspace switch replaces both language servers, and the
+            // replacements have never heard of this document. Everything
+            // below is guarded by one-shot latches (opened once, semantic
+            // tokens requested once per version), so without clearing them
+            // an already-open tab would sit there believing it had already
+            // introduced itself and would silently lose every semantic
+            // feature for the rest of its life. Reading the generation here
+            // is also what subscribes this computed to the switch.
+            let generation = rx.get(workspace().lspGeneration);
+            if rx.get(lspGenerationSeen) != generation {
+                lspGenerationSeen := generation;
+                lspDocumentOpened := false;
+                // -1 rather than 0: 0 is a real document version, so the
+                // guard has to be reset to something no version can equal.
+                semanticRequestedVersion := -1;
+            }
+
             if vueBridge && filePath.length > 0 && lspLanguageId.length > 0 {
                 // openDocument() is a ONE-SHOT (it early-returns once the
                 // document is open), but the argument was still being
@@ -3705,7 +3739,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     // slow start reads as "starting up", not as "broken".
                     if rx.get(hoverRequest) {
                         let pending = rx.get(hoverResult);
-                        let ready = vueBridge && vueBridge.hoverAvailable();
+                        let bridgeForHover = getState().lspBridge;
+                        let ready = bridgeForHover && bridgeForHover.hoverAvailable();
                         let hoverText = pending ? pending as str
                             : (ready ? "Loading..." : "Starting language server...");
 
@@ -4037,7 +4072,11 @@ fn fileNameOf(path: str): str {
 export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
 
-        let cache = json.CacheFile<Cache>("codeeditor.cache.json");
+        // The ONE cache for the process -- see appcache.hz. This used to
+        // build a second CacheFile over the same path as main.hz's, which
+        // meant every tab-list write went to an instance nobody ever
+        // flushed while the flushed instance was never written.
+        let cache = appCache();
 
         // The open tabs, and which one is showing.
         //
@@ -4183,21 +4222,15 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             openFile(cache.data.file as str);
         }
 
+        // Menu-bar state, shared by the two halves of the title bar (the
+        // row, and the floating menu that must be declared at the very end
+        // of the tree -- see titlebar.hz for why they cannot be one
+        // component).
+        let titleBarState = TitleBarState(ui);
+
         let promptForFile = () => {
             if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
                 openFile(picked.path);
-            }
-        };
-
-        // STUB. The dialog is real and returns a real path, but there is
-        // nowhere to put it: this editor has no workspace/folder model,
-        // only a flat list of open files. It exists so ctrl+k ctrl+o is a
-        // live end-to-end demonstration that a two-stroke chord resolves
-        // and reaches its command; opening a folder AS a workspace is the
-        // actual feature and is deliberately not part of this change.
-        let promptForFolder = () => {
-            if let picked = filedialog.pickFolder(); picked is filedialog.DialogSuccess {
-                fmt.println("[keybindings] TODO workbench.action.files.openFolder: ", picked.path);
             }
         };
 
@@ -4237,7 +4270,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // other's contents.
         registerWorkbenchCommands(keybindings(), WorkbenchCommands {
             openFile: () => { promptForFile(); },
-            openFolder: () => { promptForFolder(); },
+            openFolder: () => { promptForWorkspace(); },
+            closeFolder: () => { closeWorkspace(); },
+            // No command palette to list recents in yet, so this opens the
+            // File menu, which is where they are.
+            openRecent: () => { titleBarState.openMenu := menuFile(); },
             closeActiveEditor: () => { closeActiveEditor(); },
             nextEditor: () => { cycleEditor(1); },
             previousEditor: () => { cycleEditor(-1); },
@@ -4290,6 +4327,12 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.hGrow(),
                     presets.bg("#181818"),
                     presets.textColor("#FFF"),
+                    // Makes this the containing block for the title bar's
+                    // menu, which is absolutely positioned and declared at
+                    // the very end of this subtree -- see titlebar.hz. The
+                    // root already fills the viewport, so nothing that
+                    // previously fell back to the viewport moves.
+                    presets.relative(),
                 ],
                 focusable: true,
                 // THE dispatch point for the whole window.
@@ -4312,7 +4355,28 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         event.stopPropagation();
                     }
                 },
+                // Click-outside for the menus. Capture phase for the same
+                // reason the keyboard uses it: this is the only handler
+                // that sees every press regardless of what is underneath.
+                // It deliberately does NOT fire for presses on the bar or
+                // the menu itself -- see dismissMenusOnPress.
+                onPointerDownCapture: (event: ui_components.PointerEvent) => {
+                    dismissMenusOnPress(titleBarState);
+                },
             }, () => {
+                let openMenu = rx.get(titleBarState.openMenu);
+                let menuItems: []ui_widgets.DropdownItem = [];
+                if openMenu == menuFile() {
+                    menuItems = buildFileMenuItems();
+                }
+
+                TitleBar(ui, titleBarState, TitleBarArgs {
+                    id: 100,
+                    documentName: current >= 0 ? fileNameOf(pathForKey(current)) : "",
+                    workspaceName: rx.get(workspace().name),
+                    openMenu: openMenu,
+                });
+
                 if items.length == 0 {
                     // Nothing open. Say so, rather than showing an empty
                     // grey rectangle that looks like a failure to start.
@@ -4341,8 +4405,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             presets: [presets.textColor("#7A7A7A")],
                         });
                     });
-                    return;
                 }
+                else {
 
                 tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
                     id: 2,
@@ -4368,6 +4432,20 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             active: key == rx.get(activeKey),
                         });
                     },
+                });
+
+                }
+
+                // LAST, on purpose, and this is load bearing: the menu
+                // floats over the editor, and hit-testing is decided by
+                // declaration order (last sibling wins), not by z-index.
+                // Declared any earlier, the menu would be drawn correctly
+                // and then have every one of its clicks stolen by the
+                // editor underneath it. See titlebar.hz.
+                TitleBarMenus(ui, titleBarState, TitleBarMenusArgs {
+                    id: 101,
+                    openMenu: openMenu,
+                    items: menuItems,
                 });
             });
         };

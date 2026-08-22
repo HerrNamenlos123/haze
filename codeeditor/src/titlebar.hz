@@ -1,0 +1,353 @@
+import ui_elements
+import ui_styling
+import ui_components
+import ui_widgets
+import headwind
+
+// ═══ The title bar ═══════════════════════════════════════════════════════
+//
+// A menu strip across the top of the window: menu buttons on the left, and
+// what is being edited in the middle, the way VS Code's title bar reads
+// ("App.vue — my-project").
+//
+// It is NOT the OS window title bar. The window still has its real frame
+// for now; this is drawn inside it, in the place a custom title bar will
+// eventually go. Everything here is written so that swap is additive --
+// when the window becomes borderless, this row gains a drag region and
+// minimise/maximise/close buttons on the right and nothing else about it
+// has to change.
+//
+// ── Why this is two components ───────────────────────────────────────────
+//
+// TitleBar() draws the row. TitleBarMenus() draws the open dropdown, and
+// must be declared as the LAST child of the application root, not inside
+// the row.
+//
+// That is not a stylistic choice. Hit-testing walks the element tree in
+// reverse child order and the first subtree containing the point wins,
+// ignoring z-index entirely (UIContext.collectHitPath). The dropdown floats
+// over the editor, so it PAINTS correctly wherever it is declared -- every
+// floating element paints above in-flow content -- but if it were declared
+// inside the row, which is the root's first child, every click on it would
+// be swallowed by the editor, which is a later sibling. Declared last, it
+// wins both. `anchor`/`anchorTo` is what lets it still position itself
+// against the row it is no longer inside.
+//
+// Both halves share one TitleBarState, created by the shell.
+
+fn titleBarHeight(): real {
+    return 30.0;
+}
+
+// Horizontal padding of the row. The dropdown's left offset is this same
+// value, so the menu lines up with the button it drops from.
+fn titleBarPaddingX(): real {
+    return 6.0;
+}
+
+fn menuNone(): int { return -1; }
+fn menuFile(): int { return 0; }
+
+// Dropdown item keys. Recents are offset into their own range so a recent
+// at index 0 cannot collide with a fixed command.
+const comptime ITEM_OPEN_FILE = 1;
+const comptime ITEM_OPEN_FOLDER = 2;
+const comptime ITEM_CLOSE_FOLDER = 3;
+const comptime ITEM_RECENT_BASE = 100;
+
+struct TitleBarState {
+    // Which menu is open, menuNone() for none. An int rather than a bool
+    // per menu because menus are mutually exclusive by definition, and
+    // because that is what makes adding a second one free.
+    openMenu: rx.Reactive<int>;
+
+    // Answering "did that press land inside the menu UI?" -- see
+    // dismissMenusOnPress.
+    barRef: ui_components.ElementRef<ui_elements.DivElement>;
+    panelRef: ui_components.ElementRef<ui_elements.DivElement>;
+
+    fn constructor(ui: ui_components.UIContext): mut TitleBarState {
+        let state = TitleBarState {
+            openMenu: rx.reactive<int>(menuNone()),
+            barRef: ui.ref<ui_elements.DivElement>(),
+            panelRef: ui.ref<ui_elements.DivElement>(),
+        };
+        return state;
+    }
+}
+
+// Close whatever menu is open, unless the press that triggered this landed
+// inside the bar or inside the menu panel itself.
+//
+// Called from a capture-phase handler on the application ROOT, which is the
+// only place that sees every press regardless of what is under the pointer.
+// Hover is resolved from the current frame's hit path before any event is
+// dispatched, so both answers below are already correct by the time this
+// runs.
+//
+// The bar is excluded as well as the panel because a press on a menu button
+// must reach that button: clicking the open menu's own button has to close
+// it (the button toggles), and clicking a different one has to switch to
+// it. Dismissing here first would make the first case reopen instead.
+fn dismissMenusOnPress(state: mut TitleBarState) {
+    if rx.get(state.openMenu) == menuNone() {
+        return;
+    }
+    let bar = rx.get(state.barRef);
+    if bar && bar.hover() {
+        return;
+    }
+    let panel = rx.get(state.panelRef);
+    if panel && panel.hover() {
+        return;
+    }
+    state.openMenu := menuNone();
+}
+
+fn closeMenus(state: mut TitleBarState) {
+    state.openMenu := menuNone();
+}
+
+// The File menu, rebuilt each frame from the current workspace. Cheap, and
+// it means the recents list and the enabled/disabled states are never a
+// frame stale.
+fn buildFileMenuItems(): []ui_widgets.DropdownItem {
+    let items: []ui_widgets.DropdownItem = [];
+    items.push(ui_widgets.DropdownItem { key: ITEM_OPEN_FILE, label: "Open File...", shortcut: "Ctrl+O" });
+    items.push(ui_widgets.DropdownItem { key: ITEM_OPEN_FOLDER, label: "Open Folder...", shortcut: "Ctrl+K Ctrl+O" });
+
+    let recents: []str = rx.get(workspace().recents);
+    if recents.length > 0 {
+        items.push(ui_widgets.DropdownItem { key: 0, separator: true });
+        items.push(ui_widgets.DropdownItem { key: 0, label: "Recent Workspaces", header: true });
+        let current: str = rx.get(workspace().path);
+        for (let i = 0; i < recents.length; i++) {
+            let path = recents[i];
+            items.push(ui_widgets.DropdownItem {
+                key: ITEM_RECENT_BASE + i,
+                // The folder NAME is what identifies a project to a
+                // reader; the path is shown after it for the case where
+                // two checkouts share a name, which is exactly when the
+                // name alone would be useless.
+                label: f"{folderNameOf(path)}",
+                shortcut: path,
+                checked: path == current,
+            });
+        }
+    }
+
+    items.push(ui_widgets.DropdownItem { key: 0, separator: true });
+    items.push(ui_widgets.DropdownItem {
+        key: ITEM_CLOSE_FOLDER,
+        label: "Close Folder",
+        enabled: hasWorkspace(),
+    });
+    return items;
+}
+
+fn runFileMenuItem(key: int) {
+    if key == ITEM_OPEN_FILE {
+        // Routed through the command registry rather than calling the
+        // shell's closure directly, so a menu entry and its keyboard
+        // shortcut are provably the same action -- there is one definition
+        // of "open a file" and both reach it. See keybindings.hz.
+        keybindings().commands.run("workbench.action.files.openFile");
+        return;
+    }
+    if key == ITEM_OPEN_FOLDER {
+        keybindings().commands.run("workbench.action.files.openFolder");
+        return;
+    }
+    if key == ITEM_CLOSE_FOLDER {
+        keybindings().commands.run("workbench.action.closeFolder");
+        return;
+    }
+    if key >= ITEM_RECENT_BASE {
+        let index = key - ITEM_RECENT_BASE;
+        let recents: []str = rx.get(workspace().recents);
+        if index >= 0 && index < recents.length {
+            openWorkspace(recents[index]);
+        }
+    }
+}
+
+struct TitleBarArgs {
+    id: int;
+    // What is being edited, for the middle of the bar. Empty when nothing
+    // is open.
+    documentName: str = "";
+    // The open folder's name, "" for none.
+    workspaceName: str = "";
+    // Which menu the shell currently has open. Passed IN rather than read
+    // from the shared state inside the template, so that props equality
+    // actually describes what this component draws -- a component that
+    // renders from reactives its props say nothing about is a component
+    // whose props comparison is a lie.
+    openMenu: int = -1;
+
+    fn operator!=(other: TitleBarArgs) {
+        return this.id != other.id
+            || this.documentName != other.documentName
+            || this.workspaceName != other.workspaceName
+            || this.openMenu != other.openMenu;
+    }
+}
+
+// The row. Declare this FIRST in the application root.
+export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: TitleBarArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarArgs>) => {
+        ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
+
+        return (): void => {
+            let props = instance.props();
+
+            ui.div({
+                id: 1,
+                ref: state.barRef,
+                style: {
+                    height: titleBarHeight(),
+                    padding: ui_styling.StylePaddingFull {
+                        left: titleBarPaddingX(),
+                        right: titleBarPaddingX(),
+                        top: 0.0,
+                        bottom: 0.0,
+                    },
+                },
+                presets: [
+                    headwind.presets.row(),
+                    headwind.presets.wGrow(),
+                    headwind.presets.crossAlign(ui_styling.CrossAlign.Center),
+                    headwind.presets.bg("#3C3C3C"),
+                    headwind.presets.borderB(1),
+                    headwind.presets.borderColor("#2B2B2B"),
+                    // NO overflowHidden here. A floating element inherits
+                    // the clip rectangle of the element it is attached to,
+                    // so clipping this row would clip the menu that hangs
+                    // off it down to 30 pixels tall.
+                    headwind.presets.cursorDefault(),
+                ],
+            }, (): void => {
+                ui_widgets.Button(ui, ui_widgets.ButtonArgs {
+                    id: 1,
+                    label: "File",
+                    selected: props.openMenu == menuFile(),
+                    style: { paddingX: 8.0, paddingY: 4.0 },
+                    onClick: () => {
+                        // Toggle. The root's capture handler deliberately
+                        // leaves presses on the bar alone precisely so this
+                        // can close a menu that is already open -- see
+                        // dismissMenusOnPress.
+                        if rx.get(state.openMenu) == menuFile() {
+                            state.openMenu := menuNone();
+                        } else {
+                            state.openMenu := menuFile();
+                        }
+                    },
+                });
+
+                // Pushes the title to the middle of the remaining space.
+                ui.div({
+                    id: 2,
+                    style: { width: ui_styling.SizeMode.Grow },
+                    presets: [headwind.presets.row(), headwind.presets.hFit()],
+                }, (): void => {});
+
+                let workspaceName = props.workspaceName;
+                let title = props.documentName;
+                if workspaceName.length > 0 {
+                    title = title.length > 0
+                        ? f"{title} — {workspaceName}"
+                        : workspaceName;
+                }
+                if title.length == 0 {
+                    title = "Haze CodeEditor";
+                }
+                ui.text({
+                    id: 3,
+                    text: title,
+                    presets: [
+                        headwind.presets.textColor("#CCCCCC"),
+                        headwind.presets.noWrap(),
+                    ],
+                });
+
+                // Mirrors the spacer above so the title stays centred
+                // rather than drifting left by half the File button.
+                ui.div({
+                    id: 4,
+                    style: { width: ui_styling.SizeMode.Grow },
+                    presets: [headwind.presets.row(), headwind.presets.hFit()],
+                }, (): void => {});
+            });
+        };
+    });
+}
+
+struct TitleBarMenusArgs {
+    id: int;
+    openMenu: int = -1;
+    // The open menu's contents, built by the shell (buildFileMenuItems()).
+    // Passed as props for the same reason TitleBarArgs.openMenu is: it is
+    // what this component draws, so it is what its equality has to be
+    // about. Empty whenever no menu is open.
+    items: []ui_widgets.DropdownItem = [];
+
+    fn operator!=(other: TitleBarMenusArgs) {
+        if this.id != other.id
+            || this.openMenu != other.openMenu
+            || this.items.length != other.items.length {
+            return true;
+        }
+        let i = 0;
+        while i < this.items.length {
+            if this.items[i].key != other.items[i].key
+                || this.items[i].label != other.items[i].label
+                || this.items[i].shortcut != other.items[i].shortcut
+                || this.items[i].enabled != other.items[i].enabled
+                || this.items[i].separator != other.items[i].separator
+                || this.items[i].header != other.items[i].header
+                || this.items[i].checked != other.items[i].checked {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}
+
+// The open menu. Declare this LAST in the application root -- see the
+// header comment for why that is a requirement and not a preference.
+export fn TitleBarMenus(ui: ui_components.UIContext, state: mut TitleBarState, args: TitleBarMenusArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarMenusArgs>) => {
+        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
+
+        return (): void => {
+            let props = instance.props();
+            let isFileOpen = props.openMenu == menuFile();
+
+            ui_widgets.Dropdown(ui, ui_widgets.DropdownArgs {
+                id: 1,
+                open: isFileOpen,
+                items: props.items,
+                panelRef: state.panelRef,
+                // Absolute, in the application root's coordinate space --
+                // the root is presets.relative(), so this is measured from
+                // the top-left of the window. Directly under the bar and
+                // flush with the left edge of its content box, which is
+                // where the File button is. See dropdown.hz for why this is
+                // plain absolute positioning rather than anchoring to the
+                // button itself.
+                offsetX: titleBarPaddingX(),
+                offsetY: titleBarHeight(),
+                onSelect: (key: int) => {
+                    // Close FIRST. Several of these commands open a modal
+                    // native dialog that blocks this thread; leaving the
+                    // menu up behind it looks like the click was ignored,
+                    // and it would still be up when the dialog returns.
+                    closeMenus(state);
+                    runFileMenuItem(key);
+                },
+            });
+        };
+    });
+}

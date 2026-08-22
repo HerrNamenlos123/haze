@@ -56,6 +56,8 @@ fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
     registerWorkbenchCommands(keys, WorkbenchCommands {
         openFile: () => { run.record("openFile"); },
         openFolder: () => { run.record("openFolder"); },
+        closeFolder: () => { run.record("closeFolder"); },
+        openRecent: () => { run.record("openRecent"); },
         closeActiveEditor: () => { run.record("close"); },
         nextEditor: () => { run.record("next"); },
         previousEditor: () => { run.record("prev"); },
@@ -76,7 +78,10 @@ fn checkWhen(run: mut KeyTestRun, name: str, source: str, ctx: WhenContext, expe
     run.checkBool(name, evalWhen(expr, ctx), expected);
 }
 
-fn runKeybindingSelfTest(): int {
+// `mode` is the value of CODEEDITOR_SELFTEST. "lsp" additionally runs the
+// slow test that spawns real language servers; anything else runs only the
+// fast, headless checks.
+fn runEditorSelfTest(mode: str): int {
     let run = KeyTestRun {};
 
     // ── Keystroke parsing ────────────────────────────────────────────────
@@ -248,9 +253,29 @@ fn runKeybindingSelfTest(): int {
     run.checkBool("unknown command is consumed", unknown.handled(), true);
     run.checkBool("unknown command is reported", unknown.outcome == DispatchOutcome.UnknownCommand, true);
 
-    fmt.println("keybindings self-test: ", run.checks - run.failures, "/", run.checks, " passed");
+    runWorkspaceSelfTest(run);
+
+    if mode == "lsp" {
+        // Needs the shared State, because restarting the language servers
+        // swaps the bridge held there.
+        let engine = HighlightEngine("codeeditor/syntax-engine/syntax-engine");
+        if !engine {
+            run.check("highlight engine starts", "no engine", "an engine");
+        } else {
+            initState({
+                highlightEngine: engine,
+                reactiveCounter: rx.reactive<int>(0),
+            });
+            runLspRestartSelfTest(run);
+            // Deliberately NOT engine.stop(): that joins the syntax engine,
+            // which blocks until it exits, and it has not been asked to.
+            // The process ends with this one.
+        }
+    }
+
+    fmt.println("editor self-test: ", run.checks - run.failures, "/", run.checks, " passed");
     if run.failures > 0 {
-        fmt.println("keybindings self-test FAILED (", run.failures, " failures)");
+        fmt.println("editor self-test FAILED (", run.failures, " failures)");
         return 1;
     }
     return 0;

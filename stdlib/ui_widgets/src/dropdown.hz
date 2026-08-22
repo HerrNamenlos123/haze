@@ -1,0 +1,399 @@
+import ui_elements
+import ui_styling
+import ui_components
+import headwind
+type presets = headwind.presets;
+
+// Named so a closure literal can be assigned into DivProps.onPointerDown's
+// `| none` union: a handler that ONLY calls event.stopPropagation() infers
+// as `pure`, which does not implicitly convert into the (impure) union
+// member. Binding it through a named type first is the standard way round
+// that in this language.
+type PointerHandler = (e: ui_components.PointerEvent) => none;
+
+// === Dropdown =================================================
+//
+// A floating panel of selectable rows, hung underneath some other element.
+// Menus, "open recent" lists, pickers, context menus.
+//
+// ── It is CONTROLLED, and it is not a child of its trigger ────
+//
+// Two design decisions that are not arbitrary and that a caller has to
+// know about:
+//
+// 1. `open` is a prop, not internal state. The component never opens or
+//    closes itself. That is what lets a menu BAR make its menus mutually
+//    exclusive -- one owner holds "which menu is open", and no dropdown
+//    has to know the others exist. It is the same reason a text input
+//    takes `value` rather than remembering it.
+//
+// 2. The panel must be declared LATE in the tree -- typically as the last
+//    child of the application root -- and NOT inside the button it drops
+//    from. Hit-testing walks the element tree in reverse child order and
+//    the first subtree that contains the point wins, ignoring z-index
+//    entirely (see UIContext.collectHitPath). So a panel declared inside a
+//    toolbar that is the FIRST child of the root would be painted above
+//    the content (floating elements always are) but every click on it
+//    would be stolen by the content, which is a later sibling. Declaring
+//    it last fixes hit-testing.
+//
+//    Since the panel is therefore nowhere near the button it belongs to,
+//    it is positioned with plain absolute coordinates against the nearest
+//    POSITIONED ancestor -- so the caller must give that ancestor
+//    presets.relative() and pass offsets measured from its top-left. The
+//    obvious alternative, publishing the button as an anchor target and
+//    using presets.anchorTo(), is not usable: it panics inside ui_layout's
+//    resolveFloating() on a TypeErasedBox fingerprint mismatch (the same
+//    type fingerprints differently in ui_components, where the box is
+//    written, and ui_layout, where it is read). Absolute positioning
+//    against a relative ancestor is the mechanism the editor's own hover
+//    popup already uses.
+//
+// ── Dismissal is the owner's job, on purpose ──────────────────
+//
+// There is no scrim and no click-outside handling in here, because "what
+// counts as outside" is a question only the owner can answer: a menu bar
+// wants a click on ANOTHER menu button to switch menus rather than merely
+// close this one. The recipe, which is what codeeditor's title bar does:
+//
+//   - keep a ref on the trigger row and pass `panelRef` for this panel
+//   - put onPointerDownCapture on the application root
+//   - in it, close the menu UNLESS row.hover() or panel.hover() is true
+//
+// Hover state is resolved from the current frame's hit path before any
+// event is dispatched, so both answers are already correct when the
+// capture handler runs.
+//
+// ── Slots ─────────────────────────────────────────────────────
+//
+// `renderItem`, `renderHeader` and `renderFooter` are Vue-style slots
+// expressed as callbacks -- the same mechanism stdlib/tabs uses for
+// `renderTab`. Element declaration is ambient (the context keeps a
+// current-parent stack), so whatever a callback declares becomes a child
+// of the row or panel that was open when it ran. `renderItem` replaces one
+// row's CONTENT only; the row itself, its hover highlight and its click
+// handling still come from here.
+
+export struct DropdownItem {
+    key: int = 0;
+    label: str = "";
+    // Right-aligned accelerator text ("Ctrl+O"). Cosmetic only -- this
+    // component does not bind anything.
+    shortcut: str = "";
+    enabled: bool = true;
+    // A horizontal rule. `key` and `label` are ignored, and it is never
+    // selectable.
+    separator: bool = false;
+    // A non-interactive caption above a group of items ("Recent").
+    header: bool = false;
+    // A check/bullet down the left, for items representing a current
+    // choice -- which workspace is open, which theme is active.
+    checked: bool = false;
+
+    fn operator!=(other: DropdownItem) {
+        return this.key != other.key
+            || this.label != other.label
+            || this.shortcut != other.shortcut
+            || this.enabled != other.enabled
+            || this.separator != other.separator
+            || this.header != other.header
+            || this.checked != other.checked;
+    }
+}
+
+export inline struct DropdownStyle {
+    bg: str = "#1F1F1F";
+    borderColor: str = "#454545";
+    textColor: str = "#CCCCCC";
+    textColorDisabled: str = "#6A6A6A";
+    // Headers and shortcut columns are deliberately dimmer than the label:
+    // they are context, not the thing being chosen.
+    textColorMuted: str = "#8A8A8A";
+    itemBgHover: str = "#04395E";
+    separatorColor: str = "#454545";
+    rounded: real = 4.0;
+}
+
+export struct DropdownArgs {
+    id: int;
+    // See the note above: the owner holds this.
+    open: bool = false;
+    items: []DropdownItem = [];
+
+    // The panel's top-left, in the coordinate space of the nearest
+    // POSITIONED ancestor (see the note above). For a menu bar these are
+    // the button's x and the bar's height.
+    offsetX: real = 0.0;
+    offsetY: real = 0.0;
+    minWidth: real = 200.0;
+
+    style: DropdownStyle = {};
+
+    // Handed the panel's own div, so the owner can answer "is the pointer
+    // inside the open menu?" when deciding whether a click dismisses it.
+    panelRef?: ui_components.ElementRef<ui_elements.DivElement>;
+
+    onSelect?: (key: int) => none;
+
+    // SLOTS -- see the note above.
+    renderItem?: (key: int) => none;
+    renderHeader?: () => none;
+    renderFooter?: () => none;
+
+    fn operator!=(other: DropdownArgs) {
+        if this.id != other.id
+            || this.open != other.open
+            || this.offsetX != other.offsetX
+            || this.offsetY != other.offsetY
+            || this.minWidth != other.minWidth
+            || this.items.length != other.items.length {
+            return true;
+        }
+        // Field-by-field rather than `this.items[i] != other.items[i]`:
+        // invoking a struct's own operator!= from inside another one makes
+        // the C code generator produce a for-loop init it cannot express.
+        let i = 0;
+        while i < this.items.length {
+            if this.items[i].key != other.items[i].key
+                || this.items[i].label != other.items[i].label
+                || this.items[i].shortcut != other.items[i].shortcut
+                || this.items[i].enabled != other.items[i].enabled
+                || this.items[i].separator != other.items[i].separator
+                || this.items[i].header != other.items[i].header
+                || this.items[i].checked != other.items[i].checked {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+}
+
+// Element ids. Items are keyed by their position in the list rather than
+// by DropdownItem.key, because a key is caller-supplied and may repeat
+// (two separators both keyed 0) while an index never does.
+const comptime ID_PANEL = 1;
+const comptime ID_HEADER = 2;
+const comptime ID_FOOTER = 3;
+const comptime ID_ITEM_BASE = 1000;
+
+export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<DropdownArgs>) => {
+        // The component's wrapper must take no space of its own: the panel
+        // inside it is floating, so a Grow/Grow wrapper (the default) would
+        // still claim a share of whatever row or column the caller declared
+        // this in, pushing its siblings around even while the menu is shut.
+        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
+
+        // One ref per item row, grown on demand. Hover is polled from the
+        // element (see Button for why), and a row cannot use Button itself
+        // because it needs the shortcut column and the checked column laid
+        // out as separate cells.
+        let itemRefs: []ui_components.ElementRef<ui_elements.DivElement> = [];
+        let refForItem = (index: int): ui_components.ElementRef<ui_elements.DivElement> => {
+            while itemRefs.length <= index {
+                itemRefs.push(ui.ref<ui_elements.DivElement>());
+            }
+            return itemRefs[index];
+        };
+
+        let swallowPress: PointerHandler = (event: ui_components.PointerEvent) => {
+            event.stopPropagation();
+        };
+
+        return (): void => {
+            let props = instance.props();
+            // v-if, not v-show: a closed menu should not exist at all. It
+            // holds no state worth preserving, and an element that is
+            // merely hidden keeps its last bounding box, which is exactly
+            // the sort of thing that goes on answering hit tests.
+            if !props.open {
+                return;
+            }
+
+            let style = props.style;
+
+            let panelOps: []ui_styling.DivStyleOp = [];
+            panelOps.push(presets.absolute());
+            panelOps.push(presets.top(props.offsetY));
+            panelOps.push(presets.left(props.offsetX));
+            panelOps.push(presets.col());
+            panelOps.push(presets.bg(style.bg));
+            panelOps.push(presets.border(1));
+            panelOps.push(presets.borderColor(style.borderColor));
+            panelOps.push(presets.rounded(style.rounded));
+            // Above other floating things (the editor's own hover popup is
+            // one). Paint order versus IN-FLOW content is already
+            // guaranteed -- every floating element wins that -- so this
+            // only orders the floats among themselves.
+            panelOps.push(presets.z(1000));
+            // Do not inherit the editor's I-beam through the hit path
+            // underneath.
+            panelOps.push(presets.cursorDefault());
+
+            ui.div({
+                id: ID_PANEL,
+                ref: props.panelRef,
+                style: {
+                    // A minimum, not a fixed width -- the panel still grows
+                    // to fit a long label or a long path.
+                    width: ui_styling.SizeMode.Fit,
+                    padding: ui_styling.StylePaddingFull { left: 0.0, right: 0.0, top: 4.0, bottom: 4.0 },
+                },
+                presets: panelOps,
+                // Presses that land on the panel's own padding, between
+                // rows, are still the menu's -- without this they would
+                // fall through to whatever is behind it.
+                onPointerDown: swallowPress,
+            }, (): void => {
+                let p = instance.props();
+
+                let renderHeader = p.renderHeader;
+                if renderHeader {
+                    ui.div({
+                        id: ID_HEADER,
+                        presets: [presets.col(), presets.wGrow(), presets.hFit()],
+                    }, (): void => { renderHeader(); });
+                }
+
+                let i = 0;
+                while i < p.items.length {
+                    let item = p.items[i];
+
+                    let index = i;
+                    i = i + 1;
+                    if item.separator {
+                        ui.div({
+                            id: ID_ITEM_BASE + index,
+                            style: {
+                                height: 1.0,
+                                padding: ui_styling.StylePaddingFull { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
+                            },
+                            presets: [
+                                presets.wGrow(),
+                                presets.bg(style.separatorColor),
+                            ],
+                        }, (): void => {});
+                        continue;
+                    }
+
+                    if item.header {
+                        ui.div({
+                            id: ID_ITEM_BASE + index,
+                            style: {
+                                padding: ui_styling.StylePaddingFull { left: 10.0, right: 10.0, top: 6.0, bottom: 2.0 },
+                            },
+                            presets: [presets.row(), presets.wGrow(), presets.hFit()],
+                        }, (): void => {
+                            ui.text({
+                                id: 1,
+                                text: item.label,
+                                presets: [presets.textColor(style.textColorMuted), presets.noWrap()],
+                            });
+                        });
+                        continue;
+                    }
+
+                    let itemRef = refForItem(index);
+                    let element = rx.get(itemRef);
+                    let hovered = item.enabled && element ? element.hover() : false;
+                    let itemKey = item.key;
+
+                    ui.div({
+                        id: ID_ITEM_BASE + index,
+                        ref: itemRef,
+                        style: {
+                            // The minimum applies to the ROW rather than the
+                            // panel, because the panel shrink-wraps its
+                            // widest child -- so widening the rows is what
+                            // actually widens the menu.
+                            width: ui_styling.SizeMode.Grow,
+                            padding: ui_styling.StylePaddingFull { left: 10.0, right: 10.0, top: 4.0, bottom: 4.0 },
+                        },
+                        presets: [
+                            presets.row(),
+                            presets.gap(3),
+                            presets.crossAlign(ui_styling.CrossAlign.Center),
+                            presets.bg(hovered ? style.itemBgHover : "#00000000"),
+                            item.enabled ? presets.cursorPointer() : presets.cursorDefault(),
+                        ],
+                        onPointerDown: (event: ui_components.PointerEvent) => {
+                            event.stopPropagation();
+                            let current = instance.props();
+                            // Re-read from props rather than trusting the
+                            // `item` captured above: this handler outlives
+                            // the render pass that created it, and the item
+                            // list may have been replaced since.
+                            if index >= current.items.length {
+                                return;
+                            }
+                            if !current.items[index].enabled {
+                                return;
+                            }
+                            let onSelect = current.onSelect;
+                            if onSelect {
+                                onSelect(itemKey);
+                            }
+                        },
+                    }, (): void => {
+                        let current = instance.props();
+                        let renderItem = current.renderItem;
+                        if renderItem {
+                            renderItem(itemKey);
+                            return;
+                        }
+
+                        // A fixed-width gutter so labels line up whether or
+                        // not any item in the menu is checked.
+                        ui.div({
+                            id: 1,
+                            style: { width: 14.0 },
+                            presets: [presets.row(), presets.hFit()],
+                        }, (): void => {
+                            if item.checked {
+                                ui.text({
+                                    id: 1,
+                                    text: "✓",
+                                    presets: [presets.textColor(style.textColor)],
+                                });
+                            }
+                        });
+
+                        ui.text({
+                            id: 2,
+                            text: item.label,
+                            presets: [
+                                presets.textColor(item.enabled ? style.textColor : style.textColorDisabled),
+                                presets.noWrap(),
+                            ],
+                        });
+
+                        // Spacer, so the accelerator is pushed to the right
+                        // edge however wide the panel ends up.
+                        ui.div({
+                            id: 3,
+                            style: { width: ui_styling.SizeMode.Grow },
+                            presets: [presets.row(), presets.hFit(), presets.w(6)],
+                        }, (): void => {});
+
+                        if item.shortcut.length > 0 {
+                            ui.text({
+                                id: 4,
+                                text: item.shortcut,
+                                presets: [presets.textColor(style.textColorMuted), presets.noWrap()],
+                            });
+                        }
+                    });
+                }
+
+                let renderFooter = p.renderFooter;
+                if renderFooter {
+                    ui.div({
+                        id: ID_FOOTER,
+                        presets: [presets.col(), presets.wGrow(), presets.hFit()],
+                    }, (): void => { renderFooter(); });
+                }
+            });
+        };
+    });
+}
