@@ -1,3 +1,5 @@
+> **Superseded 2026-08-22 by `Storage Classes and References.md`**, which is the consolidated, authoritative design (value-default structs, `ref` / `stackref` modifiers, `nocopy`, literal-takes-slot-type allocation). The mechanism and reasoning below still stand where that document says so; its §14 lists every point on which it overrides this one.
+
 # Generational Stack References
 
 Status: mechanism established, surface design open. The runtime mechanism in §4–§7 is believed
