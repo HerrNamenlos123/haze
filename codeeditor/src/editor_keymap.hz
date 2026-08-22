@@ -49,7 +49,18 @@ fn ctxHasOpenTabs(): str { return "hasOpenTabs"; }
 fn installDefaultKeymap(keys: mut Keybindings): void {
     keys.keymap.bindAll([
         // Files.
-        { key: "ctrl+o", command: "workbench.action.files.openFile" },
+        //
+        // The `when` is what keeps ctrl+o out of vim's way. Vim's own <C-o>
+        // is jump-back, and it takes a COUNT (`3<C-o>`) -- a count the user
+        // types as ordinary characters that go straight to the editing
+        // engine. If this binding swallowed the ctrl+o, the engine would
+        // never see the key, the count would be stranded, and `3<C-o>` would
+        // jump once. So inside a vim editor outside insert mode this rule
+        // deliberately does not match at all, and the key falls through to
+        // the engine untouched -- which is also where it is tested against
+        // real neovim (scripts/vim-jumplist-cases.ts).
+        { key: "ctrl+o", command: "workbench.action.files.openFile",
+          when: "!(editorTextFocus && vimActive && vimMode != 'insert')" },
         // A CHORD: ctrl+k is a prefix, so pressing it alone parks the
         // dispatcher until the second stroke arrives. VS Code puts most of
         // its two-stroke bindings behind this same ctrl+k prefix.
@@ -68,18 +79,17 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // Editing model.
         { key: "f2", command: "editor.action.toggleVim", when: "editorTextFocus" },
 
-        // ── Vim overrides ────────────────────────────────────────────────
-        //
-        // Written LAST on purpose. Resolution scans the table backwards, so
-        // a later rule beats an earlier one for the same chord whenever its
-        // `when` also holds -- which is the whole mechanism by which a mode
-        // (or, eventually, an extension, or the user's own keybindings.json)
-        // takes a key over without the earlier rule knowing anything about
-        // it. Here: ctrl+o stays "open a file" everywhere except inside a
-        // vim editor that is not in insert mode, where it becomes vim's
-        // jump-back. Insert mode is excluded for the same reason vim
-        // excludes it -- there, ctrl+o is vim's own one-shot command escape.
-        { key: "ctrl+o", command: "vim.navigateBack", when: "editorTextFocus && vimActive && vimMode != 'insert'" },
+        // Go to definition, on VS Code's key. `gd` reaches the same command
+        // from inside vim -- see Vim.onGoToDefinition.
+        { key: "f12", command: "editor.action.revealDefinition", when: "editorTextFocus" },
+
+        // NOTE on the jump list: <C-o> and <C-i> are deliberately NOT bound
+        // here. They belong to the editing engine, which implements the
+        // real jump list with counts and vim's own append/de-duplicate
+        // semantics (see stdlib/vim_behavior). The commands
+        // vim.navigateBack / vim.navigateForward exist and are registered
+        // so a menu or command palette can reach them, but no key routes
+        // through them -- a key that did would arrive without its count.
     ]);
 }
 
@@ -139,9 +149,13 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
 struct EditorCommands {
     toggleVim: CommandFn;
     vimNavigateBack: CommandFn;
+    vimNavigateForward: CommandFn;
+    goToDefinition: CommandFn;
 }
 
 fn registerEditorCommands(keys: mut Keybindings, handlers: EditorCommands): void {
     keys.commands.register("editor.action.toggleVim", handlers.toggleVim);
     keys.commands.register("vim.navigateBack", handlers.vimNavigateBack);
+    keys.commands.register("vim.navigateForward", handlers.vimNavigateForward);
+    keys.commands.register("editor.action.revealDefinition", handlers.goToDefinition);
 }

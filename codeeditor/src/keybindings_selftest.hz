@@ -65,6 +65,8 @@ fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
     registerEditorCommands(keys, EditorCommands {
         toggleVim: () => { run.record("toggleVim"); },
         vimNavigateBack: () => { run.record("back"); },
+        vimNavigateForward: () => { run.record("forward"); },
+        goToDefinition: () => { run.record("gotoDef"); },
     });
     return keys;
 }
@@ -159,16 +161,18 @@ fn runEditorSelfTest(mode: str): int {
     keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
     run.check("ctrl+o opens a file by default", run.takeRan(), "openFile;");
 
-    // Inside a vim editor in normal mode the LATER rule takes the same key
-    // over -- the whole point of the `when` mechanism.
+    // Inside a vim editor in normal mode the binding's `when` stops
+    // matching, so the key is left ENTIRELY alone and travels on to the
+    // editing engine, which owns <C-o> and its count.
     keys.context.setBool("editorTextFocus", true);
     keys.context.setBool("vimActive", true);
     keys.context.setStr("vimMode", "normal");
-    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
-    run.check("ctrl+o in vim is jump-back", run.takeRan(), "back;");
+    let inVim = keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.checkBool("ctrl+o in vim is left to the engine", inVim.handled(), false);
+    run.check("ctrl+o in vim runs no command", run.takeRan(), "");
 
-    // ...but not in insert mode, where the override's `when` fails and the
-    // earlier rule is uncovered again.
+    // ...but not in insert mode, where the `when` holds again and the
+    // binding is uncovered.
     keys.context.setStr("vimMode", "insert");
     keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
     run.check("ctrl+o in vim insert opens a file", run.takeRan(), "openFile;");
@@ -267,6 +271,7 @@ fn runEditorSelfTest(mode: str): int {
                 reactiveCounter: rx.reactive<int>(0),
             });
             runLspRestartSelfTest(run);
+            runDefinitionSelfTest(run);
             // Deliberately NOT engine.stop(): that joins the syntax engine,
             // which blocks until it exits, and it has not been asked to.
             // The process ends with this one.

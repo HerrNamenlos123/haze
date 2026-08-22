@@ -105,6 +105,10 @@ interface Case {
   cursor: { line: number; col: number };
   keys: string;
   maps?: { mode: string; lhs: string; rhs: string; noremap: boolean }[];
+  // vim's 'commentstring', for gc/gcc cases. Both sides need it: with
+  // -u NONE --noplugin nvim has no ftplugin to supply one, and the engine
+  // would otherwise use its own default.
+  commentstring?: string;
 }
 
 function generateCases(seed: number, count: number, withRemaps: boolean): Case[] {
@@ -181,6 +185,9 @@ function runHaze(cases: Case[]): any {
       noremap: m.noremap,
     })),
     clipboard: "",
+    // Haze's json.parse requires every declared field to be present, so
+    // this is always emitted; "" means "leave the engine's default".
+    commentstring: c.commentstring ?? "",
   }));
   writeFileSync(jobPath, JSON.stringify({ cases: full }));
   const res = spawnSync(

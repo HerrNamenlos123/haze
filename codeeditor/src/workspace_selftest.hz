@@ -81,6 +81,42 @@ fn runWorkspaceSelfTest(run: mut KeyTestRun): void {
     let clearRecents: []str = [];
     workspace().recents := clearRecents;
 
+    // ── comment syntax per file ──────────────────────────────────────────
+    //
+    // Which template `gc` uses. The toggle ALGORITHM is tested against real
+    // neovim (scripts/vim-comment-cases.ts); what is tested here is the
+    // editor's choice of template, which neovim gets from an ftplugin this
+    // editor does not have.
+    run.check("ts is a line comment", commentStringForFile("/a/b/x.ts"), "// %s");
+    run.check("tsx too", commentStringForFile("/a/b/x.tsx"), "// %s");
+    run.check("haze too", commentStringForFile("/a/b/x.hz"), "// %s");
+    run.check("python is a hash", commentStringForFile("/a/b/x.py"), "# %s");
+    run.check("yaml is a hash", commentStringForFile("/a/b/x.yaml"), "# %s");
+    run.check("css is a block", commentStringForFile("/a/b/x.css"), "/* %s */");
+    run.check("html is a block", commentStringForFile("/a/b/x.html"), "<!-- %s -->");
+    run.check("lua is a dash", commentStringForFile("/a/b/x.lua"), "-- %s");
+    run.check("case is ignored", commentStringForFile("/a/b/X.PY"), "# %s");
+    run.check("unknown falls back", commentStringForFile("/a/b/x.whatever"), "// %s");
+
+    // A .vue file has three comment syntaxes at once, chosen by which block
+    // the line is in. Commenting a template line with `//` would not
+    // comment it at all -- it would insert visible text into the page.
+    let sfc = text_document.Document();
+    sfc.setText("<script setup lang=\"ts\">\nconst a = 1;\n</script>\n\n<template>\n  <div />\n</template>\n\n<style>\n.a { color: red; }\n</style>\n");
+    run.check("the script tag itself", vueCommentStringAt(sfc, 0), "// %s");
+    run.check("inside script", vueCommentStringAt(sfc, 1), "// %s");
+    run.check("inside template", vueCommentStringAt(sfc, 5), "<!-- %s -->");
+    run.check("the template tag itself", vueCommentStringAt(sfc, 4), "<!-- %s -->");
+    run.check("inside style", vueCommentStringAt(sfc, 9), "/* %s */");
+    // Between blocks, the previous block's closing tag is the nearest tag
+    // seen, so the answer is that block's syntax. Harmless: the line is
+    // blank, and commenting a blank line is a no-op in every syntax.
+    run.check("between blocks", vueCommentStringAt(sfc, 3), "// %s");
+
+    let noBlocks = text_document.Document();
+    noBlocks.setText("just text\nmore text\n");
+    run.check("a .vue with no blocks is markup", vueCommentStringAt(noBlocks, 1), "<!-- %s -->");
+
     // ── the newline-delimited persistence format ─────────────────────────
     let three: []str = ["/one", "/two", "/three"];
     let roundTrip: []str = splitLines(joinLines(three));
@@ -180,4 +216,90 @@ fn runLspRestartSelfTest(run: mut KeyTestRun): void {
         drain = drain + 1;
     }
     run.check("teardown leaves nothing behind", f"{retiredProcessCount()}", "0");
+}
+
+// ═══ Go to definition, end to end ════════════════════════════════════════
+//
+// Also gated behind CODEEDITOR_SELFTEST=lsp. A real tsserver is asked where
+// a real symbol is defined, in a file written for the purpose, and the
+// answer is checked. A LOCAL symbol is used deliberately: tsserver resolves
+// one without needing a configured project, so the test does not depend on
+// a tsconfig, a node_modules, or anything outside the temporary file.
+fn runDefinitionSelfTest(run: mut KeyTestRun): void {
+    let dir = f"{getCwdAbsolute()}/__haze__/codeeditor";
+    let path = f"{dir}/selftest-definition.ts";
+    // Line 0 declares it; line 2 uses it. Asking about the USE must point
+    // back at the DECLARATION.
+    let source = "const targetValue = 41;
+
+ export const other = targetValue + 1;
+";
+    let written = fs.writeText(path, source);
+    if !written {
+        run.check("could write the probe file", "no", "yes");
+        return;
+    }
+
+    workspace().path := dir;
+    workspace().name := folderNameOf(dir);
+    restartLanguageServers();
+    let bridge = getState().lspBridge;
+    if !bridge {
+        run.check("servers started for the definition probe", "no bridge", "a bridge");
+        return;
+    }
+
+    let ready = 0;
+    while !bridge.isReady() && ready < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        ready = ready + 1;
+    }
+    run.checkBool("servers came up", bridge.isReady(), true);
+
+    bridge.openDocument(path, "typescript", 1, source);
+    // tsserver needs a moment to actually open the file before it can
+    // answer about it; loop() is what delivers its replies.
+    let settle = 0;
+    while settle < 30 {
+        bridge.loop();
+        time.sleep(0.05);
+        settle = settle + 1;
+    }
+
+    // Column 22 on line 2 is inside "targetValue" in ` export const other =
+    // targetValue + 1;`.
+    let useLine = " export const other = targetValue + 1;";
+    let answered = false;
+    let answerFile = "";
+    let answerLine = -1;
+    bridge.definition(path, 2, 22, useLine, (targets: []DefinitionTarget) => {
+        answered = true;
+        if targets.length > 0 {
+            answerFile = targets[0].filepath;
+            answerLine = targets[0].line;
+        }
+    });
+
+    let waited = 0;
+    while !answered && waited < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        waited = waited + 1;
+    }
+
+    run.checkBool("the definition request was answered", answered, true);
+    run.check("it names the right file", answerFile, path);
+    run.check("it points at the declaration", f"{answerLine}", "0");
+
+    let last = getState().lspBridge;
+    if last {
+        last.shutdown();
+    }
+    let drain = 0;
+    while retiredProcessCount() > 0 && drain < 100 {
+        reapRetiredProcesses();
+        time.sleep(0.1);
+        drain = drain + 1;
+    }
 }

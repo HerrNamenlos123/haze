@@ -34,6 +34,9 @@ struct CaseSpec {
     keys: str = "";
     maps: []MapSpec = [];
     clipboard: str = "";
+    // vim's 'commentstring', for gc/gcc cases. Empty means "leave the
+    // engine's default alone".
+    commentstring: str = "";
 }
 
 struct Job {
@@ -78,6 +81,9 @@ fn runCase(spec: CaseSpec): ResultOut {
     doc.setText(text);
     let ctx = makeContext(doc);
     let vim = vim_behavior.Vim(ctx);
+    if spec.commentstring.length > 0 {
+        vim.commentString = spec.commentstring;
+    }
     vim.install();
 
     for m in spec.maps {

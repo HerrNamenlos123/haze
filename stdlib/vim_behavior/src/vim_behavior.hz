@@ -53,6 +53,11 @@ export enum Operator {
     Change,
     IndentRight,
     IndentLeft,
+    // `gc`. An operator rather than a special case, which is what it is in
+    // vim -- so gcw, gcj, gc}, gcG, visual gc and the doubled gcc all fall
+    // out of the machinery that already exists for d/y/c instead of each
+    // needing its own path.
+    Comment,
     // gu / gU / g~ would slot in here.
 }
 
@@ -77,6 +82,10 @@ export struct LastFind {
 }
 
 // A recorded jump position, for <C-o>/<C-i>.
+// A host callback with no arguments and no result. Named because a bare
+// closure literal will not convert into a `| none` union.
+export type GoToDefinitionHook = () => void;
+
 export struct Jump {
     pos: Vec2i = {};
 }
@@ -167,6 +176,27 @@ export struct Vim {
     // (noexpandtab, shiftwidth=8); an editor that prefers spaces sets
     // this to "    " and everything else follows.
     indentUnit: str = "\t";
+
+    // `gd`. Stock vim's gd is "go to local declaration" -- a backward
+    // search for the identifier inside the current function. With a
+    // language server available that is strictly worse than asking it, and
+    // binding gd to the real definition is what every LSP-equipped vim
+    // config does, so that is what this does. none leaves gd inert rather
+    // than pretending.
+    //
+    // The engine does not know what a language server is: the host supplies
+    // the hook and owns everything about it. See EditorView in codeui.hz.
+    onGoToDefinition: GoToDefinitionHook | none = none;
+
+    // vim's 'commentstring': ONE template with %s standing in for the
+    // line's own text. "// %s", "# %s", "<!-- %s -->". A single template
+    // covers both line comments and languages that only have block
+    // comments, which is why vim models it this way and why there is no
+    // separate "block comment" concept here.
+    //
+    // The host sets it per file (and, for a language like Vue whose
+    // regions differ, per line). See commentStringFor in codeui.hz.
+    commentString: str = "// %s";
 
     fn constructor(ctx: mut textedit_behavior.Context): mut Vim {
         let vim = Vim {
@@ -616,6 +646,19 @@ export struct Vim {
 
         // Operators. In visual mode an operator applies immediately to
         // the selection instead of waiting for a motion.
+        // `gcc` -- the doubled form, like dd/yy/cc. It cannot come out of
+        // the check below, because that one fires when the key maps to the
+        // SAME operator that is pending, and the third key here is a bare
+        // `c`, which maps to Change. operatorForKey is a free function with
+        // no view of what is pending, so the doubling has to be recognized
+        // here instead.
+        if this.pending == PendingKind.Operator
+            && this.pendingOperator == Operator.Comment
+            && key == "c" {
+            this.applyOperatorLinewise(Operator.Comment, this.effectiveCount());
+            return;
+        }
+
         let op = operatorForKey(key);
         if op != Operator.NoneOp {
             if visual {
@@ -832,7 +875,14 @@ export struct Vim {
             // (Vim's documented default differs from neovim's here.)
             let y = this.count1 > 0 ? clampInt(this.count1 - 1, 0, this.ctx.lineCount() - 1)
                                     : this.ctx.lineCount() - 1;
-            result = Motion { valid: true, target: { x: pos.x, y: y },
+            // desiredColumn(), not pos.x. They differ whenever a previous
+            // vertical move passed through a line too short to hold the
+            // column: vim keeps wanting the ORIGINAL column (curswant) and
+            // only clamps what it displays, so `gg` from column 9 onto a
+            // 9-character line and then `G` back onto a long one returns to
+            // column 9, not to the 8 the short line clamped it to. Reading
+            // pos.x here made every clamp permanent. j/k already do this.
+            result = Motion { valid: true, target: { x: this.ctx.desiredColumn(), y: y },
                               linewise: true, setsJump: true, keepsColumn: true };
             return result;
         }
@@ -1207,7 +1257,11 @@ export struct Vim {
             // `w` on the last word of a line looks like it went nowhere
             // (it clamps onto the final character) but still gives the
             // operator a range to the line end -- see clampsToLineEnd.
+            // `gc` is exempt: it acts on whole LINES whatever the motion
+            // selected, so a motion that covers no characters still has a
+            // line to toggle. `gc0` at column 0 comments the line.
             if motion.target.x == pos.x && motion.target.y == pos.y
+                    && this.pendingOperator != Operator.Comment
                     && !motion.inclusive && !motion.linewise && !motion.clampsToLineEnd {
                 // `c` still enters insert mode on a zero-width range:
                 // `c^` with the caret already at the first non-blank
@@ -1370,6 +1424,79 @@ export struct Vim {
             } else {
                 this.ctx.moveTo(normalized.start, true, false);
             }
+            return;
+        }
+
+        if op == Operator.Comment {
+            // Always whole lines, whatever the motion selected: half a
+            // commented line is not a thing, exactly as it is not for
+            // `>` and `<`.
+            let normalized = this.ctx.normalizeRange(range);
+            let startY = normalized.start.y;
+            let endY = normalized.end.y;
+            // A charwise range that ends at column 0 of the following line
+            // did not really reach that line -- the same exclusive-end rule
+            // the other operators apply. NOT for a visual selection, whose
+            // end is inclusive: `vjgc` selects into the second line and
+            // must comment it.
+            if !linewise && !fromVisual && endY > startY && normalized.end.x == 0 {
+                endY = endY - 1;
+            }
+            // Everything the caret rule needs is read BEFORE editing:
+            // replaceRangeWith moves the caret as it rewrites each line,
+            // which restates the desired column as a side effect.
+            let wantedColumn = this.ctx.cursor().x;
+            let firstNonBlankBefore = this.leadingWhitespace(startY).length;
+            // How far the caret could legally sit on the line it is landing
+            // on, BEFORE the comment markers widened it. A motion onto a
+            // blank line puts the caret at column 0, and it stays there --
+            // it does not inherit a column from the line it came from just
+            // because commenting has since made room for one.
+            let maxColumnBefore = this.ctx.maxColumn(startY);
+            // `gcc` on ONE line is the doubled form with no count, which is
+            // the only shape that pulls the caret left.
+            let singleLineForm = wholeLineForm && startY == endY;
+
+            this.toggleComment(startY, endY);
+            if fromVisual && linewise {
+                // Undo of a linewise change puts the caret at the start of
+                // the restored lines, not back where the operator was
+                // invoked -- the same marking Delete does for `V`+`d`.
+                this.ctx.markUndoEntryLinewise();
+            }
+
+            // Where the caret ends up, which differs per form:
+            //
+            //   V...gc     column 0, like every operator on a linewise
+            //              selection
+            //   v...gc     the start of the charwise selection
+            //   gcc        pulled back to the line's first non-blank if it
+            //              was past it, otherwise left alone -- `gcc` is
+            //              `g@_`, and `_` is a first-non-blank motion
+            //   Ngcc, gc<motion>
+            //              left exactly where it was
+            let column = wantedColumn;
+            if fromVisual {
+                // A linewise selection parks the caret at column 0 like
+                // every other operator; a charwise one keeps the column the
+                // selection started at, which applyOperatorToSelection has
+                // already put the caret on.
+                if linewise {
+                    column = 0;
+                }
+            } else if !linewise {
+                // A charwise motion leaves the caret at the start of the
+                // range it covered -- `gc0` from column 3 ends at column 0.
+                column = this.ctx.normalizeRange(range).start.x;
+            } else if singleLineForm && firstNonBlankBefore < column {
+                column = firstNonBlankBefore;
+            }
+            if column > maxColumnBefore {
+                column = maxColumnBefore;
+            }
+            let landing: Vec2i = { x: column, y: clampInt(startY, 0, this.ctx.lineCount() - 1) };
+            this.ctx.moveTo(landing, true, false);
+            this.clampCursorToMode();
             return;
         }
 
@@ -1992,10 +2119,45 @@ export struct Vim {
                 // gg: line `count` or the first line. Keeps the column,
                 // like G -- see the 'startofline' note there.
                 let y = this.count1 > 0 ? clampInt(this.count1 - 1, 0, this.ctx.lineCount() - 1) : 0;
-                let pos = this.ctx.cursor();
-                let motion = Motion { valid: true, target: { x: pos.x, y: y },
+                // desiredColumn() rather than the cursor's own x -- see the
+                // same call in G's motion for why they are not the same.
+                let motion = Motion { valid: true, target: { x: this.ctx.desiredColumn(), y: y },
                                       linewise: true, keepsColumn: true };
                 this.applyMotion(motion);
+                return;
+            }
+            if key == "d" {
+                let hook = this.onGoToDefinition;
+                this.resetPending();
+                if hook {
+                    // Record where we are BEFORE handing over, so <C-o>
+                    // comes back here. Pushing now rather than when the
+                    // answer arrives is both simpler and self-correcting:
+                    // if the lookup finds nothing and the caret never
+                    // moves, cleanupJumpList drops the entry again the
+                    // moment <C-o> is next used, because an entry for the
+                    // line the cursor is already on is removed.
+                    this.pushJump();
+                    hook();
+                }
+                return;
+            }
+            if key == "c" {
+                // `gc` IS an operator, so it is registered as one rather
+                // than handled inline: everything downstream -- gcw, gcj,
+                // gc}, gcG, the doubled gcc, visual gc -- then comes from
+                // the machinery d/y/c already use.
+                if modeIsVisualNow(this.ctx) {
+                    this.applyOperatorToSelection(Operator.Comment);
+                    return;
+                }
+                // Vim allows a count on either side of an operator
+                // (2gcc == gc2c), so the one seen before `gc` moves out of
+                // the way for the one that may follow it.
+                this.count2 = this.count1;
+                this.count1 = 0;
+                this.pending = PendingKind.Operator;
+                this.pendingOperator = Operator.Comment;
                 return;
             }
             if key == "u" || key == "U" || key == "~" {
@@ -2162,8 +2324,26 @@ export struct Vim {
             return;
         }
         if key == "Y" {
+            // `y$`, NOT `yy`. Neovim ships `nnoremap Y y$` as a default
+            // mapping, so a stock neovim yanks to the end of the line
+            // CHARWISE where traditional vim yanks the whole line
+            // linewise. This engine targets neovim (see the 'startofline'
+            // and 'cpoptions' notes elsewhere), so it follows neovim.
+            //
+            // Visual-mode `Y` above is unaffected -- that one really is
+            // linewise in both.
             this.resetPending();
-            this.applyOperatorLinewise(Operator.Yank, count);
+            this.pending = PendingKind.Operator;
+            this.pendingOperator = Operator.Yank;
+            // `$` reads the count itself (3$ ends on the third line down),
+            // which is exactly what 3Y should do.
+            this.count1 = count > 1 ? count : 0;
+            let motion = this.resolveMotion("$");
+            if motion.valid {
+                this.applyMotion(motion);
+            } else {
+                this.resetPending();
+            }
             return;
         }
         if key == "S" {
@@ -2206,14 +2386,24 @@ export struct Vim {
             this.toggleCase(count);
             return;
         }
-        if key == "<C-o>" {
+        if key == "<C-o>" || key == "<C-i>" {
+            // Normal mode only. In visual mode vim has no jump-list command
+            // on these keys at all -- <C-o> there is simply swallowed, and
+            // jumping would tear the selection across the buffer.
+            if textedit_behavior.modeIsVisual(rx.get(this.ctx.mode)) {
+                this.resetPending();
+                return;
+            }
+            // Read the count BEFORE resetPending() throws it away, or
+            // `3<C-o>` would silently behave like a bare <C-o>.
+            let jumpCount = this.effectiveCount();
+            let backwards = key == "<C-o>";
             this.resetPending();
-            this.jumpBack();
-            return;
-        }
-        if key == "<C-i>" {
-            this.resetPending();
-            this.jumpForward();
+            if backwards {
+                this.jumpBack(jumpCount);
+            } else {
+                this.jumpForward(jumpCount);
+            }
             return;
         }
         if key == "<C-d>" || key == "<C-u>" {
@@ -2582,53 +2772,215 @@ export struct Vim {
 
     // === Jump list ================================================
 
+    // === The jump list ============================================
+    //
+    // This is vim's own algorithm, not an approximation of it, because the
+    // observable behaviour of <C-o>/<C-i> is surprisingly hard to guess at
+    // and the obvious model is wrong in a way that shows up immediately.
+    //
+    // The obvious model -- "a browser history: on a new jump, throw away
+    // the forward entries and append" -- is what this used to do. Vim does
+    // NOT truncate. setpcmark() only ever APPENDS and parks the index at
+    // the end; the forward entries stay in the list, they just become
+    // unreachable. What tidies them up is a separate pass,
+    // cleanup_jumplist(), which removes any entry whose LINE also appears
+    // later in the list. The two together produce a list a truncating
+    // model cannot: after `5G 10G <C-o> 15G`, vim holds [1, 10, 5] --
+    // truncation would give [1, 5].
+    //
+    // See vim's mark.c: setpcmark(), cleanup_jumplist() and movemark().
+
+    // vim's JUMPLISTSIZE.
+    fn jumpListLimit(): int {
+        return 100;
+    }
+
+    // vim's setpcmark(): record where the cursor is NOW as a jump origin,
+    // and park the index past the end. Callers run this BEFORE moving, so
+    // the list stores where you came from.
     mut fn pushJump() {
         let pos = this.ctx.cursor();
-        let entry = Jump { pos: pos };
-        // Truncate any forward history, like vim does on a new jump.
+        this.jumps.push(Jump { pos: pos });
+        // Full list: the OLDEST entry falls off, not the newest.
+        if this.jumps.length > this.jumpListLimit() {
+            let kept: []Jump = [];
+            for (let i = this.jumps.length - this.jumpListLimit(); i < this.jumps.length; i++) {
+                kept.push(this.jumps[i]);
+            }
+            this.jumps = kept;
+        }
+        this.jumpIndex = this.jumps.length;
+    }
+
+    // vim's cleanup_jumplist(): drop every entry whose line number occurs
+    // again later in the list, keeping the newest, and remap the index onto
+    // the compacted list. Deduplication is by LINE ONLY -- two jumps to
+    // different columns of the same line are one entry, which is why
+    // jumping back to a line you have already visited does not leave a
+    // trail of near-identical stops.
+    mut fn cleanupJumpList() {
         let kept: []Jump = [];
-        for (let i = 0; i < this.jumpIndex && i < this.jumps.length; i++) {
-            kept.push(this.jumps[i]);
+        let newIndex = -1;
+        // `source` rather than vim's `from`: `from` is a reserved word here.
+        for (let source = 0; source < this.jumps.length; source++) {
+            // The index is remapped to wherever the compacted list has got
+            // to, exactly as vim does it -- including when the entry the
+            // index points at is itself a duplicate about to be dropped.
+            if this.jumpIndex == source {
+                newIndex = kept.length;
+            }
+            let duplicate = false;
+            for (let i = source + 1; i < this.jumps.length; i++) {
+                if this.jumps[i].pos.y == this.jumps[source].pos.y {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if !duplicate {
+                kept.push(this.jumps[source]);
+            }
         }
-        kept.push(entry);
+        // Index parked past the end stays past the end.
+        if this.jumpIndex >= this.jumps.length {
+            newIndex = kept.length;
+        }
         this.jumps = kept;
-        this.jumpIndex = kept.length;
-    }
+        this.jumpIndex = newIndex >= 0 ? newIndex : kept.length;
 
-    mut fn jumpBack() {
-        if this.jumpIndex <= 0 || this.jumps.length == 0 {
-            return;
-        }
-        // Stepping back from the newest entry records where we are now,
-        // so <C-i> can return.
+        // "You are already there." When the index sits at the END of the
+        // list -- i.e. you are not part-way through a traversal -- an entry
+        // for the line the cursor is ON is dropped as well.
+        //
+        // This is observable, not bookkeeping. Jump away from line 7 and
+        // then wander back to line 7 by ordinary motions: the entry that
+        // would have taken you to line 7 is gone, so <C-o> skips straight
+        // past it to the one before. Without this rule <C-o> appears to do
+        // nothing at all, because it "returns" you to the line you are
+        // already sitting on.
+        //
+        // Deliberately NOT applied mid-traversal: with the index inside the
+        // list, walking back onto a line that is also an entry is exactly
+        // what <C-o> is for, and removing it would strand the traversal.
         if this.jumpIndex == this.jumps.length {
-            let here = Jump { pos: this.ctx.cursor() };
-            this.jumps.push(here);
+            let here = this.ctx.cursor();
+            let survivors: []Jump = [];
+            for entry in this.jumps {
+                if entry.pos.y != here.y {
+                    survivors.push(entry);
+                }
+            }
+            this.jumps = survivors;
+            this.jumpIndex = survivors.length;
         }
-        this.jumpIndex = this.jumpIndex - 1;
+    }
+
+    // vim's movemark(): negative count for <C-o>, positive for <C-i>.
+    mut fn moveThroughJumpList(count: int) {
+        this.cleanupJumpList();
+        if this.jumps.length == 0 {
+            return;
+        }
+        // Off either end is a no-op -- no wrap, no bell, and crucially no
+        // partial move: `3<C-o>` with only two entries behind you does
+        // NOTHING rather than going back as far as it can.
+        if this.jumpIndex + count < 0 || this.jumpIndex + count >= this.jumps.length {
+            return;
+        }
+        if this.jumpIndex == this.jumps.length {
+            // First step off the end of the list: record where we are now,
+            // so <C-i> has somewhere to come back to, then step onto that
+            // new entry before applying the count.
+            this.pushJump();
+            this.jumpIndex = this.jumpIndex - 1;
+            if this.jumpIndex + count < 0 {
+                return;
+            }
+        }
+        this.jumpIndex = this.jumpIndex + count;
         let target = this.jumps[this.jumpIndex];
         this.ctx.moveTo(target.pos, true, false);
         this.clampCursorToMode();
     }
 
-    mut fn jumpForward() {
-        if this.jumpIndex + 1 >= this.jumps.length {
-            return;
-        }
-        this.jumpIndex = this.jumpIndex + 1;
-        let target = this.jumps[this.jumpIndex];
-        this.ctx.moveTo(target.pos, true, false);
-        this.clampCursorToMode();
+    mut fn jumpBack(count: int = 1) {
+        this.moveThroughJumpList(-count);
+    }
+
+    mut fn jumpForward(count: int = 1) {
+        this.moveThroughJumpList(count);
     }
 
     // After an edit the caret can end up one past the last character,
     // which is legal in insert mode but not in normal mode.
+    // Comment or uncomment lines [startY, endY], vim's rule: if EVERY
+    // non-blank line in the range is already commented, uncomment them
+    // all; otherwise comment them all. Blank lines are ignored when
+    // deciding and when measuring the common indent, but they are still
+    // commented along with the rest -- except when the whole range is
+    // blank, which does nothing at all (a range of blank lines counts as
+    // "all commented", so the uncomment pass runs and finds nothing).
+    mut fn toggleComment(startY: int, endY: int) {
+        let parts = splitCommentString(this.commentString);
+        if !parts.valid {
+            return;
+        }
+        let lastLine = this.ctx.lineCount() - 1;
+        let first = clampInt(startY, 0, lastLine);
+        let last = clampInt(endY, 0, lastLine);
+        if last < first {
+            return;
+        }
+
+        // Pass one: the common indent, and whether this is a comment or an
+        // uncomment.
+        let indent = "";
+        let indentWidth = -1;
+        let allCommented = true;
+        for (let y = first; y <= last; y++) {
+            let text = this.ctx.line(y).cloneString();
+            if isBlankText(text) {
+                continue;
+            }
+            let lead = leadingWhitespaceOf(text);
+            if indentWidth < 0 || lead.length < indentWidth {
+                indentWidth = lead.length;
+                indent = lead;
+            }
+            if allCommented {
+                allCommented = lineIsCommented(text, parts);
+            }
+        }
+
+        // Pass two, as one undo step -- `u` after commenting a block puts
+        // the whole block back, not its last line.
+        this.ctx.beginTransaction();
+        for (let y = first; y <= last; y++) {
+            let text = this.ctx.line(y).cloneString();
+            let replacement = allCommented
+                ? uncommentedLine(text, parts)
+                : commentedLine(text, parts, indent);
+            if replacement != text {
+                let r = textedit_behavior.Range {
+                    start: { x: 0, y: y },
+                    end: { x: this.ctx.lineLength(y), y: y },
+                    kind: textedit_behavior.RangeKind.Characterwise,
+                };
+                this.ctx.replaceRangeWith(r, String(replacement));
+            }
+        }
+        this.ctx.endTransaction();
+    }
+
     mut fn clampCursorToMode() {
         let pos = this.ctx.cursor();
         let maxX = this.ctx.maxColumn(pos.y);
         if pos.x > maxX {
             let target: Vec2i = { x: maxX, y: pos.y };
-            this.ctx.moveTo(target, true, false);
+            // false: clamping is a display concession, not a statement of
+            // intent. Vim narrows the caret to fit a short line but leaves
+            // curswant alone, which is what lets the column come back on
+            // the next long line.
+            this.ctx.moveTo(target, false, false);
         }
     }
 }
@@ -3053,4 +3405,154 @@ export fn toUpperStr(s: str): str {
         }
     }
     return buf.cloneString();
+}
+
+
+// === Commenting =================================================
+//
+// A direct port of neovim's own implementation (runtime/lua/vim/
+// _comment.lua), because "toggle a comment" has more edge cases than it
+// looks and guessing at them produces something that is right most of the
+// time, which is worse than useless in an editor.
+//
+// The parts of 'commentstring'. "// %s" -> left "// ", right ""; and
+// "<!-- %s -->" -> left "<!-- ", right " -->". Note the padding is part of
+// the template, not something added afterwards -- a commentstring of
+// "//%s" genuinely produces "//text" with no space.
+export struct CommentParts {
+    left: str = "";
+    right: str = "";
+    valid: bool = false;
+}
+
+export fn splitCommentString(template: str): CommentParts {
+    let marker = -1;
+    for (let i = 0; i + 1 < template.length; i++) {
+        if template.slice(i, i + 2) == "%s" {
+            marker = i;
+            break;
+        }
+    }
+    if marker < 0 {
+        // No %s: vim treats this as an error and does nothing at all.
+        return CommentParts {};
+    }
+    let parts = CommentParts {
+        left: template.slice(0, marker),
+        right: template.slice(marker + 2, template.length),
+        valid: true,
+    };
+    return parts;
+}
+
+fn modeIsVisualNow(ctx: textedit_behavior.Context): bool {
+    return textedit_behavior.modeIsVisual(rx.get(ctx.mode));
+}
+
+fn isBlankText(text: str): bool {
+    return text.trim().length == 0;
+}
+
+fn leadingWhitespaceOf(text: str): str {
+    let n = 0;
+    while n < text.length {
+        let ch = text.slice(n, n + 1);
+        if ch != " " && ch != "\t" {
+            break;
+        }
+        n = n + 1;
+    }
+    return text.slice(0, n);
+}
+
+fn trailingWhitespaceStart(text: str): int {
+    let end = text.length;
+    while end > 0 {
+        let ch = text.slice(end - 1, end);
+        if ch != " " && ch != "\t" {
+            break;
+        }
+        end = end - 1;
+    }
+    return end;
+}
+
+// Whether a line already carries a comment. The TRIMMED parts are used, so
+// "//x" counts as commented under a "// %s" commentstring -- a comment
+// someone wrote without the customary space is still a comment.
+export fn lineIsCommented(text: str, parts: CommentParts): bool {
+    let left = parts.left.trim();
+    let right = parts.right.trim();
+    let body = text.trim();
+    // Both delimiters must fit without overlapping: "<!--->" is not a
+    // commented empty line, it is six characters that happen to start and
+    // end the right way.
+    if body.length < left.length + right.length {
+        return false;
+    }
+    if left.length > 0 && !body.startsWith(left) {
+        return false;
+    }
+    if right.length > 0 && !body.endsWith(right) {
+        return false;
+    }
+    return true;
+}
+
+// `indent` is the common indent of the whole range, not this line's own:
+// commenting a block puts every marker in one column so the block still
+// reads as a block. The line keeps whatever indent it had beyond that.
+export fn commentedLine(text: str, parts: CommentParts, indent: str): str {
+    if isBlankText(text) {
+        // A blank line inside a range gets a bare marker with no trailing
+        // padding, so commenting does not leave whitespace at the end.
+        return indent + parts.left.trim() + parts.right.trim();
+    }
+    return indent + parts.left + text.slice(indent.length, text.length) + parts.right;
+}
+
+// One attempt at removing a comment, with the given delimiters. none when
+// the line is not commented that way.
+fn stripCommentWith(text: str, left: str, right: str): str | none {
+    let indent = leadingWhitespaceOf(text);
+    let rest = text.slice(indent.length, text.length);
+    if !rest.startsWith(left) {
+        return none;
+    }
+    let body = rest.slice(left.length, rest.length);
+    let core = body;
+    let trail = "";
+    if right.length > 0 {
+        let cut = trailingWhitespaceStart(body);
+        let head = body.slice(0, cut);
+        if !head.endsWith(right) {
+            return none;
+        }
+        core = head.slice(0, head.length - right.length);
+        trail = body.slice(cut, body.length);
+    }
+    // A line whose content turns out to be blank loses its indent and its
+    // trailing run too, so uncommenting a commented blank line gives a
+    // genuinely empty line rather than a line full of spaces.
+    if isBlankText(core) {
+        return core;
+    }
+    let result = indent + core + trail;
+    return result;
+}
+
+export fn uncommentedLine(text: str, parts: CommentParts): str {
+    // Exact delimiters first (so "// " eats its own space), then the
+    // trimmed ones (so a comment written as "//x" still comes apart).
+    let exact = stripCommentWith(text, parts.left, parts.right);
+    if exact {
+        let value: str = exact;
+        return value;
+    }
+    let trimmed = stripCommentWith(text, parts.left.trim(), parts.right.trim());
+    if trimmed {
+        let value: str = trimmed;
+        return value;
+    }
+    return text;
 }

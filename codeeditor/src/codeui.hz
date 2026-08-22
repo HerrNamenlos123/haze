@@ -91,6 +91,59 @@ fn vimModeContextName(mode: textedit_behavior.Mode): str {
     return "normal";
 }
 
+// vim's 'commentstring' for a file: ONE template with %s where the line's
+// own text goes. Both line comments ("// %s") and languages that only have
+// block comments ("<!-- %s -->") are expressed the same way, which is why
+// vim models it as a single template -- see toggleComment in vim_behavior.
+fn commentStringForFile(path: str): str {
+    let lower = asciiLower(path);
+    if lower.endsWith(".py") || lower.endsWith(".sh") || lower.endsWith(".bash")
+        || lower.endsWith(".zsh") || lower.endsWith(".toml") || lower.endsWith(".yaml")
+        || lower.endsWith(".yml") || lower.endsWith(".ini") || lower.endsWith(".conf") {
+        return "# %s";
+    }
+    if lower.endsWith(".css") || lower.endsWith(".scss") || lower.endsWith(".less") {
+        return "/* %s */";
+    }
+    if lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xml")
+        || lower.endsWith(".svg") || lower.endsWith(".md") {
+        return "<!-- %s -->";
+    }
+    if lower.endsWith(".lua") || lower.endsWith(".sql") {
+        return "-- %s";
+    }
+    // Everything else this editor is likely to see -- ts/js/tsx/hz/c/rs/go.
+    return "// %s";
+}
+
+// A .vue file has no single comment syntax: its <template> is HTML, its
+// <script> is TypeScript and its <style> is CSS, and a comment written in
+// the wrong one of those is not a comment at all.
+//
+// Which region a line is in is decided by scanning back for the nearest
+// top-level block tag rather than by asking the syntax engine, because the
+// per-line tokens this editor caches keep only text and colour -- the
+// TextMate scopes that would answer it directly are dropped before they
+// reach here. An SFC's blocks are top-level and unnested by construction,
+// so the scan is reliable in practice.
+fn vueCommentStringAt(doc: text_document.Document, line: int): str {
+    let y = vim_behavior.clampInt(line, 0, doc.lineCount() - 1);
+    for (let i = y; i >= 0; i--) {
+        let text = doc.lineText(i).trim();
+        if text.startsWith("<script") {
+            return "// %s";
+        }
+        if text.startsWith("<style") {
+            return "/* %s */";
+        }
+        if text.startsWith("<template") {
+            return "<!-- %s -->";
+        }
+    }
+    // Above every block tag -- the SFC's outermost level, which is markup.
+    return "<!-- %s -->";
+}
+
 type SizeMode = ui_components.SizeMode;
 type DivElement = ui_elements.DivElement;
 type TextElement = ui_elements.TextElement;
@@ -1936,6 +1989,102 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             applyVimMode(next);
         };
 
+        // ── Go to definition ─────────────────────────────────────────
+        //
+        // Asks the language server where the symbol under the caret is
+        // defined and raises a navigation request for the answer. The
+        // request, not a direct jump: the target may be in a file that is
+        // not open, and opening tabs belongs to the shell -- see
+        // navigation.hz.
+        let goToDefinition = () => {
+            let bridge = getState().lspBridge;
+            if !bridge {
+                return;
+            }
+            if lspLanguageId.length == 0 {
+                // Not a language these servers speak; there is nothing to
+                // ask and a request would be answered against nothing.
+                return;
+            }
+            let caret = rx.get(texteditBehavior.cursorPosition);
+            let lineText = doc.lineText(caret.y);
+            bridge.definition(filePath, caret.y, caret.x, lineText,
+                (targets: []DefinitionTarget) => {
+                    if targets.length == 0 {
+                        return;
+                    }
+                    // The first target, like every editor: several only
+                    // happen for overloads and merged declarations, where
+                    // the first is the one people mean.
+                    let target = targets[0];
+                    requestReveal(target.filepath, target.line, target.utf16Offset);
+                });
+        };
+
+        // vim's `gd`. The engine knows nothing about language servers; it
+        // just calls this. See Vim.onGoToDefinition.
+        let goToDefinitionHook: vim_behavior.GoToDefinitionHook = () => {
+            goToDefinition();
+        };
+        vim.onGoToDefinition = goToDefinitionHook;
+
+        // Keep 'commentstring' current for `gc`. A computed rather than a
+        // one-off, because in a .vue file the answer depends on which
+        // block the caret is in and therefore changes as the caret moves.
+        let isVue = asciiLower(filePath).endsWith(".vue");
+        let fixedCommentString = commentStringForFile(filePath);
+        let trackCommentString = rx.computed(() => {
+            if !isVue {
+                vim.commentString = fixedCommentString;
+                return fixedCommentString;
+            }
+            let caret = rx.get(texteditBehavior.cursorPosition);
+            rx.get(docVersion);
+            let resolved = vueCommentStringAt(doc, caret.y);
+            vim.commentString = resolved;
+            return resolved;
+        });
+
+        // ── Acting on a navigation request ───────────────────────────
+        //
+        // Every tab watches; the one whose path matches acts. Guarded by a
+        // serial it has already seen, so each request moves each tab once
+        // and no tab has to clear the request for the others (the same
+        // shape workspace().lspGeneration uses).
+        let revealSerialSeen = rx.reactive<int>(0);
+        let applyPendingReveal = rx.computed(() => {
+            let nav = navigation();
+            let serial = rx.get(nav.serial);
+            if serial == rx.get(revealSerialSeen) {
+                return serial;
+            }
+            let wanted: str = rx.get(nav.path);
+            if wanted != filePath {
+                // Not for this tab. Deliberately does NOT mark the serial
+                // seen: the tab this is for may not exist yet, and marking
+                // it here would be meaningless anyway since each tab keeps
+                // its own counter.
+                return serial;
+            }
+            revealSerialSeen := serial;
+            let line = vim_behavior.clampInt(rx.get(nav.line), 0, doc.lineCount() - 1);
+            // The offset arrives in UTF-16 code units because the sender
+            // had no way to convert it -- only this side has the target
+            // line's text. See DefinitionTarget.
+            let lineText = doc.lineText(line);
+            let byteColumn = unicode.offsetFromUtf16Units(lineText, rx.get(nav.utf16Offset));
+            let target: Vec2i = { x: byteColumn, y: line };
+            if rx.get(vimOn) {
+                texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+            }
+            texteditBehavior.clearSelection();
+            texteditBehavior.moveTo(target, true, false);
+            // Centred, which is what every editor does on a jump: landing
+            // on the last visible line tells you nothing about context.
+            texteditBehavior.requestScroll(textedit_behavior.ScrollIntent.Center);
+            return serial;
+        });
+
         // Scroll state for the text area. The editor owns it (it knows
         // the content size); the scroll component owns the maths.
         let scroll = ui_components.ScrollState();
@@ -2487,14 +2636,19 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
             registerEditorCommands(keybindings(), EditorCommands {
                 toggleVim: () => { toggleVim(); },
-                // STUB, as asked for. vim_behavior does already keep a jump
-                // list and implement <C-o> internally (see its `jumps`
-                // stack) -- what is missing is the route from a COMMAND to
-                // it, which is the piece this harness is meant to make
-                // possible. Until that exists this binding shadows vim's
-                // own <C-o>, which is why it is worth knowing it is a stub.
-                vimNavigateBack: () => {
-                    fmt.println("[keybindings] TODO vim.navigateBack (<C-o>)");
+                // No longer a stub: this is the real jump list. The keymap
+                // routes ctrl+o here rather than letting it reach the
+                // engine as a key, so the binding and vim's own <C-o> are
+                // the same action rather than two that shadow each other.
+                vimNavigateBack: () => { vim.jumpBack(); },
+                vimNavigateForward: () => { vim.jumpForward(); },
+                goToDefinition: () => {
+                    // Outside vim, or from F12, the jump origin still has
+                    // to be recorded -- `gd` does this itself.
+                    if rx.get(vimOn) {
+                        vim.pushJump();
+                    }
+                    goToDefinition();
                 },
             });
             return true;
@@ -3207,6 +3361,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // tab -- see publishEditorContext / ownEditorCommands.
                 rx.get(publishEditorContext);
                 rx.get(ownEditorCommands);
+                // Keeps `gc`'s comment syntax in step with the caret, and
+                // lets this tab act on a go-to-definition that landed in
+                // it -- see trackCommentString / applyPendingReveal.
+                rx.get(trackCommentString);
+                rx.get(applyPendingReveal);
 
                 ui.div({
                     id: 1,
@@ -4280,6 +4439,32 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             previousEditor: () => { cycleEditor(-1); },
         });
 
+        // ── Go-to-definition landing in another file ─────────────────
+        //
+        // The shell's half of a navigation request: make sure the target
+        // file has a tab and is the visible one. Putting the caret in the
+        // right place is the destination editor's half -- see
+        // applyPendingReveal in EditorView, and navigation.hz for why the
+        // two are split.
+        let navigationSerialSeen = rx.reactive<int>(0);
+        let followNavigation = rx.computed(() => {
+            let nav = navigation();
+            let serial = rx.get(nav.serial);
+            if serial == rx.get(navigationSerialSeen) {
+                return serial;
+            }
+            navigationSerialSeen := serial;
+            let path: str = rx.get(nav.path);
+            if path.length > 0 {
+                // Focuses the existing tab when there is one, and opens a
+                // new one otherwise. A tab loads its document synchronously
+                // on mount, so the editor can act on the same request in
+                // this very frame.
+                openFile(path);
+            }
+            return serial;
+        });
+
         // Pump the shared language server once per frame, here rather than
         // in each editor: the connection is one, and a reply is consumed by
         // whoever reads it first, so N tabs pumping it would race for each
@@ -4302,6 +4487,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             let items: []tabs_lib.TabItem = rx.get(tabs);
             let current = rx.get(activeKey);
             rx.get(runSharedLspLoop);
+            rx.get(followNavigation);
 
             // Publish the shell's own piece of `when`-clause context. The
             // tab commands are gated on it, so ctrl+w with nothing open is

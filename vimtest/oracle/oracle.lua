@@ -263,6 +263,18 @@ local function fresh_buffer(lines, filetype)
 
   vim.api.nvim_win_set_buf(0, new)
 
+  -- Clear the jump list AFTER the window actually holds the new buffer.
+  --
+  -- The `clearjumps` inside nvim_buf_call above does not do it: the jump list
+  -- is per-WINDOW, not per-buffer, and nvim_buf_call only swaps the buffer
+  -- context. The window's real list therefore survived every case, which is
+  -- invisible until a case actually uses <C-o>: the first such case works,
+  -- and every later one jumps into a stale entry pointing at a DIFFERENT
+  -- buffer (bufnr 1, the startup buffer, which is never wiped). The window
+  -- then shows that buffer and capture_state reads ITS lines, so the case is
+  -- compared against the wrong file.
+  pcall(vim.cmd, "silent! clearjumps")
+
   if scratch_buf and scratch_buf ~= new and vim.api.nvim_buf_is_valid(scratch_buf) then
     pcall(function() vim.bo[scratch_buf].modified = false end)
     pcall(vim.api.nvim_buf_delete, scratch_buf, { force = true, unload = false })
@@ -280,6 +292,36 @@ end
 --------------------------------------------------------------------------------
 
 local applied_maps = {}
+
+-- Neovim's OWN default mappings, snapshotted once before any case runs.
+--
+-- clear_maps() below wipes every global mapping in every mode as a
+-- belt-and-braces reset between cases. That was written when nvim shipped
+-- essentially no default mappings; since 0.10 it ships real ones -- most
+-- importantly gc/gcc/gbc (commenting), but also gco/gcO and others. Wiping
+-- them turns the oracle into an nvim that cannot comment, and a
+-- differential test for gc then "passes" only when the engine under test
+-- also does nothing. So the wipe is followed by putting these back.
+local DEFAULT_MAPS = {}
+
+local MAP_MODES = { "n", "i", "v", "x", "s", "o", "c", "t", "l" }
+
+local function snapshot_default_maps()
+  for _, mode in ipairs(MAP_MODES) do
+    local ok, maps = pcall(vim.api.nvim_get_keymap, mode)
+    DEFAULT_MAPS[mode] = ok and maps or {}
+  end
+end
+
+local function restore_default_maps()
+  for _, mode in ipairs(MAP_MODES) do
+    for _, mp in ipairs(DEFAULT_MAPS[mode] or {}) do
+      pcall(vim.fn.mapset, mode, false, mp)
+    end
+  end
+end
+
+snapshot_default_maps()
 
 local function apply_maps(maps)
   applied_maps = {}
@@ -330,6 +372,9 @@ local function clear_maps()
       end
     end
   end
+  -- ...and put nvim's own back, so each case starts from a stock nvim
+  -- rather than one with its built-in commands removed.
+  restore_default_maps()
 end
 
 --------------------------------------------------------------------------------
@@ -574,6 +619,14 @@ local function setup_case(case)
   end
 
   fresh_buffer(case.lines or { "" }, case.filetype)
+
+  -- 'commentstring' is BUFFER-local, so it has to be set after the buffer
+  -- exists -- case.options above is applied through vim.o before there is
+  -- one. With -u NONE --noplugin there are no ftplugins to supply a
+  -- default, so a case that exercises gc/gcc must state it explicitly.
+  if case.commentstring then
+    vim.bo.commentstring = case.commentstring
+  end
 
   local cur = case.cursor or { line = 1, col = 0 }
   local lc = vim.api.nvim_buf_line_count(0)

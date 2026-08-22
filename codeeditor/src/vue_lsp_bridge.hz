@@ -109,6 +109,40 @@ struct TsServerResponseMessage {
 // is (a json.Node cannot be default-constructed).
 struct TsServerExitArgs {}
 
+// tsserver's `definition` command. Identical in shape to QuickInfoArgs --
+// 1-based line, 1-based UTF-16 offset.
+struct DefinitionArgs {
+    file: str;
+    line: int;
+    offset: int;
+}
+
+// One entry of tsserver's `definition` reply: a FileSpan. `file` is a plain
+// absolute filesystem PATH, not a URI -- which is a second reason (beyond
+// hybrid mode) to ask tsserver rather than vue-language-server: there is no
+// percent-decoding and no file:// scheme to unpick.
+struct DefinitionSpan {
+    file: str = "";
+    start: TsServerLocation = {};
+    end: TsServerLocation = {};
+}
+
+// Where a definition lives, in the terms the editor needs to go there.
+export inline struct DefinitionTarget {
+    // Absolute path. May be a file that is not open, or not even a file the
+    // user has ever seen (a .d.ts inside node_modules).
+    filepath: str;
+    // 0-based, converted from tsserver's 1-based line.
+    line: int;
+    // 0-based UTF-16 code units into that line -- NOT a byte column.
+    //
+    // Converting to a byte column needs the TEXT of the target line, and
+    // for a file that is not open yet there is no text to consult. So the
+    // raw offset travels to the destination and is converted there, once
+    // the document exists. See applyPendingReveal in codeui.hz.
+    utf16Offset: int;
+}
+
 struct QuickInfoArgs {
     file: str;
     line: int;    // 1-based, per TS Server Protocol (unlike LSP's 0-based)
@@ -127,8 +161,8 @@ struct QuickInfoBody {
 // unlike LSP's 0-based Position right next to it. The +1s live in
 // changeDocument() rather than in callers.
 struct TsServerLocation {
-    line: int;
-    offset: int;
+    line: int = 0;
+    offset: int = 0;
 }
 
 struct TsServerCodeEdit {
@@ -432,6 +466,12 @@ export opaque struct VueLspBridge {
         callback: (spans: []SemanticSpan) => none;
     }
     _semanticTokensPendingRequests: []PendingSemanticTokensRequest = [];
+
+    struct PendingDefinitionRequest {
+        seq: int;
+        callback: (targets: []DefinitionTarget) => none;
+    }
+    _definitionPendingRequests: []PendingDefinitionRequest = [];
 
     // One file registered with both servers. `sent` distinguishes a
     // document that has actually been announced from one that is still
@@ -893,6 +933,46 @@ export opaque struct VueLspBridge {
         });
     }
 
+    // Where the symbol under `byteColumn` on `line` is defined.
+    //
+    // Answered by tsserver alone, not by vue-language-server. In hybrid
+    // mode the language server has no semantic TypeScript service at all
+    // (see the module doc comment), so it cannot resolve a definition for
+    // anything in <script setup> -- which is nearly everything anyone wants
+    // to jump to. The tsserver reply also names plain filesystem paths
+    // rather than URIs, so nothing has to be decoded.
+    //
+    // The callback receives an empty list when there is no definition, and
+    // is not called at all if the servers are not ready or the file was
+    // never opened -- the same contract hover() has.
+    fn definition(filepath: str, line: int, byteColumn: int, lineText: str, callback: (targets: []DefinitionTarget) => none) {
+        if this._shutdown || !rx.get(this._documentReady) {
+            return;
+        }
+        let known = false;
+        for doc in this._openDocuments {
+            if doc.filepath == filepath && doc.sent {
+                known = true;
+                break;
+            }
+        }
+        if !known {
+            return;
+        }
+        // tsserver always counts UTF-16 code units, never bytes.
+        let tsserverOffset = unicode.utf16UnitsBefore(lineText, byteColumn);
+        let argsNode = json.encodeToJsonNode<DefinitionArgs>({
+            file: filepath, line: line + 1, offset: tsserverOffset + 1,
+        });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'definition' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._definitionPendingRequests.push({ seq: seq, callback: callback });
+        this._sendTsServerCommand(seq, "definition", argsNode);
+    }
+
     // Asks tsserver directly for hover info at a position, bypassing
     // vue-language-server entirely -- see the module doc comment (channel
     // 3) for why this works. Not the same thing as the "tsserver/request"
@@ -1056,6 +1136,40 @@ export opaque struct VueLspBridge {
             else {
                 matchedQuickInfoCallback(none);
             }
+            return;
+        }
+
+        // Definitions, matched the same way as quickinfo above.
+        let matchedDefinitionCallback: ((targets: []DefinitionTarget) => none) | none = none;
+        let remainingDefinition: []PendingDefinitionRequest = [];
+        for entry in this._definitionPendingRequests {
+            if entry.seq == requestSeq {
+                matchedDefinitionCallback = entry.callback;
+            }
+            else {
+                remainingDefinition.push(entry);
+            }
+        }
+        this._definitionPendingRequests = remainingDefinition;
+        if matchedDefinitionCallback is not none {
+            let targets: []DefinitionTarget = [];
+            if result.body {
+                let spans = json.parse<[]DefinitionSpan>(result.body);
+                if spans {
+                    for span in spans {
+                        if span.file.length > 0 {
+                            targets.push(DefinitionTarget {
+                                filepath: span.file,
+                                line: span.start.line - 1,
+                                utf16Offset: span.start.offset - 1,
+                            });
+                        }
+                    }
+                }
+            }
+            // An empty list is a real answer ("nothing is defined here"),
+            // and so is a failed command -- both mean do not navigate.
+            matchedDefinitionCallback(targets);
             return;
         }
 

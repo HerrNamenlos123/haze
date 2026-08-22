@@ -1480,7 +1480,13 @@ export struct Context {
     // caret sits at the selection's moving END, but vim leaves it on the
     // column the selection STARTED at, so the caller supplies that.
     mut fn _deleteLines(startY: int, endY: int, keepColumnOverride: int = -1) {
-        let keepColumn = keepColumnOverride >= 0 ? keepColumnOverride : this._cursorPos().x;
+        // The DESIRED column, not the caret's current one. They differ once
+        // a vertical move has passed through a line too short to hold the
+        // column: vim clamps what it displays but keeps wanting the
+        // original column (curswant), so `dd` on a short line drops the
+        // caret onto the original column of whatever line slides up. Using
+        // the clamped column here made every such clamp permanent.
+        let keepColumn = keepColumnOverride >= 0 ? keepColumnOverride : this._desiredCursorPosition.x;
         let lineCount = this.args.getLineCount();
         let cutStart: Vec2i = { x: 0, y: startY };
         let cutEnd: Vec2i = {};
@@ -1503,7 +1509,10 @@ export struct Context {
         // to that line's length by _moveTo).
         let landingY = clamp<int>(startY, 0, this.args.getLineCount() - 1);
         let target: Vec2i = { x: keepColumn, y: landingY };
-        this._moveTo(target, true, false);
+        // Only an explicit override re-states the desired column; the
+        // default path is restoring it, and restoring must not overwrite it
+        // with whatever the landing line could accommodate.
+        this._moveTo(target, keepColumnOverride >= 0, false);
     }
 
     fn _getTextInRange(start: Vec2i, end: Vec2i): String {

@@ -83,6 +83,49 @@ The RHS is a full key sequence, not a single action, and `noremap`
 `defaultVimrc()` returns the maintainer's mappings as a ready-made
 preset; it is also the exact configuration the test suite validates.
 
+### Commenting
+
+`gc` is a real operator, so `gcw`, `gcj`, `gc}`, `gcG`, visual `gc` and the
+doubled `gcc` all work, and all take counts. It follows Neovim's own
+built-in commenting exactly (Neovim 0.10+), including the parts that are
+easy to get wrong: a range is *uncommented* only when every non-blank line
+in it is already commented, the marker goes at the range's SMALLEST indent
+so a block stays aligned, blank lines are ignored when deciding and when
+measuring that indent but are still commented, and a range that is entirely
+blank is left alone.
+
+The syntax comes from `commentString`, which is Vim's `'commentstring'`:
+one template with `%s` where the line goes. That single form covers line
+comments and languages that only have block comments:
+
+```haze
+vim.commentString = "// %s";          // TypeScript, C, Haze
+vim.commentString = "# %s";           // Python, YAML
+vim.commentString = "<!-- %s -->";    // HTML, Vue templates
+```
+
+The padding is part of the template — `"//%s"` genuinely produces `//text`.
+Uncommenting accepts either form, so a comment someone wrote as `//x` still
+comes apart.
+
+### Go to definition
+
+`gd` calls `onGoToDefinition`, a host hook, and records a jump first so
+`<C-o>` comes back. The engine has no idea what a language server is;
+stock Vim's `gd` (a backwards search for the identifier) is not
+implemented, because any host that can answer the question properly should.
+
+### The jump list
+
+`<C-o>` and `<C-i>` implement Vim's algorithm rather than an approximation
+of it. Notably Vim does **not** truncate forward history on a new jump: it
+appends and then removes entries whose *line* appears again later, keeping
+the newest. The two produce different lists — after `5G 10G <C-o> 15G` Vim
+holds `[1, 10, 5]` where truncation would give `[1, 5]` — and the
+difference is visible through `<C-o>`. Entries are capped at 100, and an
+entry for the line the cursor is already on is dropped when the index is at
+the end of the list.
+
 ### Scrolling
 
 The engine cannot scroll — it has no idea how tall the viewport is. `zz`
@@ -92,13 +135,22 @@ that the host reads and applies, then clears with `clearScrollRequest()`.
 ## Testing against real Neovim
 
 Correctness here is not "looks right", it is "byte-identical to Neovim".
-Three suites, all driving a headless `nvim` as the oracle:
+Five suites, all driving a headless `nvim` as the oracle:
 
 ```bash
-bun run scripts/vim-core-cases.ts            # the supported subset
-bun run scripts/vim-core-cases.ts --remaps   # ...again, with the vimrc
+bun run scripts/vim-core-cases.ts             # the supported subset
+bun run scripts/vim-core-cases.ts --remaps    # ...again, with the vimrc
+bun run scripts/vim-jumplist-cases.ts         # <C-o> / <C-i>
+bun run scripts/vim-comment-cases.ts          # gc / gcc
 bun run scripts/vim-difftest.ts --seed 3 --count 300   # random fuzz
 ```
+
+The jump-list and comment suites are separate corpora rather than extra
+entries in the core one, because the core corpus is a cross product (every
+key against every buffer/cursor pair): one added key costs 20 cases and
+moves the 2680 figure below. They also need buffers the core corpus does
+not have — tall ones with paragraph breaks for jumps, indented and
+part-commented ones for `gc`.
 
 Each runs every case through both real Neovim and the Haze
 implementation and compares buffer text, cursor position, mode, visual
@@ -108,9 +160,13 @@ anchor and register contents (including charwise/linewise-ness).
 | --- | --- |
 | Core subset, no remaps | **2680 / 2680** |
 | Core subset, vimrc remaps | **2680 / 2680** |
+| Jump list, no remaps | **204 / 204** |
+| Jump list, vimrc remaps | **204 / 204** |
+| Comment operator | **798 / 798** |
 | Random fuzz (6 seeds × 150) | ~92% |
 
-The core suite is the regression gate and must stay at 100%. The fuzzer
+The core, jump-list and comment suites are the regression gate and must
+stay at 100%. The fuzzer
 generates arbitrary key soup — including combinations well outside the
 supported subset — so its remaining ~8% is a long tail of one-off
 edge cases (mostly `>`/`<` cursor placement with exotic motions), not a

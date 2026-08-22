@@ -1,0 +1,73 @@
+// ═══ "Go to this place in this file" ═════════════════════════════════════
+//
+// One shell-owned request that any editor tab can raise and that the shell
+// and the destination tab both act on.
+//
+// It exists because a go-to-definition can land in a file that is not open,
+// and the two halves of that live in different places with no reference to
+// each other. Opening a tab belongs to the shell (it owns the tab list and
+// nothing else can see it), while placing the caret belongs to the editor
+// for that file (it owns the document). Neither can call the other: the
+// shell's openFile is a closure local to UI(), and the command registry
+// takes no arguments, so a command cannot carry a path and a position.
+//
+// The mechanism copies workspace().lspGeneration exactly: a monotonic
+// counter each interested component compares against a "seen" value of its
+// own, so every one of them reacts exactly once and none of them has to
+// clear the request for the others.
+//
+// Timing works out because a tab loads its document SYNCHRONOUSLY when it
+// mounts, so a newly opened file's EditorView can honour the request on the
+// very frame it first renders -- there is no "reveal once loaded" queue.
+
+struct NavigationState {
+    // Absolute path of the file the caret should end up in. "" when there
+    // is no outstanding request.
+    path: rx.Reactive<str>;
+    // 0-based line within it.
+    line: rx.Reactive<int>;
+    // 0-based UTF-16 code units into that line -- NOT a byte column.
+    //
+    // The conversion needs the target line's TEXT, which only exists once
+    // the file is open, so the raw offset travels and the destination
+    // converts. See DefinitionTarget in vue_lsp_bridge.hz.
+    utf16Offset: rx.Reactive<int>;
+    // Bumped on every request. What actually makes a component act, so that
+    // jumping twice to the same position fires twice.
+    serial: rx.Reactive<int>;
+
+    fn constructor(): mut NavigationState {
+        let state = NavigationState {
+            path: rx.reactive<str>(""),
+            line: rx.reactive<int>(0),
+            utf16Offset: rx.reactive<int>(0),
+            serial: rx.reactive<int>(0),
+        };
+        return state;
+    }
+}
+
+extern C let g_navigation: mut NavigationState | none = none;
+
+fn navigation(): mut NavigationState {
+    let existing = g_navigation;
+    if existing {
+        return existing;
+    }
+    let created = NavigationState();
+    g_navigation = created;
+    return created;
+}
+
+// Ask for the caret to end up at `line`/`utf16Offset` of `path`, opening
+// the file if it is not already open.
+fn requestReveal(path: str, line: int, utf16Offset: int) {
+    if path.length == 0 {
+        return;
+    }
+    let nav = navigation();
+    nav.path := path;
+    nav.line := line;
+    nav.utf16Offset := utf16Offset;
+    nav.serial := rx.get(nav.serial) + 1;
+}
