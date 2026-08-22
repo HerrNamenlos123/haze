@@ -80,6 +80,17 @@ fn keyEventName(key: ui_components.Key): str {
     return "";
 }
 
+// The vim mode as a `when` clause spells it -- lowercase, matching the
+// vocabulary vim's own documentation uses, so a rule reads
+// `vimMode == 'normal'`. See ctxVimMode() in editor_keymap.hz.
+fn vimModeContextName(mode: textedit_behavior.Mode): str {
+    if mode == textedit_behavior.Mode.Insert { return "insert"; }
+    if mode == textedit_behavior.Mode.Visual { return "visual"; }
+    if mode == textedit_behavior.Mode.VisualLine { return "visualline"; }
+    if mode == textedit_behavior.Mode.VisualBlock { return "visualblock"; }
+    return "normal";
+}
+
 type SizeMode = ui_components.SizeMode;
 type DivElement = ui_elements.DivElement;
 type TextElement = ui_elements.TextElement;
@@ -2428,6 +2439,54 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return "#7FA8D9" as Color;
         });
 
+        // ── Keybinding context and commands owned by this editor ──────
+        //
+        // Both are guarded on `active` because the registries are flat and
+        // global while an editor is per-tab: the visible tab is the one
+        // that holds keyboard focus, so it is the one whose state the
+        // `when` clauses are asking about and the one whose document an
+        // editor command should act on. Switching tabs re-runs both, and
+        // the newly active editor takes ownership.
+        //
+        // Computeds rather than writes scattered through the mutation
+        // sites: every value below is derived from a reactive, so this
+        // re-runs exactly when one of them changes and nothing else has to
+        // remember to keep the context in step. Read once per frame from
+        // the render pass (see rx.get() in the template) to stay live --
+        // the same shape followActiveFocus above already uses.
+        let publishEditorContext = rx.computed(() => {
+            if !instance.props().active {
+                return false;
+            }
+            let ctx = keybindings().context;
+            let on = rx.get(vimOn);
+            let mode = rx.get(texteditBehavior.mode);
+            ctx.setBool(ctxVimActive(), on);
+            ctx.setStr(ctxVimMode(), on ? vimModeContextName(mode) : "");
+            let anchor = rx.get(texteditBehavior.selectionAnchor);
+            ctx.setBool(ctxEditorHasSelection(), anchor ? true : false);
+            return true;
+        });
+
+        let ownEditorCommands = rx.computed(() => {
+            if !instance.props().active {
+                return false;
+            }
+            registerEditorCommands(keybindings(), EditorCommands {
+                toggleVim: () => { toggleVim(); },
+                // STUB, as asked for. vim_behavior does already keep a jump
+                // list and implement <C-o> internally (see its `jumps`
+                // stack) -- what is missing is the route from a COMMAND to
+                // it, which is the piece this harness is meant to make
+                // possible. Until that exists this binding shadows vim's
+                // own <C-o>, which is why it is worth knowing it is a stub.
+                vimNavigateBack: () => {
+                    fmt.println("[keybindings] TODO vim.navigateBack (<C-o>)");
+                },
+            });
+            return true;
+        });
+
         let prevUpdate = ui.now();
 
         let lspMemStat = rx.reactive<str | none>(none);
@@ -3083,6 +3142,20 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         presets: [presets.textColor(modeColor)],
                     });
 
+                    // A chord waiting for its second stroke. Without this,
+                    // pressing ctrl+k looks exactly like pressing nothing:
+                    // the key is swallowed and the next one means something
+                    // unexpected. VS Code shows the same hint for the same
+                    // reason.
+                    let chord = rx.get(keybindings().chordHint);
+                    if chord.length > 0 {
+                        ui.text({
+                            id: 3,
+                            text: f"{chord} ...",
+                            presets: [presets.textColor("#D9B87F")],
+                        });
+                    }
+
                     if lspMemStat {
                         ui.text({
                             id: 1,
@@ -3095,6 +3168,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // Moves keyboard focus onto this editor when its tab
                 // becomes the visible one -- see followActiveFocus.
                 rx.get(followActiveFocus);
+                // Keeps this editor's `when`-clause context and its
+                // command registrations current while it is the visible
+                // tab -- see publishEditorContext / ownEditorCommands.
+                rx.get(publishEditorContext);
+                rx.get(ownEditorCommands);
 
                 ui.div({
                     id: 1,
@@ -3126,6 +3204,19 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         // presets.p(8),
                     ],
                     focusable: true,
+
+                    // editorTextFocus, the context key that separates "this
+                    // key is for the document" from "this key is for the
+                    // application" -- see editor_keymap.hz. Tracked from
+                    // focus itself rather than from `active`, because it is
+                    // literally the question the dispatcher is asking: will
+                    // this keystroke reach a text editor?
+                    onFocus: () => {
+                        keybindings().context.setBool(ctxEditorTextFocus(), true);
+                    },
+                    onBlur: () => {
+                        keybindings().context.setBool(ctxEditorTextFocus(), false);
+                    },
 
                     // Wheel scrolls the text, exactly like any scroll
                     // container; the scroll model clamps at both ends.
@@ -3207,13 +3298,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
                         let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
 
-                        // F2 toggles the vim editing model at runtime.
-                        // Handled before anything else so it works in
-                        // every mode, including vim's insert mode.
-                        if event.key == ui_components.Key.F2 {
-                            toggleVim();
-                            return;
-                        }
+                        // F2 (toggle the vim editing model) is not handled
+                        // here any more: it is a keymap rule bound to
+                        // editor.action.toggleVim, resolved at the window's
+                        // capture-phase dispatch point before this handler
+                        // ever runs. See editor_keymap.hz.
 
                         // Any key may move the caret, so ask the next
                         // frame to scroll it back into view.
@@ -4100,6 +4189,60 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         };
 
+        // STUB. The dialog is real and returns a real path, but there is
+        // nowhere to put it: this editor has no workspace/folder model,
+        // only a flat list of open files. It exists so ctrl+k ctrl+o is a
+        // live end-to-end demonstration that a two-stroke chord resolves
+        // and reaches its command; opening a folder AS a workspace is the
+        // actual feature and is deliberately not part of this change.
+        let promptForFolder = () => {
+            if let picked = filedialog.pickFolder(); picked is filedialog.DialogSuccess {
+                fmt.println("[keybindings] TODO workbench.action.files.openFolder: ", picked.path);
+            }
+        };
+
+        // Tab cycling, lifted out of the old inline key handler so it can
+        // be named as a command instead. +1 is the next tab, -1 the
+        // previous; both wrap.
+        let cycleEditor = (delta: int) => {
+            let all: []tabs_lib.TabItem = rx.get(tabs);
+            if all.length <= 1 {
+                return;
+            }
+            let key = rx.get(activeKey);
+            let index = 0;
+            for (let i = 0; i < all.length; i++) {
+                if all[i].key == key {
+                    index = i;
+                    break;
+                }
+            }
+            let next = index + delta;
+            if next < 0 { next = all.length - 1; }
+            if next >= all.length { next = 0; }
+            activeKey := all[next].key;
+            persist();
+        };
+
+        let closeActiveEditor = () => {
+            let key = rx.get(activeKey);
+            if key >= 0 {
+                closeTab(key);
+            }
+        };
+
+        // Hand the shell's own actions to the command registry under their
+        // VS Code ids. Which KEYS reach them is not decided here -- that is
+        // the rule table in editor_keymap.hz, and neither half knows the
+        // other's contents.
+        registerWorkbenchCommands(keybindings(), WorkbenchCommands {
+            openFile: () => { promptForFile(); },
+            openFolder: () => { promptForFolder(); },
+            closeActiveEditor: () => { closeActiveEditor(); },
+            nextEditor: () => { cycleEditor(1); },
+            previousEditor: () => { cycleEditor(-1); },
+        });
+
         // Pump the shared language server once per frame, here rather than
         // in each editor: the connection is one, and a reply is consumed by
         // whoever reads it first, so N tabs pumping it would race for each
@@ -4123,6 +4266,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             let current = rx.get(activeKey);
             rx.get(runSharedLspLoop);
 
+            // Publish the shell's own piece of `when`-clause context. The
+            // tab commands are gated on it, so ctrl+w with nothing open is
+            // not a bound key at all rather than a bound key that does
+            // nothing.
+            keybindings().context.setBool(ctxHasOpenTabs(), items.length > 0);
+            if items.length == 0 {
+                // Closing the focused tab UNMOUNTS its editor, and an
+                // unmounted element never gets an onBlur (the component
+                // system drops focus by simply not finding the element
+                // again, see collectFocusPath). So the flag has to be
+                // cleared from here, or it would stay stuck true with no
+                // editor left to be true about -- and ctrl+o would keep
+                // resolving to the vim override.
+                keybindings().context.setBool(ctxEditorTextFocus(), false);
+            }
+
             ui.div({
                 id: 0,
                 presets: [
@@ -4133,50 +4292,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     presets.textColor("#FFF"),
                 ],
                 focusable: true,
-                onKeyDown: (event: ui_components.KeyboardEvent) => {
-                    let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
-                    if !ctrl {
-                        return;
-                    }
-                    // ctrl+O opens a file, ctrl+W closes the current tab,
-                    // ctrl+Tab cycles -- the bindings these gestures have
-                    // everywhere. Handled on the shell rather than in the
-                    // editor because they are about the SET of tabs, which
-                    // no individual editor knows anything about.
-                    //
-                    // This runs in the bubble phase, so an editor that
-                    // wanted one of these for itself would have already had
-                    // its chance at it.
-                    if event.key == ui_components.Key.O {
+                // THE dispatch point for the whole window.
+                //
+                // Capture phase, on the root, so every bound key is
+                // resolved BEFORE the focused element sees it. That
+                // ordering is the entire reason this is one handler here
+                // instead of a handler per component: a rule can only take
+                // a key away from the document (ctrl+o inside a vim
+                // editor) if it gets asked first. A bubble-phase handler,
+                // which is what this replaced, only ever sees the keys the
+                // document did not want.
+                //
+                // Anything the keymap does not claim is left completely
+                // untouched and continues down to the editor as before --
+                // vim's own <C-d>/<C-u>/<C-r>, every printable character,
+                // the arrow keys.
+                onKeyDownCapture: (event: ui_components.KeyboardEvent) => {
+                    if keybindings().dispatch(event).handled() {
                         event.stopPropagation();
-                        promptForFile();
-                    }
-                    else if event.key == ui_components.Key.W {
-                        event.stopPropagation();
-                        let key = rx.get(activeKey);
-                        if key >= 0 {
-                            closeTab(key);
-                        }
-                    }
-                    else if event.key == ui_components.Key.Tab {
-                        event.stopPropagation();
-                        let all: []tabs_lib.TabItem = rx.get(tabs);
-                        if all.length > 1 {
-                            let key = rx.get(activeKey);
-                            let index = 0;
-                            for (let i = 0; i < all.length; i++) {
-                                if all[i].key == key {
-                                    index = i;
-                                    break;
-                                }
-                            }
-                            let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
-                            let next = shift ? index - 1 : index + 1;
-                            if next < 0 { next = all.length - 1; }
-                            if next >= all.length { next = 0; }
-                            activeKey := all[next].key;
-                            persist();
-                        }
                     }
                 },
             }, () => {
@@ -4192,6 +4325,15 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                             presets.packing(ui_styling.Packing.Center),
                             presets.crossAlign(ui_styling.CrossAlign.Center),
                         ],
+                        // Key events are only delivered along the FOCUSED
+                        // element's ancestor chain, so closing the last tab
+                        // used to leave the window with nothing focused and
+                        // therefore no keyboard at all -- including the
+                        // ctrl+o this very screen tells you to press. This
+                        // branch only exists while there are no tabs, so
+                        // claiming focus here cannot fight with an editor.
+                        focusable: true,
+                        autofocus: true,
                     }, () => {
                         ui.text({
                             id: 0,

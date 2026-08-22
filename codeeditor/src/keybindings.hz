@@ -1,0 +1,1028 @@
+import ui_components
+
+// ═══ A VS Code-shaped keybinding harness ═════════════════════════════════
+//
+// Three small registries that only meet at the very end:
+//
+//   commands   an id ("workbench.action.files.openFile") -> a function.
+//              Knows nothing about keys.
+//   keymap     a list of rules, each "these keystrokes" + "this command
+//              id" + "only when this expression is true". Knows nothing
+//              about what the commands do.
+//   context    a bag of named values ("editorTextFocus" = true,
+//              "vimMode" = "normal") the `when` expressions are evaluated
+//              against. Knows nothing about either of the other two.
+//
+// The point of the split is that a keystroke can mean different things in
+// different situations WITHOUT every handler growing a chain of `if`s about
+// the rest of the application. ctrl+o is a good example: it opens a file
+// normally, but inside a vim editor it is "jump back". Written as one rule
+// each, the second simply overrides the first while its `when` holds -- and
+// neither one has to know the other exists.
+//
+// Why a *single* dispatch point rather than a handler per component: the
+// alternative (what this file replaced) is that whoever is focused gets the
+// key first and every other interested party has to hope it bubbles. That
+// makes "ctrl+o means something else here" impossible to express without
+// the focused component knowing about file dialogs. VS Code resolves
+// keybindings globally, before the editor sees the key, for exactly this
+// reason -- so this does too, from a capture-phase handler on the root.
+//
+// Deliberately NOT implemented (all easy to add on top): `in`/`not in`
+// operators, regex (`=~`) matching, per-command arguments, and reading the
+// keymap from a JSON file. The last one is the real motivation for parsing
+// `when` out of a *string* rather than building expressions in code: the
+// table below can move into a user-editable keybindings.json unchanged.
+
+// One command's implementation. Named via `type` rather than written
+// inline because a bare closure literal does not implicitly convert into a
+// `| none` union, and a struct field with a closure literal DEFAULT crashes
+// the compiler outright -- see stdlib/textedit_behavior's Behavior struct,
+// which is shaped this way for the same reason.
+type CommandFn = () => void;
+
+// ═══ 1. Keystrokes ═══════════════════════════════════════════════════════
+
+// One physical key plus the modifiers held with it -- "ctrl+shift+p".
+// A *chord* (VS Code's word) is a sequence of these: "ctrl+k ctrl+o".
+struct KeyStroke {
+    key: ui_components.Key = ui_components.Key.Unknown;
+    ctrl: bool = false;
+    shift: bool = false;
+    alt: bool = false;
+    // The Windows/Command/Super key. Named after ui_components'
+    // KeyModifiers.Gui rather than after any one platform's label for it.
+    gui: bool = false;
+
+    fn equals(other: KeyStroke): bool {
+        return this.key == other.key
+            && this.ctrl == other.ctrl
+            && this.shift == other.shift
+            && this.alt == other.alt
+            && this.gui == other.gui;
+    }
+
+    // False for a stroke whose key name could not be resolved, so a typo
+    // in a keymap table ("ctrl+oo") becomes a rule that can never fire
+    // rather than a rule that fires on some arbitrary other key.
+    fn valid(): bool {
+        return this.key != ui_components.Key.Unknown;
+    }
+}
+
+// ui_components.Key's values are deliberately pinned to USB HID usage IDs
+// (see its own doc comment), which puts A..Z, the digit row and F1..F12 at
+// contiguous, known codes. Going through the raw number keeps the name
+// tables below to a few lines of arithmetic instead of ~50 one-per-key
+// branches in each direction. Plain `as` will not do this -- Haze has no
+// conversion between an enum and an int -- hence the same drop to C that
+// main.hz's sdlKeyToUIKey() already relies on for the same reason.
+fn keyFromCode(code: int): ui_components.Key :: final {
+    do unsafe {
+        let result: ui_components.Key = uninitialized;
+        __c__("result = (int)code;");
+        return result;
+    };
+}
+
+fn codeOfKey(key: ui_components.Key): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("result = (int)key;");
+        return result;
+    };
+}
+
+// Lowercase an ASCII string. Local rather than reused from vim_behavior's
+// toLowerStr() so this file stays independent of the vim module -- nothing
+// here is vim-specific, and a keybinding harness that only compiles
+// alongside a vim implementation would be a strange dependency.
+fn asciiLower(s: str): str {
+    let buf = String(s);
+    for (let i = 0; i < buf.length(); i++) {
+        let b = buf.getAt(i);
+        if b >= b"A" && b <= b"Z" {
+            buf.setAt(i, b + 32 as u8);
+        }
+    }
+    return buf.cloneString();
+}
+
+// Resolve one key NAME (already lowercased, no modifiers) to a physical
+// key. The vocabulary is VS Code's: single letters and digits, "f1".."f12",
+// and the spelled-out names below.
+fn keyFromName(name: str): ui_components.Key {
+    if name.length == 0 {
+        return ui_components.Key.Unknown;
+    }
+
+    if name.length == 1 {
+        let b = String(name).getAt(0);
+        // a..z -> Key.A(4)..Key.Z(29)
+        if b >= b"a" && b <= b"z" {
+            return keyFromCode(codeOfKey(ui_components.Key.A) + ((b as int) - (b"a" as int)));
+        }
+        // The digit row is HID-ordered 1..9 then 0, which is why "0" is
+        // not simply "1" plus nine.
+        if b >= b"1" && b <= b"9" {
+            return keyFromCode(codeOfKey(ui_components.Key.Num1) + ((b as int) - (b"1" as int)));
+        }
+        if b == b"0" { return ui_components.Key.Num0; }
+
+        if b == b"-" { return ui_components.Key.Minus; }
+        if b == b"=" { return ui_components.Key.Equals; }
+        if b == b"[" { return ui_components.Key.LeftBracket; }
+        if b == b"]" { return ui_components.Key.RightBracket; }
+        if b == b"\\" { return ui_components.Key.Backslash; }
+        if b == b";" { return ui_components.Key.Semicolon; }
+        if b == b"'" { return ui_components.Key.Apostrophe; }
+        if b == b"`" { return ui_components.Key.Grave; }
+        if b == b"," { return ui_components.Key.Comma; }
+        if b == b"." { return ui_components.Key.Period; }
+        if b == b"/" { return ui_components.Key.Slash; }
+        return ui_components.Key.Unknown;
+    }
+
+    // f1..f12
+    if name.startsWith("f") && name.length <= 3 {
+        let number = parseSmallInt(name.slice(1, name.length));
+        if number >= 1 && number <= 12 {
+            return keyFromCode(codeOfKey(ui_components.Key.F1) + (number - 1));
+        }
+    }
+
+    if name == "escape" || name == "esc" { return ui_components.Key.Escape; }
+    if name == "enter" || name == "return" { return ui_components.Key.Return; }
+    if name == "tab" { return ui_components.Key.Tab; }
+    if name == "space" { return ui_components.Key.Space; }
+    if name == "backspace" { return ui_components.Key.Backspace; }
+    if name == "delete" || name == "del" { return ui_components.Key.Delete; }
+    if name == "insert" { return ui_components.Key.Insert; }
+    if name == "home" { return ui_components.Key.Home; }
+    if name == "end" { return ui_components.Key.End; }
+    if name == "pageup" { return ui_components.Key.PageUp; }
+    if name == "pagedown" { return ui_components.Key.PageDown; }
+    if name == "left" { return ui_components.Key.Left; }
+    if name == "right" { return ui_components.Key.Right; }
+    if name == "up" { return ui_components.Key.Up; }
+    if name == "down" { return ui_components.Key.Down; }
+    if name == "capslock" { return ui_components.Key.CapsLock; }
+
+    return ui_components.Key.Unknown;
+}
+
+// The inverse of keyFromName, for rendering a chord back to the user (the
+// "waiting for the second key" hint in the status bar). Not required to
+// round-trip every key -- an unnameable one comes back as "?" rather than
+// failing.
+fn nameOfKey(key: ui_components.Key): str {
+    let code = codeOfKey(key);
+
+    let a = codeOfKey(ui_components.Key.A);
+    if code >= a && code <= codeOfKey(ui_components.Key.Z) {
+        let offset = code - a;
+        return "abcdefghijklmnopqrstuvwxyz".slice(offset, offset + 1);
+    }
+
+    let one = codeOfKey(ui_components.Key.Num1);
+    if code >= one && code <= codeOfKey(ui_components.Key.Num9) {
+        let offset = code - one;
+        return "123456789".slice(offset, offset + 1);
+    }
+    if key == ui_components.Key.Num0 { return "0"; }
+
+    let f1 = codeOfKey(ui_components.Key.F1);
+    if code >= f1 && code <= codeOfKey(ui_components.Key.F12) {
+        return f"f{code - f1 + 1}";
+    }
+
+    if key == ui_components.Key.Minus { return "-"; }
+    if key == ui_components.Key.Equals { return "="; }
+    if key == ui_components.Key.LeftBracket { return "["; }
+    if key == ui_components.Key.RightBracket { return "]"; }
+    if key == ui_components.Key.Backslash { return "\\"; }
+    if key == ui_components.Key.Semicolon { return ";"; }
+    if key == ui_components.Key.Apostrophe { return "'"; }
+    if key == ui_components.Key.Grave { return "`"; }
+    if key == ui_components.Key.Comma { return ","; }
+    if key == ui_components.Key.Period { return "."; }
+    if key == ui_components.Key.Slash { return "/"; }
+
+    if key == ui_components.Key.Escape { return "escape"; }
+    if key == ui_components.Key.Return { return "enter"; }
+    if key == ui_components.Key.Tab { return "tab"; }
+    if key == ui_components.Key.Space { return "space"; }
+    if key == ui_components.Key.Backspace { return "backspace"; }
+    if key == ui_components.Key.Delete { return "delete"; }
+    if key == ui_components.Key.Insert { return "insert"; }
+    if key == ui_components.Key.Home { return "home"; }
+    if key == ui_components.Key.End { return "end"; }
+    if key == ui_components.Key.PageUp { return "pageup"; }
+    if key == ui_components.Key.PageDown { return "pagedown"; }
+    if key == ui_components.Key.Left { return "left"; }
+    if key == ui_components.Key.Right { return "right"; }
+    if key == ui_components.Key.Up { return "up"; }
+    if key == ui_components.Key.Down { return "down"; }
+    if key == ui_components.Key.CapsLock { return "capslock"; }
+
+    return "?";
+}
+
+// Parse a decimal string. -1 for anything that is not one, which is what
+// makes "fx" fall through to the named-key table instead of matching F0.
+fn parseSmallInt(s: str): int {
+    if s.length == 0 {
+        return -1;
+    }
+    let buf = String(s);
+    let value = 0;
+    for (let i = 0; i < buf.length(); i++) {
+        let b = buf.getAt(i);
+        if b < b"0" || b > b"9" {
+            return -1;
+        }
+        value = value * 10 + ((b as int) - (b"0" as int));
+    }
+    return value;
+}
+
+// A modifier key pressed BY ITSELF. These must never take part in
+// dispatch: holding ctrl before pressing o produces a key event for ctrl
+// too, and treating that as "a key that matched nothing" would cancel any
+// chord in progress before its second stroke ever arrived.
+fn keyIsModifier(key: ui_components.Key): bool {
+    return key == ui_components.Key.LCtrl || key == ui_components.Key.RCtrl
+        || key == ui_components.Key.LShift || key == ui_components.Key.RShift
+        || key == ui_components.Key.LAlt || key == ui_components.Key.RAlt
+        || key == ui_components.Key.LGui || key == ui_components.Key.RGui;
+}
+
+// "ctrl+shift+p" -> a KeyStroke. Modifier prefixes are stripped one at a
+// time from the front rather than splitting on "+", so that the key itself
+// may BE "+" ("ctrl++") without the split eating it.
+fn parseKeyStroke(spec: str): KeyStroke {
+    let rest = asciiLower(spec).trim();
+    let ctrl = false;
+    let shift = false;
+    let alt = false;
+    let gui = false;
+
+    while true {
+        if rest.startsWith("ctrl+") { ctrl = true; rest = rest.slice(5, rest.length); }
+        else if rest.startsWith("shift+") { shift = true; rest = rest.slice(6, rest.length); }
+        else if rest.startsWith("alt+") { alt = true; rest = rest.slice(4, rest.length); }
+        // VS Code spells the Super/Command key "meta" on Linux and "cmd" on
+        // macOS; "win" is accepted too since that is what it is labelled on
+        // most keyboards this runs on.
+        else if rest.startsWith("meta+") { gui = true; rest = rest.slice(5, rest.length); }
+        else if rest.startsWith("cmd+") { gui = true; rest = rest.slice(4, rest.length); }
+        else if rest.startsWith("win+") { gui = true; rest = rest.slice(4, rest.length); }
+        else { break; }
+    }
+
+    return KeyStroke {
+        key: keyFromName(rest),
+        ctrl: ctrl,
+        shift: shift,
+        alt: alt,
+        gui: gui,
+    };
+}
+
+// "ctrl+k ctrl+o" -> two strokes. Empty when any part fails to parse, so a
+// malformed rule is dropped whole instead of silently binding a prefix.
+fn parseChord(spec: str): []KeyStroke {
+    let strokes: []KeyStroke = [];
+    for part in spec.split(" ") {
+        if part.trim().length == 0 {
+            continue;
+        }
+        let stroke = parseKeyStroke(part);
+        if !stroke.valid() {
+            let empty: []KeyStroke = [];
+            return empty;
+        }
+        strokes.push(stroke);
+    }
+    return strokes;
+}
+
+fn keyStrokeLabel(stroke: KeyStroke): str {
+    let label = String("");
+    if stroke.ctrl { label.append(String("ctrl+")); }
+    if stroke.shift { label.append(String("shift+")); }
+    if stroke.alt { label.append(String("alt+")); }
+    if stroke.gui { label.append(String("meta+")); }
+    label.append(String(nameOfKey(stroke.key)));
+    return label.cloneString();
+}
+
+fn chordLabel(chord: []KeyStroke): str {
+    let label = String("");
+    for (let i = 0; i < chord.length; i++) {
+        if i > 0 {
+            label.append(String(" "));
+        }
+        label.append(String(keyStrokeLabel(chord[i])));
+    }
+    return label.cloneString();
+}
+
+// The stroke a live key event represents.
+fn strokeFromEvent(event: ui_components.KeyboardEvent): KeyStroke {
+    return KeyStroke {
+        key: event.key,
+        ctrl: hasModifier(event.modifiers, KeyModifiers.Ctrl),
+        shift: hasModifier(event.modifiers, KeyModifiers.Shift),
+        alt: hasModifier(event.modifiers, KeyModifiers.Alt),
+        gui: hasModifier(event.modifiers, KeyModifiers.Gui),
+    };
+}
+
+// ═══ 2. `when` expressions ═══════════════════════════════════════════════
+//
+// The supported grammar, in precedence order (loosest first):
+//
+//   or      := and ('||' and)*
+//   and     := unary ('&&' unary)*
+//   unary   := '!' unary | primary
+//   primary := '(' or ')' | key | key ('=='|'!=') value
+//   value   := 'quoted' | bare-identifier | number
+//
+// A context key with no value is the empty string, which is falsy and
+// unequal to everything -- so `someKey` is false and `someKey != 'x'` is
+// true for a key nobody ever set, matching VS Code's undefined semantics.
+
+// A context key's value is TRUE unless it is one of the handful of things
+// VS Code also treats as false. Everything is stored as text, so a bool
+// context key is the literal string "true" or "false".
+fn whenTruthy(value: str): bool {
+    return value.length > 0 && value != "false" && value != "0";
+}
+
+// The bag of named values `when` expressions are evaluated against. The
+// application pushes into this whenever the thing a key means could have
+// changed -- focus moved, the vim mode changed, a tab opened.
+struct WhenContext {
+    values: LinearMap<str, str> = {};
+
+    fn constructor(): mut WhenContext {
+        let ctx = WhenContext {};
+        return ctx;
+    }
+
+    mut fn setStr(key: str, value: str): void {
+        this.values.set(key, value);
+    }
+
+    mut fn setBool(key: str, value: bool): void {
+        this.values.set(key, value ? "true" : "false");
+    }
+
+    // Unset reads back as "" -- see the grammar note above.
+    fn value(key: str): str {
+        let existing = this.values.get(key);
+        if existing {
+            return existing;
+        }
+        return "";
+    }
+
+    fn getBool(key: str): bool {
+        return whenTruthy(this.value(key));
+    }
+}
+
+enum WhenTokenKind {
+    Ident,      // a context key, or a bare right-hand value
+    StringLit,  // 'quoted' or "quoted"
+    AndAnd,
+    OrOr,
+    Bang,
+    EqEq,
+    BangEq,
+    LParen,
+    RParen,
+    Invalid,
+}
+
+struct WhenToken {
+    kind: WhenTokenKind = WhenTokenKind.Invalid;
+    text: str = "";
+}
+
+fn isWhenIdentByte(b: u8): bool {
+    return (b >= b"a" && b <= b"z")
+        || (b >= b"A" && b <= b"Z")
+        || (b >= b"0" && b <= b"9")
+        || b == b"_" || b == b"." || b == b"$" || b == b"-";
+}
+
+fn tokenizeWhen(src: str): []WhenToken {
+    let tokens: []WhenToken = [];
+    let buf = String(src);
+    let n = buf.length();
+    let i = 0;
+
+    while i < n {
+        let b = buf.getAt(i);
+
+        if b == b" " || b == b"\t" || b == b"\n" || b == b"\r" {
+            i = i + 1;
+            continue;
+        }
+
+        // Two-byte operators first: "!=" must be seen before "!".
+        if i + 1 < n {
+            let b2 = buf.getAt(i + 1);
+            if b == b"&" && b2 == b"&" {
+                tokens.push(WhenToken { kind: WhenTokenKind.AndAnd, text: "&&" });
+                i = i + 2;
+                continue;
+            }
+            if b == b"|" && b2 == b"|" {
+                tokens.push(WhenToken { kind: WhenTokenKind.OrOr, text: "||" });
+                i = i + 2;
+                continue;
+            }
+            if b == b"=" && b2 == b"=" {
+                tokens.push(WhenToken { kind: WhenTokenKind.EqEq, text: "==" });
+                i = i + 2;
+                continue;
+            }
+            if b == b"!" && b2 == b"=" {
+                tokens.push(WhenToken { kind: WhenTokenKind.BangEq, text: "!=" });
+                i = i + 2;
+                continue;
+            }
+        }
+
+        if b == b"!" {
+            tokens.push(WhenToken { kind: WhenTokenKind.Bang, text: "!" });
+            i = i + 1;
+            continue;
+        }
+        if b == b"(" {
+            tokens.push(WhenToken { kind: WhenTokenKind.LParen, text: "(" });
+            i = i + 1;
+            continue;
+        }
+        if b == b")" {
+            tokens.push(WhenToken { kind: WhenTokenKind.RParen, text: ")" });
+            i = i + 1;
+            continue;
+        }
+
+        if b == b"'" || b == b"\"" {
+            let quote = b;
+            let start = i + 1;
+            let j = start;
+            while j < n && buf.getAt(j) != quote {
+                j = j + 1;
+            }
+            if j >= n {
+                // Unterminated -- an Invalid token, which the parser turns
+                // into a whole-expression error rather than guessing.
+                tokens.push(WhenToken { kind: WhenTokenKind.Invalid, text: src.slice(i, n) });
+                return tokens;
+            }
+            tokens.push(WhenToken { kind: WhenTokenKind.StringLit, text: src.slice(start, j) });
+            i = j + 1;
+            continue;
+        }
+
+        if isWhenIdentByte(b) {
+            let start = i;
+            while i < n && isWhenIdentByte(buf.getAt(i)) {
+                i = i + 1;
+            }
+            tokens.push(WhenToken { kind: WhenTokenKind.Ident, text: src.slice(start, i) });
+            continue;
+        }
+
+        tokens.push(WhenToken { kind: WhenTokenKind.Invalid, text: src.slice(i, i + 1) });
+        return tokens;
+    }
+
+    return tokens;
+}
+
+enum WhenKind {
+    Always,     // an empty `when`: the rule is unconditional
+    Truthy,     // key
+    Equals,     // key == value
+    NotEquals,  // key != value
+    Not,        // !left
+    And,        // left && right
+    Or,         // left || right
+}
+
+// The tree is stored FLAT, as a node array with integer child links,
+// because a struct cannot contain itself by value -- the usual shape for a
+// tree in a language without an obvious owning-pointer type.
+struct WhenNode {
+    kind: WhenKind = WhenKind.Always;
+    key: str = "";
+    value: str = "";
+    left: int = -1;
+    right: int = -1;
+}
+
+// A parsed `when` clause. `root < 0` means "always true": that is both the
+// empty clause and the fallback for one that failed to parse, so a typo
+// never silently disables a keybinding -- it makes it unconditional, and
+// `error` says why.
+struct WhenExpr {
+    source: str = "";
+    nodes: []WhenNode = [];
+    root: int = -1;
+    error: str = "";
+}
+
+fn evalWhenNode(expr: WhenExpr, index: int, ctx: WhenContext): bool :: final {
+    if index < 0 || index >= expr.nodes.length {
+        return true;
+    }
+    let node = expr.nodes[index];
+    if node.kind == WhenKind.Always {
+        return true;
+    }
+    if node.kind == WhenKind.Truthy {
+        return whenTruthy(ctx.value(node.key));
+    }
+    if node.kind == WhenKind.Equals {
+        return ctx.value(node.key) == node.value;
+    }
+    if node.kind == WhenKind.NotEquals {
+        return ctx.value(node.key) != node.value;
+    }
+    if node.kind == WhenKind.Not {
+        return !evalWhenNode(expr, node.left, ctx);
+    }
+    if node.kind == WhenKind.And {
+        return evalWhenNode(expr, node.left, ctx) && evalWhenNode(expr, node.right, ctx);
+    }
+    if node.kind == WhenKind.Or {
+        return evalWhenNode(expr, node.left, ctx) || evalWhenNode(expr, node.right, ctx);
+    }
+    return false;
+}
+
+fn evalWhen(expr: WhenExpr, ctx: WhenContext): bool {
+    return evalWhenNode(expr, expr.root, ctx);
+}
+
+// Recursive-descent over the token list. Held as a struct purely so the
+// cursor and the node arena are shared between the mutually recursive
+// methods; each of them returns a node index, or -1 once `error` is set.
+struct WhenParser {
+    tokens: []WhenToken = [];
+    pos: int = 0;
+    nodes: []WhenNode = [];
+    error: str = "";
+
+    fn constructor(tokens: []WhenToken): mut WhenParser {
+        let parser = WhenParser { tokens: tokens };
+        return parser;
+    }
+
+    fn atEnd(): bool {
+        return this.pos >= this.tokens.length;
+    }
+
+    fn peekKind(): WhenTokenKind {
+        if this.atEnd() {
+            return WhenTokenKind.Invalid;
+        }
+        return this.tokens[this.pos].kind;
+    }
+
+    mut fn addNode(node: WhenNode): int {
+        this.nodes.push(node);
+        return this.nodes.length - 1;
+    }
+
+    mut fn fail(message: str): int {
+        if this.error.length == 0 {
+            this.error = message;
+        }
+        return -1;
+    }
+
+    mut fn parseOr(): int :: final {
+        let left = this.parseAnd();
+        if left < 0 { return -1; }
+        while !this.atEnd() && this.peekKind() == WhenTokenKind.OrOr {
+            this.pos = this.pos + 1;
+            let right = this.parseAnd();
+            if right < 0 { return -1; }
+            left = this.addNode(WhenNode { kind: WhenKind.Or, left: left, right: right });
+        }
+        return left;
+    }
+
+    mut fn parseAnd(): int :: final {
+        let left = this.parseUnary();
+        if left < 0 { return -1; }
+        while !this.atEnd() && this.peekKind() == WhenTokenKind.AndAnd {
+            this.pos = this.pos + 1;
+            let right = this.parseUnary();
+            if right < 0 { return -1; }
+            left = this.addNode(WhenNode { kind: WhenKind.And, left: left, right: right });
+        }
+        return left;
+    }
+
+    mut fn parseUnary(): int :: final {
+        if !this.atEnd() && this.peekKind() == WhenTokenKind.Bang {
+            this.pos = this.pos + 1;
+            let operand = this.parseUnary();
+            if operand < 0 { return -1; }
+            return this.addNode(WhenNode { kind: WhenKind.Not, left: operand });
+        }
+        return this.parsePrimary();
+    }
+
+    mut fn parsePrimary(): int :: final {
+        if this.atEnd() {
+            return this.fail("unexpected end of expression");
+        }
+
+        let token = this.tokens[this.pos];
+
+        if token.kind == WhenTokenKind.LParen {
+            this.pos = this.pos + 1;
+            let inner = this.parseOr();
+            if inner < 0 { return -1; }
+            if this.atEnd() || this.peekKind() != WhenTokenKind.RParen {
+                return this.fail("missing ')'");
+            }
+            this.pos = this.pos + 1;
+            return inner;
+        }
+
+        if token.kind != WhenTokenKind.Ident {
+            return this.fail(f"unexpected '{token.text}'");
+        }
+        this.pos = this.pos + 1;
+
+        // A bare key, unless a comparison follows it.
+        let next = this.peekKind();
+        if next == WhenTokenKind.EqEq || next == WhenTokenKind.BangEq {
+            this.pos = this.pos + 1;
+            if this.atEnd() {
+                return this.fail("missing value after comparison");
+            }
+            let rhs = this.tokens[this.pos];
+            if rhs.kind != WhenTokenKind.Ident && rhs.kind != WhenTokenKind.StringLit {
+                return this.fail(f"unexpected '{rhs.text}' after comparison");
+            }
+            this.pos = this.pos + 1;
+            let kind = next == WhenTokenKind.EqEq ? WhenKind.Equals : WhenKind.NotEquals;
+            return this.addNode(WhenNode { kind: kind, key: token.text, value: rhs.text });
+        }
+
+        return this.addNode(WhenNode { kind: WhenKind.Truthy, key: token.text });
+    }
+}
+
+fn parseWhen(source: str): WhenExpr {
+    if source.trim().length == 0 {
+        return WhenExpr { source: source };
+    }
+
+    let tokens = tokenizeWhen(source);
+    for token in tokens {
+        if token.kind == WhenTokenKind.Invalid {
+            return WhenExpr { source: source, error: f"invalid token '{token.text}'" };
+        }
+    }
+
+    let parser = WhenParser(tokens);
+    let root = parser.parseOr();
+    if root >= 0 && !parser.atEnd() {
+        parser.fail(f"trailing '{parser.tokens[parser.pos].text}'");
+        root = -1;
+    }
+    if root < 0 {
+        return WhenExpr { source: source, error: parser.error };
+    }
+    return WhenExpr { source: source, nodes: parser.nodes, root: root };
+}
+
+// ═══ 3. Commands ═════════════════════════════════════════════════════════
+
+// Two parallel arrays rather than a LinearMap: LinearMap is annotated for
+// json.serialize/parse, which makes the compiler try to instantiate
+// json.stringify() for its value type, and a closure cannot be serialized
+// (H7015). The lookup is the same linear scan either way.
+struct CommandRegistry {
+    ids: []str = [];
+    handlers: []CommandFn = [];
+
+    fn constructor(): mut CommandRegistry {
+        let registry = CommandRegistry {};
+        return registry;
+    }
+
+    fn indexOf(id: str): int {
+        for (let i = 0; i < this.ids.length; i++) {
+            if this.ids[i] == id {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // Re-registering an id replaces the previous handler, so a component
+    // that remounts does not stack duplicates.
+    mut fn register(id: str, run: CommandFn): void {
+        let existing = this.indexOf(id);
+        if existing >= 0 {
+            this.handlers[existing] = run;
+            return;
+        }
+        this.ids.push(id);
+        this.handlers.push(run);
+    }
+
+    fn has(id: str): bool {
+        return this.indexOf(id) >= 0;
+    }
+
+    // False when nothing is registered under `id` -- which is not an error
+    // here: a keymap is allowed to mention commands a given build does not
+    // provide, exactly as VS Code's default keymap mentions commands that
+    // only exist once some extension is installed.
+    fn run(id: str): bool {
+        let index = this.indexOf(id);
+        if index >= 0 {
+            let handler = this.handlers[index];
+            handler();
+            return true;
+        }
+        return false;
+    }
+}
+
+// ═══ 4. The keymap and its dispatcher ════════════════════════════════════
+
+// One row of a keymap table, in the shape a keybindings.json entry has.
+struct KeybindingSpec {
+    key: str = "";
+    command: str = "";
+    when: str = "";
+}
+
+struct Keybinding {
+    chord: []KeyStroke = [];
+    command: str = "";
+    when: WhenExpr = {};
+    // What the rule was written as, kept for diagnostics and for anything
+    // that wants to show the user their own keymap back.
+    keys: str = "";
+}
+
+enum DispatchOutcome {
+    // Nothing matched and no chord was in progress: the key is not ours,
+    // and must be left alone for whatever is focused.
+    Ignored,
+    // A rule completed and its command ran.
+    Executed,
+    // A rule completed but names a command nobody registered. Still
+    // consumed -- the binding exists, so letting the raw key through
+    // instead would be worse than doing nothing.
+    UnknownCommand,
+    // The start (or middle) of a chord. Consumed, and the dispatcher is
+    // now waiting for the next stroke.
+    Pending,
+    // A chord was in progress and this stroke does not continue it. The
+    // chord is dropped and the stroke consumed, so the second half of an
+    // abandoned "ctrl+k ..." never leaks into the document.
+    ChordBroken,
+}
+
+struct DispatchResult {
+    outcome: DispatchOutcome = DispatchOutcome.Ignored;
+    command: str = "";
+
+    // True when the dispatcher took the key. The caller must then stop it
+    // reaching the focused element.
+    fn handled(): bool {
+        return this.outcome != DispatchOutcome.Ignored;
+    }
+}
+
+fn chordStartsWith(chord: []KeyStroke, prefix: []KeyStroke): bool {
+    if prefix.length > chord.length {
+        return false;
+    }
+    for (let i = 0; i < prefix.length; i++) {
+        if !chord[i].equals(prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct Keymap {
+    // In declaration order. LATER RULES WIN: resolution scans backwards, so
+    // a rule added afterwards overrides an earlier one for the same chord
+    // whenever its `when` also holds. This is what lets a keymap be layered
+    // -- defaults first, then a user's overrides on top -- without either
+    // layer knowing about the other.
+    bindings: []Keybinding = [];
+
+    // Strokes accepted so far towards a multi-stroke chord. Empty when no
+    // chord is in progress.
+    pending: []KeyStroke = [];
+
+    // Rules whose `when` clause did not parse, so a keymap can be
+    // sanity-checked instead of quietly misbehaving.
+    problems: []str = [];
+
+    fn constructor(): mut Keymap {
+        let keymap = Keymap {};
+        return keymap;
+    }
+
+    // A command written as "-some.command" REMOVES earlier rules for the
+    // same chord instead of adding one, which is how VS Code's
+    // keybindings.json turns a default binding off.
+    mut fn bind(keys: str, command: str, when: str = ""): void {
+        let chord = parseChord(keys);
+        if chord.length == 0 {
+            this.problems.push(f"unrecognized key sequence '{keys}' for '{command}'");
+            return;
+        }
+
+        if command.startsWith("-") {
+            this.removeBinding(chord, command.slice(1, command.length));
+            return;
+        }
+
+        let expr = parseWhen(when);
+        if expr.error.length > 0 {
+            this.problems.push(f"bad when clause for '{keys}' -> '{command}': {expr.error}");
+        }
+
+        this.bindings.push(Keybinding {
+            chord: chord,
+            command: command,
+            when: expr,
+            keys: keys,
+        });
+    }
+
+    mut fn bindAll(specs: []KeybindingSpec): void {
+        for spec in specs {
+            this.bind(spec.key, spec.command, spec.when);
+        }
+    }
+
+    // An empty `command` removes every rule for the chord regardless of
+    // what it was bound to.
+    mut fn removeBinding(chord: []KeyStroke, command: str): void {
+        let kept: []Keybinding = [];
+        for binding in this.bindings {
+            let sameChord = binding.chord.length == chord.length
+                && chordStartsWith(binding.chord, chord);
+            let sameCommand = command.length == 0 || binding.command == command;
+            if !(sameChord && sameCommand) {
+                kept.push(binding);
+            }
+        }
+        this.bindings = kept;
+    }
+
+    mut fn clear(): void {
+        this.bindings = [];
+        this.pending = [];
+        this.problems = [];
+    }
+
+    mut fn cancelPending(): void {
+        this.pending = [];
+    }
+
+    // "ctrl+k" while a chord is half-entered, "" otherwise. For the
+    // status-bar hint VS Code shows in the same situation.
+    fn pendingLabel(): str {
+        if this.pending.length == 0 {
+            return "";
+        }
+        return chordLabel(this.pending);
+    }
+
+    // Feed one key-down event. See DispatchOutcome for what each answer
+    // obliges the caller to do.
+    mut fn dispatch(event: ui_components.KeyboardEvent, ctx: WhenContext, commands: CommandRegistry): DispatchResult {
+        // A modifier on its own is not a keystroke, it is part of the next
+        // one. Passing it through untouched also leaves a pending chord
+        // intact while the user reaches for ctrl again.
+        if keyIsModifier(event.key) {
+            return DispatchResult {};
+        }
+
+        // Auto-repeat is a genuine repeat of the same binding for a motion
+        // key, but never for a chord: holding ctrl+k must not re-enter the
+        // chord over and over. Repeats are only accepted at chord depth 0.
+        if event.repeat && this.pending.length > 0 {
+            return DispatchResult { outcome: DispatchOutcome.Pending };
+        }
+
+        let sequence: []KeyStroke = [];
+        for stroke in this.pending {
+            sequence.push(stroke);
+        }
+        sequence.push(strokeFromEvent(event));
+
+        // Backwards, so the LAST matching rule is the one that wins.
+        let exact = -1;
+        let hasLongerMatch = false;
+        for (let i = this.bindings.length - 1; i >= 0; i--) {
+            let binding = this.bindings[i];
+            if !chordStartsWith(binding.chord, sequence) {
+                continue;
+            }
+            if !evalWhen(binding.when, ctx) {
+                continue;
+            }
+            if binding.chord.length == sequence.length {
+                if exact < 0 {
+                    exact = i;
+                }
+            } else {
+                hasLongerMatch = true;
+            }
+        }
+
+        // A rule that CONTINUES beyond this stroke wins over one that ends
+        // here, which is what makes "ctrl+k ctrl+o" reachable at all when
+        // "ctrl+k" is also bound. VS Code resolves the same way: entering
+        // chord mode takes priority, and the shorter rule becomes dead.
+        if hasLongerMatch {
+            this.pending = sequence;
+            return DispatchResult { outcome: DispatchOutcome.Pending };
+        }
+
+        if exact >= 0 {
+            let binding = this.bindings[exact];
+            this.pending = [];
+            if commands.run(binding.command) {
+                return DispatchResult { outcome: DispatchOutcome.Executed, command: binding.command };
+            }
+            return DispatchResult { outcome: DispatchOutcome.UnknownCommand, command: binding.command };
+        }
+
+        if this.pending.length > 0 {
+            this.pending = [];
+            return DispatchResult { outcome: DispatchOutcome.ChordBroken };
+        }
+
+        return DispatchResult {};
+    }
+}
+
+// ═══ 5. The three of them together ═══════════════════════════════════════
+
+// What an application actually holds. Nothing here beyond owning one of
+// each and wiring dispatch to all three at once -- the registries stay
+// separately reachable so a component can register a command, or set a
+// context key, without going through the dispatcher.
+struct Keybindings {
+    keymap: mut Keymap;
+    commands: mut CommandRegistry;
+    context: mut WhenContext;
+
+    // The half-entered chord, as a reactive so a status bar can simply
+    // render it. "" whenever no chord is in progress.
+    chordHint: rx.Reactive<str>;
+
+    fn constructor(): mut Keybindings {
+        let keys = Keybindings {
+            keymap: Keymap(),
+            commands: CommandRegistry(),
+            context: WhenContext(),
+            chordHint: rx.reactive<str>(""),
+        };
+        return keys;
+    }
+
+    mut fn dispatch(event: ui_components.KeyboardEvent): DispatchResult {
+        let result = this.keymap.dispatch(event, this.context, this.commands);
+        this.chordHint := this.keymap.pendingLabel();
+        if result.outcome == DispatchOutcome.UnknownCommand {
+            fmt.println("[keybindings] no such command: ", result.command);
+        }
+        return result;
+    }
+
+    // Print anything wrong with the keymap once, at startup. A keybinding
+    // that never fires is otherwise invisible.
+    fn reportProblems(): void {
+        for problem in this.keymap.problems {
+            fmt.println("[keybindings] ", problem);
+        }
+    }
+}

@@ -1,0 +1,257 @@
+import ui_components
+
+// ═══ Headless checks for the keybinding harness ══════════════════════════
+//
+// Run with:   CODEEDITOR_SELFTEST=1 <the codeeditor binary>
+//
+// A `when`-clause parser and a chord dispatcher are exactly the kind of code
+// that fails silently -- a mis-parsed expression does not crash, it just
+// makes one keybinding quietly never fire (or always fire), which is close
+// to invisible from inside a running editor. So they are checked here
+// instead, against the REAL default keymap from editor_keymap.hz, with no
+// window, no GPU and no event loop involved.
+
+struct KeyTestRun {
+    checks: int = 0;
+    failures: int = 0;
+    // What the fake commands recorded, as "id;id;" -- a plain str rather
+    // than a []str because a closure captures an array BY VALUE here, so
+    // pushes made inside a command would not be visible afterwards. A
+    // struct field is shared.
+    ran: str = "";
+
+    mut fn record(id: str): void {
+        this.ran = f"{this.ran}{id};";
+    }
+
+    mut fn takeRan(): str {
+        let value = this.ran;
+        this.ran = "";
+        return value;
+    }
+
+    mut fn check(name: str, actual: str, expected: str): void {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println("  FAIL  ", name, ": expected [", expected, "] got [", actual, "]");
+        }
+    }
+
+    mut fn checkBool(name: str, actual: bool, expected: bool): void {
+        this.check(name, actual ? "true" : "false", expected ? "true" : "false");
+    }
+}
+
+fn keyEvent(key: ui_components.Key, mods: KeyModifiers): ui_components.KeyboardEvent {
+    return ui_components.KeyboardEvent { key: key, repeat: false, modifiers: mods };
+}
+
+// A Keybindings loaded with the real default keymap and with every command
+// in it replaced by one that just records its own id, so a test can assert
+// on WHICH command a keystroke reached.
+fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
+    let keys = Keybindings();
+    installDefaultKeymap(keys);
+    registerWorkbenchCommands(keys, WorkbenchCommands {
+        openFile: () => { run.record("openFile"); },
+        openFolder: () => { run.record("openFolder"); },
+        closeActiveEditor: () => { run.record("close"); },
+        nextEditor: () => { run.record("next"); },
+        previousEditor: () => { run.record("prev"); },
+    });
+    registerEditorCommands(keys, EditorCommands {
+        toggleVim: () => { run.record("toggleVim"); },
+        vimNavigateBack: () => { run.record("back"); },
+    });
+    return keys;
+}
+
+fn checkWhen(run: mut KeyTestRun, name: str, source: str, ctx: WhenContext, expected: bool): void {
+    let expr = parseWhen(source);
+    if expr.error.length > 0 {
+        run.check(name, f"parse error: {expr.error}", "no parse error");
+        return;
+    }
+    run.checkBool(name, evalWhen(expr, ctx), expected);
+}
+
+fn runKeybindingSelfTest(): int {
+    let run = KeyTestRun {};
+
+    // ── Keystroke parsing ────────────────────────────────────────────────
+    let ctrlO = parseKeyStroke("ctrl+o");
+    run.checkBool("ctrl+o has ctrl", ctrlO.ctrl, true);
+    run.checkBool("ctrl+o has no shift", ctrlO.shift, false);
+    run.checkBool("ctrl+o is O", ctrlO.key == ui_components.Key.O, true);
+
+    let shiftP = parseKeyStroke("CTRL+Shift+P");
+    run.checkBool("case-insensitive ctrl", shiftP.ctrl, true);
+    run.checkBool("case-insensitive shift", shiftP.shift, true);
+    run.checkBool("case-insensitive key", shiftP.key == ui_components.Key.P, true);
+
+    run.checkBool("f12 parses", parseKeyStroke("f12").key == ui_components.Key.F12, true);
+    run.checkBool("f1 parses", parseKeyStroke("f1").key == ui_components.Key.F1, true);
+    run.checkBool("digit 0 parses", parseKeyStroke("0").key == ui_components.Key.Num0, true);
+    run.checkBool("digit 9 parses", parseKeyStroke("9").key == ui_components.Key.Num9, true);
+    run.checkBool("z parses", parseKeyStroke("z").key == ui_components.Key.Z, true);
+    run.checkBool("escape parses", parseKeyStroke("escape").key == ui_components.Key.Escape, true);
+    run.checkBool("nonsense does not parse", parseKeyStroke("nope").valid(), false);
+
+    // Round-tripping is what makes the status-bar chord hint trustworthy.
+    run.check("chord round-trip", chordLabel(parseChord("ctrl+k ctrl+o")), "ctrl+k ctrl+o");
+    run.check("chord round-trip 2", chordLabel(parseChord("ctrl+shift+tab")), "ctrl+shift+tab");
+    // One bad stroke drops the WHOLE chord, so a typo cannot bind a prefix.
+    run.check("bad chord is empty", f"{parseChord("ctrl+k ctrl+nope").length}", "0");
+
+    // ── when expressions ─────────────────────────────────────────────────
+    let ctx = WhenContext();
+    ctx.setBool("editorTextFocus", true);
+    ctx.setBool("vimActive", true);
+    ctx.setStr("vimMode", "normal");
+
+    checkWhen(run, "empty is always true", "", ctx, true);
+    checkWhen(run, "bare truthy key", "editorTextFocus", ctx, true);
+    checkWhen(run, "negation", "!editorTextFocus", ctx, false);
+    checkWhen(run, "equality", "vimMode == 'normal'", ctx, true);
+    checkWhen(run, "inequality", "vimMode != 'insert'", ctx, true);
+    checkWhen(run, "unquoted value", "vimMode == normal", ctx, true);
+    checkWhen(run, "conjunction", "editorTextFocus && vimActive", ctx, true);
+    checkWhen(run, "conjunction false", "editorTextFocus && !vimActive", ctx, false);
+    checkWhen(run, "disjunction", "!editorTextFocus || vimActive", ctx, true);
+    // && binds tighter than ||, so this is false || (true && false).
+    checkWhen(run, "precedence", "!editorTextFocus || vimActive && !vimActive", ctx, false);
+    checkWhen(run, "parens override precedence", "(!editorTextFocus || vimActive) && vimActive", ctx, true);
+    checkWhen(run, "double negation", "!!editorTextFocus", ctx, true);
+    // An unset key is falsy and unequal to everything -- VS Code's
+    // undefined semantics, and what makes `vimMode != 'insert'` true in a
+    // window where vim was never switched on.
+    checkWhen(run, "unset key is false", "neverSet", ctx, false);
+    checkWhen(run, "unset key differs from value", "neverSet != 'x'", ctx, true);
+    checkWhen(run, "unset key equals nothing", "neverSet == 'x'", ctx, false);
+    // "false" as text is falsy, so a bool context key reads naturally.
+    ctx.setBool("editorTextFocus", false);
+    checkWhen(run, "bool false is falsy", "editorTextFocus", ctx, false);
+    ctx.setBool("editorTextFocus", true);
+
+    // A malformed clause must be reported, not guessed at.
+    run.checkBool("unbalanced paren is an error", parseWhen("(a && b").error.length > 0, true);
+    run.checkBool("dangling operator is an error", parseWhen("a &&").error.length > 0, true);
+    run.checkBool("trailing junk is an error", parseWhen("a b").error.length > 0, true);
+    run.checkBool("unterminated string is an error", parseWhen("a == 'x").error.length > 0, true);
+
+    // The shipped keymap itself must be clean.
+    let defaults = Keybindings();
+    installDefaultKeymap(defaults);
+    run.check("default keymap has no problems", f"{defaults.keymap.problems.length}", "0");
+
+    // ── Dispatch ─────────────────────────────────────────────────────────
+    let keys = testKeybindings(run);
+    let ctrl = KeyModifiers.Ctrl;
+    let ctrlShift = KeyModifiers.Ctrl | KeyModifiers.Shift;
+
+    // Nothing focused, no vim: ctrl+o is the plain "open a file".
+    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("ctrl+o opens a file by default", run.takeRan(), "openFile;");
+
+    // Inside a vim editor in normal mode the LATER rule takes the same key
+    // over -- the whole point of the `when` mechanism.
+    keys.context.setBool("editorTextFocus", true);
+    keys.context.setBool("vimActive", true);
+    keys.context.setStr("vimMode", "normal");
+    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("ctrl+o in vim is jump-back", run.takeRan(), "back;");
+
+    // ...but not in insert mode, where the override's `when` fails and the
+    // earlier rule is uncovered again.
+    keys.context.setStr("vimMode", "insert");
+    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("ctrl+o in vim insert opens a file", run.takeRan(), "openFile;");
+
+    // ...and not in a non-vim editor either.
+    keys.context.setStr("vimMode", "");
+    keys.context.setBool("vimActive", false);
+    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("ctrl+o in a plain editor opens a file", run.takeRan(), "openFile;");
+
+    // ── Chords ───────────────────────────────────────────────────────────
+    let pending = keys.dispatch(keyEvent(ui_components.Key.K, ctrl));
+    run.checkBool("ctrl+k is consumed", pending.handled(), true);
+    run.checkBool("ctrl+k is pending", pending.outcome == DispatchOutcome.Pending, true);
+    run.check("ctrl+k ran nothing yet", run.takeRan(), "");
+    run.check("chord hint shows the prefix", rx.get(keys.chordHint), "ctrl+k");
+
+    // A modifier press in the middle must not disturb the pending chord --
+    // the user is on their way to the second stroke.
+    keys.dispatch(keyEvent(ui_components.Key.LCtrl, ctrl));
+    run.check("modifier alone keeps the chord", rx.get(keys.chordHint), "ctrl+k");
+
+    keys.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("ctrl+k ctrl+o opens a folder", run.takeRan(), "openFolder;");
+    run.check("chord hint clears", rx.get(keys.chordHint), "");
+
+    // An unrelated second stroke drops the chord and is swallowed, so the
+    // stray key never lands in the document.
+    keys.dispatch(keyEvent(ui_components.Key.K, ctrl));
+    let broken = keys.dispatch(keyEvent(ui_components.Key.Q, ctrl));
+    run.checkBool("broken chord is consumed", broken.handled(), true);
+    run.checkBool("broken chord is reported", broken.outcome == DispatchOutcome.ChordBroken, true);
+    run.check("broken chord ran nothing", run.takeRan(), "");
+    run.check("broken chord clears the hint", rx.get(keys.chordHint), "");
+
+    // ── Unbound keys are left completely alone ───────────────────────────
+    let ignored = keys.dispatch(keyEvent(ui_components.Key.J, ctrl));
+    run.checkBool("unbound key is not handled", ignored.handled(), false);
+    let plainLetter = keys.dispatch(keyEvent(ui_components.Key.A, KeyModifiers.None));
+    run.checkBool("plain letter is not handled", plainLetter.handled(), false);
+    let modifierOnly = keys.dispatch(keyEvent(ui_components.Key.LShift, KeyModifiers.Shift));
+    run.checkBool("lone modifier is not handled", modifierOnly.handled(), false);
+
+    // ── when-gated shell commands ────────────────────────────────────────
+    keys.context.setBool("hasOpenTabs", false);
+    let noTabs = keys.dispatch(keyEvent(ui_components.Key.W, ctrl));
+    run.checkBool("ctrl+w with nothing open is unbound", noTabs.handled(), false);
+    keys.context.setBool("hasOpenTabs", true);
+    keys.dispatch(keyEvent(ui_components.Key.W, ctrl));
+    run.check("ctrl+w closes a tab", run.takeRan(), "close;");
+
+    // Modifiers are matched EXACTLY, so these are two different keys.
+    keys.dispatch(keyEvent(ui_components.Key.Tab, ctrl));
+    run.check("ctrl+tab is next", run.takeRan(), "next;");
+    keys.dispatch(keyEvent(ui_components.Key.Tab, ctrlShift));
+    run.check("ctrl+shift+tab is previous", run.takeRan(), "prev;");
+
+    // f2 needs editorTextFocus, which is still set from above.
+    keys.dispatch(keyEvent(ui_components.Key.F2, KeyModifiers.None));
+    run.check("f2 toggles vim", run.takeRan(), "toggleVim;");
+    keys.context.setBool("editorTextFocus", false);
+    let unfocusedF2 = keys.dispatch(keyEvent(ui_components.Key.F2, KeyModifiers.None));
+    run.checkBool("f2 outside an editor is unbound", unfocusedF2.handled(), false);
+
+    // ── Layering: a later rule overrides, "-id" removes ──────────────────
+    let layered = Keybindings();
+    layered.keymap.bind("ctrl+o", "a");
+    layered.keymap.bind("ctrl+o", "b");
+    layered.commands.register("a", () => { run.record("a"); });
+    layered.commands.register("b", () => { run.record("b"); });
+    layered.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("the later rule wins", run.takeRan(), "b;");
+    layered.keymap.bind("ctrl+o", "-b");
+    layered.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.check("-b uncovers the earlier rule", run.takeRan(), "a;");
+
+    // A bound command nobody registered is still consumed, so the raw key
+    // cannot leak into the document behind it.
+    let missing = Keybindings();
+    missing.keymap.bind("ctrl+o", "does.not.exist");
+    let unknown = missing.dispatch(keyEvent(ui_components.Key.O, ctrl));
+    run.checkBool("unknown command is consumed", unknown.handled(), true);
+    run.checkBool("unknown command is reported", unknown.outcome == DispatchOutcome.UnknownCommand, true);
+
+    fmt.println("keybindings self-test: ", run.checks - run.failures, "/", run.checks, " passed");
+    if run.failures > 0 {
+        fmt.println("keybindings self-test FAILED (", run.failures, " failures)");
+        return 1;
+    }
+    return 0;
+}

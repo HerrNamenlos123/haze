@@ -70,6 +70,16 @@ fn toUIKeyEdges(a: app.App): []ui_components.KeyEdge {
 }
 
 fn main(): int {
+    // Headless check of the keybinding harness -- the `when` parser and the
+    // chord dispatcher, which fail silently rather than loudly (see
+    // keybindings_selftest.hz). Gated on an env var because there is no
+    // argv accessor in the stdlib yet, and taken before the window is
+    // created so it needs no GPU.
+    let selftest = env.get("CODEEDITOR_SELFTEST");
+    if selftest {
+        return runKeybindingSelfTest();
+    }
+
     attempt {
         let a = app.App({
             title: "Haze CodeEditor",

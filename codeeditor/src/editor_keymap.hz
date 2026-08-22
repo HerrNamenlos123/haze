@@ -1,0 +1,142 @@
+import filedialog
+
+// ═══ This editor's keymap ════════════════════════════════════════════════
+//
+// keybindings.hz is the generic machinery; everything editor-specific lives
+// here. Two halves:
+//
+//   installDefaultKeymap()  the rule table -- which keys run which command
+//                           ids, and under which conditions. Deliberately
+//                           written as data, in exactly the shape a
+//                           keybindings.json row has, so it can be replaced
+//                           by (or layered under) a file on disk later
+//                           without any of the surrounding code changing.
+//
+//   the context keys        named below as constants, because a `when`
+//                           clause referring to a key nobody ever sets is
+//                           silently false and there is no compiler to
+//                           catch the typo.
+//
+// The commands themselves are registered where their closures live -- see
+// registerWorkbenchCommands() in the UI shell and registerEditorCommands()
+// in EditorView -- because a command is a piece of behavior belonging to a
+// component, not a piece of configuration.
+
+// ── Context keys ─────────────────────────────────────────────────────────
+
+// A text editor has keyboard focus. The single most important one: it is
+// what separates "this key is for the document" from "this key is for the
+// application", and it is why ctrl+o can mean two different things.
+fn ctxEditorTextFocus(): str { return "editorTextFocus"; }
+
+// The focused editor has the vim behavior installed.
+fn ctxVimActive(): str { return "vimActive"; }
+
+// Which vim mode that editor is in: "normal", "insert", "visual",
+// "visualline", or "" when vim is off. A string rather than a set of bools
+// so a rule can say `vimMode == 'normal'` and read the way vim docs do.
+fn ctxVimMode(): str { return "vimMode"; }
+
+// The focused editor has a non-empty selection.
+fn ctxEditorHasSelection(): str { return "editorHasSelection"; }
+
+// At least one file is open. Guards the tab commands, which are
+// meaningless with nothing open.
+fn ctxHasOpenTabs(): str { return "hasOpenTabs"; }
+
+// ── The rule table ───────────────────────────────────────────────────────
+
+fn installDefaultKeymap(keys: mut Keybindings): void {
+    keys.keymap.bindAll([
+        // Files.
+        { key: "ctrl+o", command: "workbench.action.files.openFile" },
+        // A CHORD: ctrl+k is a prefix, so pressing it alone parks the
+        // dispatcher until the second stroke arrives. VS Code puts most of
+        // its two-stroke bindings behind this same ctrl+k prefix.
+        { key: "ctrl+k ctrl+o", command: "workbench.action.files.openFolder" },
+
+        // Tabs.
+        { key: "ctrl+w", command: "workbench.action.closeActiveEditor", when: "hasOpenTabs" },
+        // ctrl+tab and ctrl+shift+tab are separate rules rather than one
+        // rule that inspects shift itself: modifiers are matched exactly,
+        // which is what keeps a rule for ctrl+tab from also swallowing
+        // every shifted variant of it.
+        { key: "ctrl+tab", command: "workbench.action.nextEditor", when: "hasOpenTabs" },
+        { key: "ctrl+shift+tab", command: "workbench.action.previousEditor", when: "hasOpenTabs" },
+
+        // Editing model.
+        { key: "f2", command: "editor.action.toggleVim", when: "editorTextFocus" },
+
+        // ── Vim overrides ────────────────────────────────────────────────
+        //
+        // Written LAST on purpose. Resolution scans the table backwards, so
+        // a later rule beats an earlier one for the same chord whenever its
+        // `when` also holds -- which is the whole mechanism by which a mode
+        // (or, eventually, an extension, or the user's own keybindings.json)
+        // takes a key over without the earlier rule knowing anything about
+        // it. Here: ctrl+o stays "open a file" everywhere except inside a
+        // vim editor that is not in insert mode, where it becomes vim's
+        // jump-back. Insert mode is excluded for the same reason vim
+        // excludes it -- there, ctrl+o is vim's own one-shot command escape.
+        { key: "ctrl+o", command: "vim.navigateBack", when: "editorTextFocus && vimActive && vimMode != 'insert'" },
+    ]);
+}
+
+// ── The one instance ─────────────────────────────────────────────────────
+//
+// A global for the same reason State is one: keybindings are a property of
+// the application, not of any component, and both ends of the wiring (the
+// shell's dispatch point and each editor's context-key updates) need to
+// reach the same object without threading it through every render function
+// in between.
+extern C let g_keybindings: mut Keybindings | none = none;
+
+fn keybindings(): mut Keybindings {
+    let existing = g_keybindings;
+    if existing {
+        return existing;
+    }
+    let created = Keybindings();
+    installDefaultKeymap(created);
+    created.reportProblems();
+    g_keybindings = created;
+    return created;
+}
+
+// ── Commands owned by the application shell ──────────────────────────────
+//
+// Registered from inside UI(), where the closures that do the work exist.
+// Re-registering an id replaces the previous handler, so this is safe to
+// call again on a remount.
+struct WorkbenchCommands {
+    openFile: CommandFn;
+    openFolder: CommandFn;
+    closeActiveEditor: CommandFn;
+    nextEditor: CommandFn;
+    previousEditor: CommandFn;
+}
+
+fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands): void {
+    keys.commands.register("workbench.action.files.openFile", handlers.openFile);
+    keys.commands.register("workbench.action.files.openFolder", handlers.openFolder);
+    keys.commands.register("workbench.action.closeActiveEditor", handlers.closeActiveEditor);
+    keys.commands.register("workbench.action.nextEditor", handlers.nextEditor);
+    keys.commands.register("workbench.action.previousEditor", handlers.previousEditor);
+}
+
+// ── Commands owned by whichever editor is active ─────────────────────────
+//
+// An editor command is per-tab (it acts on THAT document), but the command
+// registry is flat and global -- so the editor that is currently active
+// re-registers these on becoming active, and thereby claims them. That is
+// the correct owner by definition: keyboard focus follows the active tab,
+// and every one of these bindings is gated on editorTextFocus anyway.
+struct EditorCommands {
+    toggleVim: CommandFn;
+    vimNavigateBack: CommandFn;
+}
+
+fn registerEditorCommands(keys: mut Keybindings, handlers: EditorCommands): void {
+    keys.commands.register("editor.action.toggleVim", handlers.toggleVim);
+    keys.commands.register("vim.navigateBack", handlers.vimNavigateBack);
+}
