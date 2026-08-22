@@ -169,3 +169,29 @@ namespace fmt {
         writer.write(value.stringify());
     }
 }
+
+namespace sys {
+    export fn args(): []str {
+        return [];
+    }
+
+    export inline struct InputPipe {
+        fn constructor() {
+            return InputPipe {};
+        }
+    }
+
+    export inline struct OutputPipe {
+        fn constructor() {
+            return OutputPipe {};
+        }
+    }
+
+    export fn stdin(): InputPipe {
+        return InputPipe();
+    }
+
+    export fn stdout(): OutputPipe {
+        return OutputPipe();
+    }
+}

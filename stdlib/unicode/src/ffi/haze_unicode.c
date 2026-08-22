@@ -24,6 +24,11 @@
 
 #include "hzstd/include/hzstd_string.h"
 
+// utf8proc is vendored and compiled straight into this translation unit, never
+// linked as a shared library. Without UTF8PROC_STATIC its header falls back to
+// __declspec(dllimport) on Windows, which clang rejects on the definitions that
+// follow ("dllimport cannot be applied to non-inline function definition").
+#define UTF8PROC_STATIC
 #include "utf8proc.c"
 
 #include "public/haze_unicode.h"

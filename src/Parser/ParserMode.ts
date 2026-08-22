@@ -13,7 +13,12 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { diffAST, formatDifferences } from "./ASTDiff";
-import { NativeParserServer, ensureNativeParser } from "./NativeParser";
+import {
+  NativeParserServer,
+  ensureNativeParser,
+  warmupNativeParserSync,
+} from "./NativeParser";
+import { shutdownAllBridges } from "./SyncBridge";
 
 export type ParserMode = "antlr" | "native" | "assert";
 
@@ -54,7 +59,10 @@ export function nativeParserAvailable(): boolean {
   }
   if (availability === null) {
     availability = prepareNativeParser();
-    if (!availability) {
+    if (availability) {
+      // Safety net for entry points that never called startNativeParser().
+      warmupNativeParserSync(repoRoot);
+    } else {
       console.warn(
         "Warning: the native Haze parser is unavailable; falling back to the ANTLR parser."
       );
@@ -82,6 +90,24 @@ export function prepareNativeParser(): boolean {
   return ensureNativeParser(repoRoot);
 }
 
+/**
+ * Bring the native parser up at compiler start-up rather than on first use.
+ *
+ * Both parser processes take ~100ms to become usable — the server used by file
+ * parsing, and the worker-owned one behind the synchronous bridge. Starting
+ * them here overlaps that with project loading and dependency resolution, so
+ * the first file parse and the first synthetic function do not pay for it.
+ *
+ * Cheap and safe to call when the native parser is not in use: it does nothing.
+ */
+export function startNativeParser(): void {
+  if (!(usesNativeParser() && nativeParserAvailable())) {
+    return;
+  }
+  warmupNativeParserSync(repoRoot);
+  getServer();
+}
+
 function getServer(): NativeParserServer {
   if (!server) {
     server = new NativeParserServer(repoRoot);
@@ -93,6 +119,7 @@ function getServer(): NativeParserServer {
 export function shutdownNativeParser(): void {
   server?.stop();
   server = null;
+  shutdownAllBridges();
 }
 
 /**

@@ -613,7 +613,10 @@ export class ProjectCompiler {
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
         regexEngine: HAZE_CACHE + "/regex-engine",
-        regexCompiler: HAZE_CACHE + "/regex-compiler",
+        // -v2: the tool gained a --server mode and a batch request. An
+        // install still holding the old binary must rebuild, or the compiler
+        // would speak a protocol it does not understand.
+        regexCompiler: HAZE_CACHE + "/regex-compiler-v2",
       };
 
       if (!this.isStepDone(MARKERS.download)) {

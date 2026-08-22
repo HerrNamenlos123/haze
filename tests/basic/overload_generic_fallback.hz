@@ -1,14 +1,14 @@
 // Regression: generic overload should be a fallback when no exact non-generic match exists.
 
-pick(x: int): int {
+fn pick(x: int): int {
     return 1;
 }
 
-pick<T>(x: T): int {
+fn pick<T>(x: T): int {
     return 2;
 }
 
-main(): int {
+fn main(): int {
     // Exact non-generic match must win.
     let a = pick(42);
 

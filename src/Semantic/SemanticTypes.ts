@@ -1075,12 +1075,30 @@ export namespace Semantic {
     }[];
     elaboratedReactiveTypes: Semantic.TypeDefId[];
     elaboratedComputedTypes: Semantic.TypeDefId[];
-    functionTypeCache: Semantic.TypeDefId[];
-    callableTypeCache: Semantic.TypeDefId[];
-    deferredFunctionTypeCache: Semantic.TypeDefId[];
+    // These were plain arrays walked linearly on every lookup: O(n) per
+    // call and quadratic over a build, and together the largest single cost
+    // in elaboration and lowering.
+    //
+    // They are now indexed rather than scanned. Where a lookup is a plain
+    // equality it becomes a Map; where it compares a whole signature the
+    // entries are bucketed by something cheap and exact (return type, and
+    // parameter count) and the *original* comparison still runs inside the
+    // bucket. Nothing is packed into a synthetic key, so no assumption is
+    // made about enum ranges and no key string is built per call.
+    functionTypeCache: Map<
+      Semantic.TypeUseId,
+      Map<number, Semantic.TypeDefId[]>
+    >;
+    callableTypeCache: Map<Semantic.TypeDefId, Semantic.TypeDefId>;
+    deferredFunctionTypeCache: Map<number, Semantic.TypeDefId[]>;
+    // Left as scans: both resolve aliases as they compare, so a precomputed
+    // index could go stale, and neither showed up in the profile.
     fixedArrayTypeCache: Semantic.TypeDefId[];
     dynamicArrayTypeCache: Semantic.TypeDefId[];
-    typeInstanceCache: Semantic.TypeUseId[];
+    typeInstanceCache: Map<
+      Semantic.TypeDefId,
+      Map<EDatatypeMutability, Map<boolean, Semantic.TypeUseId>>
+    >;
 
     // Structural fingerprints (see Fingerprint.ts for the full invariants
     // this depends on). Computed once, permanently memoized, never
@@ -1148,6 +1166,64 @@ export namespace Semantic {
     );
   }
 
+  /**
+   * Name index for the scope walk in tryLookupSymbol.
+   *
+   * lookupDirect used to walk every symbol in a scope and keep the ones whose
+   * name matched. Every one of its branches requires that name equality, so
+   * restricting the walk to the symbols actually carrying that name is exactly
+   * equivalent -- and buckets keep insertion order, so it still returns the
+   * same first match. Module scopes hold thousands of symbols and the walk ran
+   * once per scope in every lookup chain.
+   *
+   * Scope symbol sets are append-only (nothing in the compiler removes from
+   * one), so the index is extended rather than rebuilt: on growth only the
+   * entries past those already indexed are visited. That matters because
+   * elaboration keeps adding symbols -- every synthetic function does -- and
+   * rebuilding a module-scope index on each addition would put the quadratic
+   * behaviour straight back.
+   */
+  const scopeNameIndex = new WeakMap<
+    Set<Collect.SymbolId>,
+    { indexed: number; byName: Map<string, Collect.SymbolId[]> }
+  >();
+
+  const NO_SYMBOLS: Collect.SymbolId[] = [];
+
+  function symbolsNamed(
+    cc: Semantic.Context["cc"],
+    symbols: Set<Collect.SymbolId>,
+    name: string
+  ): Collect.SymbolId[] {
+    let index = scopeNameIndex.get(symbols);
+    if (!index) {
+      index = { indexed: 0, byName: new Map() };
+      scopeNameIndex.set(symbols, index);
+    }
+
+    if (index.indexed !== symbols.size) {
+      let seen = 0;
+      for (const id of symbols) {
+        if (seen++ < index.indexed) {
+          continue;
+        }
+        const symbolName = (cc.symbolNodes.get(id) as { name?: unknown }).name;
+        if (typeof symbolName !== "string") {
+          continue; // cannot match: every branch below compares a name
+        }
+        const bucket = index.byName.get(symbolName);
+        if (bucket) {
+          bucket.push(id);
+        } else {
+          index.byName.set(symbolName, [id]);
+        }
+      }
+      index.indexed = symbols.size;
+    }
+
+    return index.byName.get(name) ?? NO_SYMBOLS;
+  }
+
   export function tryLookupSymbol(
     sr: Semantic.Context,
     name: string,
@@ -1187,7 +1263,7 @@ export namespace Semantic {
     }
 
     const lookupDirect = (symbols: Set<Collect.SymbolId>) => {
-      for (const id of symbols) {
+      for (const id of symbolsNamed(cc, symbols, name)) {
         const s = cc.symbolNodes.get(id);
         if (
           s.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
@@ -1752,12 +1828,12 @@ export namespace Semantic {
       elaboratedNamespaceSymbols: [],
       elaboratedGlobalVariableDefinitionSymbols: new Set(),
       elaboratedTypeDefSymbols: [],
-      functionTypeCache: [],
-      callableTypeCache: [],
-      deferredFunctionTypeCache: [],
+      functionTypeCache: new Map(),
+      callableTypeCache: new Map(),
+      deferredFunctionTypeCache: new Map(),
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
-      typeInstanceCache: [],
+      typeInstanceCache: new Map(),
 
       typeDefFingerprints: new Map(),
       typeUseFingerprints: new Map(),
@@ -1810,6 +1886,13 @@ export namespace Semantic {
     sr.b = new SemanticBuilder(sr);
 
     sr.e.topLevelScope(cc.moduleScopeId);
+
+    // Structs reached only as another struct's member type never get their
+    // method list built during the recursive elaboration above, which silently
+    // drops every uncalled method from the exported module interface. The
+    // elaboration stack is empty again here, so sweep up whatever was missed --
+    // see finalizeAllStructMethods for the full explanation.
+    sr.e.finalizeAllStructMethods();
 
     if (moduleName !== HAZE_STDLIB_NAME) {
       if (isLibrary) {

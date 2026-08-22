@@ -130,7 +130,7 @@ fn main(): int {
         buildSyntaxEngine();
         // installLSP();
 
-        let highlightEngine = HighlightEngine("./syntax-engine", "codeeditor/syntax-engine");
+        let highlightEngine = HighlightEngine("codeeditor/syntax-engine/syntax-engine");
         if (!highlightEngine) {
             fmt.println("Highlight engine failed to start");
             return 0;

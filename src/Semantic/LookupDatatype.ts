@@ -45,7 +45,10 @@ export function makeDeferredFunctionDatatypeAvailable(
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
-  for (const id of sr.deferredFunctionTypeCache) {
+  // Only entries with the same parameter count can match, so the original
+  // comparison below now runs over that bucket instead of every cached type.
+  let deferredBucket = sr.deferredFunctionTypeCache.get(args.parameters.length);
+  for (const id of deferredBucket ?? []) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.DeferredFunctionDatatype);
     if (type.parameters.length !== args.parameters.length) {
@@ -79,7 +82,11 @@ export function makeDeferredFunctionDatatypeAvailable(
     vararg: args.vararg,
     concrete: args.parameters.every((p) => isTypeConcrete(sr, p.type)),
   });
-  sr.deferredFunctionTypeCache.push(ftypeId);
+  if (!deferredBucket) {
+    deferredBucket = [];
+    sr.deferredFunctionTypeCache.set(args.parameters.length, deferredBucket);
+  }
+  deferredBucket.push(ftypeId);
   return ftypeId;
 }
 
@@ -90,13 +97,10 @@ export function makeRawCallableDatatypeAvailable(
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
-  for (const id of sr.callableTypeCache) {
-    const type = sr.typeDefNodes.get(id);
-    assert(type.variant === Semantic.ENode.CallableDatatype);
-    if (type.functionType === args.functionType) {
-      // Everything matches
-      return id;
-    }
+  // The only thing the scan compared was functionType, so this is a plain map.
+  const cachedCallable = sr.callableTypeCache.get(args.functionType);
+  if (cachedCallable !== undefined) {
+    return cachedCallable;
   }
 
   // Nothing found
@@ -105,7 +109,7 @@ export function makeRawCallableDatatypeAvailable(
     functionType: args.functionType,
     concrete: sr.typeDefNodes.get(args.functionType).concrete,
   });
-  sr.callableTypeCache.push(ftypeId);
+  sr.callableTypeCache.set(args.functionType, ftypeId);
   return ftypeId;
 }
 
@@ -135,7 +139,12 @@ export function makeRawFunctionDatatypeAvailable(
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
-  for (const id of sr.functionTypeCache) {
+  // Bucketed by return type and parameter count -- both necessary conditions
+  // the scan checked anyway. Everything else is compared exactly as before,
+  // just over the handful of entries that share those two.
+  let byParamCount = sr.functionTypeCache.get(args.returnType);
+  let fnBucket = byParamCount?.get(args.parameters.length);
+  for (const id of fnBucket ?? []) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.FunctionDatatype);
     if (type.parameters.length !== args.parameters.length) {
@@ -188,7 +197,15 @@ export function makeRawFunctionDatatypeAvailable(
       args.parameters.every((p) => isTypeConcrete(sr, p.type)) &&
       isTypeConcrete(sr, args.returnType),
   });
-  sr.functionTypeCache.push(ftypeId);
+  if (!byParamCount) {
+    byParamCount = new Map();
+    sr.functionTypeCache.set(args.returnType, byParamCount);
+  }
+  if (!fnBucket) {
+    fnBucket = [];
+    byParamCount.set(args.parameters.length, fnBucket);
+  }
+  fnBucket.push(ftypeId);
   return ftypeId;
 }
 
@@ -212,6 +229,26 @@ export function makeFunctionDatatypeAvailable(
   )[1];
 }
 
+function cacheTypeInstance(
+  sr: Semantic.Context,
+  typeId: Semantic.TypeDefId,
+  mutability: EDatatypeMutability,
+  inline: boolean,
+  id: Semantic.TypeUseId
+): void {
+  let byMutability = sr.typeInstanceCache.get(typeId);
+  if (!byMutability) {
+    byMutability = new Map();
+    sr.typeInstanceCache.set(typeId, byMutability);
+  }
+  let byInline = byMutability.get(mutability);
+  if (!byInline) {
+    byInline = new Map();
+    byMutability.set(mutability, byInline);
+  }
+  byInline.set(inline, id);
+}
+
 export function makeTypeUse(
   sr: Semantic.Context,
   typeId: Semantic.TypeDefId,
@@ -228,17 +265,15 @@ export function makeTypeUse(
       shouldBeInline ||= inline;
     }
 
-    for (const id of sr.typeInstanceCache) {
-      const typeUse = sr.typeUseNodes.get(id);
-      if (
-        typeUse.mutability !== mutability ||
-        typeUse.type !== typeId ||
-        typeUse.inline !== shouldBeInline
-      ) {
-        continue;
-      }
-
-      return [typeUse, id] as const;
+    // Nested maps rather than one packed key: the levels are the three
+    // things the scan compared, so nothing here assumes how many values
+    // EDatatypeMutability has, and no key object or string is built per call.
+    const cachedStruct = sr.typeInstanceCache
+      .get(typeId)
+      ?.get(mutability)
+      ?.get(shouldBeInline);
+    if (cachedStruct !== undefined) {
+      return [sr.typeUseNodes.get(cachedStruct), cachedStruct] as const;
     }
 
     const instance = sr.b.addTypeInstance(sr, {
@@ -247,15 +282,16 @@ export function makeTypeUse(
       type: typeId,
       sourceloc: sourceloc,
     });
-    sr.typeInstanceCache.push(instance[1]);
+    cacheTypeInstance(sr, typeId, mutability, shouldBeInline, instance[1]);
     return instance;
   }
-  for (const id of sr.typeInstanceCache) {
-    const typeUse = sr.typeUseNodes.get(id);
-    if (typeUse.type !== typeId || typeUse.mutability !== mutability) {
-      continue;
-    }
-    return [typeUse, id] as const;
+  // Non-structs never compared inline, so they all live in the false slot:
+  // the scan matched on type and mutability alone, so the first entry for a
+  // pair won whatever its inline was. A typeId is a struct or it is not, so
+  // these two branches never share an entry.
+  const cachedPlain = sr.typeInstanceCache.get(typeId)?.get(mutability)?.get(false);
+  if (cachedPlain !== undefined) {
+    return [sr.typeUseNodes.get(cachedPlain), cachedPlain] as const;
   }
 
   let shouldBeInline = inline;
@@ -269,7 +305,7 @@ export function makeTypeUse(
     type: typeId,
     sourceloc: sourceloc,
   });
-  sr.typeInstanceCache.push(instance[1]);
+  cacheTypeInstance(sr, typeId, mutability, false, instance[1]);
   return instance;
 }
 

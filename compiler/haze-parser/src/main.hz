@@ -30,10 +30,38 @@ extern C fn hz_write_err(data: str): void :: final;
 extern C fn hz_read_exact(n: int): str :: final;
 
 __c__("
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+
+// stdin/stdout default to text mode on Windows, which is fatal for this
+// protocol. Reading: fread() collapses CRLF to LF, so a TEXT request carrying a
+// CRLF source needs more raw bytes than its declared length and fread() blocks
+// forever waiting for bytes the compiler already sent in full. Writing: LF
+// expands to CRLF, so the payload no longer matches the byte count in the
+// header. Both sides must be raw.
+__attribute__((constructor))
+static void _hz_set_binary_stdio(void) {
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+}
+#endif
+
 static char _hz_linebuf[65536];
 
 // The generated entry point does not stash argc/argv anywhere, so grab them
 // from a constructor that runs before main.
+//
+// Only glibc passes (argc, argv, envp) to .init_array constructors. On Windows
+// a constructor is called with no arguments at all, so reading them there gave
+// argc == 0 and every invocation failed with the usage message. Windows instead
+// exposes the real values as the CRT globals __argc/__argv.
+#ifdef _WIN32
+extern int __argc;
+extern char** __argv;
+#define _hz_argc __argc
+#define _hz_argv ((const char**)__argv)
+#else
 static int _hz_argc = 0;
 static const char** _hz_argv = 0;
 
@@ -42,6 +70,7 @@ static void _hz_capture_args(int argc, const char** argv) {
     _hz_argc = argc;
     _hz_argv = argv;
 }
+#endif
 
 hzstd_str_t hz_read_exact(hzstd_int_t n) {
     hzstd_str_t s;
@@ -55,7 +84,14 @@ hzstd_str_t hz_read_exact(hzstd_int_t n) {
 }
 
 hzstd_ccstr_t hz_read_line(void) {
-    if (!fgets(_hz_linebuf, sizeof(_hz_linebuf), stdin)) return 0;
+    // Must not return NULL at EOF: the caller wraps this in
+    // hzstd_str_from_ccstr_ref, which strlen()s it, so a NULL segfaulted the
+    // whole server the moment stdin closed without an explicit __quit__.
+    // An empty line already means \"stop\" in runServer.
+    if (!fgets(_hz_linebuf, sizeof(_hz_linebuf), stdin)) {
+        _hz_linebuf[0] = 0;
+        return _hz_linebuf;
+    }
     return _hz_linebuf;
 }
 

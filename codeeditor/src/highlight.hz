@@ -105,8 +105,25 @@ struct HighlightEngine {
     // and must never be touched again.
     dead: bool = false;
 
-    fn constructor(cmdline: str, cwd: str) {
-        let p = process.spawn("/bin/bash", ["-c", cmdline], { cwd: cwd });
+    // `exePath` is the engine binary, relative to the process working
+    // directory (the repo root), without any platform suffix.
+    //
+    // The binary is spawned directly rather than through `/bin/bash -c`, which
+    // does not exist on Windows. Its working directory is deliberately left
+    // alone as well: the Linux spawn helper chdir()s inside the child before
+    // exec, so a relative exe would resolve against that new directory, while
+    // CreateProcess resolves it against ours -- inheriting our cwd is the only
+    // reading both platforms agree on. The compiled engine embeds its grammars
+    // and the oniguruma wasm (see syntax-engine.ts), so it does not need to run
+    // from its own directory.
+    fn constructor(exePath: str) {
+        let exe = exePath;
+        if sys.isWin32() {
+            // What `bun build --compile --outfile syntax-engine` actually writes.
+            exe = exePath + ".exe";
+        }
+
+        let p = process.spawn(exe, []);
         if (!p) {
             return none;
         }
@@ -233,8 +250,18 @@ struct HighlightEngine {
         this.inputBuffer.append(newStdout);
 
         let contentLengthText = "Content-Length: ";
-        if this.inputBuffer.length() > 0 && !this.inputBuffer.startsWith(contentLengthText) {
-            sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+        // Only a buffer long enough to hold the whole prefix can prove the
+        // stream is out of sync. readStdout() hands back whatever bytes happen
+        // to sit in the pipe at that instant and this runs once a frame, so
+        // seeing a header that is still being written is routine -- more so on
+        // Windows, where PeekNamedPipe reports a partial write as readable.
+        // Testing `length() > 0` turned "the rest of the header has not
+        // arrived yet" into a panic.
+        if this.inputBuffer.length() >= contentLengthText.length && !this.inputBuffer.startsWith(contentLengthText) {
+            // The offending bytes are in the message: a desync is only ever
+            // debuggable if it says what arrived instead.
+            let head = this.inputBuffer.cloneSlice(0, contentLengthText.length);
+            sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}', got '{head}'");
         }
 
         let separator = "\r\n\r\n";

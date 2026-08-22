@@ -4,8 +4,8 @@ __c__("#include <GLFW/glfw3.h>");
 __c__("#include <math.h>");
 __c__("#include <string.h>");
 
-extern C noemit strcmp(str1: ccstr, str2: ccstr): i32 :: final;
-extern C noemit getenv(name: ccstr): ccstr :: final;
+extern C noemit fn strcmp(str1: ccstr, str2: ccstr): i32 :: final;
+extern C noemit fn getenv(name: ccstr): ccstr :: final;
 
 const GLFW_PLATFORM: i32;
 const GLFW_PLATFORM_X11: i32;
@@ -21,40 +21,40 @@ namespace ffi {
     export extern C struct GLFWwindow {};
     export extern C struct GLFWmonitor {};
 
-    extern C glfwInit(): i32 :: final;
-    extern C glfwTerminate(): void :: final;
-    extern C glfwCreateWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none :: final;
-    extern C glfwDestroyWindow(w: GLFWwindow) :: final;
-    extern C glfwWindowShouldClose(w: GLFWwindow): i32 :: final;
-    extern C glfwSetWindowShouldClose(w: GLFWwindow, value: i32) :: final;
-    extern C glfwSwapBuffers(w: GLFWwindow) :: final;
-    extern C glfwSwapInterval(flag: i32) :: final;
-    extern C glfwMakeContextCurrent(w: GLFWwindow) :: final;
-    extern C glfwPollEvents() :: final;
-    extern C glfwInitHint(hint: i32, value: i32) :: final;
-    extern C glfwWindowHint(hint: i32, value: i32) :: final;
-    extern C glfwGetTime(): f64 :: final;
+    extern C fn glfwInit(): i32 :: final;
+    extern C fn glfwTerminate(): void :: final;
+    extern C fn glfwCreateWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none :: final;
+    extern C fn glfwDestroyWindow(w: GLFWwindow) :: final;
+    extern C fn glfwWindowShouldClose(w: GLFWwindow): i32 :: final;
+    extern C fn glfwSetWindowShouldClose(w: GLFWwindow, value: i32) :: final;
+    extern C fn glfwSwapBuffers(w: GLFWwindow) :: final;
+    extern C fn glfwSwapInterval(flag: i32) :: final;
+    extern C fn glfwMakeContextCurrent(w: GLFWwindow) :: final;
+    extern C fn glfwPollEvents() :: final;
+    extern C fn glfwInitHint(hint: i32, value: i32) :: final;
+    extern C fn glfwWindowHint(hint: i32, value: i32) :: final;
+    extern C fn glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
-    extern C glfwGetProcAddress(procname: ccstr): (() -> void) :: final;
-    extern C noemit glfwGetFramebufferSize(w: GLFWwindow, width: cptr /* int* aka i32* */, height: cptr /* int* aka i32* */) :: final;
+    extern C fn glfwGetProcAddress(procname: ccstr): (() -> void) :: final;
+    extern C noemit fn glfwGetFramebufferSize(w: GLFWwindow, width: cptr /* int* aka i32* */, height: cptr /* int* aka i32* */) :: final;
 
-    export init(): bool {
+    export fn init(): bool {
         return glfwInit() != 0;
     }
 
-    export terminate(): void {
+    export fn terminate(): void {
         glfwTerminate();
     }
 
-    export createWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none {
+    export fn createWindow(width: i32, height: i32, title: ccstr, monitor?: GLFWmonitor, share?: GLFWwindow): GLFWwindow | none {
         return glfwCreateWindow(width, height, title, monitor, share);
     }
 
-    export windowShouldClose(w: GLFWwindow): bool {
+    export fn windowShouldClose(w: GLFWwindow): bool {
         return glfwWindowShouldClose(w) != 0;
     }
 
-    export setWindowShouldClose(w: GLFWwindow, value: bool) {
+    export fn setWindowShouldClose(w: GLFWwindow, value: bool) {
         if value == true {
             glfwSetWindowShouldClose(w, 1);
         }
@@ -63,39 +63,39 @@ namespace ffi {
         }
     }
 
-    export swapBuffers(w: GLFWwindow) {
+    export fn swapBuffers(w: GLFWwindow) {
         glfwSwapBuffers(w);
     }
 
-    export swapInterval(flags: i32) {
+    export fn swapInterval(flags: i32) {
         glfwSwapInterval(flags);
     }
 
-    export destroyWindow(w: GLFWwindow) {
+    export fn destroyWindow(w: GLFWwindow) {
         glfwDestroyWindow(w);
     }
 
-    export makeContextCurrent(w: GLFWwindow) {
+    export fn makeContextCurrent(w: GLFWwindow) {
         glfwMakeContextCurrent(w);
     }
 
-    export pollEvents() {
+    export fn pollEvents() {
         glfwPollEvents();
     }
 
-    export initHint(hint: i32, value: i32) {
+    export fn initHint(hint: i32, value: i32) {
         glfwInitHint(hint, value);
     }
 
-    export windowHint(hint: i32, value: i32) {
+    export fn windowHint(hint: i32, value: i32) {
         glfwWindowHint(hint, value);
     }
 
-    export getTime(): f64 {
+    export fn getTime(): f64 {
         return glfwGetTime() as f64;
     }
 
-    export extern C glfw_getProcAddress(procname: ccstr): () -> void {
+    export extern C fn glfw_getProcAddress(procname: ccstr): () -> void {
         return glfwGetProcAddress(procname);
     }
 }
@@ -103,35 +103,35 @@ namespace ffi {
 export struct Window {
     handle: ffi.GLFWwindow;
 
-    makeContextCurrent() {
+    fn makeContextCurrent() {
         ffi.makeContextCurrent(this.handle);
     }
 
-    shouldClose(): bool {
+    fn shouldClose(): bool {
         return ffi.windowShouldClose(this.handle);
     }
 
-    close() {
+    fn close() {
         ffi.setWindowShouldClose(this.handle, true);
     }
 
-    destroy() {
+    fn destroy() {
         ffi.destroyWindow(this.handle);
     }
 
-    swapBuffers() {
+    fn swapBuffers() {
         ffi.makeContextCurrent(this.handle);
         ffi.swapBuffers(this.handle);
     }
 
-    swapInterval(interval: int) {
+    fn swapInterval(interval: int) {
         if interval >= 0 && interval <= 10 {
             ffi.makeContextCurrent(this.handle);
             ffi.swapInterval(interval);
         }
     }
 
-    getFramebufferSize() {
+    fn getFramebufferSize() {
         let width = 0 as i32;
         let height = 0 as i32;
         let w = none as cptr;
@@ -142,7 +142,7 @@ export struct Window {
         return Vec2i(width, height);
     }
 
-    getProcAddress(): ((name: ccstr) -> cptr) {
+    fn getProcAddress(): ((name: ccstr) -> cptr) {
         // This makeContextCurrent() is important because getProcAddress is usually immediately passed to
         // gl.init, which then takes the GL context. It is important that the two are linked.
         // We just need to hope someone doesn't call getProcAddress and then do something else instead of gl.init()
@@ -168,7 +168,7 @@ export struct WindowConfig {
     noApi: bool = false; // This prevents graphics context creation, which is required for Vulkan
 }
 
-export init(): bool {
+export fn init(): bool {
     const desktop = getenv("XDG_CURRENT_DESKTOP");
     let valid = true;
     __c__("valid = desktop != 0;");
@@ -181,11 +181,11 @@ export init(): bool {
     return ffi.init();
 }
 
-export terminate() {
+export fn terminate() {
     ffi.terminate();
 }
 
-export createWindow(config: WindowConfig): Result<Window, none> {
+export fn createWindow(config: WindowConfig): Result<Window, none> {
     ffi.windowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     ffi.windowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     ffi.windowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -206,10 +206,10 @@ export createWindow(config: WindowConfig): Result<Window, none> {
     );
 }
 
-export pollEvents() {
+export fn pollEvents() {
     ffi.pollEvents();
 }
 
-export getTime(): real {
+export fn getTime(): real {
     return ffi.getTime() as real;
 }

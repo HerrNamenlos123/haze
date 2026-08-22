@@ -1,5 +1,5 @@
 
-main(): int {
+fn main(): int {
     let x = reactive<int>(0);
 
     let a = x += 1;

@@ -17,13 +17,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
+import { requestSync, warmupBridge } from "./SyncBridge";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
+// The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
+// this path with existsSync, which does no PATHEXT resolution, so an
+// extensionless path made the check fail forever on Windows and rebuilt the
+// parser (through the slow ANTLR pipeline) on every single build.
 const PARSER_BINARY = path.join(
   "__haze__",
   "haze-parser",
   "bin",
-  "haze-parser"
+  process.platform === "win32" ? "haze-parser.exe" : "haze-parser"
 );
 
 // ---------------------------------------------------------------------------
@@ -163,7 +168,10 @@ function parserSourceHash(repoRoot: string): string {
   const srcDir = path.join(repoRoot, PARSER_PROJECT_DIR, "src");
   const hash = crypto.createHash("sha256");
 
-  const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".hz")).sort();
+  const files = fs
+    .readdirSync(srcDir)
+    .filter((f) => f.endsWith(".hz"))
+    .sort();
   for (const file of files) {
     hash.update(file);
     hash.update(fs.readFileSync(path.join(srcDir, file)));
@@ -195,7 +203,17 @@ export function isParserUpToDate(repoRoot: string): boolean {
 export function buildNativeParser(repoRoot: string): boolean {
   const result = child_process.spawnSync(
     process.execPath,
-    [path.join("src", "main.ts"), "build", "--dir", PARSER_PROJECT_DIR],
+    // `--parser antlr` is essential: the default parser mode is `native`, so
+    // without it the child would find the binary missing/stale, call
+    // buildNativeParser() itself, and recurse forever.
+    [
+      path.join("src", "main.ts"),
+      "build",
+      "--dir",
+      PARSER_PROJECT_DIR,
+      "--parser",
+      "antlr",
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -237,7 +255,7 @@ export class NativeParserServer {
     resolve: (v: string) => void;
     reject: (e: Error) => void;
   } | null = null;
-  private queue: (() => void)[] = [];
+  private queue: { run: () => void; reject: (e: Error) => void }[] = [];
 
   constructor(private readonly repoRoot: string) {}
 
@@ -262,9 +280,20 @@ export class NativeParserServer {
 
     this.proc.on("exit", () => {
       this.proc = null;
-      this.pending?.reject(new Error("native parser exited"));
-      this.pending = null;
+      this.failAll(new Error("native parser exited"));
     });
+  }
+
+  /** Fail the in-flight request and everything still queued behind it. */
+  private failAll(error: Error): void {
+    const pending = this.pending;
+    this.pending = null;
+    pending?.reject(error);
+    const queued = this.queue;
+    this.queue = [];
+    for (const job of queued) {
+      job.reject(error);
+    }
   }
 
   /** Try to complete the in-flight request from the buffered bytes. */
@@ -290,9 +319,14 @@ export class NativeParserServer {
     }
 
     if (!header.startsWith("OK ")) {
+      // Drop the offending line and keep going. Returning here (as this used
+      // to) left the bytes in the buffer and never called next(), so one
+      // unexpected line on stdout wedged every queued parse forever.
       const pending = this.pending;
       this.pending = null;
+      this.buffer = this.buffer.subarray(newline + 1);
       pending.reject(new Error(`bad response header: ${header}`));
+      this.next();
       return;
     }
 
@@ -316,7 +350,7 @@ export class NativeParserServer {
   private next(): void {
     const job = this.queue.shift();
     if (job) {
-      job();
+      job.run();
     }
   }
 
@@ -349,14 +383,20 @@ export class NativeParserServer {
 
     return new Promise<string>((resolve, reject) => {
       const run = () => {
+        this.start();
+        if (!this.proc) {
+          reject(new Error("native parser is not running"));
+          this.next();
+          return;
+        }
         this.pending = { resolve: resolve, reject: reject };
-        this.proc?.stdin.write(payload);
+        this.proc.stdin.write(payload);
         // A previous response may already be buffered.
         this.drain();
       };
 
       if (this.pending) {
-        this.queue.push(run);
+        this.queue.push({ run: run, reject: reject });
       } else {
         run();
       }
@@ -397,16 +437,76 @@ export function parseFileNativeSync(
   return reviveAST(JSON.parse(result.stdout));
 }
 
+/** Absolute path to the parser binary, for callers outside this module. */
+/** Bridge key for the long-lived parser process. */
+const PARSER_BRIDGE = "parser";
+
+export function parserBinaryPath(repoRoot: string): string {
+  return path.join(repoRoot, PARSER_BINARY);
+}
+
+/**
+ * Start the synchronous bridge's worker ahead of the first parse, so its
+ * ~100ms of worker and parser start-up overlaps with the rest of the build.
+ */
+export function warmupNativeParserSync(repoRoot: string): void {
+  warmupBridge(PARSER_BRIDGE, parserBinaryPath(repoRoot), repoRoot);
+}
+
 /**
  * Parse source text the compiler already holds.
  *
  * The compiler's parse entry point is synchronous and is called from deep
- * inside the collection phase, so this uses a one-shot process rather than the
- * async server. The text is passed on stdin (via the server protocol's TEXT
- * request) so nothing has to be written to disk, and so sources with no file at
- * all — the synthetic "internal" ones — work too.
+ * inside the collection phase, so it cannot await the async server. It goes
+ * through SyncParserBridge instead, which blocks on a worker that owns one
+ * persistent parser process. Spawning a process per call — what this used to
+ * do, and what it still falls back to if the bridge is unavailable — costs
+ * ~25ms each, which dominated synthetic function generation.
+ *
+ * The text is passed in memory (via the server protocol's TEXT request) so
+ * nothing has to be written to disk, and so sources with no file at all — the
+ * synthetic "internal" ones — work too.
  */
 export function parseTextNativeSync(
+  repoRoot: string,
+  text: string,
+  filename: string
+): ASTRoot {
+  const payload = Buffer.from(text, "utf8");
+  const request = Buffer.concat([
+    Buffer.from(
+      `TEXT ${payload.length} ${filename}
+`,
+      "utf8"
+    ),
+    payload,
+  ]);
+
+  let viaBridge: string | null;
+  try {
+    viaBridge = requestSync(
+      PARSER_BRIDGE,
+      parserBinaryPath(repoRoot),
+      repoRoot,
+      request
+    );
+  } catch (e) {
+    throw new Error(
+      `native parser failed for ${filename}: ${(e as Error).message}`
+    );
+  }
+
+  if (viaBridge !== null) {
+    return reviveAST(JSON.parse(viaBridge));
+  }
+  return parseTextNativeSpawn(repoRoot, text, filename);
+}
+
+/**
+ * One parse, one process. The fallback for when the bridge cannot run; also
+ * what every synchronous parse used to do.
+ */
+function parseTextNativeSpawn(
   repoRoot: string,
   text: string,
   filename: string

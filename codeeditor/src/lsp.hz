@@ -3,8 +3,27 @@ inline struct ExecOptions {
     cwd?: str;
 }
 
-fn exec(cmd: str, options: ExecOptions = {}): Result<none, none> {
-    let subprocess = process.run("/bin/sh", ["-c", cmd], {
+// Every command run here is a developer tool resolved from PATH, and on
+// Windows most of those (npm, npx, ...) are `.cmd` batch launchers rather than
+// real executables. CreateProcess appends nothing but ".exe" to a bare command
+// name and cannot execute a batch file at all, so they only ever start through
+// cmd.exe. `bun` is a genuine bun.exe and would run either way; routing all of
+// them through the shell keeps one code path instead of a per-tool guess.
+fn exec(exe: str, args: []str, options: ExecOptions = {}): Result<none, none> {
+    let realExe = exe;
+    let realArgs = args;
+    if sys.isWin32() {
+        let shellArgs: []str = [];
+        shellArgs.push("/c");
+        shellArgs.push(exe);
+        for arg in args {
+            shellArgs.push(arg);
+        }
+        realExe = "cmd.exe";
+        realArgs = shellArgs;
+    }
+
+    let subprocess = process.run(realExe, realArgs, {
         cwd: options.cwd,
     });
     if (!subprocess) {
@@ -21,15 +40,20 @@ const vueLspFilePath = "codeeditor/syntax-engine/node_modules/@vue/language-serv
 // The files `npm install` below is expected to produce. These are resolved
 // against the process working directory (the repo root), NOT against
 // syntaxEngineDir -- only the npm/bun subprocesses run with that as their cwd.
+//
+// tsserver.js rather than bin/tsc, because bin/tsc exists in TypeScript 7 too
+// while tsserver.js does not (see the version pin below). Checking for a file
+// both trees have would report a TypeScript that cannot drive this editor as a
+// working install.
 fn lspFilePaths(): []str {
   return [
       vueLspFilePath,
-      "codeeditor/syntax-engine/node_modules/typescript/bin/tsc",
+      "codeeditor/syntax-engine/node_modules/typescript/lib/tsserver.js",
   ];
 }
 
 fn buildSyntaxEngine() {
-    return exec("bun build syntax-engine.ts --compile --outfile syntax-engine", {
+    return exec("bun", ["build", "syntax-engine.ts", "--compile", "--outfile", "syntax-engine"], {
         cwd: syntaxEngineDir,
     });
 }
@@ -38,7 +62,7 @@ fn installLSP() {
 
     attempt {
         fmt.println("Building Syntax Engine...");
-        exec("bun install", {
+        exec("bun", ["install"], {
             cwd: syntaxEngineDir,
         })?!;
         buildSyntaxEngine()?!;
@@ -64,7 +88,13 @@ fn installLSP() {
 
         // @catppuccin/vscode
         fmt.println("Some LSP files missing, installing...");
-        exec("npm install --no-save @vue/language-server typescript @types/bun vscode-textmate vscode-oniguruma", {
+        // typescript is pinned to 5.x on purpose. Plain `typescript` now
+        // resolves to 7.x, the native rewrite, whose lib/ ships only a
+        // launcher for the Go binary -- no typescript.js and no tsserver.js.
+        // Both of the things started below need exactly those two files:
+        // @vue/language-server require.resolve()s ./typescript.js out of the
+        // tsdk, and the bridge spawns node on lib/tsserver.js.
+        exec("npm", ["install", "--no-save", "@vue/language-server", "typescript@^5", "@types/bun", "vscode-textmate", "vscode-oniguruma"], {
             cwd: syntaxEngineDir,
         })?!;
         fmt.println("Some LSP files missing, installing... Done");

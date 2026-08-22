@@ -9,6 +9,7 @@ import {
   type ParserMode,
   setParserMode,
   shutdownNativeParser,
+  startNativeParser,
 } from "./Parser/ParserMode";
 
 const version = pkg.version;
@@ -127,11 +128,11 @@ async function main(): Promise<number> {
   build_parser.add_argument("--parser", {
     dest: "parser",
     choices: ["antlr", "native", "assert"],
-    default: "antlr",
+    default: "native",
     help:
-      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
-      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
-      "and require identical ASTs)",
+      "Which parser to use: 'native' (default, the hand-written parser in " +
+      "compiler/haze-parser), 'antlr' (the older, much slower one), or " +
+      "'assert' (run both and require identical ASTs)",
   });
   build_parser.add_argument("filename", {
     nargs: "?",
@@ -181,11 +182,11 @@ async function main(): Promise<number> {
   run_parser.add_argument("--parser", {
     dest: "parser",
     choices: ["antlr", "native", "assert"],
-    default: "antlr",
+    default: "native",
     help:
-      "Which parser to use: 'antlr' (default), 'native' (the much faster " +
-      "hand-written parser in compiler/haze-parser), or 'assert' (run both " +
-      "and require identical ASTs)",
+      "Which parser to use: 'native' (default, the hand-written parser in " +
+      "compiler/haze-parser), 'antlr' (the older, much slower one), or " +
+      "'assert' (run both and require identical ASTs)",
   });
   run_parser.add_argument("--show-timing", {
     action: "store_true",
@@ -274,7 +275,10 @@ async function main(): Promise<number> {
     ) {
       // Select the parser implementation for this invocation. `assert` runs
       // both and requires identical ASTs, which is how the two stay in sync.
-      setParserMode((args.parser ?? "antlr") as ParserMode, process.cwd());
+      setParserMode((args.parser ?? "native") as ParserMode, process.cwd());
+      // Get the parser processes running now; they take ~100ms to come up and
+      // nothing below needs them until project loading is well under way.
+      startNativeParser();
 
       const project = new ProjectCompiler(
         Boolean(args.verbose),
@@ -327,19 +331,31 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if ((process.env as any).HAZE_EXEC_MODE === "profiling") {
-  const url = "chrome://inspect";
+const execMode = (process.env as any).HAZE_EXEC_MODE;
 
-  // ANSI helpers
-  const reset = "\x1b[0m";
-  const bold = "\x1b[1m";
-  const fg = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
-  const bg = (r: number, g: number, b: number) => `\x1b[48;2;${r};${g};${b}m`;
+// Both modes deliberately skip the process.exit() in the else branch:
+// exiting explicitly truncates the CPU profile before it is flushed to
+// disk, and it drops any attached debugger mid-run.
+if (execMode === "profiling" || execMode === "debug") {
+  // Only Node registers a Chrome DevTools Protocol target, so
+  // chrome://inspect is the right frontend there. Bun speaks the
+  // JavaScriptCore protocol instead and prints its own debug.bun.sh URL on
+  // stderr, so it needs no banner from us. Under --cpu-prof there is no
+  // inspector to connect to at all.
+  if (execMode === "debug" && typeof (globalThis as any).Bun === "undefined") {
+    const url = "chrome://inspect";
 
-  console.log(
-    `${bold}${fg(255, 255, 255)}${bg(255, 0, 200)}  OPEN CHROME INSPECT  ${reset}\n` +
-      `${bold}${fg(0, 255, 255)}${url}${reset}`
-  );
+    // ANSI helpers
+    const reset = "\x1b[0m";
+    const bold = "\x1b[1m";
+    const fg = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
+    const bg = (r: number, g: number, b: number) => `\x1b[48;2;${r};${g};${b}m`;
+
+    console.log(
+      `${bold}${fg(255, 255, 255)}${bg(255, 0, 200)}  OPEN CHROME INSPECT  ${reset}\n` +
+        `${bold}${fg(0, 255, 255)}${url}${reset}`
+    );
+  }
 
   async function runMain() {
     try {

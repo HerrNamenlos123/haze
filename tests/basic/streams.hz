@@ -3,15 +3,15 @@
 // tiny test framework
 // ------------------------------------------------------------
 
-fail(msg: str): void {
+fn fail(msg: str): void {
     sys.panic("TEST FAILED: " + msg);
 }
 
-assert(cond: bool, msg: str = "assertion failed"): void {
+fn assert(cond: bool, msg: str = "assertion failed"): void {
     if !cond { fail(msg); }
 }
 
-assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
+fn assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
     if a.length != b.length { fail(f"{msg} (length mismatch)"); }
     for (let i = 0; i < a.length; i++) {
         if a[i] != b[i] { fail(f"{msg} (diff at {i})"); }
@@ -22,7 +22,7 @@ assertEqBytes(a: Bytes, b: Bytes, msg: str = "bytes not equal"): void {
 // helpers
 // ------------------------------------------------------------
 
-readAll(s: io.Stream): Bytes {
+fn readAll(s: io.Stream): Bytes {
     let out = ByteBuffer();
     out.reserve(s.size());
 
@@ -38,12 +38,12 @@ readAll(s: io.Stream): Bytes {
     return out.bytes();
 }
 
-readAllFrom(open: () => io.Stream): Bytes {
+fn readAllFrom(open: () => io.Stream): Bytes {
     let s = open();
     return readAll(s);
 }
 
-readUntilEOF(s: io.Stream): void {
+fn readUntilEOF(s: io.Stream): void {
     while s.read().length != 0 {}
 }
 
@@ -51,7 +51,7 @@ readUntilEOF(s: io.Stream): void {
 // spec
 // ------------------------------------------------------------
 
-runStreamSpec(name: str, open: () => io.Stream): void {
+fn runStreamSpec(name: str, open: () => io.Stream): void {
 
     // ---------- stable EOF ----------
     do {
@@ -137,7 +137,7 @@ runStreamSpec(name: str, open: () => io.Stream): void {
 // chunk independence driver
 // ------------------------------------------------------------
 
-runChunkVariants(bytes: Bytes): void {
+fn runChunkVariants(bytes: Bytes): void {
     let sizes: []int = [1, 7, 64, 511, 4096];
 
     let reference = readAllFrom(() => io.Stream.fromBytes(bytes, {chunkSize: 4096}) as io.Stream);
@@ -152,11 +152,11 @@ runChunkVariants(bytes: Bytes): void {
 // entry
 // ------------------------------------------------------------
 
-getBytes(): Bytes {
+fn getBytes(): Bytes {
     return embed.binary("tests/basic/streams.hz");
 }
 
-main(): int {
+fn main(): int {
 
     let bytes = getBytes();
 

@@ -589,17 +589,42 @@ export struct FramedMessage {
 
 export fn extractFramedMessage(buffer: str): FramedMessage | none {
     let contentLengthText = "Content-Length: ";
-    if buffer.length > 0 && !buffer.startsWith(contentLengthText) {
-        sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}'");
+
+    // Line breaks sitting in front of a header are skipped, not treated as a
+    // desync. tsserver announces `Content-Length: 1 + <json bytes>` and then
+    // terminates the message with host.newLine -- which is CRLF on Windows,
+    // one byte more than it counted. Honouring the announced length therefore
+    // leaves a stray newline in front of the next header. No message may begin
+    // with a line break anyway, so skipping them costs nothing, and it is what
+    // every real LSP client does.
+    let start = 0;
+    while start < buffer.length {
+        let byte = buffer[start] as int;
+        if byte != 13 && byte != 10 { // CR, LF
+            break;
+        }
+        start++;
+    }
+    let buf = buffer.slice(start);
+    // A buffer shorter than the prefix proves nothing: callers feed this
+    // whatever a non-blocking pipe read returned, which can end anywhere,
+    // including in the middle of the next message's header. Only once there
+    // are enough bytes to compare the whole prefix does a mismatch mean the
+    // stream is genuinely out of sync.
+    if buf.length >= contentLengthText.length && !buf.startsWith(contentLengthText) {
+        // The offending bytes are in the message: a desync is only ever
+        // debuggable if it says what arrived instead.
+        let head = buf.slice(0, contentLengthText.length);
+        sys.panic(f"LSP: Input Buffer must never start with something other than '{contentLengthText}', got '{head}'");
     }
 
     let separator = "\r\n\r\n";
-    let separatorIndex = find(buffer, separator);
+    let separatorIndex = find(buf, separator);
     if !separatorIndex {
         return none;
     }
 
-    let numberString = buffer.slice(contentLengthText.length, separatorIndex);
+    let numberString = buf.slice(contentLengthText.length, separatorIndex);
     let contentLength = strToInt(numberString);
     if !contentLength {
         fmt.println("LSP Response: Failed to parse content length");
@@ -608,13 +633,13 @@ export fn extractFramedMessage(buffer: str): FramedMessage | none {
     let headerLength = separatorIndex + separator.length;
     let totalPacketLength = headerLength + contentLength;
 
-    if buffer.length < totalPacketLength {
+    if buf.length < totalPacketLength {
         return none;
     }
 
     return FramedMessage {
-        message: buffer.slice(headerLength, headerLength + contentLength),
-        remaining: buffer.slice(totalPacketLength),
+        message: buf.slice(headerLength, headerLength + contentLength),
+        remaining: buf.slice(totalPacketLength),
     };
 }
 
