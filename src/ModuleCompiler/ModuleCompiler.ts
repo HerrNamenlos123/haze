@@ -1796,6 +1796,16 @@ export class ModuleCompiler {
     return join(this.getModuleRootDir(moduleName), "src");
   }
 
+  /** Does the artifact this module's build is supposed to produce exist? */
+  private primaryOutputExists(): boolean {
+    const paths = this.computeBuildPaths();
+    const output =
+      this.config.moduleType === ModuleType.Executable
+        ? paths.moduleExecutable
+        : paths.moduleOutputLib;
+    return existsSync(output);
+  }
+
   private maybeStripExecutable() {
     if (!this.strip) {
       return;
@@ -2203,7 +2213,12 @@ export class ModuleCompiler {
           const generatorsNeedRun = forceGenerators
             ? true
             : this.generatorsNeedRun();
-          const moduleChanged = forceFullRebuild
+          // The build cache only tracks inputs. If the output itself is gone
+          // (e.g. __haze__/<module> was deleted, or this is a fresh clone that
+          // received a cache file but no artifacts), the cache would happily
+          // report "up to date" and the module would never be rebuilt.
+          const outputMissing = !this.primaryOutputExists();
+          const moduleChanged = forceFullRebuild || outputMissing
             ? true
             : buildCache.hasModuleChanged(
                 this.config.name,

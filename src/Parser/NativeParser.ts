@@ -168,7 +168,10 @@ function parserSourceHash(repoRoot: string): string {
   const srcDir = path.join(repoRoot, PARSER_PROJECT_DIR, "src");
   const hash = crypto.createHash("sha256");
 
-  const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".hz")).sort();
+  const files = fs
+    .readdirSync(srcDir)
+    .filter((f) => f.endsWith(".hz"))
+    .sort();
   for (const file of files) {
     hash.update(file);
     hash.update(fs.readFileSync(path.join(srcDir, file)));
@@ -200,7 +203,17 @@ export function isParserUpToDate(repoRoot: string): boolean {
 export function buildNativeParser(repoRoot: string): boolean {
   const result = child_process.spawnSync(
     process.execPath,
-    [path.join("src", "main.ts"), "build", "--dir", PARSER_PROJECT_DIR],
+    // `--parser antlr` is essential: the default parser mode is `native`, so
+    // without it the child would find the binary missing/stale, call
+    // buildNativeParser() itself, and recurse forever.
+    [
+      path.join("src", "main.ts"),
+      "build",
+      "--dir",
+      PARSER_PROJECT_DIR,
+      "--parser",
+      "antlr",
+    ],
     {
       cwd: repoRoot,
       encoding: "utf8",
@@ -461,8 +474,11 @@ export function parseTextNativeSync(
 ): ASTRoot {
   const payload = Buffer.from(text, "utf8");
   const request = Buffer.concat([
-    Buffer.from(`TEXT ${payload.length} ${filename}
-`, "utf8"),
+    Buffer.from(
+      `TEXT ${payload.length} ${filename}
+`,
+      "utf8"
+    ),
     payload,
   ]);
 
