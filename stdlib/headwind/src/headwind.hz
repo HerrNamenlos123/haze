@@ -315,6 +315,12 @@ namespace presets {
         return ui_styling.CursorOp { value: ui_styling.Cursor.Default };
     }
 
+    // The op that does nothing -- for conditionally including an op in a
+    // preset pack: `cond ? presets.fontSize(s) : presets.noop()`.
+    export fn noop(): ui_styling.NoOp {
+        return ui_styling.NoOp {};
+    }
+
     export fn cursorPointer(): ui_styling.CursorOp {
         return ui_styling.CursorOp { value: ui_styling.Cursor.Pointer };
     }

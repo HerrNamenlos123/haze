@@ -22,13 +22,12 @@ fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
                 style: {
                     cornerRadius: ui_styling.StyleCornerRadiusSimple { value: 10.0 },
                 },
-                presets: [
-                    presets.bg(Color(0.9, 0.2, 0.2, 1)),
-                    presets.p(4),
-                ]
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().title, style: { fontSize: 42.0 } });
-            });
+            },
+                presets.bg(Color(0.9, 0.2, 0.2, 1)),
+                presets.p(4)
+            );
         };
     });
 }
@@ -136,11 +135,6 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                 style: {
                     direction: ui_styling.Direction.Column,
                 },
-                presets: [
-                    presets.p(2),
-                    presets.bg("#33CC66FF"),
-                    presets.gap(4),
-                ],
             }, (): void => {
                 ui.text({ id: 200, text: "Welcome to the content area!", style: { fontSize: 24.0 } });
 
@@ -324,7 +318,11 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                         color: Color(1, 1, 1, 1),
                     });
                 });
-            });
+            },
+                presets.p(2),
+                presets.bg("#33CC66FF"),
+                presets.gap(4)
+            );
         };
     });
 }
@@ -345,14 +343,13 @@ fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
         return (): void => {
             ui.div({
                 id: 10000,
-                presets: [
-                    presets.bg("#181818"),
-                    presets.textColor("#F00"),
-                    presets.p(15),
-                ],
             }, (): void => {
                 ui.text({ id: 20000, text: text, style: { fontSize: 12.0 } });
-            });
+            },
+                presets.bg("#181818"),
+                presets.textColor("#F00"),
+                presets.p(15)
+            );
         };
     });
 }
@@ -382,10 +379,6 @@ export fn UI(ui: ui_components.UIContext) {
                     textColor: Color(1, 1, 1, 1),
                     gap: 10.0,
                 },
-                presets: [
-                    presets.wGrow(),
-                    presets.hGrow(),
-                ]
             }, (): void => {
                 Header(ui, { id: 15000, title: f"HAZE UI — Component System (Frame #{ui.framecount()})" });
 
@@ -404,7 +397,10 @@ export fn UI(ui: ui_components.UIContext) {
                 });
 
                 Footer(ui, { id: 5500 });
-            });
+            },
+                presets.wGrow(),
+                presets.hGrow()
+            );
         };
     });
 }

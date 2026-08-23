@@ -3289,13 +3289,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         return () => {
             ui.div({
                 id: 0,
-                presets: [
-                    presets.col(),
-                    presets.wGrow(),
-                    presets.hGrow(),
-                    presets.textColor("#FFF"),
-                    presets.gap(2),
-                ]
             }, () => {
                 // Per-tab status line. It stays inside the editor rather
                 // than being lifted to the app shell because everything on
@@ -3303,17 +3296,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // property of THIS document, and each tab has its own.
                 ui.div({
                     id: 0,
-                    presets: [
-                        presets.row(),
-                        presets.gap(8),
-                        presets.p(1),
-                        // Explicitly shrink-wrap the row's height, so the
-                        // editor box below it (hGrow) takes ALL the
-                        // remaining space instead of the two of them
-                        // splitting the column between them.
-                        presets.wGrow(),
-                        presets.hFit(),
-                    ]
                 }, () => {
                     ui.text({
                         id: 0,
@@ -3327,8 +3309,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     ui.text({
                         id: 2,
                         text: modeLabel,
-                        presets: [presets.textColor(modeColor)],
-                    });
+                    },
+                        presets.textColor(modeColor)
+                    );
 
                     // A chord waiting for its second stroke. Without this,
                     // pressing ctrl+k looks exactly like pressing nothing:
@@ -3340,8 +3323,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         ui.text({
                             id: 3,
                             text: f"{chord} ...",
-                            presets: [presets.textColor("#D9B87F")],
-                        });
+                        },
+                            presets.textColor("#D9B87F")
+                        );
                     }
 
                     if lspMemStat {
@@ -3350,7 +3334,17 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                             text: lspMemStat,
                         });
                     }
-                });
+                },
+                    presets.row(),
+                    presets.gap(8),
+                    presets.p(1),
+                    // Explicitly shrink-wrap the row's height, so the
+                    // editor box below it (hGrow) takes ALL the
+                    // remaining space instead of the two of them
+                    // splitting the column between them.
+                    presets.wGrow(),
+                    presets.hFit()
+                );
 
                 rx.get(runLspLoop);
                 // Moves keyboard focus onto this editor when its tab
@@ -3376,26 +3370,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         fontSize: editorFontSize(),
                         textColor: "#FFF" as Color,
                     },
-                    presets: [
-                        presets.relative(),
-                        presets.wGrow(),
-                        presets.hGrow(),
-                        presets.col(),
-                        presets.bg("#181818"),
-                        // Lines are absolutely positioned at a scroll-offset
-                        // top, so the ones scrolled past either edge would
-                        // otherwise paint straight over the statusline and
-                        // out past the window. Clip them to this box.
-                        presets.overflowHidden(),
-                        // I-beam over the text, exactly like VS Code. Set on
-                        // the editor box rather than on each line so it also
-                        // covers the empty space past the last line and to
-                        // the right of short lines -- which is still text you
-                        // can click into. Inherited by the lines; the
-                        // scrollbar overrides it back to an arrow.
-                        presets.cursorText(),
-                        // presets.p(8),
-                    ],
                     focusable: true,
 
                     // editorTextFocus, the context key that separates "this
@@ -3738,13 +3712,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                     width: columns * characterSize.x,
                                     height: lineHeight,
                                 },
-                                presets: [
-                                    presets.absolute(),
-                                    presets.top(i as real * lineHeight - scrollY),
-                                    presets.left(startCell as real * characterSize.x),
-                                    presets.bg("#3391FF55"),
-                                ]
-                            }, () => {});
+                            }, () => {},
+                                presets.absolute(),
+                                presets.top(i as real * lineHeight - scrollY),
+                                presets.left(startCell as real * characterSize.x),
+                                presets.bg("#3391FF55")
+                            );
                         }
                     }
 
@@ -3755,30 +3728,29 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         let tokens = highlightedLine(i);
                         ui.div({
                             id: 200000 + i,
-                            presets: [
-                                presets.absolute(),
-                                presets.top(i as real * lineHeight - scrollY),
-                                presets.left(0),
-                                presets.row(),
-                                // A code line must NEVER wrap. Wrapping puts
-                                // the overflow on a second visual row, so the
-                                // glyph at column N stops being at
-                                // N*charWidth -- and documentPositionAt(),
-                                // the caret and the selection highlight all
-                                // assume exactly that. Long lines overflow
-                                // and get clipped instead, like every editor.
-                                presets.noWrap(),
-                            ],
                         }, () => {
                             if tokens.length > 0 {
                                 for t, ti in tokens {
-                                    ui.text({ id: ti, text: t.text, presets: [presets.textColor(t.color)] });
+                                    ui.text({ id: ti, text: t.text }, presets.textColor(t.color));
                                 }
                             }
                             else {
                                 ui.text({ id: 0, text: "" });
                             }
-                        });
+                        },
+                            presets.absolute(),
+                            presets.top(i as real * lineHeight - scrollY),
+                            presets.left(0),
+                            presets.row(),
+                            // A code line must NEVER wrap. Wrapping puts
+                            // the overflow on a second visual row, so the
+                            // glyph at column N stops being at
+                            // N*charWidth -- and documentPositionAt(),
+                            // the caret and the selection highlight all
+                            // assume exactly that. Long lines overflow
+                            // and get clipped instead, like every editor.
+                            presets.noWrap()
+                        );
                     }
 
                     // Caret. In vim's normal/visual modes it is a BLOCK
@@ -3824,15 +3796,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                             width: blockCaret ? caretCells as real * characterSize.x : 1.0,
                             height: lineHeight,
                         },
-                        presets: [
-                            presets.absolute(),
-                            presets.top(cursorPos.y),
-                            presets.left(cursorPos.x),
-                            texteditBehavior.cursorVisible
-                                ? (blockCaret ? presets.bg("#FFFFFF99") : presets.bg("#FFF"))
-                                : presets.bg("#00000000"),
-                        ]
-                    }, () => {});
+                    }, () => {},
+                        presets.absolute(),
+                        presets.top(cursorPos.y),
+                        presets.left(cursorPos.x),
+                        texteditBehavior.cursorVisible
+                            ? (blockCaret ? presets.bg("#FFFFFF99") : presets.bg("#FFF"))
+                            : presets.bg("#00000000")
+                    );
 
                     // Scrollbar. Drawn last so it sits above the text,
                     // and only when the content actually overflows
@@ -3848,16 +3819,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         ui.div({
                             id: 400000,
                             style: { width: barWidth, height: trackHeight },
-                            presets: [
-                                presets.absolute(),
-                                presets.top(0),
-                                presets.left(viewWidth - barWidth),
-                                presets.bg(scroll.style.trackColor),
-                                // The scrollbar sits inside the editor, so it
-                                // would inherit the I-beam; it's chrome, not
-                                // text. VS Code shows the plain arrow here.
-                                presets.cursorDefault(),
-                            ],
                             onPointerDown: (event: ui_components.PointerEvent) => {
                                 // Stop this reaching the editor underneath,
                                 // which would otherwise start a text
@@ -3877,17 +3838,25 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                             ui.div({
                                 id: 0,
                                 style: { width: barWidth, height: thumbHeight },
-                                presets: [
-                                    presets.absolute(),
-                                    presets.top(thumbTop),
-                                    presets.left(0),
-                                    presets.bg(scroll.isDragging()
-                                        ? scroll.style.thumbActiveColor
-                                        : scroll.style.thumbColor),
-                                    presets.rounded(5),
-                                ],
-                            }, () => {});
-                        });
+                            }, () => {},
+                                presets.absolute(),
+                                presets.top(thumbTop),
+                                presets.left(0),
+                                presets.bg(scroll.isDragging()
+                                    ? scroll.style.thumbActiveColor
+                                    : scroll.style.thumbColor),
+                                presets.rounded(5)
+                            );
+                        },
+                            presets.absolute(),
+                            presets.top(0),
+                            presets.left(viewWidth - barWidth),
+                            presets.bg(scroll.style.trackColor),
+                            // The scrollbar sits inside the editor, so it
+                            // would inherit the I-beam; it's chrome, not
+                            // text. VS Code shows the plain arrow here.
+                            presets.cursorDefault()
+                        );
                     }
 
                     // The popup exists whenever a hover was ASKED for, not
@@ -4048,33 +4017,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         ui.div({
                             id: 300002,
                             elementRef: hoverPopupRef,
-                            presets: [
-                                presets.absolute(),
-                                presets.top(popupY),
-                                presets.left(popupX),
-                                // -1 = "up by exactly my own height", so the
-                                // popup's BOTTOM lands on popupY. Only when
-                                // sitting above; below already starts at the
-                                // right place.
-                                presets.translateY(above ? -1.0 : 0.0),
-                                // Blocks (and code lines within them) stack
-                                // vertically, like the editor's own lines.
-                                presets.col(),
-                                // Fully transparent on the measuring frame
-                                // -- see `measuring` above. Same box, same
-                                // size, simply not painted yet.
-                                presets.bg(measuring ? "#00000000" : "#181818"),
-                                presets.border(1),
-                                presets.borderColor(measuring ? "#00000000" : "#4F4F4F"),
-                                presets.rounded(2),
-                                // Without a bound, a long signature runs off
-                                // the right edge and the text is unreadable.
-                                presets.p(2),
-                                // A popup floating over the text is chrome:
-                                // it would otherwise inherit the editor's
-                                // I-beam, implying you can select into it.
-                                presets.cursorDefault(),
-                            ]
                         }, () => {
                             if !pending {
                                 // Still waiting on the language server --
@@ -4098,8 +4040,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 ui.text({
                                     id: hoverPlaceholderId,
                                     text: hoverText,
-                                    presets: [presets.textColor(hoverInk("#9A9A9A"))],
-                                });
+                                },
+                                    presets.textColor(hoverInk("#9A9A9A"))
+                                );
                             }
                             else {
                                 // Code blocks are drawn line by line as
@@ -4137,7 +4080,6 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                     // any given id constant by construction.
                                     ui.div({
                                         id: bi,
-                                        presets: [presets.col()],
                                     }, () => {
                                         if block.isCode {
                                             for lineText, li in block.text.split("\n") {
@@ -4145,23 +4087,15 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                                 codeLine.value = codeLine.value + 1;
                                                 ui.div({
                                                     id: li,
-                                                    presets: [
-                                                        presets.row(),
-                                                        // Same reason as a
-                                                        // buffer line: a
-                                                        // wrapped run would
-                                                        // break the column
-                                                        // alignment of code.
-                                                        presets.noWrap(),
-                                                    ],
                                                 }, () => {
                                                     if runs.length > 0 {
                                                         for run, ri in runs {
                                                             ui.text({
                                                                 id: ri,
                                                                 text: run.text,
-                                                                presets: [presets.textColor(hoverInk(run.color))],
-                                                            });
+                                                            },
+                                                                presets.textColor(hoverInk(run.color))
+                                                            );
                                                         }
                                                     }
                                                     else {
@@ -4173,10 +4107,19 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                                         ui.text({
                                                             id: 0,
                                                             text: lineText,
-                                                            presets: [presets.textColor(hoverInk(defaultTextColor()))],
-                                                        });
+                                                        },
+                                                            presets.textColor(hoverInk(defaultTextColor()))
+                                                        );
                                                     }
-                                                });
+                                                },
+                                                    presets.row(),
+                                                    // Same reason as a
+                                                    // buffer line: a
+                                                    // wrapped run would
+                                                    // break the column
+                                                    // alignment of code.
+                                                    presets.noWrap()
+                                                );
                                             }
                                         }
                                         else {
@@ -4195,16 +4138,70 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                             ui.text({
                                                 id: hoverProseId,
                                                 text: block.text,
-                                                presets: [presets.textColor(hoverInk("#9A9A9A"))],
-                                            });
+                                            },
+                                                presets.textColor(hoverInk("#9A9A9A"))
+                                            );
                                         }
-                                    });
+                                    },
+                                        presets.col()
+                                    );
                                 }
                             }
-                        });
+                        },
+                            presets.absolute(),
+                            presets.top(popupY),
+                            presets.left(popupX),
+                            // -1 = "up by exactly my own height", so the
+                            // popup's BOTTOM lands on popupY. Only when
+                            // sitting above; below already starts at the
+                            // right place.
+                            presets.translateY(above ? -1.0 : 0.0),
+                            // Blocks (and code lines within them) stack
+                            // vertically, like the editor's own lines.
+                            presets.col(),
+                            // Fully transparent on the measuring frame
+                            // -- see `measuring` above. Same box, same
+                            // size, simply not painted yet.
+                            presets.bg(measuring ? "#00000000" : "#181818"),
+                            presets.border(1),
+                            presets.borderColor(measuring ? "#00000000" : "#4F4F4F"),
+                            presets.rounded(2),
+                            // Without a bound, a long signature runs off
+                            // the right edge and the text is unreadable.
+                            presets.p(2),
+                            // A popup floating over the text is chrome:
+                            // it would otherwise inherit the editor's
+                            // I-beam, implying you can select into it.
+                            presets.cursorDefault()
+                        );
                     }
-                });
-            });
+                },
+                    presets.relative(),
+                    presets.wGrow(),
+                    presets.hGrow(),
+                    presets.col(),
+                    presets.bg("#181818"),
+                    // Lines are absolutely positioned at a scroll-offset
+                    // top, so the ones scrolled past either edge would
+                    // otherwise paint straight over the statusline and
+                    // out past the window. Clip them to this box.
+                    presets.overflowHidden(),
+                    // I-beam over the text, exactly like VS Code. Set on
+                    // the editor box rather than on each line so it also
+                    // covers the empty space past the last line and to
+                    // the right of short lines -- which is still text you
+                    // can click into. Inherited by the lines; the
+                    // scrollbar overrides it back to an arrow.
+                    presets.cursorText(),
+                    // presets.p(8)
+                );
+            },
+                presets.col(),
+                presets.wGrow(),
+                presets.hGrow(),
+                presets.textColor("#FFF"),
+                presets.gap(2)
+            );
         };
     });
 }
@@ -4507,19 +4504,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
             ui.div({
                 id: 0,
-                presets: [
-                    presets.col(),
-                    presets.wGrow(),
-                    presets.hGrow(),
-                    presets.bg("#181818"),
-                    presets.textColor("#FFF"),
-                    // Makes this the containing block for the title bar's
-                    // menu, which is absolutely positioned and declared at
-                    // the very end of this subtree -- see titlebar.hz. The
-                    // root already fills the viewport, so nothing that
-                    // previously fell back to the viewport moves.
-                    presets.relative(),
-                ],
                 focusable: true,
                 // THE dispatch point for the whole window.
                 //
@@ -4568,13 +4552,6 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     // grey rectangle that looks like a failure to start.
                     ui.div({
                         id: 1,
-                        presets: [
-                            presets.col(),
-                            presets.wGrow(),
-                            presets.hGrow(),
-                            presets.packing(ui_styling.Packing.Center),
-                            presets.crossAlign(ui_styling.CrossAlign.Center),
-                        ],
                         // Key events are only delivered along the FOCUSED
                         // element's ancestor chain, so closing the last tab
                         // used to leave the window with nothing focused and
@@ -4588,9 +4565,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         ui.text({
                             id: 0,
                             text: "No file open  --  Ctrl+O to open one",
-                            presets: [presets.textColor("#7A7A7A")],
-                        });
-                    });
+                        },
+                            presets.textColor("#7A7A7A")
+                        );
+                    },
+                        presets.col(),
+                        presets.wGrow(),
+                        presets.hGrow(),
+                        presets.packing(ui_styling.Packing.Center),
+                        presets.crossAlign(ui_styling.CrossAlign.Center)
+                    );
                 }
                 else {
 
@@ -4633,7 +4617,19 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     openMenu: openMenu,
                     items: menuItems,
                 });
-            });
+            },
+                presets.col(),
+                presets.wGrow(),
+                presets.hGrow(),
+                presets.bg("#181818"),
+                presets.textColor("#FFF"),
+                // Makes this the containing block for the title bar's
+                // menu, which is absolutely positioned and declared at
+                // the very end of this subtree -- see titlebar.hz. The
+                // root already fills the viewport, so nothing that
+                // previously fell back to the viewport moves.
+                presets.relative()
+            );
         };
     });
 }

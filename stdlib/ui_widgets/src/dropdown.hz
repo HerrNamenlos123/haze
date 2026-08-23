@@ -213,24 +213,6 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
 
             let style = props.style;
 
-            let panelOps: []ui_styling.DivStyleOp = [];
-            panelOps.push(presets.absolute());
-            panelOps.push(presets.top(props.offsetY));
-            panelOps.push(presets.left(props.offsetX));
-            panelOps.push(presets.col());
-            panelOps.push(presets.bg(style.bg));
-            panelOps.push(presets.border(1));
-            panelOps.push(presets.borderColor(style.borderColor));
-            panelOps.push(presets.rounded(style.rounded));
-            // Above other floating things (the editor's own hover popup is
-            // one). Paint order versus IN-FLOW content is already
-            // guaranteed -- every floating element wins that -- so this
-            // only orders the floats among themselves.
-            panelOps.push(presets.z(1000));
-            // Do not inherit the editor's I-beam through the hit path
-            // underneath.
-            panelOps.push(presets.cursorDefault());
-
             ui.div({
                 id: ID_PANEL,
                 elementRef: props.panelRef,
@@ -240,7 +222,6 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                     width: ui_styling.SizeMode.Fit,
                     padding: ui_styling.StylePaddingFull { left: 0.0, right: 0.0, top: 4.0, bottom: 4.0 },
                 },
-                presets: panelOps,
                 // Presses that land on the panel's own padding, between
                 // rows, are still the menu's -- without this they would
                 // fall through to whatever is behind it.
@@ -252,8 +233,9 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                 if renderHeader {
                     ui.div({
                         id: ID_HEADER,
-                        presets: [presets.col(), presets.wGrow(), presets.hFit()],
-                    }, (): void => { renderHeader(); });
+                    }, (): void => { renderHeader(); },
+                        presets.col(), presets.wGrow(), presets.hFit()
+                    );
                 }
 
                 let i = 0;
@@ -269,11 +251,10 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                                 height: 1.0,
                                 padding: ui_styling.StylePaddingFull { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
                             },
-                            presets: [
-                                presets.wGrow(),
-                                presets.bg(style.separatorColor),
-                            ],
-                        }, (): void => {});
+                        }, (): void => {},
+                            presets.wGrow(),
+                            presets.bg(style.separatorColor)
+                        );
                         continue;
                     }
 
@@ -283,14 +264,16 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             style: {
                                 padding: ui_styling.StylePaddingFull { left: 10.0, right: 10.0, top: 6.0, bottom: 2.0 },
                             },
-                            presets: [presets.row(), presets.wGrow(), presets.hFit()],
                         }, (): void => {
                             ui.text({
                                 id: 1,
                                 text: item.label,
-                                presets: [presets.textColor(style.textColorMuted), presets.noWrap()],
-                            });
-                        });
+                            },
+                                presets.textColor(style.textColorMuted), presets.noWrap()
+                            );
+                        },
+                            presets.row(), presets.wGrow(), presets.hFit()
+                        );
                         continue;
                     }
 
@@ -310,13 +293,6 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             width: ui_styling.SizeMode.Grow,
                             padding: ui_styling.StylePaddingFull { left: 10.0, right: 10.0, top: 4.0, bottom: 4.0 },
                         },
-                        presets: [
-                            presets.row(),
-                            presets.gap(3),
-                            presets.crossAlign(ui_styling.CrossAlign.Center),
-                            presets.bg(hovered ? style.itemBgHover : "#00000000"),
-                            item.enabled ? presets.cursorPointer() : presets.cursorDefault(),
-                        ],
                         onPointerDown: (event: ui_components.PointerEvent) => {
                             event.stopPropagation();
                             let current = instance.props();
@@ -348,52 +324,79 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                         ui.div({
                             id: 1,
                             style: { width: 14.0 },
-                            presets: [presets.row(), presets.hFit()],
                         }, (): void => {
                             if item.checked {
                                 ui.text({
                                     id: 1,
                                     text: "✓",
-                                    presets: [presets.textColor(style.textColor)],
-                                });
+                                },
+                                    presets.textColor(style.textColor)
+                                );
                             }
-                        });
+                        },
+                            presets.row(), presets.hFit()
+                        );
 
                         ui.text({
                             id: 2,
                             text: item.label,
-                            presets: [
-                                presets.textColor(item.enabled ? style.textColor : style.textColorDisabled),
-                                presets.noWrap(),
-                            ],
-                        });
+                        },
+                            presets.textColor(item.enabled ? style.textColor : style.textColorDisabled),
+                            presets.noWrap()
+                        );
 
                         // Spacer, so the accelerator is pushed to the right
                         // edge however wide the panel ends up.
                         ui.div({
                             id: 3,
                             style: { width: ui_styling.SizeMode.Grow },
-                            presets: [presets.row(), presets.hFit(), presets.w(6)],
-                        }, (): void => {});
+                        }, (): void => {},
+                            presets.row(), presets.hFit(), presets.w(6)
+                        );
 
                         if item.shortcut.length > 0 {
                             ui.text({
                                 id: 4,
                                 text: item.shortcut,
-                                presets: [presets.textColor(style.textColorMuted), presets.noWrap()],
-                            });
+                            },
+                                presets.textColor(style.textColorMuted), presets.noWrap()
+                            );
                         }
-                    });
+                    },
+                        presets.row(),
+                        presets.gap(3),
+                        presets.crossAlign(ui_styling.CrossAlign.Center),
+                        presets.bg(hovered ? style.itemBgHover : "#00000000"),
+                        item.enabled ? presets.cursorPointer() : presets.cursorDefault()
+                    );
                 }
 
                 let renderFooter = p.renderFooter;
                 if renderFooter {
                     ui.div({
                         id: ID_FOOTER,
-                        presets: [presets.col(), presets.wGrow(), presets.hFit()],
-                    }, (): void => { renderFooter(); });
+                    }, (): void => { renderFooter(); },
+                        presets.col(), presets.wGrow(), presets.hFit()
+                    );
                 }
-            });
+            },
+                presets.absolute(),
+                presets.top(props.offsetY),
+                presets.left(props.offsetX),
+                presets.col(),
+                presets.bg(style.bg),
+                presets.border(1),
+                presets.borderColor(style.borderColor),
+                presets.rounded(style.rounded),
+                // Above other floating things (the editor's own hover popup is
+                // one). Paint order versus IN-FLOW content is already
+                // guaranteed -- every floating element wins that -- so this
+                // only orders the floats among themselves.
+                presets.z(1000),
+                // Do not inherit the editor's I-beam through the hit path
+                // underneath.
+                presets.cursorDefault()
+            );
         };
     });
 }

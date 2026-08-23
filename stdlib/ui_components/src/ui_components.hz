@@ -196,7 +196,6 @@ export ref struct KeyboardCallbacks {
 export struct DivProps {
     id: int;
     style?: ui_styling.DivStyle;
-    presets?: []ui_styling.DivStyleOp;
     elementRef?: ElementRef<ui_elements.DivElement>;
     // Registers this element's resolved id into `anchor` the moment it's
     // declared -- see ui_styling.AnchorTarget and UIContext.anchor(). Lets
@@ -277,14 +276,12 @@ export struct TextProps {
     id: int;
     style?: ui_styling.TextStyle;
     text: str;
-    presets?: []ui_styling.TextStyleOp;
     elementRef?: ElementRef<ui_elements.TextElement>;
 }
 
 export struct CanvasProps {
     id: int;
     style?: ui_styling.DivStyle;
-    presets?: []ui_styling.DivStyleOp;
     elementRef?: ElementRef<ui_elements.CanvasElement>;
     // Defaults to 4 (real hardware MSAA), applied to everything this canvas
     // draws. Set to 1 to skip it (e.g. many small canvases where the extra
@@ -2353,7 +2350,18 @@ export opaque ref struct UIContext {
         }
     }
 
-    fn div(props: DivProps, childrenFn: () => void) {
+    // Presets are a parameter pack -- `ui.div(props, children, presets.wFit(),
+    // presets.p(1))` -- so nothing is allocated per call: the pack
+    // computeDivStyle() unrolls them at compile time straight off the
+    // caller's stack. Only this thin wrapper is instantiated per distinct
+    // preset combination; the element work lives in divImpl() once.
+    fn div(props: DivProps, childrenFn: () => void, presets: ...) {
+        let rawStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawStyle := props.style; }
+        return this.divImpl(props, ui_styling.computeDivStyle(rawStyle, ...presets), childrenFn);
+    }
+
+    fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: () => void) {
         let parent = this.getCurrentParent();
         let lookup = getOrCreateDiv(parent, props.id, this.getCurrentIdPath());
         let element = lookup.element;
@@ -2374,9 +2382,7 @@ export opaque ref struct UIContext {
             props.anchor := TypeErasedBox<ui_elements.DivElement>(element);
         }
 
-        let rawStyle: ui_styling.DivStyle = {};
-        if props.style is not none { rawStyle := props.style; }
-        element.style := ui_styling.computeDivStyle(rawStyle, props.presets);
+        element.style := style;
 
         // Store event callbacks into runtime data so the event system can read them.
         let data = runtimeDataOf(element);
@@ -2442,14 +2448,19 @@ export opaque ref struct UIContext {
         return element;
     }
 
-    fn text(props: TextProps) {
+    // Presets as a parameter pack -- see div().
+    fn text(props: TextProps, presets: ...) {
+        let rawTextStyle: ui_styling.TextStyle = {};
+        if props.style is not none { rawTextStyle := props.style; }
+        return this.textImpl(props, ui_styling.computeTextStyle(rawTextStyle, ...presets));
+    }
+
+    fn textImpl(props: TextProps, style: ui_styling.ComputedTextStyle) {
         let parent = this.getCurrentParent();
         let element = getOrCreateText(parent, props.id, this.getCurrentIdPath()).element;
 
         element.text := props.text;
-        let rawTextStyle: ui_styling.TextStyle = {};
-        if props.style is not none { rawTextStyle := props.style; }
-        element.style := ui_styling.computeTextStyle(rawTextStyle, props.presets);
+        element.style := style;
 
         // attach into current parent
         this.attachChild(element);
@@ -2473,14 +2484,26 @@ export opaque ref struct UIContext {
     // For content that should persist across frames instead of being fully
     // redrawn every frame, draw imperatively whenever via drawToCanvas()
     // (e.g. from an event handler) instead of passing drawFn here.
-    fn canvas(props: CanvasProps, drawFn?: CanvasDrawFn) {
+    //
+    // Presets are a trailing parameter pack (see div()); since the pack must
+    // be last, the optional drawFn is an overload instead of `drawFn?`.
+    fn canvas(props: CanvasProps, drawFn: CanvasDrawFn, presets: ...) {
+        let rawCanvasStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawCanvasStyle := props.style; }
+        return this.canvasImpl(props, ui_styling.computeDivStyle(rawCanvasStyle, ...presets), drawFn);
+    }
+
+    fn canvas(props: CanvasProps, presets: ...) {
+        let rawCanvasStyle: ui_styling.DivStyle = {};
+        if props.style is not none { rawCanvasStyle := props.style; }
+        return this.canvasImpl(props, ui_styling.computeDivStyle(rawCanvasStyle, ...presets), none);
+    }
+
+    fn canvasImpl(props: CanvasProps, style: ui_styling.ComputedDivStyle, drawFn?: CanvasDrawFn) {
         let parent = this.getCurrentParent();
         let element = getOrCreateCanvas(parent, props.id, this.getCurrentIdPath()).element;
 
-
-        let rawCanvasStyle: ui_styling.DivStyle = {};
-        if props.style is not none { rawCanvasStyle := props.style; }
-        element.style := ui_styling.computeDivStyle(rawCanvasStyle, props.presets);
+        element.style := style;
 
         // attach into current parent
         this.attachChild(element);

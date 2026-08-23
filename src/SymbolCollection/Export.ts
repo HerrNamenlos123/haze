@@ -6,7 +6,9 @@ import {
   EOverloadedOperator,
   EStorageClass,
 } from "../shared/AST";
-import { getModuleGlobalNamespaceName } from "../shared/Config";
+import { getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { assert, formatSourceLoc } from "../shared/Errors";
 import {
   Collect,
@@ -196,7 +198,10 @@ export function ExportTypeDef(
       for (const methodId of typedef.methods) {
         const method = sr.symbolNodes.get(methodId);
         assert(method.variant === Semantic.ENode.FunctionSymbol);
-        if (method.generics.length === 0) {
+        if (
+          method.generics.length === 0 &&
+          !funcSymHasParameterPack(sr.cc, method.originalCollectedFunction)
+        ) {
           const functype = sr.typeDefNodes.get(method.type);
           assert(functype.variant === Semantic.ENode.FunctionDatatype);
           const parameters = functype.parameters
@@ -295,13 +300,14 @@ export function ExportTypeDef(
           }
         }
         // Elaborated instantiations of generic methods (method.generics.length > 0)
-        // are intentionally skipped here: each call site with distinct type
-        // arguments produces its own entry in typedef.methods, which would
-        // otherwise re-emit the same raw generic source once per instantiation.
-        // The loop below emits the generic template exactly once instead.
+        // and of parameter-pack methods are intentionally skipped here: each
+        // call site with distinct type arguments / pack types produces its own
+        // entry in typedef.methods, which would otherwise re-emit the same raw
+        // source once per instantiation. The loop below emits the template
+        // exactly once instead.
       }
 
-      // Emit generic methods. Those are NOT elaborated yet, so we have to workaround through the collected symbol.
+      // Emit generic and parameter-pack methods. Those are NOT elaborated yet, so we have to workaround through the collected symbol.
       const collected = sr.cc.symbolNodes.get(typedef.originalCollectedSymbol);
       assert(collected.variant === Collect.ENode.TypeDefSymbol);
       const collectedStruct = sr.cc.typeDefNodes.get(collected.typeDef);
@@ -315,7 +321,8 @@ export function ExportTypeDef(
             const overload = sr.cc.symbolNodes.get(overloadId);
             if (
               overload.variant === Collect.ENode.FunctionSymbol &&
-              overload.generics.length > 0
+              (overload.generics.length > 0 ||
+                funcSymHasParameterPack(sr.cc, overloadId))
             ) {
               file.writeLine(overload.originalSourcecode);
             }
@@ -594,6 +601,49 @@ function getNamespacesFromSymbol(
 
 export function ExportCollectedSymbols(sr: Semantic.Context) {
   const file = new OutputWriter(4);
+
+  // Generic and parameter-pack symbols are exported as raw source and
+  // re-elaborated inside the importing module, where this module's
+  // `import dep;` aliases do not exist. Re-create them inside the module
+  // namespace so that raw source can keep naming its dependencies the way
+  // the original file does (`ui_styling.DivStyle`). Transitive dependencies
+  // are always collected by the importer (ModuleCompiler.collectImports), so
+  // the target namespace is guaranteed to be present.
+  if (sr.cc.config.name !== "haze-stdlib" && sr.cc.config.dependencies.length > 0) {
+    const aliases: string[] = [];
+    for (const dep of sr.cc.config.dependencies) {
+      const metadataPath = join(
+        process.cwd(),
+        "__haze__",
+        sr.cc.config.name,
+        "__deps",
+        dep.name,
+        "metadata.json"
+      );
+      if (!existsSync(metadataPath)) {
+        continue;
+      }
+      const metadata: ModuleConfig = JSON.parse(readFileSync(metadataPath, "utf8"));
+      aliases.push(
+        `type ${dep.name} = ${getModuleGlobalNamespaceName(
+          metadata.name,
+          metadata.version,
+          metadata.id
+        )};`
+      );
+    }
+    if (aliases.length > 0) {
+      file
+        .writeLine(
+          `module_namespace ${sr.cc.config.name} "${sr.cc.config.version}" "${sr.cc.config.id}" {`
+        )
+        .pushIndent();
+      for (const a of aliases) {
+        file.writeLine(a);
+      }
+      file.popIndent().writeLine("}");
+    }
+  }
 
   for (const symbolId of sr.exportedSymbols) {
     file.writeLine(ExportSymbol(sr, symbolId, false));

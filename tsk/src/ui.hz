@@ -59,13 +59,6 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
             ui.div({
                 id: 1,
                 elementRef: divRef,
-                presets: [
-                    presets.wFit(),
-                    presets.hFit(),
-                    presets.bg(bg),
-                    presets.p(1),
-                    presets.rounded(4),
-                ],
                 onClick: (e: ui_components.PointerEvent) => {
                     e.stopPropagation();
                     fmt.println("Button clicked");
@@ -76,7 +69,13 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 }
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().label });
-            });
+            },
+                presets.wFit(),
+                presets.hFit(),
+                presets.bg(bg),
+                presets.p(1),
+                presets.rounded(4)
+            );
         };
     });
 }
@@ -105,19 +104,18 @@ fn Textbox(ui: ui_components.UIContext, args: TextboxArgs) {
             ui.div({
                 id: 1,
                 elementRef: divRef,
-                presets: [
-                    presets.wFit(),
-                    presets.hFit(),
-                    presets.bg(isHovered ? "#666" : "#555"),
-                    presets.p(1),
-                    presets.rounded(4),
-                ],
                 onClick: (e: ui_components.PointerEvent) => {
                     fmt.println("Textbox clicked");
                 }
             }, (): void => {
                 ui.text({ id: 2, text: "" });
-            });
+            },
+                presets.wFit(),
+                presets.hFit(),
+                presets.bg(isHovered ? "#666" : "#555"),
+                presets.p(1),
+                presets.rounded(4)
+            );
         };
     });
 }
@@ -166,22 +164,12 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
         return (): void => {
             ui.div({
                 id: 1,
-                presets: [
-                    presets.wGrow(),
-                    presets.hGrow(),
-                    presets.col(),
-                ],
             }, (): void => {
                 ui.div({ 
                     id: 50,
                     style: {
                         backgroundColor: Color("#253"),
                     },
-                    presets: [
-                        presets.wGrow(),
-                        presets.hGrow(),
-                        presets.col(),
-                    ],
                     onClick: (e: ui_components.PointerEvent) => {
                         fmt.println("DIV CLICKED");
                     }
@@ -189,7 +177,11 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                     Button(ui, { id: 45, label: "Load file" });
                     Button(ui, { id: 55, label: "Pay respect" });
                     Textbox(ui, { id: 65 });
-                });
+                },
+                    presets.wGrow(),
+                    presets.hGrow(),
+                    presets.col()
+                );
                 // CanvasProps (unlike DivProps) has no onPointerDown/Up of
                 // its own, so the drag-pan handlers go on a wrapping div
                 // instead. Pre-bound to `let`s first for the same reason as
@@ -246,20 +238,12 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                 ui.div({
                     id: 900,
                     elementRef: canvasAreaRef,
-                    presets: [
-                        presets.wGrow(),
-                        presets.hGrow(),
-                    ],
                     onPointerDown: onCanvasPointerDown,
                     onPointerUp: onCanvasPointerUp,
                     onWheel: onCanvasWheel,
                 }, (): void => {
                     ui.canvas({
                         id: 1000,
-                        presets: [
-                            presets.wGrow(),
-                            presets.hGrow(),
-                        ],
                     }, (r: mut renderer.gfx.Renderer): void => {
                         cache.flush();
 
@@ -271,9 +255,19 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                         if d {
                             documentRenderer.render(r, d);
                         }
-                    });
-                });
-            });
+                    },
+                        presets.wGrow(),
+                        presets.hGrow()
+                    );
+                },
+                    presets.wGrow(),
+                    presets.hGrow()
+                );
+            },
+                presets.wGrow(),
+                presets.hGrow(),
+                presets.col()
+            );
         };
     });
 }
@@ -295,17 +289,16 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     fontSize: 16.0,
                     textColor: Color(1, 1, 1, 1),
                 },
-                presets: [
-                    presets.wGrow(),
-                    presets.hGrow(),
-                    presets.col(),
-                    presets.bg("#333"),
-                    presets.p(8),
-                    presets.gap(4),
-                ]
             }, (): void => {
                 InfoBox(ui, gfx, { id: 4400 });
-            });
+            },
+                presets.wGrow(),
+                presets.hGrow(),
+                presets.col(),
+                presets.bg("#333"),
+                presets.p(8),
+                presets.gap(4)
+            );
         };
     });
 }

@@ -12,6 +12,9 @@
 //     an error, as is spreading anything that is not a pack
 //   * pack elements can be used from lambdas inside the pack function
 //   * a pack parameter must still be the last parameter
+//   * overloads with a pack are a last-resort tier (never shadowing a plain
+//     overload that fits, even via implicit conversion); among pack
+//     overloads the one whose pack absorbs the fewest arguments wins
 //
 // Per framework.hz, everything a running program can verify is bundled into
 // ONE compile-and-run case; each must-fail-to-compile rule gets its own.
@@ -119,8 +122,24 @@ fn t11() {
     fmt.println("11: single");
 }
 
+// ── 12. overloads with packs: last-resort tier, most specific wins ─────────
+struct Op { v: int; }
+fn op(v: int): Op { return Op { v: v }; }
+type DrawFn = (r: int) => str;
+fn cv(id: int, ops: ...): str { return f"A{id}/{ops.length}"; }
+fn cv(id: int, draw: DrawFn, ops: ...): str { return f"B{id}/{ops.length}/{draw(id)}"; }
+fn pl(x: []int | none): str { return "plain"; }
+fn pl(ops: ...): str { return f"pack{ops.length}"; }
+fn t12() {
+    let o = op(5);
+    fmt.println(f"12: {cv(1)} {cv(2, op(1), op(2))} {cv(3, (r: int) => { return f"d{r}"; })} {cv(4, (r) => { return f"d{r}"; }, op(1))} {cv(5, o)}");
+    // a pack overload never shadows a plain overload an implicit conversion can satisfy
+    let arr: []int = [1];
+    fmt.println(f"12: {pl(none)} {pl(arr)} {pl(1, 2)}");
+}
+
 fn main(): int {
-    t1(); t2(); t3(); t4(); t5(); t6(); t7(); t8(); t9(); t10(); t11();
+    t1(); t2(); t3(); t4(); t5(); t6(); t7(); t8(); t9(); t10(); t11(); t12();
     return 0;
 }
 """,
@@ -139,7 +158,18 @@ bar true 3 x false
 11 a true 2.5
 11: no newline
 11: single
+12: A1/0 A2/2 B3/0/d3 B4/1/d4 A5/1
+12: plain plain pack2
 """);
+
+        s.compileFails(
+            "two pack overloads with the same signature conflict at definition",
+            """
+fn f(a: int, ops: ...): int { return 1; }
+fn f(b: int, more: ...): int { return 2; }
+fn main(): int { return f(1, 2); }
+""",
+            [testsuite.mustHave(errorcodes.Code.ConflictingFunctionWithSameSignatureAlreadyDefined)]);
 
         // ── Compile-time rules ──────────────────────────────────────────────
         s.compileFails(

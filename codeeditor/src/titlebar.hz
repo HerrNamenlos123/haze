@@ -213,19 +213,6 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                         bottom: 0.0,
                     },
                 },
-                presets: [
-                    headwind.presets.row(),
-                    headwind.presets.wGrow(),
-                    headwind.presets.crossAlign(ui_styling.CrossAlign.Center),
-                    headwind.presets.bg("#3C3C3C"),
-                    headwind.presets.borderB(1),
-                    headwind.presets.borderColor("#2B2B2B"),
-                    // NO overflowHidden here. A floating element inherits
-                    // the clip rectangle of the element it is attached to,
-                    // so clipping this row would clip the menu that hangs
-                    // off it down to 30 pixels tall.
-                    headwind.presets.cursorDefault(),
-                ],
             }, (): void => {
                 ui_widgets.Button(ui, ui_widgets.ButtonArgs {
                     id: 1,
@@ -249,8 +236,9 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                 ui.div({
                     id: 2,
                     style: { width: ui_styling.SizeMode.Grow },
-                    presets: [headwind.presets.row(), headwind.presets.hFit()],
-                }, (): void => {});
+                }, (): void => {},
+                    headwind.presets.row(), headwind.presets.hFit()
+                );
 
                 let workspaceName = props.workspaceName;
                 let title = props.documentName;
@@ -265,20 +253,32 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                 ui.text({
                     id: 3,
                     text: title,
-                    presets: [
-                        headwind.presets.textColor("#CCCCCC"),
-                        headwind.presets.noWrap(),
-                    ],
-                });
+                },
+                    headwind.presets.textColor("#CCCCCC"),
+                    headwind.presets.noWrap()
+                );
 
                 // Mirrors the spacer above so the title stays centred
                 // rather than drifting left by half the File button.
                 ui.div({
                     id: 4,
                     style: { width: ui_styling.SizeMode.Grow },
-                    presets: [headwind.presets.row(), headwind.presets.hFit()],
-                }, (): void => {});
-            });
+                }, (): void => {},
+                    headwind.presets.row(), headwind.presets.hFit()
+                );
+            },
+                headwind.presets.row(),
+                headwind.presets.wGrow(),
+                headwind.presets.crossAlign(ui_styling.CrossAlign.Center),
+                headwind.presets.bg("#3C3C3C"),
+                headwind.presets.borderB(1),
+                headwind.presets.borderColor("#2B2B2B"),
+                // NO overflowHidden here. A floating element inherits
+                // the clip rectangle of the element it is attached to,
+                // so clipping this row would clip the menu that hangs
+                // off it down to 30 pixels tall.
+                headwind.presets.cursorDefault()
+            );
         };
     });
 }

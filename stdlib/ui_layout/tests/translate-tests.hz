@@ -262,11 +262,13 @@ fn main(): int {
 // they're split per axis at all), and that an explicit style value still beats
 // a preset, the fill-the-gaps rule every other op follows.
 fn presetChecks(): int {
-    let failures = 0;
-    let check = (name: str, actual: real, expected: real): void => {
+    // Shared with the closure below through a stack reference: a plain
+    // `let` would be captured by value (closures copy stack values).
+    let stackref failures = Box<int>(0);
+    let stackref check = (name: str, actual: real, expected: real): void => {
         if actual != expected {
             fmt.println(f"FAIL: {name}: expected {expected}, got {actual}");
-            failures = failures + 1;
+            failures.value = failures.value + 1;
         }
     };
 
@@ -291,8 +293,23 @@ fn presetChecks(): int {
     check("presets: default x is 0", bare.translate.x, 0.0);
     check("presets: default y is 0", bare.translate.y, 0.0);
 
-    if failures > 0 {
-        fmt.println(f"presets-check: {failures} FAILURE(S)");
+    // The parameter-pack form (what ui.div()'s trailing presets use) must
+    // resolve exactly like the array form.
+    let packed = ui_styling.computeDivStyle({},
+        headwind.presets.translateX(-0.5),
+        headwind.presets.translateY(1.0));
+    check("presets (pack): translateX composes", packed.translate.x, -0.5);
+    check("presets (pack): translateY composes", packed.translate.y, 1.0);
+    let packedExplicit = ui_styling.computeDivStyle(
+        { translate: { x: 9.0, y: 0.0 } },
+        headwind.presets.translate(1.0, 5.0), headwind.presets.noop());
+    check("presets (pack): explicit style beats preset on x", packedExplicit.translate.x, 9.0);
+    check("presets (pack): preset still fills the untouched y", packedExplicit.translate.y, 5.0);
+    let packedEmpty = ui_styling.computeDivStyle({});
+    check("presets (pack): empty pack", packedEmpty.translate.x, 0.0);
+
+    if failures.value > 0 {
+        fmt.println(f"presets-check: {failures.value} FAILURE(S)");
         return 1;
     }
     fmt.println("presets-check: OK");

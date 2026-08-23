@@ -165,17 +165,6 @@ export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
                 // the strip is a rail of exactly this size and every bit of
                 // the remaining column goes to the panels below it.
                 style: { height: style.height },
-                presets: [
-                    presets.row(),
-                    presets.wGrow(),
-                    presets.bg(style.barBackground),
-                    presets.borderB(1),
-                    presets.borderColor(style.border),
-                    // The strip is a fixed-height rail: if more tabs are
-                    // open than fit, they are clipped rather than allowed
-                    // to push the editor out of the window.
-                    presets.overflowHidden(),
-                ],
             }, (): void => {
                 for tab, index in props.tabs {
                     let isActive = tab.key == props.activeKey;
@@ -189,7 +178,17 @@ export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
                         onClose: props.onClose,
                     });
                 }
-            });
+            },
+                presets.row(),
+                presets.wGrow(),
+                presets.bg(style.barBackground),
+                presets.borderB(1),
+                presets.borderColor(style.border),
+                // The strip is a fixed-height rail: if more tabs are
+                // open than fit, they are clipped rather than allowed
+                // to push the editor out of the window.
+                presets.overflowHidden()
+            );
         };
     });
 }
@@ -250,27 +249,6 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
             ui.div({
                 id: 1,
                 elementRef: tabRef,
-                presets: [
-                    // `relative` so the active indicator below can be
-                    // absolutely positioned against this tab rather than
-                    // against the whole strip.
-                    presets.relative(),
-                    presets.row(),
-                    // Width shrink-wraps the label; height fills the strip.
-                    // NOT wGrow: tabs sized to the container would divide
-                    // the whole width between them, so three open files
-                    // would each be a third of the window wide and the
-                    // titles would sit marooned in the middle of them.
-                    presets.wFit(),
-                    presets.hGrow(),
-                    presets.crossAlign(ui_styling.CrossAlign.Center),
-                    presets.gap(2),
-                    presets.p(2),
-                    presets.bg(background),
-                    presets.borderR(1),
-                    presets.borderColor(style.border),
-                    presets.cursorPointer(),
-                ],
                 onPointerDown: (event: ui_components.PointerEvent) => {
                     // Middle-click closes, as in every browser and editor.
                     let p = instance.props();
@@ -296,11 +274,10 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                 ui.text({
                     id: 2,
                     text: props.tab.title,
-                    presets: [
-                        presets.textColor(active ? style.tabActiveText : style.tabText),
-                        presets.noWrap(),
-                    ],
-                });
+                },
+                    presets.textColor(active ? style.tabActiveText : style.tabText),
+                    presets.noWrap()
+                );
 
                 // Unsaved marker. Shown in place of the close button
                 // unless the tab is hovered, again matching what editors
@@ -310,18 +287,14 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                     ui.text({
                         id: 3,
                         text: "●",
-                        presets: [presets.textColor(style.tabActiveText)],
-                    });
+                    },
+                        presets.textColor(style.tabActiveText)
+                    );
                 }
                 else if props.closable {
                     ui.div({
                         id: 4,
                         elementRef: closeRef,
-                        presets: [
-                            presets.rounded(3),
-                            presets.bg(closeHovered ? style.closeHoverBackground : "#00000000"),
-                            presets.cursorPointer(),
-                        ],
                         onPointerDown: (event: ui_components.PointerEvent) => {
                             if event.button != ui_components.PointerButton.Left {
                                 return;
@@ -336,11 +309,14 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                         ui.text({
                             id: 5,
                             text: "×",
-                            presets: [
-                                presets.textColor(active ? style.tabActiveText : style.tabText),
-                            ],
-                        });
-                    });
+                        },
+                            presets.textColor(active ? style.tabActiveText : style.tabText)
+                        );
+                    },
+                        presets.rounded(3),
+                        presets.bg(closeHovered ? style.closeHoverBackground : "#00000000"),
+                        presets.cursorPointer()
+                    );
                 }
 
                 // Active indicator: a line along the top edge of the
@@ -350,16 +326,35 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                     ui.div({
                         id: 6,
                         style: { height: style.indicatorThickness },
-                        presets: [
-                            presets.absolute(),
-                            presets.top(0),
-                            presets.left(0),
-                            presets.wGrow(),
-                            presets.bg(style.indicator),
-                        ],
-                    }, (): void => {});
+                    }, (): void => {},
+                        presets.absolute(),
+                        presets.top(0),
+                        presets.left(0),
+                        presets.wGrow(),
+                        presets.bg(style.indicator)
+                    );
                 }
-            });
+            },
+                // `relative` so the active indicator below can be
+                // absolutely positioned against this tab rather than
+                // against the whole strip.
+                presets.relative(),
+                presets.row(),
+                // Width shrink-wraps the label; height fills the strip.
+                // NOT wGrow: tabs sized to the container would divide
+                // the whole width between them, so three open files
+                // would each be a third of the window wide and the
+                // titles would sit marooned in the middle of them.
+                presets.wFit(),
+                presets.hGrow(),
+                presets.crossAlign(ui_styling.CrossAlign.Center),
+                presets.gap(2),
+                presets.p(2),
+                presets.bg(background),
+                presets.borderR(1),
+                presets.borderColor(style.border),
+                presets.cursorPointer()
+            );
         };
     });
 }
@@ -376,12 +371,6 @@ export fn TabPanels(ui: ui_components.UIContext, args: TabsArgs) {
 
             ui.div({
                 id: ID_PANELS,
-                presets: [
-                    presets.relative(),
-                    presets.col(),
-                    presets.wGrow(),
-                    presets.hGrow(),
-                ],
             }, (): void => {
                 let renderTab = props.renderTab;
                 if !renderTab {
@@ -401,17 +390,21 @@ export fn TabPanels(ui: ui_components.UIContext, args: TabsArgs) {
                     // hand tab N the component instance of tab N+1.
                     ui.div({
                         id: ID_PANEL_BASE + tab.key,
-                        presets: [
-                            presets.show(isActive),
-                            presets.col(),
-                            presets.wGrow(),
-                            presets.hGrow(),
-                        ],
                     }, (): void => {
                         renderTab(tab.key);
-                    });
+                    },
+                        presets.show(isActive),
+                        presets.col(),
+                        presets.wGrow(),
+                        presets.hGrow()
+                    );
                 }
-            });
+            },
+                presets.relative(),
+                presets.col(),
+                presets.wGrow(),
+                presets.hGrow()
+            );
         };
     });
 }
@@ -424,11 +417,6 @@ export fn Tabs(ui: ui_components.UIContext, args: TabsArgs) {
 
             ui.div({
                 id: ID_ROOT,
-                presets: [
-                    presets.col(),
-                    presets.wGrow(),
-                    presets.hGrow(),
-                ],
             }, (): void => {
                 // Distinct ids so the two children are separate component
                 // instances even though both are handed the same props.
@@ -449,7 +437,11 @@ export fn Tabs(ui: ui_components.UIContext, args: TabsArgs) {
                     closable: props.closable,
                     renderTab: props.renderTab,
                 });
-            });
+            },
+                presets.col(),
+                presets.wGrow(),
+                presets.hGrow()
+            );
         };
     });
 }

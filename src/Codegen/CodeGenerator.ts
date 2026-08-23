@@ -2339,7 +2339,11 @@ class CodeGenerator {
       case Lowered.ENode.UnionToUnionCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
-        const typeUse = this.lr.typeUseNodes.get(expr.type);
+        // The target may be named through an alias (`type TextStyleOp = A | B`
+        // from another module); the cast needs the union itself.
+        const typeUse = this.lr.typeUseNodes.get(
+          Lowered.resolveAlias(this.lr, expr.type)
+        );
         const union = this.lr.typeDefNodes.get(typeUse.type);
         assert(
           union.variant === Lowered.ENode.UntaggedUnionDatatype ||

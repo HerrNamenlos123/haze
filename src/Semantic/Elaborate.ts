@@ -4832,7 +4832,9 @@ export class SemanticElaborator {
       );
     }
 
-    const matchSignatures = (exact: boolean) => {
+    // packsOnly: the last-resort tier that considers only overloads with a
+    // parameter pack (they are skipped by every other tier, see below).
+    const matchSignatures = (exact: boolean, packsOnly: boolean = false) => {
       const matchingSignatures = [] as {
         matches: boolean;
         signature: Semantic.SymbolId;
@@ -4864,11 +4866,18 @@ export class SemanticElaborator {
         //   continue;
         // }
 
-        if (funcSymHasParameterPack(this.sr.cc, overloadId)) {
+        // A pack overload fits almost any argument list, so it must never
+        // shadow a plain overload that a later tier (implicit conversions)
+        // would have accepted. Pack overloads are only considered in the
+        // packsOnly tier, after every other tier failed.
+        const hasPack = funcSymHasParameterPack(this.sr.cc, overloadId);
+        if (hasPack !== packsOnly) {
           matchingSignatures.push({
             matches: false,
             signature: signatureId,
-            reason: "Contains a parameter pack (exact match not possible)",
+            reason: hasPack
+              ? "Contains a parameter pack (only considered when no other overload fits)"
+              : "Has no parameter pack (pack tier)",
           });
           continue;
         }
@@ -4884,7 +4893,11 @@ export class SemanticElaborator {
 
         // If any arguments were passed, maxArgIndex is the highest index
         // Check if we're trying to pass arguments beyond what the signature accepts
-        if (argCount > 0 && maxArgIndex >= signature.parameters.length) {
+        if (
+          !hasPack &&
+          argCount > 0 &&
+          maxArgIndex >= signature.parameters.length
+        ) {
           matchingSignatures.push({
             matches: false,
             signature: signatureId,
@@ -5153,6 +5166,37 @@ export class SemanticElaborator {
       }
 
       if (implicitMatchingSignatures.filter((s) => s.matches).length === 0) {
+        // Last tier: overloads with a parameter pack. Their pack parameter
+        // accepts anything, so only the non-pack parameters are matched.
+        // If several fit, the most specific one wins -- the one whose pack
+        // absorbs the fewest arguments (`f(p, fn, ops: ...)` beats
+        // `f(p, ops: ...)` when called with a closure), like a non-variadic
+        // overload beats a variadic one in C++.
+        const packMatches = matchSignatures(false, true).filter(
+          (s) => s.matches
+        );
+        if (packMatches.length >= 1) {
+          const scored = packMatches.map((m) => {
+            const signature = this.sr.symbolNodes.get(m.signature);
+            assert(signature.variant === Semantic.ENode.FunctionSignature);
+            const packIndex = signature.parameters.findIndex(
+              (p) => p.kind === "param-pack"
+            );
+            assert(packIndex !== -1);
+            return {
+              m,
+              absorbed: Math.max(0, calledWithArgs.length - packIndex),
+            };
+          });
+          const best = Math.min(...scored.map((x) => x.absorbed));
+          const winners = scored.filter((x) => x.absorbed === best);
+          if (winners.length === 1) {
+            const signature = this.sr.symbolNodes.get(winners[0].m.signature);
+            assert(signature.variant === Semantic.ENode.FunctionSignature);
+            return signature.originalFunction;
+          }
+        }
+
         let str = `No candidate for call to overloaded function '${overloadGroup.name}' matches arguments\n`;
         for (const candidate of nonExactMatchingSignatures) {
           const signature = this.sr.symbolNodes.get(candidate.signature);

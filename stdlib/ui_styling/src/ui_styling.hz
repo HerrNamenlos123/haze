@@ -652,13 +652,18 @@ export struct FontWeightOp { value: real; }
 export struct LineHeightOp { value: LineHeight; }
 export struct LetterSpacingOp { value: real; }
 export struct TextWrapOp { value: TextWrap; }
+// Does nothing. Lets a call site express "maybe this op" with a plain
+// ternary inside a preset pack -- `size ? presets.fontSize(size) : presets.noop()`
+// -- now that presets are passed as arguments rather than built into an
+// array at runtime.
+export struct NoOp { }
 
 // Text-only ops are a sub-union of the div ops, so a single op value (e.g.
 // from presets.textColor(...)) satisfies both `[]TextStyleOp` and
 // `[]DivStyleOp` structurally -- no separate vocabularies needed.
 export type TextStyleOp =
     TextColorOp | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp
-    | TextWrapOp;
+    | TextWrapOp | NoOp;
 
 // Flat (not nested) so a TextStyleOp member's value -- e.g. from
 // presets.textColor(...) -- is directly usable wherever DivStyleOp is
@@ -674,76 +679,71 @@ export type DivStyleOp =
     | ZIndexOp | AnchorToOp | CursorOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
     | BorderColorOp | TextWrapOp
-    | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp;
+    | FontFamilyOp | FontSizeOp | FontWeightOp | LineHeightOp | LetterSpacingOp
+    | NoOp;
 
-// Applies `ops` onto `raw`, with explicitly-set fields on `raw` always
-// winning over a preset op for the same field (presets only fill gaps),
-// then resolves the result into a ComputedDivStyle. One flat exhaustive
-// match, plain data in and out -- no function pointers, fully inlinable.
-// `ops` is optional (rather than requiring an empty array when a caller has
-// no presets) purely so callers like ui_components.div() can pass their own
-// already-optional `props.presets` straight through, with nothing to
-// allocate at all in the common no-presets case.
-export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivStyle {
-    let working: DivStyle = raw;
-
-    if ops is not none {
-        for op in ops {
-            if op is BackgroundColorOp { if !working.backgroundColor { working.backgroundColor = op.color; } }
-            else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
-            else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
-            else if op is GapOp { if !working.gap { working.gap = op.value; } }
-            else if op is DisplayOp { if !working.display { working.display = op.value; } }
-            else if op is OverflowOp {
-                if !working.overflowX { working.overflowX = op.x; }
-                if !working.overflowY { working.overflowY = op.y; }
-            }
-            else if op is OverflowXOp { if !working.overflowX { working.overflowX = op.value; } }
-            else if op is OverflowYOp { if !working.overflowY { working.overflowY = op.value; } }
-            else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
-            else if op is PackingOp { if !working.packing { working.packing = op.value; } }
-            else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
-            else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
-            else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
-            else if op is HeightOp { if isUnset(working.height) { working.height = op.value; } }
-            else if op is PositionOp { if !working.position { working.position = op.value; } }
-            else if op is TopOp { if !working.positionValues.top { working.positionValues.top = op.value; } }
-            else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
-            else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
-            else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
-            // "Not set by the component" is 0.0 here (the field's own
-            // default), so a preset only fills in an axis the raw style left
-            // at zero -- the same fill-the-gaps rule every other op follows.
-            // Translating by an explicit 0.0 and not translating at all are
-            // the same placement, so nothing is lost by conflating them.
-            else if op is TranslateOp {
-                if working.translate.x == 0.0 { working.translate.x = op.x; }
-                if working.translate.y == 0.0 { working.translate.y = op.y; }
-            }
-            else if op is TranslateXOp { if working.translate.x == 0.0 { working.translate.x = op.value; } }
-            else if op is TranslateYOp { if working.translate.y == 0.0 { working.translate.y = op.value; } }
-            else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
-            else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
-            else if op is CursorOp { if !working.cursor { working.cursor = op.value; } }
-            else if op is BorderWidthOp {
-                if !working.borderWidth.top { working.borderWidth.top = op.value; }
-                if !working.borderWidth.right { working.borderWidth.right = op.value; }
-                if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; }
-                if !working.borderWidth.left { working.borderWidth.left = op.value; }
-            }
-            else if op is BorderTopWidthOp { if !working.borderWidth.top { working.borderWidth.top = op.value; } }
-            else if op is BorderRightWidthOp { if !working.borderWidth.right { working.borderWidth.right = op.value; } }
-            else if op is BorderBottomWidthOp { if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; } }
-            else if op is BorderLeftWidthOp { if !working.borderWidth.left { working.borderWidth.left = op.value; } }
-            else if op is BorderColorOp { if !working.borderColor { working.borderColor = op.color; } }
-            else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
-            else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
-            else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
-            else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
-            else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
-        }
+// Applies one op onto `working`, with explicitly-set fields on `working`
+// always winning over the op for the same field (presets only fill gaps).
+// One flat exhaustive match, plain data in and out -- no function pointers,
+// fully inlinable. Exported because the pack-based computeDivStyle below is
+// re-elaborated in every importing module.
+export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
+    if op is BackgroundColorOp { if !working.backgroundColor { working.backgroundColor = op.color; } }
+    else if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+    else if op is PaddingOp { if !working.padding { working.padding = op.padding; } }
+    else if op is GapOp { if !working.gap { working.gap = op.value; } }
+    else if op is DisplayOp { if !working.display { working.display = op.value; } }
+    else if op is OverflowOp {
+        if !working.overflowX { working.overflowX = op.x; }
+        if !working.overflowY { working.overflowY = op.y; }
     }
+    else if op is OverflowXOp { if !working.overflowX { working.overflowX = op.value; } }
+    else if op is OverflowYOp { if !working.overflowY { working.overflowY = op.value; } }
+    else if op is CrossAlignOp { if !working.crossAlign { working.crossAlign = op.value; } }
+    else if op is PackingOp { if !working.packing { working.packing = op.value; } }
+    else if op is DirectionOp { if !working.direction { working.direction = op.value; } }
+    else if op is CornerRadiusOp { if !working.cornerRadius { working.cornerRadius = op.cornerRadius; } }
+    else if op is WidthOp { if isUnset(working.width) { working.width = op.value; } }
+    else if op is HeightOp { if isUnset(working.height) { working.height = op.value; } }
+    else if op is PositionOp { if !working.position { working.position = op.value; } }
+    else if op is TopOp { if !working.positionValues.top { working.positionValues.top = op.value; } }
+    else if op is RightOp { if !working.positionValues.right { working.positionValues.right = op.value; } }
+    else if op is BottomOp { if !working.positionValues.bottom { working.positionValues.bottom = op.value; } }
+    else if op is LeftOp { if !working.positionValues.left { working.positionValues.left = op.value; } }
+    // "Not set by the component" is 0.0 here (the field's own
+    // default), so a preset only fills in an axis the raw style left
+    // at zero -- the same fill-the-gaps rule every other op follows.
+    // Translating by an explicit 0.0 and not translating at all are
+    // the same placement, so nothing is lost by conflating them.
+    else if op is TranslateOp {
+        if working.translate.x == 0.0 { working.translate.x = op.x; }
+        if working.translate.y == 0.0 { working.translate.y = op.y; }
+    }
+    else if op is TranslateXOp { if working.translate.x == 0.0 { working.translate.x = op.value; } }
+    else if op is TranslateYOp { if working.translate.y == 0.0 { working.translate.y = op.value; } }
+    else if op is ZIndexOp { if !working.zIndex { working.zIndex = op.value; } }
+    else if op is AnchorToOp { if !working.anchorTarget { working.anchorTarget = op.target; } }
+    else if op is CursorOp { if !working.cursor { working.cursor = op.value; } }
+    else if op is BorderWidthOp {
+        if !working.borderWidth.top { working.borderWidth.top = op.value; }
+        if !working.borderWidth.right { working.borderWidth.right = op.value; }
+        if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; }
+        if !working.borderWidth.left { working.borderWidth.left = op.value; }
+    }
+    else if op is BorderTopWidthOp { if !working.borderWidth.top { working.borderWidth.top = op.value; } }
+    else if op is BorderRightWidthOp { if !working.borderWidth.right { working.borderWidth.right = op.value; } }
+    else if op is BorderBottomWidthOp { if !working.borderWidth.bottom { working.borderWidth.bottom = op.value; } }
+    else if op is BorderLeftWidthOp { if !working.borderWidth.left { working.borderWidth.left = op.value; } }
+    else if op is BorderColorOp { if !working.borderColor { working.borderColor = op.color; } }
+    else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+    else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+    else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+    else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+    else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+}
 
+// Resolves a fully merged DivStyle into its computed form.
+export fn finishDivStyle(working: DivStyle): ComputedDivStyle {
     let result = ComputedDivStyle {
         padding: resolvePadding(working.padding),
         cornerRadius: resolveCornerRadius(working.cornerRadius),
@@ -775,22 +775,45 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
     return result;
 }
 
-// ops is optional -- see computeDivStyle's own comment.
-export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedTextStyle {
-    let working: TextStyle = raw;
 
+// Applies `ops` onto `raw` and resolves the result into a ComputedDivStyle.
+// `ops` is optional (rather than requiring an empty array when a caller has
+// no presets) so an already-optional array can be passed straight through.
+export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivStyle {
+    let stackref working = raw;
     if ops is not none {
         for op in ops {
-            if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
-            else if op is TextWrapOp { if !working.textWrap { working.textWrap = op.value; } }
-            else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
-            else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
-            else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
-            else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
-            else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+            applyDivOp(working, op);
         }
     }
+    return finishDivStyle(working);
+}
 
+// The allocation-free form: the ops are a parameter pack, so a call site
+// like `ui.div(props, children, presets.wFit(), presets.p(1))` never builds
+// an array -- the loop is unrolled at compile time and each op is applied
+// straight from the caller's stack. Small on purpose (one call per op plus
+// the finish) since it is instantiated once per distinct op combination.
+export fn computeDivStyle(raw: DivStyle, ops: ...): ComputedDivStyle {
+    let stackref working = raw;
+    for comptime op in ops {
+        applyDivOp(working, op);
+    }
+    return finishDivStyle(working);
+}
+
+// Text counterpart of applyDivOp.
+export fn applyTextOp(working: mut stackref TextStyle, op: TextStyleOp) {
+    if op is TextColorOp { if !working.textColor { working.textColor = op.color; } }
+    else if op is TextWrapOp { if !working.textWrap { working.textWrap = op.value; } }
+    else if op is FontFamilyOp { if !working.fontFamily { working.fontFamily = op.value; } }
+    else if op is FontSizeOp { if !working.fontSize { working.fontSize = op.value; } }
+    else if op is FontWeightOp { if !working.fontWeight { working.fontWeight = op.value; } }
+    else if op is LineHeightOp { if !working.lineHeight { working.lineHeight = op.value; } }
+    else if op is LetterSpacingOp { if !working.letterSpacing { working.letterSpacing = op.value; } }
+}
+
+export fn finishTextStyle(working: TextStyle): ComputedTextStyle {
     return ComputedTextStyle {
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
@@ -799,4 +822,24 @@ export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedT
         letterSpacing: working.letterSpacing,
         textColor: working.textColor,
     };
+}
+
+// ops is optional -- see computeDivStyle's own comment.
+export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedTextStyle {
+    let stackref working = raw;
+    if ops is not none {
+        for op in ops {
+            applyTextOp(working, op);
+        }
+    }
+    return finishTextStyle(working);
+}
+
+// Allocation-free pack form -- see the pack computeDivStyle above.
+export fn computeTextStyle(raw: TextStyle, ops: ...): ComputedTextStyle {
+    let stackref working = raw;
+    for comptime op in ops {
+        applyTextOp(working, op);
+    }
+    return finishTextStyle(working);
 }

@@ -114,20 +114,6 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 background = style.bgHover;
             }
 
-            let ops: []ui_styling.DivStyleOp = [
-                presets.row(),
-                presets.crossAlign(ui_styling.CrossAlign.Center),
-                presets.gap(0),
-                presets.bg(background),
-                presets.rounded(style.rounded),
-                presets.hFit(),
-                props.grow ? presets.wGrow() : presets.wFit(),
-                // An arrow, not the editor's I-beam -- the cursor is
-                // inherited down the hit path, so a button sitting inside
-                // a text area would otherwise keep the caret cursor.
-                props.enabled ? presets.cursorPointer() : presets.cursorDefault(),
-            ];
-
             ui.div({
                 id: 1,
                 elementRef: buttonRef,
@@ -143,7 +129,6 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                         bottom: style.paddingY,
                     },
                 },
-                presets: ops,
                 onPointerDown: (event: ui_components.PointerEvent) => {
                     // A press on a button is the button's business and
                     // nobody else's -- without this it would also reach
@@ -169,20 +154,28 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 if p.label.length == 0 {
                     return;
                 }
-                let textOps: []ui_styling.TextStyleOp = [
-                    presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
-                    presets.noWrap(),
-                ];
                 let size = style.fontSize;
-                if size {
-                    textOps.push(presets.fontSize(size));
-                }
                 ui.text({
                     id: 1,
                     text: p.label,
-                    presets: textOps,
-                });
-            });
+                },
+                    presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
+                    presets.noWrap(),
+                    size ? presets.fontSize(size) : presets.noop()
+                );
+            },
+                presets.row(),
+                presets.crossAlign(ui_styling.CrossAlign.Center),
+                presets.gap(0),
+                presets.bg(background),
+                presets.rounded(style.rounded),
+                presets.hFit(),
+                props.grow ? presets.wGrow() : presets.wFit(),
+                // An arrow, not the editor's I-beam -- the cursor is
+                // inherited down the hit path, so a button sitting inside
+                // a text area would otherwise keep the caret cursor.
+                props.enabled ? presets.cursorPointer() : presets.cursorDefault()
+            );
         };
     });
 }
