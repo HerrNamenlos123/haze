@@ -208,7 +208,39 @@ namespace profiling {
 
         let cpuIndex = 0;
         let allocIndex = 0;
-        let lastTimeUs = 0.0;
+
+        // Timestamp of the last event that is EVIDENCE THE THREAD WAS RUNNING -- a CPU
+        // sample or an instrumented allocation, whichever came last -- as opposed to
+        // lastEmittedUs, which also moves for synthetic "(idle)" samples this loop
+        // invents itself.
+        //
+        // Both kinds count, and that is the whole point of tracking this separately from
+        // the CPU stream alone. An allocation capture is an instrumented event: it exists
+        // because that line of code actually executed, which is exactly as strong a proof
+        // that the thread was on-CPU at that instant as a CPU sample is. So a gap is only
+        // off-CPU time if NEITHER kind of event appears in it.
+        //
+        // Measuring the gap against the previous CPU sample only (what this used to do,
+        // with the whole check living inside the CPU branch below) got both halves of that
+        // wrong, and the two failures compounded:
+        //
+        //   - A gap BOUNDED BY ALLOCATIONS was never even looked at. If an allocation was
+        //     the last event before the thread went off-CPU and another allocation was the
+        //     first event after it -- which is the normal shape of a frame-paced render
+        //     loop, where the wait for the next swapchain image sits between two bursts of
+        //     Haze allocations -- the loop emitted the two allocations back to back with
+        //     nothing in between, and every viewer drew the FIRST one as spanning the
+        //     entire wait. That is where "Heap alloc ... WGPUSurfaceTexture (24 bytes)"
+        //     came to be shown as a 15 ms call. Measured on a real 3.7 s session: 1.58 s
+        //     (42% of the whole timeline) sat under allocation leaves drawn this way.
+        //   - When the gap WAS noticed (because a CPU sample happened to follow it), the
+        //     idle sample still got placed by clamping against lastEmittedUs, so any
+        //     allocation that had landed after the gap pushed the idle marker past the gap
+        //     it was describing -- a zero-width "(idle)" on the wrong side of the pause,
+        //     with the pause itself still charged to whatever preceded it.
+        let lastActivityUs = 0.0;
+        let haveActivity = false;
+
         while cpuIndex < result.samples.length || allocIndex < allocationLeaves.length {
             // Whichever stream's next entry is older goes first.
             let takeCpuSample = true;
@@ -219,50 +251,48 @@ namespace profiling {
                     <= result.memoryInstrumentationFrames[allocIndex].timestamp;
             }
 
-            if !takeCpuSample {
-                let capture = result.memoryInstrumentationFrames[allocIndex];
-                let allocTimeUs = capture.timestamp * 1000000.0;
-                if allocTimeUs < lastEmittedUs {
-                    allocTimeUs = lastEmittedUs;
-                }
-                // A CpuProfile sample carries no size/type of its own (V8's
-                // SamplingHeapProfileNode has selfSize for exactly this; the CPU shape has
-                // nowhere to put it), so they become the LEAF frame instead -- "Heap alloc
-                // ref struct mut Foo (8 bytes)" sits where the allocating function's callee
-                // would be. That also dedups on exactly the right key: same type, same size,
-                // same call path collapses to one node, while differing in either keeps them
-                // apart and separately countable.
-                builder.addSample(
-                    allocTimeUs,
-                    sampleFrameRefsForStacktrace(
-                        capture.stacktrace,
-                        frameRefs,
-                        ChromeTrace.FrameRef { name: allocationLeaves[allocIndex], url: "", line: 0, column: 0 },
-                    ),
-                );
-                lastEmittedUs = allocTimeUs;
-                allocIndex = allocIndex + 1;
-                continue;
+            // The next event's timestamp -- and, for a CPU sample, whether the kernel
+            // reported samples lost right before it -- resolved BEFORE anything is
+            // emitted, because the gap handling below has to run against it and is
+            // identical for both kinds of event.
+            let eventTimeUs = 0.0;
+            let lostBefore = 0;
+            if takeCpuSample {
+                eventTimeUs = result.samples[cpuIndex].timestamp * 1000000.0;
+                lostBefore = result.samples[cpuIndex].lost_before;
+            } else {
+                eventTimeUs = result.memoryInstrumentationFrames[allocIndex].timestamp * 1000000.0;
+            }
+            if eventTimeUs < lastEmittedUs {
+                eventTimeUs = lastEmittedUs;
             }
 
-            let s = cpuIndex;
-            cpuIndex = cpuIndex + 1;
-            let sample = result.samples[s];
-            let timeUs = sample.timestamp * 1000000.0;
-            if timeUs < lastEmittedUs {
-                timeUs = lastEmittedUs;
-            }
-
-            if s > 0 {
-                let delta = timeUs - lastTimeUs;
-                if sample.lost_before > 0 {
+            if haveActivity {
+                if lostBefore > 0 {
                     // Hard fact from the kernel, not an inference from timing: real code
                     // definitely ran here, we just have no record of what it was. This takes
                     // priority over the off-cpu heuristic below -- finding out real samples
                     // existed here means the thread almost certainly *was* running, the opposite
                     // conclusion the off-cpu heuristic would otherwise draw from the same gap.
-                    builder.addLostSamplesMarker(lastTimeUs + nominalIntervalUs, delta - nominalIntervalUs);
-                } else if delta > offCpuThresholdUs {
+                    //
+                    // Clamped to lastEmittedUs like every other emitted timestamp: allocation
+                    // captures can have been emitted since the last CPU sample, and handing the
+                    // builder a timestamp behind those would push a NEGATIVE timeDelta into the
+                    // profile, which corrupts every timestamp reconstructed after it.
+                    // Starts one nominal interval after the last real event (which
+                    // therefore keeps its normal width) and runs up to this sample, whose
+                    // own emission right below is what gives the marker that width -- no
+                    // duration is passed or needed, see addLostSamplesMarker.
+                    let markerStartUs = lastActivityUs + nominalIntervalUs;
+                    if markerStartUs < lastEmittedUs {
+                        markerStartUs = lastEmittedUs;
+                    }
+                    if markerStartUs > eventTimeUs {
+                        markerStartUs = eventTimeUs;
+                    }
+                    builder.addLostSamplesMarker(markerStartUs);
+                    lastEmittedUs = markerStartUs;
+                } else if eventTimeUs - lastActivityUs > offCpuThresholdUs {
                     // Off-CPU: the thread wasn't running for (most of) this gap.
                     //
                     // Emitting NOTHING here (what this used to do, intending to leave the trace
@@ -281,7 +311,7 @@ namespace profiling {
                     // interval after the last real one (which therefore keeps its normal width).
                     // "(idle)" is V8's own name for this in a .cpuprofile, so DevTools already
                     // understands what it is rather than showing it as a mystery function.
-                    let idleStartUs = lastTimeUs + nominalIntervalUs;
+                    let idleStartUs = lastActivityUs + nominalIntervalUs;
                     if idleStartUs < lastEmittedUs {
                         idleStartUs = lastEmittedUs;
                     }
@@ -290,18 +320,42 @@ namespace profiling {
                 }
             }
 
-            let frames: []ChromeTrace.FrameRef = [];
-            frames.reserve(sample.frames.length);
-            // sample.frames is innermost-first; CpuProfileBuilder.addSample wants outermost-first.
-            // Each entry is already a frame-table index, so this is a lookup into the shared
-            // table (see buildFrameRefTable) rather than a fresh FrameRef per sample per depth.
-            for (let depth = sample.frames.length - 1; depth >= 0; depth--) {
-                frames.push(frameRefs[sample.frames[depth]]);
-            }
-            builder.addSample(timeUs, frames, sample.truncated);
+            if !takeCpuSample {
+                let capture = result.memoryInstrumentationFrames[allocIndex];
+                // A CpuProfile sample carries no size/type of its own (V8's
+                // SamplingHeapProfileNode has selfSize for exactly this; the CPU shape has
+                // nowhere to put it), so they become the LEAF frame instead -- "Heap alloc
+                // ref struct mut Foo (8 bytes)" sits where the allocating function's callee
+                // would be. That also dedups on exactly the right key: same type, same size,
+                // same call path collapses to one node, while differing in either keeps them
+                // apart and separately countable.
+                builder.addSample(
+                    eventTimeUs,
+                    sampleFrameRefsForStacktrace(
+                        capture.stacktrace,
+                        frameRefs,
+                        ChromeTrace.FrameRef { name: allocationLeaves[allocIndex], url: "", line: 0, column: 0 },
+                    ),
+                );
+                allocIndex = allocIndex + 1;
+            } else {
+                let sample = result.samples[cpuIndex];
+                cpuIndex = cpuIndex + 1;
 
-            lastEmittedUs = timeUs;
-            lastTimeUs = timeUs;
+                let frames: []ChromeTrace.FrameRef = [];
+                frames.reserve(sample.frames.length);
+                // sample.frames is innermost-first; CpuProfileBuilder.addSample wants outermost-first.
+                // Each entry is already a frame-table index, so this is a lookup into the shared
+                // table (see buildFrameRefTable) rather than a fresh FrameRef per sample per depth.
+                for (let depth = sample.frames.length - 1; depth >= 0; depth--) {
+                    frames.push(frameRefs[sample.frames[depth]]);
+                }
+                builder.addSample(eventTimeUs, frames, sample.truncated);
+            }
+
+            lastEmittedUs = eventTimeUs;
+            lastActivityUs = eventTimeUs;
+            haveActivity = true;
         }
     }
 

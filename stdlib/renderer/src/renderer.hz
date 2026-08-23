@@ -1349,7 +1349,18 @@ export struct TextureRun {
     texture: Texture;
 }
 
-export ref struct CornerRadius {
+// Value structs, like TextOpts below -- deliberately NOT `ref`. These three
+// exist only to name drawRect's arguments: every call site builds one as a
+// literal in the argument list, drawRect only ever reads it (the shape it
+// describes is decomposed into a PrimitiveInstance on the spot, see there),
+// and nothing keeps a reference afterwards. As `ref struct`s that was three
+// heap allocations for every single rectangle drawn, every frame -- measured
+// at 1,100 x RectOpts + 1,100 x CornerRadius + 1,100 x BorderWidths under
+// ui_layout's renderFilledRectTrampoline alone in one 3.7 s session, plus
+// another 507 of each under renderBorderTrampoline. As values they are built
+// straight into the caller's frame and copied into drawRect's, which allocates
+// nothing at all.
+export struct CornerRadius {
     topLeft: real = 0;
     topRight: real = 0;
     bottomLeft: real = 0;
@@ -1357,14 +1368,14 @@ export ref struct CornerRadius {
 };
 
 // Independent per-edge border widths -- see RectOpts.borderWidths.
-export ref struct BorderWidths {
+export struct BorderWidths {
     top: real = 0;
     right: real = 0;
     bottom: real = 0;
     left: real = 0;
 };
 
-export ref struct RectOpts {
+export struct RectOpts {
     pos: Vec2;
     size: Vec2;
     fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };

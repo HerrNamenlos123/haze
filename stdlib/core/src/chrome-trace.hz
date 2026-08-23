@@ -322,7 +322,28 @@ namespace ChromeTrace {
         samples: []int = [];
         timeDeltas: []int = [];
         startTimeUs: real = 0.0;
-        lastTimeUs: real = 0.0;
+        // Where the profile's timeline stands AS A CONSUMER WILL RECONSTRUCT IT:
+        // startTimeUs plus the sum of every timeDelta emitted so far. Deliberately not
+        // "the timestamp of the last sample" -- the two are not the same number, and
+        // conflating them is a slow, invisible corruption of the whole trace.
+        //
+        // timeDeltas are INTEGER microseconds (the format's own shape), while incoming
+        // timestamps are reals. Measuring each delta against the exact real timestamp of
+        // the previous sample -- which is what this used to do -- throws away the
+        // fractional microsecond of every single delta, and nothing ever gets it back:
+        // the viewer only ever sees the truncated integers, so the reconstructed timeline
+        // falls behind the real one by that fraction PER SAMPLE, forever. Measured on a
+        // real 3.7 s session (41,885 samples): a steadily growing 0.49 us/sample skew that
+        // reached 20.3 ms by the end of the trace -- the flame chart sliding progressively
+        // left out from under everything carrying an absolute `ts` (the allocation markers
+        // in DevTools' Timings track, the enclosing RunTask), which reads exactly like the
+        // two timelines being misaligned, because they are.
+        //
+        // Measuring against the reconstructed position instead makes the truncation
+        // self-correcting: whatever fraction one delta drops is still present in the next
+        // delta's own measurement, so the error stays bounded below 1 us for the entire
+        // session no matter how many samples it contains, instead of accumulating.
+        reconstructedTimeUs: real = 0.0;
         sampleCount: int = 0;
 
         fn constructor() {
@@ -458,11 +479,17 @@ namespace ChromeTrace {
         mut fn addSample(timestampUs: real, frames: []FrameRef, truncated: bool = false): void {
             if this.sampleCount == 0 {
                 this.startTimeUs = timestampUs;
+                this.reconstructedTimeUs = timestampUs;
                 this.timeDeltas.push(0);
             } else {
-                this.timeDeltas.push((timestampUs - this.lastTimeUs) as int);
+                // Measured against the reconstructed timeline, not against `timestampUs` of
+                // the previous sample -- see reconstructedTimeUs for why that distinction is
+                // the difference between a bounded sub-microsecond error and a skew that
+                // grows without limit for as long as the session runs.
+                let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
+                this.timeDeltas.push(deltaUs);
+                this.reconstructedTimeUs += deltaUs as real;
             }
-            this.lastTimeUs = timestampUs;
             this.sampleCount += 1;
 
             let currentNode = 0; // index into `nodes`; 0 is the root
@@ -492,16 +519,25 @@ namespace ChromeTrace {
         // Records a sample known to have real code running (a hard fact
         // from the kernel, e.g. PERF_RECORD_LOST -- not an inference from
         // timing like an off-cpu gap), but whose actual stack wasn't
-        // captured. Takes an explicit duration in addition to the marker's
-        // own point-in-time timestamp, since -- unlike a real sample --
-        // there is no "next sample" for the timeline reconstruction to
-        // infer this marker's own visual width from.
-        mut fn addLostSamplesMarker(timestampUs: real, durationUs: real): void {
+        // captured.
+        //
+        // Its visual width needs no special handling and gets none: like every other
+        // sample, this marker is drawn from here up to whatever the next sample's
+        // timestamp turns out to be, so a caller that wants it `durationUs` wide simply
+        // has the next sample land `durationUs` later -- which is exactly what a real gap
+        // in the sample stream already does. (This deliberately no longer advances the
+        // timeline by `durationUs` on top of that, as it once did: the gap was then
+        // counted TWICE, so the marker rendered zero-width and every sample after it --
+        // for the rest of the profile -- was pulled `durationUs` too early.)
+        mut fn addLostSamplesMarker(timestampUs: real): void {
             if this.sampleCount == 0 {
                 this.startTimeUs = timestampUs;
+                this.reconstructedTimeUs = timestampUs;
                 this.timeDeltas.push(0);
             } else {
-                this.timeDeltas.push((timestampUs - this.lastTimeUs) as int);
+                let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
+                this.timeDeltas.push(deltaUs);
+                this.reconstructedTimeUs += deltaUs as real;
             }
             this.sampleCount += 1;
 
@@ -516,23 +552,17 @@ namespace ChromeTrace {
             );
             this.nodes[lostNode].hitCount += 1;
             this.samples.push(this.nodes[lostNode].id);
-
-            // This marker's own visual duration comes from the NEXT
-            // timeDelta pushed (timestamp[i+1] - timestamp[i] is what any
-            // trace/flamechart viewer treats as sample i's width) -- so it
-            // is deliberately not accounted for here; addSample's next call
-            // pushes it via `timestampUs - this.lastTimeUs`, and using
-            // `timestampUs + durationUs` as that basis (instead of
-            // `timestampUs`) is what makes that next delta equal
-            // `durationUs` when nothing else has happened in between.
-            this.lastTimeUs = timestampUs + durationUs;
         }
 
         fn build(): CpuProfile {
             return CpuProfile {
                 nodes: this.nodes,
                 startTime: this.startTimeUs,
-                endTime: this.lastTimeUs,
+                // The reconstructed end, not the last raw timestamp: a consumer adds up
+                // the integer timeDeltas to place samples, so this is where the profile
+                // actually ends as far as anything reading it is concerned, and it is what
+                // keeps the enclosing RunTask's width consistent with the samples in it.
+                endTime: this.reconstructedTimeUs,
                 samples: this.samples,
                 timeDeltas: this.timeDeltas,
             };

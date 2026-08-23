@@ -698,7 +698,24 @@ export opaque ref struct Context {
             let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
             let lastIndex = element.children.length - 1;
 
-            let renderChildren = () => {
+            // `let stackref`, not a plain `let`: this closure captures nine
+            // values, and as an ordinary local its environment block was one
+            // heap allocation PER DIV PER FRAME -- measured as the single
+            // largest allocation source in the whole program (5,241 of
+            // "Closure env (72 bytes)" in a 3.7 s profiling session, more than
+            // twice the next entry). `let stackref` builds the env in place as
+            // a stack local of this scope instead, with the by-value captures
+            // copied straight into its fields: same captures, same semantics,
+            // zero allocations.
+            //
+            // Safe because the closure genuinely does not outlive this scope:
+            // hzui_clay_define_div_element calls it synchronously, from inside
+            // the call below, and Clay keeps nothing afterwards -- so the env
+            // is alive for exactly as long as anything can reach it. That is
+            // also the property `let stackref` itself enforces on the Haze side
+            // (every use is generation-checked), which is what makes this the
+            // right tool rather than hand-rolled pointer juggling.
+            let stackref renderChildren = () => {
                 let i = 0;
                 for child in divElement.children {
                     this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
@@ -711,7 +728,12 @@ export opaque ref struct Context {
             let func = none as cptr;
             let env = none as cptr;
             __c__("func = (void*)renderChildren.fn;");
-            __c__("env = (void*)renderChildren.env;");
+            // A stackref callable's `env` is the checked reference
+            // (hzstd_stackref_t), not a bare pointer -- Clay wants the raw env
+            // the trampoline expects as its first argument, which is the
+            // reference's own `.ptr`. The trampoline is the same function
+            // either way; only where its env lives changed.
+            __c__("env = (void*)renderChildren.env.ptr;");
 
             // Resolved against positioningContext's state *before* this
             // element pushes itself below -- an element's own placement
