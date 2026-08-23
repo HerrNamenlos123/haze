@@ -4,23 +4,31 @@ export struct ShaderModuleDescriptor {
     code: str;
 }
 
-fn toFFI(v: ShaderModuleDescriptor): ref ffi.WGPUShaderModuleDescriptor :: final {
-
-    let source = ref ffi.WGPUShaderSourceWGSL {
+// The WGSL source is a CHAINED struct: the descriptor carries a pointer to it in
+// `nextInChain`, so -- like every other pointer field in this module -- it is
+// built by the caller, in the frame that makes the wgpu call, and borrowed into
+// place here. See Device.createShaderModule and borrowForCall in utils.hz.
+fn wgslSourceToFFI(v: ShaderModuleDescriptor): ffi.WGPUShaderSourceWGSL :: final {
+    return ffi.WGPUShaderSourceWGSL {
         chain: {
             next: none,
             sType: ffi.WGPUSType_ShaderSourceWGSL,
         },
         code: toFFI(v.code),
-    }
+    };
+}
 
-    let desc = ref ffi.WGPUShaderModuleDescriptor {
-        nextInChain: none,
-        label: toOptionalFFI(v.debugLabel),
-    }
-    __c__("desc->nextInChain = (void*)source;");
-
-    return desc;
+fn toFFI(v: ShaderModuleDescriptor, source: ref ffi.WGPUShaderSourceWGSL): ffi.WGPUShaderModuleDescriptor :: final {
+    do unsafe {
+        let desc = ffi.WGPUShaderModuleDescriptor {
+            nextInChain: none,
+            label: toOptionalFFI(v.debugLabel),
+        };
+        // WGPUShaderSourceWGSL is not a WGPUChainedStruct, it merely starts with
+        // one -- the cast is what the C API's chaining convention is built on.
+        __c__("desc.nextInChain = (void*)source;");
+        return desc;
+    };
 }
 
 export struct ShaderModule {

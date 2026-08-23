@@ -37,7 +37,7 @@ fn fromFFI(v: ffi.WGPUDepthStencilState): DepthStencilState :: final {
     };
 }
 
-fn toFFI(v: DepthStencilState): ref ffi.WGPUDepthStencilState :: final {
+fn toFFI(v: DepthStencilState): ffi.WGPUDepthStencilState :: final {
     let depthWriteEnabled = ffi.WGPUOptionalBool_Undefined;
     if v.depthWriteEnabled {
         if v.depthWriteEnabled == true {

@@ -23,8 +23,8 @@ fn fromFFI(v: ffi.WGPUCommandBufferDescriptor): CommandBufferDescriptor :: final
     };
 }
 
-fn toFFI(v: CommandBufferDescriptor): ref ffi.WGPUCommandBufferDescriptor :: final {
-    return ref ffi.WGPUCommandBufferDescriptor {
+fn toFFI(v: CommandBufferDescriptor): ffi.WGPUCommandBufferDescriptor :: final {
+    return ffi.WGPUCommandBufferDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
     };

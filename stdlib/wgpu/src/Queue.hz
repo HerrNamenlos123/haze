@@ -63,14 +63,36 @@ export struct Queue {
         writeSize: Extent3D
     ) {
         assert(textureDataSize >= 0);
-        ffi.wgpuQueueWriteTexture(
-            this.handle,
-            toFFI(destination),
-            textureData,
-            textureDataSize,
-            toFFI(dataLayout),
-            toRefFFI(writeSize)
-        );
+        // All three descriptors live in THIS frame for the duration of the call
+        // below, which is the only thing that makes borrowing them sound -- see
+        // borrowForCall in utils.hz. wgpuQueueWriteTexture takes each as
+        // `Option<&...>` and converts it into an owned wgpu-core value before
+        // doing anything else (bin/wgpu-native/src/lib.rs), so none of the three
+        // outlives the call.
+        do unsafe {
+            let stackref dest = toFFI(destination);
+            let stackref layout = toFFI(dataLayout);
+            let stackref size = toFFI(writeSize);
+
+            let destPtr: ref ffi.WGPUTexelCopyTextureInfo = uninitialized;
+            let layoutPtr: ref ffi.WGPUTexelCopyBufferLayout = uninitialized;
+            let sizePtr: ref ffi.WGPUExtent3D = uninitialized;
+            let destRaw = ffi.extractRawUnsafeStackrefPointer(dest);
+            let layoutRaw = ffi.extractRawUnsafeStackrefPointer(layout);
+            let sizeRaw = ffi.extractRawUnsafeStackrefPointer(size);
+            __c__("destPtr = destRaw;");
+            __c__("layoutPtr = layoutRaw;");
+            __c__("sizePtr = sizeRaw;");
+
+            ffi.wgpuQueueWriteTexture(
+                this.handle,
+                destPtr,
+                textureData,
+                textureDataSize,
+                layoutPtr,
+                sizePtr
+            );
+        };
     }
 }
 

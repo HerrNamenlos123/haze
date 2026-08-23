@@ -4,7 +4,7 @@ export struct Surface {
 
     fn getCapabilities(adapter: Adapter): Result<SurfaceCapabilities, none> {
         do unsafe {
-            let caps = ref ffi.WGPUSurfaceCapabilities {
+            let stackref caps = ffi.WGPUSurfaceCapabilities {
                 nextInChain: none,
                 usages: 0,
                 formatCount: 0,
@@ -14,7 +14,10 @@ export struct Surface {
                 alphaModeCount: 0,
                 alphaModes: none,
             };
-            let status = ffi.wgpuSurfaceGetCapabilities(this.handle, adapter.handle, caps);
+            let capsPtr: mut ref ffi.WGPUSurfaceCapabilities = uninitialized;
+            let capsRaw = ffi.extractRawUnsafeStackrefPointer(caps);
+            __c__("capsPtr = capsRaw;");
+            let status = ffi.wgpuSurfaceGetCapabilities(this.handle, adapter.handle, capsPtr);
             if status != ffi.WGPUStatus_Success {
                 return none;
             }
@@ -23,17 +26,31 @@ export struct Surface {
     }
 
     fn configure(config: SurfaceConfiguration) {
-        ffi.wgpuSurfaceConfigure(this.handle, toFFI(config));
+        do unsafe {
+            let stackref c = toFFI(config);
+            let cPtr: ref ffi.WGPUSurfaceConfiguration = uninitialized;
+            let cRaw = ffi.extractRawUnsafeStackrefPointer(c);
+            __c__("cPtr = cRaw;");
+            ffi.wgpuSurfaceConfigure(this.handle, cPtr);
+        };
     }
 
     fn getCurrentTexture() {
-        let texture = ref ffi.WGPUSurfaceTexture {
+      do unsafe {
+        // Out-parameter: wgpu writes the result into this struct and keeps no
+        // pointer to it (`Option<&mut ...>` in wgpu-native), so it lives on this
+        // frame like every other descriptor -- see borrowForCall in utils.hz.
+        let stackref texture = ffi.WGPUSurfaceTexture {
             nextInChain: none,
             texture: none,
             status: ffi.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal, // will be overwritten
         };
-        ffi.wgpuSurfaceGetCurrentTexture(this.handle, texture);
+        let texturePtr: mut ref ffi.WGPUSurfaceTexture = uninitialized;
+        let textureRaw = ffi.extractRawUnsafeStackrefPointer(texture);
+        __c__("texturePtr = textureRaw;");
+        ffi.wgpuSurfaceGetCurrentTexture(this.handle, texturePtr);
         return fromFFI(texture);
+      };
     }
 
     fn present(): Result<none, none> {
@@ -57,8 +74,8 @@ fn fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture :: final {
     };
 }
 
-fn toFFI(v: SurfaceTexture): ref ffi.WGPUSurfaceTexture :: final {
-    return ref ffi.WGPUSurfaceTexture {
+fn toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
+    return ffi.WGPUSurfaceTexture {
         nextInChain: none,
         texture: v.texture ? toFFI(v.texture) : none,
         status: toFFI(v.status),
@@ -99,11 +116,11 @@ fn fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     return c;
 }
 
-fn toFFI(v: SurfaceConfiguration): ref ffi.WGPUSurfaceConfiguration :: final {
+fn toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
     assert(v.width >= u32.min && v.width <= u32.max, "Surface Width is out of bounds (v.width ∉ [u32.min, u32.max])");
     assert(v.height >= u32.min && v.height <= u32.max, "Surface Height is out of bounds (v.height ∉ [u32.min, u32.max])");
     let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
-    return ref ffi.WGPUSurfaceConfiguration {
+    return ffi.WGPUSurfaceConfiguration {
         nextInChain: none,
         device: v.device.handle,
         format: toFFI(v.format),
@@ -158,11 +175,11 @@ fn fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
     };
 }
 
-fn toFFI(v: SurfaceCapabilities): ref ffi.WGPUSurfaceCapabilities :: final {
+fn toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities :: final {
     let formats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.formats);
     let presentModes = arrayToFFI<PresentMode, ffi.WGPUPresentMode>(v.presentModes);
     let alphaModes = arrayToFFI<CompositeAlphaMode, ffi.WGPUCompositeAlphaMode>(v.alphaModes);
-    return ref ffi.WGPUSurfaceCapabilities {
+    return ffi.WGPUSurfaceCapabilities {
         nextInChain: none,
         usages: toFFI(v.usages),
         formatCount: formats.length,

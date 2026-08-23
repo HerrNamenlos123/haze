@@ -6,9 +6,9 @@ export struct BufferDescriptor {
     mappedAtCreation: bool = false;
 }
 
-fn toFFI(v: BufferDescriptor): ref ffi.WGPUBufferDescriptor :: final {
+fn toFFI(v: BufferDescriptor): ffi.WGPUBufferDescriptor :: final {
     assert(v.size >= 0, "Buffer Descriptor size >= 0");
-    return ref ffi.WGPUBufferDescriptor {
+    return ffi.WGPUBufferDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
         usage: toFFI(v.usage),

@@ -10,47 +10,139 @@ export struct Device {
     }
 
     fn createCommandEncoder(descriptor?: CommandEncoderDescriptor): Result<CommandEncoder, none> {
-        let commandEncoder = ffi.wgpuDeviceCreateCommandEncoder(this.handle, toOptionalFFI(descriptor));
-        if commandEncoder {
-            return fromFFI(commandEncoder);
-        }
+        do unsafe {
+            let value: ffi.WGPUCommandEncoderDescriptor = uninitialized;
+            if descriptor {
+                value = toFFI(descriptor);
+            }
+            let stackref storage = value;
+            let descriptorPtr = none as ref ffi.WGPUCommandEncoderDescriptor | none;
+            if descriptor {
+                let storageRaw = ffi.extractRawUnsafeStackrefPointer(storage);
+                __c__("descriptorPtr = storageRaw;");
+            }
+            let commandEncoder = ffi.wgpuDeviceCreateCommandEncoder(this.handle, descriptorPtr);
+            if commandEncoder {
+                return fromFFI(commandEncoder);
+            }
+            return none;
+        };
     }
 
     fn createShaderModule(descriptor: ShaderModuleDescriptor) {
-        return fromFFI(ffi.wgpuDeviceCreateShaderModule(this.handle, toFFI(descriptor)));
+        // `source` must outlive the call, not just toFFI() -- the descriptor
+        // only carries a pointer to it.
+        do unsafe {
+            let stackref source = wgslSourceToFFI(descriptor);
+            let sourcePtr: ref ffi.WGPUShaderSourceWGSL = uninitialized;
+            let sourceRaw = ffi.extractRawUnsafeStackrefPointer(source);
+            __c__("sourcePtr = sourceRaw;");
+
+            let stackref d = toFFI(descriptor, sourcePtr);
+            let dPtr: ref ffi.WGPUShaderModuleDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateShaderModule(this.handle, dPtr));
+        };
     }
 
     fn createBuffer(descriptor: BufferDescriptor) {
-        return fromFFI(ffi.wgpuDeviceCreateBuffer(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUBufferDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateBuffer(this.handle, dPtr));
+        };
     }
 
     fn createRenderPipeline(descriptor: RenderPipelineDescriptor) {
     // export extern C noemit wgpuDeviceCreateRenderPipeline(device: WGPUDeviceImpl, descriptor: WGPURenderPipelineDescriptor): WGPURenderPipelineImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreateRenderPipeline(this.handle, toFFI(descriptor)));
+        do unsafe {
+            // Both optional sub-states are pointed at by the descriptor, so they
+            // live here for as long as the call does.
+            let depthStencil: ffi.WGPUDepthStencilState = uninitialized;
+            if descriptor.depthStencil {
+                depthStencil = toFFI(descriptor.depthStencil);
+            }
+            let stackref depthStencilStorage = depthStencil;
+            let depthStencilPtr = none as ref ffi.WGPUDepthStencilState | none;
+            if descriptor.depthStencil {
+                let depthStencilRaw = ffi.extractRawUnsafeStackrefPointer(depthStencilStorage);
+                __c__("depthStencilPtr = depthStencilRaw;");
+            }
+
+            let fragment: ffi.WGPUFragmentState = uninitialized;
+            if descriptor.fragment {
+                fragment = toFFI(descriptor.fragment);
+            }
+            let stackref fragmentStorage = fragment;
+            let fragmentPtr = none as ref ffi.WGPUFragmentState | none;
+            if descriptor.fragment {
+                let fragmentRaw = ffi.extractRawUnsafeStackrefPointer(fragmentStorage);
+                __c__("fragmentPtr = fragmentRaw;");
+            }
+
+            let stackref d = toFFI(descriptor, depthStencilPtr, fragmentPtr);
+            let dPtr: ref ffi.WGPURenderPipelineDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateRenderPipeline(this.handle, dPtr));
+        };
     }
 
     fn createBindGroupLayout(descriptor: BindGroupLayoutDescriptor) {
         // export extern C noemit wgpuDeviceCreateBindGroupLayout(device: WGPUDeviceImpl, descriptor: WGPUBindGroupLayoutDescriptor): WGPUBindGroupLayoutImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreateBindGroupLayout(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUBindGroupLayoutDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateBindGroupLayout(this.handle, dPtr));
+        };
     }
 
     fn createPipelineLayout(descriptor: PipelineLayoutDescriptor) {
         // export extern C noemit wgpuDeviceCreatePipelineLayout(device: WGPUDeviceImpl, descriptor: WGPUPipelineLayoutDescriptor): WGPUPipelineLayoutImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreatePipelineLayout(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUPipelineLayoutDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreatePipelineLayout(this.handle, dPtr));
+        };
     }
 
     fn createBindGroup(descriptor: BindGroupDescriptor) {
         // export extern C noemit wgpuDeviceCreateBindGroup(device: WGPUDeviceImpl, descriptor: WGPUBindGroupDescriptor): WGPUBindGroupImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreateBindGroup(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUBindGroupDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateBindGroup(this.handle, dPtr));
+        };
     }
 
     fn createTexture(descriptor: TextureDescriptor) {
         // export extern C noemit wgpuDeviceCreateTexture(device: WGPUDeviceImpl, descriptor: WGPUTextureDescriptor): WGPUTextureImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreateTexture(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUTextureDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateTexture(this.handle, dPtr));
+        };
     }
 
     fn createSampler(descriptor: SamplerDescriptor) {
         // export extern C noemit wgpuDeviceCreateSampler(device: WGPUDeviceImpl, descriptor: WGPUSamplerDescriptor | none): WGPUSamplerImpl :: final;
-        return fromFFI(ffi.wgpuDeviceCreateSampler(this.handle, toFFI(descriptor)));
+        do unsafe {
+            let stackref d = toFFI(descriptor);
+            let dPtr: ref ffi.WGPUSamplerDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            return fromFFI(ffi.wgpuDeviceCreateSampler(this.handle, dPtr));
+        };
     }
 }

@@ -124,17 +124,25 @@ fn fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     return c;
 }
 
-fn toFFI(v: RenderPassDescriptor): ref ffi.WGPURenderPassDescriptor :: final {
+// The two pointer-valued fields are passed IN rather than built here: whoever
+// makes the wgpu call has to own that storage for the duration of the call, so
+// it cannot be created in this function's frame (see CommandEncoder.beginRenderPass,
+// the only caller, and borrowForCall in utils.hz for the full argument).
+fn toFFI(
+    v: RenderPassDescriptor,
+    depthStencilAttachment: ref ffi.WGPURenderPassDepthStencilAttachment | none,
+    timestampWrites: ref ffi.WGPURenderPassTimestampWrites | none,
+): ffi.WGPURenderPassDescriptor :: final {
     do unsafe {
         let colorAttachmentArray = arrayToFFI<RenderPassColorAttachment, ffi.WGPURenderPassColorAttachment>(v.colorAttachments);
-        return ref ffi.WGPURenderPassDescriptor {
+        return ffi.WGPURenderPassDescriptor {
             nextInChain: none,
             label: toOptionalFFI(v.debugLabel),
             colorAttachmentCount: colorAttachmentArray.length,
             colorAttachments: colorAttachmentArray.data,
-            depthStencilAttachment: v.depthStencilAttachment ? toFFI(v.depthStencilAttachment) : none,
+            depthStencilAttachment: depthStencilAttachment,
             occlusionQuerySet: v.occlusionQuerySet ? v.occlusionQuerySet.handle : none,
-            timestampWrites: v.timestampWrites ? toFFI(v.timestampWrites) : none,
+            timestampWrites: timestampWrites,
         };
     };
 }
@@ -165,8 +173,8 @@ fn fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilA
     };
 }
 
-fn toFFI(v: RenderPassDepthStencilAttachment): ref ffi.WGPURenderPassDepthStencilAttachment :: final {
-    return ref ffi.WGPURenderPassDepthStencilAttachment {
+fn toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment :: final {
+    return ffi.WGPURenderPassDepthStencilAttachment {
         view: v.view.handle,
         depthLoadOp: toFFI(v.depthLoadOp),
         depthStoreOp: toFFI(v.depthStoreOp),
@@ -193,8 +201,8 @@ fn fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites :: f
     };
 }
 
-fn toFFI(v: RenderPassTimestampWrites): ref ffi.WGPURenderPassTimestampWrites :: final {
-    return ref ffi.WGPURenderPassTimestampWrites {
+fn toFFI(v: RenderPassTimestampWrites): ffi.WGPURenderPassTimestampWrites :: final {
+    return ffi.WGPURenderPassTimestampWrites {
         querySet: v.querySet.handle,
         beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
         endOfPassWriteIndex: v.endOfPassWriteIndex,

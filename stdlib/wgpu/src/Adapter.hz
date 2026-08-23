@@ -3,53 +3,75 @@ export struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
     fn requestDeviceAsync(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
-        let ffiDescriptor: ref ffi.WGPUDeviceDescriptor | none = none;
+      do unsafe {
+        // Both the descriptor and the WGPULimits it points at have to stay alive
+        // until wgpuAdapterRequestDevice below returns, so their storage is
+        // declared HERE, at function scope, rather than inside the `if` that
+        // fills it in -- an `if` body is its own scope, and a stackref to it
+        // would be dead by the time the call happens. wgpuAdapterRequestDevice
+        // takes the descriptor as `Option<&...>` and converts it into owned
+        // wgpu-core values on entry, so nothing survives the call.
+        let limitsValue: ffi.WGPULimits = uninitialized;
+        let hasLimits = false;
+        if descriptor {
+            let requiredLimits = descriptor.requiredLimits;
+            if requiredLimits {
+                limitsValue = requiredLimits.toFFI();
+                hasLimits = true;
+            }
+        }
+
+        // Filled in above BEFORE the stackref is created: `let stackref x = v`
+        // copies `v` into its own buffer, so a later write to `v` would not be
+        // seen through the reference.
+        let stackref limitsStorage = limitsValue;
+        let limitsPtr = none as ref ffi.WGPULimits | none;
+        if hasLimits {
+            let limitsRaw = ffi.extractRawUnsafeStackrefPointer(limitsStorage);
+            __c__("limitsPtr = limitsRaw;");
+        }
+
+        let descriptorValue: ffi.WGPUDeviceDescriptor = uninitialized;
         if descriptor {
             let requiredFeatureCount = 0 as usize;
             let requiredFeatures = none as cptr;
-
             let features = descriptor.requiredFeatures;
             __c__("requiredFeatureCount = hzstd_dynamic_array_size(features);");
             __c__("requiredFeatures = hzstd_dynamic_array_raw_buffer(features);");
 
-            let limits = none as ref ffi.WGPULimits | none;
-            let requiredLimits = descriptor.requiredLimits;
-            if requiredLimits {
-                limits = requiredLimits.toFFI();
-            }
+            let a: ffi.WGPUDeviceLostCallbackInfo = uninitialized;
+            a.nextInChain = none;
+            __c__("a.callback = NULL;");
+            a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
+            a.userdata1 = none;
+            a.userdata2 = none;
 
-            do unsafe {
-                let nullCallback = none as cptr;
-                let nullCallback2: ffi.WGPUUncapturedErrorCallback = uninitialized;
-                __c__("nullCallback2 = NULL;");
+            let b: ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
+            b.nextInChain = none;
+            __c__("b.callback = NULL;");
+            b.userdata1 = none;
+            b.userdata2 = none;
 
-                let a: ffi.WGPUDeviceLostCallbackInfo = uninitialized;
-                a.nextInChain = none;
-                __c__("a.callback = NULL;");
-                a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
-                a.userdata1 = none;
-                a.userdata2 = none;
-
-                let b: ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
-                b.nextInChain = none;
-                __c__("a.callback = NULL;");
-                b.userdata1 = none;
-                b.userdata2 = none;
-
-                ffiDescriptor = ref ffi.WGPUDeviceDescriptor {
+            descriptorValue = ffi.WGPUDeviceDescriptor {
+                nextInChain: none,
+                label: toOptionalFFI(descriptor.debugLabel),
+                requiredFeatureCount: requiredFeatureCount,
+                requiredFeatures: requiredFeatures,
+                requiredLimits: limitsPtr,
+                defaultQueue: {
                     nextInChain: none,
-                    label: toOptionalFFI(descriptor.debugLabel),
-                    requiredFeatureCount: requiredFeatureCount,
-                    requiredFeatures: requiredFeatures,
-                    requiredLimits: limits,
-                    defaultQueue: {
-                        nextInChain: none,
-                        label: toOptionalFFI(descriptor.defaultQueue.debugLabel),
-                    },
-                    deviceLostCallbackInfo: a,
-                    uncapturedErrorCallbackInfo: b,
-                };
+                    label: toOptionalFFI(descriptor.defaultQueue.debugLabel),
+                },
+                deviceLostCallbackInfo: a,
+                uncapturedErrorCallbackInfo: b,
             };
+        }
+
+        let stackref descriptorStorage = descriptorValue;
+        let ffiDescriptor = none as ref ffi.WGPUDeviceDescriptor | none;
+        if descriptor {
+            let descriptorRaw = ffi.extractRawUnsafeStackrefPointer(descriptorStorage);
+            __c__("ffiDescriptor = descriptorRaw;");
         }
 
         let callback: ref Box<RequestDeviceCallback> = { value: callbackInfo.callback };
@@ -67,6 +89,7 @@ export struct Adapter {
         return fromFFI(
             ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
         );
+      };
     }
 
     fn requestDeviceSync(descriptor: DeviceDescriptor | none): Result<Device, str> {

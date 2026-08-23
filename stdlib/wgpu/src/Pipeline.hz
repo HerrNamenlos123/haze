@@ -33,16 +33,23 @@ export struct RenderPipelineDescriptor {
     fragment?: FragmentState;
 }
 
-fn toFFI(v: RenderPipelineDescriptor): ref ffi.WGPURenderPipelineDescriptor :: final {
-    return ref ffi.WGPURenderPipelineDescriptor {
+// `depthStencil` and `fragment` are pointer fields, so their storage has to
+// belong to whoever makes the wgpu call -- see Device.createRenderPipeline and
+// borrowForCall in utils.hz.
+fn toFFI(
+    v: RenderPipelineDescriptor,
+    depthStencil: ref ffi.WGPUDepthStencilState | none,
+    fragment: ref ffi.WGPUFragmentState | none,
+): ffi.WGPURenderPipelineDescriptor :: final {
+    return ffi.WGPURenderPipelineDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
         layout: v.layout ? toFFI(v.layout) : none,
         vertex: toFFI(v.vertex),
         primitive: toFFI(v.primitive),
-        depthStencil: v.depthStencil ? toFFI(v.depthStencil) : none,
+        depthStencil: depthStencil,
         multisample: toFFI(v.multisample),
-        fragment: v.fragment ? toFFI(v.fragment) : none,
+        fragment: fragment,
     };
 }
 
@@ -83,7 +90,7 @@ fn fromFFI(v: ffi.WGPUPipelineLayoutDescriptor): PipelineLayoutDescriptor :: fin
     };
 }
 
-fn toFFI(v: PipelineLayoutDescriptor): ref ffi.WGPUPipelineLayoutDescriptor :: final {
+fn toFFI(v: PipelineLayoutDescriptor): ffi.WGPUPipelineLayoutDescriptor :: final {
     let layouts = arrayToFFI<BindGroupLayout, mut ffi.WGPUBindGroupLayoutImpl>(v.bindGroupLayouts);
     return {
         nextInChain: none,

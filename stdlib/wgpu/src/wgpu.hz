@@ -95,8 +95,8 @@ export struct Limits {
     maxComputeWorkgroupSizeZ: u32 = 0;
     maxComputeWorkgroupsPerDimension: u32 = 0;
 
-    fn toFFI() {
-        return ref ffi.WGPULimits {
+    fn toFFI(): ffi.WGPULimits {
+        return ffi.WGPULimits {
             nextInChain: none,
             maxTextureDimension1D: this.maxTextureDimension1D,
             maxTextureDimension2D: this.maxTextureDimension2D,
@@ -162,16 +162,23 @@ fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut f
 
 
 export fn createInstance() { 
-    let instance = ffi.wgpuCreateInstance({
-        nextInChain: none,
-        features: {
+    do unsafe {
+        let stackref descriptor = ffi.WGPUInstanceDescriptor {
             nextInChain: none,
-            timedWaitAnyEnable: false,
-            timedWaitAnyMaxCount: 0,
+            features: {
+                nextInChain: none,
+                timedWaitAnyEnable: false,
+                timedWaitAnyMaxCount: 0,
+            }
+        };
+        let descriptorPtr: ref ffi.WGPUInstanceDescriptor = uninitialized;
+        let descriptorRaw = ffi.extractRawUnsafeStackrefPointer(descriptor);
+        __c__("descriptorPtr = descriptorRaw;");
+
+        let instance = ffi.wgpuCreateInstance(descriptorPtr);
+        if instance {
+            return fromFFI(instance);
         }
-    });
-    if instance {
-        return fromFFI(instance);
-    }
-    return none;
+        return none;
+    };
 }

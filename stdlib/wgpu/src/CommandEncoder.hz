@@ -18,18 +18,8 @@ fn fromOptionalFFI(v: ffi.WGPUCommandEncoderDescriptor | none): CommandEncoderDe
     };
 }
 
-fn toFFI(c: CommandEncoderDescriptor): ref ffi.WGPUCommandEncoderDescriptor :: final {
-    return ref ffi.WGPUCommandEncoderDescriptor {
-        nextInChain: none,
-        label: toFFI(c.label),
-    };
-}
-
-fn toOptionalFFI(c: CommandEncoderDescriptor | none): ref ffi.WGPUCommandEncoderDescriptor | none :: final {
-    if !c {
-        return none;
-    }
-    return ref ffi.WGPUCommandEncoderDescriptor {
+fn toFFI(c: CommandEncoderDescriptor): ffi.WGPUCommandEncoderDescriptor :: final {
+    return ffi.WGPUCommandEncoderDescriptor {
         nextInChain: none,
         label: toFFI(c.label),
     };
@@ -39,21 +29,66 @@ export struct CommandEncoder {
     handle: mut ffi.WGPUCommandEncoderImpl;
 
     fn beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
-        let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, toFFI(descriptor));
-        if handle {
-            return fromFFI(handle);
-        }
+        do unsafe {
+            // The two optional sub-structs the WGPURenderPassDescriptor points at
+            // are built HERE rather than inside toFFI(), because the pointers it
+            // carries must stay valid for the whole call -- a toFFI() borrowing
+            // its own frame would hand back two dangling pointers the moment it
+            // returned. wgpuCommandEncoderBeginRenderPass reads all three through
+            // `Option<&...>` and rebuilds them as owned wgpu-core values before
+            // it does anything else, so none of them escapes the call.
+            let depthStencil: ffi.WGPURenderPassDepthStencilAttachment = uninitialized;
+            if descriptor.depthStencilAttachment {
+                depthStencil = toFFI(descriptor.depthStencilAttachment);
+            }
+            let stackref depthStencilStorage = depthStencil;
+            let depthStencilPtr = none as ref ffi.WGPURenderPassDepthStencilAttachment | none;
+            if descriptor.depthStencilAttachment {
+                let depthStencilRaw = ffi.extractRawUnsafeStackrefPointer(depthStencilStorage);
+                __c__("depthStencilPtr = depthStencilRaw;");
+            }
+
+            let timestamps: ffi.WGPURenderPassTimestampWrites = uninitialized;
+            if descriptor.timestampWrites {
+                timestamps = toFFI(descriptor.timestampWrites);
+            }
+            let stackref timestampStorage = timestamps;
+            let timestampPtr = none as ref ffi.WGPURenderPassTimestampWrites | none;
+            if descriptor.timestampWrites {
+                let timestampRaw = ffi.extractRawUnsafeStackrefPointer(timestampStorage);
+                __c__("timestampPtr = timestampRaw;");
+            }
+
+            let stackref d = toFFI(descriptor, depthStencilPtr, timestampPtr);
+            let dPtr: ref ffi.WGPURenderPassDescriptor = uninitialized;
+            let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
+            __c__("dPtr = dRaw;");
+            let handle = ffi.wgpuCommandEncoderBeginRenderPass(this.handle, dPtr);
+            if handle {
+                return fromFFI(handle);
+            }
+            return none;
+        };
     }
 
     fn finish(descriptor?: CommandBufferDescriptor): Result<CommandBuffer, none> {
-        let d = none as ref ffi.WGPUCommandBufferDescriptor | none;
-        if descriptor {
-            d = toFFI(descriptor);
-        }
-        let buffer = ffi.wgpuCommandEncoderFinish(this.handle, d);
-        if buffer {
-            return fromFFI(buffer);
-        }
+        do unsafe {
+            let value: ffi.WGPUCommandBufferDescriptor = uninitialized;
+            if descriptor {
+                value = toFFI(descriptor);
+            }
+            let stackref storage = value;
+            let descriptorPtr = none as ref ffi.WGPUCommandBufferDescriptor | none;
+            if descriptor {
+                let storageRaw = ffi.extractRawUnsafeStackrefPointer(storage);
+                __c__("descriptorPtr = storageRaw;");
+            }
+            let buffer = ffi.wgpuCommandEncoderFinish(this.handle, descriptorPtr);
+            if buffer {
+                return fromFFI(buffer);
+            }
+            return none;
+        };
     }
 }
 

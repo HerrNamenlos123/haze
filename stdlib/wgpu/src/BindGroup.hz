@@ -41,7 +41,7 @@ fn fromFFI(v: ffi.WGPUBindGroupLayoutDescriptor): BindGroupLayoutDescriptor :: f
     };
 }
 
-fn toFFI(v: BindGroupLayoutDescriptor): ref ffi.WGPUBindGroupLayoutDescriptor :: final {
+fn toFFI(v: BindGroupLayoutDescriptor): ffi.WGPUBindGroupLayoutDescriptor :: final {
     let entries = arrayToFFI<BindGroupLayoutEntry, ffi.WGPUBindGroupLayoutEntry>(v.entries);
     return {
         label: toOptionalFFI(v.debugLabel),
@@ -188,7 +188,7 @@ fn fromFFI(v: ffi.WGPUBindGroupDescriptor): BindGroupDescriptor :: final {
     };
 }
 
-fn toFFI(v: BindGroupDescriptor): ref ffi.WGPUBindGroupDescriptor :: final {
+fn toFFI(v: BindGroupDescriptor): ffi.WGPUBindGroupDescriptor :: final {
     let entries = arrayToFFI<BindGroupEntry, ffi.WGPUBindGroupEntry>(v.entries);
     return {
         nextInChain: none,

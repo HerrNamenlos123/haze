@@ -32,8 +32,8 @@ fn fromOptionalFFI(v: ffi.WGPUTextureViewDescriptor | none): TextureViewDescript
     return fromFFI(v);
 }
 
-fn toFFI(v: TextureViewDescriptor): ref ffi.WGPUTextureViewDescriptor :: final {
-    return ref ffi.WGPUTextureViewDescriptor {
+fn toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor :: final {
+    return ffi.WGPUTextureViewDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
         format: toFFI(v.format),
@@ -47,24 +47,29 @@ fn toFFI(v: TextureViewDescriptor): ref ffi.WGPUTextureViewDescriptor :: final {
     };
 }
 
-fn toOptionalFFI(v: TextureViewDescriptor | none): ref ffi.WGPUTextureViewDescriptor | none :: final {
-    if !v {
-        return none;
-    }
-    return toFFI(v);
-}
-
 export struct Texture {
     handle: mut ffi.WGPUTextureImpl;
 
     fn createView(viewDescriptor?: TextureViewDescriptor): Result<TextureView, none> {
-        let textureView = ffi.wgpuTextureCreateView(this.handle, toOptionalFFI(viewDescriptor));
+      do unsafe {
+        let value: ffi.WGPUTextureViewDescriptor = uninitialized;
+        if viewDescriptor {
+            value = toFFI(viewDescriptor);
+        }
+        let stackref storage = value;
+        let descriptorPtr = none as ref ffi.WGPUTextureViewDescriptor | none;
+        if viewDescriptor {
+            let storageRaw = ffi.extractRawUnsafeStackrefPointer(storage);
+            __c__("descriptorPtr = storageRaw;");
+        }
+        let textureView = ffi.wgpuTextureCreateView(this.handle, descriptorPtr);
         if textureView {
             return TextureView {
                 handle: textureView,
             };
         }
         return none;
+      };
     }
 }
 
@@ -139,21 +144,6 @@ fn toFFI(v: Extent3D): ffi.WGPUExtent3D :: final {
     };
 }
 
-// The one caller that cannot take the value form above: wgpuQueueWriteTexture's
-// `writeSize` is a `WGPUExtent3D const*`, so it needs an address, and a `ref` is
-// the only thing in the language that can produce one that outlives the
-// expression (a `stackref` deliberately cannot become a `ref`). Everywhere else
-// an Extent3D is copied straight into a by-value field (WGPUTextureDescriptor.size)
-// and allocates nothing.
-fn toRefFFI(v: Extent3D): ref ffi.WGPUExtent3D :: final {
-    let e = toFFI(v);
-    return ref ffi.WGPUExtent3D {
-        width: e.width,
-        height: e.height,
-        depthOrArrayLayers: e.depthOrArrayLayers,
-    };
-}
-
 export struct TextureDescriptor {
     debugLabel?: str;
     usage: TextureUsage;
@@ -188,14 +178,14 @@ fn fromFFI(v: ffi.WGPUTextureDescriptor): TextureDescriptor :: final {
     return descriptor;
 }
 
-fn toFFI(v: TextureDescriptor): ref ffi.WGPUTextureDescriptor :: final {
+fn toFFI(v: TextureDescriptor): ffi.WGPUTextureDescriptor :: final {
     assert(v.size.width >= u32.min && v.size.width <= u32.max);
     assert(v.size.height >= u32.min && v.size.height <= u32.max);
     assert(v.size.depthOrArrayLayers >= u32.min && v.size.depthOrArrayLayers <= u32.max);
     assert(v.mipLevelCount >= u32.min && v.mipLevelCount <= u32.max);
     assert(v.sampleCount >= u32.min && v.sampleCount <= u32.max);
     let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
-    return ref ffi.WGPUTextureDescriptor {
+    return ffi.WGPUTextureDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
         usage: toFFI(v.usage),
@@ -224,7 +214,7 @@ fn fromFFI(v: ffi.WGPUTexelCopyBufferLayout): TexelCopyBufferLayout :: final {
     };
 }
 
-fn toFFI(v: TexelCopyBufferLayout): ref ffi.WGPUTexelCopyBufferLayout :: final {
+fn toFFI(v: TexelCopyBufferLayout): ffi.WGPUTexelCopyBufferLayout :: final {
     assert(v.offset >= u64.min && v.offset <= u64.max);
     assert(v.bytesPerRow >= u32.min && v.bytesPerRow <= u32.max);
     assert(v.rowsPerImage >= u32.min && v.rowsPerImage <= u32.max);
@@ -251,7 +241,7 @@ fn fromFFI(v: ffi.WGPUTexelCopyTextureInfo): TexelCopyTextureInfo :: final {
     };
 }
 
-fn toFFI(v: TexelCopyTextureInfo): ref ffi.WGPUTexelCopyTextureInfo :: final {
+fn toFFI(v: TexelCopyTextureInfo): ffi.WGPUTexelCopyTextureInfo :: final {
     assert(v.mipLevel >= u32.min && v.mipLevel <= u32.max);
     assert(v.origin.x >= u32.min && v.origin.x <= u32.max);
     assert(v.origin.y >= u32.min && v.origin.y <= u32.max);

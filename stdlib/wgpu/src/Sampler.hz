@@ -43,7 +43,7 @@ fn fromFFI(v: ffi.WGPUSamplerDescriptor): SamplerDescriptor :: final {
     };
 }
 
-fn toFFI(v: SamplerDescriptor): ref ffi.WGPUSamplerDescriptor :: final {
+fn toFFI(v: SamplerDescriptor): ffi.WGPUSamplerDescriptor :: final {
     assert(v.maxAnisotropy >= u16.min && v.maxAnisotropy <= u16.max);
     return {
         nextInChain: none,

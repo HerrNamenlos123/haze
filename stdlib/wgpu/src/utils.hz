@@ -49,6 +49,70 @@ fn fromFFI(view: ffi.WGPUStringView): str :: final {
     };
 }
 
+// ── Borrowing stack storage for the duration of one FFI call ──────────────
+//
+// Every WebGPU entry point that takes a `WGPUFoo const*` needs an ADDRESS, and
+// `ref` (a GC allocation) is normally the only way to get one -- `let stackref`
+// deliberately cannot become a `ref` (H4001), because in general a stackref may
+// point at storage the GC does not manage and does not keep alive.
+//
+// extractRawUnsafeStackrefPointer below is the deliberate hole in that rule, and
+// its name is the warning: it checks the witness once and then hands back the
+// bare address, with nothing left to guard it. Using it safely has two halves,
+// and for this module both are discharged:
+//
+//   1. *wgpu does not retain the pointer.* Checked against the wgpu-native
+//      source vendored at `bin/wgpu-native/src/lib.rs`, not assumed: 42 of the
+//      53 struct-pointer parameters across its 178 exported entry points are
+//      declared `Option<&T>` / `&T` -- Rust shared references whose elided
+//      lifetime is bound to the call, so rustc itself forbids storing them
+//      anywhere that outlives it. Each is destructured into owned wgpu-core
+//      types on entry (wgpuCommandEncoderBeginRenderPass, for one, builds an
+//      owned `wgc::command::RenderPassDescriptor` with `Cow::Owned` attachments
+//      before doing anything else). The other 11 are by-value parameters, not
+//      pointers -- and they include the `...CallbackInfo` structs, the one place
+//      wgpu genuinely DOES keep what it is given: their `userdata` is handed
+//      back later, from the callback. That is why callback state stays a real
+//      `ref Box<...>` and is never borrowed this way.
+//
+//   2. *The storage outlives the call.* This half is on us, and it is why the
+//      borrow is spelled out at each call site instead of being hidden inside a
+//      toFFI(): the `let stackref` owning the bytes must live in the SAME
+//      function that makes the wgpu call. A toFFI() returning a borrow of its
+//      own frame would dangle the instant it returned -- which is exactly why
+//      every pointer-valued FIELD (a descriptor's `depthStencilAttachment`,
+//      `fragment`, `nextInChain`, ...) is passed INTO its toFFI() by the caller
+//      rather than built inside it.
+//
+// What the witness check buys, precisely: it verifies once, at the moment of
+// the call, that the scope owning the storage is still alive. It cannot follow
+// the result -- a plain `ref` carries no witness -- so a borrow that is kept
+// instead of used is a dangling pointer with no diagnostic. Hence the rule this
+// module follows without exception:
+//
+//     the result must not outlive the frame that owns the storage.
+//
+// In practice that means: reinterpret it into the descriptor pointer the FFI
+// declaration asks for, in the same function that owns the storage, and use it
+// there. Never return it, never store it in anything that outlives the call.
+//
+// It hands back a `cptr` and nothing else on purpose. A `ref` into stack storage
+// would be a lie to both the type system and the GC -- it looks managed and
+// keeps nothing alive -- so the one step that reinterprets this raw address as
+// the `ref ffi.WGPU*` an entry point declares is written out, in inline C, at
+// every single call site. That reinterpretation is the unsafe act; it should be
+// visible where it happens, not hidden behind a helper with a comfortable
+// return type.
+namespace ffi {
+    fn extractRawUnsafeStackrefPointer<T>(r: stackref T): cptr :: final {
+        do unsafe {
+            let p = none as cptr;
+            __c__("p = (void*)HZSTD_STACKREF_DEREF(char, r);");
+            return p;
+        };
+    }
+}
+
 struct ArrayFFIResult {
     data: cptr = none;
     length: usize = 0;

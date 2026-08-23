@@ -73,7 +73,7 @@ fn fromFFI(v: ffi.WGPUFragmentState): FragmentState :: final {
     };
 }
 
-fn toFFI(v: FragmentState): ref ffi.WGPUFragmentState :: final {
+fn toFFI(v: FragmentState): ffi.WGPUFragmentState :: final {
     let constants = arrayToFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constants);
     let targets = arrayToFFI<ColorTargetState, ffi.WGPUColorTargetState>(v.targets);
     return {
@@ -122,6 +122,22 @@ fn fromFFI(v: ffi.WGPUBlendState): BlendState :: final {
     };
 }
 
+// The last `ref` in this module, and the one place it is genuinely the right
+// answer rather than a leftover.
+//
+// WGPUColorTargetState.blend is a POINTER field, and a ColorTargetState is only
+// ever produced as an ELEMENT of the array arrayToFFI() builds -- inside that
+// generic helper's own frame, which is gone long before the
+// wgpuDeviceCreateRenderPipeline call that reads the pointer. So unlike every
+// other pointer field here, its pointee cannot be hoisted into the frame that
+// makes the call: there is no single such frame to hoist it to. A GC allocation
+// is what keeps it alive across that gap, and it costs one 12-byte block per
+// blended color target per pipeline creation -- a handful for a whole process.
+//
+// (Collecting the blend states into one array owned by createRenderPipeline and
+// pointing into its buffer was considered and rejected: it trades N small
+// allocations for one array allocation -- N is normally 1 -- while adding a
+// requirement that the array never regrow after the pointers are taken.)
 fn toFFI(v: BlendState): ref ffi.WGPUBlendState :: final {
     return {
         color: toFFI(v.color),

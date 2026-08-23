@@ -22,16 +22,26 @@ export struct Instance {
                 compatibleSurface = surface.handle;
             }
 
-            return fromFFI(
-                ffi.wgpuInstanceRequestAdapter(this.handle, {
+            do unsafe {
+                // wgpuInstanceRequestAdapter takes `options` as `Option<&...>`
+                // and reads it into an owned wgt::RequestAdapterOptions before
+                // returning, so this frame outliving the call is enough.
+                let stackref options = ffi.WGPURequestAdapterOptions {
                     nextInChain: none,
                     featureLevel: toFFI(adapterOpts.featureLevel),
                     powerPreference: toFFI(adapterOpts.powerPreference),
                     forceFallbackAdapter: adapterOpts.forceFallbackAdapter,
                     backendType: toFFI(adapterOpts.backendType),
                     compatibleSurface: compatibleSurface,
-                }, ffiCallbackInfo)
-            );
+                };
+                let optionsPtr: ref ffi.WGPURequestAdapterOptions = uninitialized;
+                let optionsRaw = ffi.extractRawUnsafeStackrefPointer(options);
+                __c__("optionsPtr = optionsRaw;");
+
+                return fromFFI(
+                    ffi.wgpuInstanceRequestAdapter(this.handle, optionsPtr, ffiCallbackInfo)
+                );
+            };
         }
         else {
             return fromFFI(ffi.wgpuInstanceRequestAdapter(this.handle, none, ffiCallbackInfo));
