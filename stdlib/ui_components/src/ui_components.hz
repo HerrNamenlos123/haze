@@ -386,7 +386,7 @@ export enum FocusRequest { None, Focus, Blur }
 // report two things at once (which kind of request, and whose) while still
 // recursing -- a plain return value can't carry both back up out of a
 // recursive walk without allocating on every level.
-export ref struct FocusRequestTarget {
+export struct FocusRequestTarget {
     kind: FocusRequest = FocusRequest.None;
     data: ComponentElementRuntimeData | null = null;
 }
@@ -478,6 +478,14 @@ fn newRuntimeData(): ComponentElementRuntimeData {
 // Lazily attaches a ComponentElementRuntimeData to `element` if it doesn't
 // have one yet, and returns it. The one and only place that knows
 // `_runtimeData`'s concrete type.
+fn makeButtons(left: bool, middle: bool, right: bool): PointerButtons {
+    let b: PointerButtons = PointerButtons.None;
+    if left { b = b | PointerButtons.Left; }
+    if middle { b = b | PointerButtons.Middle; }
+    if right { b = b | PointerButtons.Right; }
+    return b;
+}
+
 export fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeData {
     if element is ui_elements.DivElement {
         if element._runtimeData {
@@ -787,7 +795,9 @@ export ref struct ComponentInstance {
     }
 }
 
-export ref struct RenderContext {
+// A value: renderStack holds these inline, so pushing a context for every
+// div()/component during a render pass costs no allocation.
+export struct RenderContext {
     currentComponent: ComponentInstance;
     currentParent: mut ui_elements.DivElement;
     // currentParent's own full slash-separated id path from the component
@@ -883,8 +893,10 @@ export type CursorCallback = (index: int) => void;
 // away without them only because it returns void.
 export type MousePosKnownCallback = () => (bool) :: final, pure;
 
-// Internal pending pointer event before it is dispatched to elements.
-ref struct PendingPointerEvent {
+// Internal pending pointer event before it is dispatched to elements. A
+// value (stored inline in UIContext's per-frame buffer), so an input event
+// costs no allocation of its own.
+export struct PendingPointerEvent {
     kind: PointerEventKind;
     button: PointerButton;
     buttons: PointerButtons;
@@ -918,6 +930,18 @@ export opaque ref struct UIContext {
     // participate in click eligibility on some *later*, unrelated up-event
     // that happens to hit it. See process()'s Down/Up handling.
     _pointerDownTargets: []ComponentElementRuntimeData = [];
+
+    // Per-frame scratch buffers, allocated once and cleared each frame
+    // (clear() keeps the capacity). An idle frame used to build six fresh
+    // arrays plus a closure in process(); now it allocates nothing.
+    _pendingEvents: []PendingPointerEvent = [];
+    _eventQueue: [](() => void) = [];
+    _finalHitPath: []ui_elements.Element = [];
+    _eventHitPath: []ui_elements.Element = [];
+    _focusPath: []ui_elements.Element = [];
+    _oldFocusPath: []ui_elements.Element = [];
+    _clickEligible: []bool = [];
+    _noEdges: []PointerEdge = [];
 
     renderStack: []RenderContext = [];
     effectQueue: [](() => void) = [];
@@ -1065,10 +1089,11 @@ export opaque ref struct UIContext {
     // the single largest allocation site in an idle frame: it runs over the
     // whole element tree once per frame for the cursor, again in
     // updateHoverState's sibling walk, and once more per pointer event.
-    fn buildHitPath(element: ui_elements.Element, mousePos: Vec2): []ui_elements.Element :: final {
-        let path: []ui_elements.Element = [];
-        this.collectHitPath(element, mousePos, path);
-        return path;
+    // Fills `out` (cleared first) with the root-first hit path; the caller
+    // owns the buffer so it can be reused frame after frame.
+    fn buildHitPathInto(out: []ui_elements.Element, element: ui_elements.Element, mousePos: Vec2): void :: final {
+        out.clear();
+        this.collectHitPath(element, mousePos, out);
     }
 
     // Appends this element's own contribution to `out` and reports whether
@@ -1177,10 +1202,10 @@ export opaque ref struct UIContext {
     // for the same reason: this is a FULL-TREE walk on every frame, so a
     // list per visited element meant one heap allocation per element in the
     // UI, per frame, almost all of them empty.
-    fn buildFocusPath(element: ui_elements.Element): []ui_elements.Element :: final {
-        let path: []ui_elements.Element = [];
-        this.collectFocusPath(element, path);
-        return path;
+    // See buildHitPathInto.
+    fn buildFocusPathInto(out: []ui_elements.Element, element: ui_elements.Element): void :: final {
+        out.clear();
+        this.collectFocusPath(element, out);
     }
 
     // See collectHitPath: writes to `out` only on the branch that finds the
@@ -1234,7 +1259,8 @@ export opaque ref struct UIContext {
     // hid the focused element already goes nowhere. Hover is handled by
     // updateHoverState's own `hidden` parameter instead -- see its comment.
     fn releaseHiddenInputState(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
-        let focusPath = this.buildFocusPath(tree);
+        let focusPath = this._focusPath;
+        this.buildFocusPathInto(focusPath, tree);
         if focusPath.length > 0 && this.pathIsHidden(focusPath) {
             // Blur by the same route a click uses (null target = "focus
             // nothing"), so onBlur fires and the focusVersion bump wakes
@@ -1257,7 +1283,8 @@ export opaque ref struct UIContext {
             }
         }
 
-        let oldPath = this.buildFocusPath(tree);
+        let oldPath = this._oldFocusPath;
+        this.buildFocusPathInto(oldPath, tree);
         if oldPath.length > 0 {
             let oldData = runtimeDataOf(oldPath[oldPath.length - 1]);
             oldData.focused = false;
@@ -1287,7 +1314,7 @@ export opaque ref struct UIContext {
     // elements each calling focus() in the same frame don't leave the loser's
     // flag set to spuriously re-fire on the next frame -- last writer in tree
     // order would win a frame late, which is worse than simply dropping it.
-    fn takeFocusRequest(element: ui_elements.Element, found: FocusRequestTarget): void :: final {
+    fn takeFocusRequest(element: ui_elements.Element, found: mut stackref FocusRequestTarget): void :: final {
         let data = runtimeDataOf(element);
         if data.focusRequested != FocusRequest.None {
             if found.kind == FocusRequest.None {
@@ -1310,7 +1337,7 @@ export opaque ref struct UIContext {
     // programmatic and click-driven focus cannot drift apart in behavior
     // (blur-the-old-one, fire onBlur then onFocus, both onto `eventQueue`).
     fn applyPendingFocus(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
-        let found = FocusRequestTarget {};
+        let stackref found = FocusRequestTarget {};
         this.takeFocusRequest(tree, found);
 
         if found.kind == FocusRequest.Focus {
@@ -1671,18 +1698,7 @@ export opaque ref struct UIContext {
         this._middleHeld = this._pointerButtons ? this._pointerButtons.middleHeld() : false;
         this._rightHeld = this._pointerButtons ? this._pointerButtons.rightHeld() : false;
 
-        let edges: []PointerEdge = [];
-        if this._pointerButtons {
-            edges = this._pointerButtons.edgesThisFrame();
-        }
-
-        let makeButtons = (left: bool, middle: bool, right: bool): PointerButtons => {
-            let b: PointerButtons = PointerButtons.None;
-            if left { b = b | PointerButtons.Left; }
-            if middle { b = b | PointerButtons.Middle; }
-            if right { b = b | PointerButtons.Right; }
-            return b;
-        };
+        let edges = this._pointerButtons ? this._pointerButtons.edgesThisFrame() : this._noEdges;
 
         let buttons = makeButtons(this._leftHeld, this._middleHeld, this._rightHeld);
 
@@ -1695,7 +1711,8 @@ export opaque ref struct UIContext {
         let runningMiddle = prevMiddleHeld;
         let runningRight = prevRightHeld;
 
-        let pendingEvents: []PendingPointerEvent = [];
+        let pendingEvents = this._pendingEvents;
+        pendingEvents.clear();
         for edge in edges {
             if edge.kind == PointerEdgeKind.Pressed {
                 if edge.button == PointerButton.Left { runningLeft = true; }
@@ -1722,7 +1739,8 @@ export opaque ref struct UIContext {
         // corrupt a tree that's still being traversed for this very frame's
         // hit-testing/hover pass. So: finish walking and decide everything
         // first, then fire it all only once the walk is fully done.
-        let eventQueue: [](() => void) = [];
+        let eventQueue = this._eventQueue;
+        eventQueue.clear();
 
         if this.rootComponent {
             let tree = this.rootComponent.rootElement;
@@ -1753,9 +1771,10 @@ export opaque ref struct UIContext {
             // state as a pointer sitting outside the window, which is the
             // honest description of what we know.
             let pointerLocated = this.mousePosKnown;
-            let finalHitPath: []ui_elements.Element = [];
+            let finalHitPath = this._finalHitPath;
+            finalHitPath.clear();
             if pointerLocated {
-                finalHitPath = this.buildHitPath(tree, this.mousePos);
+                this.buildHitPathInto(finalHitPath, tree, this.mousePos);
                 this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
             }
 
@@ -1786,7 +1805,8 @@ export opaque ref struct UIContext {
             // position -- multiple edges landing in one frame can each have
             // their own position if the pointer also moved in between.
             for pe in pendingEvents {
-                let hitPath = this.buildHitPath(tree, pe.pos);
+                let hitPath = this._eventHitPath;
+                this.buildHitPathInto(hitPath, tree, pe.pos);
                 let pressure = 0.0;
                 if pe.kind == PointerEventKind.Down { pressure = 0.5; }
                 else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
@@ -1809,7 +1829,7 @@ export opaque ref struct UIContext {
                     for d in this._pointerDownTargets {
                         setPointerDownHere(d, false);
                     }
-                    this._pointerDownTargets = [];
+                    this._pointerDownTargets.clear();
 
                     for el in hitPath {
                         let d = runtimeDataOf(el);
@@ -1849,7 +1869,8 @@ export opaque ref struct UIContext {
                     // correctly answers that regardless of anything the
                     // pointer did in between, including dragging off this
                     // exact element and back onto it before release.
-                    let clickEligible: []bool = [];
+                    let clickEligible = this._clickEligible;
+                    clickEligible.clear();
                     for el in hitPath {
                         let d = runtimeDataOf(el);
                         clickEligible.push(d.inputFeedback ? d.inputFeedback.pointerDownHere : false);
@@ -1863,7 +1884,7 @@ export opaque ref struct UIContext {
                     for d in this._pointerDownTargets {
                         setPointerDownHere(d, false);
                     }
-                    this._pointerDownTargets = [];
+                    this._pointerDownTargets.clear();
 
                     let clickEvent = PointerEvent {
                         pointerId: 1, pointerType: "mouse", pos: pe.pos,
@@ -1904,13 +1925,13 @@ export opaque ref struct UIContext {
             // frame's key/text queues, same as a real UI wouldn't drop a
             // keystroke that lands in the same tick as the click that
             // focused the field it's meant for.
-            let keyEdges: []KeyEdge = [];
-            if this._keyboard { keyEdges = this._keyboard.keyEdgesThisFrame(); }
-            let textChunks: []str = [];
-            if this._keyboard { textChunks = this._keyboard.textInputThisFrame(); }
-
-            if keyEdges.length > 0 || textChunks.length > 0 {
-                let focusPath = this.buildFocusPath(tree);
+            let keyboard = this._keyboard;
+            if keyboard {
+              let keyEdges = keyboard.keyEdgesThisFrame();
+              let textChunks = keyboard.textInputThisFrame();
+              if keyEdges.length > 0 || textChunks.length > 0 {
+                let focusPath = this._focusPath;
+                this.buildFocusPathInto(focusPath, tree);
                 // A focused element that got hidden this frame must not keep
                 // receiving keystrokes. releaseHiddenInputState() below
                 // normally blurs it before we ever get here (that is what
@@ -1933,6 +1954,7 @@ export opaque ref struct UIContext {
                         this.dispatchTextInputBubbling(focusPath, textEvent, eventQueue);
                     }
                 }
+              }
             }
         }
 
@@ -1940,6 +1962,9 @@ export opaque ref struct UIContext {
         // handler for this frame is now scheduled; only now do any of them
         // actually run.
         for fire in eventQueue { fire(); }
+        // Handlers are done; drop them now rather than holding the closures
+        // (and whatever they captured) alive until next frame's clear().
+        eventQueue.clear();
 
         // FLUSH PHASE
         this.flushEffects();
@@ -1976,13 +2001,15 @@ export opaque ref struct UIContext {
     // own children are done.
     fn attachChild(element: ui_elements.Element): void {
         assert(this.renderStack.length > 0);
-        let ctx = this.renderStack[this.renderStack.length - 1];
-        if ctx.childIndex < ctx.currentParent.children.length {
-            ctx.currentParent.children[ctx.childIndex] = element;
+        let top = this.renderStack.length - 1;
+        let parent = this.renderStack[top].currentParent;
+        let childIndex = this.renderStack[top].childIndex;
+        if childIndex < parent.children.length {
+            parent.children[childIndex] = element;
         } else {
-            ctx.currentParent.children.push(element);
+            parent.children.push(element);
         }
-        ctx.childIndex = ctx.childIndex + 1;
+        this.renderStack[top].childIndex = childIndex + 1;
     }
 
     // Counterpart to attachChild() above: once a parent's children are done
@@ -2104,14 +2131,14 @@ export opaque ref struct UIContext {
             component.onUnmount();
         }
 
-        component.childComponents = [];
-        component.newChildComponents = [];
+        component.childComponents.clear();
+        component.newChildComponents.clear();
     }
 
     fn defineComponentImpl(
         id: int,
         propsChanged: bool,
-        setupFn: () => (() => void)
+        setupFn: stackref (() => (() => void))
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
@@ -2153,7 +2180,7 @@ export opaque ref struct UIContext {
             instance.templateComputed = rx.computed(() => {
                 rx.get(instance.propsVersion);
 
-                instance.newChildComponents = [];
+                instance.newChildComponents.clear();
 
                 if instance.crashed && instance.crashInfo {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
@@ -2189,11 +2216,13 @@ export opaque ref struct UIContext {
                     return none;
                 };
 
-                let oldChildren =
-                    instance.childComponents;
-
-                instance.childComponents =
-                    instance.newChildComponents;
+                // Swap the two lists: what was registered this pass becomes
+                // the current list, and last pass's list is kept around as
+                // next pass's (cleared) registration buffer -- the same two
+                // arrays live for the component's whole life.
+                let oldChildren = instance.childComponents;
+                instance.childComponents = instance.newChildComponents;
+                instance.newChildComponents = oldChildren;
 
                 for old in oldChildren {
 
@@ -2274,9 +2303,13 @@ export opaque ref struct UIContext {
             assert(instance.prevProps);
             instance.prevProps.set<TProps>(props);
 
-            return this.defineComponentImpl(id, propsChanged, () => {
+            // Only ever called once (setupDone), but it is *built* on every
+            // render of the parent -- in place on the stack, so that costs
+            // nothing.
+            let stackref setup = () => {
                 return setupFn(instanceData);
-            });
+            };
+            return this.defineComponentImpl(id, propsChanged, setup);
         };
     }
 
@@ -2333,21 +2366,18 @@ export opaque ref struct UIContext {
         }
     }
 
-    fn queuePopFront() {
-        let front = this.effectQueue[0];
-        let newQueue: [](() => void) = [];
-        for (let i = 1; i < this.effectQueue.length; i++) {
-            newQueue.push(this.effectQueue[i]);
-        }
-        this.effectQueue = newQueue;
-        return front;
-    }
 
+    // Runs every queued effect in order, including any an effect schedules
+    // while this runs (the loop re-reads the length), then clears the queue
+    // in place -- no per-pop copy of the remaining queue.
     fn flushEffects() {
-        while this.effectQueue.length > 0 {
-            let effect = queuePopFront();
+        let i = 0;
+        while i < this.effectQueue.length {
+            let effect = this.effectQueue[i];
             effect();
+            i = i + 1;
         }
+        this.effectQueue.clear();
     }
 
     // Presets are a parameter pack -- `ui.div(props, children, presets.wFit(),
