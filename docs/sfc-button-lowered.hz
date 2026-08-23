@@ -1,0 +1,201 @@
+// ============================================================================
+// LOWERED OUTPUT of button.hz (SFC draft) -- hand-written spec for the plugin.
+//
+// Sections map 1:1 onto what the plugin emits:
+//   [prelude]   copied verbatim
+//   [props]     struct Button.Props + generated operator!=, slot payload struct
+//   [emit]      struct Button.Emit with one fn per @emit entry
+//   [setup]     copied verbatim, bare prop reads rewritten to instance.props().X
+//   [template]  elements lowered to ui.div/ui.text, class tokens to presets
+//
+// Markers of the form `//@plugin:` explain a lowering decision.
+// ============================================================================
+
+// ---- [prelude] -------------------------------------------------------------
+import ui_elements
+import ui_styling
+import ui_components
+import headwind
+type presets = headwind.presets;
+
+// To show it works, this would not be how we do things, all style vars should be separate props
+export struct ButtonStyle {
+    bg: str = "#00000000";
+    bgHover: str = "#2A2D2E";
+    bgActive: str = "#37373D";
+    bgSelected: str = "#37373D";
+    textColor: str = "#CCCCCC";
+    textColorDisabled: str = "#6A6A6A";
+    paddingX: real = 8.0;
+    paddingY: real = 4.0;
+    rounded: real = 3.0;
+    fontSize: real | none = none;
+}
+
+// ---- [slot]  `content: { label: str; }` -> payload struct ------------------
+export struct ButtonSlotContent {
+    label: str;
+}
+
+// ---- [props] ---------------------------------------------------------------
+export struct ButtonArgs {
+    //@plugin: `id` is injected; never written by SFC users (template assigns it).
+    id: int;
+
+    // @props body, verbatim
+    label: str = "";
+    enabled: bool = true;
+    selected: bool = false;
+    grow: bool = false;
+    style: ButtonStyle = {};
+
+    // @emit  click: (MouseEvent,)   -> optional callback prop
+    onClick?: (e: ui_components.PointerEvent) => none;
+    // @slot  content                -> optional render callback with payload
+    content?: (s: ButtonSlotContent) => none;
+
+    //@plugin: generated. Compares exactly the @props fields -- callbacks
+    // (emits, slots) are excluded by construction, so the "fresh closure every
+    // frame => props always changed" gotcha cannot be written by hand anymore.
+    fn operator!=(other: ButtonArgs) {
+        return this.id != other.id
+            || this.label != other.label
+            || this.enabled != other.enabled
+            || this.selected != other.selected
+            || this.grow != other.grow;
+            //@plugin: `style` is skipped today because ButtonStyle has no
+            // operator!=; the plugin should either require one or generate
+            // field-wise equality for plain structs.
+    }
+}
+
+// ---- [emit] ----------------------------------------------------------------
+//@plugin: `emit.click(e)` in setup resolves to this. Ordinary compiler checks
+// name and argument types; the plugin does no validation of its own.
+struct ButtonEmit {
+    instance: ui_components.InstanceData<ButtonArgs>;
+    fn click(e: ui_components.PointerEvent) {
+        let p = this.instance.props();
+        if p.onClick { p.onClick(e); }
+    }
+}
+
+export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
+        let emits = ButtonEmit { instance: instance };
+
+        // ---- @template [w-fit grow?w-grow h-fit] --------------------------
+        //@plugin: component-box tokens lower to componentSize(). Tailwind
+        // semantics are LAST-WINS, so `w-fit grow?w-grow` == grow ? Grow : Fit.
+        if instance.props().grow {
+            ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
+        } else {
+            ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
+        }
+
+        // ---- @setup (verbatim; `enabled` -> instance.props().enabled etc.) --
+        let buttonRef = ui.elementRef<ui_elements.DivElement>();
+
+        let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
+        let isActive = rx.computed(() => buttonRef?.active() ?? false);
+
+        let clicked = (event: ui_components.PointerEvent) => {
+            event.stopPropagation();
+            if !instance.props().enabled { return; }
+            emits.click(event);
+        };
+
+        let backgroundColor = rx.computed(() => {
+            //@plugin: `style` is a prop -> instance.props().style at the use site.
+            if !instance.props().enabled { return instance.props().style.bg; }
+            else if instance.props().selected { return instance.props().style.bgSelected; }
+            else if isActive { return instance.props().style.bgActive; }
+            else if isHovered { return instance.props().style.bgHover; }
+            return instance.props().style.bg;
+        });
+
+        // ---- @template ------------------------------------------------------
+        return (): void => {
+            let props = instance.props();
+            let style = props.style;
+
+            ui.div({
+                    id: 1,                       //@plugin: auto, 1st element in this block
+                    elementRef: buttonRef,       // ref=buttonRef
+                    onPointerDown: clicked,      // @pointerdown=clicked
+                }, (): void => {
+                    // slot content label=label { ...fallback... }
+                    let p = instance.props();
+                    if p.content {
+                        p.content(ButtonSlotContent { label: p.label });
+                    } else {
+                        // text if=[label.length > 0] [...] label
+                        if p.label.length > 0 {
+                            ui.text({
+                                    id: 1,       //@plugin: auto, 1st element in this block
+                                    text: p.label,
+                                },
+                                //@plugin: ops are FIRST-WINS in applyDivOp today, so the
+                                // token list is emitted in REVERSE to get Tailwind's
+                                // last-wins. Alternatively flip the runtime.
+                                // style.fontSize?font-size-[style.fontSize]
+                                style.fontSize ? presets.fontSize(style.fontSize) : presets.noop(),
+                                // text-nowrap
+                                presets.noWrap(),
+                                // text-color-[enabled ? style.textColor : style.textColorDisabled]
+                                presets.textColor(p.enabled ? style.textColor : style.textColorDisabled)
+                            );
+                        }
+                    }
+                },
+                // class list, reversed (see above):
+                //   row cross-align-center gap-0 px-[style.paddingX]px py-[style.paddingY]px
+                //   bg-[backgroundColor] rounded-[style.rounded]px h-fit
+                //   enabled?cursor-pointer w-fit grow?w-grow
+                //@plugin: `hover:some-stuff` omitted -- element-state variants need
+                // an auto elementRef + `ref.hover() ? op : noop`; not lowered here.
+                props.grow ? presets.wGrow() : presets.noop(),       // grow?w-grow
+                presets.wFit(),                                      // w-fit
+                props.enabled ? presets.cursorPointer() : presets.noop(), // enabled?cursor-pointer
+                presets.hFit(),                                      // h-fit
+                presets.rounded(style.rounded),                      // rounded-[style.rounded]px
+                presets.bg(backgroundColor),                         // bg-[backgroundColor]
+                //@plugin: px-/py- do not exist -- PaddingOp is monolithic. Needs
+                // per-side ops (or px()/py() that only fill their sides) so a
+                // parent's `p-4` can merge with a child's `px-2 py-1`. Lowered to
+                // the existing p({...}) for now.
+                presets.p({
+                    left: style.paddingX, right: style.paddingX,     // px-[style.paddingX]px
+                    top: style.paddingY, bottom: style.paddingY,     // py-[style.paddingY]px
+                }),
+                presets.gap(0),                                      // gap-0
+                presets.crossAlign(ui_styling.CrossAlign.Center),    // cross-align-center
+                presets.row()                                        // row
+            );
+        };
+    });
+}
+
+// ============================================================================
+// USAGE SIDE -- what the parent's template lowers to:
+//
+//   Button label="Save" @click=save {
+//       #content label {
+//           icon [w-4 h-4] name="check"
+//           text label
+//       }
+//   }
+//
+//   Button(ui, {
+//       id: <auto>,
+//       label: "Save",
+//       onClick: save,
+//       content: (s: ButtonSlotContent) => {
+//           ui.icon({ id: 1, name: "check" }, presets.h(4), presets.w(4));
+//           ui.text({ id: 2, text: s.label });
+//       },
+//   });
+//
+// The closure is rebuilt every frame, which is fine: generated operator!=
+// never looks at it.
+// ============================================================================
