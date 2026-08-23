@@ -119,6 +119,26 @@ export opaque ref struct App {
     // platform mouse event.
     mousePositionKnown: bool = false;
     resized: bool = false;
+
+    // ── OS window focus ──────────────────────────────────────────────
+    //
+    // `focused` is the live state; the two edges beside it are true for
+    // exactly the one frame the state flipped, the same one-frame-window
+    // lifecycle `resized` above has.
+    //
+    // An application cares about the EDGE far more than the level -- "the
+    // user just switched away, flush unsaved work" and "the user just came
+    // back, re-check what changed underneath us" -- and computing it here
+    // rather than in every caller is what keeps two consumers from each
+    // having to keep their own previous-value variable and disagreeing
+    // about which frame the transition happened on.
+    //
+    // `focused` starts false, so the first frame of a window that opens
+    // focused reports focusGained. That is deliberate: "the window just
+    // became current" is exactly what a startup frame is.
+    focused: bool = false;
+    focusGained: bool = false;
+    focusLost: bool = false;
     _pointerButtons: AppPointerButtons = {};
     _pointerEdgeQueue: []PointerEdge = [];
     _keyEdgeQueue: []KeyEdge = [];
@@ -296,6 +316,24 @@ export opaque ref struct App {
         return this.wheelModifiersThisFrame;
     }
 
+    // Does the window hold the OS keyboard focus? See the fields above for
+    // why the two edges are published alongside it.
+    fn hasFocus(): bool {
+        return this.focused;
+    }
+
+    // True for exactly the frame the window lost the OS keyboard focus --
+    // the moment to flush anything that should not be left unsaved while
+    // the user is somewhere else.
+    fn justLostFocus(): bool {
+        return this.focusLost;
+    }
+
+    // True for exactly the frame the window regained it.
+    fn justGainedFocus(): bool {
+        return this.focusGained;
+    }
+
     // Polls events, handles resize, and returns this App's Frame reset for
     // this tick (the same persistent instance every call, not a fresh
     // allocation -- see Frame's doc comment in renderer.hz).
@@ -316,6 +354,15 @@ export opaque ref struct App {
 
         sdl.pollEvents();
         fs.pollEvents();
+
+        // Focus edges for this frame. Read once, after pollEvents(), so
+        // both the level and the two edges describe the same instant --
+        // and so a handler that runs later this frame cannot see the flag
+        // flip underneath it.
+        let nowFocused = this.window.hasFocus();
+        this.focusGained = nowFocused && !this.focused;
+        this.focusLost = !nowFocused && this.focused;
+        this.focused = nowFocused;
 
         this.resized = false;
         if this.window.consumeSizeChanged() {

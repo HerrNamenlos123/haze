@@ -66,6 +66,12 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // its two-stroke bindings behind this same ctrl+k prefix.
         { key: "ctrl+k ctrl+o", command: "workbench.action.files.openFolder" },
         { key: "ctrl+r", command: "workbench.action.openRecent" },
+        // Save. Deliberately WITHOUT a `when`, unlike ctrl+o above: there
+        // is no vim meaning of ctrl+s to protect (vim's own `:w` reaches
+        // the same code through Vim.onExCommand), and a save that only
+        // works in some modes is a save nobody can rely on.
+        { key: "ctrl+s", command: "workbench.action.files.save" },
+        { key: "ctrl+k s", command: "workbench.action.files.saveAll" },
 
         // Tabs.
         { key: "ctrl+w", command: "workbench.action.closeActiveEditor", when: "hasOpenTabs" },
@@ -125,8 +131,13 @@ ref struct WorkbenchCommands {
     closeFolder: CommandFn;
     openRecent: CommandFn;
     closeActiveEditor: CommandFn;
+    closeAllEditors: CommandFn;
     nextEditor: CommandFn;
     previousEditor: CommandFn;
+    // Saving one document belongs to the editor that owns it (see
+    // EditorCommands below); saving ALL of them belongs here, because only
+    // the shell knows how many there are.
+    saveAll: CommandFn;
 }
 
 fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands): void {
@@ -135,6 +146,8 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
     keys.commands.register("workbench.action.closeFolder", handlers.closeFolder);
     keys.commands.register("workbench.action.openRecent", handlers.openRecent);
     keys.commands.register("workbench.action.closeActiveEditor", handlers.closeActiveEditor);
+    keys.commands.register("workbench.action.closeAllEditors", handlers.closeAllEditors);
+    keys.commands.register("workbench.action.files.saveAll", handlers.saveAll);
     keys.commands.register("workbench.action.nextEditor", handlers.nextEditor);
     keys.commands.register("workbench.action.previousEditor", handlers.previousEditor);
 }
@@ -147,6 +160,11 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
 // the correct owner by definition: keyboard focus follows the active tab,
 // and every one of these bindings is gated on editorTextFocus anyway.
 ref struct EditorCommands {
+    // Write THIS document to disk. An editor command rather than a
+    // workbench one precisely because it acts on one document: the active
+    // tab claims the id, which is the correct owner by definition since
+    // keyboard focus follows the active tab.
+    save: CommandFn;
     toggleVim: CommandFn;
     vimNavigateBack: CommandFn;
     vimNavigateForward: CommandFn;
@@ -154,6 +172,7 @@ ref struct EditorCommands {
 }
 
 fn registerEditorCommands(keys: mut Keybindings, handlers: EditorCommands): void {
+    keys.commands.register("workbench.action.files.save", handlers.save);
     keys.commands.register("editor.action.toggleVim", handlers.toggleVim);
     keys.commands.register("vim.navigateBack", handlers.vimNavigateBack);
     keys.commands.register("vim.navigateForward", handlers.vimNavigateForward);

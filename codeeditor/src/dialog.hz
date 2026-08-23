@@ -1,0 +1,262 @@
+import ui_elements
+import ui_styling
+import ui_components
+import ui_widgets
+import headwind
+
+// ═══ The file-conflict dialog ════════════════════════════════════════════
+//
+// The one modal in the application: the file under an edited buffer changed
+// on disk, so the two versions have diverged and neither one can be picked
+// without throwing the other away. VS Code asks exactly this question, with
+// exactly these three answers, and so does this.
+//
+// It is deliberately NOT a notification or a status-line hint. Both of the
+// automatic behaviours around it -- autosave and auto-reload -- destroy one
+// side of a divergence, so the one case where they disagree is the one case
+// that has to stop and ask. Everything else about saving happens silently.
+//
+// ── Two things about how it is declared ──────────────────────────────────
+//
+// It must be the LAST child of the application root, after the title-bar
+// menus. Hit-testing walks children in reverse declaration order and the
+// first subtree containing the point wins, ignoring z-index entirely (see
+// titlebar.hz, which has the same requirement for the same reason). A modal
+// that is painted over the editor but whose clicks the editor swallows is
+// worse than no modal at all.
+//
+// And it needs the root's measured size handed to it (`viewport`), because
+// the scrim has to cover the whole window and there is no percentage
+// sizing: a floating element is positioned against its containing block but
+// not stretched to it. The shell reads that size off the root's own
+// elementRef -- which has been measured for many frames by the time any
+// dialog opens -- and passes it in.
+
+fn dialogPanelWidth(): real {
+    return 460.0;
+}
+
+struct ConflictDialogArgs {
+    id: int;
+    open: bool = false;
+    // The file's display name (not its full path): the dialog is a
+    // sentence about one file, and a path turns it into a wrapped
+    // paragraph without saying anything the name does not.
+    fileName: str = "";
+    // The application root's measured size, so the scrim can cover it.
+    viewport: Vec2 = {};
+
+    // The three answers. Non-optional, and taken as DocAction (the same
+    // named type the registry publishes them under -- see documents.hz):
+    // a `T | none` field would have to be built from a ternary at the call
+    // site, and a union of "some named function type" with none does not
+    // convert into a union of the anonymous signature with none. The shell
+    // passes a no-op while no conflict is open, which is also simply
+    // truer -- a closed dialog has no answers, it is not three missing
+    // ones.
+    onOverwrite: DocAction;
+    onDiscard: DocAction;
+    onCancel: DocAction;
+
+    // Callbacks are deliberately not compared -- the shell writes fresh
+    // closures on some rebuilds, and comparing them would report "changed"
+    // every frame and defeat props equality entirely. Same reasoning as
+    // ButtonArgs in stdlib/ui_widgets.
+    fn operator!=(other: ConflictDialogArgs) {
+        return this.id != other.id
+            || this.open != other.open
+            || this.fileName != other.fileName
+            || this.viewport.x != other.viewport.x
+            || this.viewport.y != other.viewport.y;
+    }
+}
+
+// Element ids inside the dialog.
+const comptime ID_SCRIM = 1;
+const comptime ID_PANEL = 2;
+const comptime ID_TITLE = 3;
+const comptime ID_MESSAGE = 4;
+const comptime ID_BUTTONS = 5;
+const comptime ID_BTN_OVERWRITE = 6;
+const comptime ID_BTN_DISCARD = 7;
+const comptime ID_BTN_CANCEL = 8;
+
+fn primaryButtonStyle(): ui_widgets.ButtonStyle {
+    return {
+        bg: "#0078D4",
+        bgHover: "#026EC1",
+        bgActive: "#005FB8",
+        textColor: "#FFFFFF",
+        paddingX: 14.0,
+        paddingY: 6.0,
+        rounded: 2.0,
+    };
+}
+
+fn secondaryButtonStyle(): ui_widgets.ButtonStyle {
+    return {
+        bg: "#313131",
+        bgHover: "#3C3C3C",
+        bgActive: "#484848",
+        textColor: "#CCCCCC",
+        paddingX: 14.0,
+        paddingY: 6.0,
+        rounded: 2.0,
+    };
+}
+
+export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) {
+    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ConflictDialogArgs>) => {
+        // The component's own wrapper must shrink-wrap, or it would take a
+        // share of the root's column even while no dialog is open -- the
+        // scrim inside is floating and sizes itself.
+        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
+
+        return (): void => {
+            let props = instance.props();
+            if !props.open {
+                return;
+            }
+
+            ui.div({
+                id: ID_SCRIM,
+                // Explicit pixel size rather than Grow: see the header --
+                // a floating element is positioned against its containing
+                // block, not stretched to fill it.
+                style: {
+                    width: props.viewport.x,
+                    height: props.viewport.y,
+                },
+                // Modality is only half about painting. The scrim is
+                // focusable and takes focus the moment it appears, so the
+                // keyboard answers the dialog rather than continuing to
+                // edit the document behind it -- and because it covers the
+                // window and is declared last, every click lands here
+                // instead of on the editor.
+                focusable: true,
+                autofocus: true,
+                onKeyDown: (event: ui_components.KeyboardEvent) => {
+                    // Read through instance.props() rather than the
+                    // captured `props` above: this handler outlives the
+                    // render that built it, and the entry it answers for
+                    // can change between them.
+                    let p = instance.props();
+                    if event.key == ui_components.Key.Escape {
+                        event.stopPropagation();
+                        let cancel = p.onCancel;
+                        cancel();
+                        return;
+                    }
+                    // Enter takes the primary answer, which is Overwrite:
+                    // of the two lossy choices it is the one that keeps
+                    // what was actually typed, and it is the button drawn
+                    // as the default.
+                    if event.key == ui_components.Key.Return {
+                        event.stopPropagation();
+                        let overwrite = p.onOverwrite;
+                        overwrite();
+                        return;
+                    }
+                    // Everything else is swallowed rather than passed on.
+                    // A modal that lets ctrl+w through would close the very
+                    // tab whose fate is being decided.
+                    event.stopPropagation();
+                },
+                // Swallow presses that land on the scrim itself. Clicking
+                // outside deliberately does NOT dismiss: every answer here
+                // is destructive to one side or the other, so there is no
+                // safe meaning for "clicked next to the dialog".
+                onPointerDown: (event: ui_components.PointerEvent) => {
+                    event.stopPropagation();
+                },
+            }, (): void => {
+                ui.div({
+                    id: ID_PANEL,
+                    style: { width: dialogPanelWidth() },
+                }, (): void => {
+                    ui.text({
+                        id: ID_TITLE,
+                        text: f"The file '{props.fileName}' has changed on disk.",
+                        style: { fontSize: 14.0 },
+                    },
+                        presets.textColor("#FFFFFF")
+                    );
+                    ui.text({
+                        id: ID_MESSAGE,
+                        text: "This buffer has unsaved changes, so the two versions have diverged. Overwrite writes the editor's version over the file. Discard Changes throws the buffer away and re-reads the file. Cancel leaves both alone and keeps the buffer unsaved, and nothing will be written on its own until you say so.",
+                        style: { fontSize: 12.0 },
+                    },
+                        presets.textColor("#BBBBBB"),
+                        presets.textWrap(ui_styling.TextWrap.Words)
+                    );
+
+                    ui.div({
+                        id: ID_BUTTONS,
+                    }, (): void => {
+                        // Order matches VS Code's: the affirmative answer
+                        // first, the destructive-to-the-buffer one next,
+                        // and the way out last.
+                        ui_widgets.Button(ui, {
+                            id: ID_BTN_OVERWRITE,
+                            label: "Overwrite",
+                            style: primaryButtonStyle(),
+                            onClick: () => {
+                                let action = instance.props().onOverwrite;
+                                action();
+                            },
+                        });
+                        ui_widgets.Button(ui, {
+                            id: ID_BTN_DISCARD,
+                            label: "Discard Changes",
+                            style: secondaryButtonStyle(),
+                            onClick: () => {
+                                let action = instance.props().onDiscard;
+                                action();
+                            },
+                        });
+                        ui_widgets.Button(ui, {
+                            id: ID_BTN_CANCEL,
+                            label: "Cancel",
+                            style: secondaryButtonStyle(),
+                            onClick: () => {
+                                let action = instance.props().onCancel;
+                                action();
+                            },
+                        });
+                    },
+                        presets.row(),
+                        presets.gap(8),
+                        presets.wGrow(),
+                        presets.hFit(),
+                        presets.packing(ui_styling.Packing.End)
+                    );
+                },
+                    presets.col(),
+                    presets.gap(12),
+                    presets.p(16),
+                    presets.hFit(),
+                    presets.bg("#252526"),
+                    presets.border(1),
+                    presets.borderColor("#454545"),
+                    presets.rounded(4),
+                    presets.cursorDefault()
+                );
+            },
+                presets.absolute(),
+                presets.top(0),
+                presets.left(0),
+                // Above the title-bar menu, which is the only other
+                // floating thing that can be up at the same time. Paint
+                // order versus in-flow content is already guaranteed.
+                presets.z(2000),
+                presets.col(),
+                presets.packing(ui_styling.Packing.Center),
+                presets.crossAlign(ui_styling.CrossAlign.Center),
+                // Dim, not opaque: the file being argued about should
+                // still be visible behind the question.
+                presets.bg("#000000A0"),
+                presets.cursorDefault()
+            );
+        };
+    });
+}

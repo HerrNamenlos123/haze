@@ -181,6 +181,25 @@ fn main(): int {
                 g_state.reactiveCounter++;
             }
 
+            // ── The OS window's own focus ────────────────────────────
+            //
+            // The other half of the autosave rule. An editor saves when
+            // keyboard focus leaves it INSIDE the application (see the
+            // onBlur in EditorView), but switching to another program does
+            // not move that focus at all -- the window keeps its internal
+            // focus and simply stops being the current one. This is that
+            // edge, and it is only visible from here.
+            //
+            // Coming back is the mirror image: an edit made in another
+            // program has just finished, so every open file is re-checked
+            // immediately rather than waiting out the poll interval.
+            if a.justLostFocus() {
+                documents().saveAllDirty();
+            }
+            if a.justGainedFocus() {
+                documents().checkAllDisk();
+            }
+
             // Retire the node processes of any language servers that a
             // workspace switch replaced. Non-blocking, and a no-op unless
             // a switch actually happened -- see reapRetiredProcesses.

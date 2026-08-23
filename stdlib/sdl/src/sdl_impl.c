@@ -362,6 +362,22 @@ bool haze_sdl_consumeWindowSizeChanged(SDL_Window* window)
   return changed;
 }
 
+// Does this window currently hold the OS keyboard focus?
+//
+// Polled rather than pushed: SDL delivers FOCUS_GAINED/FOCUS_LOST as
+// events, but every consumer of this only ever wants the current state
+// once a frame, and a flag read straight off the window costs nothing
+// while an extra event trampoline would have to be registered, dispatched
+// and queued for a value that is already sitting there.
+bool haze_sdl_windowHasFocus(SDL_Window* window)
+{
+  if (!window) {
+    return false;
+  }
+
+  return (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
 bool haze_sdl_makeContextCurrent(SDL_Window* window)
 {
   SDL_GLContext context = haze_sdl_get_window_gl_context(window);
