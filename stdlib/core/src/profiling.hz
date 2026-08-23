@@ -185,11 +185,19 @@ namespace profiling {
     // allocations are instrumented, so each one is an exact event. A burst of allocations
     // inside one sampled call renders as exactly that -- many precise leaves under one
     // approximate parent.
+    //
+    // `allocationSampleTimesUs` receives, per allocation and in the same order as
+    // `allocationLeaves`, the timestamp the allocation's sample will RECONSTRUCT to in
+    // the profile (what CpuProfileBuilder.addSample returns) -- the allocation's
+    // Timings-track marker has to be placed at exactly that value, not at the capture's
+    // own timestamp, so that the two halves of one allocation coincide on the timeline.
+    // See the marker loop in buildTrace.
     fn addSamplesToProfile(
         builder: mut ChromeTrace.CpuProfileBuilder,
         result: ProfilingResult,
         frameRefs: []ChromeTrace.FrameRef,
         allocationLeaves: []str,
+        allocationSampleTimesUs: mut []real,
     ): void {
         let nominalIntervalUs = 1000000.0 / (result.sampling_rate_hz as real);
         let offCpuThresholdUs = nominalIntervalUs * 4.0;
@@ -329,7 +337,7 @@ namespace profiling {
                 // would be. That also dedups on exactly the right key: same type, same size,
                 // same call path collapses to one node, while differing in either keeps them
                 // apart and separately countable.
-                builder.addSample(
+                let emittedUs = builder.addSample(
                     eventTimeUs,
                     sampleFrameRefsForStacktrace(
                         capture.stacktrace,
@@ -337,6 +345,7 @@ namespace profiling {
                         ChromeTrace.FrameRef { name: allocationLeaves[allocIndex], url: "", line: 0, column: 0 },
                     ),
                 );
+                allocationSampleTimesUs.push(emittedUs);
                 allocIndex = allocIndex + 1;
             } else {
                 let sample = result.samples[cpuIndex];
@@ -371,9 +380,10 @@ namespace profiling {
         // nothing reading it expects instrumented events mixed in. buildTrace passes real
         // leaves (see there); this path passes none.
         let noAllocationLeaves: []str = [];
+        let noAllocationSampleTimes: mut []real = [];
         let builder = ChromeTrace.CpuProfileBuilder();
         builder.reserveSamples(result.samples.length);
-        addSamplesToProfile(builder, result, frameRefs, noAllocationLeaves);
+        addSamplesToProfile(builder, result, frameRefs, noAllocationLeaves, noAllocationSampleTimes);
         return builder.build();
     }
 
@@ -511,8 +521,12 @@ namespace profiling {
         // ONE profile on ONE thread, carrying the CPU samples and the allocations together.
         let profileBuilder = ChromeTrace.CpuProfileBuilder();
         profileBuilder.reserveSamples(result.samples.length + allocationLeaves.length);
-        addSamplesToProfile(profileBuilder, result, frameRefs, allocationLeaves);
+        let allocationSampleTimesUs: mut []real = [];
+        allocationSampleTimesUs.reserve(allocationLeaves.length);
+        addSamplesToProfile(profileBuilder, result, frameRefs, allocationLeaves, allocationSampleTimesUs);
         let profile = profileBuilder.build();
+        assert(allocationSampleTimesUs.length == allocationCount,
+            "every allocation capture must have been emitted as exactly one sample");
 
         // This "task" block is what gives the flame chart somewhere to render into (see
         // ChromeTrace's file header) and anchors the sample ordering invariant; the profiled
@@ -522,6 +536,16 @@ namespace profiling {
 
         // The Timings-track half (2. above). Stackless, so this is just one small event per
         // capture, reusing the name already computed for the flame-chart leaf.
+        //
+        // Placed at the timestamp the allocation's SAMPLE reconstructs to, not at the
+        // capture's own timestamp. The marker carries no stack of its own; a viewer
+        // answers "what was running when this fired" by looking up the sample active at
+        // the marker's ts, and the sample timeline is built from integer microsecond
+        // deltas, so it can land a fraction of a microsecond off the real timestamp.
+        // Emitting the marker at the real timestamp (what this used to do) put it just
+        // BEFORE its own sample every time, and the lookup then returned the stack of the
+        // CPU sample preceding the allocation -- a plausible-looking stack pointing at
+        // code that never allocated anything.
         if allocationCount > 0 {
             // One empty list shared by every marker rather than one built per capture:
             // addInstantMarker only ever reads it, and an empty array literal inside this
@@ -533,7 +557,7 @@ namespace profiling {
                 let frame = result.memoryInstrumentationFrames[i];
                 builder.addInstantMarker(
                     mainThreadTid,
-                    frame.timestamp * 1000000.0,
+                    allocationSampleTimesUs[i],
                     allocationLeaves[i],
                     noFrames,
                     frame.dataType.length > 0 ? frame.dataType : none,

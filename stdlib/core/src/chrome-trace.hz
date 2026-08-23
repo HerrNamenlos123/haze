@@ -25,10 +25,11 @@
 //    task event meant to contain it, that sample gets merged in first and
 //    becomes a top-level sibling instead of a nested child -- silent,
 //    plausible-looking nonsense (e.g. "foo -> Task -> bar" instead of
-//    "Task -> foo -> bar"). TraceBuilder avoids this by construction: a
-//    profile's startTime always equals its owning task's start time, and
-//    the first timeDelta is always tiny (1us) rather than a full sampling
-//    interval.
+//    "Task -> foo -> bar"). Avoided by construction: CpuProfileBuilder
+//    anchors a profile's startTime 1us BEFORE its first sample (so the first
+//    timeDelta is always exactly 1us, never 0 and never a full sampling
+//    interval), and the caller nests the profile under a task starting at
+//    that same startTime (see profiling.buildTrace).
 //
 // 2. Marker event visibility (see TraceBuilder.addInstantMarker):
 //    DevTools only renders an event in the flame chart/track if its `name`
@@ -476,21 +477,16 @@ namespace ChromeTrace {
         // "execution really did continue further here, we just don't know
         // what it was" instead of silently looking like a shallower call
         // than it actually was.
-        mut fn addSample(timestampUs: real, frames: []FrameRef, truncated: bool = false): void {
-            if this.sampleCount == 0 {
-                this.startTimeUs = timestampUs;
-                this.reconstructedTimeUs = timestampUs;
-                this.timeDeltas.push(0);
-            } else {
-                // Measured against the reconstructed timeline, not against `timestampUs` of
-                // the previous sample -- see reconstructedTimeUs for why that distinction is
-                // the difference between a bounded sub-microsecond error and a skew that
-                // grows without limit for as long as the session runs.
-                let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
-                this.timeDeltas.push(deltaUs);
-                this.reconstructedTimeUs += deltaUs as real;
-            }
-            this.sampleCount += 1;
+        // Returns the timestamp this sample will actually be reconstructed AT by a
+        // consumer (see reconstructedTimeUs) -- NOT `timestampUs`, which the integer
+        // timeDeltas can only approximate. Anything that has to coincide with this sample
+        // on the timeline (profiling.hz's allocation markers, which are the same event as
+        // the allocation's leaf sample and are resolved against the samples by timestamp
+        // in a viewer) must be placed at the returned value: placing it at `timestampUs`
+        // instead puts it a fraction of a microsecond BEFORE its own sample, and a
+        // viewer asked "what was on the stack here" answers with the previous sample.
+        mut fn addSample(timestampUs: real, frames: []FrameRef, truncated: bool = false): real {
+            this.advanceTimeline(timestampUs);
 
             let currentNode = 0; // index into `nodes`; 0 is the root
 
@@ -514,6 +510,34 @@ namespace ChromeTrace {
 
             this.nodes[currentNode].hitCount += 1;
             this.samples.push(this.nodes[currentNode].id);
+            return this.reconstructedTimeUs;
+        }
+
+        // Appends the timeDelta that places the next sample at (as close as the format
+        // allows to) `timestampUs`, and advances reconstructedTimeUs to where it actually
+        // lands.
+        //
+        // The very first sample is the one place where the reconstruction can be made
+        // EXACT rather than approximate, and it is, deliberately: the profile is anchored
+        // at startTime = timestamp - 1us with a first delta of exactly 1us, so the first
+        // sample reconstructs to precisely its own timestamp (and sits strictly after the
+        // profile start -- invariant 1 in the file header, which the task/profile writer
+        // therefore gets for free instead of having to patch the first delta itself; see
+        // buildProfileChunks). Every later sample is measured against the reconstructed
+        // position -- see reconstructedTimeUs for why that distinction is the difference
+        // between a bounded sub-microsecond error and a skew that grows without limit for
+        // as long as the session runs.
+        mut fn advanceTimeline(timestampUs: real): void {
+            if this.sampleCount == 0 {
+                this.startTimeUs = timestampUs - 1.0;
+                this.reconstructedTimeUs = timestampUs;
+                this.timeDeltas.push(1);
+            } else {
+                let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
+                this.timeDeltas.push(deltaUs);
+                this.reconstructedTimeUs += deltaUs as real;
+            }
+            this.sampleCount += 1;
         }
 
         // Records a sample known to have real code running (a hard fact
@@ -530,16 +554,7 @@ namespace ChromeTrace {
         // counted TWICE, so the marker rendered zero-width and every sample after it --
         // for the rest of the profile -- was pulled `durationUs` too early.)
         mut fn addLostSamplesMarker(timestampUs: real): void {
-            if this.sampleCount == 0 {
-                this.startTimeUs = timestampUs;
-                this.reconstructedTimeUs = timestampUs;
-                this.timeDeltas.push(0);
-            } else {
-                let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
-                this.timeDeltas.push(deltaUs);
-                this.reconstructedTimeUs += deltaUs as real;
-            }
-            this.sampleCount += 1;
+            this.advanceTimeline(timestampUs);
 
             let lostNode = this.findOrCreateChild(
                 0,
@@ -878,11 +893,12 @@ namespace ChromeTrace {
         // Streams a whole already-built CpuProfile onto `tid` as a
         // Profile + chunked ProfileChunk events, anchored to start exactly
         // at `taskTs` (the ts of the addTask call this profile's samples
-        // should nest under -- see invariant 1 in the file header). The
-        // profile's own first sample timestamp is shifted to
-        // `taskTs + 1us` and every other sample's timing preserved
-        // relative to that, guaranteeing the ordering invariant holds
-        // regardless of what `taskTs` the caller picked.
+        // should nest under -- see invariant 1 in the file header). Pass
+        // `profile.startTime` as `taskTs`: that is the anchor the builder's
+        // deltas were measured from, and it is the only value for which the
+        // samples reconstruct to the timestamps CpuProfileBuilder.addSample
+        // reported (a different taskTs shifts the whole sample timeline by the
+        // difference, relative to everything placed by absolute `ts`).
         mut fn addCpuProfileSamples(tid: int, taskTs: real, profile: CpuProfile): void {
             let id = f"0x{this.nextProfileId}";
             this.nextProfileId += 1;
@@ -1000,23 +1016,26 @@ namespace ChromeTrace {
 
         let chunks: []TraceEventProfileChunk = [];
         let offset = 0;
-        // Anchor the first sample to taskTs + 1us (see invariant 1 in the
-        // file header) and preserve every other sample's timing relative
-        // to that, regardless of what profile.startTime originally was.
+        // Anchored at taskTs, with every sample's timing preserved relative to
+        // that. The deltas are emitted exactly as built: CpuProfileBuilder already
+        // guarantees the first one is 1us (see advanceTimeline), which is what keeps
+        // the first sample strictly after the task start (invariant 1 in the file
+        // header) -- and, just as importantly, keeps every reconstructed sample
+        // timestamp identical to the one CpuProfileBuilder.addSample reported to its
+        // caller. This used to overwrite the first delta with 1 here instead, on
+        // top of a first delta of 0 from the builder, which shifted the ENTIRE
+        // sample timeline 1us later than the builder had promised -- every
+        // allocation marker then sat just before its own sample, and a viewer
+        // resolving the marker against the samples showed the stack of whatever
+        // CPU sample came before the allocation.
         let chunkTs = taskTs;
-        let firstDeltaShifted = false;
         while offset < profile.samples.length {
             let count = profile.samples.length - offset < chunkSampleCount ? profile.samples.length - offset : chunkSampleCount;
             let chunkSamples: []int = [];
             let chunkDeltas: []int = [];
             for (let i = offset; i < offset + count; i++) {
-                let delta = profile.timeDeltas[i];
-                if !firstDeltaShifted {
-                    delta = 1;
-                    firstDeltaShifted = true;
-                }
                 chunkSamples.push(profile.samples[i]);
-                chunkDeltas.push(delta);
+                chunkDeltas.push(profile.timeDeltas[i]);
             }
 
             chunks.push(TraceEventProfileChunk {

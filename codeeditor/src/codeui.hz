@@ -3796,6 +3796,175 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return splitLineTokens(lineText, tokensForLine, noOverrides);
         };
 
+        let onWheel = (event: ui_components.WheelEvent) => {
+            scroll.handleWheel(event.delta);
+            // The popup is anchored to a place in the text; once
+            // the text moves under it, it is pointing at the
+            // wrong token. Both editors close it on scroll.
+            dismissHover();
+        };
+
+        let onPointerDown = (event: ui_components.PointerEvent) => {
+            // A press that started on the scrollbar is a
+            // scroll gesture, not a text selection.
+            if scroll.isDragging() {
+                return;
+            }
+            // Clicking is an interaction with the text, not a
+            // request to describe it -- put the popup away.
+            dismissHover();
+            let target = documentPositionAt(event.pos);
+            mouseSelecting := true;
+            dragOriginPxX := event.pos.x;
+            dragOriginPxY := event.pos.y;
+            dragOriginX := target.x;
+            dragOriginY := target.y;
+            dragMoved := false;
+            if rx.get(vimOn) {
+                // Leave whatever visual selection existed, then
+                // place the caret; a subsequent drag re-enters
+                // visual mode from here.
+                texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+                texteditBehavior.clearSelection();
+            } else {
+                texteditBehavior.clearSelection();
+            }
+            texteditBehavior.moveTo(target, true, false);
+        };
+
+        let onTextInput = (event: ui_components.TextInputEvent) => {
+            // With Vim active, printable characters are
+            // commands in normal/visual mode and literal text
+            // in insert mode -- the behavior decides which.
+            if rx.get(vimOn) {
+                // Hover, as neovim binds it: an explicit
+                // command in normal/visual mode (stock LSP
+                // configs put `vim.lsp.buf.hover` on K; here it
+                // is shift+L). Shifted letters arrive as text
+                // input, not as key events, so the intercept
+                // belongs here -- and it must happen BEFORE the
+                // behavior sees the character, or vim would
+                // also run its own "L" motion (screen-bottom).
+                //
+                // Insert mode is excluded for the same reason
+                // neovim excludes it: there, "L" is just a
+                // letter you are typing.
+                let vimMode = rx.get(texteditBehavior.mode);
+                // ...but not while a `:` line is open, where an L is a
+                // character of the command being typed and nothing else.
+                // Command-line mode is not an engine mode (see
+                // Vim.commandLineActive), so the mode check above cannot
+                // see it.
+                if event.text == "L" && vimMode != textedit_behavior.Mode.Insert
+                    && !vim.commandLineOpen() {
+                    hoverKeyPressed := true;
+                    return;
+                }
+                texteditBehavior.handleTextInput(event.text);
+            } else {
+                texteditBehavior.insertText(event.text);
+            }
+            caretFollow := true;
+            noteKeyboardActivity();
+            dismissHover();
+        };
+
+        let onFocus = () => {
+            keybindings().context.setBool(ctxEditorTextFocus(), true);
+        };
+
+        let onBlur = () => {
+            keybindings().context.setBool(ctxEditorTextFocus(), false);
+            // Autosave. Focus leaving a text editor is the moment its
+            // contents stop being something the user is still in the
+            // middle of -- switching to another tab, clicking into another
+            // panel, or (the same handler, since a hidden element cannot
+            // hold focus) having this tab hidden underneath another one.
+            //
+            // Leaving the OS window entirely does NOT come through here:
+            // the window keeps its internal focus while the user is in
+            // another application. That edge is handled in main.hz.
+            autosave();
+        };
+
+        let onKeyDown = (event: ui_components.KeyboardEvent) => {
+            let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
+            let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+            let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
+
+            // F2 (toggle the vim editing model) is not handled
+            // here any more: it is a keymap rule bound to
+            // editor.action.toggleVim, resolved at the window's
+            // capture-phase dispatch point before this handler
+            // ever runs. See editor_keymap.hz.
+
+            // Any key may move the caret, so ask the next
+            // frame to scroll it back into view.
+            caretFollow := true;
+
+            if rx.get(vimOn) {
+                // Non-character keys (and modifier combos)
+                // reach Vim here; plain characters arrive via
+                // onTextInput above.
+                let name = vim_behavior.namedKey(keyEventName(event.key), ctrl, alt);
+                if name.length > 0 {
+                    texteditBehavior.handleKey(name);
+                    noteKeyboardActivity();
+                    // neovim's hover float closes on the next
+                    // keypress; so does this one.
+                    dismissHover();
+                }
+                return;
+            }
+
+            if event.key == ui_components.Key.Left {
+                if ctrl { texteditBehavior.moveCursorWordLeft(shift); }
+                else { texteditBehavior.moveCursorLeft(shift); }
+            }
+            else if event.key == ui_components.Key.Right {
+                if ctrl { texteditBehavior.moveCursorWordRight(shift); }
+                else { texteditBehavior.moveCursorRight(shift); }
+            }
+            else if event.key == ui_components.Key.Up {
+                texteditBehavior.moveCursorUp(shift);
+            }
+            else if event.key == ui_components.Key.Down {
+                texteditBehavior.moveCursorDown(shift);
+            }
+            else if event.key == ui_components.Key.Home {
+                if ctrl { texteditBehavior.moveCursorDocumentStart(shift); }
+                else { texteditBehavior.moveCursorHome(shift); }
+            }
+            else if event.key == ui_components.Key.End {
+                if ctrl { texteditBehavior.moveCursorDocumentEnd(shift); }
+                else { texteditBehavior.moveCursorEnd(shift); }
+            }
+            else if event.key == ui_components.Key.Return {
+                texteditBehavior.insertNewline();
+            }
+            else if event.key == ui_components.Key.Backspace {
+                texteditBehavior.deleteBackward(ctrl);
+            }
+            else if event.key == ui_components.Key.Delete {
+                texteditBehavior.deleteForward(ctrl);
+            }
+            else if ctrl && event.key == ui_components.Key.A {
+                texteditBehavior.selectAll();
+            }
+            else if ctrl && event.key == ui_components.Key.C {
+                texteditBehavior.copy();
+            }
+            else if ctrl && event.key == ui_components.Key.X {
+                texteditBehavior.cut();
+            }
+            else if ctrl && event.key == ui_components.Key.V {
+                texteditBehavior.paste();
+            }
+
+            noteKeyboardActivity();
+            dismissHover();
+        };
+
         return () => {
             ui.div({
                 id: 0,
@@ -3914,184 +4083,24 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     // focus itself rather than from `active`, because it is
                     // literally the question the dispatcher is asking: will
                     // this keystroke reach a text editor?
-                    onFocus: () => {
-                        keybindings().context.setBool(ctxEditorTextFocus(), true);
-                    },
-                    onBlur: () => {
-                        keybindings().context.setBool(ctxEditorTextFocus(), false);
-                        // Autosave. Focus leaving a text editor is the
-                        // moment its contents stop being something the
-                        // user is still in the middle of -- switching to
-                        // another tab, clicking into another panel, or
-                        // (the same handler, since a hidden element cannot
-                        // hold focus) having this tab hidden underneath
-                        // another one.
-                        //
-                        // Leaving the OS window entirely does NOT come
-                        // through here: the window keeps its internal
-                        // focus while the user is in another application.
-                        // That edge is handled in main.hz.
-                        autosave();
-                    },
+                    onFocus: onFocus,
+                    onBlur: onBlur,
 
                     // Wheel scrolls the text, exactly like any scroll
                     // container; the scroll model clamps at both ends.
-                    onWheel: (event: ui_components.WheelEvent) => {
-                        scroll.handleWheel(event.delta);
-                        // The popup is anchored to a place in the text; once
-                        // the text moves under it, it is pointing at the
-                        // wrong token. Both editors close it on scroll.
-                        dismissHover();
-                    },
+                    onWheel: onWheel,
 
                     // Click places the caret, drag extends a selection --
                     // chrome's behavior, and what vim does with the mouse
                     // too (a drag puts vim into visual mode).
-                    onPointerDown: (event: ui_components.PointerEvent) => {
-                        // A press that started on the scrollbar is a
-                        // scroll gesture, not a text selection.
-                        if scroll.isDragging() {
-                            return;
-                        }
-                        // Clicking is an interaction with the text, not a
-                        // request to describe it -- put the popup away.
-                        dismissHover();
-                        let target = documentPositionAt(event.pos);
-                        mouseSelecting := true;
-                        dragOriginPxX := event.pos.x;
-                        dragOriginPxY := event.pos.y;
-                        dragOriginX := target.x;
-                        dragOriginY := target.y;
-                        dragMoved := false;
-                        if rx.get(vimOn) {
-                            // Leave whatever visual selection existed, then
-                            // place the caret; a subsequent drag re-enters
-                            // visual mode from here.
-                            texteditBehavior.setMode(textedit_behavior.Mode.Normal);
-                            texteditBehavior.clearSelection();
-                        } else {
-                            texteditBehavior.clearSelection();
-                        }
-                        texteditBehavior.moveTo(target, true, false);
-                    },
+                    onPointerDown: onPointerDown,
                     // Dragging and releasing are handled by the pointer
                     // capture pump in the render pass, not here: element
                     // events stop firing once the cursor leaves the
                     // element, which would strand a selection (or a
                     // scrollbar drag) half-finished.
-                    onTextInput: (event: ui_components.TextInputEvent) => {
-                        // With Vim active, printable characters are
-                        // commands in normal/visual mode and literal text
-                        // in insert mode -- the behavior decides which.
-                        if rx.get(vimOn) {
-                            // Hover, as neovim binds it: an explicit
-                            // command in normal/visual mode (stock LSP
-                            // configs put `vim.lsp.buf.hover` on K; here it
-                            // is shift+L). Shifted letters arrive as text
-                            // input, not as key events, so the intercept
-                            // belongs here -- and it must happen BEFORE the
-                            // behavior sees the character, or vim would
-                            // also run its own "L" motion (screen-bottom).
-                            //
-                            // Insert mode is excluded for the same reason
-                            // neovim excludes it: there, "L" is just a
-                            // letter you are typing.
-                            let vimMode = rx.get(texteditBehavior.mode);
-                            // ...but not while a `:` line is open, where an
-                            // L is a character of the command being typed
-                            // and nothing else. Command-line mode is not an
-                            // engine mode (see Vim.commandLineActive), so
-                            // the mode check above cannot see it.
-                            if event.text == "L" && vimMode != textedit_behavior.Mode.Insert
-                                && !vim.commandLineOpen() {
-                                hoverKeyPressed := true;
-                                return;
-                            }
-                            texteditBehavior.handleTextInput(event.text);
-                        } else {
-                            texteditBehavior.insertText(event.text);
-                        }
-                        caretFollow := true;
-                        noteKeyboardActivity();
-                        dismissHover();
-                    },
-                    onKeyDown: (event: ui_components.KeyboardEvent) => {
-                        let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
-                        let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
-                        let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
-
-                        // F2 (toggle the vim editing model) is not handled
-                        // here any more: it is a keymap rule bound to
-                        // editor.action.toggleVim, resolved at the window's
-                        // capture-phase dispatch point before this handler
-                        // ever runs. See editor_keymap.hz.
-
-                        // Any key may move the caret, so ask the next
-                        // frame to scroll it back into view.
-                        caretFollow := true;
-
-                        if rx.get(vimOn) {
-                            // Non-character keys (and modifier combos)
-                            // reach Vim here; plain characters arrive via
-                            // onTextInput above.
-                            let name = vim_behavior.namedKey(keyEventName(event.key), ctrl, alt);
-                            if name.length > 0 {
-                                texteditBehavior.handleKey(name);
-                                noteKeyboardActivity();
-                                // neovim's hover float closes on the next
-                                // keypress; so does this one.
-                                dismissHover();
-                            }
-                            return;
-                        }
-
-                        if event.key == ui_components.Key.Left {
-                            if ctrl { texteditBehavior.moveCursorWordLeft(shift); }
-                            else { texteditBehavior.moveCursorLeft(shift); }
-                        }
-                        else if event.key == ui_components.Key.Right {
-                            if ctrl { texteditBehavior.moveCursorWordRight(shift); }
-                            else { texteditBehavior.moveCursorRight(shift); }
-                        }
-                        else if event.key == ui_components.Key.Up {
-                            texteditBehavior.moveCursorUp(shift);
-                        }
-                        else if event.key == ui_components.Key.Down {
-                            texteditBehavior.moveCursorDown(shift);
-                        }
-                        else if event.key == ui_components.Key.Home {
-                            if ctrl { texteditBehavior.moveCursorDocumentStart(shift); }
-                            else { texteditBehavior.moveCursorHome(shift); }
-                        }
-                        else if event.key == ui_components.Key.End {
-                            if ctrl { texteditBehavior.moveCursorDocumentEnd(shift); }
-                            else { texteditBehavior.moveCursorEnd(shift); }
-                        }
-                        else if event.key == ui_components.Key.Return {
-                            texteditBehavior.insertNewline();
-                        }
-                        else if event.key == ui_components.Key.Backspace {
-                            texteditBehavior.deleteBackward(ctrl);
-                        }
-                        else if event.key == ui_components.Key.Delete {
-                            texteditBehavior.deleteForward(ctrl);
-                        }
-                        else if ctrl && event.key == ui_components.Key.A {
-                            texteditBehavior.selectAll();
-                        }
-                        else if ctrl && event.key == ui_components.Key.C {
-                            texteditBehavior.copy();
-                        }
-                        else if ctrl && event.key == ui_components.Key.X {
-                            texteditBehavior.cut();
-                        }
-                        else if ctrl && event.key == ui_components.Key.V {
-                            texteditBehavior.paste();
-                        }
-
-                        noteKeyboardActivity();
-                        dismissHover();
-                    },
+                    onTextInput: onTextInput,
+                    onKeyDown: onKeyDown,
                 }, () => {
                     // Explicit font, so this stays identical to the value
                     // documentPositionAt() uses -- the two MUST agree.

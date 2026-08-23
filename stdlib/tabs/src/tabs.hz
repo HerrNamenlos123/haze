@@ -237,6 +237,39 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
             return element ? element.hover() : false;
         });
 
+        let pointerDown = (event: ui_components.PointerEvent) => {
+            // Middle-click closes, as in every browser and editor.
+            let p = instance.props();
+            if event.button == ui_components.PointerButton.Middle {
+                if p.closable {
+                    event.stopPropagation();
+                    let onClose = p.onClose;
+                    if onClose { onClose(p.tab.key); }
+                }
+                return;
+            }
+            if event.button != ui_components.PointerButton.Left {
+                return;
+            }
+            // Selection happens on press rather than on click,
+            // which is what native tab strips do -- the new tab is
+            // shown the instant the button goes down.
+            event.stopPropagation();
+            let onSelect = p.onSelect;
+            if onSelect { onSelect(p.tab.key); }
+        };
+
+        let pointerDown2 = (event: ui_components.PointerEvent) => {
+            if event.button != ui_components.PointerButton.Left {
+                return;
+            }
+            // Must not also select the tab being closed.
+            event.stopPropagation();
+            let p = instance.props();
+            let onClose = p.onClose;
+            if onClose { onClose(p.tab.key); }
+        };
+
         return (): void => {
             let props = instance.props();
             let style = props.style;
@@ -249,27 +282,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
             ui.div({
                 id: 1,
                 elementRef: tabRef,
-                onPointerDown: (event: ui_components.PointerEvent) => {
-                    // Middle-click closes, as in every browser and editor.
-                    let p = instance.props();
-                    if event.button == ui_components.PointerButton.Middle {
-                        if p.closable {
-                            event.stopPropagation();
-                            let onClose = p.onClose;
-                            if onClose { onClose(p.tab.key); }
-                        }
-                        return;
-                    }
-                    if event.button != ui_components.PointerButton.Left {
-                        return;
-                    }
-                    // Selection happens on press rather than on click,
-                    // which is what native tab strips do -- the new tab is
-                    // shown the instant the button goes down.
-                    event.stopPropagation();
-                    let onSelect = p.onSelect;
-                    if onSelect { onSelect(p.tab.key); }
-                },
+                onPointerDown: pointerDown,
             }, (): void => {
                 ui.text({
                     id: 2,
@@ -295,16 +308,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                     ui.div({
                         id: 4,
                         elementRef: closeRef,
-                        onPointerDown: (event: ui_components.PointerEvent) => {
-                            if event.button != ui_components.PointerButton.Left {
-                                return;
-                            }
-                            // Must not also select the tab being closed.
-                            event.stopPropagation();
-                            let p = instance.props();
-                            let onClose = p.onClose;
-                            if onClose { onClose(p.tab.key); }
-                        },
+                        onPointerDown: pointerDown2,
                     }, (): void => {
                         ui.text({
                             id: 5,

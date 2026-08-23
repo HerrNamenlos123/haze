@@ -1,0 +1,245 @@
+// Regression coverage for the allocation stack traces the profiler attaches
+// to every memory capture (hzstd_memory_instrumentation_capture_stack +
+// hzstd_profiling_end's postprocessing in hzstd_profiling.c).
+//
+// The contract being pinned down: the INNERMOST frame of a capture is the
+// user function that performed the allocation, resolved to the line of the
+// allocating expression -- not an hzstd-internal frame above it
+// (hzstd_heap_allocate & co. must stay hidden), and not the allocating
+// function's *caller* (a frame too many skipped). Both directions of
+// off-by-N are silent: the trace stays perfectly plausible-looking while
+// pointing at code that allocates nothing, which is exactly the failure mode
+// this exists to catch.
+//
+// runExitCode + assert for the same reason as cases_profiling: a live session
+// prints progress to stdout, so the exit code is the verdict.
+
+namespace cases_profiling_stacks {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.runExitCode(
+            "profiling: allocation captures start at the allocating user function, at the allocating line",
+            """
+struct Found {
+    name: str;
+    line: int;
+    callerName: str;
+    callerLine: int;
+}
+
+// The one "Closure env" allocation this program makes on purpose: `y` is
+// captured and the lambda ESCAPES (it is returned), so it needs a heap env.
+// The allocation happens on the line marked ALLOC_LINE below, inside
+// allocateClosureEnv.
+fn allocateClosureEnv(x: int): () => int {
+    let y = x + 1;
+    return () => y; // ALLOC_LINE
+}
+
+fn outerCaller(): int {
+    let f = allocateClosureEnv(41); // CALLER_LINE
+    return f();
+}
+
+fn lineOf(loc: SourceLocation): int {
+    if let l = loc.line() {
+        return l;
+    }
+    return 0;
+}
+
+fn findCapture(result: profiling.ProfilingResult, dataType: str): Found | none {
+    for capture in result.memoryInstrumentationFrames {
+        if capture.dataType == dataType {
+            assert(capture.stacktrace.frames.length >= 2, "expected at least two frames on the capture");
+            let top = capture.stacktrace.frames[0];
+            let caller = capture.stacktrace.frames[1];
+            return Found {
+                name: top.name,
+                line: lineOf(top.sourceloc),
+                callerName: caller.name,
+                callerLine: lineOf(caller.sourceloc),
+            };
+        }
+    }
+    return none;
+}
+
+fn main(): int {
+    let profiler = Profiler({ samplingRate: 100 });
+    let r = outerCaller();
+    let result = profiler.stop();
+    assert(r == 42);
+
+    for capture in result.memoryInstrumentationFrames {
+        fmt.println(f"capture: '{capture.dataType}' {capture.sizeBytes} bytes, {capture.stacktrace.frames.length} frames");
+        for frame in capture.stacktrace.frames {
+            fmt.println(f"    {frame.name} @ {lineOf(frame.sourceloc)}");
+        }
+    }
+
+    let found = findCapture(result, "Closure env");
+    assert(found is Found, "expected a 'Closure env' capture to be recorded");
+    if found is Found {
+        assert(found.name.contains("allocateClosureEnv"),
+            f"innermost frame should be allocateClosureEnv, got '{found.name}' @ {found.line} (caller '{found.callerName}' @ {found.callerLine})");
+        assert(found.line == 14,
+            f"innermost frame should be on the ALLOC_LINE (14), got {found.line} (in '{found.name}')");
+        assert(found.callerName.contains("outerCaller"),
+            f"frame[1] should be outerCaller, got '{found.callerName}' @ {found.callerLine}");
+        assert(found.callerLine == 18,
+            f"frame[1] should be on CALLER_LINE (18), got {found.callerLine}");
+    }
+    return 0;
+}
+""",
+            0
+        );
+
+        // The SAME allocation shows up twice in a built trace (see profiling.buildTrace):
+        // as a leaf sample in the CPU profile (its stack), and as a stackless
+        // PerformanceMark in the Timings track (its time/size). A viewer that is asked
+        // "what was on the stack when this marker fired" resolves that by timestamp
+        // against the reconstructed sample timeline (Profile.startTime + the integer
+        // timeDeltas). So the two halves have to agree EXACTLY on when the allocation
+        // happened: if the sample reconstructs even a fraction of a microsecond after
+        // the marker, the viewer answers with whatever CPU sample came BEFORE it -- a
+        // completely unrelated stack that still looks perfectly plausible.
+        s.runExitCode(
+            "profiling: every allocation marker sits exactly on its own sample in the built trace",
+            """
+fn allocateClosureEnv(x: int): () => int {
+    let y = x + 1;
+    return () => y;
+}
+
+fn main(): int {
+    let profiler = Profiler({ samplingRate: 100 });
+    let closures: []() => int = [];
+    for (let i = 0; i < 50; i++) {
+        closures.push(allocateClosureEnv(i));
+    }
+    let result = profiler.stop();
+    assert(closures.length == 50);
+    assert(result.memoryInstrumentationFrames.length >= 50, "expected at least the 50 closure env captures");
+
+    let trace = profiling.buildTrace(result);
+
+    // Reconstruct the sample timeline exactly the way a consumer does, collecting the
+    // timestamp of every allocation leaf sample, in emission order.
+    let nodeNames: []str = [];
+    let sampleTimes: []real = [];
+    let markerTimes: []real = [];
+    let profileStart = 0.0;
+    let reconstructed = 0.0;
+    for event in trace.traceEvents {
+        if event is ChromeTrace.TraceEventProfile {
+            profileStart = event.args.data.startTime;
+            reconstructed = profileStart;
+        }
+        if event is ChromeTrace.TraceEventProfileChunk {
+            if let nodes = event.args.data.cpuProfile.nodes {
+                for node in nodes {
+                    // Node ids are 1-based and dense, assigned in order.
+                    assert(node.id == nodeNames.length + 1, "expected dense, ordered node ids");
+                    nodeNames.push(node.callFrame.functionName);
+                }
+            }
+            let samples = event.args.data.cpuProfile.samples;
+            let deltas = event.args.data.timeDeltas;
+            assert(samples.length == deltas.length);
+            for (let i = 0; i < samples.length; i++) {
+                reconstructed += deltas[i] as real;
+                if nodeNames[samples[i] - 1].startsWith("Heap alloc ") {
+                    sampleTimes.push(reconstructed);
+                }
+            }
+        }
+        if event is ChromeTrace.TraceEventInstantMarker {
+            if event.name.startsWith("Heap alloc ") {
+                markerTimes.push(event.ts);
+            }
+        }
+    }
+
+    assert(markerTimes.length == sampleTimes.length,
+        f"every allocation must appear once as a sample and once as a marker: {sampleTimes.length} samples vs {markerTimes.length} markers");
+    assert(markerTimes.length >= 50);
+    for (let i = 0; i < markerTimes.length; i++) {
+        assert(markerTimes[i] == sampleTimes[i],
+            f"allocation #{i}: marker at {markerTimes[i]} us but its sample reconstructs to {sampleTimes[i]} us");
+    }
+    return 0;
+}
+""",
+            0
+        );
+
+        // A #line directive only pins the NEXT physical line of C; every physical line
+        // after it counts up from there. The codegen emits one directive per Haze
+        // statement, so an allocation buried deep inside a long multi-line statement --
+        // a closure env for a lambda passed as one argument of a big call, the normal
+        // shape of UI code -- used to be attributed to `statement line + however many C
+        // lines the generated expression happened to span before it`. That number is a
+        // property of the generated C's layout, not of the program: it pointed at
+        // whatever Haze line happened to have that index (a closing paren, a comment,
+        // a different statement entirely), and could not be found by searching the C.
+        s.runExitCode(
+            "profiling: a closure env allocated deep inside a multi-line statement is attributed to the lambda's own line",
+            """
+struct Handlers {
+    first: () => int;
+    second: () => int;
+    third: () => int;
+}
+
+fn keep(h: Handlers): Handlers {
+    return h;
+}
+
+fn lineOf(loc: SourceLocation): int {
+    if let l = loc.line() {
+        return l;
+    }
+    return 0;
+}
+
+fn build(x: int): Handlers {
+    let a = x + 1;
+    let b = x + 2;
+    let c = x + 3;
+    return keep(Handlers {
+        // Only `third` captures anything, so the single "Closure env"
+        // allocation in this program belongs to the lambda on the line
+        // marked LAMBDA_LINE -- many physical lines after this statement
+        // began, with two other lambdas (that allocate nothing) in between.
+        first: () => 1,
+        second: () => 2,
+        third: () => a + b + c, // LAMBDA_LINE
+    });
+}
+
+fn main(): int {
+    let profiler = Profiler({ samplingRate: 100 });
+    let h = build(1);
+    let result = profiler.stop();
+    assert(h.third() == 9);
+
+    let seen = 0;
+    for capture in result.memoryInstrumentationFrames {
+        if capture.dataType == "Closure env" {
+            seen += 1;
+            let top = capture.stacktrace.frames[0];
+            assert(top.name.contains("build"), f"innermost frame should be build, got '{top.name}'");
+            assert(lineOf(top.sourceloc) == 29,
+                f"closure env should be attributed to LAMBDA_LINE (29), got line {lineOf(top.sourceloc)}");
+        }
+    }
+    assert(seen == 1, f"expected exactly one closure env capture, got {seen}");
+    return 0;
+}
+""",
+            0
+        );
+    }
+}

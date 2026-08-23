@@ -1065,7 +1065,7 @@ fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingB
     }
 }
 
-export ref struct RenderCallbacks {
+export struct RenderCallbacks {
     renderFilledRectangle: RenderFilledRectCB;
     renderText: RenderTextCB;
     renderCanvas: (element: ui_elements.CanvasElement) => void;
