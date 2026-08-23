@@ -53,7 +53,6 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
 
         let buttonRef = ui.elementRef<ui_elements.DivElement>();
 
-        static_print(f"buttonRef: {typeof(buttonRef).prettyName}");
         let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
         let isActive = rx.computed(() => buttonRef?.active() ?? false);
 

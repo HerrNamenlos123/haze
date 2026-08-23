@@ -1,0 +1,80 @@
+import ui_elements
+import ui_styling
+import ui_components
+import headwind
+type presets = headwind.presets;
+
+// To show it works, this would not be how we do things, all style vars should be separate props
+export struct ButtonStyle {
+    bg: str = "#00000000";
+    bgHover: str = "#2A2D2E";
+    bgActive: str = "#37373D";
+    bgSelected: str = "#37373D";
+    textColor: str = "#CCCCCC";
+    textColorDisabled: str = "#6A6A6A";
+    paddingX: real = 8.0;
+    paddingY: real = 4.0;
+    rounded: real = 3.0;
+    fontSize: real | none = none;
+}
+
+@props
+label: str = "";
+enabled: bool = true;
+selected: bool = false;
+grow: bool = false;
+style: ButtonStyle = {};
+
+@slot
+content: {
+    label: str;
+};
+
+@emit
+click: (MouseEvent,);
+
+@setup
+let buttonRef = elementRef<DivElement>();
+
+let isHovered = computed(() => buttonRef?.hover() ?? false);
+let isActive = computed(() => buttonRef?.active() ?? false);
+
+let clicked = (event: PointerEvent) => {
+    event.stopPropagation();
+    if !enabled { return; }
+    emit.click(event);
+};
+
+let backgroundColor = computed(() => {
+    if !enabled { return style.bg; } 
+    else if selected { return style.bgSelected; } 
+    else if isActive { return style.bgActive; } 
+    else if isHovered { return style.bgHover; }
+    return style.bg;
+});
+
+@template [w-fit grow?w-grow h-fit] // whatever
+div [
+        row cross-align-center gap-0 px-[style.paddingX]px py-[style.paddingY]px bg-[backgroundColor]
+        rounded-[style.rounded]px h-fit enabled?cursor-pointer w-fit grow?w-grow hover:some-stuff
+    ]
+    ref=buttonRef
+    @pointerdown=clicked
+{
+    slot content label=label {
+        text if=[label.length > 0] [
+            text-color-[enabled ? style.textColor : style.textColorDisabled] text-nowrap
+            style.fontSize?font-size-[style.fontSize]
+        ] label
+    }
+}
+
+
+Usage:
+@template
+Button label="Save" @click=save {
+    #content label {
+        icon [w-4 h-4] name="check"
+        text label
+    }
+}
