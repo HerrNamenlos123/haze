@@ -41,6 +41,11 @@ ref struct Cache {
     // The last few workspaces, most recent first, newline-delimited for the
     // same reason openFiles is.
     recentWorkspaces: str | none = none;
+
+    // How many spaces one indent level is -- see settings.hz. Optional for
+    // the same reason the two above are: a key missing from an existing
+    // cache would otherwise fail the whole parse and wipe the open tabs.
+    indentWidth: int | none = none;
 }
 
 extern C let g_cache: json.CacheFile<Cache> | none = none;

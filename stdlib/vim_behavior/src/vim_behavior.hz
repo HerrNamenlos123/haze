@@ -86,6 +86,12 @@ export ref struct LastFind {
 // closure literal will not convert into a `| none` union.
 export type GoToDefinitionHook = () => void;
 
+// One ex command, without its leading colon: "w", "wq!", "e".
+//
+// Named for the same reason GoToDefinitionHook is -- a bare closure
+// literal does not convert into a `| none` union.
+export type ExCommandHook = (command: str) => void;
+
 export ref struct Jump {
     pos: Vec2i = {};
 }
@@ -175,6 +181,10 @@ export ref struct Vim {
     // What one `>` level inserts. Vim's default is a literal tab
     // (noexpandtab, shiftwidth=8); an editor that prefers spaces sets
     // this to "    " and everything else follows.
+    //
+    // "everything else follows" is literal: `<` removes exactly this much
+    // again and insert-mode <Tab> inserts it, both via indentColumns()
+    // below. One setting, not three that can disagree.
     indentUnit: str = "\t";
 
     // `gd`. Stock vim's gd is "go to local declaration" -- a backward
@@ -197,6 +207,33 @@ export ref struct Vim {
     // The host sets it per file (and, for a language like Vue whose
     // regions differ, per line). See commentStringFor in codeui.hz.
     commentString: str = "// %s";
+
+    // === Command line (`:`) =======================================
+    //
+    // Vim's Command-line mode. It is NOT one of the engine's modes: the
+    // engine's Mode decides how the caret clamps and whether a selection
+    // tracks it, and neither of those changes while a `:` line is being
+    // typed -- the buffer is untouched and the caret stays exactly where
+    // it was, which is what vim shows too. Making it an engine mode would
+    // force every clamping rule to grow a case that means "not about the
+    // buffer at all".
+    //
+    // So it lives here, as a flag plus the text typed so far, and the host
+    // renders it from commandLineActive()/commandLineText() the way it
+    // already renders the mode label.
+    //
+    // What the ex command MEANS is emphatically not this module's
+    // business. `:w` is a file write, `:q` closes a tab -- neither is a
+    // text editing operation, and neither is something an editing engine
+    // can know about. The parsed command goes to the host through
+    // onExCommand, exactly like `gd` goes out through onGoToDefinition.
+    commandLineActive: bool = false;
+    // What has been typed after the colon. A plain `str` rebuilt per key,
+    // like insertTyped above: a command line is a few characters typed by
+    // hand, so the cost is bounded by the command's own length and is
+    // paid only while one is open.
+    commandLineBuffer: str = "";
+    onExCommand: ExCommandHook | none = none;
 
     fn constructor(ctx: mut textedit_behavior.Context): mut Vim {
         let vim = Vim {
@@ -277,6 +314,17 @@ export ref struct Vim {
 
     // Main entry: one normalized key.
     mut fn handleKey(key: str): bool :: final {
+        // The command line takes every key verbatim, BEFORE the remap
+        // matcher gets a look at it. That ordering is the whole point:
+        // with `nnoremap j jzz` installed, a `j` typed into `:e file.j`
+        // would otherwise be rewritten into three keys and the command
+        // line would fill up with nonsense. Vim does not apply normal-mode
+        // maps to command-line text either (`cmap` is a separate mode, and
+        // this engine has none).
+        if this.commandLineActive {
+            this.dispatchCommandLine(key);
+            return true;
+        }
         if this.suppressRemap {
             this.dispatch(key);
             return true;
@@ -544,7 +592,10 @@ export ref struct Vim {
             return;
         }
         if key == "<Tab>" {
-            this.ctx.insertText(String("    "));
+            // The same unit `>` inserts, not a hardcoded four spaces. An
+            // editor set to two would otherwise indent by two with `>>` and
+            // by four with the Tab key, in the same buffer.
+            this.ctx.insertText(String(this.indentUnit));
             return;
         }
         if key == "<Left>"  { this.ctx.moveCursorLeft(false); return; }
@@ -634,6 +685,16 @@ export ref struct Vim {
                 this.ctx.setMode(textedit_behavior.Mode.Normal);
             }
             this.resetPending();
+            return;
+        }
+
+        // Command line. Deliberately AFTER the count digits above, so
+        // `:` cannot be reached with a count pending in a way that would
+        // silently drop it, and before the operators so a pending operator
+        // is abandoned rather than left waiting for a motion that will
+        // never come -- which is what vim does with `d:`.
+        if key == ":" {
+            this.enterCommandLine();
             return;
         }
 
@@ -750,6 +811,91 @@ export ref struct Vim {
 
         // Non-motion normal-mode commands.
         this.applyCommand(key);
+    }
+
+    // === Command line ============================================
+
+    // Open a `:` line. Anything half-typed is abandoned first: vim ends
+    // the pending command when command-line mode is entered, and a count
+    // or operator left dangling would otherwise be applied to whatever
+    // key arrives once the line closes.
+    mut fn enterCommandLine() {
+        this.resetPending();
+        this.clearSpeculative();
+        this.commandLineActive = true;
+        this.commandLineBuffer = "";
+    }
+
+    // Every key while the line is open. Named keys that mean something to
+    // a command line are handled; every other named key is IGNORED rather
+    // than inserted, so an arrow key does not end up as literal text.
+    mut fn dispatchCommandLine(key: str) {
+        if key == "<Esc>" {
+            this.leaveCommandLine();
+            return;
+        }
+        if key == "<CR>" {
+            let command = this.commandLineBuffer;
+            // Closed BEFORE the host runs, not after: an ex command can
+            // close the tab this Vim belongs to (`:q`), and leaving the
+            // line open across that would leave a dead editor swallowing
+            // every subsequent key.
+            this.leaveCommandLine();
+            // A bare `:` followed by Enter is not a command and must not
+            // reach the host as an empty one -- vim simply returns to
+            // normal mode, and a host that had to special-case "" would be
+            // parsing a non-command.
+            if command.length == 0 {
+                return;
+            }
+            let hook = this.onExCommand;
+            if hook {
+                hook(command);
+            }
+            return;
+        }
+        if key == "<BS>" {
+            let text = this.commandLineBuffer;
+            if text.length == 0 {
+                // Backspacing over the colon itself leaves command-line
+                // mode, which is what vim does and what makes the colon
+                // feel like part of the text being edited.
+                this.leaveCommandLine();
+                return;
+            }
+            // One CHARACTER off the end, not one byte -- the command line
+            // accepts arbitrary text (a filename for `:e`), and removing a
+            // single byte of a multi-byte character would leave a broken
+            // sequence behind.
+            let at = 0;
+            let lastStart = 0;
+            while at < text.length {
+                lastStart = at;
+                at = unicode.nextClusterOffset(text, at);
+            }
+            this.commandLineBuffer = text.slice(0, lastStart);
+            return;
+        }
+        if isSinglePrintableCharacter(key) {
+            this.commandLineBuffer = f"{this.commandLineBuffer}{key}";
+        }
+    }
+
+    // Close the line without running anything.
+    mut fn leaveCommandLine() {
+        this.commandLineActive = false;
+        this.commandLineBuffer = "";
+    }
+
+    // Is a `:` line open, and what has been typed into it? Two queries for
+    // the host's status line -- the text alone cannot answer the first,
+    // since a line that has only just been opened is legitimately empty.
+    fn commandLineOpen(): bool {
+        return this.commandLineActive;
+    }
+
+    fn commandLineText(): str {
+        return this.commandLineBuffer;
     }
 
     // === Counts ===================================================
@@ -1692,6 +1838,19 @@ export ref struct Vim {
         return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
     }
 
+    // How many SPACES one indent level is worth when removing one.
+    //
+    // Derived from indentUnit rather than configured separately, so `<`
+    // cannot fall out of step with `>`. A tab means vim's own default
+    // 'shiftwidth' of 8 -- with noexpandtab the two are the same thing and
+    // 8 is what the differential suites check against real neovim.
+    fn indentColumns(): int {
+        if this.indentUnit == "\t" {
+            return 8;
+        }
+        return this.indentUnit.length > 0 ? this.indentUnit.length : 1;
+    }
+
     mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
         let screenColumnBefore = this.screenColumnOf(startY, this.ctx.cursor().x);
         this.ctx.beginTransaction();
@@ -1709,13 +1868,16 @@ export ref struct Vim {
                 }
             } else {
                 // Remove one indent level: a leading tab, or up to the
-                // equivalent run of spaces.
+                // equivalent run of spaces. A leading TAB is always worth
+                // one whole level regardless of the setting -- the file may
+                // predate it, and half-eating a tab is not a thing.
                 let line = this.ctx.line(y);
+                let width = this.indentColumns();
                 let remove = 0;
                 if len > 0 && line.getAt(0) == b"\t" {
                     remove = 1;
                 } else {
-                    while remove < 8 && remove < len && line.getAt(remove) == b" " {
+                    while remove < width && remove < len && line.getAt(remove) == b" " {
                         remove = remove + 1;
                     }
                 }

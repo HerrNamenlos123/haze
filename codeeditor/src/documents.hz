@@ -1,0 +1,359 @@
+// ═══ Open documents: dirty state, saving, and disk conflicts ═════════════
+//
+// One process-wide registry of everything the shell needs to know about an
+// open file that only the file's own EditorView can actually do.
+//
+// It exists for the same reason navigation.hz does: the two halves live in
+// components that cannot reach each other. Saving a document, reloading it
+// and resolving a conflict all need the document, the caret and the change
+// listeners -- which are locals inside one EditorView's setup closure and
+// exist nowhere else. But the things that ASK for them are all outside it:
+//
+//   - the tab strip draws the unsaved dot, and the shell owns the tab list;
+//   - ctrl+s and the File menu are commands, and the command registry takes
+//     no arguments, so a command cannot carry a document;
+//   - "the OS window just lost focus" arrives in main.hz's frame loop,
+//     which knows nothing about editors;
+//   - the conflict dialog is declared at the very END of the application
+//     root (hit-testing is declaration-ordered -- see titlebar.hz), which
+//     is about as far from the editor as it is possible to be.
+//
+// So each editor publishes a handful of closures under its tab's key, and
+// everyone else works through those. Nothing in here knows what a document
+// IS; it holds no text, no version and no caret.
+//
+// ── Why the entries are not reactive as a list ───────────────────────────
+//
+// `entries` is a plain array, mutated on open and close. The two things
+// that change on their own -- dirty and conflict -- are reactive PER ENTRY,
+// so the tab strip re-renders exactly when one of them flips and not when
+// some other tab's state moves. A reactive list would additionally
+// invalidate every reader on every keystroke of every tab, which is the
+// opposite of what is wanted.
+
+// Named function types, so a closure literal converts into the field and
+// (for the optional ones) into a `| none` union -- see
+// reference_haze_closure_default_crash: a bare literal will not.
+type DocAction = () => none;
+// Save to disk. Returns whether anything was actually written, so a caller
+// that must not proceed on failure (`:wq`) can tell.
+type DocSave = () => bool;
+
+// One open file, as everything outside its editor sees it.
+ref struct DocEntry {
+    // The TAB's key, not an index: it is the identity the shell already
+    // uses for the editor component, it is stable for the tab's whole
+    // life, and it is never reused. See UI()'s `nextKey` in codeui.hz.
+    key: int;
+    // Absolute path on disk, or "" for a buffer that has none. Kept here
+    // so the conflict dialog can name the file without having to ask the
+    // shell for the tab's path as well.
+    path: str;
+
+    // Unsaved changes. Written by the editor's document change listener
+    // (which only writes it when it actually flips -- see the guard at the
+    // call site, without which every keystroke would re-notify the tab
+    // strip).
+    dirty: rx.Reactive<bool>;
+
+    // The file changed on disk while this buffer had unsaved changes, and
+    // the two have not been reconciled since.
+    //
+    // Separate from `conflict` below, and the separation is the whole point
+    // of what Cancel means. Cancel takes the dialog away; it does NOT make
+    // the versions agree. So this stays set, and while it is set nothing
+    // writes this file AUTOMATICALLY -- otherwise the very next time focus
+    // left the editor, the autosave would perform the overwrite the user
+    // had just declined to authorise.
+    //
+    // Cleared by the three things that genuinely reconcile the two: a write
+    // (the buffer wins), a reload (the file wins), or the file turning out
+    // to hold the same text as the buffer after all.
+    diverged: rx.Reactive<bool>;
+
+    // The modal is on screen for this document. Raised when the divergence
+    // is first noticed, and again by any EXPLICIT save or close attempt
+    // while it is unresolved -- a deliberate action gets an answer, an
+    // automatic one is simply skipped.
+    conflict: rx.Reactive<bool>;
+
+    // Write the buffer. Returns false without writing when the file has
+    // diverged, having raised the dialog instead -- so a caller that must
+    // not proceed on failure (`:wq`, and closing a tab) can tell.
+    save: DocSave;
+    // Re-stat the file NOW rather than waiting for the next poll tick.
+    // Called when the OS window regains focus, which is exactly when an
+    // edit made in another program has just finished.
+    checkDisk: DocAction;
+
+    // The three answers to the conflict dialog. They belong to the editor
+    // because each one is an operation on its document: write over the
+    // file, throw the buffer away and re-read, or leave both alone.
+    resolveOverwrite: DocAction;
+    resolveDiscard: DocAction;
+    resolveCancel: DocAction;
+}
+
+ref struct DocumentRegistry {
+    entries: []DocEntry = [];
+
+    // Bumped when keyboard focus should go back to the active editor.
+    //
+    // Needed because the conflict dialog TAKES focus while it is up (it
+    // has to -- it is modal and answers to the keyboard), and an editor
+    // only claims focus when it becomes the active tab. Without this,
+    // dismissing the dialog would leave the window with nothing focused
+    // and therefore no keyboard at all, exactly the way closing the last
+    // tab used to. See followActiveFocus in codeui.hz, which reads it.
+    focusEpoch: rx.Reactive<int>;
+
+    // Bumped whenever the SET of entries changes.
+    //
+    // Needed because a reader's reactive dependencies are whatever it
+    // happened to touch on its last run, and an editor registers during
+    // its own first render -- which is AFTER the shell built the tab strip
+    // for that frame. So the strip's first look at a new tab finds no
+    // entry, subscribes to nothing, and would never learn that the tab it
+    // is drawing has become dirty. Reading this makes "an entry appeared"
+    // an event the strip re-runs on, at which point it subscribes to the
+    // real flags.
+    generation: rx.Reactive<int>;
+
+    fn constructor(): mut DocumentRegistry {
+        let registry = DocumentRegistry {
+            focusEpoch: rx.reactive<int>(0),
+            generation: rx.reactive<int>(0),
+        };
+        return registry;
+    }
+
+    // Publish (or re-publish) one editor's actions. Replacing by key
+    // rather than always pushing is what makes this safe to call from a
+    // component setup that may run again: a remounted editor takes its own
+    // slot back instead of leaving a stale entry behind whose closures
+    // point at a document nobody can see any more.
+    mut fn register(entry: DocEntry) {
+        for (let i = 0; i < this.entries.length; i++) {
+            if this.entries[i].key == entry.key {
+                this.entries[i] = entry;
+                this.generation := rx.get(this.generation) + 1;
+                return;
+            }
+        }
+        this.entries.push(entry);
+        this.generation := rx.get(this.generation) + 1;
+    }
+
+    mut fn unregister(key: int) {
+        for (let i = 0; i < this.entries.length; i++) {
+            if this.entries[i].key == key {
+                this.entries.remove(i);
+                this.generation := rx.get(this.generation) + 1;
+                return;
+            }
+        }
+    }
+
+    fn find(key: int): DocEntry | none {
+        for entry in this.entries {
+            if entry.key == key {
+                return entry;
+            }
+        }
+        return none;
+    }
+
+    fn isDirty(key: int): bool {
+        let entry = this.find(key);
+        if !entry {
+            return false;
+        }
+        return rx.get(entry.dirty);
+    }
+
+    // The one document whose conflict is being shown, or none.
+    //
+    // Deliberately ONE at a time even when several files changed at once:
+    // a stack of modal dialogs is unanswerable, and each answer is about a
+    // specific file. The others keep their flag set and their dialog comes
+    // up as soon as this one is resolved.
+    fn firstConflict(): DocEntry | none {
+        for entry in this.entries {
+            if rx.get(entry.conflict) {
+                return entry;
+            }
+        }
+        return none;
+    }
+
+    // Write every dirty document that is safe to write.
+    //
+    // A diverged document is skipped SILENTLY, and that is the whole point
+    // of the check: it is dirty AND the file underneath it has moved on, so
+    // writing it is precisely the destructive answer the user has not
+    // given. Raising the dialog here instead would be worse than skipping:
+    // this runs when the window loses focus, i.e. when the user has already
+    // gone somewhere else, and a modal they did not ask for would be
+    // waiting for them on a file they cancelled out of once already.
+    fn saveAllDirty() {
+        for entry in this.entries {
+            if rx.get(entry.dirty)
+                && !rx.get(entry.diverged)
+                && !rx.get(entry.conflict) {
+                let save = entry.save;
+                save();
+            }
+        }
+    }
+
+    // May this tab close, and write it first if it should be written?
+    //
+    // Closing has to save, because closing unmounts the editor and an
+    // unmounted element never gets a blur (the component system drops focus
+    // by simply not finding it again) -- so the autosave that every other
+    // way of leaving a buffer goes through would not happen, and the work
+    // would be gone with no warning.
+    //
+    // And it has to be able to say NO, because a diverged file cannot be
+    // written without an answer and closing anyway would throw the buffer
+    // away. False means the dialog is now up and the tab must stay: unlike
+    // the focus-loss sweep above, closing is something the user just did on
+    // purpose, so it is the right moment to ask.
+    //
+    // `:q!` gets past this by abandoning its changes first, which clears
+    // the flags this reads.
+    fn requestClose(key: int): bool {
+        let entry = this.find(key);
+        if !entry {
+            return true;
+        }
+        if !rx.get(entry.dirty) {
+            return true;
+        }
+        let save = entry.save;
+        return save();
+    }
+
+    // Abandon every unsaved change, without writing anything.
+    //
+    // This is `:qa!`, and nothing else should call it: it is the one
+    // operation here that destroys work on purpose. Clearing the flag IS
+    // the abandonment -- the close path below only writes dirty buffers,
+    // and the buffer itself goes with its tab.
+    fn discardAll() {
+        for entry in this.entries {
+            entry.dirty := false;
+            entry.diverged := false;
+            entry.conflict := false;
+        }
+    }
+
+    // Re-stat every open file. Called on the frame the window regains the
+    // OS focus -- see main.hz.
+    fn checkAllDisk() {
+        for entry in this.entries {
+            let check = entry.checkDisk;
+            check();
+        }
+    }
+
+    mut fn requestEditorFocus() {
+        this.focusEpoch := rx.get(this.focusEpoch) + 1;
+    }
+}
+
+extern C let g_documents: mut DocumentRegistry | none = none;
+
+fn documents(): mut DocumentRegistry {
+    let existing = g_documents;
+    if existing {
+        return existing;
+    }
+    let created = DocumentRegistry();
+    g_documents = created;
+    return created;
+}
+
+// ═══ Ex commands ════════════════════════════════════════════════════════
+//
+// `:w`, `:q!`, `:wqa` and the rest, reduced to what they ASK FOR rather
+// than to a name. Four independent questions -- write? quit? all buffers?
+// force? -- which is what the vocabulary actually is: `wq` is not a third
+// command beside `w` and `q`, it is both of them, and `x` is a spelling of
+// `wq`. Modelling it as flags is what keeps the caller from being a table
+// of sixteen names.
+//
+// Split out of the editor and given no side effects at all so it can be
+// checked headlessly -- see save_selftest.hz. The half that DOES things
+// (writing a file, closing a tab) needs a live document and a live tab
+// list and cannot be; the half that decides what was asked for is where
+// the mistakes are.
+ref struct ExCommand {
+    // False for anything not recognised. Every other field is then
+    // meaningless, and the caller reports the command rather than guessing.
+    valid: bool = false;
+    // A trailing `!`. On a write it means "go ahead despite the file having
+    // changed underneath"; on a quit it means "abandon what is unsaved".
+    force: bool = false;
+    write: bool = false;
+    quit: bool = false;
+    // The `a`/`all` suffix: every buffer, not just this one.
+    all: bool = false;
+    // `:e` -- re-read this file from disk, discarding the buffer.
+    reload: bool = false;
+}
+
+fn parseExCommand(text: str): ExCommand {
+    let trimmed = text.trim();
+    if trimmed.length == 0 {
+        let empty = ExCommand {};
+        return empty;
+    }
+
+    let force = trimmed.endsWith("!");
+    let verb = force ? trimmed.slice(0, trimmed.length - 1) : trimmed;
+
+    // Reload. `:e` with no filename means "this file again", which is the
+    // only form supported: `:e <other file>` is an open, and opening is the
+    // shell's business, reached through ctrl+o.
+    if verb == "e" || verb == "edit" {
+        let reload = ExCommand { valid: true, force: force, reload: true };
+        return reload;
+    }
+
+    let write = verb == "w" || verb == "write"
+        || verb == "wq" || verb == "x" || verb == "xit"
+        || verb == "wa" || verb == "wall"
+        || verb == "wqa" || verb == "wqall" || verb == "xa" || verb == "xall";
+    let quit = verb == "q" || verb == "quit"
+        || verb == "wq" || verb == "x" || verb == "xit"
+        || verb == "qa" || verb == "qall"
+        || verb == "wqa" || verb == "wqall" || verb == "xa" || verb == "xall";
+    let all = verb == "wa" || verb == "wall"
+        || verb == "qa" || verb == "qall"
+        || verb == "wqa" || verb == "wqall" || verb == "xa" || verb == "xall";
+
+    if !write && !quit {
+        let unknown = ExCommand {};
+        return unknown;
+    }
+    let parsed = ExCommand {
+        valid: true,
+        force: force,
+        write: write,
+        quit: quit,
+        all: all,
+    };
+    return parsed;
+}
+
+// Is a modal dialog on screen?
+//
+// Read at the window's capture-phase key dispatch point, which is what
+// makes the dialog MODAL rather than merely on top: while it is up, no
+// keybinding resolves, so ctrl+s cannot save the very file whose fate is
+// being asked about and ctrl+w cannot close the tab out from under the
+// question.
+fn modalIsOpen(): bool {
+    return documents().firstConflict() ? true : false;
+}

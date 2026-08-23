@@ -206,8 +206,19 @@ Deliberately not all of Vim. What is covered, and verified:
 - **Jumps** `<C-o> <C-i>`, `<C-d> <C-u>`
 - **Registers** the unnamed register, charwise and linewise, optionally
   routed through the system clipboard (`clipboard=unnamedplus`)
+- **Command line** `:` — the LINE only. This module collects the text
+  (with `<BS>`, `<Esc>` and `<CR>`), keeps normal-mode remaps off it, and
+  hands the finished command to the host through `onExCommand`. It parses
+  and executes nothing: `:w` is a file write and `:q` closes a tab, and an
+  editing engine can know about neither. Query it for rendering with
+  `commandLineOpen()` / `commandLineText()`.
 
-Not implemented: named registers, macros, marks, `:` ex commands, search
+  Command-line mode is deliberately NOT a `textedit_behavior.Mode`. A Mode
+  decides how the caret clamps and whether a selection tracks it, and
+  neither changes while a `:` line is being typed.
+
+Not implemented: named registers, macros, marks, ex command HISTORY and
+ranges (`:'<,'>`, `:%s`), search
 (`/`, `?`, `n`, `N`), blockwise INSERT (`<C-v>I`/`<C-v>A`, which types the
 same text on every row), `gu`/`gU`/`g~`. A count
 before `v`/`V` (":h v_count", reuse the last selection's size) is parsed

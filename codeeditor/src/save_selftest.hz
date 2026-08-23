@@ -1,0 +1,571 @@
+// ═══ Headless checks for saving, the file watcher and ex commands ════════
+//
+// Run with:   CODEEDITOR_SELFTEST=1 <the codeeditor binary>
+//
+// Three things are checked here, and they are the three whose failure mode
+// is silent rather than loud -- which is the same reason the keybinding and
+// workspace suites exist:
+//
+//   parseExCommand    a mis-parsed `:wq!` does not crash. It closes a tab
+//                     without writing it, or writes over a file the user
+//                     asked to leave alone. Both are data loss that looks
+//                     exactly like nothing happening.
+//
+//   the command line  `:` puts the editor into a mode where every key is
+//                     text rather than a command. Getting the entry or the
+//                     exit wrong makes the editor look frozen, and the
+//                     remap bypass is invisible until somebody with
+//                     `nnoremap j jzz` in their vimrc types a `j`.
+//
+//   DocumentRegistry  the thing that decides which buffers get written when
+//                     the window loses focus. "Saved one too few" is not
+//                     visible from inside the editor at all.
+//
+// The disk round-trip at the end uses a real file, because the whole point
+// of the mtime/size pair is what a real filesystem does with it.
+
+// A vim instance over a scratch document, with no UI of any kind --
+// reactivity works headlessly (see stdlib/vim_behavior/README.md), so the
+// same engine the editor runs is the one under test here.
+ref struct VimHarness {
+    doc: mut text_document.Document;
+    ctx: mut textedit_behavior.Context;
+    vim: mut vim_behavior.Vim;
+    // What onExCommand was handed, accumulated as "cmd;cmd;" for the same
+    // reason KeyTestRun.ran is a str: a closure captures an array by value,
+    // so pushes made inside the hook would not be visible out here.
+    commands: str = "";
+}
+
+fn makeVimHarness(lines: str): mut VimHarness {
+    let doc = text_document.Document();
+    doc.setText(lines);
+    let ctx = textedit_behavior.Context({
+        getLineLength: (lineIndex: int) => doc.lineLength(lineIndex),
+        getLine: (lineIndex: int) => doc.line(lineIndex),
+        getLineCount: () => doc.lineCount(),
+        // No frame clock here; a constant is fine, because nothing under
+        // test is time-based. (Vim's 'timeoutlen' is, but it is only
+        // consulted from tick(), which this never calls.)
+        getTimeInSeconds: () => 0.0,
+        replaceRange: (start: Vec2i, end: Vec2i, text: String): void => {
+            doc.replaceRange(start, end, text.cloneString());
+        },
+        initialMode: textedit_behavior.Mode.Normal,
+    });
+    let vim = vim_behavior.Vim(ctx);
+    vim.install();
+
+    let harness = VimHarness {
+        doc: doc,
+        ctx: ctx,
+        vim: vim,
+    };
+    let hook: vim_behavior.ExCommandHook = (command: str) => {
+        harness.commands = f"{harness.commands}{command};";
+    };
+    vim.onExCommand = hook;
+    return harness;
+}
+
+// Feed a string of printable characters one at a time, exactly the way the
+// editor's onTextInput does.
+fn feedText(harness: mut VimHarness, text: str): void {
+    harness.ctx.handleTextInput(String(text));
+}
+
+fn takeCommands(harness: mut VimHarness): str {
+    let value = harness.commands;
+    harness.commands = "";
+    return value;
+}
+
+// A registry entry backed by nothing but flags, so the registry's own rules
+// can be checked without a document. `saves` counts the writes it was asked
+// for -- held in a ref struct because that is what makes the count visible
+// to the caller after a closure has incremented it.
+ref struct FakeDoc {
+    saves: int = 0;
+    checks: int = 0;
+    dirty: rx.Reactive<bool>;
+    diverged: rx.Reactive<bool>;
+    conflict: rx.Reactive<bool>;
+
+    fn constructor(isDirty: bool, hasDiverged: bool): mut FakeDoc {
+        let fake = FakeDoc {
+            dirty: rx.reactive<bool>(isDirty),
+            diverged: rx.reactive<bool>(hasDiverged),
+            // A divergence is noticed and raised in the same breath, so a
+            // fake that starts diverged starts with its dialog up too --
+            // which is the state Cancel then leaves by clearing only this.
+            conflict: rx.reactive<bool>(hasDiverged),
+        };
+        return fake;
+    }
+}
+
+fn registerFake(registry: mut DocumentRegistry, key: int, path: str, fake: mut FakeDoc): void {
+    // Models the editor's requestSave: refuse a diverged file and raise the
+    // dialog rather than performing the overwrite nobody authorised.
+    let save: DocSave = () => {
+        if rx.get(fake.diverged) {
+            fake.conflict := true;
+            return false;
+        }
+        fake.saves = fake.saves + 1;
+        fake.dirty := false;
+        return true;
+    };
+    let check: DocAction = () => {
+        fake.checks = fake.checks + 1;
+    };
+    let noop: DocAction = () => {};
+    registry.register(DocEntry {
+        key: key,
+        path: path,
+        dirty: fake.dirty,
+        diverged: fake.diverged,
+        conflict: fake.conflict,
+        save: save,
+        checkDisk: check,
+        resolveOverwrite: noop,
+        resolveDiscard: noop,
+        resolveCancel: noop,
+    });
+}
+
+fn checkExCommand(run: mut KeyTestRun, name: str, source: str, expected: str): void {
+    let parsed = parseExCommand(source);
+    if !parsed.valid {
+        run.check(name, "invalid", expected);
+        return;
+    }
+    // A compact spelling of the four flags, so one assertion covers the
+    // whole answer rather than four that can each be right on their own.
+    let describe = "";
+    if parsed.write { describe = describe + "w"; }
+    if parsed.quit { describe = describe + "q"; }
+    if parsed.all { describe = describe + "a"; }
+    if parsed.reload { describe = describe + "e"; }
+    if parsed.force { describe = describe + "!"; }
+    run.check(name, describe, expected);
+}
+
+fn runSaveSelfTest(run: mut KeyTestRun): void {
+    // ── parseExCommand ───────────────────────────────────────────────────
+    checkExCommand(run, ":w", "w", "w");
+    checkExCommand(run, ":write", "write", "w");
+    checkExCommand(run, ":q", "q", "q");
+    checkExCommand(run, ":quit", "quit", "q");
+    checkExCommand(run, ":wq is both", "wq", "wq");
+    checkExCommand(run, ":x is wq", "x", "wq");
+    checkExCommand(run, ":wa is write-all", "wa", "wa");
+    checkExCommand(run, ":qa is quit-all", "qa", "qa");
+    checkExCommand(run, ":wqa is all three", "wqa", "wqa");
+    checkExCommand(run, ":xa is wqa", "xa", "wqa");
+    checkExCommand(run, ":e reloads", "e", "e");
+    checkExCommand(run, ":edit reloads", "edit", "e");
+
+    // The bang is a separate axis from the verb, which is the whole reason
+    // it is parsed rather than matched: every command has a forced form.
+    checkExCommand(run, ":w!", "w!", "w!");
+    checkExCommand(run, ":q!", "q!", "q!");
+    checkExCommand(run, ":wq!", "wq!", "wq!");
+    checkExCommand(run, ":qa!", "qa!", "qa!");
+    checkExCommand(run, ":e!", "e!", "e!");
+
+    // Whitespace around a command is not part of it -- typing `: w` is a
+    // slip, not a different command.
+    checkExCommand(run, "surrounding space is trimmed", "  wq  ", "wq");
+
+    run.checkBool("empty is not a command", parseExCommand("").valid, false);
+    run.checkBool("blank is not a command", parseExCommand("   ").valid, false);
+    run.checkBool("nonsense is not a command", parseExCommand("frobnicate").valid, false);
+    // The near-misses matter most: silently treating one of these as a
+    // write is how a file gets overwritten by a typo.
+    run.checkBool("a bare bang is not a command", parseExCommand("!").valid, false);
+    run.checkBool("'ww' is not a command", parseExCommand("ww").valid, false);
+    run.checkBool("'qw' is not a command", parseExCommand("qw").valid, false);
+    run.checkBool("'wqq' is not a command", parseExCommand("wqq").valid, false);
+
+    // ── The `:` command line ─────────────────────────────────────────────
+    let h = makeVimHarness("alpha beta\nsecond line");
+
+    run.checkBool("no command line to start with", h.vim.commandLineOpen(), false);
+    feedText(h, ":");
+    run.checkBool(": opens the command line", h.vim.commandLineOpen(), true);
+    run.check("an open command line starts empty", h.vim.commandLineText(), "");
+
+    feedText(h, "wq");
+    run.check("characters accumulate", h.vim.commandLineText(), "wq");
+
+    // The document must be UNTOUCHED: `w` and `q` are ordinary normal-mode
+    // commands, and the entire point of command-line mode is that they stop
+    // being that.
+    run.check("the buffer is not edited while typing a command",
+        h.doc.lineText(0), "alpha beta");
+
+    h.ctx.handleKey("<BS>");
+    run.check("backspace removes a character", h.vim.commandLineText(), "w");
+
+    h.ctx.handleKey("<CR>");
+    run.checkBool("enter closes the command line", h.vim.commandLineOpen(), false);
+    run.check("enter runs the command", takeCommands(h), "w;");
+
+    // Escape abandons rather than running.
+    feedText(h, ":");
+    feedText(h, "q!");
+    h.ctx.handleKey("<Esc>");
+    run.checkBool("escape closes the command line", h.vim.commandLineOpen(), false);
+    run.check("escape runs nothing", takeCommands(h), "");
+
+    // Backspacing past the colon leaves the mode, the way it does in vim --
+    // the colon reads as the first character of what is being typed.
+    feedText(h, ":");
+    h.ctx.handleKey("<BS>");
+    run.checkBool("backspace over the colon exits", h.vim.commandLineOpen(), false);
+
+    // An empty line still closes cleanly, and asks for nothing.
+    feedText(h, ":");
+    h.ctx.handleKey("<CR>");
+    run.checkBool("an empty command line closes", h.vim.commandLineOpen(), false);
+    run.check("an empty command line runs nothing", takeCommands(h), "");
+
+    // Normal mode is unaffected once the line is closed.
+    let beforeX = caretValue(rx.get(h.ctx.cursorPosition).x);
+    feedText(h, "l");
+    let afterX = caretValue(rx.get(h.ctx.cursorPosition).x);
+    run.checkBool("normal mode works again afterwards", afterX == beforeX + 1, true);
+
+    // ── The command line bypasses remaps ─────────────────────────────────
+    //
+    // THE case this bypass exists for. With `nnoremap j jzz` installed --
+    // which is in this editor's own default vimrc -- a `j` typed into a
+    // command line would otherwise be rewritten into three keys and fill
+    // the line with nonsense.
+    let remapped = makeVimHarness("one\ntwo\nthree\nfour");
+    vim_behavior.applyRemaps(remapped.vim, vim_behavior.defaultVimrc());
+    feedText(remapped, ":");
+    feedText(remapped, "jk");
+    run.check("normal-mode remaps do not apply to the command line",
+        remapped.vim.commandLineText(), "jk");
+    remapped.ctx.handleKey("<Esc>");
+
+    // ...and the remap still works outside it, so the bypass is scoped and
+    // not simply broken.
+    let lineBefore = caretValue(rx.get(remapped.ctx.cursorPosition).y);
+    feedText(remapped, "j");
+    let lineAfter = caretValue(rx.get(remapped.ctx.cursorPosition).y);
+    run.checkBool("remaps still apply outside the command line",
+        lineAfter == lineBefore + 1, true);
+
+    // Entering the command line abandons a half-typed command, exactly as
+    // vim does -- a count left over from before would otherwise be applied
+    // to whatever is typed once the line closes.
+    let pending = makeVimHarness("aaaa\nbbbb\ncccc\ndddd\neeee");
+    feedText(pending, "3");
+    feedText(pending, ":");
+    pending.ctx.handleKey("<Esc>");
+    let pendingBefore = caretValue(rx.get(pending.ctx.cursorPosition).y);
+    feedText(pending, "j");
+    let pendingAfter = caretValue(rx.get(pending.ctx.cursorPosition).y);
+    run.checkBool("a pending count is dropped by :",
+        pendingAfter == pendingBefore + 1, true);
+
+    // ── DocumentRegistry ─────────────────────────────────────────────────
+    let registry = DocumentRegistry();
+    let clean = FakeDoc(false, false);
+    let unsaved = FakeDoc(true, false);
+    let conflicted = FakeDoc(true, true);
+    registerFake(registry, 1, "/tmp/clean.txt", clean);
+    registerFake(registry, 2, "/tmp/unsaved.txt", unsaved);
+    registerFake(registry, 3, "/tmp/conflicted.txt", conflicted);
+
+    run.checkBool("a clean document is not dirty", registry.isDirty(1), false);
+    run.checkBool("an edited document is dirty", registry.isDirty(2), true);
+    run.checkBool("an unknown key is not dirty", registry.isDirty(99), false);
+
+    // The diverged one is deliberately skipped: it is dirty AND the file
+    // underneath it has moved on, so writing it is precisely the
+    // destructive answer the user has not given yet.
+    registry.saveAllDirty();
+    run.check("a clean document is not written", f"{clean.saves}", "0");
+    run.check("a dirty document is written", f"{unsaved.saves}", "1");
+    run.check("a diverged document is NOT written", f"{conflicted.saves}", "0");
+
+    // Saving clears the flag, so a second sweep writes nothing again.
+    registry.saveAllDirty();
+    run.check("a second sweep writes nothing", f"{unsaved.saves}", "1");
+
+    // One dialog at a time, and it is about a specific file.
+    let asking = registry.firstConflict();
+    run.checkBool("a conflict is reported", asking ? true : false, true);
+    if asking {
+        run.check("the conflict names its file", asking.path, "/tmp/conflicted.txt");
+    }
+
+    // ── What Cancel means ────────────────────────────────────────────────
+    //
+    // THE case the two flags exist for. Cancel takes the dialog away and
+    // leaves the buffer unsaved -- it does NOT authorise the overwrite. So
+    // the next automatic sweep must still refuse to write the file, and
+    // collapsing the two flags into one is exactly the bug that would make
+    // it write.
+    conflicted.conflict := false;
+    run.checkBool("cancel closes the dialog",
+        registry.firstConflict() ? true : false, false);
+    registry.saveAllDirty();
+    run.check("a cancelled conflict is still not written", f"{conflicted.saves}", "0");
+
+    // ...but an explicit close DOES get an answer, rather than silently
+    // writing or silently discarding.
+    run.checkBool("closing a diverged tab is refused", registry.requestClose(3), false);
+    run.check("...and still writes nothing", f"{conflicted.saves}", "0");
+    run.checkBool("...and puts the question back on screen",
+        registry.firstConflict() ? true : false, true);
+
+    // Reconciling it (a save, a reload, or the file coming to agree) lets
+    // everything proceed again.
+    conflicted.diverged := false;
+    conflicted.conflict := false;
+    run.checkBool("a reconciled tab may close", registry.requestClose(3), true);
+    run.check("...writing it on the way out", f"{conflicted.saves}", "1");
+
+    registry.checkAllDisk();
+    run.check("every open file is re-checked", f"{clean.checks}", "1");
+    run.check("every open file is re-checked (2)", f"{conflicted.checks}", "1");
+
+    // requestClose is the close path, and it must write what it can.
+    let closing = FakeDoc(true, false);
+    registerFake(registry, 4, "/tmp/closing.txt", closing);
+    run.checkBool("closing a dirty tab is allowed", registry.requestClose(4), true);
+    run.check("closing a dirty tab writes it", f"{closing.saves}", "1");
+    run.checkBool("closing a clean tab is allowed", registry.requestClose(4), true);
+    run.check("closing a clean tab writes nothing", f"{closing.saves}", "1");
+
+    // `:qa!` -- the one operation here that destroys work on purpose.
+    let abandoned = FakeDoc(true, true);
+    registerFake(registry, 5, "/tmp/abandoned.txt", abandoned);
+    registry.discardAll();
+    run.checkBool("discardAll clears dirty", registry.isDirty(5), false);
+    run.checkBool("discardAll clears the conflict",
+        registry.firstConflict() ? true : false, false);
+    run.checkBool("discardAll lets a diverged tab close", registry.requestClose(5), true);
+    registry.saveAllDirty();
+    run.check("nothing is written after discarding", f"{abandoned.saves}", "0");
+
+    // modalIsOpen() asks the PROCESS-WIDE registry, which is what the
+    // shell's key dispatch reads -- so it is checked against that one, not
+    // against the scratch registry above.
+    run.checkBool("no modal without a conflict", modalIsOpen(), false);
+    let globalConflict = FakeDoc(true, true);
+    registerFake(documents(), 9001, "/tmp/global.txt", globalConflict);
+    run.checkBool("a conflict opens the modal", modalIsOpen(), true);
+    documents().unregister(9001);
+    run.checkBool("resolving it closes the modal", modalIsOpen(), false);
+
+    registry.unregister(3);
+    run.checkBool("an unregistered document is gone",
+        registry.find(3) ? true : false, false);
+    run.checkBool("the others are still there",
+        registry.find(2) ? true : false, true);
+    // Unregistering something that was never there is not an error -- a tab
+    // with no path never registers, and closing it must still work.
+    registry.unregister(1234);
+    run.checkBool("closing an unknown tab is allowed", registry.requestClose(1234), true);
+
+    // ── Indent width ─────────────────────────────────────────────────────
+    //
+    // The unit `>`, `<` and Tab all share. It is spaces and not a tab
+    // character for a rendering reason, not a style one: U+0009 has no
+    // glyph in any font and the renderer has no fallback, so a literal tab
+    // came out as a tofu box.
+    let startingWidth = rx.get(settings().indentWidth);
+
+    settings().indentWidth := indentWidthWide();
+    run.check("four-space indent string", indentString(), "    ");
+    run.check("four-space label", indentLabel(), "Spaces: 4");
+    settings().indentWidth := indentWidthNarrow();
+    run.check("two-space indent string", indentString(), "  ");
+    run.check("two-space label", indentLabel(), "Spaces: 2");
+
+    // Neither string may contain a tab -- that is the entire point.
+    settings().indentWidth := indentWidthWide();
+    run.checkBool("the wide indent is spaces only", indentString().contains("\t"), false);
+    settings().indentWidth := indentWidthNarrow();
+    run.checkBool("the narrow indent is spaces only", indentString().contains("\t"), false);
+
+    // The toggle is a toggle: two values, and it comes back.
+    settings().indentWidth := indentWidthWide();
+    toggleIndentWidth();
+    run.check("toggling from four gives two", indentLabel(), "Spaces: 2");
+    toggleIndentWidth();
+    run.check("toggling back gives four", indentLabel(), "Spaces: 4");
+
+    // A stored width is normalised on the way in. It comes off disk, where
+    // a human may have edited it, and an indent of 0 would make `>` a no-op
+    // that looks like a broken editor.
+    run.check("2 survives", f"{normalizeIndentWidth(2)}", "2");
+    run.check("4 survives", f"{normalizeIndentWidth(4)}", "4");
+    run.check("0 becomes the default", f"{normalizeIndentWidth(0)}", "4");
+    run.check("8 becomes the default", f"{normalizeIndentWidth(8)}", "4");
+    run.check("a negative width becomes the default", f"{normalizeIndentWidth(-3)}", "4");
+
+    // ── What the engine does with that unit ──────────────────────────────
+    //
+    // Checked through the real Vim, because the value only matters if `>`,
+    // `<` and Tab all agree on it -- three call sites that used to hold
+    // three different hardcoded answers (a tab, 8 spaces, and 4 spaces).
+    checkIndentRoundTrip(run, "two spaces", "  ");
+    checkIndentRoundTrip(run, "four spaces", "    ");
+
+    // The engine's DEFAULT must stay a tab worth 8 columns: that is vim's
+    // own noexpandtab/shiftwidth=8, and it is what the 2680-case
+    // differential suite checks against real neovim.
+    let stock = makeVimHarness("hello");
+    run.check("the engine still defaults to a tab", stock.vim.indentUnit, "\t");
+    run.check("...worth vim's default shiftwidth", f"{stock.vim.indentColumns()}", "8");
+
+    settings().indentWidth := startingWidth;
+
+    // ── documentByteLength ───────────────────────────────────────────────
+    //
+    // The watcher's cheap prefilter: it decides whether a changed file can
+    // possibly hold the same text as the buffer WITHOUT reassembling the
+    // buffer into a string. If it ever disagrees with the real length, the
+    // watcher either reloads a file that did not change or, worse, skips
+    // one that did.
+    checkByteLength(run, "empty", "");
+    checkByteLength(run, "one line", "hello");
+    checkByteLength(run, "two lines", "hello\nworld");
+    checkByteLength(run, "trailing newline", "hello\n");
+    checkByteLength(run, "blank lines", "a\n\n\nb");
+    checkByteLength(run, "only newlines", "\n\n");
+    checkByteLength(run, "utf-8", "héllo\nwörld");
+
+    // ── A real file on a real filesystem ─────────────────────────────────
+    //
+    // The mtime/size pair is only worth anything if the filesystem actually
+    // moves it, and that is not something a unit test can assume.
+    let path = f"{getCwdAbsolute()}/__haze__/codeeditor/selftest-save.txt";
+    let original = "first line\nsecond line\n";
+    if !fs.writeText(path, original) {
+        run.check("the probe file could be written", "no", "yes");
+        return;
+    }
+
+    let readBack = fs.readText(path);
+    if !readBack {
+        run.check("the probe file could be read", "no", "yes");
+        return;
+    }
+    run.check("what is written is what is read", readBack as str, original);
+
+    // Round-tripping through the document is what an actual save does:
+    // setText splits on newlines and text() joins them back, and a save
+    // that does not reproduce the file byte for byte would rewrite every
+    // file the first time it was opened and saved.
+    let probe = text_document.Document();
+    probe.setText(readBack as str);
+    run.check("a document round-trips its file", probe.text(), original);
+
+    let first = fs.statFile(path);
+    if !first {
+        run.check("the probe file could be stat'ed", "no", "yes");
+        return;
+    }
+    let firstState = first as fs.FileState;
+    run.check("stat agrees with the byte length",
+        f"{firstState.size}", f"{original.length}");
+
+    // A rewrite of a DIFFERENT length must be visible in the size alone,
+    // which is the half of the pair that does not depend on clock
+    // granularity -- the case a coarse mtime would otherwise miss.
+    let changed = "first line\nsecond line\nthird line\n";
+    if !fs.writeText(path, changed) {
+        run.check("the probe file could be rewritten", "no", "yes");
+        return;
+    }
+    let second = fs.statFile(path);
+    if !second {
+        run.check("the rewritten probe file could be stat'ed", "no", "yes");
+        return;
+    }
+    let secondState = second as fs.FileState;
+    run.checkBool("a rewrite changes the stat",
+        secondState.size != firstState.size || secondState.mtime != firstState.mtime, true);
+    run.check("the new size is the new length",
+        f"{secondState.size}", f"{changed.length}");
+
+    // And a file that is not touched keeps its identity, or the watcher
+    // would reload every open file on every poll.
+    let third = fs.statFile(path);
+    if third {
+        let thirdState = third as fs.FileState;
+        run.checkBool("an untouched file keeps its stat",
+            thirdState.size == secondState.size && thirdState.mtime == secondState.mtime, true);
+    }
+
+    // A file that is not there at all is `none`, not a zero-sized one --
+    // the difference between "deleted" and "emptied", which the watcher
+    // must not confuse (one keeps the buffer, the other replaces it).
+    run.checkBool("a missing file has no stat",
+        fs.statFile(f"{path}.does-not-exist") ? true : false, false);
+}
+
+// Snapshot one component of the caret as a plain int.
+//
+// rx.get() on a reactive Vec2i hands back a LIVE view, not a copy: two
+// "before" and "after" reads of it are the same object, so comparing them
+// compares the current value with itself and every movement test passes
+// vacuously. Passing the field through a function parameter is what forces
+// the conversion to a value -- the same thing that happens implicitly at
+// every ordinary call site (doc.lineText(caret.y) and friends).
+fn caretValue(component: int): int {
+    return component;
+}
+
+// `>>` then `<<` on the same line must land exactly back where it started,
+// for whatever unit is configured. That round trip is what proves the two
+// halves agree: an indent of two removed as up to eight (the old hardcoded
+// dedent) eats the next level as well and the file quietly loses structure.
+fn checkIndentRoundTrip(run: mut KeyTestRun, name: str, unit: str): void {
+    let h = makeVimHarness("    already indented\nsecond");
+    h.vim.indentUnit = unit;
+    run.check(f"indent columns: {name}", f"{h.vim.indentColumns()}", f"{unit.length}");
+
+    feedText(h, ">>");
+    run.check(f"indent inserts the unit: {name}",
+        h.doc.lineText(0), f"{unit}    already indented");
+    // No tab may appear in the buffer, whatever the caret did.
+    run.checkBool(f"indent inserts no tab: {name}",
+        h.doc.lineText(0).contains("\t"), false);
+
+    feedText(h, "<<");
+    run.check(f"dedent removes exactly the unit: {name}",
+        h.doc.lineText(0), "    already indented");
+
+    // Insert-mode Tab inserts the same thing, rather than its own idea of
+    // an indent (it used to be four spaces, hardcoded).
+    //
+    // Asserted by LENGTH rather than by the resulting line, because `I`
+    // lands at the first non-blank and the unit is itself spaces -- so
+    // inserting it there and inserting it at column 0 produce the identical
+    // string, and a whole-line comparison would pass without proving the
+    // width was used at all.
+    let before = h.doc.lineText(0).length;
+    feedText(h, "I");
+    h.ctx.handleKey("<Tab>");
+    h.ctx.handleKey("<Esc>");
+    let after = h.doc.lineText(0).length;
+    run.check(f"insert-mode Tab inserts the unit: {name}",
+        f"{after - before}", f"{unit.length}");
+    run.checkBool(f"insert-mode Tab inserts no tab: {name}",
+        h.doc.lineText(0).contains("\t"), false);
+}
+
+fn checkByteLength(run: mut KeyTestRun, name: str, text: str): void {
+    let doc = text_document.Document();
+    doc.setText(text);
+    run.check(f"byte length: {name}", f"{documentByteLength(doc)}", f"{text.length}");
+}

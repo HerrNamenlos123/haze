@@ -18,6 +18,7 @@ namespace ffi {
 	extern C fn haze_sdl_getProcAddress(procname: ccstr): cptr :: final;
 	extern C fn haze_sdl_getTime(): f64 :: final;
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_windowHasFocus(window: SDL_Window): bool :: final;
 	extern C noemit fn SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetError(): ccstr :: final;
@@ -136,6 +137,10 @@ namespace ffi {
 
 	export fn consumeWindowSizeChanged(window: SDL_Window): bool {
 		return haze_sdl_consumeWindowSizeChanged(window);
+	}
+
+	export fn windowHasFocus(window: SDL_Window): bool {
+		return haze_sdl_windowHasFocus(window);
 	}
 }
 
@@ -484,6 +489,12 @@ export ref struct Window {
 
 	fn consumeSizeChanged(): bool {
 		return ffi.consumeWindowSizeChanged(this.handle);
+	}
+
+	// Whether this window holds the OS keyboard focus right now. Polled,
+	// not event-driven -- see the shim in sdl_impl.c.
+	fn hasFocus(): bool {
+		return ffi.windowHasFocus(this.handle);
 	}
 
 	fn getProcAddress(): ((name: ccstr) -> cptr) {

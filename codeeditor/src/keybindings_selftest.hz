@@ -59,10 +59,13 @@ fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
         closeFolder: () => { run.record("closeFolder"); },
         openRecent: () => { run.record("openRecent"); },
         closeActiveEditor: () => { run.record("close"); },
+        closeAllEditors: () => { run.record("closeAll"); },
         nextEditor: () => { run.record("next"); },
         previousEditor: () => { run.record("prev"); },
+        saveAll: () => { run.record("saveAll"); },
     });
     registerEditorCommands(keys, EditorCommands {
+        save: () => { run.record("save"); },
         toggleVim: () => { run.record("toggleVim"); },
         vimNavigateBack: () => { run.record("back"); },
         vimNavigateForward: () => { run.record("forward"); },
@@ -258,6 +261,7 @@ fn runEditorSelfTest(mode: str): int {
     run.checkBool("unknown command is reported", unknown.outcome == DispatchOutcome.UnknownCommand, true);
 
     runWorkspaceSelfTest(run);
+    runSaveSelfTest(run);
 
     if mode == "lsp" {
         // Needs the shared State, because restarting the language servers

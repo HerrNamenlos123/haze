@@ -527,13 +527,36 @@ namespace ChromeTrace {
         // position -- see reconstructedTimeUs for why that distinction is the difference
         // between a bounded sub-microsecond error and a skew that grows without limit for
         // as long as the session runs.
+        //
+        // Two further guarantees, both for the benefit of anything that has to be
+        // nested INTO a sample by time (profiling.hz's allocation markers, which
+        // DevTools places into the tree of sample-derived entries by timestamp):
+        //
+        //   - Every reconstructed timestamp is an INTEGER microsecond. DevTools
+        //     round-trips sample times through milliseconds (µs / 1000, later
+        //     * 1000), and a fractional start makes that produce a value an ulp
+        //     either side of the real one -- enough to put a marker on the wrong
+        //     side of its own sample's start.
+        //   - Every sample is strictly later than the previous one, by at least
+        //     1us. A sample at the same microsecond as its successor has zero
+        //     width, and a zero-width entry is discarded by the viewer before
+        //     anything can be nested inside it -- so an allocation in a burst of
+        //     allocations would lose its stack to whichever wider entry came
+        //     before. The cost is a local distortion of at most 1us per sample in
+        //     a sub-microsecond burst, which the reconstructed-position
+        //     measurement absorbs again on the very next real gap; it never
+        //     accumulates.
         mut fn advanceTimeline(timestampUs: real): void {
             if this.sampleCount == 0 {
-                this.startTimeUs = timestampUs - 1.0;
-                this.reconstructedTimeUs = timestampUs;
+                let firstUs = (timestampUs as int) as real;
+                this.startTimeUs = firstUs - 1.0;
+                this.reconstructedTimeUs = firstUs;
                 this.timeDeltas.push(1);
             } else {
                 let deltaUs = (timestampUs - this.reconstructedTimeUs) as int;
+                if deltaUs < 1 {
+                    deltaUs = 1;
+                }
                 this.timeDeltas.push(deltaUs);
                 this.reconstructedTimeUs += deltaUs as real;
             }

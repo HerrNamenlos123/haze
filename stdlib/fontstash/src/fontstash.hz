@@ -100,7 +100,7 @@ export struct Dimensions {
     height: real;
 }
 
-export ref struct Atlas {
+export struct Atlas {
     width: int;
     height: int;
     pixels: cptr;

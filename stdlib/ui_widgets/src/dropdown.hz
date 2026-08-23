@@ -334,7 +334,18 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             if item.checked {
                                 ui.text({
                                     id: 1,
-                                    text: "✓",
+                                    // U+2022 BULLET, not a check mark.
+                                    // There is no glyph fallback in the
+                                    // renderer, and a character the
+                                    // inherited font does not cover comes
+                                    // out as a tofu box -- Roboto, the
+                                    // default UI font here, has no check
+                                    // mark in any of its forms (2713, 2714,
+                                    // 2705 are all absent). A bullet is the
+                                    // conventional "this is the current
+                                    // one" marker anyway, and every font
+                                    // has it.
+                                    text: "•",
                                 },
                                     presets.textColor(style.textColor)
                                 );
