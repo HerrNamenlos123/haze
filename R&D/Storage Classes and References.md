@@ -1,12 +1,11 @@
 # Storage Classes and References
 
-**Status: design decided, not implemented.** Written 2026-08-22 at the end of the design
+**Status: implemented (2026-08-23); see §16.** Written 2026-08-22 at the end of the design
 conversation that followed `Generational Stack References.md`, `Value Semantics, POD and Copy
 Safety.md` and `Container Copy Safety and Single-Allocation Construction.md`. This document is
 the consolidated, authoritative result. Where it contradicts those three, it wins; §14 lists
-every reversal with the reason. Nothing here exists in the compiler yet (checked 2026-08-22: no
-`ref` keyword, no generation table, no `nocopy`; the only trace is a commented-out
-`'nonclonable'` message in `Elaborate.ts`).
+every reversal with the reason. (When written, nothing existed in the compiler yet; it has since
+been built — §16 records what was refined on the way.)
 
 This document has two jobs and is written for both:
 
@@ -17,8 +16,8 @@ This document has two jobs and is written for both:
    because the mechanism is small and the reasoning that selects it is not, and the reasoning is
    the part that gets lost.
 
-**There are no open items.** The last one — the `this` pointer in methods — was resolved on
-2026-08-22 and is §12. The design is implementation-ready; §15 is the order of work.
+**Status update 2026-08-23: implemented.** §16 records the refinements made while building it;
+§15 is kept as the record of the build order.
 
 ---
 
@@ -719,10 +718,19 @@ methods on the receiver can never leak the receiver pointer. Field reads copy.
 (§7.1). Calling another method on the receiver is an immediate call with the same property,
 recursively. This is checkable from the method body alone (I3).
 
-Therefore:
+Therefore (as refined during implementation, 2026-08-23):
 
-> **In a plain `fn` method, the receiver is a hidden raw pointer that cannot be named as a
-> value. `this.field` and `this.method()` are the only uses of `this`. Bare `this` is an error.**
+> **In a plain `fn` method, the receiver is a hidden raw pointer. `this` is an *lvalue of the
+> receiver's bare storage class* read through that pointer: for a value struct it is the value
+> itself (`this.x = 1` writes in place; `return this`, `f(this)`, `let y = this` copy, exactly
+> like any local value), for a `ref struct` it is the `ref`.** The pointer itself can never be
+> named, so it can never escape: every way of turning `this` into a `ref` or `stackref` goes
+> through the conversion table, where value → ref and value → stackref are errors (§6.2), and
+> binding a method on it is an error (§12.4).
+
+Bare `this` is therefore *allowed* (the earlier draft made it an error). Nothing is lost: the
+safety argument rests on the conversion table, not on a syntactic ban, and the migration of
+existing code (`return this`, `ffi.print(this)`, `this == other`) needed no edits.
 
 A plain method is compiled **once**, with `struct Foo*` as its hidden receiver, and is callable
 on a value local, a temporary (`(Foo{}).print()`), a `ref Foo`, and a `stackref Foo`. The caller
@@ -731,8 +739,9 @@ produces the raw pointer — for a stackref, it performs the generation check on
 check inside the method. The hidden pointer is exactly as safe as C's `&local` passed to a
 function that does not stash it, except that here the callee *provably cannot* stash it.
 
-The `this.` syntax is kept (it avoids field/local shadowing and leaves all existing code
-unchanged); only `this` as a standalone value is removed from plain methods.
+Implementation: the hidden `this` variable keeps the type `ref Foo` (so lowering emits `->`),
+and every *value use* of `this` in a plain method of a value struct elaborates to `(*this)` — a
+`DereferenceExpr` of the value type, transparent for union narrowing paths.
 
 *Rejected alternative — monomorphise `this` over storage class:* three instantiations of every
 method body, and a body that stores `this` into a `ref Foo` field would fail in two of the three
@@ -744,11 +753,11 @@ Some methods genuinely need to pass the receiver somewhere (`StringWriter(this)`
 parent a reference to me"). Haze already has a receiver-class annotation: `mut fn write()` says
 "the receiver must be mutable, and inside, mutation is allowed." The same vocabulary extends:
 
-| Declaration | Receiver must be | `this` inside is | bare `this` nameable |
-|---|---|---|---|
-| `fn m()` | anything | hidden `Foo*` | **no** |
-| `stackref fn m()` | `stackref Foo`, or `ref Foo` (free conversion, §6.2) | `stackref Foo` | yes |
-| `ref fn m()` | `ref Foo` | `ref Foo` | yes |
+| Declaration | Receiver must be | `this` inside is |
+|---|---|---|
+| `fn m()` | anything | the bare value (lvalue through the hidden pointer), or the `ref` for a `ref struct` |
+| `stackref fn m()` | `stackref Foo`, or `ref Foo` (free conversion, §6.2) | `stackref Foo` |
+| `ref fn m()` | `ref Foo` | `ref Foo` (redundant on a `ref struct`, harmless) |
 
 The author declares what they hand out, so the type of `this` is known at author time because
 the author chose it. Rules:
@@ -907,7 +916,90 @@ annotations).
 
 ---
 
-## 16. Related documents
+## 16. Implementation notes (2026-08-23) — refinements made while building it
+
+Everything above is implemented (runtime, parser, semantics, lowering, codegen, migration, `fmt`,
+test suite `testsuite/src/cases_storage_classes.hz`). These are the points where the
+implementation refined or extended the design; each is normative from here on.
+
+**Syntax**
+- `let stackref x: T = e` — the annotation names the *pointee*; `x` is `stackref T`. A plain
+  `let x: stackref T = e` declares an ordinary variable of stackref type that must be fed an
+  existing `ref`/`stackref` (passthrough); a value there is the §6.2 error.
+- `ref Foo { … }` is a struct literal of type `ref Foo` (allocates); `let x: ref Foo = Foo { … }`
+  stays an error. Both parsers accept it.
+- Modifiers are plain prefix expressions and nest: `mut ref Foo` is `mut(ref(Foo))`. Order
+  matters only through validity: `ref mut Foo` fails because `mut Foo` on a value is an error.
+- Struct definition modifiers (`export`, `opaque`, `plain`, `ref`, `nocopy`) are order-free.
+- `ref` is a hard keyword; the UI API `ui.ref<T>()` / the `ref:` prop were renamed to
+  `elementRef`.
+- `inline` is gone from the language (reserved for later reuse).
+
+**Types**
+- `ref struct X` is always ref: no syntax yields a value `X` (mirror of the old always-inline
+  `inline struct`). The rare internal need is reflection: `T.valueType` (struct types only, error
+  otherwise; strips the storage class through any alias chain), `T.isValue`, `T.isRef`,
+  `T.isStackref`. `isInline`/`withoutInline` are gone.
+- Modifiers stack through aliases: `type Bar = mut ref Foo; stackref Bar` works; an alias use
+  records its effective class and `resolveAlias` re-applies anything added on top.
+- `mut` on a value struct is an error (§3.3); internally `mut` is normalised away on value
+  struct uses so a `mut Foo` literal and a `Foo` slot intern to one use.
+- `ref`/`stackref` apply to structs and callables only; everything else is an error (`Box<T>`
+  wraps primitives and arrays). `Box<T>` is now a value struct: a heap box is `ref Box<int>`, a
+  shared stack cell is `let stackref b = Box<int>(0)`. Generic constructors need the explicit
+  argument (`Box<bool>(false)`), as before.
+- `stackref T | none` is an ordinary tagged union; only `ref T | none` is the nullable-pointer
+  representation.
+- C names: a use is mangled with `i` (value), `p` (ref), `s` (stackref); an alias use that adds a
+  class on top of its target, and a stackref callable, get the same letters.
+
+**Closures (§7)**
+- By-value captures (primitives, value structs, fixed arrays, unions, callables, stackrefs) are
+  copied at creation into a heap cell per capture (`HZSTD_HOIST`) for an ordinary closure, or into
+  a stack local next to the env block for a lambda built in place by `let stackref`. Refs, dynamic
+  arrays and reactive cells are shared. Variable hoisting (the old "captured variable lives on the
+  heap and is shared") is gone.
+- **Assigning to a by-value capture inside the closure is an error** (H7189): the write would
+  only touch the copy. Share it through a stackref/ref instead. Assigning to a variable in the
+  declaring scope *after* a closure captured it by value is a **warning** (H7190): the closure may
+  be finished (`acc = fold(() => … acc …)` is normal), so it cannot be an error.
+- Migration pattern for shared closure state: `let stackref x = Box<T>(init)` when the closure
+  is only invoked while the frame is alive (polling a callback); `let x: ref Box<T> = { value }`
+  when the closure outlives the function (component render state, async callbacks).
+
+**Methods (§12)**
+- A method call on a value receiver passes `&value` as the hidden pointer (immediate calls
+  only). A method bound on a `ref` receiver is a plain callable whose env *is* the pointer (no
+  allocation; the trampoline reads `this = env`). A plain method bound on a `stackref` receiver
+  is a stackref callable `{fn, env: the receiver's stackref}`. A `stackref fn` bound on a
+  stackref receiver is a plain callable whose env is a heap copy of the stackref (still checked).
+  Struct-backed primitives (`str`, …) keep the old one-slot env block.
+- "Immediately called" is decided at the call-expression node (`immediatelyCalled`), so operator
+  overloads and subscripts on value receivers are fine.
+
+**Runtime**
+- The generation table is runtime-managed (`malloc`/`realloc`, never GC memory: it holds no
+  pointers and is thread-local); it starts on a static one-entry table holding the immortal
+  slot, so a thread that never participates allocates nothing. Scope exits are emitted on every
+  path (fall-through, `return` after evaluating the result into a temp, `break`, `continue`, the
+  attempt/recover `goto`), never via jumps. An unrecovered dead-reference panic ends the process
+  like any panic (`_exit(-1)`).
+
+**`fmt` (§10)**
+- `fmt.Writer` is `nocopy`, lives in `format`/`print`/`println`'s frame, and is passed as
+  `mut stackref Writer`; `StringWriter` remains as an alias. Two passes over the same arguments:
+  measure, then write into a buffer allocated once at the exact size; `string()` wraps it without
+  copying. Its methods are `final` because assertions and panics format through it.
+
+**Migration as performed**
+- One-shot script: `inline struct` → `struct`, every other `struct` → `ref struct` (except extern
+  C result structs only ever used by value, which became value structs), use-site `inline`
+  dropped, `ref` identifiers renamed. Meaningless `mut` on value structs stripped. The wgpu
+  binding generator now emits value structs with explicit `ref` for C pointer parameters.
+- `ref fn` was inserted on methods using bare `this` before the §12.2 refinement made it
+  unnecessary; it is harmless and may be removed at leisure.
+
+## 17. Related documents
 
 - `Generational Stack References.md` — the mechanism in full (§4–§7 remain authoritative for
   the runtime) and the rejected-designs list (§9).

@@ -101,7 +101,8 @@ export enum EVariableContext {
 export enum ETypeModifier {
   Const,
   Mut,
-  Inline,
+  Ref,
+  Stackref,
   // Nodiscard,
 }
 

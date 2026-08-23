@@ -57,13 +57,13 @@ namespace ffi {
         text: str,
     ): haze_fontstash_dimensions_t :: final;
 
-    export extern C noemit inline struct haze_fontstash_atlas_t {
+    export extern C noemit struct haze_fontstash_atlas_t {
         pixels: cptr;
         width: int;
         height: int;
     };
 
-    export extern C noemit inline struct haze_fontstash_glyph_t {
+    export extern C noemit struct haze_fontstash_glyph_t {
         x0: f32;
         y0: f32;
         x1: f32;
@@ -75,13 +75,13 @@ namespace ffi {
         t1: f32;
     }
 
-    export extern C noemit inline struct haze_fontstash_metrics_t {
+    export extern C noemit struct haze_fontstash_metrics_t {
         ascender: real;
         descender: real;
         lineh: real;
     }
 
-    export extern C noemit inline struct haze_fontstash_dimensions_t {
+    export extern C noemit struct haze_fontstash_dimensions_t {
         width: real;
         height: real;
     }
@@ -89,24 +89,24 @@ namespace ffi {
 
 export type Glyph = ffi.haze_fontstash_glyph_t;
 
-export inline struct Metrics {
+export struct Metrics {
     ascender: real;
     descender: real;
     lineh: real;
 }
 
-export inline struct Dimensions {
+export struct Dimensions {
     width: real;
     height: real;
 }
 
-export struct Atlas {
+export ref struct Atlas {
     width: int;
     height: int;
     pixels: cptr;
 }
 
-export opaque struct FontStash {
+export opaque ref struct FontStash {
     fonsContext: cptr | none;
 
     fn constructor(width: int, height: int) {

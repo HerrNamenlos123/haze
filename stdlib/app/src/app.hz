@@ -3,7 +3,7 @@ import sdl_wgpu
 import wgpu
 import renderer
 
-export inline struct AppOptions {
+export struct AppOptions {
     title: ccstr = "Haze App";
     presentMode: wgpu.PresentMode = wgpu.PresentMode.Fifo;
 }
@@ -45,7 +45,7 @@ fn getWindowState(window: sdl.Window): renderer.gfx.CanvasSize {
 // into one struct. Exposes every piece (gfx, canvas, window, device, surface,
 // surfaceFormat) so nothing is hidden — use individual modules directly when
 // you need to deviate from the defaults.
-export struct AppPointerButtons {
+export ref struct AppPointerButtons {
     leftHeld: bool = false;
     middleHeld: bool = false;
     rightHeld: bool = false;
@@ -68,7 +68,7 @@ export enum PointerEdgeKind { Pressed, Released }
 // as it happens, instead of folding it into shared mutable state, means
 // nothing SDL reports within a frame can ever be lost, no matter how many
 // events land in that frame.
-export struct PointerEdge {
+export ref struct PointerEdge {
     button: int;             // matches sdl.MouseButtonEvent.button: 0=left, 1=middle, 2=right
     kind: PointerEdgeKind;
     pos: Vec2;
@@ -81,17 +81,17 @@ export enum KeyEdgeKind { Pressed, Released }
 // frame takes a while, or just fast typing/repeat) can easily produce
 // several key down/up pairs within one frame, and a level or single-edge
 // latch would silently drop all but the net effect.
-export struct KeyEdge {
+export ref struct KeyEdge {
     key: sdl.Key;
     kind: KeyEdgeKind;
     repeat: bool;
     modifiers: KeyModifiers;
 }
 
-export opaque struct App {
+export opaque ref struct App {
     window: mut sdl.Window;
-    device: mut wgpu.Device;
-    surface: mut wgpu.Surface;
+    device: wgpu.Device;
+    surface: wgpu.Surface;
     surfaceFormat: wgpu.TextureFormat;
     caps: wgpu.SurfaceCapabilities;
     presentMode: wgpu.PresentMode;

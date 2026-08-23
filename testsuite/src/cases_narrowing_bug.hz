@@ -42,12 +42,12 @@ namespace cases_narrowing_bug {
         s.run(
             "boolean guard-clause narrowing does not over-narrow independent paths (De Morgan)",
             """
-struct Pair {
+ref struct Pair {
     a: int | none;
     b: int | none;
 }
 
-struct Triple {
+ref struct Triple {
     a: int | none;
     b: int | none;
     c: int | none;

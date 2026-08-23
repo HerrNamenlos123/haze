@@ -31,7 +31,7 @@ fn measureStub(fontId: int, fontSize: real, text: str): Vec2 {
     return Vec2(text.length as real * 8.0, fontSize);
 }
 
-struct Recorder {
+ref struct Recorder {
     // Every rect drawn this frame, as "x,y,WxH".
     boxes: []str = [];
 

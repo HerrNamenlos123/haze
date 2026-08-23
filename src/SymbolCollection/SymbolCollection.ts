@@ -30,6 +30,7 @@ import {
   EUnaryOperation,
   EVariableMutability,
   UnaryOperationToString,
+  EStorageClass,
 } from "../shared/AST";
 import {
   ECollectionMode,
@@ -338,6 +339,8 @@ export namespace Collect {
       | EDatatypeMutability.Const
       | EDatatypeMutability.Mut
       | null;
+    // `ref fn` / `stackref fn` (R&D/Storage Classes and References.md §12.3)
+    methodReceiverStorage: EStorageClass.Ref | EStorageClass.Stackref | null;
     extern: EExternLanguage;
     sourceloc: SourceLoc;
     functionScope: Collect.ScopeId | null;
@@ -442,7 +445,8 @@ export namespace Collect {
     export: boolean;
     opaque: boolean;
     plain: boolean;
-    inlineByDefault: boolean;
+    refByDefault: boolean;
+    nocopy: boolean;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
@@ -562,6 +566,8 @@ export namespace Collect {
     variant: ENode.VariableDefinitionStatement;
     variableSymbol: Collect.SymbolId;
     intrinsicTakeAddrOfValue: boolean;
+    // `let stackref x = ...` (R&D/Storage Classes and References.md §5.1)
+    stackref: boolean;
     comptime: boolean;
     value: Collect.ExprId | null;
   };
@@ -828,7 +834,6 @@ export namespace Collect {
     // CTFE-evaluated to a concrete length once elaborated (see
     // elaborateDatatype's StackArrayTypeDefinitionExpr case).
     length: Collect.ExprId;
-    inline: boolean;
     mutability: EDatatypeMutability;
     sourceloc: SourceLoc;
   };
@@ -1368,7 +1373,8 @@ function collectTypeDef(
           extern: item.extern,
           opaque: item.opaque,
           plain: item.plain,
-          inlineByDefault: item.inlineByDefault,
+          refByDefault: item.refByDefault,
+          nocopy: item.nocopy,
           pub: false,
           noemit: item.noemit,
           lexicalScope: -1 as Collect.ScopeId,
@@ -1721,6 +1727,7 @@ function collectSymbol(
           returnType:
             (item.returnType && collectExpr(cc, item.returnType, args)) || null,
           methodRequiredMutability: item.methodRequiredMutability,
+          methodReceiverStorage: item.methodReceiverStorage,
           sourceloc: item.sourceloc,
           functionScope: null,
           originalSourcecode: item.originalSourcecode,
@@ -2200,6 +2207,7 @@ function collectScope(
                 {
                   variant: "VariableDefinitionStatement",
                   name: astStatement.letCondition.name,
+                  stackref: false,
                   comptime: false,
                   mutability: EVariableMutability.Let,
                   sourceloc: astStatement.sourceloc,
@@ -2335,6 +2343,7 @@ function collectScope(
                 {
                   variant: "VariableDefinitionStatement",
                   name: astStatement.letCondition.name,
+                  stackref: false,
                   comptime: false,
                   mutability: EVariableMutability.Let,
                   sourceloc: astStatement.sourceloc,
@@ -2444,6 +2453,7 @@ function collectScope(
             null,
           comptime: astStatement.comptime,
           intrinsicTakeAddrOfValue: false,
+          stackref: astStatement.stackref,
           variableSymbol: variableSymbolId,
         });
         break;
@@ -2730,6 +2740,7 @@ function collectExpr(
         functionScope: -1 as Collect.ScopeId,
         generics: [],
         methodRequiredMutability: null,
+        methodReceiverStorage: null,
         methodType: EMethodType.None,
         name: callableName,
         noemit: false,
@@ -3163,13 +3174,24 @@ function collectExpr(
       })[1];
     }
 
-    case "InlineTypeExpr": {
+    case "RefTypeExpr": {
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.TypeModifierExpr,
         type: collectExpr(cc, item.type, {
           currentParentScope: args.currentParentScope,
         }),
-        modifier: ETypeModifier.Inline,
+        modifier: ETypeModifier.Ref,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "StackrefTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: ETypeModifier.Stackref,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3198,7 +3220,6 @@ function collectExpr(
         length: collectExpr(cc, item.arraySize, {
           currentParentScope: args.currentParentScope,
         }),
-        inline: false,
         mutability: EDatatypeMutability.Default,
         sourceloc: item.sourceloc,
       })[1];
@@ -3370,6 +3391,7 @@ function collectExpr(
                     {
                       variant: "VariableDefinitionStatement",
                       name: varName,
+                      stackref: false,
                       comptime: false,
                       mutability: EVariableMutability.Let,
                       sourceloc: item.sourceloc,
@@ -3814,8 +3836,10 @@ export const printCollectedExpr = (
         return `const ${printCollectedDatatype(cc, expr.type)}`;
       } else if (expr.modifier === ETypeModifier.Mut) {
         return `mut ${printCollectedDatatype(cc, expr.type)}`;
-      } else if (expr.modifier === ETypeModifier.Inline) {
-        return `inline ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Ref) {
+        return `ref ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Stackref) {
+        return `stackref ${printCollectedDatatype(cc, expr.type)}`;
       }
       assert(false);
       throw new Error();

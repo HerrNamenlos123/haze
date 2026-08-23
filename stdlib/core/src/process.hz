@@ -1,7 +1,7 @@
 
 namespace process {
 
-  extern C noemit struct hzstd_process_result_t {
+  extern C noemit ref struct hzstd_process_result_t {
     exit_code: i32 = -1;
     stdout_data: cstr = "";
     stderr_data: cstr = "";
@@ -14,7 +14,7 @@ namespace process {
                         inherit_stdio: bool,
                         out: hzstd_process_result_t): int :: final;
 
-  export struct Options {
+  export ref struct Options {
     env: []str = [];
     cwd: str | none = none;
     inherit_stdio: bool = true;
@@ -45,7 +45,7 @@ namespace process {
     return Result<none, int>.Ok(none);
   }
 
-  export struct RunCapturedResult {
+  export ref struct RunCapturedResult {
     exitCode: int;
     stdoutResult: str;
     stderrResult: str;
@@ -86,7 +86,7 @@ namespace process {
   extern C noemit fn hzstd_process_spawn(exe: str,
                         argv: []str,
                         envp: []str, // empty → inherit
-                        cwd: str): inline hzstd_process_spawn_result_t :: final; // empty → use current working directory
+                        cwd: str): hzstd_process_spawn_result_t :: final; // empty → use current working directory
 
   extern C noemit fn hzstd_process_read_stdout(handle: cptr): str :: final;
   extern C noemit fn hzstd_process_read_stderr(handle: cptr): str :: final;
@@ -96,14 +96,14 @@ namespace process {
   extern C noemit fn hzstd_process_join(handle: cptr): int :: final;
   extern C noemit fn hzstd_process_release(handle: cptr) :: final;
 
-  export struct SpawnOptions {
+  export ref struct SpawnOptions {
     env: []str = [];
     cwd: str | none = none;
   }
 
   // A process spawned in the background via process.spawn. stdin/stdout/stderr
   // are always piped, so the process can be interacted with while it runs.
-  export struct Process {
+  export ref struct Process {
     handle: cptr;
     // Set once join() has released the underlying OS handle. Every other
     // method must check this first: touching `handle` after release is a
@@ -182,14 +182,14 @@ namespace process {
     return Result<Process, int>.Ok(Process { handle: result.handle });
   }
 
-  extern C noemit struct hzstd_process_memory_info_t {
-    // See struct MemoryInfo
+  extern C noemit ref struct hzstd_process_memory_info_t {
+    // See ref struct MemoryInfo
     resident: int = 0;
     peak_resident: int = 0;
     committed: int = 0;
   }
 
-  export struct MemoryInfo {
+  export ref struct MemoryInfo {
     // Resident Set Size: Amount of this process's memory currently resident in physical RAM,
     // excluding swapped-out pages. Shared Memory shared across multiple processes will report the same amount of
     // RSS in all of them. Sum of all process'es RSS != total system utilization.

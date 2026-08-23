@@ -15,6 +15,7 @@ import {
   EOverloadedOperator,
   EUnaryOperation,
   EVariableMutability,
+  EStorageClass,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import {
@@ -716,7 +717,7 @@ export class SemanticElaborator {
                         this.sr,
                         leftTypeUse.type,
                         EDatatypeMutability.Mut,
-                        "force-no-inline",
+                        EStorageClass.Ref,
                         binaryExpr.sourceloc
                       )[1],
                     }
@@ -745,7 +746,7 @@ export class SemanticElaborator {
                     this.sr,
                     leftTypeUse.type,
                     EDatatypeMutability.Mut,
-                    "force-no-inline",
+                    EStorageClass.Ref,
                     binaryExpr.sourceloc
                   )[1],
                 },
@@ -809,7 +810,7 @@ export class SemanticElaborator {
           this.sr,
           leftTypeId,
           EDatatypeMutability.Const,
-          false,
+          EStorageClass.Value,
           binaryExpr.sourceloc
         )[1];
         rightId = Conversion.MakeConversionOrThrow(
@@ -826,7 +827,7 @@ export class SemanticElaborator {
           this.sr,
           rightTypeId,
           EDatatypeMutability.Const,
-          false,
+          EStorageClass.Value,
           binaryExpr.sourceloc
         )[1];
         leftId = Conversion.MakeConversionOrThrow(
@@ -1257,7 +1258,7 @@ export class SemanticElaborator {
               this.sr,
               bytesTypeDef,
               EDatatypeMutability.Default,
-              true,
+              EStorageClass.Value,
               callExpr.sourceloc
             );
             returnType = bytesTypeUseId;
@@ -1626,6 +1627,12 @@ export class SemanticElaborator {
       [calledExpr, calledExprId] = resolveCalledExpr();
     }
 
+    if (calledExpr.variant === Semantic.ENode.CallableExpr) {
+      // A method callable used directly as a callee: the receiver is only
+      // borrowed for the duration of the call (§12.2).
+      calledExpr.immediatelyCalled = true;
+    }
+
     // Handle intrinsic function calls
     if (calledExpr.variant === Semantic.ENode.IntrinsicSymbol) {
       return this.handleIntrinsicCall(calledExpr, callExpr, inference);
@@ -1938,7 +1945,7 @@ export class SemanticElaborator {
           this.sr,
           calledExpr.unionType,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           calledExpr.sourceloc
         )[1],
         flow: e.flow,
@@ -2275,7 +2282,7 @@ export class SemanticElaborator {
               this.sr,
               this.sr.typeUseNodes.get(calledExprTypeUseId).type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               callSourceloc
             )[1],
           }
@@ -3505,6 +3512,7 @@ export class SemanticElaborator {
           sourceloc: memberAccess.sourceloc,
           value: objectId,
           intrinsicTakeAddrOfValue: false,
+          stackrefInit: null,
           variableSymbol: tempVariableId,
         })[1],
         this.sr.b.addStatement(this.sr, {
@@ -3514,6 +3522,7 @@ export class SemanticElaborator {
           sourceloc: memberAccess.sourceloc,
           value: null,
           intrinsicTakeAddrOfValue: false,
+          stackrefInit: null,
           variableSymbol: resultVariableId,
         })[1],
         this.sr.b.addStatement(this.sr, {
@@ -4106,7 +4115,7 @@ export class SemanticElaborator {
                 this.sr,
                 semanticStructId,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 semanticStruct.sourceloc
               )[1],
             }
@@ -4344,7 +4353,8 @@ export class SemanticElaborator {
         opaque: definedStructType.opaque,
         reactiveClone: false,
         plain: definedStructType.plain,
-        inlineByDefault: definedStructType.inlineByDefault,
+        refByDefault: definedStructType.refByDefault,
+        nocopy: definedStructType.nocopy,
         membersBuilt: false,
         membersFinalized: false,
         parentSymbolId: parentSymbolId,
@@ -4827,11 +4837,11 @@ export class SemanticElaborator {
             return;
           }
 
-          if (aUse.inline !== bUse.inline) {
+          if (aUse.storage !== bUse.storage) {
             matches = false;
             reason = `Parameter #${
               i + 1
-            } has mismatching 'inline' attribute: ${Semantic.serializeTypeUse(
+            } has mismatching storage class (value / ref / stackref): ${Semantic.serializeTypeUse(
               this.sr,
               actuallyGivenexpression.type
             )} != ${Semantic.serializeTypeUse(this.sr, signatureParam.type)}`;
@@ -5897,6 +5907,7 @@ export class SemanticElaborator {
             envType: null,
             parameterNames: func.parameters.map((p) => p.name),
             methodRequiredMutability: func.methodRequiredMutability,
+            methodReceiverStorage: func.methodReceiverStorage,
             returnedDatatypes: new Set(),
             // A lambda literal is collected (and named) exactly once at its
             // source location, but with bypassCache set it may be elaborated
@@ -6051,7 +6062,7 @@ export class SemanticElaborator {
                   this.sr,
                   paramPackId,
                   EDatatypeMutability.Const,
-                  false,
+                  EStorageClass.Value,
                   func.sourceloc
                 )[1],
                 variableContext: EVariableContext.FunctionParameter,
@@ -6067,7 +6078,7 @@ export class SemanticElaborator {
                   this.sr,
                   paramPackId,
                   EDatatypeMutability.Const,
-                  false,
+                  EStorageClass.Value,
                   func.sourceloc
                 )[1],
               };
@@ -6118,6 +6129,30 @@ export class SemanticElaborator {
 
         if (func.methodType === EMethodType.Method && !func.staticMethod) {
           assert(parentSymbolId);
+          // The receiver's storage class is the method's own business
+          // (`stackref fn` / `ref fn` / plain), whatever the caller's env said:
+          // callers only know the struct. Normalised here so every entry point
+          // (struct pre-elaboration, operators, member access, implicit this)
+          // agrees. (§12.3)
+          if (env?.type === "method") {
+            const thisUse = this.sr.typeUseNodes.get(env.thisExprType);
+            const wanted =
+              func.methodReceiverStorage === EStorageClass.Stackref
+                ? EStorageClass.Stackref
+                : EStorageClass.Ref;
+            if (thisUse.storage !== wanted) {
+              env = {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  thisUse.type,
+                  thisUse.mutability,
+                  wanted,
+                  func.sourceloc
+                )[1],
+              };
+            }
+          }
           symbol.envType = env;
         }
 
@@ -6322,7 +6357,7 @@ export class SemanticElaborator {
 
               if (
                 (paramType.variant === Semantic.ENode.StructDatatype &&
-                  !paramUse.inline &&
+                  (paramUse.storage !== EStorageClass.Value) &&
                   paramUse.mutability === EDatatypeMutability.Mut) ||
                 (paramType.variant === Semantic.ENode.DynamicArrayDatatype &&
                   paramUse.mutability === EDatatypeMutability.Mut) ||
@@ -6375,11 +6410,15 @@ export class SemanticElaborator {
               assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
 
               assert(symbol.methodOf);
+              // The hidden receiver: a pointer (`ref Foo`) for a plain or `ref`
+              // method, the checked reference for a `stackref fn`. (§12)
               const thisRef = makeTypeUse(
                 this.sr,
                 symbol.methodOf,
                 symbol.methodRequiredMutability ?? EDatatypeMutability.Default,
-                "force-no-inline",
+                symbol.methodReceiverStorage === EStorageClass.Stackref
+                  ? EStorageClass.Stackref
+                  : EStorageClass.Ref,
                 func.sourceloc
               )[1];
               const variableId = this.sr.b.addSymbol(this.sr, {
@@ -6724,7 +6763,7 @@ export class SemanticElaborator {
           this.sr,
           symbol.datatype,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           expr.sourceloc
         )[1];
       }
@@ -6761,6 +6800,27 @@ export class SemanticElaborator {
     );
   }
 
+  /**
+   * `mut` means "the holder may mutate through this". It only makes sense on
+   * something that *is* a reference: a `ref`/`stackref` struct, a dynamic
+   * array (a GC pointer), or a union of those. On a value struct the callee
+   * got a copy and nothing could be mutated through it, so it is an error
+   * (R&D/Storage Classes and References.md §3.3).
+   */
+  assertMutApplicable(typeUse: Semantic.TypeUse, sourceloc: SourceLoc) {
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+    if (
+      typeDef.variant === Semantic.ENode.StructDatatype &&
+      typeUse.storage === EStorageClass.Value
+    ) {
+      throw new CompilerError(
+        `'mut' cannot be applied to '${Semantic.serializeTypeUse(this.sr, makeTypeUse(this.sr, typeUse.type, typeUse.mutability, typeUse.storage, sourceloc)[1])}': it is a value, and nothing can be mutated through a copy. Use 'mut ref ...' or 'mut stackref ...'`,
+        sourceloc,
+        HazeErrorCode.MutModifierOnValueType
+      );
+    }
+  }
+
   elaborateDatatype(
     typeId: Collect.ExprId,
     args?: { noSubstituteGenerics?: boolean }
@@ -6788,29 +6848,32 @@ export class SemanticElaborator {
             // container itself is never mutated directly (assignment replaces or
             // narrows, never mutates the discriminant wrapper).
             const resolvedTypeUseId = this.resolveAlias(typeUseId);
+            const resolvedTypeUse = this.sr.typeUseNodes.get(resolvedTypeUseId);
             const resolvedTypeDef = this.sr.typeDefNodes.get(
-              this.sr.typeUseNodes.get(resolvedTypeUseId).type
+              resolvedTypeUse.type
             );
             if (
               resolvedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
             ) {
               const mutMembers = resolvedTypeDef.members.map((memberId) => {
                 const memberUse = this.sr.typeUseNodes.get(memberId);
+                this.assertMutApplicable(memberUse, type.sourceloc);
                 return makeTypeUse(
                   this.sr,
                   memberUse.type,
                   EDatatypeMutability.Mut,
-                  memberUse.inline,
+                  memberUse.storage,
                   type.sourceloc
                 )[1];
               });
               return this.sr.b.untaggedUnionTypeUse(mutMembers, type.sourceloc);
             }
+            this.assertMutApplicable(resolvedTypeUse, type.sourceloc);
             return makeTypeUse(
               this.sr,
               tUse.type,
               EDatatypeMutability.Mut,
-              tUse.inline,
+              tUse.storage,
               type.sourceloc
             )[1];
           }
@@ -6820,23 +6883,68 @@ export class SemanticElaborator {
               this.sr,
               tUse.type,
               EDatatypeMutability.Const,
-              tUse.inline,
+              tUse.storage,
               type.sourceloc
             )[1];
           }
 
-          case ETypeModifier.Inline: {
+          case ETypeModifier.Ref: {
+            const resolvedTypeUse = this.sr.typeUseNodes.get(
+              this.resolveAlias(typeUseId)
+            );
+            const resolvedTypeDef = this.sr.typeDefNodes.get(
+              resolvedTypeUse.type
+            );
+            if (
+              resolvedTypeDef.variant !== Semantic.ENode.StructDatatype &&
+              resolvedTypeDef.variant !== Semantic.ENode.GenericParameterDatatype
+            ) {
+              throw new CompilerError(
+                `'ref' can only be applied to struct types, but '${Semantic.serializeTypeUse(this.sr, typeUseId)}' is not a struct`,
+                type.sourceloc,
+                HazeErrorCode.RefModifierOnNonStruct
+              );
+            }
+            // Last modifier wins: `ref` on top of anything is a ref.
             return makeTypeUse(
               this.sr,
               tUse.type,
               tUse.mutability,
-              true,
+              EStorageClass.Ref,
+              type.sourceloc
+            )[1];
+          }
+
+          case ETypeModifier.Stackref: {
+            const resolvedTypeUse = this.sr.typeUseNodes.get(
+              this.resolveAlias(typeUseId)
+            );
+            const resolvedTypeDef = this.sr.typeDefNodes.get(
+              resolvedTypeUse.type
+            );
+            if (
+              resolvedTypeDef.variant !== Semantic.ENode.StructDatatype &&
+              resolvedTypeDef.variant !== Semantic.ENode.CallableDatatype &&
+              resolvedTypeDef.variant !== Semantic.ENode.GenericParameterDatatype
+            ) {
+              throw new CompilerError(
+                `'stackref' can only be applied to struct or callable types, but '${Semantic.serializeTypeUse(this.sr, typeUseId)}' is neither`,
+                type.sourceloc,
+                HazeErrorCode.StackrefModifierOnNonStructOrCallable
+              );
+            }
+            // Last modifier wins: `stackref T` is a stackref whatever T is.
+            return makeTypeUse(
+              this.sr,
+              tUse.type,
+              tUse.mutability,
+              EStorageClass.Stackref,
               type.sourceloc
             )[1];
           }
 
           default:
-            assert(false, type.modifier);
+            assert(false, String(type.modifier));
             throw new Error();
         }
       }
@@ -6971,7 +7079,7 @@ export class SemanticElaborator {
             this.elaborateDatatype(type.datatype),
             0n,
             type.mutability,
-            type.inline,
+            EStorageClass.Value,
             type.sourceloc
           );
         }
@@ -6987,7 +7095,7 @@ export class SemanticElaborator {
           this.elaborateDatatype(type.datatype),
           length,
           type.mutability,
-          type.inline,
+          EStorageClass.Value,
           type.sourceloc
         );
       }
@@ -7001,7 +7109,7 @@ export class SemanticElaborator {
           this.sr,
           this.elaborateDatatype(type.datatype),
           type.mutability,
-          false,
+          EStorageClass.Value,
           type.sourceloc
         );
       }
@@ -7052,7 +7160,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(
       //               `rx.Reactive<T> cannot be inline`,
       //               innerTypeUse.sourceloc,
@@ -7090,7 +7198,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(
       //               `rx.UnwrapReactive<T> cannot be inline`,
       //               innerTypeUse.sourceloc,
@@ -7129,7 +7237,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(`IsReactive<T> cannot be inline`, innerTypeUse.sourceloc);
       //           }
 
@@ -7166,7 +7274,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(
       //               `IsShallowReactive<T> cannot be inline`,
       //               innerTypeUse.sourceloc,
@@ -7206,7 +7314,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
       //           }
 
@@ -7244,7 +7352,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(`IsComputed<T> cannot be inline`, innerTypeUse.sourceloc);
       //           }
 
@@ -7282,7 +7390,7 @@ export class SemanticElaborator {
       //             );
       //           }
 
-      //           if (innerTypeUse.inline) {
+      //           if ((innerTypeUse.storage === EStorageClass.Value)) {
       //             throw new CompilerError(`Computed<T> cannot be inline`, innerTypeUse.sourceloc);
       //           }
 
@@ -7394,7 +7502,7 @@ export class SemanticElaborator {
       //         type.genericArgs,
       //         type.innerNested,
       //         type.mutability,
-      //         type.inline,
+      //         type.storage,
       //         type.sourceloc,
       //       );
       //     } else if (typedef.variant === Collect.ENode.StructTypeDef) {
@@ -7462,7 +7570,7 @@ export class SemanticElaborator {
       //               this.sr,
       //               typeUse.type,
       //               type.mutability,
-      //               type.inline,
+      //               type.storage,
       //               type.sourceloc,
       //             )[1];
       //           },
@@ -7472,7 +7580,7 @@ export class SemanticElaborator {
       //           this.sr,
       //           structId,
       //           type.mutability,
-      //           type.inline,
+      //           type.storage,
       //           type.sourceloc,
       //         )[1];
       //       }
@@ -7482,7 +7590,7 @@ export class SemanticElaborator {
       //           this.sr,
       //           this.namespace(found.typeDef),
       //           type.mutability,
-      //           type.inline,
+      //           type.storage,
       //           type.sourceloc,
       //         )[1];
       //       }
@@ -7509,7 +7617,7 @@ export class SemanticElaborator {
       //             this.sr,
       //             typeUse.type,
       //             type.mutability,
-      //             type.inline,
+      //             type.storage,
       //             type.sourceloc,
       //           )[1];
       //         },
@@ -7519,7 +7627,7 @@ export class SemanticElaborator {
       //         this.sr,
       //         this.enum(found.typeDef),
       //         type.mutability,
-      //         type.inline,
+      //         type.storage,
       //         type.sourceloc,
       //       )[1];
       //     }
@@ -7588,6 +7696,96 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * A closure holds a *copy* of every variable it captured by value
+   * (R&D/Storage Classes and References.md §7.1). Writing to that copy from
+   * inside the closure would be a silent no-op for the outer variable, which
+   * is exactly the JavaScript-style shared-counter code this model replaces,
+   * so it is rejected with a pointer at the fix: share it through a stackref.
+   * Writes *through* a reference reached from the copy (`captured.refField.x`)
+   * are fine -- they mutate the shared object, not the copy.
+   */
+  assertNotWriteToByValueCapture(targetExprId: Semantic.ExprId, sourceloc: SourceLoc) {
+    // Find the root symbol of the assignment target, stopping at any link
+    // that goes through a reference.
+    let cur = this.sr.exprNodes.get(targetExprId);
+    while (true) {
+      if (cur.variant === Semantic.ENode.MemberAccessExpr) {
+        const objExpr = this.sr.exprNodes.get(cur.expr);
+        const objUse = this.sr.typeUseNodes.get(this.resolveAlias(objExpr.type));
+        const objDef = this.sr.typeDefNodes.get(objUse.type);
+        if (
+          objDef.variant !== Semantic.ENode.StructDatatype ||
+          objUse.storage !== EStorageClass.Value
+        ) {
+          return;
+        }
+        cur = objExpr;
+        continue;
+      }
+      if (cur.variant === Semantic.ENode.UnionToValueCastExpr) {
+        cur = this.sr.exprNodes.get(cur.expr);
+        continue;
+      }
+      break;
+    }
+    if (cur.variant !== Semantic.ENode.SymbolValueExpr) {
+      return;
+    }
+    const symbolId = cur.symbol;
+    const rootSymbol = this.sr.symbolNodes.get(symbolId);
+
+    // Innermost enclosing lambda scope, if any.
+    let scopeId = this.currentContext.currentScope;
+    let lambdaScopeId: Collect.ScopeId | null = null;
+    while (true) {
+      const scope = this.sr.cc.scopeNodes.get(scopeId);
+      if (scope.variant === Collect.ENode.LambdaScope) {
+        lambdaScopeId = scopeId;
+        break;
+      }
+      if (!("parentScope" in scope)) {
+        break;
+      }
+      scopeId = scope.parentScope;
+    }
+    const lambdaId =
+      lambdaScopeId === null
+        ? undefined
+        : this.currentContext.elaboratedLambdaExprs.get(lambdaScopeId);
+    const lambda = lambdaId === undefined ? null : this.sr.exprNodes.get(lambdaId);
+    const capture =
+      lambda &&
+      lambda.variant === Semantic.ENode.CallableExpr &&
+      lambda.envType?.type === "lambda"
+        ? lambda.envType.captures.find(
+            (c) => c.capturedSymbol === symbolId && c.byValue
+          )
+        : undefined;
+    if (!capture) {
+      // Not a write inside a capturing closure. But a write in the declaring
+      // scope *after* some closure took a by-value copy leaves that closure
+      // with a stale value -- the same shared-state mistake from the other side.
+      if (
+        rootSymbol.variant === Semantic.ENode.VariableSymbol &&
+        rootSymbol.capturedByValueAt
+      ) {
+        // A warning, not an error: the closure may well be finished by now
+        // (`acc = fold(() => ... acc ...)` is a normal pattern), and whether
+        // it is still alive is not knowable locally.
+        const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(rootSymbol.capturedByValueAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
+        printWarningMessage(msg, sourceloc, HazeErrorCode.WriteAfterByValueCapture);
+        return;
+      }
+      return;
+    }
+    throw new CompilerError(
+      `Cannot assign to '${capture.name}' inside this closure: it is captured by value, so the closure only holds a copy and the outer variable would not change. To share it, declare it as a stack reference (e.g. 'let stackref ${capture.name} = Box(...)') or a 'ref'.`,
+      sourceloc,
+      HazeErrorCode.WriteToByValueCapture
+    );
+  }
+
   assignmentExpr(
     assignment: Collect.ExprAssignmentExpr,
     inference: Semantic.Inference
@@ -7611,6 +7809,7 @@ export class SemanticElaborator {
     });
 
     this.assertNotIntrinsic(valueExpr, "assigned to a variable");
+    this.assertNotWriteToByValueCapture(targetExprId, assignment.sourceloc);
 
     const lhsTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(targetExpr.type)
@@ -7692,7 +7891,7 @@ export class SemanticElaborator {
               this.sr,
               this.sr.typeUseNodes.get(targetExpr.type).type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               assignment.sourceloc
             )[1],
           },
@@ -8505,7 +8704,9 @@ export class SemanticElaborator {
           this.sr,
           parentSymbol.datatype,
           funcsym.methodRequiredMutability ?? EDatatypeMutability.Default,
-          "force-no-inline",
+          funcsym.methodReceiverStorage === EStorageClass.Stackref
+            ? EStorageClass.Stackref
+            : EStorageClass.Ref,
           sourceloc
         )[1],
       };
@@ -8753,7 +8954,9 @@ export class SemanticElaborator {
                   this.sr,
                   resolvedExprTypeUse.type,
                   EDatatypeMutability.Mut,
-                  "force-no-inline",
+                  collectedMethod.methodReceiverStorage === EStorageClass.Stackref
+                    ? EStorageClass.Stackref
+                    : EStorageClass.Ref,
                   sourceloc
                 )[1],
               };
@@ -8795,8 +8998,15 @@ export class SemanticElaborator {
         );
       }
 
+      // A value is mutable in place unless it is const; a reference is
+      // mutable through only if it is `mut`.
+      const receiverStorage = resolvedExprTypeUse.storage;
+      const receiverMutable =
+        receiverStorage === EStorageClass.Value
+          ? resolvedExprTypeUse.mutability !== EDatatypeMutability.Const
+          : resolvedExprTypeUse.mutability === EDatatypeMutability.Mut;
       if (
-        resolvedExprTypeUse.mutability !== EDatatypeMutability.Mut &&
+        !receiverMutable &&
         elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Mut
       ) {
         throw new CompilerError(
@@ -8806,6 +9016,29 @@ export class SemanticElaborator {
           )}() can mutate the object but is not called on an object that is mutable. Is it called on a const object?`,
           sourceloc,
           HazeErrorCode.MethodCanMutateObjectButNotCalledObject
+        );
+      }
+
+      // Receiver class required by `stackref fn` / `ref fn` (§12.3).
+      const requiredReceiver = elaboratedMethod.methodReceiverStorage;
+      if (
+        requiredReceiver === EStorageClass.Stackref &&
+        receiverStorage === EStorageClass.Value
+      ) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(this.sr, elaboratedMethodId)}() is a 'stackref fn' and requires a 'stackref' (or 'ref') receiver, but it is called on a value. Declare the receiver with 'let stackref'.`,
+          sourceloc,
+          HazeErrorCode.ReceiverStorageTooWeak
+        );
+      }
+      if (
+        requiredReceiver === EStorageClass.Ref &&
+        receiverStorage !== EStorageClass.Ref
+      ) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(this.sr, elaboratedMethodId)}() is a 'ref fn' and requires a 'ref' receiver, but it is called on a ${receiverStorage === EStorageClass.Value ? "value" : "stackref"}.`,
+          sourceloc,
+          HazeErrorCode.ReceiverStorageTooWeak
         );
       }
 
@@ -8823,7 +9056,7 @@ export class SemanticElaborator {
         );
       }
 
-      return this.sr.b.callableExpr(
+      const [callable, callableId] = this.sr.b.callableExpr(
         elaboratedMethodId,
         {
           type: "method",
@@ -8831,7 +9064,9 @@ export class SemanticElaborator {
             this.sr,
             exprTypeUse.type,
             EDatatypeMutability.Mut,
-            "force-no-inline",
+            requiredReceiver === EStorageClass.Stackref
+              ? EStorageClass.Stackref
+              : EStorageClass.Ref,
             sourceloc
           )[1],
         },
@@ -8841,6 +9076,22 @@ export class SemanticElaborator {
         },
         sourceloc
       );
+      if (
+        receiverStorage === EStorageClass.Stackref &&
+        requiredReceiver !== EStorageClass.Stackref
+      ) {
+        // Bound on a stackref receiver: the callable carries the receiver's
+        // witness and checks it on every invocation (§12.4).
+        const callableUse = this.sr.typeUseNodes.get(callable.type);
+        callable.type = makeTypeUse(
+          this.sr,
+          callableUse.type,
+          callableUse.mutability,
+          EStorageClass.Stackref,
+          sourceloc
+        )[1];
+      }
+      return [callable, callableId] as const;
     }
 
     const typeDefId = [...structScope.symbols].find((mId) => {
@@ -8947,7 +9198,7 @@ export class SemanticElaborator {
             this.sr,
             exprTypeUse.type,
             EDatatypeMutability.Mut,
-            "force-no-inline",
+            EStorageClass.Ref,
             sourceloc
           )[1],
         },
@@ -8965,7 +9216,7 @@ export class SemanticElaborator {
           this.sr,
           exprTypeUse.type,
           EDatatypeMutability.Mut,
-          "force-no-inline",
+          EStorageClass.Ref,
           sourceloc
         )[1],
       },
@@ -9113,7 +9364,7 @@ export class SemanticElaborator {
           this.sr,
           innerTypeDefId,
           defaultMutability,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1];
         return this.sr.b.datatypeUseAsValue(baseTypeUseId, sourceloc);
@@ -9130,10 +9381,24 @@ export class SemanticElaborator {
           sourceloc
         );
       }
-      if (name === "isInline") {
-        return this.sr.b.literal(resolvedTypeUse.inline, sourceloc);
+      if (name === "isRef") {
+        return this.sr.b.literal(
+          resolvedTypeUse.storage === EStorageClass.Ref,
+          sourceloc
+        );
       }
-      if (name === "withoutConst") {
+      if (name === "isStackref") {
+        return this.sr.b.literal(
+          resolvedTypeUse.storage === EStorageClass.Stackref,
+          sourceloc
+        );
+      }
+      if (name === "isValue") {
+        return this.sr.b.literal(
+          resolvedTypeUse.storage === EStorageClass.Value,
+          sourceloc
+        );
+      }      if (name === "withoutConst") {
         const newMutability =
           resolvedTypeUse.mutability === EDatatypeMutability.Const
             ? EDatatypeMutability.Default
@@ -9142,7 +9407,7 @@ export class SemanticElaborator {
           this.sr,
           resolvedTypeUse.type,
           newMutability,
-          resolvedTypeUse.inline,
+          resolvedTypeUse.storage,
           sourceloc
         )[1];
         return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
@@ -9156,18 +9421,32 @@ export class SemanticElaborator {
           this.sr,
           resolvedTypeUse.type,
           newMutability,
-          resolvedTypeUse.inline,
+          resolvedTypeUse.storage,
           sourceloc
         )[1];
         return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
       }
-      if (name === "withoutInline") {
-        const newTypeUseId = makeTypeUse(
+      if (name === "valueType") {
+        // The value form of a struct type, through any alias/modifier chain
+        // (`type Bar = mut ref Foo; Bar.valueType == Foo`). Only exists on
+        // struct types. Note this bypasses a `ref struct`'s always-ref default
+        // deliberately: it is the one sanctioned way to name such a value
+        // (compiler-internal uses like building a Deep<T> in place).
+        if (resolvedTypeDef.variant !== Semantic.ENode.StructDatatype) {
+          throw new CompilerError(
+            `'.valueType' only exists on struct types, but '${Semantic.serializeTypeUse(this.sr, expr.type)}' is not a struct`,
+            sourceloc,
+            HazeErrorCode.ValueTypeOnNonStruct
+          );
+        }
+        const newTypeUseId = this.sr.b.addTypeInstance<Semantic.TypeUse>(
           this.sr,
-          resolvedTypeUse.type,
-          resolvedTypeUse.mutability,
-          false,
-          sourceloc
+          {
+            type: resolvedTypeUse.type,
+            mutability: EDatatypeMutability.Default,
+            storage: EStorageClass.Value,
+            sourceloc: sourceloc,
+          }
         )[1];
         return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
       }
@@ -9196,7 +9475,7 @@ export class SemanticElaborator {
             this.sr,
             nonNodiscardTypeDefId,
             resolvedTypeUse.mutability,
-            resolvedTypeUse.inline,
+            resolvedTypeUse.storage,
             sourceloc
           )[1];
           return this.sr.b.datatypeUseAsValue(newTypeUseId, sourceloc);
@@ -9316,7 +9595,7 @@ export class SemanticElaborator {
             metaFieldType,
             BigInt(reflectedFields.length),
             EDatatypeMutability.Const,
-            false,
+            EStorageClass.Value,
             sourceloc
           );
 
@@ -9391,7 +9670,7 @@ export class SemanticElaborator {
           elemType,
           BigInt(memberExprs.length),
           EDatatypeMutability.Const,
-          false,
+          EStorageClass.Value,
           sourceloc
         );
         return this.sr.b.arrayLiteral(
@@ -9437,7 +9716,7 @@ export class SemanticElaborator {
             metaTaggedMemberType,
             BigInt(memberExprs.length),
             EDatatypeMutability.Const,
-            false,
+            EStorageClass.Value,
             sourceloc
           );
           return this.sr.b.arrayLiteral(
@@ -9461,7 +9740,7 @@ export class SemanticElaborator {
                 this.sr,
                 this.sr.b.unionTagRefTypeDef(),
                 EDatatypeMutability.Default,
-                false,
+                EStorageClass.Value,
                 sourceloc
               )[1],
               sourceloc: sourceloc,
@@ -9827,7 +10106,7 @@ export class SemanticElaborator {
           this.sr,
           exprTypeUse.type,
           EDatatypeMutability.Mut,
-          "force-no-inline",
+          EStorageClass.Ref,
           sourceloc
         )[1];
 
@@ -9982,7 +10261,7 @@ export class SemanticElaborator {
             this.sr,
             this.sr.b.strType(),
             EDatatypeMutability.Mut,
-            false,
+            EStorageClass.Value,
             sourceloc
           ),
           ["hzstd_make_heap_allocator()"]
@@ -10112,7 +10391,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10130,7 +10409,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10190,7 +10469,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10208,7 +10487,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10280,7 +10559,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10298,7 +10577,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10363,7 +10642,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10381,7 +10660,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10440,7 +10719,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10458,7 +10737,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10513,7 +10792,7 @@ export class SemanticElaborator {
                 this.sr,
                 exprTypeUse.type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 sourceloc
               )[1],
             },
@@ -10531,7 +10810,7 @@ export class SemanticElaborator {
               this.sr,
               exprTypeUse.type,
               EDatatypeMutability.Mut,
-              "force-no-inline",
+              EStorageClass.Ref,
               sourceloc
             )[1],
           },
@@ -10635,7 +10914,7 @@ export class SemanticElaborator {
       this.sr,
       this.sr.typeUseNodes.get(expr.type).type,
       EDatatypeMutability.Mut,
-      "force-no-inline",
+      EStorageClass.Ref,
       sourceloc
     )[1];
 
@@ -10983,7 +11262,7 @@ export class SemanticElaborator {
         this.sr,
         arrayUse.type,
         mutability,
-        arrayUse.inline,
+        arrayUse.storage,
         sourceloc
       )[1],
       values,
@@ -11150,7 +11429,7 @@ export class SemanticElaborator {
         this.sr,
         structUse.type,
         mutability,
-        structUse.inline,
+        structUse.storage,
         sourceloc
       )[1],
       assign,
@@ -11215,7 +11494,7 @@ export class SemanticElaborator {
       this.sr,
       structTypeDefId,
       EDatatypeMutability.Mut,
-      true,
+      EStorageClass.Value,
       site
     )[1];
 
@@ -11238,7 +11517,7 @@ export class SemanticElaborator {
         this.sr,
         this.metaFieldStructTypeId,
         EDatatypeMutability.Const,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -11252,7 +11531,9 @@ export class SemanticElaborator {
         opaque: false,
         plain: true,
         reactiveClone: false,
-        inlineByDefault: false,
+        // Was a non-inline (reference) struct before the value-default flip; keep it.
+        refByDefault: true,
+        nocopy: false,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -11294,7 +11575,7 @@ export class SemanticElaborator {
       this.sr,
       metaFieldStructId,
       EDatatypeMutability.Const,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -11305,7 +11586,7 @@ export class SemanticElaborator {
         this.sr,
         this.metaTypeValueStructTypeId,
         EDatatypeMutability.Const,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -11319,7 +11600,9 @@ export class SemanticElaborator {
         opaque: false,
         plain: true,
         reactiveClone: false,
-        inlineByDefault: false,
+        // Was a non-inline (reference) struct before the value-default flip; keep it.
+        refByDefault: true,
+        nocopy: false,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -11343,7 +11626,7 @@ export class SemanticElaborator {
       this.sr,
       structId,
       EDatatypeMutability.Const,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -11354,7 +11637,7 @@ export class SemanticElaborator {
         this.sr,
         this.metaTaggedMemberStructTypeId,
         EDatatypeMutability.Const,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -11367,7 +11650,9 @@ export class SemanticElaborator {
         opaque: false,
         plain: true,
         reactiveClone: false,
-        inlineByDefault: false,
+        // Was a non-inline (reference) struct before the value-default flip; keep it.
+        refByDefault: true,
+        nocopy: false,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -11428,7 +11713,7 @@ export class SemanticElaborator {
       this.sr,
       structId,
       EDatatypeMutability.Const,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -11612,7 +11897,7 @@ export class SemanticElaborator {
           this.sr,
           func.type,
           EDatatypeMutability.Const,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1],
         flow: Semantic.FlowResult.fallthrough(),
@@ -12579,6 +12864,109 @@ export class SemanticElaborator {
           );
         }
 
+        // `let stackref x = <value>`: the one place a stackref is created.
+        let stackrefInit: Semantic.StackrefInit = null;
+        if (s.stackref) {
+          if (!this.inFunction) {
+            throw new CompilerError(
+              `'let stackref' is not allowed at global scope: a stack reference needs a scope to live in`,
+              s.sourceloc,
+              HazeErrorCode.StackrefOnGlobal
+            );
+          }
+          if (!valueId || !value || uninitialized) {
+            throw new CompilerError(
+              `'let stackref ${variableSymbol.name}' must be initialised from a value, a ref, a stackref or a lambda literal`,
+              s.sourceloc,
+              HazeErrorCode.StackrefInitializerNotAllowed
+            );
+          }
+          // The annotation, if any, names the *pointee* type: `let stackref x: T`
+          // means x: stackref T. Convert the value to it first.
+          if (variableSymbol.type) {
+            const annotated = this.sr.typeUseNodes.get(variableSymbol.type);
+            if (annotated.storage === EStorageClass.Stackref) {
+              throw new CompilerError(
+                `'let stackref ${variableSymbol.name}: T' names the referenced type; write the type without 'stackref' (or drop the 'stackref' on 'let' to declare a plain variable of stackref type)`,
+                s.sourceloc,
+                HazeErrorCode.StackrefInitializerNotAllowed
+              );
+            }
+            valueId = Conversion.MakeConversionOrThrow(
+              this.sr,
+              valueId,
+              variableSymbol.type,
+              this.currentContext.constraints,
+              s.sourceloc,
+              Conversion.Mode.Implicit,
+              inference?.unsafe ?? false
+            );
+          }
+          const srcExpr = this.sr.exprNodes.get(valueId);
+          const srcUse = this.sr.typeUseNodes.get(this.resolveAlias(srcExpr.type));
+          const srcDef = this.sr.typeDefNodes.get(srcUse.type);
+          if (srcDef.variant === Semantic.ENode.CallableDatatype) {
+            if (srcUse.storage === EStorageClass.Stackref) {
+              stackrefInit = "from-stackref";
+            } else if (
+              srcExpr.variant === Semantic.ENode.CallableExpr &&
+              srcExpr.envValue?.type === "lambda"
+            ) {
+              stackrefInit = "lambda";
+            } else if (
+              srcExpr.variant === Semantic.ENode.CallableExpr &&
+              srcExpr.envValue?.type === "method"
+            ) {
+              throw new CompilerError(
+                `'let stackref ${variableSymbol.name}' cannot bind a method: bind it on a stackref receiver instead ('let stackref obj = ...; let f = obj.method')`,
+                s.sourceloc,
+                HazeErrorCode.StackrefInitializerNotAllowed
+              );
+            } else {
+              throw new CompilerError(
+                `'let stackref ${variableSymbol.name}' must be initialised directly with a lambda literal to build the closure in place; a callable from another expression cannot be moved. Use 'let ${variableSymbol.name}: stackref (...) => ... = value' for a plain stackref variable.`,
+                s.sourceloc,
+                HazeErrorCode.StackrefInitializerNotAllowed
+              );
+            }
+          } else if (srcDef.variant === Semantic.ENode.StructDatatype) {
+            if (srcUse.storage === EStorageClass.Stackref) {
+              stackrefInit = "from-stackref";
+            } else if (srcUse.storage === EStorageClass.Ref) {
+              stackrefInit = "from-ref";
+            } else {
+              if (!srcExpr.isTemporary && Conversion.isNocopyType(this.sr, srcUse.type)) {
+                throw new CompilerError(
+                  `'let stackref ${variableSymbol.name}' would copy '${Semantic.serializeTypeUse(this.sr, srcExpr.type)}', which is 'nocopy'. Only a temporary can initialise a stackref to a nocopy value (e.g. 'let stackref w = Writer()').`,
+                  s.sourceloc,
+                  HazeErrorCode.NocopySecondBinding
+                );
+              }
+              stackrefInit = "copy-value";
+            }
+          } else {
+            throw new CompilerError(
+              `'let stackref' can only reference a struct or a callable, but the value has type '${Semantic.serializeTypeUse(this.sr, srcExpr.type)}'. Wrap a primitive in a struct (e.g. Box(value))`,
+              s.sourceloc,
+              HazeErrorCode.StackrefModifierOnNonStructOrCallable
+            );
+          }
+          // x: stackref T. A copied value is x's own fresh buffer, so the
+          // reference to it is mutable (like any `let` local); a reference
+          // obtained from a ref/stackref inherits that reference's mutability.
+          const stackrefMutability =
+            stackrefInit === "copy-value" || stackrefInit === "lambda"
+              ? EDatatypeMutability.Mut
+              : srcUse.mutability;
+          variableSymbol.type = makeTypeUse(
+            this.sr,
+            srcUse.type,
+            stackrefMutability,
+            EStorageClass.Stackref,
+            s.sourceloc
+          )[1];
+        }
+
         if (!variableSymbol.type) {
           variableSymbol.type = value?.type || null;
 
@@ -12594,7 +12982,7 @@ export class SemanticElaborator {
           //       this.sr,
           //       variableSymbolType.type,
           //       EDatatypeMutability.Mut,
-          //       variableSymbolType.inline,
+          //       variableSymbolType.storage,
           //       variableSymbolType.unique,
           //       s.sourceloc
           //     )[1];
@@ -12611,7 +12999,7 @@ export class SemanticElaborator {
               this.sr,
               typeUse.type,
               EDatatypeMutability.Const,
-              typeUse.inline,
+              typeUse.storage,
               s.sourceloc
             )[1];
           }
@@ -12708,19 +13096,24 @@ export class SemanticElaborator {
             mutability: variableSymbol.mutability,
             comptime: collectedVariableSymbol.comptime,
             intrinsicTakeAddrOfValue: s.intrinsicTakeAddrOfValue,
+            stackrefInit: stackrefInit,
             name: variableSymbol.name,
             variableSymbol: variableSymbolId,
             value:
               (valueId &&
-                Conversion.MakeConversionOrThrow(
-                  this.sr,
-                  valueId,
-                  variableSymbol.type,
-                  this.currentContext.constraints,
-                  s.sourceloc,
-                  Conversion.Mode.Implicit,
-                  inference?.unsafe ?? false
-                )) ||
+                (stackrefInit === "copy-value" || stackrefInit === "lambda"
+                  ? // The value stays what it is; lowering copies it into the
+                    // stack buffer / builds the closure in place.
+                    valueId
+                  : Conversion.MakeConversionOrThrow(
+                      this.sr,
+                      valueId,
+                      variableSymbol.type,
+                      this.currentContext.constraints,
+                      s.sourceloc,
+                      Conversion.Mode.Implicit,
+                      inference?.unsafe ?? false
+                    ))) ||
               null,
             sourceloc: s.sourceloc,
           })[1],
@@ -13700,7 +14093,57 @@ export class SemanticElaborator {
     if (def.variant !== Semantic.ENode.TypeAliasDatatype) {
       return aliasId;
     }
-    return this.resolveAlias(def.targetType, visited);
+    const targetId = this.resolveAlias(def.targetType, visited);
+    // Modifiers stack through aliases (`type Bar = mut Foo; ref Bar`): whatever
+    // this use added on top of the alias is re-applied to the resolved target.
+    // `use.storage` is already the effective class (makeTypeUse inherits the
+    // target's class when no modifier was written), so it is always right;
+    // Default mutability means "inherit".
+    const targetUse = this.sr.typeUseNodes.get(targetId);
+    const mutability =
+      use.mutability === EDatatypeMutability.Default
+        ? targetUse.mutability
+        : use.mutability;
+    if (
+      targetUse.storage === use.storage &&
+      targetUse.mutability === mutability
+    ) {
+      return targetId;
+    }
+    return makeTypeUse(
+      this.sr,
+      targetUse.type,
+      mutability,
+      use.storage,
+      use.sourceloc
+    )[1];
+  }
+
+  /**
+   * Whether a variable of this type is captured by value (copied into the env
+   * at closure creation) or by reference (the pointer it already is). Anything
+   * that is a GC-managed reference in C (ref struct, dynamic array, reactive
+   * cells, callables) is shared; everything else -- primitives, value structs,
+   * fixed arrays, unions, and stackrefs (a copy of the *reference*) -- is copied.
+   */
+  isCapturedByValue(typeUseId: Semantic.TypeUseId): boolean {
+    const typeUse = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+    switch (typeDef.variant) {
+      case Semantic.ENode.DynamicArrayDatatype:
+      case Semantic.ENode.ShallowReactiveDatatype:
+      case Semantic.ENode.ReactiveDatatype:
+      case Semantic.ENode.ComputedDatatype:
+        return false;
+      case Semantic.ENode.CallableDatatype:
+        // A callable is a {fn, env} value (env already shared); copying it
+        // into the env is both correct and required (it is not pointer-sized).
+        return true;
+      case Semantic.ENode.StructDatatype:
+        return typeUse.storage !== EStorageClass.Ref;
+      default:
+        return true;
+    }
   }
 
   addCaptureToLambda(
@@ -13714,19 +14157,24 @@ export class SemanticElaborator {
 
     const resultingExpr = this.sr.exprNodes.get(resultingExprId);
 
-    const typeUse = this.sr.typeUseNodes.get(capturedVariable.type);
-    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-
-    if (typeDef.variant === Semantic.ENode.DynamicArrayDatatype) {
-    } else if (typeDef.variant === Semantic.ENode.ShallowReactiveDatatype) {
-    } else if (typeDef.variant === Semantic.ENode.ReactiveDatatype) {
-    } else if (typeDef.variant === Semantic.ENode.ComputedDatatype) {
-    } else if (typeDef.variant === Semantic.ENode.StructDatatype) {
-      if (typeUse.inline) {
-        capturedVariable.requiresHoisting = true;
+    const byValue = this.isCapturedByValue(capturedVariable.type);
+    if (byValue && !capturedVariable.capturedByValueAt) {
+      capturedVariable.capturedByValueAt = resultingExpr.sourceloc;
+    }
+    if (byValue) {
+      const capUse = this.sr.typeUseNodes.get(this.resolveAlias(capturedVariable.type));
+      const capDef = this.sr.typeDefNodes.get(capUse.type);
+      if (
+        capDef.variant === Semantic.ENode.StructDatatype &&
+        capUse.storage === EStorageClass.Value &&
+        Conversion.isNocopyType(this.sr, capUse.type)
+      ) {
+        throw new CompilerError(
+          `'${capturedVariable.name}' is a 'nocopy' value and cannot be captured by a closure (that would copy it). Declare it with 'let stackref' and capture the reference instead.`,
+          resultingExpr.sourceloc,
+          HazeErrorCode.NocopySecondBinding
+        );
       }
-    } else {
-      capturedVariable.requiresHoisting = true;
     }
 
     const lambdaScope = this.sr.cc.scopeNodes.get(lambdaScopeId);
@@ -13755,6 +14203,7 @@ export class SemanticElaborator {
         name: capturedVariable.name,
         type: capturedVariable.type,
         capturedSymbol: capturedVariableId,
+        byValue: byValue,
       });
       lambdaExpr.envValue.captures.push({
         variable: capturedVariableId,
@@ -13849,7 +14298,7 @@ export class SemanticElaborator {
           this.sr,
           reactiveElemType,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           sourceloc
         );
         // DynamicArray is not a struct — go directly to makeRaw without Deep
@@ -13944,6 +14393,44 @@ export class SemanticElaborator {
           elaboratedSymbolId,
           sourceloc
         )[1];
+
+        // `this` in a plain method of a value struct is a hidden pointer; as
+        // a value expression it is `*this`: an lvalue of the struct's value
+        // type (member writes go through, whole-value use copies) -- so the
+        // pointer itself can never escape (§12.2).
+        if (
+          elaboratedSymbol.name === "this" &&
+          elaboratedSymbol.memberOfStruct !== null
+        ) {
+          const thisUse = this.sr.typeUseNodes.get(elaboratedSymbol.type);
+          const thisDef = this.sr.typeDefNodes.get(thisUse.type);
+          if (
+            thisUse.storage === EStorageClass.Ref &&
+            thisDef.variant === Semantic.ENode.StructDatatype &&
+            !thisDef.refByDefault
+          ) {
+            const valueType = makeTypeUse(
+              this.sr,
+              thisUse.type,
+              thisUse.mutability === EDatatypeMutability.Const
+                ? EDatatypeMutability.Const
+                : EDatatypeMutability.Default,
+              EStorageClass.Value,
+              sourceloc
+            )[1];
+            const symExpr = this.sr.exprNodes.get(resultingExprId);
+            resultingExprId = this.sr.b.addExpr(this.sr, {
+              variant: Semantic.ENode.DereferenceExpr,
+              instanceIds: [],
+              expr: resultingExprId,
+              type: valueType,
+              isTemporary: false,
+              sourceloc: sourceloc,
+              flow: symExpr.flow,
+              writes: symExpr.writes,
+            })[1];
+          }
+        }
 
         const resolvedSymbolTypeUse = this.sr.typeUseNodes.get(
           this.sr.e.resolveAlias(elaboratedSymbol.type)
@@ -14369,6 +14856,7 @@ export class SemanticElaborator {
           sourceloc: errPropExpr.sourceloc,
           value: leftExprId,
           intrinsicTakeAddrOfValue: false,
+          stackrefInit: null,
           variableSymbol: tempVariableId,
         })[1],
         this.sr.b.addStatement(this.sr, {
@@ -14565,7 +15053,7 @@ export class SemanticElaborator {
                   this.sr,
                   resolvedTypeUse.type,
                   EDatatypeMutability.Mut,
-                  "force-no-inline",
+                  EStorageClass.Ref,
                   sourceloc
                 )[1],
               };
@@ -14662,7 +15150,7 @@ export class SemanticElaborator {
           this.sr,
           valueType.datatype,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           arraySubscript.sourceloc
         ),
         sourceloc: arraySubscript.sourceloc,
@@ -14842,7 +15330,7 @@ export class SemanticElaborator {
             this.sr,
             elemUse.type,
             EDatatypeMutability.Mut,
-            "force-no-inline",
+            EStorageClass.Ref,
             arraySubscript.sourceloc
           )[1];
         }
@@ -14977,7 +15465,7 @@ export class SemanticElaborator {
                 this.sr,
                 this.sr.typeUseNodes.get(value.type).type,
                 EDatatypeMutability.Mut,
-                "force-no-inline",
+                EStorageClass.Ref,
                 arraySubscript.sourceloc
               )[1],
             },
@@ -15037,7 +15525,7 @@ export class SemanticElaborator {
       this.sr,
       this.sr.typeUseNodes.get(expr.type).type,
       EDatatypeMutability.Mut,
-      "force-no-inline",
+      EStorageClass.Ref,
       sourceloc
     )[1];
 
@@ -15744,7 +16232,7 @@ export class SemanticElaborator {
         this.sr,
         panicInfoSemanticSymbol.datatype,
         EDatatypeMutability.Const,
-        false,
+        EStorageClass.Value,
         attempt.sourceloc
       )[1];
       attemptExpr.panicInfoType = panicInfoTypeUse;
@@ -16359,7 +16847,7 @@ export function makeComputedDatatypeAvailable(
     sr,
     makeRawComputedDatatypeAvailable(sr, wrappedType),
     mutability,
-    false,
+    EStorageClass.Value,
     sourceloc
   )[1];
 }
@@ -16424,7 +16912,7 @@ export function makeReactiveDatatypeAvailable(
       sr,
       reactiveElemType,
       EDatatypeMutability.Default,
-      false,
+      EStorageClass.Value,
       sourceloc
     );
     // DynamicArray is not a struct — no Deep wrapping needed
@@ -16432,7 +16920,7 @@ export function makeReactiveDatatypeAvailable(
       sr,
       makeRawReactiveDatatypeAvailable(sr, wrappedType),
       mutability,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -16445,7 +16933,7 @@ export function makeReactiveDatatypeAvailable(
     sr,
     makeRawReactiveDatatypeAvailable(sr, deepWrappedType),
     mutability,
-    false,
+    EStorageClass.Value,
     sourceloc
   )[1];
 }
@@ -16460,7 +16948,7 @@ export function makeShallowReactiveDatatypeAvailable(
     sr,
     makeRawShallowReactiveDatatypeAvailable(sr, wrappedType),
     mutability,
-    false,
+    EStorageClass.Value,
     sourceloc
   )[1];
 }
@@ -16524,7 +17012,7 @@ export function makeDeepDatatypeAvailable(
         sr,
         entry.deepTypeDefId,
         EDatatypeMutability.Default,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -16538,7 +17026,8 @@ export function makeDeepDatatypeAvailable(
       export: false,
       extern: EExternLanguage.None,
       generics: wrappedTypeDef.generics,
-      inlineByDefault: wrappedTypeDef.inlineByDefault,
+      refByDefault: wrappedTypeDef.refByDefault,
+      nocopy: wrappedTypeDef.nocopy,
       membersBuilt: false,
       reactiveClone: true,
       membersFinalized: false,
@@ -16594,7 +17083,7 @@ export function makeDeepDatatypeAvailable(
     sr,
     newStructId,
     EDatatypeMutability.Default,
-    false,
+    EStorageClass.Value,
     newStruct.sourceloc
   )[1];
 
@@ -16615,7 +17104,7 @@ export function makeDeepDatatypeAvailable(
     sr,
     deepTypeDefId,
     EDatatypeMutability.Default,
-    false,
+    EStorageClass.Value,
     sourceloc
   )[1];
 }
@@ -16669,7 +17158,7 @@ export function makePrimitiveAvailable(
     sr,
     makeRawPrimitiveAvailable(sr, primitive),
     mutability,
-    false,
+    EStorageClass.Value,
     sourceloc
   )[1];
 }

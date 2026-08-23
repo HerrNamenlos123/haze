@@ -1,10 +1,10 @@
 
-export inline struct Surface {
+export struct Surface {
     handle: mut ffi.WGPUSurfaceImpl;
 
-    fn getCapabilities(adapter: mut Adapter): Result<SurfaceCapabilities, none> {
+    fn getCapabilities(adapter: Adapter): Result<SurfaceCapabilities, none> {
         do unsafe {
-            let caps = ffi.WGPUSurfaceCapabilities {
+            let caps = ref ffi.WGPUSurfaceCapabilities {
                 nextInChain: none,
                 usages: 0,
                 formatCount: 0,
@@ -27,7 +27,7 @@ export inline struct Surface {
     }
 
     fn getCurrentTexture() {
-        let texture = ffi.WGPUSurfaceTexture {
+        let texture = ref ffi.WGPUSurfaceTexture {
             nextInChain: none,
             texture: none,
             status: ffi.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal, // will be overwritten
@@ -45,8 +45,8 @@ export inline struct Surface {
     }
 }
 
-export struct SurfaceTexture {
-    texture: mut Texture | none;
+export ref struct SurfaceTexture {
+    texture: Texture | none;
     status: SurfaceGetCurrentTextureStatus;
 }
 
@@ -57,15 +57,15 @@ fn fromFFI(v: ffi.WGPUSurfaceTexture): SurfaceTexture :: final {
     };
 }
 
-fn toFFI(v: SurfaceTexture): ffi.WGPUSurfaceTexture :: final {
-    return ffi.WGPUSurfaceTexture {
+fn toFFI(v: SurfaceTexture): ref ffi.WGPUSurfaceTexture :: final {
+    return ref ffi.WGPUSurfaceTexture {
         nextInChain: none,
         texture: v.texture ? toFFI(v.texture) : none,
         status: toFFI(v.status),
     };
 }
 
-export struct SurfaceConfiguration {
+export ref struct SurfaceConfiguration {
     format: TextureFormat = TextureFormat.Undefined;
     usage: TextureUsage = TextureUsage.None;
     width: int = 0;
@@ -73,7 +73,7 @@ export struct SurfaceConfiguration {
     viewFormats: []TextureFormat = [];
     alphaMode: CompositeAlphaMode = CompositeAlphaMode.Auto;
     presentMode: PresentMode = PresentMode.Undefined;
-    device: mut Device;
+    device: Device;
 }
 
 fn fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
@@ -91,7 +91,7 @@ fn fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     for (let i = 0; i < v.viewFormatCount; i++) {
         do unsafe {
             let e: TextureFormat = uninitialized;
-            __c__("e = (int)((WGPUTextureFormat*)v->viewFormats)[i];");
+            __c__("e = (int)((WGPUTextureFormat*)v.viewFormats)[i];");
             c.viewFormats.push(e);
         };
     }
@@ -99,11 +99,11 @@ fn fromFFI(v: ffi.WGPUSurfaceConfiguration): SurfaceConfiguration :: final {
     return c;
 }
 
-fn toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
+fn toFFI(v: SurfaceConfiguration): ref ffi.WGPUSurfaceConfiguration :: final {
     assert(v.width >= u32.min && v.width <= u32.max, "Surface Width is out of bounds (v.width ∉ [u32.min, u32.max])");
     assert(v.height >= u32.min && v.height <= u32.max, "Surface Height is out of bounds (v.height ∉ [u32.min, u32.max])");
     let viewFormats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.viewFormats);
-    return ffi.WGPUSurfaceConfiguration {
+    return ref ffi.WGPUSurfaceConfiguration {
         nextInChain: none,
         device: v.device.handle,
         format: toFFI(v.format),
@@ -117,7 +117,7 @@ fn toFFI(v: SurfaceConfiguration): ffi.WGPUSurfaceConfiguration :: final {
     };
 }
 
-export struct SurfaceCapabilities {
+export ref struct SurfaceCapabilities {
     usages: TextureUsage = TextureUsage.None;
     formats: []TextureFormat = [];
     presentModes: []PresentMode = [];
@@ -133,7 +133,7 @@ fn fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
         for (let i = 0; i < v.formatCount; i++) {
             do unsafe {
                 let e: TextureFormat = uninitialized;
-                __c__("e = (int)((WGPUTextureFormat*)v->formats)[i];");
+                __c__("e = (int)((WGPUTextureFormat*)v.formats)[i];");
                 c.formats.push(e);
             };
         }
@@ -141,7 +141,7 @@ fn fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
         for (let i = 0; i < v.presentModeCount; i++) {
             do unsafe {
                 let p: PresentMode = uninitialized;
-                __c__("p = (int)((WGPUPresentMode*)v->presentModes)[i];");
+                __c__("p = (int)((WGPUPresentMode*)v.presentModes)[i];");
                 c.presentModes.push(p);
             };
         }
@@ -149,7 +149,7 @@ fn fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
         for (let i = 0; i < v.alphaModeCount; i++) {
             do unsafe {
                 let a: CompositeAlphaMode = uninitialized;
-                __c__("a = (int)((WGPUCompositeAlphaMode*)v->alphaModes)[i];");
+                __c__("a = (int)((WGPUCompositeAlphaMode*)v.alphaModes)[i];");
                 c.alphaModes.push(a);
             };
         }
@@ -158,11 +158,11 @@ fn fromFFI(v: ffi.WGPUSurfaceCapabilities): SurfaceCapabilities :: final {
     };
 }
 
-fn toFFI(v: SurfaceCapabilities): ffi.WGPUSurfaceCapabilities :: final {
+fn toFFI(v: SurfaceCapabilities): ref ffi.WGPUSurfaceCapabilities :: final {
     let formats = arrayToFFI<TextureFormat, ffi.WGPUTextureFormat>(v.formats);
     let presentModes = arrayToFFI<PresentMode, ffi.WGPUPresentMode>(v.presentModes);
     let alphaModes = arrayToFFI<CompositeAlphaMode, ffi.WGPUCompositeAlphaMode>(v.alphaModes);
-    return ffi.WGPUSurfaceCapabilities {
+    return ref ffi.WGPUSurfaceCapabilities {
         nextInChain: none,
         usages: toFFI(v.usages),
         formatCount: formats.length,

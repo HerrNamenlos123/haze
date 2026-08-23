@@ -1,6 +1,6 @@
 
 namespace ffi {
-    // extern C struct hzstd_file_t {};
+    // extern C ref struct hzstd_file_t {};
 
     extern C noemit enum unscoped hzstd_fs_error_code_t {
         hzstd_fs_error_code_none = 0,
@@ -23,29 +23,29 @@ namespace ffi {
 
     extern C noemit struct hzstd_read_file_text_result_t {
         data: str;
-        error: inline hzstd_fs_error_t;
+        error: hzstd_fs_error_t;
     };
 
-    extern C fn hzstd_read_file_text(allocator: Allocator, path: str): inline hzstd_read_file_text_result_t :: final;
-    extern C fn hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_read_file_text(allocator: Allocator, path: str): hzstd_read_file_text_result_t :: final;
+    extern C fn hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): hzstd_fs_error_t :: final;
 
-    extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): inline hzstd_fs_error_t :: final;
-    extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): hzstd_fs_error_t :: final;
 
-    extern C fn hzstd_file_open_write(allocator: Allocator, path: str, out_handle: cptr): inline hzstd_fs_error_t :: final;
-    extern C fn hzstd_file_append_text(allocator: Allocator, handle: cptr, input: str): inline hzstd_fs_error_t :: final;
-    extern C fn hzstd_file_close(allocator: Allocator, handle: cptr): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_open_write(allocator: Allocator, path: str, out_handle: cptr): hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_append_text(allocator: Allocator, handle: cptr, input: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_close(allocator: Allocator, handle: cptr): hzstd_fs_error_t :: final;
 
-    extern C fn hzstd_mkdir_recursive(path: str): inline hzstd_fs_error_t :: final;
+    extern C fn hzstd_mkdir_recursive(path: str): hzstd_fs_error_t :: final;
 
     extern C noemit struct hzstd_fs_exists_result_t {
         exists: bool;
-        error: inline hzstd_fs_error_t;
+        error: hzstd_fs_error_t;
     };
 
-    extern C noemit fn hzstd_fs_exists(path: str): inline hzstd_fs_exists_result_t :: final;
+    extern C noemit fn hzstd_fs_exists(path: str): hzstd_fs_exists_result_t :: final;
 
-    extern C noemit struct hzstd_fs_copy_options_t {
+    extern C noemit ref struct hzstd_fs_copy_options_t {
         overwrite: bool;
         follow_symlinks: bool;
         skip_errors: bool;
@@ -54,21 +54,21 @@ namespace ffi {
     // Copy a file or directory (recursive if needed) to a destination.
     // Automatically creates parent directories. Overwrite, symlink, and error
     // behavior controlled via options.
-    extern C noemit fn hzstd_fs_copy(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy(src: str, dst: str, options: hzstd_fs_copy_options_t): hzstd_fs_error_t :: final;
 
     // Copy a single file to a destination. Parent directories are created
     // automatically. Fails if src is not a file.
-    extern C noemit fn hzstd_fs_copy_file(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy_file(src: str, dst: str, options: hzstd_fs_copy_options_t): hzstd_fs_error_t :: final;
 
     // Copy a directory recursively to a destination. Parent directories are created
     // automatically. All files and subdirectories are copied according to options.
-    extern C noemit fn hzstd_fs_copy_dir(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_copy_dir(src: str, dst: str, options: hzstd_fs_copy_options_t): hzstd_fs_error_t :: final;
 
     // Optional: move a file or directory (copy + delete original). Behaves like
     // hzstd_fs_copy.
-    extern C noemit fn hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): inline hzstd_fs_error_t :: final;
+    extern C noemit fn hzstd_fs_move(src: str, dst: str, options: hzstd_fs_copy_options_t): hzstd_fs_error_t :: final;
 
-    extern C noemit inline struct hzstd_file_stat_t {
+    extern C noemit struct hzstd_file_stat_t {
         exists: bool;
         mtime_ns: i64;
         size: i64;
@@ -87,8 +87,8 @@ namespace ffi {
         name: str;
     };
 
-    extern C fn hzstd_open_dir(path: str): inline hzstd_open_dir_result_t :: final;
-    extern C fn hzstd_read_next_dir_entry(handle: cptr): inline hzstd_dir_entry_t :: final;
+    extern C fn hzstd_open_dir(path: str): hzstd_open_dir_result_t :: final;
+    extern C fn hzstd_read_next_dir_entry(handle: cptr): hzstd_dir_entry_t :: final;
     extern C fn hzstd_close_dir(handle: cptr): void :: final;
 }
 
@@ -242,7 +242,7 @@ export namespace fs {
     // only appears at flush time (a full disk, typically). Writing after
     // close, or closing twice, is a bug and is rejected rather than silently
     // ignored.
-    export opaque struct FileWriter {
+    export opaque ref struct FileWriter {
         handle: cptr;
         closed: bool = false;
 
@@ -345,7 +345,7 @@ export namespace fs {
         return Result<none, Error>.Err(mapErrorEnum(result.code));
     }
 
-    export struct CopyOptions {
+    export ref struct CopyOptions {
         overwrite: bool = false;
         followSymlinks: bool = false;
         skipErrors: bool = false;
@@ -408,7 +408,7 @@ export namespace fs {
         return Result<none, Error>.Ok(none);
     }
 
-    export inline struct FileState {
+    export struct FileState {
         mtime: int;   // or platform timestamp type
         size: int;    // optional but useful
     }
@@ -425,7 +425,7 @@ export namespace fs {
         };
     }
 
-    export inline struct DirEntry {
+    export struct DirEntry {
         path: str;
         name: str;
         isFile: bool;
@@ -455,13 +455,13 @@ export namespace fs {
         DiffContent,
     }
 
-    export inline struct WatchConfig {
+    export struct WatchConfig {
         interval: real = 0.1;
         immediate: bool = false;
         strategy: WatchStrategy = WatchStrategy.ModificationDate;
     }
 
-    export inline struct FileChangeEvent {
+    export struct FileChangeEvent {
         path: str;
         kind: FileChangeKind;
     }
@@ -472,12 +472,12 @@ export namespace fs {
         Deleted,
     }
 
-    export struct WatchHandle {
+    export ref struct WatchHandle {
         handle: int;
     }
 
     // NOT inline
-    struct Watcher {
+    ref struct Watcher {
         id: int;
         path: str;
         interval: real;
@@ -489,7 +489,7 @@ export namespace fs {
         strategy: WatchStrategy;
     }
 
-    struct GlobalFilesystemContext {
+    ref struct GlobalFilesystemContext {
         watchers: []Watcher;
         nextId: int;
         inPoll: bool;
@@ -673,7 +673,7 @@ export namespace fs {
         ctx.inPoll = false;
     }
 
-    export inline struct FileWatchOptions {
+    export struct FileWatchOptions {
         interval: real = 0.1;
     }
 

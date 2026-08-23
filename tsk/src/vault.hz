@@ -17,13 +17,13 @@ fn chooseFile(): str | none {
     return none;
 }
 
-struct FSFileEntry {
+ref struct FSFileEntry {
   type: "file";
   filename: str;
   fullPath: str;
 }
 
-struct FSDirEntry {
+ref struct FSDirEntry {
   type: "directory";
   dirname: str;
   fullPath: str;
@@ -32,7 +32,7 @@ struct FSDirEntry {
 
 type FSEntry = FSFileEntry | FSDirEntry;
 
-struct VaultFS {
+ref struct VaultFS {
   entries: []FSEntry = [];
 }
 
@@ -50,8 +50,10 @@ fn indexVault(vaultPath: str) {
     // TODO: Allow a variable to capture itself if the declaration is a pure closure that cannot be called
     // before the variable is defined. But this is surprisingly difficult, first to prove it's safe in
     // all edge cases, and secondly, to actually do it in C. This requires special C support for capturing.
-    let index = (path: str): []FSEntry :: final => { return []; };
-    index = (path: str): []FSEntry :: final => {
+    // A recursive closure: the lambda must see the *final* binding, not a
+    // copy of the placeholder, so the slot is shared through a stack reference.
+    let stackref index = Box<(path: str) => []FSEntry>((path: str): []FSEntry :: final => { return []; });
+    index.value = (path: str): []FSEntry :: final => {
         let entries: []FSEntry = [];
         if let dirs = fs.listDir(path) {
             for dir in dirs {
@@ -67,20 +69,20 @@ fn indexVault(vaultPath: str) {
                         type: "directory",
                         dirname: dir.name,
                         fullPath: dir.path,
-                        children: index(dir.path),
+                        children: index.value(dir.path),
                     });
                 }
             }
         }
         return entries;
     };
-    vault.entries = index(vaultPath);
+    vault.entries = index.value(vaultPath);
 
-    let process = (entry: FSEntry): none :: final => none;
-    process = (entry: FSEntry): none :: final => {
+    let stackref process = Box<(entry: FSEntry) => none>((entry: FSEntry): none :: final => none);
+    process.value = (entry: FSEntry): none :: final => {
         if entry is FSDirEntry {
             for child in entry.children {
-                process(child);
+                process.value(child);
             }
         }
         else {
@@ -89,7 +91,7 @@ fn indexVault(vaultPath: str) {
         return none;
     };
     for entry in vault.entries {
-        // process(entry);
+        // process.value(entry);
     }
 
     // if let f = chooseFile() {

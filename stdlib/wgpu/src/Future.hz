@@ -1,10 +1,10 @@
 
 
-export struct Future {
+export ref struct Future {
     id: u64;
 }
 
-fn fromFFI(future: inline ffi.WGPUFuture): const Future {
+fn fromFFI(future: ffi.WGPUFuture): const Future {
     return {
         id: future.id,
     };

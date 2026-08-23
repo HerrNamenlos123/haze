@@ -20,6 +20,7 @@ import {
   type EUnaryOperation,
   type EVariableMutability,
   UnaryOperationToString,
+  EStorageClass,
 } from "../shared/AST";
 import {
   type Brand,
@@ -165,7 +166,13 @@ export namespace Semantic {
     export: boolean;
     extern: EExternLanguage;
     variableContext: EVariableContext;
+    // Legacy: variables used to be hoisted to the heap when captured. Captures
+    // now copy (by value) or share the pointer (refs); this is never set.
     requiresHoisting: boolean;
+    // Set when a closure captured this variable by value (§7.1): a later
+    // assignment in the declaring scope would leave the closure with a stale
+    // copy, so it is rejected (see assertNotWriteAfterByValueCapture).
+    capturedByValueAt?: SourceLoc;
     parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;
@@ -227,6 +234,8 @@ export namespace Semantic {
       | EDatatypeMutability.Const
       | EDatatypeMutability.Mut
       | null;
+    // `ref fn` / `stackref fn` (R&D/Storage Classes and References.md §12.3)
+    methodReceiverStorage: EStorageClass.Ref | EStorageClass.Stackref | null;
     extern: EExternLanguage;
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;
@@ -338,7 +347,8 @@ export namespace Semantic {
     opaque: boolean;
     plain: boolean;
     reactiveClone: boolean;
-    inlineByDefault: boolean;
+    refByDefault: boolean;
+    nocopy: boolean;
     export: boolean;
     extern: EExternLanguage;
     members: Semantic.SymbolId[];
@@ -502,7 +512,9 @@ export namespace Semantic {
   export type TypeUse = {
     type: TypeDefId;
     mutability: EDatatypeMutability;
-    inline: boolean;
+    // Always the *effective* storage class (a `ref struct` use is never Value);
+    // see makeTypeUse in LookupDatatype.ts.
+    storage: EStorageClass;
     sourceloc: SourceLoc;
   };
 
@@ -541,6 +553,11 @@ export namespace Semantic {
           name: string;
           type: TypeUseId;
           capturedSymbol: SymbolId;
+          // Capture rule (R&D/Storage Classes and References.md §7.1): a stack
+          // value (primitive, value struct, stackref, ...) is copied into the
+          // env at creation; a ref / dynamic array / reactive / callable is
+          // captured as the pointer it already is.
+          byValue: boolean;
         }[];
       }
     | null;
@@ -565,6 +582,10 @@ export namespace Semantic {
     envType: EnvBlockType;
     envValue: EnvBlockValue;
     functionSymbol: SymbolId;
+    // Set by call elaboration when this callable is the callee of a call
+    // expression. A method on a value receiver may only be used this way
+    // (R&D/Storage Classes and References.md §12.4).
+    immediatelyCalled?: boolean;
   };
 
   export type SymbolValueExpr = BaseExpr & {
@@ -931,6 +952,20 @@ export namespace Semantic {
     sourceloc: SourceLoc;
   };
 
+  // How a `let stackref x = ...` obtains its reference
+  // (R&D/Storage Classes and References.md §5.1):
+  //   copy-value    the value is copied into x's own stack buffer; the scope
+  //                 registers a generation slot
+  //   from-ref      x points at the GC object, immortal generation
+  //   from-stackref the reference is copied
+  //   lambda        a lambda literal is built in place in x's buffer (§7.3)
+  export type StackrefInit =
+    | "copy-value"
+    | "from-ref"
+    | "from-stackref"
+    | "lambda"
+    | null;
+
   export type VariableStatement = {
     variant: ENode.VariableStatement;
     name: string;
@@ -938,6 +973,7 @@ export namespace Semantic {
     comptime: boolean;
     variableSymbol: SymbolId;
     intrinsicTakeAddrOfValue: boolean;
+    stackrefInit: StackrefInit;
     sourceloc: SourceLoc;
   };
 
@@ -1097,7 +1133,7 @@ export namespace Semantic {
     dynamicArrayTypeCache: Semantic.TypeDefId[];
     typeInstanceCache: Map<
       Semantic.TypeDefId,
-      Map<EDatatypeMutability, Map<boolean, Semantic.TypeUseId>>
+      Map<EDatatypeMutability, Map<EStorageClass, Semantic.TypeUseId>>
     >;
 
     // Structural fingerprints (see Fingerprint.ts for the full invariants
@@ -1936,15 +1972,18 @@ export namespace Semantic {
   }
 
   export function serializeMutability(typeUse: TypeUse) {
+    // Outer to inner: `mut ref Foo` is mut(ref(Foo)).
     let s = "";
-    if (typeUse.inline) {
-      s += "inline ";
-    }
-
     if (typeUse.mutability === EDatatypeMutability.Const) {
       s += "const ";
     } else if (typeUse.mutability === EDatatypeMutability.Mut) {
       s += "mut ";
+    }
+
+    if (typeUse.storage === EStorageClass.Ref) {
+      s += "ref ";
+    } else if (typeUse.storage === EStorageClass.Stackref) {
+      s += "stackref ";
     }
 
     return s;
@@ -1978,6 +2017,15 @@ export namespace Semantic {
       typeDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
       typeDef.variant === Semantic.ENode.TaggedUnionDatatype
     ) {
+      mut = "";
+    } else if (
+      typeDef.variant === Semantic.ENode.StructDatatype &&
+      datatype.storage === EStorageClass.Value &&
+      datatype.mutability === EDatatypeMutability.Mut
+    ) {
+      // Mutability through a value is meaningless (and `mut Foo` on a value is
+      // an error when written by a user); internal literals are created Mut,
+      // so never print it back out, or exports would not re-parse.
       mut = "";
     }
 
@@ -2557,18 +2605,42 @@ export namespace Semantic {
 
     const def = mangleTypeDef(sr, typeInstance.type);
 
+    const typeDefVariant = sr.typeDefNodes.get(typeInstance.type).variant;
     if (
-      sr.typeDefNodes.get(typeInstance.type).variant ===
-        Semantic.ENode.StructDatatype ||
-      sr.typeDefNodes.get(typeInstance.type).variant ===
-        Semantic.ENode.DynamicArrayDatatype
+      typeDefVariant === Semantic.ENode.StructDatatype ||
+      typeDefVariant === Semantic.ENode.DynamicArrayDatatype
     ) {
-      if (typeInstance.inline) {
-        def.name = "i" + def.name;
-      } else {
+      if (typeInstance.storage === EStorageClass.Stackref) {
+        def.name = "s" + def.name;
+      } else if (typeInstance.storage === EStorageClass.Ref) {
         def.name = "p" + def.name;
+      } else {
+        def.name = "i" + def.name;
       }
       def.wasMangled = true;
+    } else if (
+      typeDefVariant === Semantic.ENode.CallableDatatype &&
+      typeInstance.storage === EStorageClass.Stackref
+    ) {
+      def.name = "s" + def.name;
+      def.wasMangled = true;
+    } else if (typeDefVariant === Semantic.ENode.TypeAliasDatatype) {
+      // An alias use that adds a storage class on top of the alias target
+      // (`stackref StringWriter`) is a different C type from the plain alias.
+      const aliasDef = sr.typeDefNodes.get(typeInstance.type);
+      assert(aliasDef.variant === Semantic.ENode.TypeAliasDatatype);
+      const targetUse = sr.typeUseNodes.get(
+        sr.e.resolveAlias(aliasDef.targetType)
+      );
+      if (typeInstance.storage !== targetUse.storage) {
+        def.name =
+          (typeInstance.storage === EStorageClass.Stackref
+            ? "s"
+            : typeInstance.storage === EStorageClass.Ref
+              ? "p"
+              : "i") + def.name;
+        def.wasMangled = true;
+      }
     }
 
     const typeVariant = sr.typeDefNodes.get(typeInstance.type).variant;
@@ -2602,8 +2674,9 @@ export namespace Semantic {
     // mangling is non reversible and demangling becomes impossible, and conflicts appear.
     //
     // Modifiers
-    // p -> pointer (for structs)
-    // i -> inline (for structs)
+    // p -> ref / pointer (for structs)
+    // i -> value (for structs)
+    // s -> stackref (for structs and callables)
     // c -> const
     // m -> mutable
     // r -> reactive clone (TODO: Is this still relevant with rx.Deep<T>?)
@@ -3109,7 +3182,7 @@ export namespace Semantic {
           .map((a) => `${a.name}: ${serializeExpr(sr, a.value)}`)
           .join(", ")} }`;
         if (
-          typeUse.inline ||
+          typeUse.storage !== EStorageClass.Value ||
           typeUse.mutability !== EDatatypeMutability.Default
         ) {
           return `(${literal}) as ${serializeTypeUse(sr, expr.type)}`;

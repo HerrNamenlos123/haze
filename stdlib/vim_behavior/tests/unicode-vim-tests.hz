@@ -4,7 +4,7 @@ import vim_behavior
 
 // Drives the Vim behavior over emoji and CJK text.
 
-struct Doc {
+ref struct Doc {
     lines: []String = [];
     failures: int = 0;
     checks: int = 0;

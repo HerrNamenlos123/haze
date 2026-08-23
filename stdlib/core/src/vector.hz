@@ -1,5 +1,5 @@
 
-export extern C noemit inline struct hzstd_vec2_t {
+export extern C noemit struct hzstd_vec2_t {
     x: real = 0.0;
     y: real = 0.0;
 
@@ -44,7 +44,7 @@ export extern C noemit inline struct hzstd_vec2_t {
 }
 export type Vec2 = hzstd_vec2_t;
 
-export extern C noemit inline struct hzstd_vec2f_t {
+export extern C noemit struct hzstd_vec2f_t {
     x: f32 = 0.0;
     y: f32 = 0.0;
 
@@ -89,7 +89,7 @@ export extern C noemit inline struct hzstd_vec2f_t {
 }
 export type Vec2f = hzstd_vec2f_t;
 
-export extern C noemit inline struct hzstd_vec2i_t {
+export extern C noemit struct hzstd_vec2i_t {
     x: int = 0;
     y: int = 0;
 
@@ -130,7 +130,7 @@ export extern C noemit inline struct hzstd_vec2i_t {
 }
 export type Vec2i = hzstd_vec2i_t;
 
-export inline struct _Vec3<T> {
+export struct _Vec3<T> {
     x: T = default;
     y: T = default;
     z: T = default;
@@ -181,7 +181,7 @@ export type Vec3 = _Vec3<real>;
 export type Vec3i = _Vec3<int>;
 export type Vec3f = _Vec3<f32>;
 
-export inline struct _Vec4<T> {
+export struct _Vec4<T> {
     x: T = default;
     y: T = default;
     z: T = default;
@@ -234,7 +234,7 @@ export type Vec4i = _Vec4<int>;
 export type Vec4f = _Vec4<f32>;
 
 namespace fmt {
-    export fn format_to(writer: mut StringWriter, value: Vec2, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: Vec2, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -242,7 +242,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut StringWriter, value: Vec2f, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: Vec2f, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -250,7 +250,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut StringWriter, value: Vec2i, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: Vec2i, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -258,7 +258,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut StringWriter, value: rx.Deep<Vec2i>, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: rx.Deep<Vec2i>, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to_proxy(writer, value.x, args);
         format_to(writer, ", ", args);

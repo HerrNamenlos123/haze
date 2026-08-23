@@ -20,7 +20,7 @@ type presets = headwind.presets;
 // declares is parented to whatever div is open at the moment it runs.
 //
 
-export inline struct ButtonStyle {
+export struct ButtonStyle {
     // Transparent by default, so a button sitting in a toolbar shows the
     // toolbar's own colour until it is pointed at -- the behaviour every
     // menu bar and icon strip wants.
@@ -37,7 +37,7 @@ export inline struct ButtonStyle {
     fontSize: real | none = none;
 }
 
-export struct ButtonArgs {
+export ref struct ButtonArgs {
     id: int;
     label: str = "";
     // A disabled button still lays out and still shows its label, greyed;
@@ -84,7 +84,7 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
             ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
         }
 
-        let buttonRef = ui.ref<ui_elements.DivElement>();
+        let buttonRef = ui.elementRef<ui_elements.DivElement>();
         // Polled rather than driven by onHoverEnter/onHoverLeave, matching
         // every other hover effect in this codebase (see tabs.hz): the
         // element wrapper already answers the CSS :hover / :active
@@ -130,7 +130,7 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
 
             ui.div({
                 id: 1,
-                ref: buttonRef,
+                elementRef: buttonRef,
                 // Padding via `style` rather than presets.p(), because
                 // presets.p() is on the Tailwind 4px spacing scale and a
                 // button's padding is rarely a multiple of four -- and

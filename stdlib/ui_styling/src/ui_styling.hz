@@ -2,21 +2,21 @@
 // Concrete, fully-resolved value types (no "unset" representation -- these
 // are what a resolved style actually holds, not what a user wrote).
 
-export inline struct Padding {
+export struct Padding {
     left: real = 0.0;
     right: real = 0.0;
     top: real = 0.0;
     bottom: real = 0.0;
 }
 
-export inline struct CornerRadius {
+export struct CornerRadius {
     topLeft: real = 0.0;
     topRight: real = 0.0;
     bottomLeft: real = 0.0;
     bottomRight: real = 0.0;
 }
 
-export inline struct BorderWidth {
+export struct BorderWidth {
     left: real = 0.0;
     right: real = 0.0;
     top: real = 0.0;
@@ -199,7 +199,7 @@ export fn cursorToInt(cursor: Cursor): int :: final {
 // right (or both top and bottom) are set, left/top wins -- there's no Clay
 // equivalent of "stretch by opposing offsets" since floating elements are
 // never sized from their offsets, only positioned by them.
-export inline struct PositionValues {
+export struct PositionValues {
     top?: real;
     right?: real;
     bottom?: real;
@@ -234,7 +234,7 @@ export inline struct PositionValues {
 // element that is actually placed by that path (Absolute/Fixed, or anything
 // with an explicit anchorTo()). On a Static/Relative in-flow element it is
 // inert, exactly as `translate` on a non-transformable box is in CSS.
-export inline struct TranslateValues {
+export struct TranslateValues {
     x: real = 0.0;
     y: real = 0.0;
 }
@@ -269,7 +269,7 @@ export type AnchorTarget = rx.ShallowReactive<TypeErasedBox | null>;
 export enum TextWrap { Words, Newlines, None }
 
 export enum LineHeightMode { Auto, Relative, Pixels }
-export struct LineHeight {
+export ref struct LineHeight {
     mode: LineHeightMode;
     value: real;
 };
@@ -278,11 +278,11 @@ export struct LineHeight {
 // sides/corners at once, "Full" sets them independently. `none` on any
 // field of either means "not set".
 
-export inline struct StylePaddingSimple {
+export struct StylePaddingSimple {
     value?: real;
 }
 
-export inline struct StylePaddingFull {
+export struct StylePaddingFull {
     left?: real;
     right?: real;
     top?: real;
@@ -291,11 +291,11 @@ export inline struct StylePaddingFull {
 
 export type StylePadding = StylePaddingSimple | StylePaddingFull | none;
 
-export inline struct StyleCornerRadiusSimple {
+export struct StyleCornerRadiusSimple {
     value?: real;
 }
 
-export inline struct StyleCornerRadiusFull {
+export struct StyleCornerRadiusFull {
     topLeft?: real;
     topRight?: real;
     bottomLeft?: real;
@@ -310,7 +310,7 @@ export type StyleCornerRadius = StyleCornerRadiusSimple | StyleCornerRadiusFull 
 // presets.borderR(4)]`, mirroring Tailwind's `border-t-2 border-r-4`, each
 // setting one edge independently) rather than one call replacing the whole
 // thing.
-export inline struct BorderWidthValues {
+export struct BorderWidthValues {
     top?: real;
     right?: real;
     bottom?: real;
@@ -362,7 +362,7 @@ fn resolveBorderWidth(values: BorderWidthValues): BorderWidth {
 // component" -- computeDivStyle()/computeTextStyle() below are the only
 // place that turns "not set" into an actual value.
 
-export inline struct DivStyle {
+export struct DivStyle {
     // "Unset" is represented in-band via SizeMode._Unset (see its comment),
     // not `?` -- these fields are deliberately non-optional.
     width: Size = SizeMode._Unset;
@@ -466,7 +466,7 @@ export inline struct DivStyle {
     }
 }
 
-export inline struct TextStyle {
+export struct TextStyle {
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -508,7 +508,7 @@ export inline struct TextStyle {
 //     ancestor's resolved value), which a single element's props can't see
 //     in isolation -- that's the layout engine's job, same as today.
 
-export inline struct ComputedDivStyle {
+export struct ComputedDivStyle {
     width: Size = SizeMode.Fit;
     height: Size = SizeMode.Fit;
     padding: Padding = {};
@@ -583,7 +583,7 @@ export inline struct ComputedDivStyle {
     }
 }
 
-export inline struct ComputedTextStyle {
+export struct ComputedTextStyle {
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -608,50 +608,50 @@ export inline struct ComputedTextStyle {
 // as data -- it never needs to know what produces these or what they're
 // called as "presets" (bg/p/gap/...).
 
-export inline struct BackgroundColorOp { color: Color; }
-export inline struct TextColorOp { color: Color; }
-export inline struct PaddingOp { padding: StylePadding; }
-export inline struct GapOp { value: real; }
-export inline struct DisplayOp { value: Display; }
+export struct BackgroundColorOp { color: Color; }
+export struct TextColorOp { color: Color; }
+export struct PaddingOp { padding: StylePadding; }
+export struct GapOp { value: real; }
+export struct DisplayOp { value: Display; }
 // Both axes at once (the CSS `overflow` shorthand); OverflowXOp/OverflowYOp
 // are the per-axis longhands.
-export inline struct OverflowOp { x: Overflow; y: Overflow; }
-export inline struct OverflowXOp { value: Overflow; }
-export inline struct OverflowYOp { value: Overflow; }
-export inline struct CrossAlignOp { value: CrossAlign; }
-export inline struct PackingOp { value: Packing; }
-export inline struct DirectionOp { value: Direction; }
-export inline struct CornerRadiusOp { cornerRadius: StyleCornerRadius; }
-export inline struct WidthOp { value: Size; }
-export inline struct HeightOp { value: Size; }
-export inline struct PositionOp { value: Position; }
-export inline struct TopOp { value: real; }
-export inline struct RightOp { value: real; }
-export inline struct BottomOp { value: real; }
-export inline struct LeftOp { value: real; }
+export struct OverflowOp { x: Overflow; y: Overflow; }
+export struct OverflowXOp { value: Overflow; }
+export struct OverflowYOp { value: Overflow; }
+export struct CrossAlignOp { value: CrossAlign; }
+export struct PackingOp { value: Packing; }
+export struct DirectionOp { value: Direction; }
+export struct CornerRadiusOp { cornerRadius: StyleCornerRadius; }
+export struct WidthOp { value: Size; }
+export struct HeightOp { value: Size; }
+export struct PositionOp { value: Position; }
+export struct TopOp { value: real; }
+export struct RightOp { value: real; }
+export struct BottomOp { value: real; }
+export struct LeftOp { value: real; }
 // Per-axis rather than one combined op, for the same reason the border-width
 // ops are split: `[presets.translateX(-0.5), presets.translateY(-1.0)]` must
 // compose within one array (mirroring Tailwind's `-translate-x-1/2
 // -translate-y-full`) instead of the second call replacing the first.
 // TranslateOp sets both axes at once -- the `translate-*` shorthand.
-export inline struct TranslateOp { x: real; y: real; }
-export inline struct TranslateXOp { value: real; }
-export inline struct TranslateYOp { value: real; }
-export inline struct ZIndexOp { value: int; }
-export inline struct AnchorToOp { target: AnchorTarget; }
-export inline struct CursorOp { value: Cursor; }
-export inline struct BorderWidthOp { value: real; }
-export inline struct BorderTopWidthOp { value: real; }
-export inline struct BorderRightWidthOp { value: real; }
-export inline struct BorderBottomWidthOp { value: real; }
-export inline struct BorderLeftWidthOp { value: real; }
-export inline struct BorderColorOp { color: Color; }
-export inline struct FontFamilyOp { value: str; }
-export inline struct FontSizeOp { value: real; }
-export inline struct FontWeightOp { value: real; }
-export inline struct LineHeightOp { value: LineHeight; }
-export inline struct LetterSpacingOp { value: real; }
-export inline struct TextWrapOp { value: TextWrap; }
+export struct TranslateOp { x: real; y: real; }
+export struct TranslateXOp { value: real; }
+export struct TranslateYOp { value: real; }
+export struct ZIndexOp { value: int; }
+export struct AnchorToOp { target: AnchorTarget; }
+export struct CursorOp { value: Cursor; }
+export struct BorderWidthOp { value: real; }
+export struct BorderTopWidthOp { value: real; }
+export struct BorderRightWidthOp { value: real; }
+export struct BorderBottomWidthOp { value: real; }
+export struct BorderLeftWidthOp { value: real; }
+export struct BorderColorOp { color: Color; }
+export struct FontFamilyOp { value: str; }
+export struct FontSizeOp { value: real; }
+export struct FontWeightOp { value: real; }
+export struct LineHeightOp { value: LineHeight; }
+export struct LetterSpacingOp { value: real; }
+export struct TextWrapOp { value: TextWrap; }
 
 // Text-only ops are a sub-union of the div ops, so a single op value (e.g.
 // from presets.textColor(...)) satisfies both `[]TextStyleOp` and
@@ -685,7 +685,7 @@ export type DivStyleOp =
 // already-optional `props.presets` straight through, with nothing to
 // allocate at all in the common no-presets case.
 export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivStyle {
-    let working: inline DivStyle = raw;
+    let working: DivStyle = raw;
 
     if ops is not none {
         for op in ops {
@@ -777,7 +777,7 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
 
 // ops is optional -- see computeDivStyle's own comment.
 export fn computeTextStyle(raw: TextStyle, ops: []TextStyleOp | none): ComputedTextStyle {
-    let working: inline TextStyle = raw;
+    let working: TextStyle = raw;
 
     if ops is not none {
         for op in ops {

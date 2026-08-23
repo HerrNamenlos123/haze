@@ -53,7 +53,7 @@ type presets = headwind.presets;
 
 // One tab, as the host describes it. Purely data -- the host owns the
 // list, the component only reads it.
-export struct TabItem {
+export ref struct TabItem {
     // Stable identity for this tab, chosen by the host. Used as the
     // component id of the tab's panel, so it MUST be unique among the
     // tabs and MUST NOT change while the tab exists -- if it changed, the
@@ -74,7 +74,7 @@ export struct TabItem {
 
 // Colours of the strip, so a host can theme it without forking the
 // component. Defaults are a neutral dark scheme.
-export struct TabsStyle {
+export ref struct TabsStyle {
     barBackground: str = "#1B1B1B";
     tabBackground: str = "#1B1B1B";
     tabHoverBackground: str = "#2A2A2A";
@@ -89,7 +89,7 @@ export struct TabsStyle {
     height: real = 34.0;
 }
 
-export struct TabsArgs {
+export ref struct TabsArgs {
     id: int;
     tabs: []TabItem;
     // Which tab's panel is visible. A key not present in `tabs` simply
@@ -194,7 +194,7 @@ export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
     });
 }
 
-struct TabButtonArgs {
+ref struct TabButtonArgs {
     id: int;
     tab: TabItem;
     active: bool;
@@ -225,8 +225,8 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
         // of the strip's full width no matter what its contents asked for.
         ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Grow);
 
-        let tabRef = ui.ref<ui_elements.DivElement>();
-        let closeRef = ui.ref<ui_elements.DivElement>();
+        let tabRef = ui.elementRef<ui_elements.DivElement>();
+        let closeRef = ui.elementRef<ui_elements.DivElement>();
 
         let isHovered = rx.computed(() => {
             let element = rx.get(tabRef);
@@ -249,7 +249,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
 
             ui.div({
                 id: 1,
-                ref: tabRef,
+                elementRef: tabRef,
                 presets: [
                     // `relative` so the active indicator below can be
                     // absolutely positioned against this tab rather than
@@ -316,7 +316,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                 else if props.closable {
                     ui.div({
                         id: 4,
-                        ref: closeRef,
+                        elementRef: closeRef,
                         presets: [
                             presets.rounded(3),
                             presets.bg(closeHovered ? style.closeHoverBackground : "#00000000"),

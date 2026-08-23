@@ -844,6 +844,7 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void)
     .cleanup_handlers
     = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_cleanup_entry_t, 1, "hzstd_panic_recovery_cleanup_entry_t"),
     ._hz_panic_stacktrace = { 0 },
+    .saved_stackref_depth = hzstd_gen_table.depth,
   };
 
   hzstd_panic_recovery_frame_t *framePtr
@@ -914,4 +915,92 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
         = HZSTD_DYNAMIC_ARRAY_GET(frame->cleanup_handlers, hzstd_panic_recovery_cleanup_entry_t, i);
     entry.fn(entry.env);
   }
+}
+
+
+// ── Generational stack references ────────────────────────────────────────────
+//
+// The table is runtime-managed (malloc/realloc), deliberately not GC memory:
+// it holds no pointers, so the GC has no business scanning it, and being a
+// _Thread_local it would otherwise need GC_add_roots like panic_recovery_frames
+// above. It starts out pointing at a static one-entry array holding only the
+// immortal slot, so a thread that never participates never allocates and the
+// check in HZSTD_STACKREF_DEREF is valid from the first instruction.
+
+static uint64_t hzstd_gen_table_initial[1] = { HZSTD_STACKREF_IMMORTAL_GEN };
+
+_Thread_local hzstd_gen_table_t hzstd_gen_table = {
+  .gens = hzstd_gen_table_initial,
+  .cap = 1,
+  .depth = 1,    // slot 0 is always occupied (immortal)
+  .serial = 1,   // the immortal generation; the next handed out is 2
+};
+
+static void hzstd_gen_table_grow(hzstd_gen_table_t *t)
+{
+  size_t newCap = t->cap < 64 ? 64 : t->cap * 2;
+  uint64_t *newGens;
+  if (t->gens == hzstd_gen_table_initial) {
+    newGens = (uint64_t *)malloc(newCap * sizeof(uint64_t));
+    if (newGens) {
+      newGens[0] = hzstd_gen_table_initial[0];
+    }
+  }
+  else {
+    newGens = (uint64_t *)realloc(t->gens, newCap * sizeof(uint64_t));
+  }
+  if (!newGens) {
+    hzstd_trap_ccstr("out of memory growing the stackref generation table");
+  }
+  // Zero-fill the new half: a slot at or above the current depth must read 0,
+  // and no real generation is ever 0.
+  memset(newGens + t->cap, 0, (newCap - t->cap) * sizeof(uint64_t));
+  t->gens = newGens;
+  t->cap = newCap;
+}
+
+size_t hzstd_stackref_scope_enter(void)
+{
+  hzstd_gen_table_t *t = &hzstd_gen_table;
+  if (t->depth == t->cap) {
+    hzstd_gen_table_grow(t);
+  }
+  size_t slot = t->depth++;
+  // Never hand out generation 0: a reference born with gen 0 whose scope
+  // exits (writing 0) would compare equal forever.
+  t->serial += 1 + (t->serial + 1 == 0);
+  t->gens[slot] = t->serial;
+  return slot;
+}
+
+void hzstd_stackref_scope_exit(void)
+{
+  hzstd_gen_table_t *t = &hzstd_gen_table;
+  if (t->depth <= 1) {
+    hzstd_trap_ccstr("stackref scope exit without matching enter");
+  }
+  t->gens[--t->depth] = 0;
+}
+
+void hzstd_stackref_scope_renew(size_t slot)
+{
+  hzstd_gen_table_t *t = &hzstd_gen_table;
+  t->serial += 1 + (t->serial + 1 == 0);
+  t->gens[slot] = t->serial;
+}
+
+void hzstd_stackref_unwind_to(size_t depth)
+{
+  hzstd_gen_table_t *t = &hzstd_gen_table;
+  if (depth < 1) {
+    depth = 1;
+  }
+  while (t->depth > depth) {
+    t->gens[--t->depth] = 0;
+  }
+}
+
+_Noreturn void hzstd_panic_dead_stackref(void)
+{
+  hzstd_panic_fmt_n(1, "use of a dead stackref: the scope that owned the referenced value has already exited");
 }

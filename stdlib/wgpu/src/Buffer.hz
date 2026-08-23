@@ -1,14 +1,14 @@
 
-export struct BufferDescriptor {
+export ref struct BufferDescriptor {
     debugLabel?: str;
     usage: BufferUsage;
     size: int;
     mappedAtCreation: bool = false;
 }
 
-fn toFFI(v: BufferDescriptor): ffi.WGPUBufferDescriptor :: final {
+fn toFFI(v: BufferDescriptor): ref ffi.WGPUBufferDescriptor :: final {
     assert(v.size >= 0, "Buffer Descriptor size >= 0");
-    return ffi.WGPUBufferDescriptor {
+    return ref ffi.WGPUBufferDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
         usage: toFFI(v.usage),
@@ -48,11 +48,11 @@ fn toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
     };
 }
 
-export inline struct Buffer {
+export struct Buffer {
     handle: mut ffi.WGPUBufferImpl;
 }
 
-fn fromFFI(v: mut ffi.WGPUBufferImpl): mut Buffer :: final {
+fn fromFFI(v: mut ffi.WGPUBufferImpl): Buffer :: final {
     return Buffer { handle: v };
 }
 
@@ -60,27 +60,27 @@ fn toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
     return v.handle;
 }
 
-export struct VertexBufferLayout {
+export ref struct VertexBufferLayout {
     stepMode: VertexStepMode;
     arrayStride: int;
     attributes: []VertexAttribute;
 }
 
-fn fromFFI(v: inline ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
+fn fromFFI(v: ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
     let c = none as cptr;
     __c__("c = (void*)v.attributes;"); // ignoring constness issue
     assert(v.arrayStride >= int.min && v.arrayStride <= int.max, "Vertex Buffer Layout: Array Stride out of bounds");
     return VertexBufferLayout {
         stepMode: fromFFI(v.stepMode),
         arrayStride: v.arrayStride,
-        attributes: arrayFromFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributeCount, c),
+        attributes: arrayFromFFI<VertexAttribute, ffi.WGPUVertexAttribute>(v.attributeCount, c),
     };
 }
 
-fn toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
+fn toFFI(v: VertexBufferLayout): ref ffi.WGPUVertexBufferLayout :: final {
     assert(v.arrayStride >= u64.min && v.arrayStride <= u64.max, "Vertex Buffer Layout: Array Stride out of bounds");
-    let attributes = arrayToFFI<VertexAttribute, inline ffi.WGPUVertexAttribute>(v.attributes);
-    return ffi.WGPUVertexBufferLayout {
+    let attributes = arrayToFFI<VertexAttribute, ffi.WGPUVertexAttribute>(v.attributes);
+    return ref ffi.WGPUVertexBufferLayout {
         stepMode: toFFI(v.stepMode),
         arrayStride: v.arrayStride,
         attributeCount: attributes.length,

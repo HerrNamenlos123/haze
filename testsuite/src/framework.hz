@@ -1,6 +1,6 @@
 
 // Compiler test harness. Modeled on CMake's feature-probing checks
-// (check_c_source_compiles, etc.): a test case is a small inline snippet of
+// (check_c_source_compiles, etc.): a test case is a small snippet of
 // Haze source plus an expectation about what the real Haze compiler (the
 // dist/haze binary configured for this run, see main.hz) does with it.
 //
@@ -17,7 +17,7 @@ namespace testsuite {
         TotalCount,     // exactly `count` H-codes total must appear (any code)
     }
 
-    export struct ErrorCheck {
+    export ref struct ErrorCheck {
         code: int;
         kind: CheckKind;
         count: int = 0;
@@ -45,7 +45,7 @@ namespace testsuite {
         CompileFailure,  // must fail to compile; errorChecks apply to compiler output
     }
 
-    export struct TestCase {
+    export ref struct TestCase {
         name: str;
         source: str;
         expect: ExpectKind;
@@ -73,7 +73,7 @@ namespace testsuite {
     // anything else: it expects a *different* exit code than other checks,
     // or it must fail to compile (compileFails) while everything around it
     // must succeed — those cannot coexist in one program or one build.
-    export struct Suite {
+    export ref struct Suite {
         cases: []TestCase = [];
 
         // Must compile. Never executed.
@@ -138,13 +138,13 @@ namespace testsuite {
 
     // ── Execution engine ────────────────────────────────────────────────────
 
-    export struct RunnerConfig {
+    export ref struct RunnerConfig {
         hazeBinary: str;
         stdlibDir: str;
         workDir: str;
     }
 
-    struct CaseResult {
+    ref struct CaseResult {
         name: str;
         passed: bool;
         detail: str; // failure detail; "" when passed

@@ -2,6 +2,7 @@ import {
   EDatatypeMutability,
   EExternLanguage,
   EVariableMutability,
+  EStorageClass,
 } from "../shared/AST";
 import { EVariableContext } from "../shared/common";
 import { assert, type SourceLoc } from "../shared/Errors";
@@ -124,7 +125,7 @@ export function makeCallableDatatypeAvailable(
     sr,
     makeRawCallableDatatypeAvailable(sr, args),
     EDatatypeMutability.Default,
-    false,
+    EStorageClass.Value,
     args.sourceloc
   )[1];
 }
@@ -224,7 +225,7 @@ export function makeFunctionDatatypeAvailable(
     sr,
     makeRawFunctionDatatypeAvailable(sr, args),
     args.mutability,
-    false,
+    EStorageClass.Value,
     args.sourceloc
   )[1];
 }
@@ -233,7 +234,7 @@ function cacheTypeInstance(
   sr: Semantic.Context,
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
-  inline: boolean,
+  storage: EStorageClass,
   id: Semantic.TypeUseId
 ): void {
   let byMutability = sr.typeInstanceCache.get(typeId);
@@ -241,71 +242,104 @@ function cacheTypeInstance(
     byMutability = new Map();
     sr.typeInstanceCache.set(typeId, byMutability);
   }
-  let byInline = byMutability.get(mutability);
-  if (!byInline) {
-    byInline = new Map();
-    byMutability.set(mutability, byInline);
+  let byStorage = byMutability.get(mutability);
+  if (!byStorage) {
+    byStorage = new Map();
+    byMutability.set(mutability, byStorage);
   }
-  byInline.set(inline, id);
+  byStorage.set(storage, id);
+}
+
+/**
+ * Returns the storage class a type *use* actually has, given the requested
+ * modifier and the definition's default (R&D/Storage Classes and References.md §3):
+ *
+ *  - struct: `ref struct` is always at least Ref; `stackref` wins over
+ *    everything (last modifier wins), so a stackref to a `ref struct` is a
+ *    stackref to the heap object.
+ *  - callable: Value (ordinary GC-env callable) or Stackref.
+ *  - everything else: only Value exists. Callers that need to *reject*
+ *    `ref int` / `stackref []T` do so before calling this (elaborateDatatype).
+ */
+export function effectiveStorageClass(
+  sr: Semantic.Context,
+  typeId: Semantic.TypeDefId,
+  storage: EStorageClass
+): EStorageClass {
+  const type = sr.typeDefNodes.get(typeId);
+  if (type.variant === Semantic.ENode.TypeAliasDatatype) {
+    // Modifiers stack through aliases: `type Bar = mut ref Foo` then `Bar`
+    // inherits Foo's ref-ness, and `stackref Bar` wins over it. The alias use
+    // itself records the effective class so readers of the unresolved use see
+    // the truth without chasing the chain.
+    const targetUse = sr.typeUseNodes.get(sr.e.resolveAlias(type.targetType));
+    if (storage === EStorageClass.Value) {
+      return targetUse.storage;
+    }
+    return effectiveStorageClass(sr, targetUse.type, storage);
+  }
+  if (type.variant === Semantic.ENode.StructDatatype) {
+    if (storage === EStorageClass.Stackref) {
+      return EStorageClass.Stackref;
+    }
+    if (type.refByDefault) {
+      return EStorageClass.Ref;
+    }
+    return storage;
+  }
+  if (type.variant === Semantic.ENode.CallableDatatype) {
+    return storage === EStorageClass.Stackref
+      ? EStorageClass.Stackref
+      : EStorageClass.Value;
+  }
+  if (type.variant === Semantic.ENode.GenericParameterDatatype) {
+    // An uninstantiated `ref T` / `stackref T` pattern keeps the request so
+    // deduction and later substitution can see it; the instantiated body is
+    // re-elaborated with T bound, where the modifier is applied for real.
+    return storage;
+  }
+  return EStorageClass.Value;
 }
 
 export function makeTypeUse(
   sr: Semantic.Context,
   typeId: Semantic.TypeDefId,
   mutability: EDatatypeMutability,
-  inline: boolean | "force-no-inline",
+  storage: EStorageClass,
   sourceloc: SourceLoc
 ) {
-  const type = sr.typeDefNodes.get(typeId);
-  if (type.variant === Semantic.ENode.StructDatatype) {
-    let shouldBeInline = type.inlineByDefault;
-    if (inline === "force-no-inline") {
-      shouldBeInline = false;
-    } else {
-      shouldBeInline ||= inline;
-    }
+  const effective = effectiveStorageClass(sr, typeId, storage);
 
-    // Nested maps rather than one packed key: the levels are the three
-    // things the scan compared, so nothing here assumes how many values
-    // EDatatypeMutability has, and no key object or string is built per call.
-    const cachedStruct = sr.typeInstanceCache
-      .get(typeId)
-      ?.get(mutability)
-      ?.get(shouldBeInline);
-    if (cachedStruct !== undefined) {
-      return [sr.typeUseNodes.get(cachedStruct), cachedStruct] as const;
-    }
-
-    const instance = sr.b.addTypeInstance(sr, {
-      mutability: mutability,
-      inline: shouldBeInline,
-      type: typeId,
-      sourceloc: sourceloc,
-    });
-    cacheTypeInstance(sr, typeId, mutability, shouldBeInline, instance[1]);
-    return instance;
-  }
-  // Non-structs never compared inline, so they all live in the false slot:
-  // the scan matched on type and mutability alone, so the first entry for a
-  // pair won whatever its inline was. A typeId is a struct or it is not, so
-  // these two branches never share an entry.
-  const cachedPlain = sr.typeInstanceCache.get(typeId)?.get(mutability)?.get(false);
-  if (cachedPlain !== undefined) {
-    return [sr.typeUseNodes.get(cachedPlain), cachedPlain] as const;
+  // `mut` on a value struct is meaningless: nothing can be mutated *through* a
+  // copy, and a value can always be mutated in place where it lives. Normalise
+  // it away so `mut Foo` (e.g. a struct literal, which is created Mut) and
+  // `Foo` are one interned use -- union members and conversions compare uses
+  // by identity. `const` stays: deep immutability is meaningful on a value.
+  if (
+    mutability === EDatatypeMutability.Mut &&
+    effective === EStorageClass.Value &&
+    sr.typeDefNodes.get(typeId).variant === Semantic.ENode.StructDatatype
+  ) {
+    mutability = EDatatypeMutability.Default;
   }
 
-  let shouldBeInline = inline;
-  if (shouldBeInline === "force-no-inline") {
-    shouldBeInline = false;
+  // Nested maps rather than one packed key: the levels are the three things
+  // that identify a use, so no key object or string is built per call.
+  const cached = sr.typeInstanceCache
+    .get(typeId)
+    ?.get(mutability)
+    ?.get(effective);
+  if (cached !== undefined) {
+    return [sr.typeUseNodes.get(cached), cached] as const;
   }
 
   const instance = sr.b.addTypeInstance<Semantic.TypeUse>(sr, {
     mutability: mutability,
-    inline: shouldBeInline,
+    storage: effective,
     type: typeId,
     sourceloc: sourceloc,
   });
-  cacheTypeInstance(sr, typeId, mutability, false, instance[1]);
+  cacheTypeInstance(sr, typeId, mutability, effective, instance[1]);
   return instance;
 }
 
@@ -314,7 +348,7 @@ export function makeStackArrayDatatypeAvailable(
   datatype: Semantic.TypeUseId,
   length: bigint,
   mutability: EDatatypeMutability,
-  inline: boolean,
+  storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
@@ -325,7 +359,7 @@ export function makeStackArrayDatatypeAvailable(
     if (cachedElemDefId !== resolvedElemDefId || type.length !== length) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, storage, sourceloc)[1];
   }
 
   // Nothing found - create new type with lengthField
@@ -338,14 +372,14 @@ export function makeStackArrayDatatypeAvailable(
     syntheticFields: [lengthFieldId],
   });
   sr.fixedArrayTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
+  return makeTypeUse(sr, typeId, mutability, storage, sourceloc)[1];
 }
 
 export function makeDynamicArrayDatatypeAvailable(
   sr: Semantic.Context,
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
-  inline: boolean,
+  storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
   const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
@@ -356,7 +390,7 @@ export function makeDynamicArrayDatatypeAvailable(
     if (cachedElemDefId !== resolvedElemDefId) {
       continue;
     }
-    return makeTypeUse(sr, id, mutability, inline, sourceloc)[1];
+    return makeTypeUse(sr, id, mutability, storage, sourceloc)[1];
   }
 
   // Nothing found - create new type with lengthField
@@ -368,5 +402,5 @@ export function makeDynamicArrayDatatypeAvailable(
     syntheticFields: [lengthFieldId],
   });
   sr.dynamicArrayTypeCache.push(typeId);
-  return makeTypeUse(sr, typeId, mutability, inline, sourceloc)[1];
+  return makeTypeUse(sr, typeId, mutability, storage, sourceloc)[1];
 }

@@ -57,7 +57,7 @@ namespace ChromeTrace {
     // (Haze source location convention) with 0 meaning "unknown/absent" --
     // CpuProfileBuilder does whatever index conversion each output format
     // needs internally, callers never adjust these themselves.
-    export inline struct FrameRef {
+    export struct FrameRef {
         name: str;
         url: str = "";
         line: int = 0;
@@ -103,7 +103,7 @@ namespace ChromeTrace {
 
     // ── .cpuprofile-compatible call tree (legacy CDP Profiler.Profile shape) ─
 
-    export struct CpuProfileCallFrame {
+    export ref struct CpuProfileCallFrame {
         functionName: str;
         scriptId: str;
         url: str;
@@ -111,14 +111,14 @@ namespace ChromeTrace {
         columnNumber: int;
     }
 
-    export struct CpuProfileNode {
+    export ref struct CpuProfileNode {
         id: int;
         callFrame: CpuProfileCallFrame;
         hitCount: int;
         children: []int;
     }
 
-    export struct CpuProfile {
+    export ref struct CpuProfile {
         nodes: []CpuProfileNode;
         startTime: real;
         endTime: real;
@@ -145,7 +145,7 @@ namespace ChromeTrace {
     // `hitCount`; scriptId is a JSON number, not a string; url/lineNumber/
     // columnNumber are omitted entirely (not ""/-1) when absent.
 
-    export struct TraceCallFrame {
+    export ref struct TraceCallFrame {
         functionName: str;
         codeType: str;
         scriptId: int;
@@ -160,7 +160,7 @@ namespace ChromeTrace {
     // event (see TraceEventInstantMarker's own comment: `sf` was tried and
     // confirmed not to work for this event category). With one allocation
     // marker per allocation, and stacks routinely 60-90 frames deep, this
-    // struct is emitted MILLIONS of times in a single trace -- so every
+    // ref struct is emitted MILLIONS of times in a single trace -- so every
     // field it carries is multiplied by ~5 million, and a field that
     // DevTools does not read is pure file size.
     //
@@ -183,13 +183,13 @@ namespace ChromeTrace {
     // lineNumber stays 1-indexed on the way in and is decremented here, the
     // same as cpuProfileCallFrame does -- see invariant 2 in the file header
     // (DevTools decrements it again for this event shape specifically).
-    export struct TraceMarkerCallFrame {
+    export ref struct TraceMarkerCallFrame {
         functionName: str;
         url?: str;
         lineNumber?: int;
     }
 
-    export struct TraceProfileNode {
+    export ref struct TraceProfileNode {
         id: int;
         callFrame: TraceCallFrame;
         parent?: int;
@@ -266,7 +266,7 @@ namespace ChromeTrace {
     // the exact same identity semantics (two children are the same node iff their FrameRefs are
     // `==`, checked directly on a collision, no string involved) -- see
     // CpuProfileBuilder.findOrCreateChild.
-    export struct ChildTable {
+    export ref struct ChildTable {
         // buckets[b] == 0 means empty; otherwise it's (childArrayIndex + 1)
         // into the owning node's `children` array (see findOrCreateChild),
         // the same "index + 1" convention `children` itself already uses
@@ -304,7 +304,7 @@ namespace ChromeTrace {
     // (A future distinction between "voluntarily yielded" and "kernel
     // preemption" can add a real visible idle marker for the voluntary case
     // without changing this default.)
-    export struct CpuProfileBuilder {
+    export ref struct CpuProfileBuilder {
         nodes: []CpuProfileNode = [];
         // parallel to `nodes`: the FrameRef that identifies each node, used for dedup lookups --
         // two children are the same node iff their FrameRefs are `==` (see findOrCreateChild).
@@ -549,17 +549,17 @@ namespace ChromeTrace {
 
     // ── trace.json wire format ───────────────────────────────────────────────
 
-    export inline struct TraceMetadata {
+    export struct TraceMetadata {
         source: str;
         dataOrigin: str;
     }
 
-    export inline struct Trace {
+    export struct Trace {
         metadata: TraceMetadata;
         traceEvents: []TraceEvent;
     }
 
-    export inline struct Metadata {
+    export struct Metadata {
         pid: int;
         tid: int;
         ts: real = 0.0;
@@ -567,7 +567,7 @@ namespace ChromeTrace {
         cat: str = "__metadata";
         name: str;
 
-        inline struct Args {
+        struct Args {
             name: str;
         }
         args: Args;
@@ -587,7 +587,7 @@ namespace ChromeTrace {
     // registration order, neither of which actually controlled ordering here (observed: swapping
     // tids so the allocations thread had the lower tid, and registering it first, made no
     // difference -- the "CrRendererMain"-named thread appears to always sort first regardless).
-    export inline struct MetadataSortIndex {
+    export struct MetadataSortIndex {
         pid: int;
         tid: int;
         ts: real = 0.0;
@@ -595,7 +595,7 @@ namespace ChromeTrace {
         cat: str = "__metadata";
         name: str = "thread_sort_index";
 
-        inline struct Args {
+        struct Args {
             sort_index: int;
         }
         args: Args;
@@ -614,7 +614,7 @@ namespace ChromeTrace {
     // chart no matter how correct the Profile/ProfileChunk payload itself
     // was. This is also the anchor event whose start resets the JS call
     // stack DevTools reconstructs (see invariant 1 in the file header).
-    export inline struct TraceEventComplete {
+    export struct TraceEventComplete {
         pid: int;
         tid: int;
         ts: real;
@@ -624,7 +624,7 @@ namespace ChromeTrace {
         name: str = "RunTask";
     }
 
-    export inline struct TraceEventProfile {
+    export struct TraceEventProfile {
         pid: int;
         tid: int;
         ts: real;
@@ -633,8 +633,8 @@ namespace ChromeTrace {
         name: str = "Profile";
         id: str;
 
-        inline struct Args {
-            inline struct Data {
+        struct Args {
+            struct Data {
                 startTime: real;
                 source: str = "Internal";
             }
@@ -643,12 +643,12 @@ namespace ChromeTrace {
         args: Args;
     }
 
-    export inline struct TraceCpuProfileChunk {
+    export struct TraceCpuProfileChunk {
         nodes?: []TraceProfileNode;
         samples: []int;
     }
 
-    export inline struct TraceEventProfileChunk {
+    export struct TraceEventProfileChunk {
         pid: int;
         tid: int;
         ts: real;
@@ -657,8 +657,8 @@ namespace ChromeTrace {
         name: str = "ProfileChunk";
         id: str;
 
-        inline struct Args {
-            inline struct Data {
+        struct Args {
+            struct Data {
                 cpuProfile: TraceCpuProfileChunk;
                 timeDeltas: []int;
                 source: str = "Internal";
@@ -668,7 +668,7 @@ namespace ChromeTrace {
         args: Args;
     }
 
-    export inline struct TraceFrame {
+    export struct TraceFrame {
         frame: str;
         processId: int;
         url: str;
@@ -676,7 +676,7 @@ namespace ChromeTrace {
 
     // Essential to make stack traces work at all: without this event, the
     // Summary tab always shows raw args JSON instead of a Call Stack panel.
-    export inline struct TraceTracingStartedInBrowser {
+    export struct TraceTracingStartedInBrowser {
         pid: int;
         tid: int;
         ts: real = 0.0;
@@ -685,8 +685,8 @@ namespace ChromeTrace {
         cat: str = "disabled-by-default-devtools.timeline";
         name: str = "TracingStartedInBrowser";
 
-        inline struct Args {
-            inline struct Data {
+        struct Args {
+            struct Data {
                 frames: []TraceFrame;
             }
             data: Data;
@@ -717,7 +717,7 @@ namespace ChromeTrace {
     // stack trace whatsoever, just the bare name. Do not reintroduce `sf` here without a real
     // Chrome trace confirming DevTools actually resolves it for THIS event shape specifically;
     // it clearly doesn't just because it's the documented mechanism in general.
-    export inline struct TraceEventInstantMarker {
+    export struct TraceEventInstantMarker {
         pid: int;
         tid: int;
         ts: real;
@@ -725,8 +725,8 @@ namespace ChromeTrace {
         cat: str = "blink.user_timing";
         name: str;
 
-        inline struct Args {
-            inline struct Data {
+        struct Args {
+            struct Data {
                 // TraceMarkerCallFrame, not TraceCallFrame: this array is
                 // inlined into every marker and is by far the largest thing
                 // in a memory-instrumented trace, so it carries only the
@@ -780,7 +780,7 @@ namespace ChromeTrace {
     // purpose-specific threads/tracks within it) and leaves room to grow --
     // e.g. a future second Haze process (worker/subprocess) would get pid 2
     // rather than requiring these ids to be renumbered.
-    export struct TraceBuilder {
+    export ref struct TraceBuilder {
         pid: int;
         events: []TraceEvent = [];
         nextProfileId: int = 1;

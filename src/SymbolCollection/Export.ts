@@ -4,6 +4,7 @@ import {
   EDatatypeMutability,
   EExternLanguage,
   EOverloadedOperator,
+  EStorageClass,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { assert, formatSourceLoc } from "../shared/Errors";
@@ -162,8 +163,11 @@ export function ExportTypeDef(
       if (typedef.plain) {
         file.write("plain ");
       }
-      if (typedef.inlineByDefault) {
-        file.write("inline ");
+      if (typedef.refByDefault) {
+        file.write("ref ");
+      }
+      if (typedef.nocopy) {
+        file.write("nocopy ");
       }
       file.write("struct ");
       file
@@ -259,6 +263,11 @@ export function ExportTypeDef(
             method.methodRequiredMutability === EDatatypeMutability.Const
           ) {
             file.write("const ");
+          }
+          if (method.methodReceiverStorage === EStorageClass.Ref) {
+            file.write("ref ");
+          } else if (method.methodReceiverStorage === EStorageClass.Stackref) {
+            file.write("stackref ");
           }
 
           if (functype.returnType) {

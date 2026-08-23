@@ -50,12 +50,12 @@ fn fileExists(path: str): bool {
 // the whole contract of the scoped form: the caller writes no start/stop
 // pair and cannot forget the stop half.
 fn checkScopedProfileRunsBodyAndWritesTrace(): void {
-    let ran = 0;
+    let ran: ref Box<int> = { value: 0 };
     profiling.profile(() => {
-        ran = ran + 1;
+        ran.value = ran.value + 1;
     }, "scoped_case.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
 
-    assert(ran == 1, f"expected profiled closure to run exactly once, ran {ran} time(s)");
+    assert(ran.value == 1, f"expected profiled closure to run exactly once, ran {ran.value} time(s)");
     assert(fileExists("scoped_case.trace.json"), "expected profile() to write its trace file");
 
     // A trace is JSON with a traceEvents array -- enough of a shape check to
@@ -73,13 +73,13 @@ fn checkScopedProfileRunsBodyAndWritesTrace(): void {
 // closure must be able to read what was in scope before it -- i.e. profile()
 // takes a real closure, not a detached function.
 fn checkScopedProfileClosesOverEnclosingScope(): void {
-    let total = 0;
+    let total: ref Box<int> = { value: 0 };
     let addend = 21;
     profiling.profile(() => {
-        total = total + addend + addend;
+        total.value = total.value + addend + addend;
     }, "scoped_case2.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
 
-    assert(total == 42, f"expected closure mutation to be visible after profile(), got {total}");
+    assert(total.value == 42, f"expected closure mutation to be visible after profile(), got {total.value}");
 }
 
 // Sessions must be properly torn down: hzstd_profiling_start panics if a
@@ -114,11 +114,11 @@ fn checkAutoProfilingHooksAreInertWhenNotRequested(): void {
     // No trace at the default path -- an inert begin/end pair must not write one.
     assert(!fileExists("trace.json"), "expected no trace.json when auto-profiling was not requested");
 
-    let ran = 0;
+    let ran: ref Box<int> = { value: 0 };
     profiling.profile(() => {
-        ran = ran + 1;
+        ran.value = ran.value + 1;
     }, "after_auto.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
-    assert(ran == 1, "expected scoped profiling to still work after inert auto-profiling hooks");
+    assert(ran.value == 1, "expected scoped profiling to still work after inert auto-profiling hooks");
 }
 
 // endAutoProfiling must tolerate being called without a matching begin, and

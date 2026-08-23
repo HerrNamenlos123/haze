@@ -14,7 +14,7 @@ namespace Core.Math {
 }
 
 namespace Core.Utils {
-    export struct Pair<T, U> {
+    export ref struct Pair<T, U> {
         first: T;
         second: U;
 

@@ -29,7 +29,7 @@
 // with Enter is removed 1 / inserted 2, and joining is removed 2 /
 // inserted 1. Lines outside [startLine, startLine+removedCount) kept
 // their content; those after the range only shifted index.
-export struct ChangeSet {
+export ref struct ChangeSet {
     startLine: int = 0;
     removedCount: int = 0;
     insertedCount: int = 0;
@@ -50,7 +50,7 @@ export struct ChangeSet {
 
 export type ChangeListener = (change: ChangeSet) => void;
 
-export struct Document {
+export ref struct Document {
     // `mut` so `lines[i].insert(...)` edits in place rather than
     // producing a copy. The array itself is only ever inserted into or
     // removed from -- never rebuilt.

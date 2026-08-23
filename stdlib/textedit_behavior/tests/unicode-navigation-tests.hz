@@ -4,10 +4,10 @@ import textedit_behavior
 // Drives the editing engine headlessly over text containing emoji, CJK
 // and combining marks, asserting the behaviour a user would actually see.
 //
-// All state lives inside a Doc struct rather than module globals, because
+// All state lives inside a Doc ref struct rather than module globals, because
 // module-level `let` cannot hold multi-line initializers in this compiler.
 
-struct Doc {
+ref struct Doc {
     lines: []String = [];
     failures: int = 0;
     checks: int = 0;

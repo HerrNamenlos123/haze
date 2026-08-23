@@ -16,7 +16,7 @@ const SEP_FIRST: int = 0;
 const SEP_NEED: int = 1;
 const SEP_VALUE: int = 2;
 
-export struct JsonWriter {
+export ref struct JsonWriter {
     // Raw byte buffer from outbuf.hz rather than a stdlib String: String and
     // ByteBuffer append ONE BYTE PER CALL (~15 MB/s measured, a single 910KB
     // append took 61ms), which would dominate the parser's runtime.

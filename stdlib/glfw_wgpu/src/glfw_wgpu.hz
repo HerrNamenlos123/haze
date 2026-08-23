@@ -8,7 +8,7 @@ namespace ffi {
     extern C noemit fn glfwCreateWindowWGPUSurface(instance: wgpu.ffi.WGPUInstanceImpl, w: glfw.ffi.GLFWwindow): mut wgpu.ffi.WGPUSurfaceImpl | none :: final;
 }
 
-export fn createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window): Result<mut wgpu.Surface, none> {
+export fn createWindowWGPUSurface(instance: wgpu.Instance, window: glfw.Window): Result<wgpu.Surface, none> {
     let surface = ffi.glfwCreateWindowWGPUSurface(instance.handle, window.handle);
     if surface {
         return wgpu.Surface {

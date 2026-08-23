@@ -24,7 +24,7 @@ export extern C fn hzstd_str_from_ccstr_ref(data: ccstr): str :: final;
 // It just means, since the string may always change, we can never turn 'String' into 'str' unless we also
 // inherit ByteBuffer's commit logic. We must pass the String around everywhere.
 // But if every function can take either 'String' or 'str', then both of these string representations can work.
-export opaque struct String {
+export opaque ref struct String {
     // SO: This is the main string container in Haze. 'str' is the lowest-level string primitive which is a slice.
     // String is a dynamic container. However, since we can never automatically turn String into str, we don't want
     // to always have to define every function twice. And a str function can never take String, unless we commit it.
@@ -109,19 +109,19 @@ export opaque struct String {
         }
     }
 
-    mut fn append(string: String) {
+    ref mut fn append(string: String) {
         let buffer = this._getBuffer();
         buffer.push(string.bytes());
         return this;
     }
 
-    mut fn append(string: str) {
+    ref mut fn append(string: str) {
         let buffer = this._getBuffer();
         buffer.push(string);
         return this;
     }
 
-    mut fn setAt(index: int, value: u8) {
+    ref mut fn setAt(index: int, value: u8) {
         let buffer = this._getBuffer();
         buffer.writeAt(index, Bytes(value));
         return this;
@@ -136,19 +136,19 @@ export opaque struct String {
         }
     }
 
-    mut fn insert(index: int, value: str) {
+    ref mut fn insert(index: int, value: str) {
         let buffer = this._getBuffer();
         buffer.insert(index, value);
         return this;
     }
 
-    mut fn remove(index: int, count: int) {
+    ref mut fn remove(index: int, count: int) {
         let buffer = this._getBuffer();
         buffer.remove(index, count);
         return this;
     }
 
-    mut fn operator[](index: int) {
+    ref mut fn operator[](index: int) {
         return StringByteRef {
             string: this,
             index: index,
@@ -281,7 +281,7 @@ export opaque struct String {
     }
 }
 
-export struct StringByteRef {
+export ref struct StringByteRef {
     string: mut String;
     index: int;
 
@@ -295,7 +295,7 @@ export struct StringByteRef {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut StringWriter, value: String, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: String, args: FormatArgs) {
         // Read a COPY rather than committing. Committing would freeze the
         // String's buffer permanently, so merely interpolating a String
         // (f"{line}") would make every later edit to it panic with

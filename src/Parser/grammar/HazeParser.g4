@@ -154,7 +154,8 @@ typeExprSimple
     ;
 
 typeExprModified
-    : INLINE typeExprModified
+    : REF typeExprModified
+    | STACKREF typeExprModified
     | MUT typeExprModified
     | CONST typeExprModified
     // The array size is a general expression (a literal, a generic
@@ -183,7 +184,7 @@ genericLiteral
 structContent
     : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
     | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
-    | static=STATIC? mutability=(MUT | CONST)? FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition
     ;
@@ -196,8 +197,25 @@ enumDefinition
     : (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? ENUM BITFLAG? UNSCOPED? id requiresBlock? LCURLY (((content+=enumContent COMMA)+ (content+=enumContent COMMA?)?) | (content+=enumContent COMMA?))? RCURLY (SEMI)?
     ;
 
+// Receiver-class / mutability modifiers on a method, in any order: `mut fn`,
+// `stackref fn`, `mut ref fn`, ...
+methodModifier
+    : MUT
+    | CONST
+    | REF
+    | STACKREF
+    ;
+
+// Struct definition modifiers, in any order.
+structModifier
+    : OPAQUE
+    | PLAIN
+    | REF
+    | NOCOPY
+    ;
+
 structDefinition
-    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? OPAQUE? PLAIN? INLINE? STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
+    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage)? pub=PUB? noemit=NOEMIT? structModifier* STRUCT id (LANGLE id (COMMA id)* RANGLE)? requiresBlock? LCURLY (content+=structContent)* RCURLY (SEMI)?
     ;
 
 typeDefinition
@@ -299,8 +317,10 @@ arrayExpr
     : LBRACKET aggregateBody RBRACKET withAllocator?
     ;
 
+// `ref Foo { ... }` is a struct literal whose type is `ref Foo`: it allocates
+// (R&D/Storage Classes and References.md §6.1).
 braceExpr
-    : nameExpr? LCURLY aggregateBody RCURLY withAllocator?
+    : ref=REF? nameExpr? LCURLY aggregateBody RCURLY withAllocator?
     ;
 
 postfix
@@ -367,7 +387,7 @@ expr
 // Statements & Conditionals
 
 variableCreation
-    : variableMutabilitySpecifier comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI? #VariableCreationStatementRule
+    : variableMutabilitySpecifier stackref=STACKREF? comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI? #VariableCreationStatementRule
     ;
 
 ifStatementConditionImpl

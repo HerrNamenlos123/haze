@@ -1,15 +1,15 @@
 
 namespace ffi {
-    export extern C noemit inline struct hzstd_color_from_hex_result_t {
-        color: inline hzstd_color_t;
+    export extern C noemit struct hzstd_color_from_hex_result_t {
+        color: hzstd_color_t;
         error: str;
     };
 
-    extern C fn hzstd_color_from_hex(hex: str, argbMode: bool): inline hzstd_color_from_hex_result_t :: final;
-    extern C fn hzstd_color_to_hex(color: inline hzstd_color_t, omitAlphaIfOpaque: bool, argbMode: bool): str :: final;
+    extern C fn hzstd_color_from_hex(hex: str, argbMode: bool): hzstd_color_from_hex_result_t :: final;
+    extern C fn hzstd_color_to_hex(color: hzstd_color_t, omitAlphaIfOpaque: bool, argbMode: bool): str :: final;
 }
 
-export extern C noemit inline struct hzstd_color_t {
+export extern C noemit struct hzstd_color_t {
     r: real = 0;
     g: real = 0;
     b: real = 0;
@@ -22,7 +22,7 @@ export extern C noemit inline struct hzstd_color_t {
     }
 
     // Options for hex parsing and serialization.
-    export inline struct ColorArgs {
+    export struct ColorArgs {
         mode: HexMode = HexMode.RGBA;
         omitAlphaIfOpaque: bool = true;
     };
@@ -66,7 +66,7 @@ export extern C noemit inline struct hzstd_color_t {
         return ffi.hzstd_color_to_hex(this, args.omitAlphaIfOpaque, args.mode == HexMode.ARGB);
     }
 
-    fn constructor(color: rx.Reactive<Color>): mut Color {
+    fn constructor(color: rx.Reactive<Color>): Color {
         return Color {
             r: color.r,
             g: color.g,
@@ -75,11 +75,11 @@ export extern C noemit inline struct hzstd_color_t {
         };
     }
 
-    fn constructor(color: Color): mut Color {
+    fn constructor(color: Color): Color {
         return color;
     }
 
-    fn constructor(color: Colorf): mut Color {
+    fn constructor(color: Colorf): Color {
         return Color {
             r: color.r as real,
             g: color.g as real,
@@ -88,7 +88,7 @@ export extern C noemit inline struct hzstd_color_t {
         };
     }
 
-    fn constructor(r: real, g: real, b: real, a: real): mut Color {
+    fn constructor(r: real, g: real, b: real, a: real): Color {
         return Color {
             r: r,
             g: g,
@@ -109,9 +109,9 @@ export extern C noemit inline struct hzstd_color_t {
     }
 }
 
-export type Color = mut hzstd_color_t;
+export type Color = hzstd_color_t;
 
-export extern C noemit inline struct hzstd_colorf_t {
+export extern C noemit struct hzstd_colorf_t {
     r: f32 = 0;
     g: f32 = 0;
     b: f32 = 0;
@@ -158,7 +158,7 @@ export extern C noemit inline struct hzstd_colorf_t {
         }, args.omitAlphaIfOpaque, args.mode == Color.HexMode.ARGB);
     }
 
-    fn constructor(color: rx.Reactive<Colorf>): mut Colorf {
+    fn constructor(color: rx.Reactive<Colorf>): Colorf {
         return Colorf {
             r: color.r,
             g: color.g,
@@ -167,11 +167,11 @@ export extern C noemit inline struct hzstd_colorf_t {
         };
     }
 
-    fn constructor(color: Colorf): mut Colorf {
+    fn constructor(color: Colorf): Colorf {
         return color;
     }
 
-    fn constructor(color: Color): mut Colorf {
+    fn constructor(color: Color): Colorf {
         return Colorf {
             r: color.r as f32,
             g: color.g as f32,
@@ -180,7 +180,7 @@ export extern C noemit inline struct hzstd_colorf_t {
         };
     }
 
-    fn constructor(r: f32, g: f32, b: f32, a: f32): mut Colorf {
+    fn constructor(r: f32, g: f32, b: f32, a: f32): Colorf {
         return Colorf {
             r: r,
             g: g,
@@ -201,15 +201,15 @@ export extern C noemit inline struct hzstd_colorf_t {
     }
 }
 
-export type Colorf = mut hzstd_colorf_t;
+export type Colorf = hzstd_colorf_t;
 
 namespace fmt {
-    export fn format_to(writer: mut StringWriter, value: Color, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: Color, args: FormatArgs) {
         format_to(writer, "#", {});
         format_to(writer, value.hex(), {});
     }
 
-    export fn format_to(writer: mut StringWriter, value: Colorf, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: Colorf, args: FormatArgs) {
         format_to(writer, value as Color, {});
     }
 }

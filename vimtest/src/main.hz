@@ -14,20 +14,20 @@ import text_document
 //   HAZE_VIM_JOB  - input  JSON path
 //   HAZE_VIM_OUT  - output JSON path
 
-struct MapSpec {
+ref struct MapSpec {
     mode: str = "n";
     lhs: str = "";
     rhs: str = "";
     noremap: bool = true;
 }
 
-struct CursorSpec {
+ref struct CursorSpec {
     // 1-based line, 0-based column, matching nvim's convention.
     line: int = 1;
     col: int = 0;
 }
 
-struct CaseSpec {
+ref struct CaseSpec {
     id: str = "";
     lines: []str = [];
     cursor: CursorSpec = {};
@@ -39,11 +39,11 @@ struct CaseSpec {
     commentstring: str = "";
 }
 
-struct Job {
+ref struct Job {
     cases: []CaseSpec = [];
 }
 
-struct StateOut {
+ref struct StateOut {
     lines: []str = [];
     cursor: CursorSpec = {};
     mode: str = "n";
@@ -56,13 +56,13 @@ struct StateOut {
     registerKind: str = "empty";
 }
 
-struct ResultOut {
+ref struct ResultOut {
     id: str = "";
     ok: bool = true;
     state: StateOut = {};
 }
 
-struct Output {
+ref struct Output {
     count: int = 0;
     results: []ResultOut = [];
 }

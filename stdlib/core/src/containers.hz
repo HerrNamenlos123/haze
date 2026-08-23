@@ -7,8 +7,8 @@
 // implementation of a shared Map interface alongside a future HashMap.
 //
 // K is constrained by convention (not enforced -- Haze has no interfaces/
-// trait bounds yet) to primitive types (str/int/real/bool): struct equality
-// (`==`) does not compile by default, so a struct key would need its own
+// trait bounds yet) to primitive types (str/int/real/bool): ref struct equality
+// (`==`) does not compile by default, so a ref struct key would need its own
 // `operator==` before it could be used here.
 //
 // [[json.serialize]]/[[json.parse]] (stdlib/core/src/json.hz): a LinearMap
@@ -26,7 +26,7 @@
 // every other comptime-dispatched static_assert in this codebase (e.g.
 // json.hz's own Proxy.to<T>()).
 [[json.serialize="toJson", json.parse="fromJson"]]
-export struct LinearMap<K, V> {
+export ref struct LinearMap<K, V> {
     keys: []K = [];
     values: []V = [];
 
@@ -151,7 +151,7 @@ export struct LinearMap<K, V> {
     }
 
     // [[json.serialize="toJson"]] hook (see json.hz's dumpJsonNode<T>()):
-    // called instead of the default field-by-field struct walk, so a
+    // called instead of the default field-by-field ref struct walk, so a
     // LinearMap prints as a real {"key": value, ...} JSON object instead of
     // its raw {"keys": [...], "values": [...]} internals.
     fn toJson(): json.Node {
@@ -170,7 +170,7 @@ export struct LinearMap<K, V> {
     }
 
     // [[json.parse="fromJson"]] hook (see json.hz's parseJsonNodeFromFfi<T>()):
-    // called instead of the default field-by-field struct read. Walks every
+    // called instead of the default field-by-field ref struct read. Walks every
     // key of the JSON object via Node.objectEntryCount()/objectKeyAt()/
     // objectValueAt() (json.hz) -- LinearMap's key set isn't known ahead of
     // time, unlike a regular struct's fixed field list -- converting each

@@ -270,27 +270,29 @@ fn runDefinitionSelfTest(run: mut KeyTestRun): void {
     // Column 22 on line 2 is inside "targetValue" in ` export const other =
     // targetValue + 1;`.
     let useLine = " export const other = targetValue + 1;";
-    let answered = false;
-    let answerFile = "";
-    let answerLine = -1;
+    // Shared with the callback through stack references; the callback runs
+    // while this frame is polling below.
+    let stackref answered = Box<bool>(false);
+    let stackref answerFile = Box<str>("");
+    let stackref answerLine = Box<int>(-1);
     bridge.definition(path, 2, 22, useLine, (targets: []DefinitionTarget) => {
-        answered = true;
+        answered.value = true;
         if targets.length > 0 {
-            answerFile = targets[0].filepath;
-            answerLine = targets[0].line;
+            answerFile.value = targets[0].filepath;
+            answerLine.value = targets[0].line;
         }
     });
 
     let waited = 0;
-    while !answered && waited < 400 {
+    while !answered.value && waited < 400 {
         bridge.loop();
         time.sleep(0.05);
         waited = waited + 1;
     }
 
-    run.checkBool("the definition request was answered", answered, true);
-    run.check("it names the right file", answerFile, path);
-    run.check("it points at the declaration", f"{answerLine}", "0");
+    run.checkBool("the definition request was answered", answered.value, true);
+    run.check("it names the right file", answerFile.value, path);
+    run.check("it points at the declaration", f"{answerLine.value}", "0");
 
     let last = getState().lspBridge;
     if last {

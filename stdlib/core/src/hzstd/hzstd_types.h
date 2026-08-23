@@ -441,7 +441,45 @@ typedef struct {
   hzstd_dynamic_array_t *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
   HZSTD_JMP_BUF recovery_point;
   hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
+  // Generational stack-reference table depth at the time this frame was pushed
+  // (see hzstd_gen_table_t). A panic longjmps over every scope exit between the
+  // panic site and this frame, so the recovery path unwinds the table back to
+  // this depth explicitly -- otherwise skipped slots keep live generations and a
+  // stale stackref would pass its check (soundness hole, not a leak).
+  size_t saved_stackref_depth;
 } hzstd_panic_recovery_frame_t;
+
+// ── Generational stack references ────────────────────────────────────────────
+//
+// A `stackref T` in Haze: a machine pointer plus a lifetime witness. `slot`
+// indexes the per-thread generation table; `gen` is the generation the
+// referenced scope had when the reference was created. Every dereference
+// compares `table.gens[slot] == gen` and panics on mismatch. Slot 0 is the
+// immortal slot (gens[0] == 1 forever): references to GC objects and statics
+// are {ptr, 0, 1} and pass the same check with no special casing.
+//
+// Design of record: R&D/Storage Classes and References.md §4-§5.
+typedef struct {
+  void *ptr;
+  uint64_t slot;
+  uint64_t gen;
+} hzstd_stackref_t;
+
+// A `stackref` callable: the function pointer plus the referenced environment.
+// For a bound method the env is the receiver's stackref; for a lambda built in
+// place by `let stackref f = () => ...` it points at the stack-resident env
+// block. Invoking checks `env` like any dereference, then calls fn(env.ptr,...).
+typedef struct {
+  void *fn;
+  hzstd_stackref_t env;
+} hzstd_stackref_callable_t;
+
+typedef struct {
+  uint64_t *gens;  // index-stable across growth (references hold an index, not an address)
+  size_t cap;
+  size_t depth;    // number of currently active *participating* scopes (+1 for slot 0)
+  uint64_t serial; // monotonic, never reused; generation 0 is never handed out
+} hzstd_gen_table_t;
 
 // ── Meta ─────────────────────────────────────────────────────────────────────
 

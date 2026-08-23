@@ -1,9 +1,9 @@
 
-struct HighlightCommand {
+ref struct HighlightCommand {
     fileContent: str;
 }
 
-struct HighlightResult {
+ref struct HighlightResult {
     tokens: []Token;
     // Which document this reply describes, echoed back from the request.
     // Replies for every document share one stream, so this is the only
@@ -41,14 +41,14 @@ struct HighlightResult {
     version: int = 0;
 }
 
-struct Token {
+ref struct Token {
   lineIndex: int;
   startIndex: int;
   endIndex: int;
   scopes: []str;
 };
 
-struct HighlightRequest {
+ref struct HighlightRequest {
     id: int;
     method: str;
     fileContent?: str;
@@ -70,7 +70,7 @@ struct HighlightRequest {
     scopeName?: str;
 }
 
-struct ResultObject {
+ref struct ResultObject {
     tokens?: []Token;
     initialized?: bool;
     // The line range these tokens cover. A "change" reply only carries
@@ -85,19 +85,19 @@ struct ResultObject {
     uri?: str;
 }
 
-struct ErrorObject {
+ref struct ErrorObject {
     code: int;
     message: str;
 }
 
-struct HighlightResponse {
+ref struct HighlightResponse {
     jsonrpc: str;
     id: int;
     result?: ResultObject;
     error?: ErrorObject;
 }
 
-struct HighlightEngine {
+ref struct HighlightEngine {
     highlightProcess: process.Process;
     inputBuffer: mut String;
     nextMessageId: int = 1;

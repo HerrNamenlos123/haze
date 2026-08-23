@@ -1,10 +1,10 @@
 
-struct EnumValue {
+ref struct EnumValue {
     name: str = "";
     value: str = ""; // Hexadecimal string
 }
 
-struct EnumResult {
+ref struct EnumResult {
     name: str = "";
     values: []EnumValue = [];
 }
@@ -60,12 +60,12 @@ fn extractEnums(file: str): Result<[]EnumResult, str> {
     };
 }
 
-struct StructField {
+ref struct StructField {
     name: str = "";
     fieldType: str = "";
 }
 
-struct StructResult {
+ref struct StructResult {
     name: str = "";
     fields: []StructField = [];
 }
@@ -120,7 +120,7 @@ fn extractStructs(file: str): Result<[]StructResult, str> {
     };
 }
 
-struct FunctionType {
+ref struct FunctionType {
     name: str = "";
     returnType: str = "";
     params: []FunctionParam = [];
@@ -185,7 +185,7 @@ fn extractFunctionTypes(file: str): Result<[]FunctionType, str> {
     };
 }
 
-struct BitflagType {
+ref struct BitflagType {
     name: str = "";
     baseType: str = "";
 }
@@ -220,7 +220,7 @@ fn extractBitflagTypes(file: str): Result<[]BitflagType, str> {
     };
 }
 
-struct BitflagValue {
+ref struct BitflagValue {
     typeName: str = "";
     name: str = "";
     value: str = "";
@@ -252,7 +252,7 @@ fn extractBitflagValues(file: str): Result<[]BitflagValue, str> {
     };
 }
 
-struct Typedef {
+ref struct Typedef {
     name: str = "";
     base: str = "";
 }
@@ -286,12 +286,12 @@ fn extractTypedefs(file: str): Result<[]Typedef, str> {
     };
 }
 
-struct FunctionParam {
+ref struct FunctionParam {
     name: str = "";
     paramType: str = "";
 }
 
-struct FunctionDecl {
+ref struct FunctionDecl {
     name: str = "";
     returnType: str = "";
     params: []FunctionParam = [];
@@ -356,7 +356,7 @@ fn extractFunctionDecls(file: str): Result<[]FunctionDecl, str> {
     };
 }
 
-struct GenArgs {
+ref struct GenArgs {
     outfile: str;
     enums: []EnumResult;
     structs: []StructResult;
@@ -368,14 +368,14 @@ struct GenArgs {
     funcDecls: []FunctionDecl;
 }
 
-struct ImplStruct {
+ref struct ImplStruct {
     implName: str = "";
     publicName: str = "";
 }
 
 // This Impl stuff is a hack because WebGPU wants to use opaque handles and therefore uses
 // implementation structs and then typedefs pointers to them as handles. But we cannot properly
-// use the handles because then Haze would think they are inline non-pointer structs, but
+// use the handles because then Haze would think they are non-pointer structs, but
 // in C they are actually pointers and we would have a lot of mismatches everywhere because
 // Haze would work with value semantics on reference types.
 //
@@ -500,19 +500,19 @@ fn parseType(args: GenArgs, fieldType: str): str {
         return "cptr /* uint32_t const* */";
     }
 
-    // "<STRUCT_NAME> *" -> Pointer (non-inline)
+    // "<STRUCT_NAME> *" -> Pointer (ref)
     let pointerStruct = regex.find(r"^(.*)\s\*$", fieldType);
     if pointerStruct {
         let baseType = pointerStruct.groups[0].text;
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"mut {args.structs[i].name}";
+                return f"mut ref {args.structs[i].name}";
             }
         }
     }
 
-    // "struct <STRUCT_NAME> *" -> Pointer (non-inline, explicit struct)
+    // "struct <STRUCT_NAME> *" -> Pointer (ref, explicit struct)
     let structPointer = regex.find(
         r"^struct\s+(\w+)\s\*$",
         fieldType
@@ -522,7 +522,7 @@ fn parseType(args: GenArgs, fieldType: str): str {
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"mut {args.structs[i].name}";
+                return f"mut ref {args.structs[i].name}";
             }
         }
     }
@@ -534,7 +534,7 @@ fn parseType(args: GenArgs, fieldType: str): str {
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"{args.structs[i].name}";
+                return f"ref {args.structs[i].name}";
             }
         }
     }
@@ -549,7 +549,7 @@ fn parseType(args: GenArgs, fieldType: str): str {
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"mut {args.structs[i].name} | none";
+                return f"mut ref {args.structs[i].name} | none";
             }
         }
     }
@@ -564,12 +564,12 @@ fn parseType(args: GenArgs, fieldType: str): str {
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"{args.structs[i].name} | none";
+                return f"ref {args.structs[i].name} | none";
             }
         }
     }
 
-    // "struct <STRUCT_NAME> const *" -> Const pointer with explicit struct keyword
+    // "struct <STRUCT_NAME> const *" -> Const pointer with explicit ref struct keyword
     let structConstPointer = regex.find(
         r"^struct\s+(\w+)\s+const\s\*$",
         fieldType
@@ -579,19 +579,19 @@ fn parseType(args: GenArgs, fieldType: str): str {
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"{args.structs[i].name}";
+                return f"ref {args.structs[i].name}";
             }
         }
     }
 
-    // "<STRUCT_NAME>" -> Plain struct value
+    // "<STRUCT_NAME>" -> Plain ref struct value
     let plainStruct = regex.find(r"^(\w+)$", fieldType);
     if plainStruct {
         let baseType = plainStruct.groups[0].text;
         for (let i = 0; i < args.structs.length; i++) {
             if (args.structs[i].name == baseType) {
                 // Struct matches
-                return f"inline {args.structs[i].name}";
+                return f"{args.structs[i].name}";
             }
         }
     }
@@ -727,7 +727,7 @@ fn generateBindings(args: GenArgs): Result<none, fs.Error> {
 
     for (let i = 0; i < args.implStructs.length; i++) {
         let s = args.implStructs[i];
-        file = file + f"    export extern C noemit struct {s.implName} {{}};\n";
+        file = file + f"    export extern C noemit ref struct {s.implName} {{}};\n";
     }
 
     for (let i = 0; i < args.functionTypes.length; i++) {

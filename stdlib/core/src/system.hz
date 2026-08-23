@@ -80,14 +80,14 @@ namespace ffi {
         hzstd_panic_type_arithmetic = 4,
     };
 
-    export extern C noemit opaque inline struct hzstd_stackframe_t {
+    export extern C noemit opaque struct hzstd_stackframe_t {
         id: int;
         instructionPointer: int;
         name: str;
         sourceloc: SourceLocation;
     };
 
-    export extern C noemit opaque inline struct hzstd_stacktrace_t {
+    export extern C noemit opaque struct hzstd_stacktrace_t {
         frames: []hzstd_stackframe_t;
         skip_n_frames: int;
 
@@ -100,7 +100,7 @@ namespace ffi {
         }
     };
 
-    export extern C noemit opaque inline struct hzstd_panic_info_t {
+    export extern C noemit opaque struct hzstd_panic_info_t {
         stacktrace: hzstd_stacktrace_t;
         message: str;
         type: hzstd_panic_type_t;
@@ -161,11 +161,11 @@ namespace sys {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut StringWriter, value: sys.Stacktrace, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: sys.Stacktrace, args: FormatArgs) {
         writer.write(value.stringify());
     }
 
-    export fn format_to(writer: mut StringWriter, value: sys.PanicInfo, args: FormatArgs) {
+    export fn format_to(writer: mut stackref StringWriter, value: sys.PanicInfo, args: FormatArgs) {
         writer.write(value.stringify());
     }
 }
@@ -175,13 +175,13 @@ namespace sys {
         return [];
     }
 
-    export inline struct InputPipe {
+    export struct InputPipe {
         fn constructor() {
             return InputPipe {};
         }
     }
 
-    export inline struct OutputPipe {
+    export struct OutputPipe {
         fn constructor() {
             return OutputPipe {};
         }

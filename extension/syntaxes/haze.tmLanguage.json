@@ -369,13 +369,13 @@
         },
         {
           "name": "storage.modifier.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern|pub|noemit|opaque|plain|inline|static|comptime|nodiscard|clonable|nonclonable|bitflag|unscoped)\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern|pub|noemit|opaque|plain|ref|nocopy|static|comptime|nodiscard|clonable|nonclonable|bitflag|unscoped)\\b"
         }
       ]
     },
     "struct-declaration": {
       "name": "meta.struct.declaration.haze",
-      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?=\n  (?:(?:export|extern|pub|noemit|opaque|plain|inline)\\s+(?:[_[:alpha:]][_[:alnum:]]*\\s+)?)*\n  struct\\b\n)",
+      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?=\n  (?:(?:export|extern|pub|noemit|opaque|plain|ref|nocopy)\\s+(?:[_[:alpha:]][_[:alnum:]]*\\s+)?)*\n  struct\\b\n)",
       "end": "(?<=\\})|(?=;)",
       "patterns": [
         {
@@ -607,7 +607,7 @@
     },
     "function-declaration": {
       "name": "meta.function.declaration.haze",
-      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?=\n  (?:(?:export|extern|pub|noemit|static|inline|mut|const)\\s+(?:[_[:alpha:]][_[:alnum:]]*\\s+)?)*\n  fn\\b\n)",
+      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?=\n  (?:(?:export|extern|pub|noemit|static|ref|stackref|mut|const)\\s+(?:[_[:alpha:]][_[:alnum:]]*\\s+)?)*\n  fn\\b\n)",
       "end": "(?<=\\})|(?=;)|(?<=\\S)(?=\\s*$)",
       "patterns": [
         {
@@ -851,7 +851,7 @@
     },
     "variable-declaration": {
       "name": "meta.variable.declaration.haze",
-      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?:(export)\\s+)?\n(?:(extern)\\s+(?:([_[:alpha:]][_[:alnum:]]*)\\s+)?)?\n(?:(pub)\\s+)?\n(let|const)\\s+\n(?:(comptime)\\s+)?\n([_[:alpha:]][_[:alnum:]]*)",
+      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?:(export)\\s+)?\n(?:(extern)\\s+(?:([_[:alpha:]][_[:alnum:]]*)\\s+)?)?\n(?:(pub)\\s+)?\n(let|const)\\s+\n(?:(stackref|comptime)\\s+)?\n([_[:alpha:]][_[:alnum:]]*)",
       "beginCaptures": {
         "1": {
           "name": "keyword.control.export.haze"
@@ -979,7 +979,7 @@
         },
         {
           "name": "storage.modifier.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(mut|const|inline|nodiscard)\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(mut|const|ref|stackref|nodiscard)\\b"
         },
         {
           "name": "keyword.operator.expression.typeof.haze",
@@ -1402,7 +1402,7 @@
         },
         {
           "name": "storage.modifier.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern|pub|noemit|opaque|plain|inline|static|comptime|mut|nodiscard|clonable|nonclonable|bitflag|unscoped|final|pure|noreturn|noreturn_if|requires)\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern|pub|noemit|opaque|plain|ref|stackref|nocopy|static|comptime|mut|nodiscard|clonable|nonclonable|bitflag|unscoped|final|pure|noreturn|noreturn_if|requires)\\b"
         },
         {
           "name": "keyword.other.namespace.haze",

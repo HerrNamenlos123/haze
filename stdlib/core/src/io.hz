@@ -1,10 +1,10 @@
 
 namespace io {
 
-    export opaque inline struct Resource<T> {
+    export opaque struct Resource<T> {
         cell: Cell<T>; // Will be private in future, access is hardcoded by "using" statement.
 
-        struct Cell<U> {
+        ref struct Cell<U> {
             data: U;
             alive: bool;
             releaseFn: (value: U) => void;
@@ -46,10 +46,10 @@ namespace io {
         End       // relative to end of stream
     }
 
-    export opaque inline struct Stream {
+    export opaque struct Stream {
         res: Resource<Impl>;
 
-        struct Impl {
+        ref struct Impl {
             // Invariant: The read function returns slices of data, up to the chunkSize or the remaining data.
             // If and only if there are no more bytes to read, it returns an empty slice (EOF).
             readFn: () => Bytes;
@@ -77,13 +77,13 @@ namespace io {
             return this.res.use<int>((impl: Impl) => impl.sizeFn());
         }
 
-        struct ByteCell {
+        ref struct ByteCell {
             bytes: Bytes;
             cursor: int;
             chunkSize: int;
         }
 
-        inline struct FromBytesOptions {
+        struct FromBytesOptions {
             chunkSize: int = 4096;
         }
 
@@ -93,7 +93,7 @@ namespace io {
             }
 
             let cell = ByteCell { bytes: bytes, cursor: 0, chunkSize: options.chunkSize };
-            // Storing the chunkSize in the ByteCell so we don't have to hoist another struct and reduce allocations
+            // Storing the chunkSize in the ByteCell so we don't have to hoist another ref struct and reduce allocations
             return Stream({
                 readFn: (): Bytes => {
                     if cell.cursor >= cell.bytes.length {

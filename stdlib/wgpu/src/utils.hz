@@ -1,15 +1,15 @@
 
-fn toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
+fn toOptionalFFI(text: str | none): ffi.WGPUStringView :: final {
     do unsafe {
         if text {
             let t = text;
-            let view: inline ffi.WGPUStringView = uninitialized;
+            let view: ffi.WGPUStringView = uninitialized;
             __c__("view.data = t.data;");
             __c__("view.length = t.length;");
             return view;
         }
         else {
-            let view: inline ffi.WGPUStringView = uninitialized;
+            let view: ffi.WGPUStringView = uninitialized;
             __c__("view.data = 0;");
             __c__("view.length = 0;");
             return view;
@@ -17,7 +17,7 @@ fn toOptionalFFI(text: str | none): inline ffi.WGPUStringView :: final {
     };
 }
 
-fn fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
+fn fromOptionalFFI(view: ffi.WGPUStringView): str | none :: final {
     do unsafe {
         let available = false;
         __c__("available = view.data != NULL;");
@@ -32,16 +32,16 @@ fn fromOptionalFFI(view: inline ffi.WGPUStringView): str | none :: final {
     };
 }
 
-fn toFFI(text: str): inline ffi.WGPUStringView :: final {
+fn toFFI(text: str): ffi.WGPUStringView :: final {
     do unsafe {
-        let view: inline ffi.WGPUStringView = uninitialized;
+        let view: ffi.WGPUStringView = uninitialized;
         __c__("view.data = text.data;");
         __c__("view.length = text.length;");
         return view;
     };
 }
 
-fn fromFFI(view: inline ffi.WGPUStringView): str :: final {
+fn fromFFI(view: ffi.WGPUStringView): str :: final {
     do unsafe {
         let text = "";
         __c__("text = hzstd_str_dup(HZSTD_STRING(view.data, view.length));");
@@ -49,7 +49,7 @@ fn fromFFI(view: inline ffi.WGPUStringView): str :: final {
     };
 }
 
-struct ArrayFFIResult {
+ref struct ArrayFFIResult {
     data: cptr = none;
     length: usize = 0;
 }

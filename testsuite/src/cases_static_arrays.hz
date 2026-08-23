@@ -156,9 +156,9 @@ fn mutateLocalCopy(arr: [3]int): int {
 
 // `inline struct` (rather than a plain `struct`, which is a heap-allocated
 // reference type by design in this language, orthogonal to arrays) is used
-// here so copying the struct is itself a value copy -- exercising whether
+// here so copying the ref struct is itself a value copy -- exercising whether
 // the *embedded array field* is copied by value along with it.
-inline struct Holder {
+struct Holder {
     data: [3]int;
 }
 
@@ -180,13 +180,13 @@ fn main(): int {
     assert(seenInside == 777, "the callee did mutate its own local copy");
     assert(c[0] == 5, "the caller's array is untouched by the callee's mutation");
 
-    // A static array embedded as an inline (value-typed) struct's field also
-    // has value semantics: copying the struct copies the embedded array.
+    // A static array embedded as an (value-typed) struct's field also
+    // has value semantics: copying the ref struct copies the embedded array.
     let h1 = Holder { data: [1, 1, 1] };
     let h2 = h1;
     h2.data[0] = 9;
-    assert(h1.data[0] == 1, "copying a value-typed struct copies its fixed-array field by value");
-    assert(h2.data[0] == 9, "the struct copy's array field was mutated independently");
+    assert(h1.data[0] == 1, "copying a value-typed ref struct copies its fixed-array field by value");
+    assert(h2.data[0] == 9, "the ref struct copy's array field was mutated independently");
 
     fmt.println("ok");
     return 0;
@@ -229,7 +229,7 @@ fn main(): int {
         s.run(
             "static arrays: json.parse<T> over a non-discriminated union collects one error per variant via createStaticArray, no heap allocation, distinct messages per failed variant",
             """
-struct Foo {
+ref struct Foo {
     x: int;
 }
 

@@ -1,3 +1,4 @@
+import { EStorageClass } from "../shared/AST";
 import type { ASTMetaAnnotationItem } from "../shared/AST";
 import { EPrimitive, type LiteralValue, primitiveToString } from "../shared/common";
 import { assert, InternalError } from "../shared/Errors";
@@ -506,7 +507,7 @@ export function computeTypeUseFingerprint(
 
   // Invariant 4: mangleTypeUse's own string already bakes in mutability and
   // pointer/inline via the c/m/p/i prefix scheme -- fold that string, don't
-  // separately re-hash `use.mutability`/`use.inline` as raw values too.
+  // separately re-hash `use.mutability`/`(use.storage === EStorageClass.Value)` as raw values too.
   let state = fnv1a64FoldString(
     fnv1a64Init(),
     mangledTypeUseName(sr, typeUseId)

@@ -1,6 +1,6 @@
 
 export extern C noemit struct hzstd_allocator_t {};
-export type Allocator = inline hzstd_allocator_t;
+export type Allocator = hzstd_allocator_t;
 
 export extern C fn hzstd_make_heap_allocator(): Allocator :: final;
 export extern C fn hzstd_make_arena_allocator(): Allocator :: final;
@@ -29,7 +29,7 @@ export namespace Alloc {
 // interpret it as a byte slice or utf-8 'str'.
 // Any attempt to create a 'str' that does not clone a buffer or ensures the buffer cannot be altered by anyone,
 // is strictly forbidden in Haze.
-export opaque struct ByteBuffer {
+export opaque ref struct ByteBuffer {
     committed: bool = false;
 
     // If the array is empty, it can also be absent, to optimize a redundant heap allocation
@@ -64,7 +64,7 @@ export opaque struct ByteBuffer {
         return ByteBuffer { borrowed: value };
     }
 
-    fn operator[](index: int): ByteBufferRef {
+    ref fn operator[](index: int): ByteBufferRef {
         let len = this.length();
 
         if index < 0 || index >= len {
@@ -339,7 +339,7 @@ export opaque struct ByteBuffer {
         }
 
         do unsafe {
-            // We cannot use a conventional struct literal because Bytes is OPAQUE!!!
+            // We cannot use a conventional ref struct literal because Bytes is OPAQUE!!!
             // And we cannot make it non-opaque because that would mean people can create Bytes objects themselves,
             // inject raw C pointers, and cause random memory corruption.
             let bytes = Bytes(); 
@@ -391,7 +391,7 @@ export opaque struct ByteBuffer {
         return result;
     }
 
-    struct ByteBufferRef {
+    ref struct ByteBufferRef {
         buffer: ByteBuffer;
         index: int;
 
@@ -405,7 +405,7 @@ export opaque struct ByteBuffer {
     }
 }
 
-export opaque inline struct Bytes {
+export opaque struct Bytes {
     // This slice must consist of base pointer + offset + length. Since we don't want to constrain to 
     // a non-moving GC, we can't rely on interior pointers holding buffers alive. Therefore we must
     // reference the base object directly and encode an offset, such that the GC recognizes the 
@@ -573,14 +573,14 @@ export opaque inline struct Bytes {
     }
 }
 
-export opaque inline struct TypeErasedBox {
+export opaque struct TypeErasedBox {
     _handle: cptr;
     _prettyTypeName: str;
     _fingerprint: int;
 
     fn constructor<T>(value: T) {
         do unsafe {
-            let box = Box<T>(value);
+            let box: ref Box<T> = { value: value };
             let handle: cptr = uninitialized;
             __c__("handle = box;");
             return TypeErasedBox {
@@ -594,7 +594,7 @@ export opaque inline struct TypeErasedBox {
     fn set<T>(value: T) {
         do unsafe {
             let handle = this._handle;
-            let typedBox: Box<T> = uninitialized;
+            let typedBox: ref Box<T> = uninitialized;
             __c__("typedBox = handle;");
             typedBox.value = value;
         };
@@ -615,7 +615,7 @@ export opaque inline struct TypeErasedBox {
         }
         do unsafe {
             let handle = this._handle;
-            let typedBox: Box<T> = uninitialized;
+            let typedBox: ref Box<T> = uninitialized;
             __c__("typedBox = handle;");
             return typedBox.value;
         };

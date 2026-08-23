@@ -1,9 +1,9 @@
-export inline struct Instance {
+export struct Instance {
     handle: mut ffi.WGPUInstanceImpl;
 
     fn requestAdapterAsync(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
 
-        let callback = Box<RequestAdapterCallback>(callbackInfo.callback);
+        let callback: ref Box<RequestAdapterCallback> = { value: callbackInfo.callback };
         let userdata1: cptr = none;
         __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
 
@@ -13,7 +13,7 @@ export inline struct Instance {
             mode: toFFI(callbackInfo.mode),
             userdata1: userdata1,
             userdata2: none,
-        } as inline ffi.WGPURequestAdapterCallbackInfo;
+        } as ffi.WGPURequestAdapterCallbackInfo;
 
         if adapterOpts {
             let surface = adapterOpts.compatibleSurface;
@@ -38,35 +38,37 @@ export inline struct Instance {
         }
     }
 
-    fn requestAdapterSync(adapterOpts: RequestAdapterOptions | none): Result<mut Adapter, str> {
-        let adapter = none as mut Adapter | none;
-        let adapterReady = false;
-        let message = "";
+    fn requestAdapterSync(adapterOpts: RequestAdapterOptions | none): Result<Adapter, str> {
+        // Shared with the callback through stack references: the closure
+        // captures the references, the cells themselves live in this frame.
+        let stackref adapter = Box<Adapter | none>(none);
+        let stackref adapterReady = Box<bool>(false);
+        let stackref message = Box<str>("");
         this.requestAdapterAsync(adapterOpts, { 
-            callback: (status: RequestAdapterStatus, _adapter: mut Adapter, _message: str): void => {
+            callback: (status: RequestAdapterStatus, _adapter: Adapter, _message: str): void => {
                 if (status == RequestAdapterStatus.Success) {
-                    adapter = _adapter;
-                    adapterReady = true;
+                    adapter.value = _adapter;
+                    adapterReady.value = true;
                 }
                 else {
-                    adapterReady = true;
+                    adapterReady.value = true;
                 }
-                message = _message;
+                message.value = _message;
             }
         });
         let timeout = 100;
-        while !adapterReady && timeout > 0 {
+        while !adapterReady.value && timeout > 0 {
             time.sleep(0.1);
             timeout--;
         }
-        if adapter {
-            return adapter;
+        if adapter.value {
+            return adapter.value;
         }
-        return message;
+        return message.value;
     }
 }
 
-fn fromFFI(v: mut ffi.WGPUInstanceImpl): mut Instance :: final {
+fn fromFFI(v: mut ffi.WGPUInstanceImpl): Instance :: final {
     return Instance { handle: v };
 }
 

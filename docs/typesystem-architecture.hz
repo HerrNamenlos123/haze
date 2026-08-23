@@ -1,10 +1,10 @@
 
 
-struct Box<T> {
+ref struct Box<T> {
     value: T;
 }
 
-struct Foo<T> {
+ref struct Foo<T> {
     box: Box<T>;
 }
 
@@ -21,8 +21,8 @@ fn bar() {
 
 
 
-struct Foo<T> {
-    struct Box {
+ref struct Foo<T> {
+    ref struct Box {
         value: T;
     }
 

@@ -1,11 +1,11 @@
 
-export struct SourceLocationArgs {
+export ref struct SourceLocationArgs {
     filename: str | none;
     line:     int | none;
     column:   int | none;
 }
 
-export extern C noemit opaque inline struct hzstd_source_location_t {
+export extern C noemit opaque struct hzstd_source_location_t {
     _filename: str;
     _line:     int;
     _column:   int;
@@ -25,7 +25,7 @@ export extern C noemit opaque inline struct hzstd_source_location_t {
         return none;
     }
 
-    fn constructor(args: SourceLocationArgs): mut hzstd_source_location_t {
+    fn constructor(args: SourceLocationArgs): hzstd_source_location_t {
         if args.line   { assert(args.line   != 0, "SourceLocation: line cannot be 0"); }
         if args.column { assert(args.column != 0, "SourceLocation: column cannot be 0"); }
 

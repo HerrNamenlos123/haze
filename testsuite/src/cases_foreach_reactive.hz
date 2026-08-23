@@ -25,9 +25,9 @@ namespace cases_foreach_reactive {
     export fn register(s: mut testsuite.Suite) {
 
         s.run(
-            "for-each unwraps shallow/deep/computed reactive arrays directly, with or without an index variable, nested in a struct field, and for plain/fixed/manually-reactive-element arrays (regression)",
+            "for-each unwraps shallow/deep/computed reactive arrays directly, with or without an index variable, nested in a ref struct field, and for plain/fixed/manually-reactive-element arrays (regression)",
             """
-struct Doc {
+ref struct Doc {
     items: []int;
     fn operator!=(other: Doc) { return true; }
 }
@@ -119,10 +119,10 @@ fn main(): int {
             "for-each over a reactive array inside rx.computed performs a real per-element read (not a type relabel): dependency tracking and shallow-vs-deep semantics both still hold",
             """
 fn caseDeepArrayForEachInsideComputedTracksDependency() {
-    let runs = 0;
+    let runs: ref Box<int> = { value: 0 };
     let arr = rx.reactive<[]int>([1, 2, 3]);
     let sum = rx.computed(() => {
-        runs = runs + 1;
+        runs.value = runs.value + 1;
         let total = 0;
         for s in arr {
             total = total + s;
@@ -130,20 +130,20 @@ fn caseDeepArrayForEachInsideComputedTracksDependency() {
         return total;
     });
     assert(sum == 6, "initial sum");
-    assert(runs == 1, "one compute so far");
+    assert(runs.value == 1, "one compute so far");
     assert(sum == 6, "cached read");
-    assert(runs == 1, "cached read must not recompute");
+    assert(runs.value == 1, "cached read must not recompute");
 
     arr.push(4);
     assert(sum == 10, "sum picks up the pushed element");
-    assert(runs == 2, "exactly one recompute after push");
+    assert(runs.value == 2, "exactly one recompute after push");
 }
 
 fn caseShallowArrayForEachInsideComputedStillUntrackedOnPush() {
-    let runs = 0;
+    let runs: ref Box<int> = { value: 0 };
     let arr = rx.shallowReactive<[]int>([1, 2, 3]);
     let sum = rx.computed(() => {
-        runs = runs + 1;
+        runs.value = runs.value + 1;
         let total = 0;
         for s in arr {
             total = total + s;
@@ -151,18 +151,18 @@ fn caseShallowArrayForEachInsideComputedStillUntrackedOnPush() {
         return total;
     });
     assert(sum == 6, "initial sum");
-    assert(runs == 1, "one compute so far");
+    assert(runs.value == 1, "one compute so far");
 
     // A shallow array is still a dumb shell (see cases_reactive.hz) -- being
     // iterable now doesn't change that push() is untracked. Only a
     // whole-value `:=` should notify.
     arr.push(4);
     assert(sum == 6, "push into a shallow array must NOT notify, even though it's now iterable directly");
-    assert(runs == 1, "no recompute from push");
+    assert(runs.value == 1, "no recompute from push");
 
     arr := arr;
     assert(sum == 10, ":= re-observes current contents, including the earlier push");
-    assert(runs == 2, "exactly one recompute after :=");
+    assert(runs.value == 2, "exactly one recompute after :=");
 }
 
 fn main(): int {

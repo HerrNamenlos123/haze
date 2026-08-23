@@ -6,7 +6,7 @@ namespace ffi {
     export extern C fn haze_image_load_memory(data: cptr, length: int, desiredChannels: int): haze_image_result_t :: final;
     export extern C fn haze_image_failure_reason(): str :: final;
 
-    export extern C noemit inline struct haze_image_result_t {
+    export extern C noemit struct haze_image_result_t {
         pixels: cptr;
         width: int;
         height: int;
@@ -18,7 +18,7 @@ namespace ffi {
 // Decoded once at construction into GC-owned memory (see haze_image.c) --
 // there is deliberately no destroy()/free() here: `pixels` behaves like any
 // other GC-managed Bytes and is reclaimed automatically once unreachable.
-export opaque struct Image {
+export opaque ref struct Image {
     width: int;
     height: int;
     channels: int;       // channel count of the returned pixel buffer

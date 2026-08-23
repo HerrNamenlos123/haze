@@ -6,6 +6,7 @@ import {
   EExternLanguage,
   type EUnaryOperation,
   type EVariableMutability,
+  EStorageClass,
 } from "../shared/AST";
 import {
   EPrimitive,
@@ -79,6 +80,14 @@ export class SemanticBuilder {
     sr: Semantic.Context,
     n: T
   ): [T, Semantic.ExprId] {
+    if (n.variant === Semantic.ENode.ExprCallExpr) {
+      // Whatever path built this call: its callee is consumed right here, so
+      // a method bound on a value receiver is legal (§12.2).
+      const callee = sr.exprNodes.get(n.calledExpr);
+      if (callee.variant === Semantic.ENode.CallableExpr) {
+        callee.immediatelyCalled = true;
+      }
+    }
     return pushBrandedNode(sr.exprNodes, n) as [T, Semantic.ExprId];
   }
 
@@ -266,6 +275,11 @@ export class SemanticBuilder {
     sourceloc: SourceLoc
   ) {
     const expr = this.sr.exprNodes.get(exprId);
+    if (expr.variant === Semantic.ENode.CallableExpr) {
+      // The callable is consumed by this call: a method on a value receiver
+      // is fine here, the receiver only has to outlive the call (§12.2).
+      expr.immediatelyCalled = true;
+    }
     const ftypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(expr.type)
     );
@@ -485,7 +499,7 @@ export class SemanticBuilder {
           this.sr,
           literal.enumType,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1],
         flow: Semantic.FlowResult.fallthrough(),
@@ -536,7 +550,7 @@ export class SemanticBuilder {
       this.sr,
       makeLiteralDatatypeAvailable(this.sr, literalValue, sourceloc),
       EDatatypeMutability.Const,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -597,7 +611,7 @@ export class SemanticBuilder {
         this.sr,
         type,
         EDatatypeMutability.Default,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1],
       isTemporary: false,
@@ -674,7 +688,7 @@ export class SemanticBuilder {
           this.sr,
           symbol.type,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1],
         isTemporary: false,
@@ -711,7 +725,7 @@ export class SemanticBuilder {
           this.sr,
           symbol.datatype,
           EDatatypeMutability.Default,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1],
         isTemporary: false,
@@ -1018,10 +1032,13 @@ export class SemanticBuilder {
   extractConstraintPath(exprId: Semantic.ExprId): ConstraintPath | null {
     const expr = this.sr.exprNodes.get(exprId);
 
-    // Unwrap union casts to extract path from the underlying expression
+    // Unwrap union casts to extract path from the underlying expression.
+    // `(*this)` (the value-typed receiver of a plain method) is the same place
+    // as `this`, so it is transparent for narrowing too.
     if (
       expr.variant === Semantic.ENode.UnionToValueCastExpr ||
-      expr.variant === Semantic.ENode.UnionToUnionCastExpr
+      expr.variant === Semantic.ENode.UnionToUnionCastExpr ||
+      expr.variant === Semantic.ENode.DereferenceExpr
     ) {
       return this.extractConstraintPath(expr.expr);
     }
@@ -1808,7 +1825,7 @@ export class SemanticBuilder {
         concrete: true,
       })[1],
       mutability,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -1902,7 +1919,7 @@ export class SemanticBuilder {
         if (typeDef.variant !== Semantic.ENode.StructDatatype) {
           return 0;
         }
-        if (typeUse.inline) {
+        if ((typeUse.storage === EStorageClass.Value)) {
           return 2;
         }
         return 1;
@@ -1956,7 +1973,7 @@ export class SemanticBuilder {
         this.sr,
         existingUnionId,
         EDatatypeMutability.Const,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -1974,7 +1991,7 @@ export class SemanticBuilder {
       this.sr,
       unionTypeDefId,
       EDatatypeMutability.Const,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }
@@ -1997,7 +2014,7 @@ export class SemanticBuilder {
         this.sr,
         existingUnionId,
         EDatatypeMutability.Default,
-        false,
+        EStorageClass.Value,
         sourceloc
       )[1];
     }
@@ -2016,7 +2033,7 @@ export class SemanticBuilder {
       this.sr,
       unionTypeDefId,
       EDatatypeMutability.Default,
-      false,
+      EStorageClass.Value,
       sourceloc
     )[1];
   }

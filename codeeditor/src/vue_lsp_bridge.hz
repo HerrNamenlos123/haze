@@ -73,28 +73,28 @@ fn toAbsolutePath(relativePath: str): str {
     return getCwdAbsolute() + "/" + relativePath;
 }
 
-export struct VueInitializationOptions {
-    struct Plugin {
+export ref struct VueInitializationOptions {
+    ref struct Plugin {
         name: str;
         location: str;
         languages: []str;
     };
     plugins: []Plugin;
 
-    struct TypeScript {
+    ref struct TypeScript {
         tsdk: str;
     };
     typescript?: TypeScript;
 }
 
-struct TsServerRequestMessage {
+ref struct TsServerRequestMessage {
     seq: int;
     type: str;
     command: str;
     arguments: json.Node;
 }
 
-struct TsServerResponseMessage {
+ref struct TsServerResponseMessage {
     seq: int;
     type: str;
     request_seq?: int;
@@ -107,11 +107,11 @@ struct TsServerResponseMessage {
 // tsserver's `exit` command takes no arguments; this exists only so an
 // empty arguments object can be built the same way every other command's
 // is (a json.Node cannot be default-constructed).
-struct TsServerExitArgs {}
+ref struct TsServerExitArgs {}
 
 // tsserver's `definition` command. Identical in shape to QuickInfoArgs --
 // 1-based line, 1-based UTF-16 offset.
-struct DefinitionArgs {
+ref struct DefinitionArgs {
     file: str;
     line: int;
     offset: int;
@@ -121,14 +121,14 @@ struct DefinitionArgs {
 // absolute filesystem PATH, not a URI -- which is a second reason (beyond
 // hybrid mode) to ask tsserver rather than vue-language-server: there is no
 // percent-decoding and no file:// scheme to unpick.
-struct DefinitionSpan {
+ref struct DefinitionSpan {
     file: str = "";
     start: TsServerLocation = {};
     end: TsServerLocation = {};
 }
 
 // Where a definition lives, in the terms the editor needs to go there.
-export inline struct DefinitionTarget {
+export struct DefinitionTarget {
     // Absolute path. May be a file that is not open, or not even a file the
     // user has ever seen (a .d.ts inside node_modules).
     filepath: str;
@@ -143,14 +143,14 @@ export inline struct DefinitionTarget {
     utf16Offset: int;
 }
 
-struct QuickInfoArgs {
+ref struct QuickInfoArgs {
     file: str;
     line: int;    // 1-based, per TS Server Protocol (unlike LSP's 0-based)
     offset: int;  // 1-based
 }
 
 // Subset of tsserver's QuickInfoResponseBody we actually use.
-struct QuickInfoBody {
+ref struct QuickInfoBody {
     displayString?: str;
     documentation?: str;
 }
@@ -160,23 +160,23 @@ struct QuickInfoBody {
 // tsserver's own edit shape (protocol.CodeEdit): 1-BASED line and offset,
 // unlike LSP's 0-based Position right next to it. The +1s live in
 // changeDocument() rather than in callers.
-struct TsServerLocation {
+ref struct TsServerLocation {
     line: int = 0;
     offset: int = 0;
 }
 
-struct TsServerCodeEdit {
+ref struct TsServerCodeEdit {
     start: TsServerLocation;
     end: TsServerLocation;
     newText: str;
 }
 
-struct TsServerFileCodeEdits {
+ref struct TsServerFileCodeEdits {
     fileName: str;
     textChanges: []TsServerCodeEdit;
 }
 
-struct UpdateOpenArgs {
+ref struct UpdateOpenArgs {
     changedFiles: []TsServerFileCodeEdits;
 }
 
@@ -192,7 +192,7 @@ struct UpdateOpenArgs {
 // edit whose replaced range ran to the end of the document: there is no
 // "line after the last line" to point at, so the range has to end at the
 // last line's end instead. It is a BYTE offset, sent verbatim.
-export inline struct DocumentChange {
+export struct DocumentChange {
     // First replaced line, 0-based. The range starts at its column 0.
     startLine: int;
     // Line the range ends on, 0-based. Normally the line one PAST the last
@@ -207,7 +207,7 @@ export inline struct DocumentChange {
 
 // --- Semantic classification -------------------------------------------
 
-struct SemanticClassificationsArgs {
+ref struct SemanticClassificationsArgs {
     file: str;
     // Byte offsets into the whole file. tsserver counts UTF-16 code units
     // here; this editor deliberately treats those as bytes -- see
@@ -219,13 +219,13 @@ struct SemanticClassificationsArgs {
     format: str;
 }
 
-struct SemanticClassificationsBody {
+ref struct SemanticClassificationsBody {
     spans?: []int;
     endOfLineState?: int;
 }
 
 // One classified span of a document.
-export inline struct SemanticSpan {
+export struct SemanticSpan {
     start: int;
     length: int;
     // Index into semanticTokenTypeName().
@@ -323,7 +323,7 @@ fn decodeSemanticSpans(body: json.Node | none): []SemanticSpan {
     return spans;
 }
 
-struct OpenArgs {
+ref struct OpenArgs {
     file: str;
     fileContent: str;
     // Without this, tsserver opens the file as a lone "inferred project"
@@ -347,7 +347,7 @@ struct OpenArgs {
     projectRootPath?: str;
 }
 
-export inline struct VueLspBridgeArgs {
+export struct VueLspBridgeArgs {
     // All three paths are relative to the repo root (same convention as
     // every other "codeeditor/..." resource path in this codebase) --
     // resolved to absolute internally, see toAbsolutePath().
@@ -380,11 +380,11 @@ export inline struct VueLspBridgeArgs {
 // rather than waiting on anything (see hzstd_process_is_alive/_join, which
 // share an `exited` latch). A child that never exits simply stays on this
 // list; it is not worth hanging the editor over.
-// Held inside a struct rather than as a bare `[]process.Process` global:
+// Held inside a ref struct rather than as a bare `[]process.Process` global:
 // a global cannot be initialized with an expression that needs more than
 // one C statement, which an empty dynamic-array literal does. This is the
 // same shape g_state uses in codeui.hz, for the same reason.
-struct RetiredProcesses {
+ref struct RetiredProcesses {
     items: []process.Process = [];
 }
 
@@ -439,14 +439,14 @@ export fn reapRetiredProcesses() {
     registry.items = stillRunning;
 }
 
-export opaque struct VueLspBridge {
+export opaque ref struct VueLspBridge {
     _lsp: language_server_protocol.Context<VueInitializationOptions>;
     _tsserverProcess: process.Process;
     _tsserverInputBuffer: str = "";
     _tsserverNextSeq: int = 0;
     _logAllRequests: bool = false;
 
-    struct PendingTsRequest {
+    ref struct PendingTsRequest {
         seq: int;
         vueRequestId: int;
     }
@@ -455,19 +455,19 @@ export opaque struct VueLspBridge {
     // Requests *we* initiated directly against tsserver (as opposed to
     // PendingTsRequest above, which are relayed on vue-language-server's
     // behalf) -- currently just quickinfo, see sendQuickInfoRequest below.
-    struct PendingQuickInfoRequest {
+    ref struct PendingQuickInfoRequest {
         seq: int;
         callback: (body: QuickInfoBody | none) => none;
     }
     _quickInfoPendingRequests: []PendingQuickInfoRequest = [];
 
-    struct PendingSemanticTokensRequest {
+    ref struct PendingSemanticTokensRequest {
         seq: int;
         callback: (spans: []SemanticSpan) => none;
     }
     _semanticTokensPendingRequests: []PendingSemanticTokensRequest = [];
 
-    struct PendingDefinitionRequest {
+    ref struct PendingDefinitionRequest {
         seq: int;
         callback: (targets: []DefinitionTarget) => none;
     }
@@ -478,7 +478,7 @@ export opaque struct VueLspBridge {
     // waiting for the LSP handshake to finish -- openDocument() is allowed
     // to be called before the servers are up, and loop() flushes the
     // backlog once they are.
-    struct OpenDocument {
+    ref struct OpenDocument {
         filepath: str;
         languageId: str;
         version: int;
@@ -576,7 +576,7 @@ export opaque struct VueLspBridge {
         return bridge;
     }
 
-    export inline struct MemoryUtilization {
+    export struct MemoryUtilization {
         vue?: int;
         ts?: int;
     }
@@ -901,23 +901,25 @@ export opaque struct VueLspBridge {
         // The LSP side may have negotiated byte offsets instead.
         let lspCharacter = this._lsp.characterFromByteOffset(lineText, byteColumn);
 
-        let quickInfoText: str | null = null;
-        let lspHoverText: str | null = null;
-        let quickInfoDone = false;
-        let lspHoverDone = false;
+        // Shared with two asynchronous callbacks that outlive this call:
+        // heap cells, captured by reference.
+        let quickInfoText: ref Box<str | null> = { value: null };
+        let lspHoverText: ref Box<str | null> = { value: null };
+        let quickInfoDone: ref Box<bool> = { value: false };
+        let lspHoverDone: ref Box<bool> = { value: false };
 
         let tryEmit = (): void => {
-            if !quickInfoDone || !lspHoverDone {
+            if !quickInfoDone.value || !lspHoverDone.value {
                 return;
             }
-            callback(quickInfoText ? quickInfoText : lspHoverText);
+            callback(quickInfoText.value ? quickInfoText.value : lspHoverText.value);
         };
 
         this._sendQuickInfoRequest(filepath, line, tsserverOffset, (body: QuickInfoBody | none) => {
             if body && body.displayString {
-                quickInfoText = body.displayString;
+                quickInfoText.value = body.displayString;
             }
-            quickInfoDone = true;
+            quickInfoDone.value = true;
             tryEmit();
         });
 
@@ -925,10 +927,10 @@ export opaque struct VueLspBridge {
             if response {
                 let hover = response;
                 if hover {
-                    lspHoverText = hover.contents.value;
+                    lspHoverText.value = hover.contents.value;
                 }
             }
-            lspHoverDone = true;
+            lspHoverDone.value = true;
             tryEmit();
         });
     }

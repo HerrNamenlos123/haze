@@ -109,7 +109,7 @@ export enum RangeKind {
 // A normalized (start before end) region of the document plus how it
 // should be interpreted. This is what every editing operation consumes,
 // and what every motion/text-object produces.
-export struct Range {
+export ref struct Range {
     start: Vec2i = {};
     end: Vec2i = {};
     kind: RangeKind = RangeKind.Characterwise;
@@ -127,7 +127,7 @@ export struct Range {
 // the column span would draw nothing at all; vim instead shows a narrow
 // block there. The engine cannot pick that width (it has no idea what a
 // pixel is), so it reports the fact and lets the host render it.
-export struct LineSelectionRange {
+export ref struct LineSelectionRange {
     startCol: int;
     endCol: int;
     includesLineEnd: bool = false;
@@ -153,7 +153,7 @@ export enum ScrollIntent {
 
 // Yanked/deleted text plus how it was taken, because pasting linewise
 // text must open a new line while pasting characterwise text must not.
-export struct RegisterContent {
+export ref struct RegisterContent {
     text: String;
     kind: RangeKind = RangeKind.Characterwise;
 
@@ -179,7 +179,7 @@ export type KeyHandler = (key: str) => bool;
 export type TextHandler = (text: String) => bool;
 export type VoidHandler = () => void;
 
-export inline struct Behavior {
+export struct Behavior {
     // Raw key press. `key` is a normalized key name: a single character
     // for printable keys ("a", "$", " "), or a bracketed name for the
     // rest ("<Esc>", "<CR>", "<C-d>", "<M-Up>").
@@ -197,7 +197,7 @@ export inline struct Behavior {
 export type ClipboardGetter = () => String;
 export type ClipboardSetter = (text: String) => void;
 
-export inline struct ContextArgs {
+export struct ContextArgs {
     // In Hertz
     cursorBlinkFrequency: real = 1;
 
@@ -232,7 +232,7 @@ export inline struct ContextArgs {
     initialMode: Mode = Mode.Insert;
 }
 
-export struct Context {
+export ref struct Context {
     args: ContextArgs;
 
     cursorVisible: rx.Computed<bool>;
@@ -1762,7 +1762,7 @@ export struct Context {
 // stores it (array of lines, rope, piece table, ...). It is also O(edit)
 // rather than O(document), so typing a character in a 100k-line file
 // costs the same as in a 10-line one.
-export struct UndoEntry {
+export ref struct UndoEntry {
     // The range replaced, as line indices: [startLine, startLine+removedCount).
     startLine: int = 0;
     // How many lines the edit removed from that position...

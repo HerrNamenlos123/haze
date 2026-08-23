@@ -236,6 +236,24 @@ export enum HazeErrorCode {
   ArrayOutOfBoundsInComptimeParameterPack = 7171, // Array out of bounds: Index '' does not name a parameter in parameter pack of length ''.
   BreakStatementOutsideOfLoop = 7172, // A 'break' statement may only appear inside a loop
   ContinueStatementOutsideOfLoop = 7173, // A 'continue' statement may only appear inside a loop
+  // Storage classes & references (R&D/Storage Classes and References.md)
+  RefModifierOnNonStruct = 7174, // 'ref' can only be applied to struct types
+  StackrefModifierOnNonStructOrCallable = 7175, // 'stackref' can only be applied to struct or callable types
+  MutModifierOnValueType = 7176, // 'mut' cannot be applied to a value; nothing can be mutated through a copy
+  ValueIntoRefSlot = 7177, // A value cannot be converted to 'ref'; heap storage is only created by filling a 'ref' slot with a literal
+  ValueIntoStackrefSlot = 7178, // A value cannot be converted to 'stackref' at a use site; declare it with 'let stackref'
+  StackrefIntoRefSlot = 7179, // A 'stackref' can never become a 'ref'
+  NocopySecondBinding = 7180, // This type is 'nocopy' and the source is not a temporary; no second binding may be created
+  BareThisInPlainMethod = 7181, // 'this' cannot be used as a value in a plain method; declare the method 'ref fn' or 'stackref fn'
+  BoundMethodOnValueReceiver = 7182, // A method cannot be bound on a value receiver; declare the receiver 'let stackref'
+  ReceiverStorageTooWeak = 7183, // The method requires a 'ref'/'stackref' receiver
+  StackrefInitializerNotAllowed = 7184, // 'let stackref' must be initialised from a value, a ref, a stackref or a lambda literal
+  StackrefPassthroughNeedsReference = 7185, // A variable of stackref type must be initialised from an existing ref or stackref
+  ValueTypeOnNonStruct = 7186, // '.valueType' only exists on struct types
+  ExplicitValueLiteralIntoRefSlot = 7187, // An explicitly typed value literal cannot fill a 'ref' slot
+  StackrefOnGlobal = 7188, // 'let stackref' is not allowed at global scope
+  WriteToByValueCapture = 7189, // Cannot write to a variable captured by value; the closure only holds a copy
+  WriteAfterByValueCapture = 7190, // Variable captured by value by a closure above is assigned afterwards; the closure would hold a stale copy
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

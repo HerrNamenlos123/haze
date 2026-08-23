@@ -64,7 +64,7 @@ export enum Operator {
 // A single keymap entry, mirroring vim's :map family.
 // `mode` is one of "n", "i", "v", "o" (operator-pending) -- the same
 // letters vim uses -- so a user's vimrc translates one-to-one.
-export struct Remap {
+export ref struct Remap {
     mode: str = "n";
     lhs: str = "";
     rhs: str = "";
@@ -74,7 +74,7 @@ export struct Remap {
 }
 
 // How Vim's f/F/t/T remember their last search, for ; and ,
-export struct LastFind {
+export ref struct LastFind {
     valid: bool = false;
     // The key that started it: "f", "F", "t" or "T".
     kind: str = "f";
@@ -86,11 +86,11 @@ export struct LastFind {
 // closure literal will not convert into a `| none` union.
 export type GoToDefinitionHook = () => void;
 
-export struct Jump {
+export ref struct Jump {
     pos: Vec2i = {};
 }
 
-export struct Vim {
+export ref struct Vim {
     ctx: mut textedit_behavior.Context;
 
     // --- pending command state ---
@@ -209,7 +209,7 @@ export struct Vim {
     // Register this Vim as the engine's input behavior and enter Normal
     // mode. Split out from the constructor so a host can wire extra
     // things (remaps, clipboard) before input starts flowing.
-    mut fn install() {
+    ref mut fn install() {
         let self = this;
         let behavior = textedit_behavior.Behavior {
             onKey: (key: str) => self.handleKey(key),
@@ -3137,7 +3137,7 @@ export fn findMatchingClose(line: String, openByte: u8, closeByte: u8, openAt: i
 
 // Applying motions, operators and the remaining commands.
 
-export struct TextObjectResult {
+export ref struct TextObjectResult {
     valid: bool = false;
     range: textedit_behavior.Range = {};
 }
@@ -3185,7 +3185,7 @@ export fn operatorForKey(key: str): Operator {
 // under the destination, `w` and `$`-style motions do not. Getting this
 // wrong is an off-by-one in every operator, so it is carried explicitly
 // rather than inferred at each use site.
-export struct Motion {
+export ref struct Motion {
     valid: bool = false;
     target: Vec2i = {};
     linewise: bool = false;
@@ -3252,7 +3252,7 @@ export fn namedKey(keyName: str, ctrl: bool, alt: bool): str {
 // a settings UI, or a literal list. `applyVimrc` takes the same
 // (mode, lhs, rhs) triples a vimrc uses, so a user's real mappings
 // translate line for line.
-export struct RemapSpec {
+export ref struct RemapSpec {
     mode: str = "n";
     lhs: str = "";
     rhs: str = "";
@@ -3419,7 +3419,7 @@ export fn toUpperStr(s: str): str {
 // "<!-- %s -->" -> left "<!-- ", right " -->". Note the padding is part of
 // the template, not something added afterwards -- a commentstring of
 // "//%s" genuinely produces "//text" with no space.
-export struct CommentParts {
+export ref struct CommentParts {
     left: str = "";
     right: str = "";
     valid: bool = false;

@@ -74,7 +74,7 @@ type PointerHandler = (e: ui_components.PointerEvent) => none;
 // row's CONTENT only; the row itself, its hover highlight and its click
 // handling still come from here.
 
-export struct DropdownItem {
+export ref struct DropdownItem {
     key: int = 0;
     label: str = "";
     // Right-aligned accelerator text ("Ctrl+O"). Cosmetic only -- this
@@ -101,7 +101,7 @@ export struct DropdownItem {
     }
 }
 
-export inline struct DropdownStyle {
+export struct DropdownStyle {
     bg: str = "#1F1F1F";
     borderColor: str = "#454545";
     textColor: str = "#CCCCCC";
@@ -114,7 +114,7 @@ export inline struct DropdownStyle {
     rounded: real = 4.0;
 }
 
-export struct DropdownArgs {
+export ref struct DropdownArgs {
     id: int;
     // See the note above: the owner holds this.
     open: bool = false;
@@ -192,7 +192,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
         let itemRefs: []ui_components.ElementRef<ui_elements.DivElement> = [];
         let refForItem = (index: int): ui_components.ElementRef<ui_elements.DivElement> => {
             while itemRefs.length <= index {
-                itemRefs.push(ui.ref<ui_elements.DivElement>());
+                itemRefs.push(ui.elementRef<ui_elements.DivElement>());
             }
             return itemRefs[index];
         };
@@ -233,7 +233,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
 
             ui.div({
                 id: ID_PANEL,
-                ref: props.panelRef,
+                elementRef: props.panelRef,
                 style: {
                     // A minimum, not a fixed width -- the panel still grows
                     // to fit a long label or a long path.
@@ -301,7 +301,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
 
                     ui.div({
                         id: ID_ITEM_BASE + index,
-                        ref: itemRef,
+                        elementRef: itemRef,
                         style: {
                             // The minimum applies to the ROW rather than the
                             // panel, because the panel shrink-wraps its

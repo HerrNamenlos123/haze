@@ -23,7 +23,7 @@ fn toI32(value: int): i32 {
     }
 }
 
-export struct Vertex {
+export ref struct Vertex {
     pos: Vec3f;
     color: Colorf;
 }

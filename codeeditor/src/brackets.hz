@@ -56,7 +56,7 @@
 // Nothing is colourised.
 const comptime BracketRegionNone = 0;
 // Inside <template>: `{{` and `}}` only. Notably NOT the parens of
-// `$t('x')` or the braces of an inline object in a binding.
+// `$t('x')` or the braces of an object in a binding.
 const comptime BracketRegionInterpolation = 1;
 // Real code -- a whole .ts/.js file, or an SFC's <script>/<style>.
 const comptime BracketRegionCode = 2;
@@ -64,7 +64,7 @@ const comptime BracketRegionCode = 2;
 // Where the line AFTER `trimmed` sits, and where `trimmed` itself sits.
 //
 // Returned as a pair packed into one int (`lineRegion * 4 + nextRegion`)
-// only because a two-field return would need a struct for something with
+// only because a two-field return would need a ref struct for something with
 // exactly one caller; see sfcLineRegion/sfcNextRegion below.
 //
 // A block tag belongs to NEITHER side: `<script>` is SFC scaffolding, not
@@ -97,7 +97,7 @@ fn sfcNextRegion(packed: int): int {
 }
 
 // One bracket character and the depth it should be drawn at.
-struct BracketToken {
+ref struct BracketToken {
     // Byte offsets within the line, like every other offset the editor
     // stores. Usually one byte apart, but not always: `{{` is a single
     // two-byte bracket, which is what keeps an interpolation's delimiter
@@ -110,7 +110,7 @@ struct BracketToken {
 }
 
 // The colours a theme cycles through, already filtered and resolved.
-struct BracketPalette {
+ref struct BracketPalette {
     levelColors: []Color = [];
     unexpectedColor: Color;
 }
@@ -245,7 +245,7 @@ fn scanLineBrackets(line: String, tokens: []Token, stack: []int, out: []BracketT
 
         if region == BracketRegionInterpolation {
             // A Vue template colourises `{{`/`}}` and NOTHING else -- not
-            // the parens of `$t('x')`, not the braces of an inline object.
+            // the parens of `$t('x')`, not the braces of an object.
             // That is verbatim what the Vue extension ships as the SFC
             // template's `colorizedBracketPairs`.
             if i + 1 < length && ch == b"{" && line.getAt(i + 1) == b"{" {

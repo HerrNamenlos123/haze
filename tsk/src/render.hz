@@ -44,7 +44,7 @@ fn stripDataUrlPrefix(data: str): str {
 // paired with the serializable document) sidesteps that entirely, and keying
 // by content rather than shape identity means two shapes pasted from the
 // same image share one upload for free.
-struct ImageTextureCache {
+ref struct ImageTextureCache {
     textures: LinearMap<str, renderer.gfx.Texture> = {};
     // Tracks base64 strings that failed to decode, so a corrupt/invalid
     // image is only ever attempted once rather than every frame.
@@ -171,24 +171,24 @@ fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeigh
     r.commit(true);
 }
 
-struct Viewport {
+ref struct Viewport {
     offsetX: real = 0.0;
     offsetY: real = 0.0;
     zoomPxPerMm: real = 4.0;
 }
 
-struct PageTileState {
+ref struct PageTileState {
     hasCommittedLevel: bool = false;
     committedLevel: int = 0;
     // Keyed by "{level}:{tx}:{ty}". LinearMap.K is constrained to
     // primitives (see containers.hz), so the composite tile position is
-    // string-encoded rather than used as a struct key directly. .keys/
+    // string-encoded rather than used as a ref struct key directly. .keys/
     // .values are iterated directly (public fields) wherever every entry
     // needs visiting (the stale-tile sweep, markShapeDirty).
     slots: LinearMap<str, mut Tile> = {};
 }
 
-struct DocumentRenderer {
+ref struct DocumentRenderer {
     gfx: mut renderer.gfx.Context;
     pool: mut TilePool;
     pages: []mut PageTileState = [];

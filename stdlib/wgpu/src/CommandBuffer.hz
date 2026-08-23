@@ -1,5 +1,5 @@
 
-export inline struct CommandBuffer {
+export struct CommandBuffer {
     handle: mut ffi.WGPUCommandBufferImpl;
 }
 
@@ -13,7 +13,7 @@ fn toFFI(v: CommandBuffer): mut ffi.WGPUCommandBufferImpl :: final {
     return v.handle;
 }
 
-export struct CommandBufferDescriptor {
+export ref struct CommandBufferDescriptor {
     debugLabel?: str;
 }
 
@@ -23,8 +23,8 @@ fn fromFFI(v: ffi.WGPUCommandBufferDescriptor): CommandBufferDescriptor :: final
     };
 }
 
-fn toFFI(v: CommandBufferDescriptor): ffi.WGPUCommandBufferDescriptor :: final {
-    return ffi.WGPUCommandBufferDescriptor {
+fn toFFI(v: CommandBufferDescriptor): ref ffi.WGPUCommandBufferDescriptor :: final {
+    return ref ffi.WGPUCommandBufferDescriptor {
         nextInChain: none,
         label: toOptionalFFI(v.debugLabel),
     };

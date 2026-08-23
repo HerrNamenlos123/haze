@@ -18,8 +18,8 @@ const GLFW_CLIENT_API: i32;
 const GLFW_NO_API: i32;
 
 namespace ffi {
-    export extern C struct GLFWwindow {};
-    export extern C struct GLFWmonitor {};
+    export extern C ref struct GLFWwindow {};
+    export extern C ref struct GLFWmonitor {};
 
     extern C fn glfwInit(): i32 :: final;
     extern C fn glfwTerminate(): void :: final;
@@ -100,7 +100,7 @@ namespace ffi {
     }
 }
 
-export struct Window {
+export ref struct Window {
     handle: ffi.GLFWwindow;
 
     fn makeContextCurrent() {
@@ -157,12 +157,12 @@ export struct Window {
     }
 }
 
-export struct WindowSizeConfig {
+export ref struct WindowSizeConfig {
     width: int = 1080;
     height: int = 720;
 }
 
-export struct WindowConfig {
+export ref struct WindowConfig {
     title: ccstr;
     size: WindowSizeConfig = {};
     noApi: bool = false; // This prevents graphics context creation, which is required for Vulkan

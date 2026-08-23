@@ -1,5 +1,5 @@
 
-export inline struct Queue {
+export struct Queue {
     handle: mut ffi.WGPUQueueImpl;
     rawCommands?: []ffi.WGPUCommandBufferImpl;
 
@@ -29,8 +29,8 @@ export inline struct Queue {
         ffi.wgpuQueueSubmit(this.handle, len, rawPtr);
     }
 
-    fn writeBuffer<T>(buffer: mut Buffer, data: []T) {
-        // export extern C noemit wgpuQueueWriteBuffer(queue: mut WGPUQueueImpl, buffer: mut WGPUBufferImpl, bufferOffset: u64, data: cptr, size: usize): void :: final;
+    fn writeBuffer<T>(buffer: Buffer, data: []T) {
+        // export extern C noemit wgpuQueueWriteBuffer(queue: WGPUQueueImpl, buffer: WGPUBufferImpl, bufferOffset: u64, data: cptr, size: usize): void :: final;
         let elementSize = sizeofTypeInBytes<T>();
         let raw = none as cptr;
         let count = 0 as usize;
@@ -74,7 +74,7 @@ export inline struct Queue {
     }
 }
 
-fn fromFFI(v: mut ffi.WGPUQueueImpl): mut Queue :: final {
+fn fromFFI(v: mut ffi.WGPUQueueImpl): Queue :: final {
     return Queue {
         handle: v,
     };

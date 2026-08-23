@@ -149,13 +149,13 @@ type DivElement = ui_elements.DivElement;
 type TextElement = ui_elements.TextElement;
 type CanvasElement = ui_elements.CanvasElement;
 
-struct RootArgs {
+ref struct RootArgs {
     fn operator!=(other: RootArgs) {
         return false;
     }
 }
 
-struct EditorViewArgs {
+ref struct EditorViewArgs {
     // Doubles as the tab's key -- see EditorView's own comment. Stable for
     // the life of the tab.
     id: int;
@@ -255,7 +255,7 @@ fn scopeSelectorMatches(selector: str, scope: str): bool {
 //
 // Offsets are BYTE offsets within the line, like everything else the
 // editor stores.
-struct SemanticToken {
+ref struct SemanticToken {
     startIndex: int;
     endIndex: int;
     scope: str;
@@ -342,13 +342,13 @@ fn documentByteLength(doc: text_document.Document): int {
 // whatever the TextMate layer put there. Both the semantic tokens and the
 // bracket colours funnel into this one shape, so the render path has a
 // single kind of overlay to apply rather than one per feature.
-struct ColourOverride {
+ref struct ColourOverride {
     startIndex: int;
     endIndex: int;
     color: Color;
 }
 
-struct State {
+ref struct State {
     highlightEngine: HighlightEngine;
     highlightCommands: []HighlightCommand = [];
     highlightResults: []HighlightResult = [];
@@ -411,7 +411,7 @@ fn getState() {
     return state;
 }
 
-struct HighlightToken {
+ref struct HighlightToken {
     text: str;
     color: Color;
 }
@@ -424,7 +424,7 @@ struct HighlightToken {
 // part worth syntax colouring) with prose (the doc comment, which must NOT
 // be run through a TypeScript grammar or every English word ends up
 // coloured as an identifier).
-struct HoverBlock {
+ref struct HoverBlock {
     text: str;
     isCode: bool;
 }
@@ -511,7 +511,7 @@ fn parseHoverBlocks(payload: str): []HoverBlock {
 // forever. It is computed on the first frame the size is known and then
 // held: the content and the anchor are both fixed for as long as the popup
 // is open, so there is nothing for a later frame to legitimately change.
-struct HoverPlacement {
+ref struct HoverPlacement {
     x: real = 0.0;
     y: real = 0.0;
     // Sitting above the token (the default) rather than below it. Drives
@@ -519,25 +519,25 @@ struct HoverPlacement {
     above: bool = true;
 }
 
-struct PendingEdit {
+ref struct PendingEdit {
     version: int = 0;
     startLine: int = 0;
     removedCount: int = 0;
     insertedCount: int = 0;
 }
 
-struct TokenColorSettings {
+ref struct TokenColorSettings {
     foreground?: str;
     fontStyle?: str;
 };
 
-struct TokenColor {
+ref struct TokenColor {
     name?: str;
     scope: str | []str;
     settings: TokenColorSettings;
 };
 
-struct VscodeTheme {
+ref struct VscodeTheme {
   // "dark" or "light". VS Code picks a different set of built-in default
   // colours per theme type, so this decides what a theme that defines no
   // bracket colours falls back to -- see defaultBracketColorHex.
@@ -573,7 +573,7 @@ struct VscodeTheme {
   tokenColors: []TokenColor = [];
 };
 
-struct CompiledTokenColor {
+ref struct CompiledTokenColor {
     selectors: []str;
     settings: TokenColorSettings;
 }
@@ -609,7 +609,7 @@ fn hashScope(s: str): int {
     return h;
 }
 
-struct ScopeColorCache {
+ref struct ScopeColorCache {
     // Parallel arrays indexed by bucket. `used[b]` is what makes a bucket
     // occupied; keys[b] is only meaningful when it is set.
     used: []bool = [];
@@ -1722,13 +1722,13 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // a fresh bucket per line each time. The queue itself was already
         // emptied by the first drain, so a second one cannot even add
         // information.
-        let lastDrainedCounter = -1;
+        let lastDrainedCounter: ref Box<int> = { value: -1 };
         let drainHighlightResults = () => {
             let counter: int = rx.get(getState().reactiveCounter);
-            if counter == lastDrainedCounter {
+            if counter == lastDrainedCounter.value {
                 return;
             }
-            lastDrainedCounter = counter;
+            lastDrainedCounter.value = counter;
 
             let hh: []HighlightResult = rx.get(highlights);
             for result in hh {
@@ -1749,7 +1749,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // rather than a reactive: it is only ever read from inside
         // getScopeColor, which must NOT re-run its callers when the theme
         // changes -- the render pass already re-reads colours every frame.
-        let themeGeneration = 0;
+        let themeGeneration: ref Box<int> = { value: 0 };
 
         let loadTheme = () => {
             let file = fs.readText("codeeditor/resources/obsidian-radiance-dark.json");
@@ -1766,7 +1766,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             }
 
             theme := result;
-            themeGeneration = themeGeneration + 1;
+            themeGeneration.value = themeGeneration.value + 1;
         };
         let compiledTokenColors = rx.computed<[]CompiledTokenColor>(() => {
             if !theme {
@@ -1834,9 +1834,9 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             // theme, so a load since then invalidates all of them at once
             // -- cheaper to notice here, once per lookup, than to hunt
             // down every place a theme could change and purge from there.
-            if scopeColorCache.generation != themeGeneration {
+            if scopeColorCache.generation != themeGeneration.value {
                 scopeColorCache.clear();
-                scopeColorCache.generation = themeGeneration;
+                scopeColorCache.generation = themeGeneration.value;
             }
 
             let slot = scopeColorCache.find(scope);
@@ -2574,8 +2574,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // frame would re-run fpsText every frame, and formatting a string
         // is a heap allocation -- one per frame, forever, for a label that
         // is unreadable if it changes faster than this anyway.
-        let lastFrameAt = 0.0;
-        let smoothedFps = 0.0;
+        let lastFrameAt: ref Box<real> = { value: 0.0 };
+        let smoothedFps: ref Box<real> = { value: 0.0 };
         let fps = rx.reactive<real>(0.0);
         let fpsText = rx.computed(() => f"{rx.get(fps) as int} FPS");
 
@@ -2654,7 +2654,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return true;
         });
 
-        let prevUpdate = ui.now();
+        let prevUpdate: ref Box<real> = { value: ui.now() };
 
         let lspMemStat = rx.reactive<str | none>(none);
 
@@ -2675,16 +2675,16 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         let runLspLoop = rx.computed(() => {
             let now = ui.now();
 
-            let dt = now - lastFrameAt;
-            lastFrameAt = now;
+            let dt = now - lastFrameAt.value;
+            lastFrameAt.value = now;
             if dt > 0.0 {
-                smoothedFps = smoothedFps * 0.9 + (1.0 / dt) * 0.1;
+                smoothedFps.value = smoothedFps.value * 0.9 + (1.0 / dt) * 0.1;
             }
 
-            if now - prevUpdate > 0.5 {
-                fps := smoothedFps;
+            if now - prevUpdate.value > 0.5 {
+                fps := smoothedFps.value;
                 updateStats();
-                prevUpdate = now;
+                prevUpdate.value = now;
             }
 
             // Drives vim's 'timeoutlen'. A pending mapping chord (the `j` of
@@ -3239,7 +3239,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 + rx.get(tokenCacheVersion)
                 + rx.get(semanticCacheVersion)
                 + rx.get(bracketCacheVersion)
-                + themeGeneration;
+                + themeGeneration.value;
         };
 
         let highlightedLine = (lineIndex: int): []HighlightToken => {
@@ -3369,7 +3369,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
                 ui.div({
                     id: 1,
-                    ref: editorRef,
+                    elementRef: editorRef,
                     style: {
                         direction: ui_styling.Direction.Column,
                         fontFamily: editorFontFamily(),
@@ -4047,7 +4047,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
                         ui.div({
                             id: 300002,
-                            ref: hoverPopupRef,
+                            elementRef: hoverPopupRef,
                             presets: [
                                 presets.absolute(),
                                 presets.top(popupY),
@@ -4115,7 +4115,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 // engine was given (hoverCodeText), so token
                                 // line numbers line up with the text here.
                                 let blocks: []HoverBlock = rx.get(hoverBlocks);
-                                let codeLine = 0;
+                                let stackref codeLine = Box<int>(0);
                                 for block, bi in blocks {
                                     // EVERY block gets a div wrapper,
                                     // whether it is code or prose.
@@ -4141,8 +4141,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                     }, () => {
                                         if block.isCode {
                                             for lineText, li in block.text.split("\n") {
-                                                let runs = highlightedHoverLine(lineText, codeLine);
-                                                codeLine = codeLine + 1;
+                                                let runs = highlightedHoverLine(lineText, codeLine.value);
+                                                codeLine.value = codeLine.value + 1;
                                                 ui.div({
                                                     id: li,
                                                     presets: [
@@ -4393,7 +4393,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         };
 
-        // Tab cycling, lifted out of the old inline key handler so it can
+        // Tab cycling, lifted out of the old key handler so it can
         // be named as a command instead. +1 is the next tab, -1 the
         // previous; both wrap.
         let cycleEditor = (delta: int) => {

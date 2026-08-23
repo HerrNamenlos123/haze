@@ -4,7 +4,7 @@ import ui_layout;
 import ui_components;
 import renderer;
 
-export inline struct RuntimeArgs {
+export struct RuntimeArgs {
     gfx: mut renderer.gfx.Context;
     windowState: renderer.gfx.CanvasSize;
     fonts: []ui_layout.FontEntry;
@@ -27,7 +27,7 @@ export inline struct RuntimeArgs {
 // Runtime to retarget the same ui_components-authored UI onto a different
 // layout engine or renderer without touching application code or any of
 // the other modules.
-export opaque struct Runtime {
+export opaque ref struct Runtime {
     gfx: mut renderer.gfx.Context;
     layout: mut ui_layout.Context;
     ui: mut ui_components.UIContext;

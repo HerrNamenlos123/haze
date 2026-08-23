@@ -18,15 +18,15 @@ fn max<T>(a: T, b: T): T => {
 // be given to every individual shape without bloating per-vertex data with a
 // whole matrix. `time` is provided for custom vertex/fragment shaders (e.g. a
 // wavy-text effect) that want to animate independently of CPU-side state.
-inline struct Globals {
-    viewProj: inline mat4.Mat4f;
+struct Globals {
+    viewProj: mat4.Mat4f;
     time: f32 = 0.0;
     _pad0: f32 = 0.0;
     _pad1: f32 = 0.0;
     _pad2: f32 = 0.0;
 }
 
-export inline struct PrimitiveInstance {
+export struct PrimitiveInstance {
     pos: Vec2f;            // local (pre-transform) center position, shape-space units
     size: Vec2f;           // width/height, shape-space units -- always local; the SDF math in
                             // the fragment shader needs the real, untransformed width/height/
@@ -64,15 +64,15 @@ export inline struct PrimitiveInstance {
     clipRect: Vec4f = { x: 0, y: 0, z: 0, w: 0 };
 };
 
-inline struct QuadVertex {
+struct QuadVertex {
     pos: Vec2f;  // [-0.5, -0.5] .. [0.5, 0.5]
 };
 
 // Per-frame, per-canvas uniform for a custom post effect (see
 // Context.createPostEffect / Canvas.setPostEffect below). Field order/size
-// must match the WGSL `PostEffectParams` struct in resources/posteffect.wgsl
+// must match the WGSL `PostEffectParams` ref struct in resources/posteffect.wgsl
 // exactly.
-export inline struct PostEffectParams {
+export struct PostEffectParams {
     time: f32 = 0.0;
     resolutionX: f32 = 0.0;
     resolutionY: f32 = 0.0;
@@ -83,7 +83,7 @@ export inline struct PostEffectParams {
     _pad0: f32 = 0.0;
 }
 
-export inline struct MeshVertex {
+export struct MeshVertex {
     pos: Vec2f;             // local (pre-transform) vertex position, shape-space units
     color: Colorf;
     z: f32;                 // local z-coordinate; see PrimitiveInstance.z
@@ -114,7 +114,7 @@ fn resolveTransform(transform: mat4.Mat4f | none): mat4.Mat4f {
 // Logical/pixel sizing for a render target. logicalSize is the coordinate
 // space draw calls are issued in; framebufferSize is the actual pixel size
 // of the target used for the viewport/scissor (they differ under DPI scaling).
-export inline struct CanvasSize {
+export struct CanvasSize {
     logicalSize: Vec2i;
     framebufferSize: Vec2i;
     dpiScale: f32 = 1.0;
@@ -122,15 +122,15 @@ export inline struct CanvasSize {
 
 // A GPU texture plus the bind group needed to sample it through the shared
 // "group 1" texture/sampler layout. Cheap to copy around (a handful of handles).
-export opaque struct Texture {
+export opaque ref struct Texture {
     id: int;
-    texture: mut wgpu.Texture;
-    view: mut wgpu.TextureView;
-    bindGroup: mut wgpu.BindGroup;
+    texture: wgpu.Texture;
+    view: wgpu.TextureView;
+    bindGroup: wgpu.BindGroup;
     width: int;
     height: int;
 
-    fn constructor(id: int, texture: mut wgpu.Texture, view: mut wgpu.TextureView, bindGroup: mut wgpu.BindGroup, width: int, height: int) {
+    fn constructor(id: int, texture: wgpu.Texture, view: wgpu.TextureView, bindGroup: wgpu.BindGroup, width: int, height: int) {
         return Texture {
             id: id,
             texture: texture,
@@ -147,7 +147,7 @@ export opaque struct Texture {
 // constructor). Single constant so the two can never drift apart.
 const fontAtlasSize = 2048;
 
-export struct TextRenderer {
+export ref struct TextRenderer {
     fs: fontstash.FontStash;
     glyphBuffer: []fontstash.Glyph;
     defaultFont: int;
@@ -180,19 +180,19 @@ export struct TextRenderer {
     }
 }
 
-export struct ContextOptions {
-    device: mut wgpu.Device;
+export ref struct ContextOptions {
+    device: wgpu.Device;
     targetFormat: wgpu.TextureFormat;
 }
 
-export inline struct RenderTexture {
-    texture: mut wgpu.Texture;
-    view: mut wgpu.TextureView;
+export struct RenderTexture {
+    texture: wgpu.Texture;
+    view: wgpu.TextureView;
 }
 
 const comptime msaaSampleCount = 4;
 
-fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.TextureFormat, usage: wgpu.TextureUsage, sampleCount: int = 1): RenderTexture {
+fn createRenderTexture(device: wgpu.Device, size: Vec2i, format: wgpu.TextureFormat, usage: wgpu.TextureUsage, sampleCount: int = 1): RenderTexture {
     let texture = device.createTexture({
         size: { width: size.x, height: size.y, depthOrArrayLayers: 1 },
         format: format,
@@ -206,7 +206,7 @@ fn createRenderTexture(device: mut wgpu.Device, size: Vec2i, format: wgpu.Textur
 }
 
 // One level of a CPU-built RGBA8 mip chain (see buildMipChain below).
-inline struct MipLevel {
+struct MipLevel {
     pixels: Bytes;
     width: int;
     height: int;
@@ -328,9 +328,9 @@ fn depthStencilState(): wgpu.DepthStencilState {
 // Everything that is independent of *where* you draw: pipelines, shared
 // geometry, bind group layouts, and the (shared, target-independent) font
 // atlas. Created once for the application; Canvas and Renderer both borrow it.
-export opaque struct Context {
-    device: mut wgpu.Device;
-    queue: mut wgpu.Queue;
+export opaque ref struct Context {
+    device: wgpu.Device;
+    queue: wgpu.Queue;
     targetFormat: wgpu.TextureFormat;
 
     // Captured once at startup so Globals.time / PostEffectParams.time can be
@@ -343,9 +343,9 @@ export opaque struct Context {
     // of a millisecond for as long as any real session runs.
     startTime: real;
 
-    globalsLayout: mut wgpu.BindGroupLayout;
-    textureLayout: mut wgpu.BindGroupLayout;
-    transformsLayout: mut wgpu.BindGroupLayout;
+    globalsLayout: wgpu.BindGroupLayout;
+    textureLayout: wgpu.BindGroupLayout;
+    transformsLayout: wgpu.BindGroupLayout;
 
     // Shared by every canvas's custom post effect (CanvasOptions.postEffect,
     // see Canvas below): source texture + sampler + PostEffectParams
@@ -353,8 +353,8 @@ export opaque struct Context {
     // it isn't part of the primitive/mesh pipelines at all). One pipeline
     // layout is reused by every canvas's compiled effect pipeline since this
     // binding layout never varies; only the fragment shader body does.
-    postEffectLayout: mut wgpu.BindGroupLayout;
-    postEffectPipelineLayout: mut wgpu.PipelineLayout;
+    postEffectLayout: wgpu.BindGroupLayout;
+    postEffectPipelineLayout: wgpu.PipelineLayout;
     postEffectPreamble: str;
 
     // Primitive (rect/glyph/textured-quad) pipeline, and mesh (triangle)
@@ -366,15 +366,15 @@ export opaque struct Context {
     // everything drawn into that canvas, primitives and mesh alike, since a
     // render pass's attachments and every pipeline drawing into it must all
     // share one sample count.
-    pipeline: rx.Computed<mut wgpu.RenderPipeline>;
-    pipelineMsaa: rx.Computed<mut wgpu.RenderPipeline>;
-    triPipeline: rx.Computed<mut wgpu.RenderPipeline>;
-    triPipelineMsaa: rx.Computed<mut wgpu.RenderPipeline>;
+    pipeline: rx.Computed<wgpu.RenderPipeline>;
+    pipelineMsaa: rx.Computed<wgpu.RenderPipeline>;
+    triPipeline: rx.Computed<wgpu.RenderPipeline>;
+    triPipelineMsaa: rx.Computed<wgpu.RenderPipeline>;
 
-    quadVertexBuffer: mut wgpu.Buffer;
-    quadIndexBuffer: mut wgpu.Buffer;
+    quadVertexBuffer: wgpu.Buffer;
+    quadIndexBuffer: wgpu.Buffer;
 
-    defaultSampler: mut wgpu.Sampler;
+    defaultSampler: wgpu.Sampler;
 
     fontRenderer: mut TextRenderer;
     fontAtlas: Texture;
@@ -886,7 +886,7 @@ export opaque struct Context {
 // pipeline for a canvas's custom full-canvas post effect. Not exported:
 // callers just pass a shader source string to CanvasOptions.postEffect (see
 // Canvas below), which builds and reactively recompiles this internally.
-fn buildPostEffectPipeline(gfx: mut Context, fragmentSource: str): mut wgpu.RenderPipeline {
+fn buildPostEffectPipeline(gfx: mut Context, fragmentSource: str): wgpu.RenderPipeline {
     let combinedSource = fmt.format(gfx.postEffectPreamble, fragmentSource);
     let shader = gfx.device.createShaderModule({ code: combinedSource });
 
@@ -914,16 +914,16 @@ fn buildPostEffectPipeline(gfx: mut Context, fragmentSource: str): mut wgpu.Rend
 // value -- capturing straight out of an `if let source = options.postEffect`
 // binding does not carry the narrowed type across the closure boundary in
 // this compiler, so this indirection is required, not just tidiness.
-fn watchPostEffectPipeline(gfx: mut Context, source: rx.Reactive<str>): rx.Computed<mut wgpu.RenderPipeline> {
+fn watchPostEffectPipeline(gfx: mut Context, source: rx.Reactive<str>): rx.Computed<wgpu.RenderPipeline> {
     return rx.computed(() => {
         return buildPostEffectPipeline(gfx, rx.get(source));
     });
 }
 
-export struct CanvasOptions {
+export ref struct CanvasOptions {
     gfx: mut Context;
     size: CanvasSize;
-    surface?: mut wgpu.Surface; // omit for an offscreen (render-to-texture) canvas
+    surface?: wgpu.Surface; // omit for an offscreen (render-to-texture) canvas
 
     // 4 (the default; WebGPU only guarantees 1 or 4) applies real hardware
     // MSAA to everything drawn into this canvas -- mesh triangles and
@@ -944,7 +944,7 @@ export struct CanvasOptions {
     // on: sampleSource(uv) and a `params` uniform with time/resolution/4
     // free "extra" floats, see Canvas.setPostEffectExtra). Pass
     // embed.watchText(...) for a hot-reloadable file-backed shader, or
-    // rx.reactive("...") for a static inline one -- either way this is read
+    // rx.reactive("...") for a static one -- either way this is read
     // reactively, so editing the source (if watched) recompiles the effect
     // automatically with no other code involved. None means "draw this
     // canvas's content directly, no post-processing" (the default).
@@ -956,27 +956,27 @@ export struct CanvasOptions {
 // (globals buffer, depth buffer, growable instance/mesh buffers) rather than
 // a single frame, so a fresh Renderer can be created against it every frame
 // for free.
-export opaque struct Canvas {
+export opaque ref struct Canvas {
     gfx: mut Context;
     size: CanvasSize;
-    surface: mut wgpu.Surface | none;
+    surface: wgpu.Surface | none;
 
-    offscreenTexture: mut wgpu.Texture | none;
-    offscreenView: mut wgpu.TextureView | none;
+    offscreenTexture: wgpu.Texture | none;
+    offscreenView: wgpu.TextureView | none;
     cachedTexture: Texture | none;
 
     // Only populated when msaaSamples > 1; a msaaSamples == 1 canvas renders
     // directly into its target with no separate multisample texture or
     // resolve step at all.
     msaaSamples: int = 4;
-    msaaColorTexture?: mut wgpu.Texture = none;
-    msaaColorView?: mut wgpu.TextureView = none;
+    msaaColorTexture?: wgpu.Texture = none;
+    msaaColorView?: wgpu.TextureView = none;
 
-    depthTexture: mut wgpu.Texture;
-    depthView: mut wgpu.TextureView;
+    depthTexture: wgpu.Texture;
+    depthView: wgpu.TextureView;
 
-    globalsBuffer: mut wgpu.Buffer;
-    globalsBindGroup: mut wgpu.BindGroup;
+    globalsBuffer: wgpu.Buffer;
+    globalsBindGroup: wgpu.BindGroup;
 
     // The camera for this canvas: none means "use the default 2D orthographic
     // projection matching this canvas's pixel size" (see defaultViewProj),
@@ -986,18 +986,18 @@ export opaque struct Canvas {
     // 3D scene (e.g. composited onto a wall via drawTexture elsewhere).
     viewProj?: mat4.Mat4f = none;
 
-    instanceBuffer?: mut wgpu.Buffer = none;
+    instanceBuffer?: wgpu.Buffer = none;
     instanceBufferSize: int = 0;
-    meshVertexBuffer?: mut wgpu.Buffer = none;
+    meshVertexBuffer?: wgpu.Buffer = none;
     meshVertexBufferSize: int = 0;
 
     // Per-shape transform pool for this canvas: grown/rewritten each commit()
     // from whatever transforms this frame's Renderer collected, then bound at
     // group 2 so every PrimitiveInstance/MeshVertex can look its own model
     // matrix up by transformIndex.
-    transformBuffer?: mut wgpu.Buffer = none;
+    transformBuffer?: wgpu.Buffer = none;
     transformBufferSize: int = 0;
-    transformBindGroup?: mut wgpu.BindGroup = none;
+    transformBindGroup?: wgpu.BindGroup = none;
 
     // Optional full-canvas fragment effect applied after this canvas's
     // normal primitives/mesh are drawn (see CanvasOptions.postEffect above).
@@ -1009,14 +1009,14 @@ export opaque struct Canvas {
     // output target -- only created lazily, on first commit() -- and
     // postProcessCachedTexture wraps it for asTexture() the same way
     // cachedTexture does for the plain (no-effect) path.
-    postEffectPipeline?: rx.Computed<mut wgpu.RenderPipeline> = none;
+    postEffectPipeline?: rx.Computed<wgpu.RenderPipeline> = none;
     postEffectExtraX: real = 0;
     postEffectExtraY: real = 0;
     postEffectExtraZ: real = 0;
     postEffectExtraW: real = 0;
-    postEffectParamsBuffer?: mut wgpu.Buffer = none;
-    postProcessTexture?: mut wgpu.Texture = none;
-    postProcessView?: mut wgpu.TextureView = none;
+    postEffectParamsBuffer?: wgpu.Buffer = none;
+    postProcessTexture?: wgpu.Texture = none;
+    postProcessView?: wgpu.TextureView = none;
     postProcessCachedTexture?: Texture = none;
 
     fn constructor(options: CanvasOptions) {
@@ -1036,8 +1036,8 @@ export opaque struct Canvas {
             },
         });
 
-        let offscreenTexture = none as mut wgpu.Texture | none;
-        let offscreenView = none as mut wgpu.TextureView | none;
+        let offscreenTexture = none as wgpu.Texture | none;
+        let offscreenView = none as wgpu.TextureView | none;
 
         if !options.surface {
             let target = createRenderTexture(
@@ -1058,8 +1058,8 @@ export opaque struct Canvas {
             options.msaaSamples
         );
 
-        let msaaColorTexture = none as mut wgpu.Texture | none;
-        let msaaColorView = none as mut wgpu.TextureView | none;
+        let msaaColorTexture = none as wgpu.Texture | none;
+        let msaaColorView = none as wgpu.TextureView | none;
         if options.msaaSamples > 1 {
             let msaaTarget = createRenderTexture(
                 options.gfx.device,
@@ -1079,7 +1079,7 @@ export opaque struct Canvas {
         // module) makes the tracked dependency explicit: if `source` is
         // backed by a watched file, editing it invalidates this computed and
         // the next commit() recompiles automatically.
-        let postEffectPipeline = none as rx.Computed<mut wgpu.RenderPipeline> | none;
+        let postEffectPipeline = none as rx.Computed<wgpu.RenderPipeline> | none;
         if let source = options.postEffect {
             postEffectPipeline = watchPostEffectPipeline(options.gfx, source);
         }
@@ -1183,7 +1183,7 @@ export opaque struct Canvas {
         }
     }
 
-    fn currentView(): Result<mut wgpu.TextureView, str> {
+    fn currentView(): Result<wgpu.TextureView, str> {
         if this.surface {
             let surfaceTexture = this.surface.getCurrentTexture();
 
@@ -1277,7 +1277,7 @@ export opaque struct Canvas {
 // Renderer(frame, canvas) built against it, and every nested
 // canvas-element/offscreen-composite call underneath that -- all of them
 // must observe and mutate the SAME pendingPresents list and encoder, not an
-// independent copy each (an earlier `inline` version of this struct gave
+// independent copy each (an earlier `inline` version of this ref struct gave
 // every one of those call sites its own value-copy, so a surface canvas's
 // commit() registered its pending present on a copy frame.present() never
 // saw -- its acquired surface texture then never got presented, and the
@@ -1297,7 +1297,7 @@ export opaque struct Canvas {
 // tick, create/commit as many Renderer(frame, canvas) as needed against any
 // Canvas (offscreen or surface-backed, in any order, sampling each other's
 // output freely), then call frame.present() exactly once at the end.
-export opaque struct Frame {
+export opaque ref struct Frame {
     gfx: mut Context;
     encoder: wgpu.CommandEncoder;
     pendingPresents: []mut Canvas = [];
@@ -1343,13 +1343,13 @@ export opaque struct Frame {
 // textured quads -> their own texture). Plain rects need no run at all: they
 // don't sample group 1, so they're free to sit in the gaps between runs and
 // draw with whatever happens to be bound.
-export inline struct TextureRun {
+export struct TextureRun {
     start: int;
     count: int;
     texture: Texture;
 }
 
-export struct CornerRadius {
+export ref struct CornerRadius {
     topLeft: real = 0;
     topRight: real = 0;
     bottomLeft: real = 0;
@@ -1357,14 +1357,14 @@ export struct CornerRadius {
 };
 
 // Independent per-edge border widths -- see RectOpts.borderWidths.
-export struct BorderWidths {
+export ref struct BorderWidths {
     top: real = 0;
     right: real = 0;
     bottom: real = 0;
     left: real = 0;
 };
 
-export struct RectOpts {
+export ref struct RectOpts {
     pos: Vec2;
     size: Vec2;
     fillColor: Color = { r: 1, g: 1, b: 1, a: 1 };
@@ -1387,7 +1387,7 @@ export struct RectOpts {
     transform?: mat4.Mat4f = none;
 };
 
-export inline struct TextOpts {
+export struct TextOpts {
     font: int;
     position: Vec2;
     size: real;
@@ -1405,7 +1405,7 @@ export inline struct TextOpts {
     transform?: mat4.Mat4f = none;
 }
 
-export struct TextureOpts {
+export ref struct TextureOpts {
     texture: Texture;
     pos: Vec2;
     size: Vec2;
@@ -1429,7 +1429,7 @@ export struct TextureOpts {
 // primitives and triangles, and between different zIndex values, is
 // resolved entirely by the GPU depth test -- there is no CPU-side sorting of
 // draw calls.
-export opaque struct Renderer {
+export opaque ref struct Renderer {
     canvas: mut Canvas;
     frame: mut Frame;
     primitives: []PrimitiveInstance = [];

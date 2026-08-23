@@ -6,7 +6,7 @@ import headwind
 import renderer
 type presets = headwind.presets;
 
-struct HeaderArgs {
+ref struct HeaderArgs {
     id: int;
     title: str;
 
@@ -33,7 +33,7 @@ fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
     });
 }
 
-struct NavItemArgs {
+ref struct NavItemArgs {
     id: int;
     label: str;
 
@@ -45,7 +45,7 @@ struct NavItemArgs {
 fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<NavItemArgs>) => {
 
-        let divRef = ui.ref<ui_elements.DivElement>();
+        let divRef = ui.elementRef<ui_elements.DivElement>();
 
         let isHovered = rx.computed(() => {
             let element = rx.get(divRef);
@@ -58,7 +58,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
         return (): void => {
             ui.div({
                 id: 1,
-                ref: divRef,
+                elementRef: divRef,
                 style: {
                     backgroundColor: isHovered ? Color(1, 0, 0, 1) : Color(0.15, 0.45, 0.75, 1),
                     padding: ui_styling.StylePaddingFull { left: 15.0, right: 15.0, top: 8.0, bottom: 8.0 },
@@ -71,7 +71,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
     });
 }
 
-struct SidebarArgs {
+ref struct SidebarArgs {
     id: int;
 
     fn operator!=(other: SidebarArgs) {
@@ -102,7 +102,7 @@ fn Sidebar(ui: ui_components.UIContext, args: SidebarArgs) {
     });
 }
 
-struct ContentAreaArgs {
+ref struct ContentAreaArgs {
     id: int;
     text: str;
 
@@ -114,10 +114,10 @@ struct ContentAreaArgs {
 fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ContentAreaArgs>) => {
 
-        let divRef = ui.ref<ui_elements.DivElement>();
+        let divRef = ui.elementRef<ui_elements.DivElement>();
         let h = rx.computed(() => {
-            if let ref = rx.get(divRef) {
-                return ref.hover();
+            if let elementRef = rx.get(divRef) {
+                return elementRef.hover();
             }
             return false;
         })
@@ -132,7 +132,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
         return (): void => {
             ui.div({
                 id: 100,
-                ref: divRef,
+                elementRef: divRef,
                 style: {
                     direction: ui_styling.Direction.Column,
                 },
@@ -329,7 +329,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
     });
 }
 
-struct FooterArgs {
+ref struct FooterArgs {
     id: int;
 
     fn operator!=(other: FooterArgs) {
@@ -357,7 +357,7 @@ fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
     });
 }
 
-struct RootArgs {
+ref struct RootArgs {
     fn operator!=(other: RootArgs) {
         return false;
     }

@@ -14,6 +14,7 @@ import {
   EIncrOperation,
   type EUnaryOperation,
   UnaryOperationToString,
+  EStorageClass,
 } from "../shared/AST";
 import {
   type Brand,
@@ -28,6 +29,7 @@ import {
   InternalError,
   printWarningMessage,
   type SourceLoc,
+  CompilerError,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import { makeTempName } from "../shared/store";
@@ -108,6 +110,10 @@ export namespace Lowered {
     ArraySliceExpr = 55,
     StringSubscriptExpr = 56,
     StringConstructExpr = 57,
+    // Read through a stackref: checks the generation witness and yields the
+    // raw pointer (HZSTD_STACKREF_DEREF). The ONE lowering path for every
+    // access through a `stackref` (R&D/Storage Classes and References.md §5.3).
+    StackrefDerefExpr = 58,
     // Dummy
     Dummy = 60,
 
@@ -270,6 +276,15 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  export type StackrefDerefExpr = {
+    variant: ENode.StackrefDerefExpr;
+    // An expression of stackref storage (a `hzstd_stackref_t` in C), or for a
+    // stackref callable the `.env` member of it.
+    expr: ExprId;
+    // The resulting pointer type (`T*`, or cptr for a callable env).
+    type: TypeUseId;
+  };
+
   export type SizeofExpr = {
     variant: ENode.SizeofExpr;
     value: ExprId;
@@ -419,6 +434,7 @@ export namespace Lowered {
     | ExprAssignmentExpr
     | DereferenceExpr
     | AddressOfExpr
+    | StackrefDerefExpr
     | SizeofExpr
     | AlignofExpr
     | DatatypeAsValueExpr
@@ -469,6 +485,10 @@ export namespace Lowered {
     variableContext: EVariableContext;
     intrinsicTakeAddrOfValue: boolean;
     value: ExprId | null;
+    // `let stackref x = ...` (see Semantic.StackrefInit). For "copy-value" the
+    // value has the pointee type and codegen copies it into a stack buffer;
+    // for "lambda" the value is the CallableExpr to build in place.
+    stackrefInit: Semantic.StackrefInit;
     sourceloc: SourceLoc;
   };
 
@@ -541,14 +561,25 @@ export namespace Lowered {
       }
     | {
         type: "lambda";
-        captures: { name: string; type: Lowered.TypeUseId }[];
+        // byValue: the env slot holds a pointer to a *copy* of the value made
+        // at closure creation (heap via HZSTD_HOIST, or a stack local when the
+        // closure is built in place by `let stackref`); the lambda reads it
+        // through that pointer. Otherwise the slot is the GC pointer itself.
+        captures: { name: string; type: Lowered.TypeUseId; byValue: boolean }[];
       }
     | null;
 
   export type EnvBlockValue =
     | {
         type: "method";
+        // The receiver as the method's hidden `this` parameter wants it: a
+        // pointer (deref'd through the witness if the receiver was a
+        // stackref), or the stackref itself for a `stackref fn`.
         thisExpr: Lowered.ExprId;
+        // For a plain method bound on a stackref receiver: the receiver's
+        // stackref, carried as the callable's env so every invocation checks
+        // the witness first (§12.4).
+        thisStackref: Lowered.ExprId | null;
       }
     | {
         type: "lambda";
@@ -580,7 +611,10 @@ export namespace Lowered {
     variant: ENode.TypeUse;
     mutability: EDatatypeMutability;
     type: TypeDefId;
+    // C representation: `pointer` -> `T*` (a `ref`), `stackref` ->
+    // `hzstd_stackref_t` / `hzstd_stackref_callable_t`. Both false -> `T`.
     pointer: boolean;
+    stackref: boolean;
     name: NameSet;
     sourceloc: SourceLoc;
   };
@@ -804,6 +838,7 @@ const storeInTempVarAndGet = (
   flattened.push(
     Lowered.addStatement(lr, {
       variant: Lowered.ENode.VariableStatement,
+      stackrefInit: null,
       name: {
         prettyName: varname,
         mangledName: varname,
@@ -880,6 +915,7 @@ function makeIntrinsicCall(
         mutability: EDatatypeMutability.Default,
         name: functype.name,
         pointer: false,
+        stackref: false,
         sourceloc: null,
         type: functypeId,
       })[1],
@@ -1182,6 +1218,52 @@ export function lowerExpr(
           null,
           flattened
         )[1];
+        if (calledExprType.stackref) {
+          // Stackref callable {fn, env: hzstd_stackref_t}: check the witness,
+          // then call fn(env.ptr, args). The method body / lambda never knows
+          // it was reached through a stackref (§12.4).
+          const fnPtrType = makeLowerTypeUse(
+            lr,
+            calledExprTypeDef.functionType,
+            false
+          )[1];
+          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
+            lr,
+            {
+              variant: Lowered.ENode.ExprCallExpr,
+              expr: Lowered.addExpr(lr, {
+                variant: Lowered.ENode.ExplicitCastExpr,
+                expr: Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.MemberAccessExpr,
+                  memberName: "fn",
+                  requiresDeref: false,
+                  type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                  expr: callableTmp,
+                })[1],
+                type: fnPtrType,
+                integerNarrowingRange: null,
+              })[1],
+              arguments: [
+                Lowered.addExpr(lr, {
+                  variant: Lowered.ENode.StackrefDerefExpr,
+                  expr: Lowered.addExpr(lr, {
+                    variant: Lowered.ENode.MemberAccessExpr,
+                    expr: callableTmp,
+                    requiresDeref: false,
+                    memberName: "env",
+                    type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                  })[1],
+                  type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+                })[1],
+                ...expr.arguments.map(
+                  (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
+                ),
+              ],
+              type: type,
+            }
+          );
+          return [callExpr, callExprId];
+        }
         const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
           lr,
           {
@@ -1306,10 +1388,7 @@ export function lowerExpr(
           return symbol.variableSymbol === expr.symbol;
         });
 
-        let name = symbol.name;
-        if (symbol.requiresHoisting && !args?.noLambdaHoisting) {
-          name = "*" + name;
-        }
+        const name = symbol.name;
 
         const prettyName = name;
         let mangledName = name;
@@ -1331,14 +1410,12 @@ export function lowerExpr(
           expr.symbol
         );
         if (captureOverride) {
-          // Suppress the hoisting * when the captured type is already a pointer (non-inline struct).
-          // Union captures still need *, but narrowed struct captures are already stored as pointers.
-          const suppressStar =
-            captureOverride.suppressHoisting || !!args?.noLambdaHoisting;
-          const effectiveName =
-            symbol.requiresHoisting && !suppressStar
-              ? "*" + symbol.name
-              : symbol.name;
+          // A by-value capture is a `T *name` parameter of the lambda: read it
+          // through the pointer. (A nested closure capturing it again reads the
+          // value the same way, then copies it into its own env.)
+          const effectiveName = captureOverride.suppressHoisting
+            ? symbol.name
+            : "*" + symbol.name;
           return Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
             name: {
@@ -1430,7 +1507,11 @@ export function lowerExpr(
       // Do not cast if the cast doesn't actually do anything in the generated C, because
       // doing it would cause the left side of assignments to be casted to the same time
       // (because multiple haze types map to the same C type), and the C compiler rejects it.
-      if (targetTypeDef === exprTypeDef) {
+      if (
+        targetTypeDef === exprTypeDef &&
+        // ref -> stackref changes the C representation; never elide it
+        targetType.stackref === exprType.stackref
+      ) {
         const fromIsConst = exprType.mutability === EDatatypeMutability.Const;
         const toIsConst = targetType.mutability === EDatatypeMutability.Const;
         if (fromIsConst === toIsConst) {
@@ -1497,7 +1578,7 @@ export function lowerExpr(
       );
 
       let structTypeDef = accessedExprTypeDef;
-      let isInline = accessedExprTypeUse.inline;
+      let isInline = (accessedExprTypeUse.storage === EStorageClass.Value);
       let isDeepAccess = false;
       if (accessedExprTypeDef.variant === Semantic.ENode.DeepDatatype) {
         const clonedTypeUse = lr.sr.typeUseNodes.get(
@@ -1512,15 +1593,26 @@ export function lowerExpr(
         }
       }
 
+      let objectExprId = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
+      let requiresDeref = isDeepAccess
+        ? false
+        : !(
+            structTypeDef.variant === Semantic.ENode.StructDatatype &&
+            isInline
+          );
+      if (
+        structTypeDef.variant === Semantic.ENode.StructDatatype &&
+        accessedExprTypeUse.storage === EStorageClass.Stackref
+      ) {
+        // Every read through a stackref goes through the checked deref.
+        objectExprId = makeStackrefDeref(lr, objectExprId, accessedExprTypeUse.type);
+        requiresDeref = true;
+      }
+
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.MemberAccessExpr,
-        expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
-        requiresDeref: isDeepAccess
-          ? false
-          : !(
-              structTypeDef.variant === Semantic.ENode.StructDatatype &&
-              isInline
-            ),
+        expr: objectExprId,
+        requiresDeref: requiresDeref,
         memberName: expr.memberName,
         type: lowerTypeUse(lr, expr.type),
       });
@@ -1572,7 +1664,7 @@ export function lowerExpr(
                 lr.sr,
                 lr.sr.e.elaborateBuiltinSymbolByName("hzstd_allocator_t"),
                 EDatatypeMutability.Default,
-                true,
+                EStorageClass.Value,
                 expr.sourceloc
               )[1]
             )
@@ -1678,7 +1770,7 @@ export function lowerExpr(
             lr.sr,
             rawType,
             EDatatypeMutability.Default,
-            false,
+            EStorageClass.Value,
             expr.sourceloc
           )[1]
         );
@@ -1714,7 +1806,7 @@ export function lowerExpr(
                 lr.sr,
                 lr.sr.e.elaborateBuiltinSymbolByName("hzstd_allocator_t"),
                 EDatatypeMutability.Default,
-                true,
+                EStorageClass.Value,
                 expr.sourceloc
               )[1]
             )
@@ -1923,12 +2015,64 @@ export function lowerExpr(
           )[1];
         }
 
-        if (
-          lr.typeUseNodes.get(Lowered.resolveAlias(lr, structPointerType))
-            .pointer
-        ) {
-          loweredThisExpression = tempId;
+        const receiverResolved = lr.typeUseNodes.get(
+          Lowered.resolveAlias(lr, structPointerType)
+        );
+        // An alias use may add the storage class on top of its target
+        // (`stackref StringWriter`): the unresolved use carries it.
+        const receiverUnresolved = lr.typeUseNodes.get(structPointerType);
+        const receiverLowered = {
+          stackref: receiverUnresolved.stackref || receiverResolved.stackref,
+          pointer: receiverUnresolved.pointer || receiverResolved.pointer,
+        };
+        const calledFunctionSymbol = lr.sr.symbolNodes.get(expr.functionSymbol);
+        assert(calledFunctionSymbol.variant === Semantic.ENode.FunctionSymbol);
+        const methodWantsStackref =
+          calledFunctionSymbol.methodReceiverStorage === EStorageClass.Stackref;
+        let thisStackref: Lowered.ExprId | null = null;
+        if (receiverLowered.stackref) {
+          // Stackref receiver.
+          if (methodWantsStackref) {
+            loweredThisExpression = tempId;
+          } else {
+            // Plain method: it takes the hidden pointer, checked once here.
+            const receiverSemanticUse = lr.sr.typeUseNodes.get(
+              lr.sr.e.resolveAlias(thisExpr.type)
+            );
+            loweredThisExpression = makeStackrefDeref(
+              lr,
+              tempId,
+              receiverSemanticUse.type
+            );
+            thisStackref = tempId;
+          }
+        } else if (receiverLowered.pointer) {
+          if (methodWantsStackref) {
+            // ref -> stackref (immortal) for a `stackref fn`
+            loweredThisExpression = Lowered.addExpr(lr, {
+              variant: Lowered.ENode.ExplicitCastExpr,
+              expr: tempId,
+              type: lowerTypeUse(lr, expr.envType!.type === "method" ? expr.envType!.thisExprType : thisExpr.type),
+              integerNarrowingRange: null,
+            })[1];
+          } else {
+            loweredThisExpression = tempId;
+          }
         } else {
+          // Value receiver: a method may only be called on it immediately;
+          // the hidden pointer is the address of the value (§12.2).
+          if (!expr.immediatelyCalled && !methodWantsStackref) {
+            const recvDef = lr.sr.typeDefNodes.get(
+              lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(thisExpr.type)).type
+            );
+            if (recvDef.variant === Semantic.ENode.StructDatatype) {
+              throw new CompilerError(
+                `A method cannot be bound on a value receiver: the closure would keep a pointer to a value that may not outlive it. Declare the receiver with 'let stackref' (or use a 'ref') and bind the method on that.`,
+                expr.sourceloc,
+                HazeErrorCode.BoundMethodOnValueReceiver
+              );
+            }
+          }
           loweredThisExpression = Lowered.addExpr(lr, {
             variant: Lowered.ENode.AddressOfExpr,
             expr: tempId,
@@ -1937,11 +2081,15 @@ export function lowerExpr(
         }
         envType = {
           type: "method",
-          thisExprType: lowerTypeUse(lr, thisExpr.type),
+          thisExprType: lowerTypeUse(
+            lr,
+            expr.envType?.type === "method" ? expr.envType.thisExprType : thisExpr.type
+          ),
         };
         envValue = {
           type: "method",
           thisExpr: loweredThisExpression,
+          thisStackref: thisStackref,
         };
       } else if (expr.envValue?.type === "lambda") {
         assert(expr.envType?.type === "lambda");
@@ -1950,15 +2098,13 @@ export function lowerExpr(
           captures: expr.envType.captures.map((c) => ({
             name: c.name,
             type: lowerTypeUse(lr, c.type),
+            byValue: c.byValue,
           })),
         };
         envValue = {
           type: "lambda",
           captures: expr.envValue.captures.map(
-            (c) =>
-              lowerExpr(lr, c.value, flattened, instanceInfo, {
-                noLambdaHoisting: true,
-              })[1]
+            (c) => lowerExpr(lr, c.value, flattened, instanceInfo)[1]
           ),
         };
       }
@@ -3193,6 +3339,24 @@ function makeVoidPointerType(lr: Lowered.Module) {
   return newVoidId;
 }
 
+/**
+ * Wrap a stackref-typed lowered expression in the checked dereference,
+ * yielding a `T*` (the struct's ref/pointer use). This is the single lowering
+ * path for reading through a stackref (R&D/Storage Classes and References.md §5.3).
+ */
+function makeStackrefDeref(
+  lr: Lowered.Module,
+  stackrefExprId: Lowered.ExprId,
+  structTypeDefId: Semantic.TypeDefId
+): Lowered.ExprId {
+  const pointerType = makeLowerTypeUse(lr, lowerTypeDef(lr, structTypeDefId), true)[1];
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.StackrefDerefExpr,
+    expr: stackrefExprId,
+    type: pointerType,
+  })[1];
+}
+
 function makeLowerTypeUse(
   lr: Lowered.Module,
   typeDefId: Lowered.TypeDefId,
@@ -3204,6 +3368,7 @@ function makeLowerTypeUse(
     name: typeDef.name,
     mutability: EDatatypeMutability.Default,
     pointer: pointer,
+    stackref: false,
     type: typeDefId,
     sourceloc: null,
   });
@@ -3384,9 +3549,11 @@ export function lowerTypeDef(
       const def1 = lr.sr.typeDefNodes.get(use1.type);
       const use2 = lr.sr.typeUseNodes.get(type.members[1]);
       const def2 = lr.sr.typeDefNodes.get(use2.type);
+      // Only a plain `ref` is a nullable C pointer; a stackref is a struct
+      // and gets the ordinary tagged representation.
       if (
         def1.variant === Semantic.ENode.StructDatatype &&
-        !use1.inline &&
+        use1.storage === EStorageClass.Ref &&
         def2.variant === Semantic.ENode.PrimitiveDatatype &&
         (def2.primitive === EPrimitive.none ||
           def2.primitive === EPrimitive.null)
@@ -3395,7 +3562,7 @@ export function lowerTypeDef(
       }
       if (
         def2.variant === Semantic.ENode.StructDatatype &&
-        !use2.inline &&
+        use2.storage === EStorageClass.Ref &&
         def1.variant === Semantic.ENode.PrimitiveDatatype &&
         (def1.primitive === EPrimitive.none ||
           def1.primitive === EPrimitive.null)
@@ -3604,20 +3771,37 @@ function lowerTypeUse(
 
   const typeDef = lr.sr.typeDefNodes.get(resolvedTypeUse.type);
   const originalTypeDef = lr.sr.typeDefNodes.get(typeUse.type);
+  const isStructOrArrayDef =
+    typeDef.variant === Semantic.ENode.StructDatatype ||
+    typeDef.variant === Semantic.ENode.DynamicArrayDatatype;
+  const isStackref =
+    typeUse.storage === EStorageClass.Stackref &&
+    (typeDef.variant === Semantic.ENode.StructDatatype ||
+      typeDef.variant === Semantic.ENode.CallableDatatype);
+  let pointer = false;
+  if (!isStackref && isStructOrArrayDef) {
+    if (originalTypeDef.variant === Semantic.ENode.TypeAliasDatatype) {
+      // The alias typedef in C already carries the alias target's own storage
+      // class, so only wrap again when *this* use adds ref-ness on top of a
+      // non-ref target (`type V = Vec2; ref V`). Wrapping a target that is
+      // already a pointer would produce a double pointer.
+      pointer =
+        typeUse.storage === EStorageClass.Ref &&
+        resolvedTypeUse.storage !== EStorageClass.Ref;
+    } else {
+      pointer =
+        originalTypeDef.variant === Semantic.ENode.StructDatatype
+          ? typeUse.storage === EStorageClass.Ref
+          : // dynamic arrays are always a GC pointer in C
+            originalTypeDef.variant === Semantic.ENode.DynamicArrayDatatype;
+    }
+  }
   const id = Lowered.addTypeUse(lr, {
     variant: Lowered.ENode.TypeUse,
     mutability: typeUse.mutability,
     name: Semantic.makeNameSetTypeUse(lr.sr, typeId),
-    pointer:
-      // Only apply pointer-wrapping when the original (pre-alias) TypeDef is
-      // itself a struct or dynamic array. If it is a TypeAlias that resolves
-      // to a struct, the alias typedef in C is already a pointer, so wrapping
-      // again would produce a double-pointer with a conflicting name.
-      (originalTypeDef.variant === Semantic.ENode.StructDatatype ||
-        originalTypeDef.variant === Semantic.ENode.DynamicArrayDatatype) &&
-      !resolvedTypeUse.inline &&
-      (typeDef.variant === Semantic.ENode.StructDatatype ||
-        typeDef.variant === Semantic.ENode.DynamicArrayDatatype),
+    pointer: pointer,
+    stackref: isStackref,
     sourceloc: typeUse.sourceloc,
     type: -1 as Lowered.TypeDefId,
   })[1];
@@ -3669,6 +3853,7 @@ function lowerStatement(
 
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.VariableStatement,
+        stackrefInit: statement.stackrefInit,
         name: {
           mangledName: name,
           prettyName: name,
@@ -3791,6 +3976,7 @@ function lowerStatement(
       const [_indexInitStmt, indexInitStmtId] =
         Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
+          stackrefInit: null,
           name: indexName,
           type: intTypeUse,
           variableContext: EVariableContext.FunctionLocal,
@@ -3908,6 +4094,7 @@ function lowerStatement(
       flattened.push(
         Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
+          stackrefInit: null,
           name: {
             prettyName: loopVariableName,
             mangledName: loopVariableName,
@@ -3930,6 +4117,7 @@ function lowerStatement(
         bodyStatements.push(
           Lowered.addStatement<Lowered.VariableStatement>(lr, {
             variant: Lowered.ENode.VariableStatement,
+            stackrefInit: null,
             name: {
               prettyName: indexVariable.name,
               mangledName: indexVariable.name,
@@ -4424,6 +4612,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       let envType: Lowered.EnvBlockType = null;
       let makeTrampoline = false;
       let methodThisIsAlreadyPointer = false;
+      let methodThisIsStackref = false;
       if (symbol.envType?.type === "method") {
         const loweredThisExprType = lowerTypeUse(
           lr,
@@ -4436,6 +4625,9 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         methodThisIsAlreadyPointer = lr.typeUseNodes.get(
           Lowered.resolveAlias(lr, loweredThisExprType)
         ).pointer;
+        methodThisIsStackref = lr.typeUseNodes.get(
+          Lowered.resolveAlias(lr, loweredThisExprType)
+        ).stackref;
         envType = {
           type: "method",
           thisExprType: loweredThisExprType,
@@ -4457,25 +4649,14 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           captures: symbol.envType.captures.map((c) => ({
             name: c.name,
             type: lowerTypeUse(lr, c.type),
+            byValue: c.byValue,
           })),
         };
         for (let i = symbol.envType.captures.length - 1; i >= 0; i--) {
           let name = symbol.envType.captures[i].name;
-          const varsym = lr.sr.symbolNodes.get(
-            symbol.envType.captures[i].capturedSymbol
-          );
-          assert(varsym.variant === Semantic.ENode.VariableSymbol);
-          if (varsym.requiresHoisting) {
-            const capTypeUse = lr.sr.typeUseNodes.get(
-              symbol.envType.captures[i].type
-            );
-            const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
-            const captureAlreadyPointer =
-              capTypeDef.variant === Semantic.ENode.StructDatatype &&
-              !capTypeUse.inline;
-            if (!captureAlreadyPointer) {
-              name = "*" + name;
-            }
+          if (symbol.envType.captures[i].byValue) {
+            // The env slot points at the copy; the parameter is `T *name`.
+            name = "*" + name;
           }
           mainFuncParameterNames.unshift(name);
           mainFuncParameters.unshift({
@@ -4583,18 +4764,31 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         if (symbol.scope) {
           const statements: Lowered.StatementId[] = [];
           if (envType?.type === "method") {
-            if (methodThisIsAlreadyPointer) {
+            if (methodThisIsStackref) {
+              // `stackref fn` bound as a callable: the env holds a heap copy
+              // of the receiver's stackref (still checked on every use).
               statements.push(
                 Lowered.addStatement(lr, {
                   variant: Lowered.ENode.InlineCStatement,
                   sourceloc: f.sourceloc,
-                  value: "void* this = ((void**)__hz_env)[0];",
+                  value: "hzstd_stackref_t this = *(hzstd_stackref_t*)__hz_env;",
+                })[1]
+              );
+            } else if (methodThisIsAlreadyPointer) {
+              // The env *is* the receiver pointer: a ref, or the checked
+              // `.ptr` of a stackref callable's env (§12.4). No block.
+              statements.push(
+                Lowered.addStatement(lr, {
+                  variant: Lowered.ENode.InlineCStatement,
+                  sourceloc: f.sourceloc,
+                  value: "void* this = __hz_env;",
                 })[1]
               );
             } else {
               statements.push(
                 Lowered.addStatement(lr, {
                   variant: Lowered.ENode.VariableStatement,
+                  stackrefInit: null,
                   sourceloc: f.sourceloc,
                   name: {
                     mangledName: "this",
@@ -4735,14 +4929,9 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       lr.currentFunctionCaptureTypeMap = new Map();
       if (symbol.envType?.type === "lambda") {
         for (const cap of symbol.envType.captures) {
-          const capTypeUse = lr.sr.typeUseNodes.get(cap.type);
-          const capTypeDef = lr.sr.typeDefNodes.get(capTypeUse.type);
-          const suppressHoisting =
-            capTypeDef.variant === Semantic.ENode.StructDatatype &&
-            !capTypeUse.inline;
           lr.currentFunctionCaptureTypeMap.set(cap.capturedSymbol, {
             loweredType: lowerTypeUse(lr, cap.type),
-            suppressHoisting: suppressHoisting,
+            suppressHoisting: !cap.byValue,
           });
         }
       }
@@ -4898,6 +5087,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       const [_, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
         variant: Lowered.ENode.VariableStatement,
+        stackrefInit: null,
         name: name,
         intrinsicTakeAddrOfValue: false,
         type: lowerTypeUse(lr, variableSymbol.type),

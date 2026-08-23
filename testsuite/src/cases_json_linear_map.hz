@@ -1,11 +1,11 @@
 
 // Proves LinearMap<K, V> (stdlib/core/src/containers.hz) is a real-world
-// consumer of the [[json.serialize]]/[[json.parse]] struct hooks added
+// consumer of the [[json.serialize]]/[[json.parse]] ref struct hooks added
 // alongside this test (see cases_json_custom_struct_hooks.hz for coverage
 // of the hook mechanism itself, independent of any container).
 //
 // Without the hooks, LinearMap would serialize as its raw internals --
-// {"keys":[...],"values":[...]} -- since it's just a plain struct with two
+// {"keys":[...],"values":[...]} -- since it's just a plain ref struct with two
 // array fields. With the hooks, it instead reads/writes a proper JSON
 // *object* keyed by the map's actual keys, which is both the natural JSON
 // shape for a map and (unlike the raw-internals shape) something a
@@ -267,9 +267,9 @@ fn main(): int {
         );
 
         s.run(
-            "LinearMap json: struct values still serialize field-by-field inside the map's object shape",
+            "LinearMap json: ref struct values still serialize field-by-field inside the map's object shape",
             """
-struct Entry {
+ref struct Entry {
     label: str;
     count: int;
 }

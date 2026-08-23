@@ -85,7 +85,7 @@ namespace tilemath {
     }
 }
 
-struct TileKey {
+ref struct TileKey {
     pageIndex: int = 0;
     level: int = 0;
     tx: int = 0;
@@ -103,7 +103,7 @@ struct TileKey {
 // only ever gets added in at the final composite step (screen position) and
 // nowhere else, so tile content/hit-testing/bbox-matching stays uniform
 // across every page.
-struct Tile {
+ref struct Tile {
     canvas: mut renderer.gfx.Canvas;
     inUse: bool = false;
     valid: bool = false;       // false = hardware contents are stale/undefined, needs a render before use
@@ -136,7 +136,7 @@ struct Tile {
     }
 }
 
-struct TilePool {
+ref struct TilePool {
     gfx: mut renderer.gfx.Context;
     tiles: []mut Tile = [];
 

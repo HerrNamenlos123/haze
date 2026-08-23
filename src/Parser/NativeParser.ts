@@ -17,6 +17,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
+import { HazeErrorCode } from "../shared/ErrorCodes";
+import { CompilerError } from "../shared/Errors";
 import { requestSync, warmupBridge } from "./SyncBridge";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
@@ -30,6 +32,30 @@ const PARSER_BINARY = path.join(
   "bin",
   process.platform === "win32" ? "haze-parser.exe" : "haze-parser"
 );
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn a native parser error line (`<file>:<line>:<col>: <message>`) into the
+ * same H1000 syntax error the ANTLR path raises, so error codes are identical
+ * regardless of which parser ran.
+ */
+export function nativeParseErrorToCompilerError(message: string): Error {
+  const m = /^(.*?):(\d+):(\d+): (.*)$/s.exec(message);
+  if (m) {
+    return new CompilerError(
+      m[4],
+      {
+        filename: m[1],
+        start: { line: Number(m[2]), column: Number(m[3]) },
+      },
+      HazeErrorCode.SyntaxError
+    );
+  }
+  return new CompilerError(message, null, HazeErrorCode.SyntaxError);
+}
 
 // ---------------------------------------------------------------------------
 // Reviving
@@ -313,7 +339,7 @@ export class NativeParserServer {
       const pending = this.pending;
       this.pending = null;
       this.buffer = this.buffer.subarray(newline + 1);
-      pending.reject(new Error(header.slice(4)));
+      pending.reject(nativeParseErrorToCompilerError(header.slice(4)));
       this.next();
       return;
     }
@@ -534,6 +560,9 @@ function parseTextNativeSpawn(
   const newline = stdout.indexOf(0x0a);
   const head = stdout.subarray(0, newline).toString("utf8");
   if (!head.startsWith("OK ")) {
+    if (head.startsWith("ERR ")) {
+      throw nativeParseErrorToCompilerError(head.slice(4));
+    }
     throw new Error(`native parser failed for ${filename}: ${head}`);
   }
   const length = Number.parseInt(head.slice(3), 10);

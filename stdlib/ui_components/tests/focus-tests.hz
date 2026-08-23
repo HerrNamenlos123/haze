@@ -13,16 +13,16 @@ import ui_elements
 // misses -- that is exactly why these tests drive focus programmatically and
 // never synthesise clicks.
 
-struct TestArgs {
+ref struct TestArgs {
     fn operator!=(other: TestArgs) {
         return false;
     }
 }
 
-// All mutable test state lives in one struct so the UI closures can capture a
+// All mutable test state lives in one ref struct so the UI closures can capture a
 // single handle and still see later writes (the same reason the code editor's
 // own component state is grouped rather than held in loose locals).
-struct State {
+ref struct State {
     typed: str = "";
     events: str = "";
 
@@ -71,7 +71,7 @@ fn main(): int {
                 return () => {
                     ctx.div({
                         id: 1,
-                        ref: editorRef,
+                        elementRef: editorRef,
                         focusable: true,
                         onFocus: () => { state.events = f"{state.events}editor-focus;"; },
                         onBlur: () => { state.events = f"{state.events}editor-blur;"; },
@@ -82,7 +82,7 @@ fn main(): int {
 
                     ctx.div({
                         id: 2,
-                        ref: otherRef,
+                        elementRef: otherRef,
                         focusable: true,
                         onFocus: () => { state.events = f"{state.events}other-focus;"; },
                         onBlur: () => { state.events = f"{state.events}other-blur;"; },

@@ -8,10 +8,10 @@ export __c__("typedef struct mg_mgr mg_mgr;");
 export namespace mongoose {
     extern "C" mg_mgr_init(mgr: *mg_mgr): void;
 
-    export extern "C" noemit struct mg_mgr {}
+    export extern "C" noemit ref struct mg_mgr {}
 }
 
-// export struct Ember {
+// export ref struct Ember {
 //     mgr: mongoose.mg_mgr;
 // }
 

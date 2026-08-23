@@ -8,7 +8,7 @@
 // products of these primitives -- there is no separate 2D-only code path.
 export namespace mat4 {
 
-export inline struct Mat4f {
+export struct Mat4f {
     data: [16]f32;
 
     fn constructor(data: [16]f32) {

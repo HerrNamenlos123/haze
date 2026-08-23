@@ -1,5 +1,5 @@
 
-export struct PrimitiveState {
+export ref struct PrimitiveState {
     topology: PrimitiveTopology;
     stripIndexFormat: IndexFormat = IndexFormat.Undefined;
     frontFace: FrontFace = FrontFace.Undefined;
@@ -17,7 +17,7 @@ fn fromFFI(v: ffi.WGPUPrimitiveState): PrimitiveState :: final {
     };
 }
 
-fn toFFI(v: PrimitiveState): ffi.WGPUPrimitiveState :: final {
+fn toFFI(v: PrimitiveState): ref ffi.WGPUPrimitiveState :: final {
     return {
         nextInChain: none,
         topology: toFFI(v.topology),

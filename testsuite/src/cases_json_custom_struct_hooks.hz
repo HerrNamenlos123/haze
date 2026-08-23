@@ -1,14 +1,14 @@
 
-// Regression coverage for custom per-struct JSON (de)serialization hooks.
+// Regression coverage for custom per-ref struct JSON (de)serialization hooks.
 //
 // Context: json.serialize()/json.parse() previously always treated a struct
 // as a plain object built/read field-by-field (dumpJsonStruct/
-// parseJsonStruct). This adds an opt-out: a struct annotated with
+// parseJsonStruct). This adds an opt-out: a ref struct annotated with
 // [[json.serialize="methodName"]] has that zero-arg method called instead of
 // the default field walk, and the json.Node it returns is spliced in
 // verbatim. Symmetrically, [[json.parse="methodName"]] routes parsing
 // through a static method that receives the raw json.Node and returns
-// Result<T, json.Error>. The two attributes are independent: a struct may
+// Result<T, json.Error>. The two attributes are independent: a ref struct may
 // define either or both (stacked as comma-separated items inside a single
 // [[...]] block -- the grammar allows only one meta-annotation block per
 // declaration).
@@ -18,7 +18,7 @@
 // mechanism itself is pinned down independently of any particular
 // container's key/value scheme. The custom shape chosen (a single "sum"
 // field replacing the normal two-field {"x":..,"y":..} object) is
-// deliberately NOT what the default struct walk would produce, so a test
+// deliberately NOT what the default ref struct walk would produce, so a test
 // that silently fell back to the default encoding would fail loudly rather
 // than passing by coincidence.
 
@@ -27,10 +27,10 @@ namespace cases_json_custom_struct_hooks {
     export fn register(s: mut testsuite.Suite) {
 
         s.run(
-            "json custom struct hooks: serialize replaces the default field walk",
+            "json custom ref struct hooks: serialize replaces the default field walk",
             """
 [[json.serialize="toJson"]]
-struct Point {
+ref struct Point {
     x: int;
     y: int;
 
@@ -47,7 +47,7 @@ struct Point {
     }
 }
 
-struct Wrapper {
+ref struct Wrapper {
     label: str;
     point: Point;
 }
@@ -57,7 +57,7 @@ fn main(): int {
     let out = json.stringify(p);
     assert(out == \"\"\"{"sum":7}\"\"\", f"expected custom {{sum}} encoding, got: {out}");
 
-    // Struct nested inside another struct must also go through the hook
+    // Struct nested inside another ref struct must also go through the hook
     // rather than the default {"x":..,"y":..} shape.
     let w = Wrapper { label: "origin", point: Point { x: 1, y: 2 } };
     let wOut = json.stringify(w);
@@ -71,10 +71,10 @@ fn main(): int {
         );
 
         s.run(
-            "json custom struct hooks: parse routes through the annotated method",
+            "json custom ref struct hooks: parse routes through the annotated method",
             """
 [[json.parse="fromJson"]]
-struct Point {
+ref struct Point {
     x: int;
     y: int;
 
@@ -109,10 +109,10 @@ fn main(): int {
         );
 
         s.run(
-            "json custom struct hooks: round trip through both hooks together, including inside an array",
+            "json custom ref struct hooks: round trip through both hooks together, including inside an array",
             """
 [[json.serialize="toJson", json.parse="fromJson"]]
-struct Tagged {
+ref struct Tagged {
     id: int;
     name: str;
 
@@ -155,7 +155,7 @@ fn main(): int {
 
         // Also round trip inside an array to prove the hook applies uniformly,
         // not just at the top level. Explicit `[]Tagged` annotation: array
-        // literals of >1 explicitly-named struct literals need it here to
+        // literals of >1 explicitly-named ref struct literals need it here to
         // infer (a separate, pre-existing gap, unrelated to json hooks).
         let arr: []Tagged = [Tagged { id: 1, name: "a" }, Tagged { id: 2, name: "b" }];
         let arrEncoded = json.stringify(arr);

@@ -1,9 +1,9 @@
 
-export inline struct Adapter {
+export struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
     fn requestDeviceAsync(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
-        let ffiDescriptor: ffi.WGPUDeviceDescriptor | none = none;
+        let ffiDescriptor: ref ffi.WGPUDeviceDescriptor | none = none;
         if descriptor {
             let requiredFeatureCount = 0 as usize;
             let requiredFeatures = none as cptr;
@@ -12,7 +12,7 @@ export inline struct Adapter {
             __c__("requiredFeatureCount = hzstd_dynamic_array_size(features);");
             __c__("requiredFeatures = hzstd_dynamic_array_raw_buffer(features);");
 
-            let limits = none as ffi.WGPULimits | none;
+            let limits = none as ref ffi.WGPULimits | none;
             let requiredLimits = descriptor.requiredLimits;
             if requiredLimits {
                 limits = requiredLimits.toFFI();
@@ -23,20 +23,20 @@ export inline struct Adapter {
                 let nullCallback2: ffi.WGPUUncapturedErrorCallback = uninitialized;
                 __c__("nullCallback2 = NULL;");
 
-                let a: inline ffi.WGPUDeviceLostCallbackInfo = uninitialized;
+                let a: ffi.WGPUDeviceLostCallbackInfo = uninitialized;
                 a.nextInChain = none;
                 __c__("a.callback = NULL;");
                 a.mode = ffi.WGPUCallbackMode_WaitAnyOnly;
                 a.userdata1 = none;
                 a.userdata2 = none;
 
-                let b: inline ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
+                let b: ffi.WGPUUncapturedErrorCallbackInfo = uninitialized;
                 b.nextInChain = none;
                 __c__("a.callback = NULL;");
                 b.userdata1 = none;
                 b.userdata2 = none;
 
-                ffiDescriptor = ffi.WGPUDeviceDescriptor {
+                ffiDescriptor = ref ffi.WGPUDeviceDescriptor {
                     nextInChain: none,
                     label: toOptionalFFI(descriptor.debugLabel),
                     requiredFeatureCount: requiredFeatureCount,
@@ -52,7 +52,7 @@ export inline struct Adapter {
             };
         }
 
-        let callback = Box<RequestDeviceCallback>(callbackInfo.callback);
+        let callback: ref Box<RequestDeviceCallback> = { value: callbackInfo.callback };
         let userdata1 = none as cptr;
         __c__("userdata1 = callback;");
 
@@ -62,43 +62,45 @@ export inline struct Adapter {
             callback: requestDeviceCallbackProxy,
             userdata1: userdata1,
             userdata2: none,
-        } as inline ffi.WGPURequestDeviceCallbackInfo;
+        } as ffi.WGPURequestDeviceCallbackInfo;
 
         return fromFFI(
             ffi.wgpuAdapterRequestDevice(this.handle, ffiDescriptor, ffiCallbackInfo)
         );
     }
 
-    fn requestDeviceSync(descriptor: DeviceDescriptor | none): Result<mut Device, str> {
-        let device = none as mut Device | none;
-        let deviceReady = false;
-        let message = "";
+    fn requestDeviceSync(descriptor: DeviceDescriptor | none): Result<Device, str> {
+        // Shared with the callback through stack references: the closure
+        // captures the references, the cells themselves live in this frame.
+        let stackref device = Box<Device | none>(none);
+        let stackref deviceReady = Box<bool>(false);
+        let stackref message = Box<str>("");
         this.requestDeviceAsync(descriptor, { 
-            callback: (status: RequestDeviceStatus, _device: mut Device, _message: str): void => {
+            callback: (status: RequestDeviceStatus, _device: Device, _message: str): void => {
                 if (status == RequestDeviceStatus.Success) {
-                    device = _device;
-                    deviceReady = true;
+                    device.value = _device;
+                    deviceReady.value = true;
                 }
                 else {
-                    deviceReady = true;
+                    deviceReady.value = true;
                 }
-                message = _message;
+                message.value = _message;
             }
         });
 
         let timeout = 100;
-        while !deviceReady && timeout > 0 {
+        while !deviceReady.value && timeout > 0 {
             time.sleep(0.1);
             timeout--;
         }
-        if device {
-            return device;
+        if device.value {
+            return device.value;
         }
-        return message;
+        return message.value;
     }
 }
 
-fn fromFFI(v: mut ffi.WGPUAdapterImpl): mut Adapter :: final {
+fn fromFFI(v: mut ffi.WGPUAdapterImpl): Adapter :: final {
     return Adapter { handle: v };
 }
 

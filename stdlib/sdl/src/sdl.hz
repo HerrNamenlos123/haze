@@ -3,7 +3,7 @@ __c__("#include <SDL3/SDL.h>");
 __c__("#include \"sdl_impl.c\"");
 
 namespace ffi {
-	export extern C struct SDL_Window {};
+	export extern C ref struct SDL_Window {};
 
 	extern C fn haze_sdl_init(): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
@@ -60,7 +60,7 @@ namespace ffi {
 	// this before the string ever reaches a Haze-level queue.
 	extern C fn hzstd_cstr_dup(data: cstr): str :: final;
 
-	extern C fn haze_sdl_register_trampolines(t: inline haze_sdl_trampolines_t): void :: final;
+	extern C fn haze_sdl_register_trampolines(t: haze_sdl_trampolines_t): void :: final;
 	export extern C fn haze_sdl_set_window_event_userdata(window: SDL_Window, userdata: cptr): void :: final;
 
 	// Stateless poll (SDL_GetModState), not tied to any specific event --
@@ -191,24 +191,24 @@ export enum Key {
 	RGui = 231,
 }
 
-export struct KeyEvent {
+export ref struct KeyEvent {
 	key: Key;
 	repeat: bool;
 	modifiers: KeyModifiers;
 }
 
-export struct ResizeEvent {
+export ref struct ResizeEvent {
 	width: int;
 	height: int;
 }
 
-export struct MouseMoveEvent {
+export ref struct MouseMoveEvent {
 	pos: Vec2;
 	modifiers: KeyModifiers;
 }
 
 // button: 0=left, 1=middle, 2=right
-export struct MouseButtonEvent {
+export ref struct MouseButtonEvent {
 	button: int;
 	pos: Vec2;
 	modifiers: KeyModifiers;
@@ -217,7 +217,7 @@ export struct MouseButtonEvent {
 // x/y: signed scroll amount (positive = right/away-from-user); pos: mouse
 // position at the time of the scroll, window-relative like every other
 // event here.
-export struct MouseWheelEvent {
+export ref struct MouseWheelEvent {
 	delta: Vec2;
 	pos: Vec2;
 	modifiers: KeyModifiers;
@@ -228,7 +228,7 @@ export struct MouseWheelEvent {
 // whether that produced "a", "A", "ä", or (mid-IME-composition) nothing at
 // all yet. This is the already-resolved character(s) to actually insert,
 // same division of labor as the DOM's keydown vs. input events.
-export struct TextInputEvent {
+export ref struct TextInputEvent {
 	text: str;
 }
 
@@ -247,32 +247,32 @@ export type TextInputEventCallback = (e: TextInputEvent) => bool :: final;
 // Internal handler structs (one per event category)
 // ---------------------------------------------------------------------------
 
-export struct KeyHandler {
+export ref struct KeyHandler {
 	id: int;
 	callback: KeyEventCallback;
 }
 
-export struct ResizeHandler {
+export ref struct ResizeHandler {
 	id: int;
 	callback: ResizeEventCallback;
 }
 
-export struct MouseMoveHandler {
+export ref struct MouseMoveHandler {
 	id: int;
 	callback: MouseMoveEventCallback;
 }
 
-export struct MouseButtonHandler {
+export ref struct MouseButtonHandler {
 	id: int;
 	callback: MouseButtonEventCallback;
 }
 
-export struct MouseWheelHandler {
+export ref struct MouseWheelHandler {
 	id: int;
 	callback: MouseWheelEventCallback;
 }
 
-export struct TextInputHandler {
+export ref struct TextInputHandler {
 	id: int;
 	callback: TextInputEventCallback;
 }
@@ -418,7 +418,7 @@ fn hazeTextInputDispatch(userdata: cptr, text: ccstr): void :: final {
 	};
 }
 
-export struct Window {
+export ref struct Window {
 	handle: ffi.SDL_Window;
 
 	// Event handler storage
@@ -730,12 +730,12 @@ export struct Window {
 	}
 }
 
-export struct WindowSizeConfig {
+export ref struct WindowSizeConfig {
 	width: int = 1080;
 	height: int = 720;
 }
 
-export struct WindowConfig {
+export ref struct WindowConfig {
 	title: ccstr;
 	size: WindowSizeConfig = {};
 	noApi: bool = false;

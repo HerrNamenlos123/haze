@@ -54,7 +54,9 @@ export enum TK {
     Yield,
     Raise,
     Emit,
-    Inline,
+    Ref,
+    Stackref,
+    Nocopy,
     Attempt,
     Recover,
     Noreturn,
@@ -165,7 +167,7 @@ export enum TK {
 // is one contiguous []Token allocation, and a token carries only offsets into
 // the source rather than an owned string. Materialising the text is a zero-copy
 // `src.slice(start, end)` and only happens for the few tokens that need it.
-export struct Token {
+export ref struct Token {
     kind: TK = TK.Invalid;
     start: int = 0;     // byte offset of first char
     end: int = 0;       // byte offset one past last char
@@ -214,7 +216,9 @@ export fn tokenName(k: TK): str {
     if k == TK.Yield { return "yield"; }
     if k == TK.Raise { return "raise"; }
     if k == TK.Emit { return "emit"; }
-    if k == TK.Inline { return "inline"; }
+    if k == TK.Ref { return "ref"; }
+    if k == TK.Stackref { return "stackref"; }
+    if k == TK.Nocopy { return "nocopy"; }
     if k == TK.Attempt { return "attempt"; }
     if k == TK.Recover { return "recover"; }
     if k == TK.Noreturn { return "noreturn"; }

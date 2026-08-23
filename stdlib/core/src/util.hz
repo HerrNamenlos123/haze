@@ -3,6 +3,8 @@ extern C noemit fn sizeof(...): usize :: final;
 
 export type Result<T, E> = nodiscard union { Ok: T, Err: E, };
 
+// A value struct holding one value: a heap integer is `ref Box<int>`, a
+// stack-referable one is `let stackref b = Box(5)`.
 export struct Box<T> {
     value: T;
 
@@ -53,8 +55,8 @@ export fn sizeofTypeInBytes<T>() {
 
 export fn addressOf<T>(value: T) {
     if comptime T.category == meta.TypeCategory.Struct {
-        if comptime T.isInline {
-            static_assert(false, f"Struct '{T.prettyName}' is inline and therefore not applicable to addressOf()");
+        if comptime T.isValue {
+            static_assert(false, f"Struct '{T.prettyName}' is and therefore not applicable to addressOf()");
         }
         let addr: u64 = 0;
         do unsafe {

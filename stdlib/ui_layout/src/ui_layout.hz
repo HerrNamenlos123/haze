@@ -10,7 +10,7 @@ __c__("#include \"ffi/ui.c\"");
 export __c__("#include \"ffi/hzui_public.h\"");
 
 namespace ffi {
-    // Both of these take a single bundled config struct instead of a long
+    // Both of these take a single bundled config ref struct instead of a long
     // positional parameter list (hzui_define_div_element_t /
     // hzui_define_canvas_element_t below) -- named fields at the call site
     // are self-documenting and can't silently shift out of order.
@@ -28,9 +28,10 @@ namespace ffi {
     extern C noemit fn hzui_clay_activate_context(context: cptr): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit fn Clay_BeginLayout(): void :: final;
-    extern C noemit fn Clay_EndLayout(): inline Clay_RenderCommandArray :: final;
-    extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: Clay_RenderCommandArray): void :: final;
+    extern C noemit fn Clay_EndLayout(): Clay_RenderCommandArray :: final;
+    extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: ref Clay_RenderCommandArray): void :: final;
 
+    // A C value returned by Clay_EndLayout; Clay_RenderClayCommands takes its address.
     extern C noemit struct Clay_RenderCommandArray {};
 
     // See hzui_element_kind_t's own comment in hzui_public.h -- renderer.c
@@ -43,7 +44,7 @@ namespace ffi {
         hzui_element_kind_canvas,
     }
 
-    extern C noemit inline struct ClayCallbacks {
+    extern C noemit struct ClayCallbacks {
         renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
         renderFilledRectUserdata: cptr;
         renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
@@ -58,12 +59,12 @@ namespace ffi {
         setClipUserdata: cptr;
     };
 
-    extern C noemit inline struct hzui_optional_bounding_box_t {
+    extern C noemit struct hzui_optional_bounding_box_t {
         bounding_box: hzui_bounding_box_t;
         found: bool;
     };
 
-    extern C noemit inline struct hzui_bounding_box_t {
+    extern C noemit struct hzui_bounding_box_t {
         position: Vec2;
         size: Vec2;
     };
@@ -71,20 +72,20 @@ namespace ffi {
     // What the injected measureText callback (see hzui_clay_init) needs to
     // measure one text run -- text is a length-prefixed slice, not
     // guaranteed null-terminated.
-    extern C noemit inline struct hzui_measure_text_request_t {
+    extern C noemit struct hzui_measure_text_request_t {
         text: str;
         fontId: int;
         fontSize: real;
     };
 
-    export extern C noemit inline struct hzui_padding_values_t {
+    export extern C noemit struct hzui_padding_values_t {
         left: real;
         right: real;
         top: real;
         bottom: real;
     }
 
-    export extern C noemit inline struct hzui_border_widths_t {
+    export extern C noemit struct hzui_border_widths_t {
         left: real;
         right: real;
         top: real;
@@ -99,7 +100,7 @@ namespace ffi {
         hzui_sizing_fixed,
     }
 
-    export extern C noemit inline struct hzui_sizing_axis_t {
+    export extern C noemit struct hzui_sizing_axis_t {
         type: hzui_sizing_type_t;
         value: real;
     }
@@ -127,7 +128,7 @@ namespace ffi {
         hzui_attach_bottom_right,
     }
 
-    export extern C noemit inline struct hzui_floating_config_t {
+    export extern C noemit struct hzui_floating_config_t {
         attachTo: hzui_attach_to_t;
         attachPoint: hzui_attach_point_t;
         offset: Vec2;
@@ -143,7 +144,7 @@ namespace ffi {
         parentId: str;
     }
 
-    export extern C noemit inline struct hzui_define_div_element_t {
+    export extern C noemit struct hzui_define_div_element_t {
         id: str;
         backgroundColor: Color;
         padding: hzui_padding_values_t;
@@ -160,7 +161,7 @@ namespace ffi {
         elementPtr: cptr;
     }
 
-    export extern C noemit inline struct hzui_define_canvas_element_t {
+    export extern C noemit struct hzui_define_canvas_element_t {
         id: str;
         backgroundColor: Color;
         cornerRadius: CornerRadiusValues;
@@ -172,7 +173,7 @@ namespace ffi {
         elementPtr: cptr;
     }
 
-    export extern C noemit inline struct hzui_define_text_element_t {
+    export extern C noemit struct hzui_define_text_element_t {
         text: str;
         fontId: int;
         fontSize: real;
@@ -183,7 +184,7 @@ namespace ffi {
         elementPtr: cptr;
     }
 
-    export extern C noemit inline struct hzui_draw_text_element_t {
+    export extern C noemit struct hzui_draw_text_element_t {
         position: Vec2;
         size: Vec2;
         text: str;
@@ -192,7 +193,7 @@ namespace ffi {
         color: Color;
     }
 
-    export extern C noemit inline struct hzui_corner_radius_values_t {
+    export extern C noemit struct hzui_corner_radius_values_t {
         topLeft: real;
         topRight: real;
         bottomLeft: real;
@@ -438,12 +439,12 @@ fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
     });
 }
 
-export inline struct FontEntry {
+export struct FontEntry {
     name: str;
     id: int;
 }
 
-export inline struct ContextOpts {
+export struct ContextOpts {
     width: int;
     height: int;
     fonts: []FontEntry;
@@ -467,13 +468,13 @@ export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 // layout-shaped styling concern it does own is font/text-color cascading
 // (inheriting from ancestors down the tree), since that can only be resolved
 // while walking the tree, not by looking at one element in isolation.
-export opaque struct Context {
+export opaque ref struct Context {
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
     // Kept alive for as long as this Context lives -- Clay holds onto the
     // raw userdata pointer we hand it in hzui_clay_init and calls back into
     // it on every subsequent layout pass, not just during this constructor.
-    measureTextBox: Box<MeasureTextCB>;
+    measureTextBox: ref Box<MeasureTextCB>;
     // The Clay_Context* this instance owns. Clay_Initialize implicitly makes
     // whichever context it just created the globally active one, so every
     // entry point that talks to Clay on behalf of *this* instance must first
@@ -484,7 +485,7 @@ export opaque struct Context {
     clayContextPtr: cptr;
 
     fn constructor(opts: ContextOpts) {
-        let measureTextBox = Box<MeasureTextCB>(opts.measureText);
+        let measureTextBox: ref Box<MeasureTextCB> = { value: opts.measureText };
         let measureTextUserdata = none as cptr;
         __c__("measureTextUserdata = measureTextBox;");
 
@@ -505,7 +506,7 @@ export opaque struct Context {
         ffi.hzui_clay_set_layout_dimensions(width, height);
     }
 
-    struct TreeTraverseContext {
+    ref struct TreeTraverseContext {
         fontFamilyStack: []str = [];
         fontSizeStack: []real = [];
         fontWeightStack: []real = [];
@@ -870,7 +871,9 @@ export opaque struct Context {
 
         let clayRenderCommands = ffi.Clay_EndLayout();
 
-        let clayRenderCommandsPtr = none as none | ffi.Clay_RenderCommandArray;
+        // Raw pointer to the stack value above, taken in C: unsafe by construction and
+        // only ever handed to Clay_RenderClayCommands below, within this frame.
+        let clayRenderCommandsPtr = none as none | ref ffi.Clay_RenderCommandArray;
         __c__("clayRenderCommandsPtr = &clayRenderCommands;");
         assert(clayRenderCommandsPtr);
 
@@ -934,13 +937,13 @@ export type RenderTextCB = (element: ffi.hzui_draw_text_element_t) => void;
 export type RenderBorderCB = (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ffi.hzui_corner_radius_values_t, borderWidth: ffi.hzui_border_widths_t) => void;
 // Not exported: it references a cross-module qualified type (ui_elements.X)
 // in its body. The compiler's cross-module shim generator mangles qualified
-// types correctly for struct fields, but has a codegen bug for top-level
+// types correctly for ref struct fields, but has a codegen bug for top-level
 // exported `type X = (...) => Y;` aliases that reference a qualified
 // cross-module type -- it leaves the module prefix unmangled, which then
 // fails to resolve when a consumer project imports this module. Kept as a
 // plain (unexported) alias for applyBoundingBoxesRecursive's own callback
 // parameter below, and inlined directly (same shape) on
-// RenderCallbacks.onBoundingBox, which exports fine since struct field types
+// RenderCallbacks.onBoundingBox, which exports fine since ref struct field types
 // go through the correctly-mangling code path.
 type BoundingBoxCB = (element: ui_elements.Element, position: Vec2, size: Vec2) => void;
 
@@ -992,7 +995,7 @@ fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingB
     }
 }
 
-export struct RenderCallbacks {
+export ref struct RenderCallbacks {
     renderFilledRectangle: RenderFilledRectCB;
     renderText: RenderTextCB;
     renderCanvas: (element: ui_elements.CanvasElement) => void;
@@ -1019,7 +1022,7 @@ const CLIP_UNBOUNDED = 10000000.0;
 // A resolved clip rect (screen-space min/max), already intersected with
 // every clipping ancestor's rect. `active` false means "nothing clips this
 // element", which the renderer represents as a zero-area rect.
-export inline struct ResolvedClip {
+export struct ResolvedClip {
     minX: real = 0.0;
     minY: real = 0.0;
     maxX: real = 0.0;
@@ -1032,7 +1035,7 @@ export inline struct ResolvedClip {
 // userData, so a draw callback can find its clip without any string work.
 // Safe to hold: these elements are kept alive for the whole frame by the
 // tree being rendered (see the DivElement branch of processTreeElement).
-inline struct ClipEntry {
+struct ClipEntry {
     elementPtr: cptr;
     clip: ResolvedClip;
 }
@@ -1161,7 +1164,7 @@ fn collectClipsRecursive(
 // callbacks plus this frame's resolved clips. A plain (non-inline) struct, so
 // one pointer to it is all every trampoline needs -- same trick, and same
 // lifetime reasoning, as passing RenderCallbacks itself used to be.
-struct DispatchState {
+ref struct DispatchState {
     callbacks: RenderCallbacks;
     clips: []ClipEntry;
 }
@@ -1178,7 +1181,7 @@ fn setClipTrampoline(userdata: cptr, elementPtr: cptr): void {
 
 fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
-        // userdata is the RenderCallbacks struct itself (already a single
+        // userdata is the RenderCallbacks ref struct itself (already a single
         // heap pointer -- see render()'s own comment), not a box -- no
         // separate allocation needed to reinterpret it back.
         let state: DispatchState = uninitialized;
@@ -1209,7 +1212,7 @@ fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): 
 // text+font+size across frames.
 fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_t): Vec2 {
     do unsafe {
-        let callable: Box<MeasureTextCB> = uninitialized;
+        let callable: ref Box<MeasureTextCB> = uninitialized;
         __c__("callable = userdata;");
         return callable.value(request.fontId, request.fontSize, request.text);
     };

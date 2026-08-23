@@ -1,7 +1,7 @@
 __c__("#include \"perfect_freehand.h\"");
 
 namespace ffi {
-	export extern C struct PfContext {};
+	export extern C ref struct PfContext {};
 
 	extern C fn pf_create(): PfContext :: final;
 	extern C fn pf_destroy(ctx: PfContext): void :: final;
@@ -19,7 +19,7 @@ namespace ffi {
 	extern C fn pf_get_outline_y(ctx: PfContext, index: i32): f64 :: final;
 }
 
-export struct StrokeOptions {
+export ref struct StrokeOptions {
 	size: real;
 	thinning: real;
 	smoothing: real;
@@ -39,7 +39,7 @@ export struct StrokeOptions {
 	}
 }
 
-export struct PerfectFreehand {
+export ref struct PerfectFreehand {
 	handle: ffi.PfContext;
 
 	fn constructor(options: StrokeOptions): PerfectFreehand {

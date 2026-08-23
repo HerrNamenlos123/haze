@@ -5,6 +5,7 @@ import {
   EDatatypeMutability,
   EUnaryOperation,
   UnaryOperationToString,
+  EStorageClass,
 } from "../shared/AST";
 import {
   EPrimitive,
@@ -50,8 +51,9 @@ export namespace Conversion {
       return extractConstraintPath(sr, expr.value);
     }
 
-    // Unwrap union casts to extract path from the underlying expression
+    // Unwrap union casts (and `(*this)`) to extract path from the underlying expression
     if (
+      expr.variant === Semantic.ENode.DereferenceExpr ||
       expr.variant === Semantic.ENode.UnionToValueCastExpr ||
       expr.variant === Semantic.ENode.UnionToUnionCastExpr
     ) {
@@ -1404,17 +1406,53 @@ export namespace Conversion {
       };
     }
 
-    // Conversion between inline/non-inline structs of the same type
-    // Since a copy always happens, mutability doesn't matter
+    // Storage-class conversions between uses of the same struct
+    // (R&D/Storage Classes and References.md §6.2):
+    //   ref -> value        implicit copy (clone)
+    //   stackref -> value   implicit copy (clone)
+    //   ref -> stackref     implicit, free (immortal generation)
+    //   value -> ref        never: heap storage is only created by filling a
+    //                       `ref` slot with a literal (I6)
+    //   value -> stackref   never at a use site: only `let stackref` creates one (I7)
+    //   stackref -> ref     never
     if (
       resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
       resolvedTargetTypeDef.variant === Semantic.ENode.StructDatatype &&
       resolvedSourceTypeUse.type === resolvedTargetTypeUse.type &&
-      resolvedSourceTypeUse.inline !== resolvedTargetTypeUse.inline
+      resolvedSourceTypeUse.storage !== resolvedTargetTypeUse.storage
     ) {
-      return {
-        kind: "clone-struct-to-target-type",
-      };
+      const from = resolvedSourceTypeUse.storage;
+      const to = resolvedTargetTypeUse.storage;
+      if (to === EStorageClass.Value) {
+        // Copy out of a reference. A copy always happens, so mutability of the
+        // source does not matter. nocopy is enforced by the caller (checkNocopy).
+        return {
+          kind: "clone-struct-to-target-type",
+        };
+      }
+      if (from === EStorageClass.Ref && to === EStorageClass.Stackref) {
+        return {
+          kind: "basic-c-cast",
+        };
+      }
+      if (from === EStorageClass.Value && to === EStorageClass.Ref) {
+        return {
+          kind: "error",
+          message: `'${sourceTypeText}' is a value and cannot become a '${targetTypeText}': a value never silently becomes a heap object. Construct it in the 'ref' slot directly (e.g. 'let x: ${targetTypeText} = { ... }'), or change the receiver to take 'stackref ${Semantic.serializeTypeUse(sr, makeTypeUse(sr, resolvedTargetTypeUse.type, EDatatypeMutability.Default, EStorageClass.Value, _sourceloc)[1])}'.`,
+        };
+      }
+      if (from === EStorageClass.Value && to === EStorageClass.Stackref) {
+        return {
+          kind: "error",
+          message: `'${sourceTypeText}' is a value and cannot be passed as '${targetTypeText}' at a use site. Declare it with 'let stackref x = ...' to create a stack reference.`,
+        };
+      }
+      if (from === EStorageClass.Stackref && to === EStorageClass.Ref) {
+        return {
+          kind: "error",
+          message: `A 'stackref' can never become a 'ref': '${sourceTypeText}' may point at scope-resident storage that the GC does not manage.`,
+        };
+      }
     }
 
     // Conversion from T[N] to T[]
@@ -1443,7 +1481,7 @@ export namespace Conversion {
     // From object reference to cptr
     if (
       resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
-      !resolvedSourceTypeUse.inline &&
+      (resolvedSourceTypeUse.storage !== EStorageClass.Value) &&
       resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
       resolvedTargetTypeDef.primitive === EPrimitive.cptr
     ) {
@@ -1677,7 +1715,7 @@ export namespace Conversion {
     // Mutability conversions
     if (resolvedSourceTypeUse.type === resolvedTargetTypeUse.type) {
       // Same type but different mutability
-      if (resolvedSourceTypeUse.inline === resolvedTargetTypeUse.inline) {
+      if (resolvedSourceTypeUse.storage === resolvedTargetTypeUse.storage) {
         if (
           resolvedSourceTypeUse.mutability === resolvedTargetTypeUse.mutability
         ) {
@@ -1700,6 +1738,18 @@ export namespace Conversion {
         if (
           (sourceExpr.variant === Semantic.ENode.StructLiteralExpr ||
             sourceExpr.variant === Semantic.ENode.ArrayLiteralExpr) &&
+          resolvedTargetTypeUse.mutability === EDatatypeMutability.Const
+        ) {
+          return {
+            kind: "basic-c-cast",
+          };
+        }
+
+        // A value struct is copied into the const binding: no other reference
+        // to the copy can exist, so freezing it is always safe.
+        if (
+          resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
+          resolvedSourceTypeUse.storage === EStorageClass.Value &&
           resolvedTargetTypeUse.mutability === EDatatypeMutability.Const
         ) {
           return {
@@ -2590,6 +2640,27 @@ export namespace Conversion {
       return { ok: false, error: conversionPlan.message };
     }
 
+    // nocopy (R&D/Storage Classes and References.md §9): landing a value of a
+    // nocopy struct type in a new slot is a second binding unless the source
+    // is a temporary (nothing else can observe it afterwards). Copying out of
+    // a ref/stackref duplicates an object that keeps existing: always rejected.
+    {
+      const targetUse = sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeUseId));
+      const targetDef = sr.typeDefNodes.get(targetUse.type);
+      if (
+        targetDef.variant === Semantic.ENode.StructDatatype &&
+        targetUse.storage === EStorageClass.Value &&
+        isNocopyType(sr, targetUse.type) &&
+        (conversionPlan.kind === "clone-struct-to-target-type" ||
+          !sourceExpr.isTemporary)
+      ) {
+        return {
+          ok: false,
+          error: `'${Semantic.serializeTypeUse(sr, targetTypeUseId)}' is 'nocopy' and this would create a second binding of an existing value. Pass it as 'stackref ${Semantic.serializeTypeUse(sr, targetTypeUseId)}' or 'ref ${Semantic.serializeTypeUse(sr, targetTypeUseId)}' instead, or construct a fresh value here.`,
+        };
+      }
+    }
+
     return {
       ok: true,
       expr: materializeConversionPlan(
@@ -2600,6 +2671,62 @@ export namespace Conversion {
         sourceloc
       ),
     };
+  }
+
+  const nocopyCaches = new WeakMap<Semantic.Context, Map<Semantic.TypeDefId, boolean>>();
+
+  /** `nocopy` is viral: a struct holding a nocopy value field is nocopy too. */
+  export function isNocopyType(
+    sr: Semantic.Context,
+    typeDefId: Semantic.TypeDefId
+  ): boolean {
+    let nocopyCache = nocopyCaches.get(sr);
+    if (!nocopyCache) {
+      nocopyCache = new Map();
+      nocopyCaches.set(sr, nocopyCache);
+    }
+    const cached = nocopyCache.get(typeDefId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const def = sr.typeDefNodes.get(typeDefId);
+    let result = false;
+    if (def.variant === Semantic.ENode.StructDatatype) {
+      if (def.nocopy) {
+        result = true;
+      } else {
+        nocopyCache.set(typeDefId, false); // cycle guard
+        for (const memberId of def.members) {
+          const member = sr.symbolNodes.get(memberId);
+          if (member.variant !== Semantic.ENode.VariableSymbol || !member.type) {
+            continue;
+          }
+          const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(member.type));
+          const mDef = sr.typeDefNodes.get(mUse.type);
+          if (
+            mDef.variant === Semantic.ENode.StructDatatype &&
+            mUse.storage === EStorageClass.Value &&
+            isNocopyType(sr, mUse.type)
+          ) {
+            result = true;
+            break;
+          }
+          if (
+            mDef.variant === Semantic.ENode.FixedArrayDatatype &&
+            isNocopyType(sr, sr.typeUseNodes.get(sr.e.resolveAlias(mDef.datatype)).type)
+          ) {
+            result = true;
+            break;
+          }
+        }
+      }
+    } else if (def.variant === Semantic.ENode.FixedArrayDatatype) {
+      const elemUse = sr.typeUseNodes.get(sr.e.resolveAlias(def.datatype));
+      result =
+        elemUse.storage === EStorageClass.Value && isNocopyType(sr, elemUse.type);
+    }
+    nocopyCache.set(typeDefId, result);
+    return result;
   }
 
   export function MakeDefaultValue(
@@ -2818,6 +2945,29 @@ export namespace Conversion {
       );
     }
 
+    // References compare by object identity -- the machine pointer. The
+    // generation of a stackref is a concept of time, not identity, and does
+    // not take part. A ref and a stackref to the same object are equal.
+    // (R&D/Storage Classes and References.md §3.5)
+    {
+      const leftUse = sr.typeUseNodes.get(sr.e.resolveAlias(leftTypeUseId));
+      const rightUse = sr.typeUseNodes.get(sr.e.resolveAlias(rightTypeUseId));
+      if (
+        leftType.variant === Semantic.ENode.StructDatatype &&
+        rightType.variant === Semantic.ENode.StructDatatype &&
+        leftTypeId === rightTypeId &&
+        leftUse.storage !== EStorageClass.Value &&
+        rightUse.storage !== EStorageClass.Value
+      ) {
+        return makePrimitiveAvailable(
+          sr,
+          EPrimitive.bool,
+          EDatatypeMutability.Const,
+          sourceloc
+        );
+      }
+    }
+
     throw new CompilerError(
       `No safe comparison is available between types '${Semantic.serializeTypeUse(
         sr,
@@ -2866,7 +3016,7 @@ export namespace Conversion {
             sr,
             leftTypeId,
             EDatatypeMutability.Const,
-            false,
+            EStorageClass.Value,
             sourceloc
           )[1];
         }
@@ -3076,7 +3226,7 @@ export namespace Conversion {
           sr,
           op.to,
           EDatatypeMutability.Const,
-          false,
+          EStorageClass.Value,
           sourceloc
         )[1];
       }

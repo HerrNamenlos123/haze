@@ -40,11 +40,11 @@ namespace cases_break_continue {
         s.run(
             "break/continue: flow control, narrowing and C semantics",
             """
-struct Box {
+ref struct Box {
     v: int | none;
 }
 
-struct Pair {
+ref struct Pair {
     a: int | none;
     b: int | none;
 }
@@ -507,7 +507,7 @@ fn main(): int {
         s.compileFails(
             "no narrowing after a fallthrough branch: the union may not be used as an int",
             """
-struct Box {
+ref struct Box {
     v: int | none;
 }
 

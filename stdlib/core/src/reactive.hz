@@ -45,11 +45,11 @@ namespace rx {
         else if comptime T.baseType.category == meta.TypeCategory.Struct {
             do unsafe {
                 let result: Reactive<T> = uninitialized;
-                // Build the Deep<T> struct on the stack with each field initialized as a reactive,
+                // Build the Deep<T> ref struct on the stack with each field initialized as a reactive,
                 // then create the reactive cell from that complete struct. This avoids the double
                 // problem of using the wrong value_T (Cache* instead of Deep<T>) and trying to
                 // write fields through a HZSTD_REACTIVE_CELL_READ copy (which is not an lvalue).
-                let deep: inline Deep<T> = uninitialized;
+                let deep: Deep<T> = uninitialized;
                 for comptime field in T.fields {
                     deep.[field.name] = reactive<typeof(value.[field.name])>(value.[field.name]);
                 }

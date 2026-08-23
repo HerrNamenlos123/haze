@@ -8,7 +8,7 @@ import ui_styling;
 // component system) stashes whatever per-element bookkeeping it needs in
 // there, typed however it likes. This module never reads it.
 
-export struct DivElementArgs {
+export ref struct DivElementArgs {
     id: int;
     // This element's own globally-unique id across the whole tree (its
     // parent's own globalId, slash-joined with `id` above) -- computed once
@@ -23,7 +23,7 @@ export struct DivElementArgs {
     style: ui_styling.ComputedDivStyle = {};
 }
 
-export struct DivElement {
+export ref struct DivElement {
     id: int;
     globalId: str;
     children: []Element = [];
@@ -40,7 +40,7 @@ export struct DivElement {
     }
 }
 
-export struct TextElementArgs {
+export ref struct TextElementArgs {
     id: int;
     // Same as DivElementArgs.globalId -- see its comment.
     globalId: str;
@@ -48,7 +48,7 @@ export struct TextElementArgs {
     style: ui_styling.ComputedTextStyle = {};
 }
 
-export struct TextElement {
+export ref struct TextElement {
     id: int;
     globalId: str;
     text: str;
@@ -65,7 +65,7 @@ export struct TextElement {
     }
 }
 
-export struct CanvasElementArgs {
+export ref struct CanvasElementArgs {
     id: int;
     // Same as DivElementArgs.globalId -- see its comment.
     globalId: str;
@@ -76,7 +76,7 @@ export struct CanvasElementArgs {
 // Like Div/Text, anything it needs beyond id/style (a GPU canvas handle, a
 // per-frame draw closure, render feedback, ...) lives in `_runtimeData`,
 // owned by whoever created it -- this module doesn't know any of that exists.
-export struct CanvasElement {
+export ref struct CanvasElement {
     id: int;
     globalId: str;
     style: ui_styling.ComputedDivStyle = {};

@@ -5,12 +5,12 @@
 // Compiler errors prove the feature is missing
 // ============================================================================
 
-struct Point {
+ref struct Point {
     x: int | null;
     y: int | null;
 }
 
-struct Container {
+ref struct Container {
     point: Point;
     value: str | null;
 }

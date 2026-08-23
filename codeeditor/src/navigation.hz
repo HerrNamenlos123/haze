@@ -20,7 +20,7 @@
 // mounts, so a newly opened file's EditorView can honour the request on the
 // very frame it first renders -- there is no "reveal once loaded" queue.
 
-struct NavigationState {
+ref struct NavigationState {
     // Absolute path of the file the caret should end up in. "" when there
     // is no outstanding request.
     path: rx.Reactive<str>;

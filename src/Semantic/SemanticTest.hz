@@ -1,7 +1,7 @@
 inject "#include <stdio.h>";
 
 namespace A {
-    export struct Wrapper<T> {
+    export ref struct Wrapper<T> {
         value: T;
 
         get(): T => {
@@ -10,7 +10,7 @@ namespace A {
     }
 
     namespace B {
-        export struct Wrapper<T> {
+        export ref struct Wrapper<T> {
             value: A.Wrapper<T>;
 
             getInner(): T => {
@@ -21,7 +21,7 @@ namespace A {
 }
 
 namespace C {
-    export struct Processor<T> {
+    export ref struct Processor<T> {
         wrap: A.B.Wrapper<T>;
 
         extract(): T => {

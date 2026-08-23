@@ -2,15 +2,15 @@ namespace ffi {
     extern C noemit fn hzstd_profiling_start(sampling_rate_hz: int, memoryInstrumentation: bool, memoryInstrumentationStacktraces: bool): hzstd_profiling_context_t :: final;
     extern C noemit fn hzstd_profiling_end(context: hzstd_profiling_context_t): hzstd_profiling_result_t :: final;
 
-    export extern C noemit struct hzstd_profiling_context_t {};
+    export extern C noemit ref struct hzstd_profiling_context_t {};
 
-    export extern C noemit opaque inline struct hzstd_profiling_frame_t {
+    export extern C noemit opaque struct hzstd_profiling_frame_t {
         address: cptr;
         name: str;
         sourceloc: SourceLocation;
     };
 
-    export extern C noemit opaque inline struct hzstd_profiling_sample_t {
+    export extern C noemit opaque struct hzstd_profiling_sample_t {
         timestamp: real;
         sampling_duration: real;
         frames: []int;
@@ -18,7 +18,7 @@ namespace ffi {
         lost_before: int;
     };
 
-    export extern C noemit opaque inline struct hzstd_memory_instrumentation_frame_t {
+    export extern C noemit opaque struct hzstd_memory_instrumentation_frame_t {
         stacktrace: hzstd_stacktrace_t;
         timestamp: real;
         sizeBytes: int;
@@ -28,7 +28,7 @@ namespace ffi {
         dataType: str; // empty string = absent
     };
 
-    export extern C noemit opaque inline struct hzstd_profiling_result_t {
+    export extern C noemit opaque struct hzstd_profiling_result_t {
         frames: []hzstd_profiling_frame_t;
         samples: []hzstd_profiling_sample_t;
         sampling_rate_hz: int;
@@ -60,7 +60,7 @@ namespace profiling {
 
     // Same conversion as frameRefForFrame above, but for sys.StackFrame
     // (the type used by memoryInstrumentationFrames' stacktraces) -- an
-    // unrelated FFI struct that happens to share the same name/sourceloc
+    // unrelated FFI ref struct that happens to share the same name/sourceloc
     // shape, so both funnel through this one implementation.
     fn frameRefForStackFrame(frame: sys.StackFrame): ChromeTrace.FrameRef {
         return frameRefForNameAndLoc(frame.name, frame.sourceloc);
@@ -228,7 +228,7 @@ namespace profiling {
                 // A CpuProfile sample carries no size/type of its own (V8's
                 // SamplingHeapProfileNode has selfSize for exactly this; the CPU shape has
                 // nowhere to put it), so they become the LEAF frame instead -- "Heap alloc
-                // struct mut Foo (8 bytes)" sits where the allocating function's callee
+                // ref struct mut Foo (8 bytes)" sits where the allocating function's callee
                 // would be. That also dedups on exactly the right key: same type, same size,
                 // same call path collapses to one node, while differing in either keeps them
                 // apart and separately countable.
@@ -341,7 +341,7 @@ namespace profiling {
 
     // Mirrors hz_profiler_instrument_allocation_type (hzstd_memory.h) -- kept as a plain int on
     // the FFI struct (see ffi.hzstd_memory_instrumentation_frame_t) rather than a real enum type,
-    // since hzstd_types.h (which that struct is defined against) is deliberately freestanding and
+    // since hzstd_types.h (which that ref struct is defined against) is deliberately freestanding and
     // can't depend on hzstd_memory.h. Values must be kept in sync by hand.
     fn allocationKindName(allocationType: int): str {
         if allocationType == 0 { return "Heap alloc"; }       // hz_profiler_instrument_allocation_type_heap
@@ -356,7 +356,7 @@ namespace profiling {
     // Builds the human-readable marker name shown in the trace for one allocation capture:
     // "<Kind> <dataType> (<size> bytes)" when a dataType string was actually reported by the
     // compiler/runtime (see the big comment on hzstd_heap_allocate_n in hzstd_memory.h for which
-    // allocations carry one -- struct instantiation and array creation always do; array growth
+    // allocations carry one -- ref struct instantiation and array creation always do; array growth
     // does via hzstd_dynamic_array_t::elementTypeName; a small number of internal-only runtime
     // allocations legitimately don't), falling back to just "<Kind> (<size> bytes)" otherwise.
     fn allocationMarkerName(frame: ffi.hzstd_memory_instrumentation_frame_t): str {
@@ -540,10 +540,10 @@ namespace profiling {
 // The *achieved* rate -- actual samples per second -- shows up in ProfilingResult.sampling_rate_hz
 // once a session ends. Only one profiling session can be active at a time; starting a second
 // session while one is already running will panic immediately.
-export struct Profiler {
+export ref struct Profiler {
     context: ffi.hzstd_profiling_context_t;
 
-    struct Args {
+    ref struct Args {
         samplingRate: int = 10000;
         memoryInstrumentation: bool = true;
         memoryInstrumentationStacktraces: bool = true;

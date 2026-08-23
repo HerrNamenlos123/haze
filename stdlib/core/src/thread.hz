@@ -1,10 +1,10 @@
 
-// shared struct Shared<T> {
+// shared ref struct Shared<T> {
 //      mutex: Mutex;
 //      _data: T;
 
 //     fn constructor() {
-//          static_assert(!T.isInline);
+//          static_assert(!T.isValue);
 //         return Shared<T> {
 
 //         };
@@ -23,7 +23,7 @@
     //     }
     // }
 
-// inline struct Cache {
+// struct Cache {
 //     path: str;
 //     count: int;
 // }

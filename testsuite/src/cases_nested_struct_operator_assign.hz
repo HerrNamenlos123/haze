@@ -2,14 +2,14 @@
 // ============================================================================
 // REGRESSION TEST
 //
-// Bug: a nested struct (`struct Outer { struct Inner { ... } }`) that
+// Bug: a nested struct (`ref struct Outer { ref struct Inner { ... } }`) that
 // defines a custom `operator:=` failed to resolve it -- "Expression of type
 // '...Inner' is not a valid LHS, no matching assignment operator overload
 // exists" -- whenever the value was obtained through a *sibling method's*
 // `Result<Inner, E>` return type, e.g. `let v = outer.get()?!; v := x;`.
-// Constructing the same nested struct directly as a literal
+// Constructing the same nested ref struct directly as a literal
 // (`Outer.Inner { ... }`) and immediately using `:=` on it worked fine, so
-// the bug was specific to reaching the nested struct via another method's
+// the bug was specific to reaching the nested ref struct via another method's
 // return type.
 //
 // This is exactly the shape json.Node.Proxy (stdlib/core/src/json.hz) has:
@@ -19,24 +19,24 @@
 //
 // Root cause (src/Semantic/Elaborate.ts, instantiateAndElaborateStruct()):
 // nested structs are pre-instantiated eagerly by
-// elaborateMethodsAndTypedefsOfStruct() while the *enclosing* struct is
+// elaborateMethodsAndTypedefsOfStruct() while the *enclosing* ref struct is
 // still the root of the recursive elaboration stack. Being non-root at
-// that moment, the nested struct itself hits the "if this is NOT a root
+// that moment, the nested ref struct itself hits the "if this is NOT a root
 // struct, do NOT elaborate methods" branch, so its own .methods list stays
-// empty. Ordinarily a later lookup of that same nested struct with an
+// empty. Ordinarily a later lookup of that same nested ref struct with an
 // empty stack fixes this up (see the CACHE HIT branch's `methodsFinalized
-// || methodsInProgress` check) -- but if the nested struct is never looked
-// up again after its enclosing struct finishes elaborating (e.g. it's only
+// || methodsInProgress` check) -- but if the nested ref struct is never looked
+// up again after its enclosing ref struct finishes elaborating (e.g. it's only
 // ever referenced from a sibling method's signature, resolved while the
 // parent was still mid-elaboration), the empty .methods list is never
 // fixed, and any operator overload resolution on it (:=, but this would
 // equally affect other operators looked up the same way) fails even
 // though the method is right there in the source.
 //
-// The fix: instantiateAndElaborateStruct(), once a struct finishes being
+// The fix: instantiateAndElaborateStruct(), once a ref struct finishes being
 // the elaboration root, now also walks its own .nestedStructs and
 // finalizes methods for any that never became a root themselves
-// (finalizeNestedStructMethods(), recursive since a nested struct can
+// (finalizeNestedStructMethods(), recursive since a nested ref struct can
 // itself nest further).
 // ============================================================================
 
@@ -45,14 +45,14 @@ namespace cases_nested_struct_operator_assign {
     export fn register(s: mut testsuite.Suite) {
 
         s.run(
-            "nested struct operator:= resolves when the value comes from a sibling method's Result<NestedStruct, E> return type",
+            "nested ref struct operator:= resolves when the value comes from a sibling method's Result<NestedStruct, E> return type",
             """
-struct MyErr {
+ref struct MyErr {
     msg: str;
 }
 
-struct Outer {
-    struct Inner {
+ref struct Outer {
+    ref struct Inner {
         v: int;
         fn operator:=(value: real): void {
             this.v = value as int;
@@ -65,7 +65,7 @@ struct Outer {
 }
 
 fn direct(): int {
-    // Sanity check: constructing the nested struct directly and using :=
+    // Sanity check: constructing the nested ref struct directly and using :=
     // immediately never triggered the bug -- this must keep working.
     let item = Outer.Inner { v: 0 };
     item := 9.0 as real;
@@ -99,7 +99,7 @@ fn main(): int {
         );
 
         s.run(
-            "nested struct operator:= resolves through json.Node.Proxy specifically (the real-world trigger)",
+            "nested ref struct operator:= resolves through json.Node.Proxy specifically (the real-world trigger)",
             """
 fn main(): int {
     let node = json.object();

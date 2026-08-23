@@ -35,8 +35,8 @@ import ui_components
 // table below can move into a user-editable keybindings.json unchanged.
 
 // One command's implementation. Named via `type` rather than written
-// inline because a bare closure literal does not implicitly convert into a
-// `| none` union, and a struct field with a closure literal DEFAULT crashes
+// because a bare closure literal does not implicitly convert into a
+// `| none` union, and a ref struct field with a closure literal DEFAULT crashes
 // the compiler outright -- see stdlib/textedit_behavior's Behavior struct,
 // which is shaped this way for the same reason.
 type CommandFn = () => void;
@@ -45,7 +45,7 @@ type CommandFn = () => void;
 
 // One physical key plus the modifiers held with it -- "ctrl+shift+p".
 // A *chord* (VS Code's word) is a sequence of these: "ctrl+k ctrl+o".
-struct KeyStroke {
+ref struct KeyStroke {
     key: ui_components.Key = ui_components.Key.Unknown;
     ctrl: bool = false;
     shift: bool = false;
@@ -363,7 +363,7 @@ fn whenTruthy(value: str): bool {
 // The bag of named values `when` expressions are evaluated against. The
 // application pushes into this whenever the thing a key means could have
 // changed -- focus moved, the vim mode changed, a tab opened.
-struct WhenContext {
+ref struct WhenContext {
     values: LinearMap<str, str> = {};
 
     fn constructor(): mut WhenContext {
@@ -406,7 +406,7 @@ enum WhenTokenKind {
     Invalid,
 }
 
-struct WhenToken {
+ref struct WhenToken {
     kind: WhenTokenKind = WhenTokenKind.Invalid;
     text: str = "";
 }
@@ -518,9 +518,9 @@ enum WhenKind {
 }
 
 // The tree is stored FLAT, as a node array with integer child links,
-// because a struct cannot contain itself by value -- the usual shape for a
+// because a ref struct cannot contain itself by value -- the usual shape for a
 // tree in a language without an obvious owning-pointer type.
-struct WhenNode {
+ref struct WhenNode {
     kind: WhenKind = WhenKind.Always;
     key: str = "";
     value: str = "";
@@ -532,7 +532,7 @@ struct WhenNode {
 // empty clause and the fallback for one that failed to parse, so a typo
 // never silently disables a keybinding -- it makes it unconditional, and
 // `error` says why.
-struct WhenExpr {
+ref struct WhenExpr {
     source: str = "";
     nodes: []WhenNode = [];
     root: int = -1;
@@ -572,10 +572,10 @@ fn evalWhen(expr: WhenExpr, ctx: WhenContext): bool {
     return evalWhenNode(expr, expr.root, ctx);
 }
 
-// Recursive-descent over the token list. Held as a struct purely so the
+// Recursive-descent over the token list. Held as a ref struct purely so the
 // cursor and the node arena are shared between the mutually recursive
 // methods; each of them returns a node index, or -1 once `error` is set.
-struct WhenParser {
+ref struct WhenParser {
     tokens: []WhenToken = [];
     pos: int = 0;
     nodes: []WhenNode = [];
@@ -716,7 +716,7 @@ fn parseWhen(source: str): WhenExpr {
 // json.serialize/parse, which makes the compiler try to instantiate
 // json.stringify() for its value type, and a closure cannot be serialized
 // (H7015). The lookup is the same linear scan either way.
-struct CommandRegistry {
+ref struct CommandRegistry {
     ids: []str = [];
     handlers: []CommandFn = [];
 
@@ -768,13 +768,13 @@ struct CommandRegistry {
 // ═══ 4. The keymap and its dispatcher ════════════════════════════════════
 
 // One row of a keymap table, in the shape a keybindings.json entry has.
-struct KeybindingSpec {
+ref struct KeybindingSpec {
     key: str = "";
     command: str = "";
     when: str = "";
 }
 
-struct Keybinding {
+ref struct Keybinding {
     chord: []KeyStroke = [];
     command: str = "";
     when: WhenExpr = {};
@@ -802,7 +802,7 @@ enum DispatchOutcome {
     ChordBroken,
 }
 
-struct DispatchResult {
+ref struct DispatchResult {
     outcome: DispatchOutcome = DispatchOutcome.Ignored;
     command: str = "";
 
@@ -825,7 +825,7 @@ fn chordStartsWith(chord: []KeyStroke, prefix: []KeyStroke): bool {
     return true;
 }
 
-struct Keymap {
+ref struct Keymap {
     // In declaration order. LATER RULES WIN: resolution scans backwards, so
     // a rule added afterwards overrides an earlier one for the same chord
     // whenever its `when` also holds. This is what lets a keymap be layered
@@ -990,7 +990,7 @@ struct Keymap {
 // each and wiring dispatch to all three at once -- the registries stay
 // separately reachable so a component can register a command, or set a
 // context key, without going through the dispatcher.
-struct Keybindings {
+ref struct Keybindings {
     keymap: mut Keymap;
     commands: mut CommandRegistry;
     context: mut WhenContext;

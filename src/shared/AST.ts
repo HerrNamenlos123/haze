@@ -13,6 +13,19 @@ export enum EDatatypeMutability {
   Const = 3,
 }
 
+// Storage class of a type *use* (R&D/Storage Classes and References.md §3).
+//   Value    - the value itself, lives where declared, copied on assignment
+//   Ref      - a machine pointer whose validity the GC guarantees
+//   Stackref - pointer + generation witness, checked on every use
+// A struct is only a C memory layout; its storage class is always a property of
+// the use. `ref struct X` makes bare uses of X mean `ref X` (and X can never be a
+// value); `stackref T` is a stackref whatever T is (last modifier wins).
+export enum EStorageClass {
+  Value = 1,
+  Ref = 2,
+  Stackref = 3,
+}
+
 export enum EExternLanguage {
   None = 0,
   Extern = 1,
@@ -242,6 +255,10 @@ export type ASTFunctionDefinition = {
     | EDatatypeMutability.Const
     | EDatatypeMutability.Mut
     | null;
+  // `ref fn` / `stackref fn`: the receiver must have (at least) this storage
+  // class and `this` is nameable inside with that type. null = plain `fn`: the
+  // receiver is a hidden pointer and bare `this` is an error (§12).
+  methodReceiverStorage: EStorageClass.Ref | EStorageClass.Stackref | null;
   funcbody?: ASTFuncBody;
   sourceloc: SourceLoc;
   originalSourcecode: string;
@@ -315,6 +332,8 @@ export type ASTContinueStatement = {
 export type ASTVariableDefinitionStatement = {
   variant: "VariableDefinitionStatement";
   mutability: EVariableMutability;
+  // `let stackref x = ...`: the one place a stackref is created (§5.1).
+  stackref: boolean;
   comptime: boolean;
   name: string;
   datatype?: ASTExpr;
@@ -606,8 +625,14 @@ export type ASTMutTypeExpr = {
   sourceloc: SourceLoc;
 };
 
-export type ASTInlineTypeExpr = {
-  variant: "InlineTypeExpr";
+export type ASTRefTypeExpr = {
+  variant: "RefTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+export type ASTStackrefTypeExpr = {
+  variant: "StackrefTypeExpr";
   type: ASTExpr;
   sourceloc: SourceLoc;
 };
@@ -713,7 +738,8 @@ export type ASTExpr =
   | ASTSymbolValueExpr
   | ASTConstTypeExpr
   | ASTMutTypeExpr
-  | ASTInlineTypeExpr
+  | ASTRefTypeExpr
+  | ASTStackrefTypeExpr
   | ASTDynamicArrayTypeExpr
   | ASTStaticArrayTypeExpr
   | ASTNodiscardTypeExpr
@@ -794,7 +820,10 @@ export type ASTStructDefinition = {
   noemit: boolean;
   opaque: boolean;
   plain: boolean;
-  inlineByDefault: boolean;
+  // `ref struct`: every bare use of this struct is `ref`; it can never be a value.
+  refByDefault: boolean;
+  // `nocopy struct`: no second binding of a value of this type may ever be created.
+  nocopy: boolean;
   pub: boolean;
   generics: {
     name: string;

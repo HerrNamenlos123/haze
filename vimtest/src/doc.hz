@@ -11,10 +11,10 @@
 // behavior that only a clock can trigger -- vim's 'timeoutlen', where a
 // pending mapping chord resolves because no key arrived in time. Without a
 // movable clock that path is simply unreachable from a test.
-// Held in a struct behind an optional global because a module-level `let`
+// Held in a ref struct behind an optional global because a module-level `let`
 // can only be initialized to `none` here (a plain `= 0.0` is rejected as a
 // multi-line global initializer) -- same shape codeui.hz's g_state uses.
-struct TestClock {
+ref struct TestClock {
     seconds: real = 0.0;
 }
 

@@ -8,24 +8,24 @@ namespace filedialog_ffi {
         hz_filedialog_result_error = 3,
     }
 
-    extern C noemit inline struct hz_filedialog_path_result_t {
+    extern C noemit struct hz_filedialog_path_result_t {
         result: hz_filedialog_result_t;
         path: str;
         error: str;
     };
 
-    extern C noemit inline struct hz_filedialog_multiple_result_t {
+    extern C noemit struct hz_filedialog_multiple_result_t {
         result: hz_filedialog_result_t;
         error: str;
     };
 
-    extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str): inline hz_filedialog_path_result_t :: final;
-    extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str): inline hz_filedialog_multiple_result_t :: final;
-    extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str): inline hz_filedialog_path_result_t :: final;
-    extern C fn hz_filedialog_open_folder_dialog(defaultPath: str): inline hz_filedialog_path_result_t :: final;
+    extern C fn hz_filedialog_open_dialog(filters: str, defaultPath: str): hz_filedialog_path_result_t :: final;
+    extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str): hz_filedialog_multiple_result_t :: final;
+    extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str): hz_filedialog_path_result_t :: final;
+    extern C fn hz_filedialog_open_folder_dialog(defaultPath: str): hz_filedialog_path_result_t :: final;
 }
 
-export inline struct DialogOpenArgs {
+export struct DialogOpenArgs {
     // Filters = String with filters for file extensions
     // Example: "jpg,png;txt;exe"
     // , -> Delimiter for extensions within a single filter
@@ -35,21 +35,21 @@ export inline struct DialogOpenArgs {
     defaultPath: str = "";
 }
 
-export inline struct DialogOpenFolderArgs {
+export struct DialogOpenFolderArgs {
     defaultPath: str = "";
 }
 
-export struct DialogSuccess {
+export ref struct DialogSuccess {
     path: str;
 }
 
-export struct DialogMultipleSuccess {
+export ref struct DialogMultipleSuccess {
     paths: []str;
 }
 
-export struct DialogCancel {}
+export ref struct DialogCancel {}
 
-export struct DialogError {
+export ref struct DialogError {
     error: str;
 }
 

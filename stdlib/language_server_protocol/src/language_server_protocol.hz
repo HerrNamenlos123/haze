@@ -1,21 +1,21 @@
 import unicode
 
 
-export inline struct ContextArgs {
+export struct ContextArgs {
     exe: str;
     args: []str;
 }
 
-export inline struct Error {
+export struct Error {
     message: str;
 }
 
-export inline struct LSPError {
+export struct LSPError {
     code: int;
     message: str;
 }
 
-export struct LSPResponse {
+export ref struct LSPResponse {
     jsonrpc: str;
     method?: str;
     id?: int;
@@ -24,7 +24,7 @@ export struct LSPResponse {
     error?: LSPError;
 }
 
-export struct LSPRequest<Params> {
+export ref struct LSPRequest<Params> {
     id?: int;
     jsonrpc: str;
     method: str;
@@ -34,25 +34,25 @@ export struct LSPRequest<Params> {
 // `shutdown` takes no parameters and returns null; `exit` takes none
 // either. Both exist only so detach() can name a type for the generic
 // send helpers.
-export struct LSPShutdownParams {}
-export struct LSPShutdownResult {}
-export struct LSPExitParams {}
+export ref struct LSPShutdownParams {}
+export ref struct LSPShutdownResult {}
+export ref struct LSPExitParams {}
 
-export struct WorkspaceFolder {
+export ref struct WorkspaceFolder {
     uri: str;
     name: str;
 }
 
-export struct InitializeOptions<TInitializationOptions> {
+export ref struct InitializeOptions<TInitializationOptions> {
     rootUri: str;
     workspaceFolders: []WorkspaceFolder = [];
     initializationOptions: TInitializationOptions;
 }
 
-export struct LSPInitializeParams<TInitializationOptions> {
+export ref struct LSPInitializeParams<TInitializationOptions> {
     processId: int;
 
-    struct ClientInfo {
+    ref struct ClientInfo {
         name: str;
         version?: str;
     };
@@ -77,8 +77,8 @@ export struct LSPInitializeParams<TInitializationOptions> {
     // conversion at all -- the offsets go on the wire exactly as stored.
     // `utf-16` is listed second because it is mandatory to support and is
     // what we must fall back to (see unicode.utf16UnitsBefore).
-    struct Capabilities {
-        struct General {
+    ref struct Capabilities {
+        ref struct General {
             positionEncodings: []str = ["utf-8", "utf-16"];
         };
         general: General = {};
@@ -121,7 +121,7 @@ export fn convertCharacterToByteOffset(lineText: str, character: int, serverUses
     return unicode.offsetFromUtf16Units(lineText, character);
 }
 
-export struct Context<TInitializationOptions> {
+export ref struct Context<TInitializationOptions> {
     _args: ContextArgs;
     _serverProcess: process.Process;
     _running: bool;
@@ -137,7 +137,7 @@ export struct Context<TInitializationOptions> {
     // bridge) that don't belong in a general-purpose LSP client.
     onNotification: ((method: str, params: json.Node) => none) | none = none;
 
-    struct PendingRequest {
+    ref struct PendingRequest {
         requestId: int;
         successCallback: (response: json.Node) => none;
         errorCallback: (error: LSPError) => none;
@@ -485,31 +485,31 @@ export struct Context<TInitializationOptions> {
     }
 }
 
-export struct LSPDocumentHoverRequestParams {
-    struct TextDocument {
+export ref struct LSPDocumentHoverRequestParams {
+    ref struct TextDocument {
         uri: str;
     };
     textDocument: TextDocument;
 
-    struct Position {
+    ref struct Position {
         line: int;
         character: int;
     };
     position: Position;
 }
 
-export struct LSPDocumentHoverResponse {
-    struct MarkupContent {
+export ref struct LSPDocumentHoverResponse {
+    ref struct MarkupContent {
         kind: str;
         value: str;
     };
     contents: MarkupContent;
 }
 
-export struct LSPInitializedNotification {}
+export ref struct LSPInitializedNotification {}
 
-export struct LSPInitResponse {
-  struct Capabilities {
+export ref struct LSPInitResponse {
+  ref struct Capabilities {
     // Which index space this server will use for `Position.character`.
     // "utf-8" means byte offsets (what we asked for and can send as-is),
     // "utf-16" means UTF-16 code units and requires conversion. Absent on
@@ -518,8 +518,8 @@ export struct LSPInitResponse {
 
     textDocumentSync: int;
 
-    struct Workspace {
-      struct WorkspaceFolders {
+    ref struct Workspace {
+      ref struct WorkspaceFolders {
         supported: bool;
         changeNotifications: bool;
       };
@@ -539,43 +539,43 @@ export struct LSPInitResponse {
     hoverProvider: bool;
     documentHighlightProvider: bool;
 
-    struct RenameProvider {
+    ref struct RenameProvider {
       prepareProvider: bool;
     };
     renameProvider: RenameProvider;
 
-    struct DocumentLinkProvider {
+    ref struct DocumentLinkProvider {
     };
     documentLinkProvider: DocumentLinkProvider;
 
-    struct InlayHintProvider {
+    ref struct InlayHintProvider {
     };
     inlayHintProvider: InlayHintProvider;
 
-    struct CompletionProvider {
+    ref struct CompletionProvider {
       triggerCharacters: []str;
       resolveProvider: bool;
     };
     completionProvider: CompletionProvider;
 
-    struct CodeActionProvider {
+    ref struct CodeActionProvider {
       codeActionKinds: []str;
       resolveProvider: bool;
     };
     codeActionProvider: CodeActionProvider;
 
-    struct DocumentOnTypeFormattingProvider {
+    ref struct DocumentOnTypeFormattingProvider {
       firstTriggerCharacter: str;
       moreTriggerCharacter: []str;
     };
     documentOnTypeFormattingProvider: DocumentOnTypeFormattingProvider;
 
-    // struct ExecuteCommandProvider {
+    // ref struct ExecuteCommandProvider {
     //   List<String> commands;
     // } executeCommandProvider;
 
-    struct Experimental {
-      struct AutoInsertionProvider {
+    ref struct Experimental {
+      ref struct AutoInsertionProvider {
         triggerCharacters: []str;
         configurationSections: [][]str;
       };
@@ -587,8 +587,8 @@ export struct LSPInitResponse {
   capabilities: Capabilities;
 };
 
-export struct LSPOpenDocumentRequestParams {
-    struct TextDocument {
+export ref struct LSPOpenDocumentRequestParams {
+    ref struct TextDocument {
       uri: str;
       languageId: str;
       version: int;
@@ -597,15 +597,15 @@ export struct LSPOpenDocumentRequestParams {
     textDocument: TextDocument;
 }
 
-export struct LSPOpenDocumentResponseResult {
+export ref struct LSPOpenDocumentResponseResult {
 }
 
-export struct LSPPosition {
+export ref struct LSPPosition {
     line: int;
     character: int;
 }
 
-export struct LSPRange {
+export ref struct LSPRange {
     start: LSPPosition;
     end: LSPPosition;
 }
@@ -613,13 +613,13 @@ export struct LSPRange {
 // One incremental edit in a textDocument/didChange. Omitting `range`
 // entirely is how the spec spells "the whole document was replaced"; this
 // client always sends a range, so the field is required here.
-export struct LSPContentChange {
+export ref struct LSPContentChange {
     range: LSPRange;
     text: str;
 }
 
-export struct LSPChangeDocumentRequestParams {
-    struct TextDocument {
+export ref struct LSPChangeDocumentRequestParams {
+    ref struct TextDocument {
       uri: str;
       version: int;
     };
@@ -631,7 +631,7 @@ export struct LSPChangeDocumentRequestParams {
 // `buffer`, if a full one is present. This is the wire framing LSP itself uses, but it's
 // also what e.g. TypeScript's tsserver emits on its own stdout, so it's exposed here for
 // reuse by code outside this module that talks to a second, LSP-adjacent process.
-export struct FramedMessage {
+export ref struct FramedMessage {
     message: str;
     remaining: str;
 }

@@ -4,29 +4,29 @@ __c__("#pragma clang diagnostic ignored \"-Wincompatible-pointer-types-discards-
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
-export inline struct QuerySet {
+export struct QuerySet {
     handle: mut ffi.WGPUQuerySetImpl;
 }
 
 extern C const WGPU_DEPTH_SLICE_UNDEFINED: u32;
 
-export struct RequestAdapterOptions {
+export ref struct RequestAdapterOptions {
     featureLevel: FeatureLevel = FeatureLevel.Core;
     powerPreference: PowerPreference = PowerPreference.Undefined;
     forceFallbackAdapter: bool = false;
     backendType: BackendType = BackendType.Undefined;
-    compatibleSurface: mut Surface | none = none;
+    compatibleSurface: Surface | none = none;
 }
 
-export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: mut Adapter, message: str) => void :: final;
-export struct RequestAdapterCallbackInfo {
+export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: Adapter, message: str) => void :: final;
+export ref struct RequestAdapterCallbackInfo {
     callback: RequestAdapterCallback;
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
 }
 
-fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
-        let callback: Box<RequestAdapterCallback> = uninitialized;
+        let callback: ref Box<RequestAdapterCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
         callback.value(fromFFI(status), fromFFI(adapter), fromFFI(message));
     };
@@ -34,7 +34,7 @@ fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mu
 
 
 
-export struct Limits {
+export ref struct Limits {
     maxTextureDimension1D: u32 = 0;
     maxTextureDimension2D: u32 = 0;
     maxTextureDimension3D: u32 = 0;
@@ -68,7 +68,7 @@ export struct Limits {
     maxComputeWorkgroupsPerDimension: u32 = 0;
 
     fn toFFI() {
-        return ffi.WGPULimits {
+        return ref ffi.WGPULimits {
             nextInChain: none,
             maxTextureDimension1D: this.maxTextureDimension1D,
             maxTextureDimension2D: this.maxTextureDimension2D,
@@ -105,28 +105,28 @@ export struct Limits {
     }
 }
 
-export struct QueueDescriptor {
+export ref struct QueueDescriptor {
     debugLabel?: str;
 }
 
-export struct DeviceDescriptor {
+export ref struct DeviceDescriptor {
     debugLabel?: str;
     requiredFeatures: []FeatureName = [];
     requiredLimits: Limits | none = none;
     defaultQueue: QueueDescriptor = default;
     // deviceLostCallbackInfo: DeviceLostCallbackInfo | none;
-    // uncapturedErrorCallbackInfo: inline WGPUUncapturedErrorCallbackInfo;
+    // uncapturedErrorCallbackInfo: WGPUUncapturedErrorCallbackInfo;
 }
 
-export type RequestDeviceCallback = (status: RequestDeviceStatus, device: mut Device, message: str) => void :: final;
-export struct RequestDeviceCallbackInfo {
+export type RequestDeviceCallback = (status: RequestDeviceStatus, device: Device, message: str) => void :: final;
+export ref struct RequestDeviceCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
     callback: RequestDeviceCallback;
 }
 
-fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: inline ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
-        let callback: Box<RequestDeviceCallback> = uninitialized;
+        let callback: ref Box<RequestDeviceCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
         callback.value(fromFFI(status), Device { handle: device }, fromFFI(message));
     };

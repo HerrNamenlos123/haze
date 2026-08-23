@@ -6,7 +6,7 @@ namespace ffi {
     export extern C fn haze_base64_encode(data: cptr, length: int): str :: final;
     export extern C fn haze_base64_decode(data: str): haze_base64_decode_result_t :: final;
 
-    export extern C noemit inline struct haze_base64_decode_result_t {
+    export extern C noemit struct haze_base64_decode_result_t {
         success: bool;
         data: cptr;
         length: int;
@@ -14,7 +14,7 @@ namespace ffi {
     }
 }
 
-export struct Error {
+export ref struct Error {
     message: str;
 }
 

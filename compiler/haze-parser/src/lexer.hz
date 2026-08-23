@@ -12,7 +12,7 @@
 //  * Line/column are tracked incrementally as we scan, so building a SourceLoc
 //    later is free rather than an O(n) scan of the file.
 //
-// f-strings are lexed inline (see TK.FStringStart in tokens.hz). The `{ }` of an
+// f-strings are lexed (see TK.FStringStart in tokens.hz). The `{ }` of an
 // interpolation re-enters normal code lexing, which can nest arbitrarily, so we
 // keep an explicit mode stack rather than recursing.
 
@@ -107,13 +107,13 @@ enum Mode {
     FTripleString,  // inside f"""..."""
 }
 
-export struct LexError {
+export ref struct LexError {
     message: str = "";
     line: int = 0;
     col: int = 0;
 }
 
-export struct Lexer {
+export ref struct Lexer {
     src: str = "";
     pos: int = 0;
     line: int = 1;    // 1-based, matches SourceLoc
@@ -247,6 +247,7 @@ export struct Lexer {
         if n == 3 {
             if s.startsWith("let", start) { return TK.Let; }
             if s.startsWith("mut", start) { return TK.Mut; }
+            if s.startsWith("ref", start) { return TK.Ref; }
             if s.startsWith("pub", start) { return TK.Pub; }
             if s.startsWith("for", start) { return TK.For; }
             if s.startsWith("try", start) { return TK.Try; }
@@ -284,7 +285,7 @@ export struct Lexer {
             if s.startsWith("extern", start) { return TK.Extern; }
             if s.startsWith("static", start) { return TK.Static; }
             if s.startsWith("typeof", start) { return TK.Typeof; }
-            if s.startsWith("inline", start) { return TK.Inline; }
+            if s.startsWith("nocopy", start) { return TK.Nocopy; }
             if s.startsWith("unsafe", start) { return TK.Unsafe; }
             if s.startsWith("noemit", start) { return TK.Noemit; }
             if s.startsWith("opaque", start) { return TK.Opaque; }
@@ -297,6 +298,7 @@ export struct Lexer {
             return TK.Ident;
         }
         if n == 8 {
+            if s.startsWith("stackref", start) { return TK.Stackref; }
             if s.startsWith("continue", start) { return TK.Continue; }
             if s.startsWith("comptime", start) { return TK.Comptime; }
             if s.startsWith("noreturn", start) { return TK.Noreturn; }

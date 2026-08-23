@@ -1,32 +1,32 @@
 
-export inline struct RenderPassEncoder {
+export struct RenderPassEncoder {
     handle: mut ffi.WGPURenderPassEncoderImpl;
 
     fn end() {
         ffi.wgpuRenderPassEncoderEnd(this.handle);
     }
 
-    fn setPipeline(pipeline: mut RenderPipeline) {
-        // export extern C noemit wgpuRenderPassEncoderSetPipeline(renderPassEncoder: mut WGPURenderPassEncoderImpl, pipeline: mut WGPURenderPipelineImpl): void :: final;
+    fn setPipeline(pipeline: RenderPipeline) {
+        // export extern C noemit wgpuRenderPassEncoderSetPipeline(renderPassEncoder: WGPURenderPassEncoderImpl, pipeline: WGPURenderPipelineImpl): void :: final;
         ffi.wgpuRenderPassEncoderSetPipeline(this.handle, toFFI(pipeline));
     }
 
     fn setVertexBuffer(slot: u32, buffer: Buffer) {
-        // export extern C noemit wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, slot: u32, buffer: mut WGPUBufferImpl | none, offset: u64, size: u64): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder: WGPURenderPassEncoderImpl, slot: u32, buffer: WGPUBufferImpl | none, offset: u64, size: u64): void :: final;
         let wholeSize = 0 as u64;
         __c__("wholeSize = WGPU_WHOLE_SIZE;");
         ffi.wgpuRenderPassEncoderSetVertexBuffer(this.handle, slot, toFFI(buffer), 0, wholeSize);
     }
 
     fn setIndexBuffer(buffer: Buffer, format: IndexFormat) {
-        // export extern C noemit wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder: mut WGPURenderPassEncoderImpl, buffer: mut WGPUBufferImpl, format: WGPUIndexFormat, offset: u64, size: u64): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder: WGPURenderPassEncoderImpl, buffer: WGPUBufferImpl, format: WGPUIndexFormat, offset: u64, size: u64): void :: final;
         let wholeSize = 0 as u64;
         __c__("wholeSize = WGPU_WHOLE_SIZE;");
         ffi.wgpuRenderPassEncoderSetIndexBuffer(this.handle, toFFI(buffer), toFFI(format), 0, wholeSize);
     }
 
     fn draw(vertexCount: int, instanceCount: int, firstVertex: int, firstInstance: int) {
-        // export extern C noemit wgpuRenderPassEncoderDraw(renderPassEncoder: mut WGPURenderPassEncoderImpl, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderDraw(renderPassEncoder: WGPURenderPassEncoderImpl, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32): void :: final;
         assert(vertexCount >= u32.min && vertexCount <= u32.max);
         assert(instanceCount >= u32.min && instanceCount <= u32.max);
         assert(firstVertex >= u32.min && firstVertex <= u32.max);
@@ -35,7 +35,7 @@ export inline struct RenderPassEncoder {
     }
 
     fn drawIndexed(indexCount: int, instanceCount: int, firstIndex: int, baseVertex: int, firstInstance: int) {
-        // export extern C noemit wgpuRenderPassEncoderDrawIndexed(renderPassEncoder: mut WGPURenderPassEncoderImpl, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderDrawIndexed(renderPassEncoder: WGPURenderPassEncoderImpl, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32): void :: final;
         assert(indexCount >= u32.min && indexCount <= u32.max);
         assert(instanceCount >= u32.min && instanceCount <= u32.max);
         assert(firstIndex >= u32.min && firstIndex <= u32.max);
@@ -45,12 +45,12 @@ export inline struct RenderPassEncoder {
     }
 
     fn setViewport(x: real, y: real, width: real, height: real, minDepth: real, maxDepth: real) {
-        // export extern C noemit wgpuRenderPassEncoderSetViewport(renderPassEncoder: mut WGPURenderPassEncoderImpl, x: f32, y: f32, width: f32, height: f32, minDepth: f32, maxDepth: f32): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderSetViewport(renderPassEncoder: WGPURenderPassEncoderImpl, x: f32, y: f32, width: f32, height: f32, minDepth: f32, maxDepth: f32): void :: final;
         ffi.wgpuRenderPassEncoderSetViewport(this.handle, x as f32, y as f32, width as f32, height as f32, minDepth as f32, maxDepth as f32);
     }
 
     fn setScissorRect(x: int, y: int, width: int, height: int) {
-        // export extern C noemit wgpuRenderPassEncoderSetScissorRect(renderPassEncoder: mut WGPURenderPassEncoderImpl, x: u32, y: u32, width: u32, height: u32): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderSetScissorRect(renderPassEncoder: WGPURenderPassEncoderImpl, x: u32, y: u32, width: u32, height: u32): void :: final;
         assert(x >= u32.min && x <= u32.max, "Scissor Rect x is out of bounds (x ∉ [u32.min, u32.max])");
         assert(y >= u32.min && y <= u32.max, "Scissor Rect y is out of bounds (y ∉ [u32.min, u32.max])");
         assert(width >= u32.min && width <= u32.max, "Scissor Rect width is out of bounds (width ∉ [u32.min, u32.max])");
@@ -58,9 +58,9 @@ export inline struct RenderPassEncoder {
         ffi.wgpuRenderPassEncoderSetScissorRect(this.handle, x, y, width, height);
     }
 
-    fn setBindGroup(groupIndex: int, group: mut BindGroup) {
+    fn setBindGroup(groupIndex: int, group: BindGroup) {
         assert(groupIndex >= u32.min && groupIndex <= u32.max);
-        // export extern C noemit wgpuRenderPassEncoderSetBindGroup(renderPassEncoder: mut WGPURenderPassEncoderImpl, groupIndex: u32, group: mut WGPUBindGroupImpl | none, dynamicOffsetCount: usize, dynamicOffsets: cptr /* uint32_t const* */): void :: final;
+        // export extern C noemit wgpuRenderPassEncoderSetBindGroup(renderPassEncoder: WGPURenderPassEncoderImpl, groupIndex: u32, group: WGPUBindGroupImpl | none, dynamicOffsetCount: usize, dynamicOffsets: cptr /* uint32_t const* */): void :: final;
         ffi.wgpuRenderPassEncoderSetBindGroup(this.handle, groupIndex, toFFI(group), 0, none);
     }
 }
@@ -75,11 +75,11 @@ fn toFFI(v: RenderPassEncoder): mut ffi.WGPURenderPassEncoderImpl :: final {
     return v.handle;
 }
 
-export struct RenderPassDescriptor {
+export ref struct RenderPassDescriptor {
     debugLabel?: str;
     colorAttachments: []RenderPassColorAttachment = [];
     depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
-    occlusionQuerySet: mut QuerySet | none = none;
+    occlusionQuerySet: QuerySet | none = none;
     timestampWrites: RenderPassTimestampWrites | none = none;
 }
 
@@ -95,14 +95,14 @@ fn fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     for (let i = 0; i < v.colorAttachmentCount; i++) {
         do unsafe {
             let e: ffi.WGPURenderPassColorAttachment = uninitialized;
-            __c__("e = &((WGPURenderPassColorAttachment*)v->colorAttachments)[i];");
+            __c__("e = ((WGPURenderPassColorAttachment*)v.colorAttachments)[i];");
             c.colorAttachments.push(fromFFI(e));
         };
     }
 
     do unsafe {
-        let sa = none as ffi.WGPURenderPassDepthStencilAttachment | none;
-        __c__("sa = (WGPURenderPassDepthStencilAttachment*)v->depthStencilAttachment;"); 
+        let sa = none as ref ffi.WGPURenderPassDepthStencilAttachment | none;
+        __c__("sa = (WGPURenderPassDepthStencilAttachment*)v.depthStencilAttachment;"); 
         if sa {
             c.depthStencilAttachment = fromFFI(sa);
         }
@@ -114,8 +114,8 @@ fn fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     }
 
     do unsafe {
-        let tw = none as ffi.WGPURenderPassTimestampWrites | none;
-        __c__("tw = (WGPURenderPassTimestampWrites*)v->timestampWrites;"); 
+        let tw = none as ref ffi.WGPURenderPassTimestampWrites | none;
+        __c__("tw = (WGPURenderPassTimestampWrites*)v.timestampWrites;"); 
         if tw {
             c.timestampWrites = fromFFI(tw);
         }
@@ -124,10 +124,10 @@ fn fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     return c;
 }
 
-fn toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor :: final {
+fn toFFI(v: RenderPassDescriptor): ref ffi.WGPURenderPassDescriptor :: final {
     do unsafe {
-        let colorAttachmentArray = arrayToFFI<RenderPassColorAttachment, inline ffi.WGPURenderPassColorAttachment>(v.colorAttachments);
-        return ffi.WGPURenderPassDescriptor {
+        let colorAttachmentArray = arrayToFFI<RenderPassColorAttachment, ffi.WGPURenderPassColorAttachment>(v.colorAttachments);
+        return ref ffi.WGPURenderPassDescriptor {
             nextInChain: none,
             label: toOptionalFFI(v.debugLabel),
             colorAttachmentCount: colorAttachmentArray.length,
@@ -139,8 +139,8 @@ fn toFFI(v: RenderPassDescriptor): ffi.WGPURenderPassDescriptor :: final {
     };
 }
 
-export struct RenderPassDepthStencilAttachment {
-    view: mut TextureView;
+export ref struct RenderPassDepthStencilAttachment {
+    view: TextureView;
     depthLoadOp: LoadOp;
     depthStoreOp: StoreOp;
     depthClearValue: f32;
@@ -165,8 +165,8 @@ fn fromFFI(v: ffi.WGPURenderPassDepthStencilAttachment): RenderPassDepthStencilA
     };
 }
 
-fn toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAttachment :: final {
-    return ffi.WGPURenderPassDepthStencilAttachment {
+fn toFFI(v: RenderPassDepthStencilAttachment): ref ffi.WGPURenderPassDepthStencilAttachment :: final {
+    return ref ffi.WGPURenderPassDepthStencilAttachment {
         view: v.view.handle,
         depthLoadOp: toFFI(v.depthLoadOp),
         depthStoreOp: toFFI(v.depthStoreOp),
@@ -179,8 +179,8 @@ fn toFFI(v: RenderPassDepthStencilAttachment): ffi.WGPURenderPassDepthStencilAtt
     };
 }
 
-export struct RenderPassTimestampWrites {
-    querySet: mut QuerySet;
+export ref struct RenderPassTimestampWrites {
+    querySet: QuerySet;
     beginningOfPassWriteIndex: u32;
     endOfPassWriteIndex: u32;
 }
@@ -193,18 +193,18 @@ fn fromFFI(v: ffi.WGPURenderPassTimestampWrites): RenderPassTimestampWrites :: f
     };
 }
 
-fn toFFI(v: RenderPassTimestampWrites): ffi.WGPURenderPassTimestampWrites :: final {
-    return ffi.WGPURenderPassTimestampWrites {
+fn toFFI(v: RenderPassTimestampWrites): ref ffi.WGPURenderPassTimestampWrites :: final {
+    return ref ffi.WGPURenderPassTimestampWrites {
         querySet: v.querySet.handle,
         beginningOfPassWriteIndex: v.beginningOfPassWriteIndex,
         endOfPassWriteIndex: v.endOfPassWriteIndex,
     };
 }
 
-export struct RenderPassColorAttachment {
-    view: mut TextureView | none = none;
+export ref struct RenderPassColorAttachment {
+    view: TextureView | none = none;
     depthSlice: u32 | none = none;
-    resolveTarget: mut TextureView | none = none;
+    resolveTarget: TextureView | none = none;
     loadOp: LoadOp;
     storeOp: StoreOp;
     clearValue: Color;
@@ -226,8 +226,8 @@ fn fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment :: f
     };
 }
 
-fn toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final {
-    return (ffi.WGPURenderPassColorAttachment {
+fn toFFI(v: RenderPassColorAttachment): ref ffi.WGPURenderPassColorAttachment :: final {
+    return (ref ffi.WGPURenderPassColorAttachment {
         nextInChain: none,
         view: v.view ? v.view.handle : none,
         depthSlice: v.depthSlice ? v.depthSlice : WGPU_DEPTH_SLICE_UNDEFINED,
@@ -240,5 +240,5 @@ fn toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: fin
             b: v.clearValue.b,
             a: v.clearValue.a,
         }
-    }) as inline ffi.WGPURenderPassColorAttachment;
+    }) as ref ffi.WGPURenderPassColorAttachment;
 }

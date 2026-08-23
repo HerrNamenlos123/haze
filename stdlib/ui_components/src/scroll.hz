@@ -37,7 +37,7 @@ export enum Overflow {
     Visible,
 }
 
-export struct ScrollbarStyle {
+export ref struct ScrollbarStyle {
     // Thickness of the bar, in pixels.
     size: real = 10.0;
     trackColor: str = "#00000000";
@@ -52,7 +52,7 @@ export struct ScrollbarStyle {
 
 // Live scroll state. A host creates one of these, keeps it across
 // frames, and reads/writes it like a DOM element's scroll properties.
-export struct ScrollState {
+export ref struct ScrollState {
     // Current scroll offset in pixels. The DOM's scrollTop/scrollLeft.
     scrollTop: rx.Reactive<real>;
     scrollLeft: rx.Reactive<real>;

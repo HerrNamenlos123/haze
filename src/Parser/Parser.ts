@@ -43,7 +43,8 @@ import {
   type ASTGlobalVariableDefinition,
   type ASTIfStatement,
   type ASTInlineCStatement,
-  type ASTInlineTypeExpr,
+  type ASTRefTypeExpr,
+  type ASTStackrefTypeExpr,
   type ASTLambda,
   type ASTLambdaExpr,
   type ASTLiteralExpr,
@@ -79,6 +80,7 @@ import {
   EAssignmentOperation,
   EBinaryOperation,
   EDatatypeMutability,
+  EStorageClass,
   EExternLanguage,
   EIncrOperation,
   ELiteralUnit,
@@ -1010,16 +1012,29 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
-    if (ctx.INLINE()) {
+    if (ctx.REF()) {
       if (produced.length !== 1) {
-        throw new InternalError("TypeExprModified inline stack mismatch");
+        throw new InternalError("TypeExprModified ref stack mismatch");
       }
 
       this.stack.push({
-        variant: "InlineTypeExpr",
+        variant: "RefTypeExpr",
         type: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
-      } satisfies ASTInlineTypeExpr);
+      } satisfies ASTRefTypeExpr);
+      return;
+    }
+
+    if (ctx.STACKREF()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified stackref stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "StackrefTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTStackrefTypeExpr);
       return;
     }
 
@@ -1405,6 +1420,7 @@ class ASTBuilder extends HazeParserListener {
       methodType: EMethodType.None,
       name: names[0],
       methodRequiredMutability: null,
+      methodReceiverStorage: null,
       operatorOverloading: undefined,
       ellipsis: params.ellipsis,
       funcbody: funcbody,
@@ -1641,10 +1657,21 @@ class ASTBuilder extends HazeParserListener {
       | EDatatypeMutability.Const
       | null = null;
 
-    if (ctx.MUT()) {
-      methodRequiredMutability = EDatatypeMutability.Mut;
-    } else if (ctx.CONST()) {
-      methodRequiredMutability = EDatatypeMutability.Const;
+    let methodReceiverStorage:
+      | EStorageClass.Ref
+      | EStorageClass.Stackref
+      | null = null;
+
+    for (const modifier of ctx.methodModifier()) {
+      if (modifier.MUT()) {
+        methodRequiredMutability = EDatatypeMutability.Mut;
+      } else if (modifier.CONST()) {
+        methodRequiredMutability = EDatatypeMutability.Const;
+      } else if (modifier.REF()) {
+        methodReceiverStorage = EStorageClass.Ref;
+      } else if (modifier.STACKREF()) {
+        methodReceiverStorage = EStorageClass.Stackref;
+      }
     }
 
     const fn: ASTFunctionDefinition = {
@@ -1657,6 +1684,7 @@ class ASTBuilder extends HazeParserListener {
       pub: false,
       methodType: methodType,
       methodRequiredMutability: methodRequiredMutability,
+      methodReceiverStorage: methodReceiverStorage,
       name: name,
       static: Boolean(ctx._static_),
       generics: genericNames.map((n) => ({
@@ -1801,9 +1829,10 @@ class ASTBuilder extends HazeParserListener {
       pub: Boolean(ctx._pub),
       extern: this.exlang(ctx),
       annotations: annotations,
-      opaque: Boolean(ctx.OPAQUE()),
-      plain: Boolean(ctx.PLAIN()),
-      inlineByDefault: Boolean(ctx.INLINE()),
+      opaque: ctx.structModifier().some((m) => Boolean(m.OPAQUE())),
+      plain: ctx.structModifier().some((m) => Boolean(m.PLAIN())),
+      refByDefault: ctx.structModifier().some((m) => Boolean(m.REF())),
+      nocopy: ctx.structModifier().some((m) => Boolean(m.NOCOPY())),
       name: name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({
@@ -1890,7 +1919,21 @@ class ASTBuilder extends HazeParserListener {
     const produced = this.stack.splice(start);
 
     let i = 0;
-    const datatype = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
+    let datatype = ctx.nameExpr() ? (produced[i++] as ASTExpr) : null;
+    if (ctx._ref) {
+      if (!datatype) {
+        throw new CompilerError(
+          "'ref' on a struct literal requires a type name: `ref Foo { ... }`",
+          this.loc(ctx),
+          HazeErrorCode.RefModifierOnNonStruct
+        );
+      }
+      datatype = {
+        variant: "RefTypeExpr",
+        type: datatype,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTRefTypeExpr;
+    }
 
     const elementCount = ctx.aggregateBody().aggregateLiteralElement().length;
     const elements = produced.slice(
@@ -2720,6 +2763,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "VariableDefinitionStatement",
       mutability: this.mutability(ctx),
+      stackref: Boolean(ctx._stackref),
       comptime: Boolean(ctx._comptime),
       name: ctx.id().getText(),
       sourceloc: this.loc(ctx),

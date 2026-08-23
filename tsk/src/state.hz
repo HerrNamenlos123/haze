@@ -1,4 +1,4 @@
 
-struct AppState {
+ref struct AppState {
     
 }

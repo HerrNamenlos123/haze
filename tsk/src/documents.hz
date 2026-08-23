@@ -19,7 +19,7 @@ fn max<T>(a: T, b: T): T {
   return b;
 }
 
-struct BBox {
+ref struct BBox {
   left: real;
   right: real;
   top: real;
@@ -31,13 +31,13 @@ struct BBox {
   }
 }
 
-struct TskPoint {
+ref struct TskPoint {
     x: real;
     y: real;
     pressure: real;
 }
 
-struct TskLineShape {
+ref struct TskLineShape {
   variant: "Line";
   points: []TskPoint;
   penColor: str;
@@ -61,7 +61,7 @@ struct TskLineShape {
   [[json.ignore]]
   tesselationCache?: LinearMap<int, TesselationResult> = none;
 
-  fn getBBox(): BBox {
+  ref fn getBBox(): BBox {
     if this.bbox {
       return this.bbox;
     }
@@ -108,7 +108,7 @@ struct TskLineShape {
   // is -- coarser (cheaper) tesselation when zoomed out, finer when zoomed
   // in, instead of one fixed tolerance that's either wasteful or visibly
   // faceted depending on zoom.
-  fn ensureTesselated(level: int): TesselationResult {
+  ref fn ensureTesselated(level: int): TesselationResult {
     if !this.tesselationCache {
       this.tesselationCache = LinearMap<int, TesselationResult>();
     }
@@ -123,7 +123,7 @@ struct TskLineShape {
   }
 };
 
-struct TskImageShape {
+ref struct TskImageShape {
   variant: "Image";
   position: Vec2;
   size: Vec2;
@@ -131,7 +131,7 @@ struct TskImageShape {
   bbox?: BBox;
   // The decoded GPU texture is cached outside the document model entirely
   // (DocumentRenderer.imageTextures, keyed by base64ImageData) rather than
-  // as a field here: this struct participates in json.parse/json.stringify
+  // as a field here: this ref struct participates in json.parse/json.stringify
   // for the whole document, and a field whose type reaches into opaque
   // wgpu FFI handles breaks that generic codegen (sizeof on an
   // intentionally-incomplete C struct) even when marked [[json.ignore]].
@@ -151,7 +151,7 @@ struct TskImageShape {
   }
 };
 
-struct TskTextblockShape {
+ref struct TskTextblockShape {
   variant: "Textblock";
   position: Vec2;
   size: Vec2;
@@ -215,17 +215,17 @@ fn clearShapeCache(shape: TskShape): void {
   }
 }
 
-struct TskPage {
+ref struct TskPage {
     shapes: []TskShape;
 }
 
-struct TskViewport {
+ref struct TskViewport {
     offsetX: real;
     offsetY: real;
     zoomPxPerMm: real;
 }
 
-struct TskDocumentBody {
+ref struct TskDocumentBody {
     pageColor: str;
     gridColor: str;
     gridType: "lines" | "dots";
@@ -236,7 +236,7 @@ struct TskDocumentBody {
     viewport?: TskViewport;
 }
 
-struct TskDocumentFile {
+ref struct TskDocumentFile {
     filetype: str;
     fileversion: int;
     data: TskDocumentBody;
@@ -263,7 +263,7 @@ fn saveTskDocument(path: str, document: TskDocumentFile): Result<none, none> {
     return Result<none, none>.Ok(none);
 }
 
-inline struct StrokeConstructArgs {
+struct StrokeConstructArgs {
   accuracyScaling: real = 10.0;
   shape: TskLineShape;
 }
@@ -294,12 +294,12 @@ fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
     return [];
 }
 
-inline struct TesselationResult {
+struct TesselationResult {
 	vertices: []Vec2 = [];
 	indices: []i32 = [];
 }
 
-inline struct StrokeTesselateArgs {
+struct StrokeTesselateArgs {
   accuracyScaling: real = 10.0;
   shape: TskLineShape;
   // Curve-flattening tolerance, in the same mm units the curve itself is

@@ -33,6 +33,60 @@ void hzstd_panic_recovery_frame_pop_cleanup(void);
 // the frame is popped.
 void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame);
 
+// ── Generational stack references ────────────────────────────────────────────
+//
+// See hzstd_stackref_t / hzstd_gen_table_t in hzstd_types.h and the design of
+// record in R&D/Storage Classes and References.md §4-§5.
+//
+// Only scopes that create a stackref to their own storage ("participating"
+// scopes) call enter/exit; every other scope costs nothing. The compiler emits:
+//
+//   size_t __hz_slot = hzstd_stackref_scope_enter();   // scope entry
+//   ...
+//   hzstd_stackref_scope_exit();                       // every exit path
+//
+// and builds references as HZSTD_STACKREF_MAKE(&local, __hz_slot). A loop body
+// that participates calls hzstd_stackref_scope_renew(slot) at the top of each
+// iteration so a reference from iteration N cannot alias iteration N+1's
+// storage. Every read/write through a stackref goes through HZSTD_STACKREF_DEREF.
+
+extern _Thread_local hzstd_gen_table_t hzstd_gen_table;
+
+size_t hzstd_stackref_scope_enter(void);
+void hzstd_stackref_scope_exit(void);
+void hzstd_stackref_scope_renew(size_t slot);
+// Pop every scope above `depth` (recovery path after a longjmp skipped the exits).
+void hzstd_stackref_unwind_to(size_t depth);
+_Noreturn void hzstd_panic_dead_stackref(void);
+
+#define HZSTD_STACKREF_IMMORTAL_SLOT ((uint64_t)0)
+#define HZSTD_STACKREF_IMMORTAL_GEN ((uint64_t)1)
+
+#define HZSTD_STACKREF_MAKE(pointer, slot_)                                                                            \
+  ((hzstd_stackref_t) { .ptr = (void *)(pointer), .slot = (uint64_t)(slot_), .gen = hzstd_gen_table.gens[(slot_)] })
+
+#define HZSTD_STACKREF_IMMORTAL(pointer)                                                                               \
+  ((hzstd_stackref_t) { .ptr = (void *)(pointer), .slot = HZSTD_STACKREF_IMMORTAL_SLOT, .gen = HZSTD_STACKREF_IMMORTAL_GEN })
+
+// Checks the witness and yields the raw pointer, cast to `type *`.
+#define HZSTD_STACKREF_DEREF(type, ref)                                                                                \
+  ((type *)({                                                                                                          \
+    hzstd_stackref_t __hz_r = (ref);                                                                                   \
+    if (__builtin_expect(hzstd_gen_table.gens[__hz_r.slot] != __hz_r.gen, 0)) {                                      \
+      hzstd_panic_dead_stackref();                                                                                     \
+    }                                                                                                                  \
+    __hz_r.ptr;                                                                                                        \
+  }))
+
+// Check only (no pointer); used before invoking a stackref callable.
+#define HZSTD_STACKREF_CHECK(ref)                                                                                      \
+  do {                                                                                                                 \
+    hzstd_stackref_t __hz_r = (ref);                                                                                   \
+    if (__builtin_expect(hzstd_gen_table.gens[__hz_r.slot] != __hz_r.gen, 0)) {                                      \
+      hzstd_panic_dead_stackref();                                                                                     \
+    }                                                                                                                  \
+  } while (0)
+
 // ── HAZE_ATTEMPT macro ───────────────────────────────────────────────────────
 //
 // Usage:
@@ -60,6 +114,8 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
     }                                                                                                                  \
     else if (__hz_jmp_##id == 1) {                                                                                     \
       /* panic_machinery already set _hz_panic_stacktrace (TLS) */                                                     \
+      /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
+      hzstd_stackref_unwind_to(__hz_frame_##id->saved_stackref_depth);                                                 \
       hzstd_panic_recovery_frame_run_cleanup(__hz_frame_##id);                                                         \
       hzstd_pop_panic_recovery_frame();                                                                                \
       goto recovery_label;                                                                                             \

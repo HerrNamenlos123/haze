@@ -55,7 +55,7 @@ const comptime ITEM_OPEN_FOLDER = 2;
 const comptime ITEM_CLOSE_FOLDER = 3;
 const comptime ITEM_RECENT_BASE = 100;
 
-struct TitleBarState {
+ref struct TitleBarState {
     // Which menu is open, menuNone() for none. An int rather than a bool
     // per menu because menus are mutually exclusive by definition, and
     // because that is what makes adding a second one free.
@@ -69,8 +69,8 @@ struct TitleBarState {
     fn constructor(ui: ui_components.UIContext): mut TitleBarState {
         let state = TitleBarState {
             openMenu: rx.reactive<int>(menuNone()),
-            barRef: ui.ref<ui_elements.DivElement>(),
-            panelRef: ui.ref<ui_elements.DivElement>(),
+            barRef: ui.elementRef<ui_elements.DivElement>(),
+            panelRef: ui.elementRef<ui_elements.DivElement>(),
         };
         return state;
     }
@@ -171,7 +171,7 @@ fn runFileMenuItem(key: int) {
     }
 }
 
-struct TitleBarArgs {
+ref struct TitleBarArgs {
     id: int;
     // What is being edited, for the middle of the bar. Empty when nothing
     // is open.
@@ -203,7 +203,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
 
             ui.div({
                 id: 1,
-                ref: state.barRef,
+                elementRef: state.barRef,
                 style: {
                     height: titleBarHeight(),
                     padding: ui_styling.StylePaddingFull {
@@ -283,7 +283,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
     });
 }
 
-struct TitleBarMenusArgs {
+ref struct TitleBarMenusArgs {
     id: int;
     openMenu: int = -1;
     // The open menu's contents, built by the shell (buildFileMenuItems()).

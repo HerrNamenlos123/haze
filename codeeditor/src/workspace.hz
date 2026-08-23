@@ -88,7 +88,7 @@ fn folderNameOf(path: str): str {
     return trimmed.slice(start, trimmed.length);
 }
 
-struct WorkspaceState {
+ref struct WorkspaceState {
     // Absolute path of the open folder, "" when none is open.
     path: rx.Reactive<str>;
     // Its last segment, for the title bar. Derived, but stored rather than

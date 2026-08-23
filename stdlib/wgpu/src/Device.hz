@@ -1,8 +1,8 @@
 
-export inline struct Device {
+export struct Device {
     handle: mut ffi.WGPUDeviceImpl;
 
-    fn getQueue(): Result<mut Queue, none> {
+    fn getQueue(): Result<Queue, none> {
         let queue = ffi.wgpuDeviceGetQueue(this.handle);
         if queue {
             return fromFFI(queue);
@@ -25,32 +25,32 @@ export inline struct Device {
     }
 
     fn createRenderPipeline(descriptor: RenderPipelineDescriptor) {
-    // export extern C noemit wgpuDeviceCreateRenderPipeline(device: mut WGPUDeviceImpl, descriptor: WGPURenderPipelineDescriptor): mut WGPURenderPipelineImpl :: final;
+    // export extern C noemit wgpuDeviceCreateRenderPipeline(device: WGPUDeviceImpl, descriptor: WGPURenderPipelineDescriptor): WGPURenderPipelineImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateRenderPipeline(this.handle, toFFI(descriptor)));
     }
 
     fn createBindGroupLayout(descriptor: BindGroupLayoutDescriptor) {
-        // export extern C noemit wgpuDeviceCreateBindGroupLayout(device: mut WGPUDeviceImpl, descriptor: WGPUBindGroupLayoutDescriptor): mut WGPUBindGroupLayoutImpl :: final;
+        // export extern C noemit wgpuDeviceCreateBindGroupLayout(device: WGPUDeviceImpl, descriptor: WGPUBindGroupLayoutDescriptor): WGPUBindGroupLayoutImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateBindGroupLayout(this.handle, toFFI(descriptor)));
     }
 
     fn createPipelineLayout(descriptor: PipelineLayoutDescriptor) {
-        // export extern C noemit wgpuDeviceCreatePipelineLayout(device: mut WGPUDeviceImpl, descriptor: WGPUPipelineLayoutDescriptor): mut WGPUPipelineLayoutImpl :: final;
+        // export extern C noemit wgpuDeviceCreatePipelineLayout(device: WGPUDeviceImpl, descriptor: WGPUPipelineLayoutDescriptor): WGPUPipelineLayoutImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreatePipelineLayout(this.handle, toFFI(descriptor)));
     }
 
     fn createBindGroup(descriptor: BindGroupDescriptor) {
-        // export extern C noemit wgpuDeviceCreateBindGroup(device: mut WGPUDeviceImpl, descriptor: WGPUBindGroupDescriptor): mut WGPUBindGroupImpl :: final;
+        // export extern C noemit wgpuDeviceCreateBindGroup(device: WGPUDeviceImpl, descriptor: WGPUBindGroupDescriptor): WGPUBindGroupImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateBindGroup(this.handle, toFFI(descriptor)));
     }
 
     fn createTexture(descriptor: TextureDescriptor) {
-        // export extern C noemit wgpuDeviceCreateTexture(device: mut WGPUDeviceImpl, descriptor: WGPUTextureDescriptor): mut WGPUTextureImpl :: final;
+        // export extern C noemit wgpuDeviceCreateTexture(device: WGPUDeviceImpl, descriptor: WGPUTextureDescriptor): WGPUTextureImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateTexture(this.handle, toFFI(descriptor)));
     }
 
     fn createSampler(descriptor: SamplerDescriptor) {
-        // export extern C noemit wgpuDeviceCreateSampler(device: mut WGPUDeviceImpl, descriptor: WGPUSamplerDescriptor | none): mut WGPUSamplerImpl :: final;
+        // export extern C noemit wgpuDeviceCreateSampler(device: WGPUDeviceImpl, descriptor: WGPUSamplerDescriptor | none): WGPUSamplerImpl :: final;
         return fromFFI(ffi.wgpuDeviceCreateSampler(this.handle, toFFI(descriptor)));
     }
 }

@@ -11,13 +11,13 @@ import ui_components
 // instead, against the REAL default keymap from editor_keymap.hz, with no
 // window, no GPU and no event loop involved.
 
-struct KeyTestRun {
+ref struct KeyTestRun {
     checks: int = 0;
     failures: int = 0;
     // What the fake commands recorded, as "id;id;" -- a plain str rather
     // than a []str because a closure captures an array BY VALUE here, so
     // pushes made inside a command would not be visible afterwards. A
-    // struct field is shared.
+    // ref struct field is shared.
     ran: str = "";
 
     mut fn record(id: str): void {

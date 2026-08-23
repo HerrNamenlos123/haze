@@ -883,7 +883,18 @@ class CodeGenerator {
         }
       } else {
         const symbol = this.lr.typeUseNodes.get(symbolInfo.id);
-        if (symbol.pointer) {
+        if (symbol.stackref) {
+          // A stackref is {ptr, slot, gen} whatever it points at; a stackref
+          // callable additionally carries the function pointer.
+          const def = this.lr.typeDefNodes.get(symbol.type);
+          const rep =
+            def.variant === Lowered.ENode.CallableDatatype
+              ? "hzstd_stackref_callable_t"
+              : "hzstd_stackref_t";
+          this.out.type_declarations.writeLine(
+            `typedef ${rep} ${this.mangleTypeUse(symbol)};`
+          );
+        } else if (symbol.pointer) {
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeDef(symbol.type)}* ${this.mangleTypeUse(symbol)};`
           );
@@ -1227,6 +1238,98 @@ class CodeGenerator {
     };
   }
 
+  // ── Generational stack references: scope bookkeeping ──────────────────────
+  //
+  // A block scope *participates* iff it directly declares a `let stackref`
+  // that copies a value or builds a lambda in place. Such a scope calls
+  // hzstd_stackref_scope_enter() at its start and hzstd_stackref_scope_exit()
+  // on every way out: fall-through, `return`, `break`, `continue`, and the
+  // `goto` an attempt/recover uses to leave its body. Exits are emitted as
+  // plain calls (no jumps): the return value is evaluated into a temp first,
+  // then the exits run, then the temp is returned -- so a returned expression
+  // may still read through the scope's own stackrefs.
+  // (R&D/Storage Classes and References.md §4.3, §5.2)
+  private stackrefScopeStack: string[] = [];
+  private loopStackrefMarks: number[] = [];
+  private labelStackrefMarks = new Map<string, number>();
+  private stackrefSlotCounter = 0;
+  private currentFunctionReturnType = "void";
+
+  private scopeParticipates(scope: Lowered.BlockScope): boolean {
+    return scope.statements.some((sid) => {
+      const st = this.lr.statementNodes.get(sid);
+      return (
+        st.variant === Lowered.ENode.VariableStatement &&
+        (st.stackrefInit === "copy-value" || st.stackrefInit === "lambda")
+      );
+    });
+  }
+
+  /** Exit calls for every participating scope above `downTo` (innermost first). */
+  private emitStackrefExits(writer: OutputWriter, downTo: number) {
+    for (let i = this.stackrefScopeStack.length - 1; i >= downTo; i--) {
+      writer.writeLine("hzstd_stackref_scope_exit();");
+    }
+  }
+
+  private currentStackrefSlot(): string {
+    assert(
+      this.stackrefScopeStack.length > 0,
+      "let stackref outside of a participating scope"
+    );
+    return this.stackrefScopeStack[this.stackrefScopeStack.length - 1];
+  }
+
+  /**
+   * `let stackref f = (...) => { ... }`: build the closure in place. The env
+   * block is a stack array in the current scope; by-value captures are copied
+   * into stack locals next to it (no heap at all), ref captures are the
+   * pointers they already are. The result is a stackref callable whose
+   * witness is the enclosing participating scope's
+   * (R&D/Storage Classes and References.md §7.3).
+   */
+  emitCallableInPlace(
+    exprId: Lowered.ExprId,
+    name: string,
+    slot: string
+  ): { temp: OutputWriter; out: OutputWriter; value: string } {
+    const expr = this.lr.exprNodes.get(exprId);
+    assert(expr.variant === Lowered.ENode.CallableExpr);
+    const tempWriter = new OutputWriter();
+    const outWriter = new OutputWriter();
+    const func = this.lr.functionNodes.get(expr.function);
+    let env = "HZSTD_STACKREF_IMMORTAL(NULL)";
+    if (
+      expr.envValue?.type === "lambda" &&
+      expr.envType?.type === "lambda" &&
+      expr.envValue.captures.length > 0
+    ) {
+      const n = expr.envValue.captures.length;
+      const envVar = `__hz_env_${name}`;
+      outWriter.writeLine(`void* ${envVar}[${n}];`);
+      expr.envValue.captures.forEach((c, i) => {
+        const e = this.emitExpr(c);
+        tempWriter.write(e.temp);
+        const cap = expr.envType!.type === "lambda" ? expr.envType!.captures[i] : null;
+        assert(cap);
+        if (cap.byValue) {
+          const capVar = `__hz_cap_${name}_${i}`;
+          outWriter.writeLine(
+            `${this.mangleTypeUse(cap.type)} ${capVar} = ${e.out.get()};`
+          );
+          outWriter.writeLine(`${envVar}[${i}] = &${capVar};`);
+        } else {
+          outWriter.writeLine(`${envVar}[${i}] = ${e.out.get()};`);
+        }
+      });
+      env = `HZSTD_STACKREF_MAKE(${envVar}, ${slot})`;
+    } else if (expr.envValue?.type === "method") {
+      assert(false, "a bound method cannot be built in place by let stackref");
+    }
+    const value = `((hzstd_stackref_callable_t) { .fn = (void*)${this.mangleName(func.name)}, .env = ${env} })`;
+    return { temp: tempWriter, out: outWriter, value: value };
+  }
+
   emitFunction(symbolId: Lowered.FunctionId) {
     const symbol = this.lr.functionNodes.get(symbolId);
     const { mangledName, returnType, params, vararg } =
@@ -1251,11 +1354,25 @@ class CodeGenerator {
     this.out.function_declarations.writeLine(signature + ";");
 
     if (symbol.scope) {
+      const savedStack = this.stackrefScopeStack;
+      const savedMarks = this.loopStackrefMarks;
+      const savedLabels = this.labelStackrefMarks;
+      const savedRet = this.currentFunctionReturnType;
+      this.stackrefScopeStack = [];
+      this.loopStackrefMarks = [];
+      this.labelStackrefMarks = new Map();
+      this.currentFunctionReturnType = returnType;
+
       this.out.function_definitions.writeLine(signature + " {").pushIndent();
       const s = this.emitScope(symbol.scope);
       this.out.function_definitions.write(s.temp);
       this.out.function_definitions.write(s.out);
       this.out.function_definitions.popIndent().writeLine("}").writeLine();
+
+      this.stackrefScopeStack = savedStack;
+      this.loopStackrefMarks = savedMarks;
+      this.labelStackrefMarks = savedLabels;
+      this.currentFunctionReturnType = savedRet;
     }
 
     if (symbol.closureTrampoline) {
@@ -1402,6 +1519,23 @@ class CodeGenerator {
     const tempWriter = new OutputWriter();
     const outWriter = new OutputWriter();
 
+    // Labels defined in this scope are targets of forward gotos from nested
+    // scopes (attempt/recover): record how deep the stackref stack is here so
+    // the jump can exit everything opened below it.
+    for (const sid of scope.statements) {
+      const st = this.lr.statementNodes.get(sid);
+      if (st.variant === Lowered.ENode.LabelDefinitionStatement) {
+        this.labelStackrefMarks.set(st.labelName, this.stackrefScopeStack.length);
+      }
+    }
+
+    const participates = this.scopeParticipates(scope);
+    if (participates) {
+      const slot = `__hz_slot_${this.stackrefSlotCounter++}`;
+      outWriter.writeLine(`size_t ${slot} = hzstd_stackref_scope_enter();`);
+      this.stackrefScopeStack.push(slot);
+    }
+
     let returned = false;
     for (const statementId of scope.statements) {
       const statement = this.lr.statementNodes.get(statementId);
@@ -1431,6 +1565,15 @@ class CodeGenerator {
       // are only declared later in the scope.
       outWriter.write(s.temp);
       outWriter.write(s.out);
+    }
+
+    if (participates) {
+      this.stackrefScopeStack.pop();
+      if (!returned) {
+        // Fall-through exit. (A return/break/continue/goto already emitted
+        // the exit for this scope on its own path.)
+        outWriter.writeLine("hzstd_stackref_scope_exit();");
+      }
     }
 
     return { temp: tempWriter, out: outWriter };
@@ -1463,8 +1606,19 @@ class CodeGenerator {
         if (statement.expr) {
           const exprWriter = this.emitExpr(statement.expr);
           tempWriter.write(exprWriter.temp);
-          outWriter.writeLine("return " + exprWriter.out.get() + ";");
+          if (this.stackrefScopeStack.length > 0) {
+            // Evaluate first (it may read through this scope's stackrefs),
+            // then leave every participating scope, then return the temp.
+            outWriter.writeLine(
+              `${this.currentFunctionReturnType} __hz_ret = ${exprWriter.out.get()};`
+            );
+            this.emitStackrefExits(outWriter, 0);
+            outWriter.writeLine("return __hz_ret;");
+          } else {
+            outWriter.writeLine("return " + exprWriter.out.get() + ";");
+          }
         } else {
+          this.emitStackrefExits(outWriter, 0);
           outWriter.writeLine("return;");
         }
         return { temp: tempWriter, out: outWriter };
@@ -1482,6 +1636,10 @@ class CodeGenerator {
             )}`
           );
         }
+        this.emitStackrefExits(
+          outWriter,
+          this.loopStackrefMarks[this.loopStackrefMarks.length - 1] ?? 0
+        );
         outWriter.writeLine("break;");
         return { temp: tempWriter, out: outWriter };
       }
@@ -1498,6 +1656,10 @@ class CodeGenerator {
             )}`
           );
         }
+        this.emitStackrefExits(
+          outWriter,
+          this.loopStackrefMarks[this.loopStackrefMarks.length - 1] ?? 0
+        );
         outWriter.writeLine("continue;");
         return { temp: tempWriter, out: outWriter };
       }
@@ -1514,6 +1676,36 @@ class CodeGenerator {
             )}`
           );
         }
+        if (statement.stackrefInit === "copy-value" && statement.value) {
+          // let stackref x = <value>: copy into x's own stack buffer, then
+          // point at it with the enclosing scope's witness.
+          const valueExpr = this.lr.exprNodes.get(statement.value);
+          const exprWriter = this.emitExpr(statement.value);
+          tempWriter.write(exprWriter.temp);
+          const buf = `__hz_buf_${this.mangleName(statement.name)}`;
+          outWriter.writeLine(
+            `${this.mangleTypeUse(valueExpr.type)} ${buf} = ${exprWriter.out.get()};`
+          );
+          outWriter.writeLine(
+            `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = HZSTD_STACKREF_MAKE(&${buf}, ${this.currentStackrefSlot()});`
+          );
+          return { temp: tempWriter, out: outWriter };
+        }
+
+        if (statement.stackrefInit === "lambda" && statement.value) {
+          const built = this.emitCallableInPlace(
+            statement.value,
+            this.mangleName(statement.name),
+            this.currentStackrefSlot()
+          );
+          tempWriter.write(built.temp);
+          outWriter.write(built.out);
+          outWriter.writeLine(
+            `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = ${built.value};`
+          );
+          return { temp: tempWriter, out: outWriter };
+        }
+
         outWriter.write(
           `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)}`
         );
@@ -1640,7 +1832,9 @@ class CodeGenerator {
           )
           .pushIndent();
 
+        this.loopStackrefMarks.push(this.stackrefScopeStack.length);
         const scope = this.emitScope(statement.body);
+        this.loopStackrefMarks.pop();
         tempWriter.write(scope.temp);
         outWriter.write(scope.out);
         outWriter.popIndent().writeLine("}");
@@ -1662,7 +1856,9 @@ class CodeGenerator {
         const exprWriter = this.emitExpr(statement.condition);
         tempWriter.write(exprWriter.temp);
         outWriter.writeLine(`while (${exprWriter.out.get()}) {`).pushIndent();
+        this.loopStackrefMarks.push(this.stackrefScopeStack.length);
         const scope = this.emitScope(statement.thenBlock);
+        this.loopStackrefMarks.pop();
         tempWriter.write(scope.temp);
         outWriter.write(scope.out);
         outWriter.popIndent().writeLine("}");
@@ -1720,6 +1916,12 @@ class CodeGenerator {
               statement.sourceloc.filename
             )}`
           );
+        }
+        {
+          const mark = this.labelStackrefMarks.get(statement.labelName);
+          if (mark !== undefined) {
+            this.emitStackrefExits(outWriter, mark);
+          }
         }
         outWriter.writeLine(`goto ${statement.labelName};`).pushIndent();
         return { temp: tempWriter, out: outWriter };
@@ -1879,6 +2081,19 @@ class CodeGenerator {
         return { temp: tempWriter, out: outWriter };
       }
 
+      case Lowered.ENode.StackrefDerefExpr: {
+        // The one checked read through a stackref: `HZSTD_STACKREF_DEREF(T, ref)`
+        // yields `T*` after comparing the generation witness.
+        const e = this.emitExpr(expr.expr);
+        tempWriter.write(e.temp);
+        const ptrUse = this.lr.typeUseNodes.get(expr.type);
+        const pointee = ptrUse.pointer
+          ? this.mangleTypeDef(ptrUse.type)
+          : "void";
+        outWriter.write(`HZSTD_STACKREF_DEREF(${pointee}, ${e.out.get()})`);
+        return { out: outWriter, temp: tempWriter };
+      }
+
       case Lowered.ENode.ExplicitCastExpr: {
         const exprWriter = this.emitExpr(expr.expr);
         tempWriter.write(exprWriter.temp);
@@ -1887,6 +2102,32 @@ class CodeGenerator {
           Lowered.resolveAlias(this.lr, expr.type)
         );
         const type = this.lr.typeDefNodes.get(typeUse.type);
+
+        {
+          // ref -> stackref: free, immortal generation (slot 0).
+          const targetUse = this.lr.typeUseNodes.get(expr.type);
+          const srcUse = this.lr.typeUseNodes.get(
+            this.lr.exprNodes.get(expr.expr).type
+          );
+          if (targetUse.stackref && !srcUse.stackref) {
+            const srcDef = this.lr.typeDefNodes.get(
+              this.lr.typeUseNodes.get(
+                Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.expr).type)
+              ).type
+            );
+            if (srcDef.variant === Lowered.ENode.CallableDatatype) {
+              // GC-backed callable -> stackref callable
+              outWriter.write(
+                `({ ${this.mangleTypeUse(this.lr.exprNodes.get(expr.expr).type)} __tmp = ${exprWriter.out.get()}; (${this.mangleTypeUse(expr.type)}){ .fn = (void*)__tmp.fn, .env = HZSTD_STACKREF_IMMORTAL(__tmp.env) }; })`
+              );
+            } else {
+              outWriter.write(
+                `((${this.mangleTypeUse(expr.type)})HZSTD_STACKREF_IMMORTAL(${exprWriter.out.get()}))`
+              );
+            }
+            return { out: outWriter, temp: tempWriter };
+          }
+        }
         if (
           type.variant === Lowered.ENode.PrimitiveDatatype &&
           type.primitive === EPrimitive.cptr
@@ -2280,8 +2521,26 @@ class CodeGenerator {
               ).type
             );
 
-            const left = leftWriter.out.get();
-            const right = rightWriter.out.get();
+            let left = leftWriter.out.get();
+            let right = rightWriter.out.get();
+            // References compare by identity (the machine pointer); a stackref
+            // contributes its `.ptr` only -- its generation is not identity.
+            const leftUse = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.left).type)
+            );
+            const rightUse = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.right).type)
+            );
+            if (leftUse.stackref) {
+              left = `((${leftWriter.out.get()}).ptr)`;
+            }
+            if (rightUse.stackref) {
+              right = `((${rightWriter.out.get()}).ptr)`;
+            }
+            if (leftUse.stackref !== rightUse.stackref) {
+              left = `((void*)${left})`;
+              right = `((void*)${right})`;
+            }
             if (
               leftType.variant === Lowered.ENode.PrimitiveDatatype &&
               rightType.variant === Lowered.ENode.PrimitiveDatatype &&
@@ -2342,8 +2601,26 @@ class CodeGenerator {
               ).type
             );
 
-            const left = leftWriter.out.get();
-            const right = rightWriter.out.get();
+            let left = leftWriter.out.get();
+            let right = rightWriter.out.get();
+            // References compare by identity (the machine pointer); a stackref
+            // contributes its `.ptr` only -- its generation is not identity.
+            const leftUse = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.left).type)
+            );
+            const rightUse = this.lr.typeUseNodes.get(
+              Lowered.resolveAlias(this.lr, this.lr.exprNodes.get(expr.right).type)
+            );
+            if (leftUse.stackref) {
+              left = `((${leftWriter.out.get()}).ptr)`;
+            }
+            if (rightUse.stackref) {
+              right = `((${rightWriter.out.get()}).ptr)`;
+            }
+            if (leftUse.stackref !== rightUse.stackref) {
+              left = `((void*)${left})`;
+              right = `((void*)${right})`;
+            }
             if (
               leftType.variant === Lowered.ENode.PrimitiveDatatype &&
               rightType.variant === Lowered.ENode.PrimitiveDatatype &&
@@ -2423,16 +2700,45 @@ class CodeGenerator {
       case Lowered.ENode.CallableExpr: {
         let env = "NULL";
         if (expr.envValue?.type === "method") {
+          assert(expr.envType?.type === "method");
+          const thisTypeUse = this.lr.typeUseNodes.get(
+            Lowered.resolveAlias(this.lr, expr.envType.thisExprType)
+          );
+          if (expr.envValue.thisStackref !== null) {
+            // Plain method bound on a stackref receiver -> stackref callable:
+            // env is the receiver's witness, checked at every invocation.
+            const sref = this.emitExpr(expr.envValue.thisStackref);
+            tempWriter.write(sref.temp);
+            const func = this.lr.functionNodes.get(expr.function);
+            outWriter.write(
+              `((${this.mangleTypeUse(expr.type)}) { .fn = (void*)${this.mangleName(func.name)}, .env = ${sref.out.get()} })`
+            );
+            return { out: outWriter, temp: tempWriter };
+          }
           const thisExpr = this.emitExpr(expr.envValue.thisExpr);
           tempWriter.write(thisExpr.temp);
-          env = `HZSTD_ENV_BLOCK_FOR_THIS_PTR(${thisExpr.out.get()})`;
+          if (thisTypeUse.stackref) {
+            // `stackref fn` bound: keep a heap copy of the stackref as env.
+            env = `HZSTD_HOIST(hzstd_stackref_t, ${thisExpr.out.get()})`;
+          } else if (thisTypeUse.pointer) {
+            // The pointer itself is the env: no allocation.
+            env = `(void*)(${thisExpr.out.get()})`;
+          } else {
+            env = `HZSTD_ENV_BLOCK_FOR_THIS_PTR(${thisExpr.out.get()})`;
+          }
         } else if (
           expr.envValue?.type === "lambda" &&
           expr.envValue.captures.length > 0
         ) {
+          assert(expr.envType?.type === "lambda");
+          const captureTypes = expr.envType.captures;
           const setters = expr.envValue.captures.map((c, i) => {
             const e = this.emitExpr(c);
             tempWriter.write(e.temp);
+            if (captureTypes[i].byValue) {
+              // Captured by value: the slot points at a copy made right now.
+              return `env[${i}] = HZSTD_HOIST(${this.mangleTypeUse(captureTypes[i].type)}, ${e.out.get()});`;
+            }
             return `env[${i}] = ${e.out.get()};`;
           });
           env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}, "Closure env"); ${setters.join(" ")} (void*)env; })`;
@@ -2462,7 +2768,8 @@ class CodeGenerator {
       case Lowered.ENode.DereferenceExpr: {
         const e = this.emitExpr(expr.expr);
         tempWriter.write(e.temp);
-        outWriter.write("*" + e.out.get());
+        // Parenthesised: `(*this).x`, not `*this.x`.
+        outWriter.write("(*" + e.out.get() + ")");
         return { out: outWriter, temp: tempWriter };
       }
 

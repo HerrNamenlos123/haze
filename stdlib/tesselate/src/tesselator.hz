@@ -1,7 +1,7 @@
 __c__("#include \"tesselator.h\"");
 
 namespace ffi {
-	export extern C struct TesselatorContext {};
+	export extern C ref struct TesselatorContext {};
 
 	extern C fn tesselator_create(): TesselatorContext :: final;
 	extern C fn tesselator_destroy(ctx: TesselatorContext): void :: final;
@@ -19,12 +19,12 @@ namespace ffi {
 	extern C fn tesselator_index_at(ctx: TesselatorContext, index: i32): i32 :: final;
 }
 
-export struct TesselationResult {
+export ref struct TesselationResult {
 	vertices: []Vec2;
 	indices: []i32;
 }
 
-export struct Tesselator {
+export ref struct Tesselator {
 	handle: ffi.TesselatorContext;
 
 

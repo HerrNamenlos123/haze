@@ -11,7 +11,7 @@
 // on disk stayed frozen at whatever some earlier build had last saved.
 // That is the kind of bug that hides forever, because a stale cache still
 // restores *something* at startup.
-struct Cache {
+ref struct Cache {
     // The open tabs, in order, and which one was showing. Restored on
     // startup so the editor comes back up where it was left.
     //

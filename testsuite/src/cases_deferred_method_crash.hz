@@ -2,7 +2,7 @@
 // ============================================================================
 // REGRESSION TEST
 //
-// Bug: calling a struct method through a bound method value (`this.foo()`)
+// Bug: calling a ref struct method through a bound method value (`this.foo()`)
 // as part of a genuine (if indirect) mutual-recursion cycle crashed the
 // entire compiler process with an internal assertion failure, instead of
 // reporting the same clean diagnostic the compiler already gives for the
@@ -42,7 +42,7 @@ namespace cases_deferred_method_crash {
         s.compileOk(
             "non-cyclic sibling method call through 'this' still compiles fine",
             """
-struct Foo {
+ref struct Foo {
     fn a() {
         return this.b();
     }
@@ -66,7 +66,7 @@ fn main(): int {
         s.compileFails(
             "mutual recursion through bound 'this' method calls reports cleanly instead of crashing the compiler",
             """
-struct Foo {
+ref struct Foo {
     fn a() {
         if false {
             return this.b();

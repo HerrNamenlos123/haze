@@ -1,12 +1,12 @@
 
 
-export struct VertexAttribute {
+export ref struct VertexAttribute {
     format: VertexFormat;
     offset: int;
     shaderLocation: int;
 }
 
-fn fromFFI(v: inline ffi.WGPUVertexAttribute): VertexAttribute :: final {
+fn fromFFI(v: ffi.WGPUVertexAttribute): VertexAttribute :: final {
     assert(v.offset <= int.max);
     return VertexAttribute {
         format: fromFFI(v.format),
@@ -15,18 +15,18 @@ fn fromFFI(v: inline ffi.WGPUVertexAttribute): VertexAttribute :: final {
     };
 }
 
-fn toFFI(v: VertexAttribute): ffi.WGPUVertexAttribute :: final {
+fn toFFI(v: VertexAttribute): ref ffi.WGPUVertexAttribute :: final {
     assert(v.offset >= u64.min && v.offset <= u64.max);
     assert(v.shaderLocation >= u32.min && v.shaderLocation <= u32.max);
-    return ffi.WGPUVertexAttribute {
+    return ref ffi.WGPUVertexAttribute {
         format: toFFI(v.format),
         offset: v.offset,
         shaderLocation: v.shaderLocation,
     };
 }
 
-export struct VertexState {
-    module: mut ShaderModule;
+export ref struct VertexState {
+    module: ShaderModule;
     entryPoint: str;
     constants: []ConstantEntry = [];
     buffers: []VertexBufferLayout = [];
@@ -36,15 +36,15 @@ fn fromFFI(v: ffi.WGPUVertexState): VertexState :: final {
     return VertexState {
         module: fromFFI(v.module),
         entryPoint: fromFFI(v.entryPoint),
-        constants: arrayFromFFI<ConstantEntry, inline ffi.WGPUConstantEntry>(v.constantCount, v.constants),
-        buffers: arrayFromFFI<VertexBufferLayout, inline ffi.WGPUVertexBufferLayout>(v.bufferCount, v.buffers),
+        constants: arrayFromFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constantCount, v.constants),
+        buffers: arrayFromFFI<VertexBufferLayout, ffi.WGPUVertexBufferLayout>(v.bufferCount, v.buffers),
     };
 }
 
-fn toFFI(v: VertexState): ffi.WGPUVertexState :: final {
-    let constants = arrayToFFI<ConstantEntry, inline ffi.WGPUConstantEntry>(v.constants);
-    let buffers = arrayToFFI<VertexBufferLayout, inline ffi.WGPUVertexBufferLayout>(v.buffers);
-    return ffi.WGPUVertexState {
+fn toFFI(v: VertexState): ref ffi.WGPUVertexState :: final {
+    let constants = arrayToFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constants);
+    let buffers = arrayToFFI<VertexBufferLayout, ffi.WGPUVertexBufferLayout>(v.buffers);
+    return ref ffi.WGPUVertexState {
         nextInChain: none,
         module: toFFI(v.module),
         entryPoint: toFFI(v.entryPoint),
@@ -55,8 +55,8 @@ fn toFFI(v: VertexState): ffi.WGPUVertexState :: final {
     };
 }
 
-export struct FragmentState {
-    module: mut ShaderModule;
+export ref struct FragmentState {
+    module: ShaderModule;
     entryPoint: str;
     constants: []ConstantEntry = [];
     targets: []ColorTargetState = [];
@@ -64,18 +64,18 @@ export struct FragmentState {
 
 fn fromFFI(v: ffi.WGPUFragmentState): FragmentState :: final {
     let targets = none as cptr;
-    __c__("targets = (void*)v->targets;");
+    __c__("targets = (void*)v.targets;");
     return {
         module: fromFFI(v.module),
         entryPoint: fromFFI(v.entryPoint),
-        constants: arrayFromFFI<ConstantEntry, inline ffi.WGPUConstantEntry>(v.constantCount, v.constants),
-        targets: arrayFromFFI<ColorTargetState, inline ffi.WGPUColorTargetState>(v.targetCount, targets),
+        constants: arrayFromFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constantCount, v.constants),
+        targets: arrayFromFFI<ColorTargetState, ffi.WGPUColorTargetState>(v.targetCount, targets),
     };
 }
 
-fn toFFI(v: FragmentState): ffi.WGPUFragmentState :: final {
-    let constants = arrayToFFI<ConstantEntry, inline ffi.WGPUConstantEntry>(v.constants);
-    let targets = arrayToFFI<ColorTargetState, inline ffi.WGPUColorTargetState>(v.targets);
+fn toFFI(v: FragmentState): ref ffi.WGPUFragmentState :: final {
+    let constants = arrayToFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constants);
+    let targets = arrayToFFI<ColorTargetState, ffi.WGPUColorTargetState>(v.targets);
     return {
         nextInChain: none,
         module: toFFI(v.module),
@@ -87,13 +87,13 @@ fn toFFI(v: FragmentState): ffi.WGPUFragmentState :: final {
     };
 }
 
-export struct ColorTargetState {
+export ref struct ColorTargetState {
     format: TextureFormat;
     blend?: BlendState;
     writeMask: ColorWriteMask = ColorWriteMask.Red | ColorWriteMask.Green | ColorWriteMask.Blue | ColorWriteMask.Alpha;
 }
 
-fn fromFFI(v: inline ffi.WGPUColorTargetState): ColorTargetState :: final {
+fn fromFFI(v: ffi.WGPUColorTargetState): ColorTargetState :: final {
     return {
         format: fromFFI(v.format),
         blend: v.blend ? fromFFI(v.blend) : none,
@@ -101,7 +101,7 @@ fn fromFFI(v: inline ffi.WGPUColorTargetState): ColorTargetState :: final {
     };
 }
 
-fn toFFI(v: ColorTargetState): ffi.WGPUColorTargetState :: final {
+fn toFFI(v: ColorTargetState): ref ffi.WGPUColorTargetState :: final {
     return {
         nextInChain: none,
         format: toFFI(v.format),
@@ -110,7 +110,7 @@ fn toFFI(v: ColorTargetState): ffi.WGPUColorTargetState :: final {
     };
 }
 
-export struct BlendState {
+export ref struct BlendState {
     color: BlendComponent;
     alpha: BlendComponent;
 }
@@ -122,20 +122,20 @@ fn fromFFI(v: ffi.WGPUBlendState): BlendState :: final {
     };
 }
 
-fn toFFI(v: BlendState): ffi.WGPUBlendState :: final {
+fn toFFI(v: BlendState): ref ffi.WGPUBlendState :: final {
     return {
         color: toFFI(v.color),
         alpha: toFFI(v.alpha),
     };
 }
 
-export struct BlendComponent {
+export ref struct BlendComponent {
     operation: BlendOperation = BlendOperation.Undefined;
     srcFactor: BlendFactor;
     dstFactor: BlendFactor;
 }
 
-fn fromFFI(v: inline ffi.WGPUBlendComponent): BlendComponent :: final {
+fn fromFFI(v: ffi.WGPUBlendComponent): BlendComponent :: final {
     return {
         operation: fromFFI(v.operation),
         srcFactor: fromFFI(v.srcFactor),
@@ -143,7 +143,7 @@ fn fromFFI(v: inline ffi.WGPUBlendComponent): BlendComponent :: final {
     };
 }
 
-fn toFFI(v: BlendComponent): ffi.WGPUBlendComponent :: final {
+fn toFFI(v: BlendComponent): ref ffi.WGPUBlendComponent :: final {
     return {
         operation: toFFI(v.operation),
         srcFactor: toFFI(v.srcFactor),
@@ -160,7 +160,7 @@ export enum bitflag ColorWriteMask {
     // All = 0xF, not representable
 }
 
-fn colorWriteMaskFromFFI(v: inline ffi.WGPUColorWriteMask): ColorWriteMask :: final {
+fn colorWriteMaskFromFFI(v: ffi.WGPUColorWriteMask): ColorWriteMask :: final {
     do unsafe {
         let usage: ColorWriteMask = uninitialized; // This is a bitflag
         __c__("usage = (int)v;");

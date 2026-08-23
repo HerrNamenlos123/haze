@@ -5,7 +5,7 @@ import app
 import ui_runtime
 import ui_components
 
-struct Cache {
+ref struct Cache {
     vaultDir: str | null = null;
 }
 

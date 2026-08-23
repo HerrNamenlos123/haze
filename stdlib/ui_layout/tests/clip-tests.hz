@@ -23,12 +23,12 @@ fn measureStub(fontId: int, fontSize: real, text: str): Vec2 {
 // A drawn rectangle plus whatever clip was active for it -- the pairing is
 // the whole point, so they're recorded together rather than in parallel
 // lists.
-struct DrawRecord {
+ref struct DrawRecord {
     box: str;
     clip: str;
 }
 
-struct Recorder {
+ref struct Recorder {
     draws: []DrawRecord = [];
     // Clip most recently handed to setClip, in the same "minX,minY,maxX,maxY"
     // form used in assertions. Starts unclipped.

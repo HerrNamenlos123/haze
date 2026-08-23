@@ -11,7 +11,7 @@ export const CONST_4: i32 = 123;
 export extern const CONST_5: i8;
 export extern "C" const M_PI: f32;
 
-struct Test {
+ref struct Test {
     value: i32;
 
     print<T>(): T => {
@@ -19,7 +19,7 @@ struct Test {
     }
 }
 
-extern "C" struct timeval_t {
+extern "C" ref struct timeval_t {
     ns: u64;
 }
 
@@ -39,7 +39,7 @@ namespace Outer.Inner {
         extern malloc(size: u64): void;
         export extern ImGui.Begin(name: String): void;
 
-        export struct Foo<T, U> {
+        export ref struct Foo<T, U> {
             value: Box<T>;
             other: U;
 

@@ -47,7 +47,7 @@ export enum PointerEventKind { Down, Up, Move }
 // Covers mouse, touch, and stylus in one type. stopPropagation() halts both
 // the remaining capture and bubble phases -- see dispatchCapturing()/
 // dispatchBubbling() below for exactly how.
-export struct PointerEvent {
+export ref struct PointerEvent {
     pointerId: int;
     pointerType: str;
     pos: Vec2;
@@ -68,7 +68,7 @@ export struct PointerEvent {
 // hover/hit already get their own dedicated (non-PointerEventKind) handling
 // below. delta.y > 0 is scroll "away" from the user (matches SDL's
 // convention, see sdl.hz's MouseWheelEvent).
-export struct WheelEvent {
+export ref struct WheelEvent {
     pos: Vec2;
     delta: Vec2;
     modifiers: KeyModifiers;
@@ -147,7 +147,7 @@ export enum KeyEdgeKind { Pressed, Released }
 // TextInputEvent below, same division of labor as the DOM's keydown vs.
 // input/beforeinput. Use this for shortcuts (modifiers + key, e.g. ctrl+L)
 // and non-character keys (F5, Escape, arrows, ...).
-export struct KeyboardEvent {
+export ref struct KeyboardEvent {
     key: Key;
     repeat: bool;
     modifiers: KeyModifiers;
@@ -165,7 +165,7 @@ export struct KeyboardEvent {
 // KeyboardEvent -- trying to reconstruct typed text from raw key events
 // yourself would have to reinvent shift/caps-lock/layout/IME handling that
 // the platform layer already did once, correctly.
-export struct TextInputEvent {
+export ref struct TextInputEvent {
     text: str;
     _stopped: bool = false;
 
@@ -178,7 +178,7 @@ export struct TextInputEvent {
 // it -- same reasoning as PointerEdge: a single level/latch can only
 // describe one transition per frame, and typing (or key auto-repeat) easily
 // produces several within one frame.
-export struct KeyEdge {
+export ref struct KeyEdge {
     key: Key;
     kind: KeyEdgeKind;
     repeat: bool;
@@ -188,16 +188,16 @@ export struct KeyEdge {
 // Optional keyboard callbacks bundled as a struct, same reasoning as
 // PointerHeldCallbacks. keyEdgesThisFrame()/textInputThisFrame() are this
 // frame's queues, in order -- see KeyEdge and TextInputEvent above.
-export struct KeyboardCallbacks {
+export ref struct KeyboardCallbacks {
     keyEdgesThisFrame: () => []KeyEdge;
     textInputThisFrame: () => []str;
 }
 
-export inline struct DivProps {
+export struct DivProps {
     id: int;
     style?: ui_styling.DivStyle;
     presets?: []ui_styling.DivStyleOp;
-    ref?: ElementRef<ui_elements.DivElement>;
+    elementRef?: ElementRef<ui_elements.DivElement>;
     // Registers this element's resolved id into `anchor` the moment it's
     // declared -- see ui_styling.AnchorTarget and UIContext.anchor(). Lets
     // some other element elsewhere in the tree target this one via
@@ -254,7 +254,7 @@ export inline struct DivProps {
     // build; afterwards focus follows clicks and ui_focus() as usual.
     //
     // For focus that has to be decided at runtime rather than declared here,
-    // use a `ref:` and call .focus()/.blur() on it (see ElementWrapper).
+    // use a `elementRef:` and call .focus()/.blur() on it (see ElementWrapper).
     autofocus?: bool;
 
     onFocus?: () => none;
@@ -273,19 +273,19 @@ export inline struct DivProps {
     onTextInputCapture?: (e: TextInputEvent) => none;
 }
 
-export inline struct TextProps {
+export struct TextProps {
     id: int;
     style?: ui_styling.TextStyle;
     text: str;
     presets?: []ui_styling.TextStyleOp;
-    ref?: ElementRef<ui_elements.TextElement>;
+    elementRef?: ElementRef<ui_elements.TextElement>;
 }
 
-export inline struct CanvasProps {
+export struct CanvasProps {
     id: int;
     style?: ui_styling.DivStyle;
     presets?: []ui_styling.DivStyleOp;
-    ref?: ElementRef<ui_elements.CanvasElement>;
+    elementRef?: ElementRef<ui_elements.CanvasElement>;
     // Defaults to 4 (real hardware MSAA), applied to everything this canvas
     // draws. Set to 1 to skip it (e.g. many small canvases where the extra
     // memory/bandwidth isn't worth it); see renderer.gfx.CanvasOptions.msaaSamples.
@@ -307,7 +307,7 @@ export inline struct CanvasProps {
 // ui_runtime's renderCanvas glue) does, via
 // TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
 // agree on this exact type: TypeErasedBox has no runtime type tag.
-export struct CanvasHandle {
+export ref struct CanvasHandle {
     canvas: mut renderer.gfx.Canvas;
 }
 
@@ -317,7 +317,7 @@ export struct CanvasHandle {
 //
 // Not exported: this alias's body references a cross-module qualified type
 // (renderer.gfx.Renderer), and the compiler's cross-module shim generator
-// mangles qualified types correctly for struct fields and function/method
+// mangles qualified types correctly for ref struct fields and function/method
 // parameters, but has a codegen bug specifically for top-level exported
 // `type X = (...) => Y;` aliases that reference a qualified cross-module
 // type -- it leaves the module prefix unmangled, which then fails to
@@ -341,15 +341,15 @@ export fn runCanvasDrawFn(drawFnBox: TypeErasedBox | none, r: mut renderer.gfx.R
 // Render/input feedback and an element's GPU canvas handle/drawFn used to
 // live as dedicated fields on the element itself (ui_elements.*Element).
 // They don't anymore -- ui_elements only knows about an opaque
-// `_runtimeData` slot, and this struct is what *this* module (the only
+// `_runtimeData` slot, and this ref struct is what *this* module (the only
 // thing that creates elements) stores there. position()/size()/hover()
 // below read it back out; ui_elements and ui_layout never see this type.
-export struct RenderFeedback {
+export ref struct RenderFeedback {
     position: Vec2;
     size: Vec2;
 }
 
-export struct InputFeedback {
+export ref struct InputFeedback {
     // Bounds-based: mouse is within this element, possibly also within a
     // child. Matches HTML/CSS :hover.
     hover: bool;
@@ -389,12 +389,12 @@ export enum FocusRequest { None, Focus, Blur }
 // report two things at once (which kind of request, and whose) while still
 // recursing -- a plain return value can't carry both back up out of a
 // recursive walk without allocating on every level.
-export struct FocusRequestTarget {
+export ref struct FocusRequestTarget {
     kind: FocusRequest = FocusRequest.None;
     data: ComponentElementRuntimeData | null = null;
 }
 
-export struct ComponentElementRuntimeData {
+export ref struct ComponentElementRuntimeData {
     renderFeedback?: RenderFeedback;
     renderFeedbackVersion: rx.Reactive<bool>;
     inputFeedback?: InputFeedback;
@@ -410,7 +410,7 @@ export struct ComponentElementRuntimeData {
     // on the whole ComponentInstance (the old design) means each lookup only
     // scans however many direct children this element actually has, not
     // every element anywhere in the component.
-    childElements: []inline ChildElementEntry = [];
+    childElements: []ChildElementEntry = [];
 
     onPointerDown?: (e: PointerEvent) => none;
     onPointerUp?: (e: PointerEvent) => none;
@@ -433,7 +433,7 @@ export struct ComponentElementRuntimeData {
     // (not a UIContext-held pointer to "the" focused element) so that
     // finding the currently-focused element's ancestor chain each frame is
     // just a tree walk checking this flag (see UIContext.buildFocusPath) --
-    // deliberately avoiding needing to compare two element/struct handles
+    // deliberately avoiding needing to compare two element/ref struct handles
     // for identity, which Haze has no safe operator for.
     focusable: bool = false;
     focused: bool = false;
@@ -534,17 +534,17 @@ fn childGlobalId(parent: ui_elements.DivElement, id: int): str {
     return parent.globalId + "/" + f"{id}";
 }
 
-inline struct DivLookup {
+struct DivLookup {
     element: mut ui_elements.DivElement;
     path: str;
 }
 
-inline struct TextLookup {
+struct TextLookup {
     element: mut ui_elements.TextElement;
     path: str;
 }
 
-inline struct CanvasLookup {
+struct CanvasLookup {
     element: mut ui_elements.CanvasElement;
     path: str;
 }
@@ -728,7 +728,7 @@ export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec
     }
 }
 
-export struct ComponentInstance {
+export ref struct ComponentInstance {
     id: int;
 
     templateComputed?: rx.Computed<none>;
@@ -743,8 +743,8 @@ export struct ComponentInstance {
         component: ComponentInstance;
     }
 
-    childComponents: []inline ComponentCache = [];
-    newChildComponents: []inline ComponentCache = [];
+    childComponents: []ComponentCache = [];
+    newChildComponents: []ComponentCache = [];
 
     rootElement: mut ui_elements.DivElement;
 
@@ -790,7 +790,7 @@ export struct ComponentInstance {
     }
 }
 
-export struct RenderContext {
+export ref struct RenderContext {
     currentComponent: ComponentInstance;
     currentParent: mut ui_elements.DivElement;
     // currentParent's own full slash-separated id path from the component
@@ -808,7 +808,7 @@ export struct RenderContext {
     childIndex: int = 0;
 }
 
-export struct InstanceData<TProps> {
+export ref struct InstanceData<TProps> {
     _props: TProps;
     _propsVersion: rx.Reactive<int>;
 
@@ -832,19 +832,19 @@ export enum PointerEdgeKind { Pressed, Released }
 // silently dropping every click but the last. See UIContext.process(), which
 // replays this queue in order so nothing reported within a frame is ever
 // lost, no matter how many events land in that frame.
-export struct PointerEdge {
+export ref struct PointerEdge {
     button: PointerButton;
     kind: PointerEdgeKind;
     pos: Vec2;
 }
 
-// Optional pointer-button callbacks bundled as a struct. Using a struct avoids
+// Optional pointer-button callbacks bundled as a struct. Using a ref struct avoids
 // the (() => bool) | none union that Haze cannot implicitly coerce a lambda into.
 //
 // *Held is the continuous level state (used for the PointerEvent.buttons
 // bitmask and for Move's drag pressure). edgesThisFrame() is the ordered
 // press/release queue described on PointerEdge above, used for Down/Up/Click.
-export struct PointerHeldCallbacks {
+export ref struct PointerHeldCallbacks {
     leftHeld: () => bool;
     middleHeld: () => bool;
     rightHeld: () => bool;
@@ -856,7 +856,7 @@ export struct PointerHeldCallbacks {
 // scroll delta (zero most frames); modifiers() is read every frame and
 // stamped onto every event this module produces (PointerEvent and
 // WheelEvent alike), not just wheel.
-export struct InputExtrasCallbacks {
+export ref struct InputExtrasCallbacks {
     wheelDelta: () => Vec2;
     modifiers: () => KeyModifiers;
 }
@@ -887,14 +887,14 @@ export type CursorCallback = (index: int) => void;
 export type MousePosKnownCallback = () => (bool) :: final, pure;
 
 // Internal pending pointer event before it is dispatched to elements.
-struct PendingPointerEvent {
+ref struct PendingPointerEvent {
     kind: PointerEventKind;
     button: PointerButton;
     buttons: PointerButtons;
     pos: Vec2;
 }
 
-export opaque struct UIContext {
+export opaque ref struct UIContext {
     _mousePosCb: (() => Vec2);
     // Optional: when supplied, says whether _mousePosCb's answer is
     // meaningful yet (see mousePosKnown below). Omitted means "always
@@ -938,7 +938,7 @@ export opaque struct UIContext {
     // frame alongside it, so everything in one frame agrees.
     mousePosKnown: bool = true;
 
-    inline struct UIContextArgs {
+    struct UIContextArgs {
         ui: ((ui: UIContext) => none);
         mousePos: () => Vec2;
         // See UIContext._mousePosKnownCb. Optional; omitting it means the
@@ -1168,7 +1168,7 @@ export opaque struct UIContext {
     // ComponentElementRuntimeData.focused) instead of mouse position -- a
     // full-tree walk each frame rather than tracking a stored "focus
     // target" handle, since Haze has no safe way to compare two element/
-    // struct handles for identity (see runtimeDataOf's callers elsewhere in
+    // ref struct handles for identity (see runtimeDataOf's callers elsewhere in
     // this file, which all key persistent per-element state off the element
     // reached during a traversal, never off a remembered handle compared
     // later). Empty when nothing is focused, or when whatever *was* focused
@@ -2314,7 +2314,7 @@ export opaque struct UIContext {
         component.onUnmount = callback;
     }
 
-    struct WatchOptions {
+    ref struct WatchOptions {
         immediate?: bool;
         deep?: bool;
     }
@@ -2433,9 +2433,9 @@ export opaque struct UIContext {
         this.popRenderContext();
         this.truncateChildrenToCursor(element, childCount);
 
-        if props.ref is not none {
-            if props.ref is null || props.ref.raw.id != element.id {
-                props.ref := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
+        if props.elementRef is not none {
+            if props.elementRef is null || props.elementRef.raw.id != element.id {
+                props.elementRef := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
             }
         }
 
@@ -2454,9 +2454,9 @@ export opaque struct UIContext {
         // attach into current parent
         this.attachChild(element);
 
-        if props.ref is not none {
-            if props.ref is null || props.ref.raw.id != element.id {
-                props.ref := ElementWrapper<ui_elements.TextElement> { raw: element, _element: element };
+        if props.elementRef is not none {
+            if props.elementRef is null || props.elementRef.raw.id != element.id {
+                props.elementRef := ElementWrapper<ui_elements.TextElement> { raw: element, _element: element };
             }
         }
 
@@ -2504,9 +2504,9 @@ export opaque struct UIContext {
             data.postEffect = props.postEffect;
         }
 
-        if props.ref is not none {
-            if props.ref is null || props.ref.raw.id != element.id {
-                props.ref := ElementWrapper<ui_elements.CanvasElement> { raw: element, _element: element };
+        if props.elementRef is not none {
+            if props.elementRef is null || props.elementRef.raw.id != element.id {
+                props.elementRef := ElementWrapper<ui_elements.CanvasElement> { raw: element, _element: element };
             }
         }
 
@@ -2536,7 +2536,7 @@ export opaque struct UIContext {
         frame.present();
     }
 
-    fn ref<T>(): ElementRef<T> {
+    fn elementRef<T>(): ElementRef<T> {
         return rx.shallowReactive<ElementWrapper<T> | null>(null);
     }
 
@@ -2555,7 +2555,7 @@ export opaque struct UIContext {
 // ui_elements.Element cannot resolve anymore because it's not namespaced. Should be fixed properly
 // by implementing preelaboration of generic structs that links types directly to nodes. 
 export type ui_Element = ui_elements.Element;
-export struct ElementWrapper<T> {
+export ref struct ElementWrapper<T> {
     raw: T;
     _element: ui_Element;
 

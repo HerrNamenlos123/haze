@@ -1,13 +1,13 @@
 
 namespace ffi {
-    extern C noemit struct hzstd_regex_blob_t {};
+    extern C noemit ref struct hzstd_regex_blob_t {};
 
-    extern C noemit inline struct hzstd_regex_runtime_compile_result_t {
+    extern C noemit struct hzstd_regex_runtime_compile_result_t {
         blob: hzstd_regex_blob_t | none;
         error: str;
     };
 
-    extern C fn hzstd_regex_runtime_compile(pattern: str, flags: str): inline hzstd_regex_runtime_compile_result_t :: final;
+    extern C fn hzstd_regex_runtime_compile(pattern: str, flags: str): hzstd_regex_runtime_compile_result_t :: final;
 
     extern C noemit struct hzstd_regex_span_t {
         start: usize;
@@ -15,42 +15,42 @@ namespace ffi {
     };
 
     extern C noemit struct hzstd_regex_group_t {
-        span: inline hzstd_regex_span_t;
+        span: hzstd_regex_span_t;
         text: str;
         present: bool;
     };
 
     extern C noemit struct hzstd_regex_find_match_t {
-        span: inline hzstd_regex_span_t;
+        span: hzstd_regex_span_t;
         text: str;
-        groups: []inline hzstd_regex_group_t;
+        groups: []hzstd_regex_group_t;
     };
 
     extern C noemit struct hzstd_regex_find_one_result_t {
         found: bool;
         // 'match' may only be accessed if 'found' is true
-        match: inline hzstd_regex_find_match_t;
+        match: hzstd_regex_find_match_t;
     };
 
     extern C noemit fn hzstd_regex_match(regex: Regex, text: str): bool :: final;
-    extern C noemit fn hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): inline hzstd_regex_find_one_result_t :: final;
-    extern C noemit fn hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](inline hzstd_regex_find_match_t) :: final;
+    extern C noemit fn hzstd_regex_find(allocator: Allocator, regex: Regex, text: str): hzstd_regex_find_one_result_t :: final;
+    extern C noemit fn hzstd_regex_find_all(allocator: Allocator, regex: Regex, text: str): [](hzstd_regex_find_match_t) :: final;
     extern C noemit fn hzstd_regex_replace(regex: Regex, text: str, replacement: str): str :: final;
 }
 
 namespace regex {
-    export struct Span {
+    export ref struct Span {
         start: int;
         end: int;
     }
 
-    export struct Group {
+    export ref struct Group {
         span: Span;
         text: str;
         present: bool;
     }
 
-    export struct Match {
+    export ref struct Match {
         span: Span;
         text: str;
         groups: []Group;

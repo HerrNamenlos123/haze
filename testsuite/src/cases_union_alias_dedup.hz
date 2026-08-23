@@ -26,7 +26,7 @@
 //
 // Why it mattered: it makes any alias-typed value hostile to the ordinary
 // `maybe ? maybe : fallback` idiom, and the standard library aliases freely
-// (`type Color = mut hzstd_color_t`), so this fired on plain application
+// (`type Color = hzstd_color_t`), so this fired on plain application
 // code that never mentions an alias by name.
 //
 // Root cause (src/Semantic/SemanticBuilder.ts, untaggedUnionTypeUse): the
@@ -51,8 +51,8 @@ namespace cases_union_alias_dedup {
         s.run(
             "a union deduplicates members that differ only by a type alias",
             """
-struct Point { x: int; }
-struct Other { y: int; }
+ref struct Point { x: int; }
+ref struct Other { y: int; }
 
 // One level of aliasing -- the exact shape from the bug report.
 type Alias = Point;

@@ -15,13 +15,13 @@
 // unavoidable; everywhere else the grammar lets us know the start token up
 // front and we patch nothing.
 
-export struct ParseError {
+export ref struct ParseError {
     message: str = "";
     line: int = 0;
     col: int = 0;
 }
 
-export struct Parser {
+export ref struct Parser {
     src: str = "";
     filename: str = "";
     toks: mut []Token = [];
@@ -883,7 +883,7 @@ export struct Parser {
             return;
         }
 
-        // Anonymous struct literal `{ ... }`.
+        // Anonymous ref struct literal `{ ... }`.
         if k == TK.LCurly {
             this.braceExpr(emptyCapture(), start);
             return;
@@ -896,6 +896,21 @@ export struct Parser {
 
         if k == TK.FStringStart || k == TK.FTripleStringStart {
             this.interpolatedString();
+            return;
+        }
+
+        // `ref Foo { ... }`: a struct literal whose type is `ref Foo` (allocates).
+        if k == TK.Ref {
+            this.advance();
+            let nameJson = this.captureWith(() => { this.nameExpr(); });
+            let refJson = this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "RefTypeExpr");
+                this.w.keyRaw("type", nameJson);
+                this.locHere(start);
+                this.w.endObject();
+            });
+            this.braceExpr(refJson, start);
             return;
         }
 
@@ -1353,10 +1368,11 @@ export struct Parser {
         let start = this.cur();
         let k = this.kind();
 
-        if k == TK.Inline || k == TK.Mut || k == TK.Const {
+        if k == TK.Ref || k == TK.Stackref || k == TK.Mut || k == TK.Const {
             this.advance();
-            let variant = "InlineTypeExpr";
-            if k == TK.Mut { variant = "MutTypeExpr"; }
+            let variant = "RefTypeExpr";
+            if k == TK.Stackref { variant = "StackrefTypeExpr"; }
+            else if k == TK.Mut { variant = "MutTypeExpr"; }
             else if k == TK.Const { variant = "ConstTypeExpr"; }
 
             this.w.beginObject();
@@ -1393,7 +1409,7 @@ export struct Parser {
         }
 
         // Function type: `(params) => T` (closure) or `-> T` (function).
-        // A parenthesised type such as `[](inline Foo)` also starts with `(`,
+        // A parenthesised type such as `[](Foo)` also starts with `(`,
         // so only commit to a function type when an arrow follows the `)`.
         if k == TK.LParen && this.parenIsFunctionType() {
             this.advance();
@@ -1984,6 +2000,7 @@ export struct Parser {
     mut fn variableCreation(): void :: final {
         let start = this.cur();
         let mutability = this.variableMutability();
+        let isStackref = this.accept(TK.Stackref);
         let isComptime = this.accept(TK.Comptime);
         let nameTok = this.expect(TK.Ident);
         let name = this.text(nameTok);
@@ -2002,6 +2019,7 @@ export struct Parser {
         this.w.beginObject();
         this.w.keyString("variant", "VariableDefinitionStatement");
         this.w.keyInt("mutability", mutability);
+        this.w.keyBool("stackref", isStackref);
         this.w.keyBool("comptime", isComptime);
         this.w.keyString("name", name);
         if datatype.length > 0 { this.w.keyRaw("datatype", datatype); }
@@ -2020,7 +2038,7 @@ export struct Parser {
 
     // Condition of if/while: either an expression or `let x = expr` with an
     // isOptional `; guard`. Brace literals are disabled so `if x { }` parses the
-    // brace as the body rather than a struct literal.
+    // brace as the body rather than a ref struct literal.
     mut fn conditionInto(letName: str): Condition :: final {
         let c = Condition {
             isLet: false,
@@ -2347,7 +2365,7 @@ export struct Parser {
         if this.at(TK.ModuleNamespace) { this.moduleNamespaceDefinition(declStart, isExport); return; }
         if this.at(TK.SourceDirective) { this.sourceLocationBlock(); return; }
 
-        // extern / pub / noemit / opaque / plain / inline modifiers.
+        // extern / pub / noemit / opaque / plain / modifiers.
         let mods = this.declModifiers();
 
         if this.at(TK.Fn) { this.functionDefinition(declStart, isExport, mods, false, 0); return; }
@@ -2360,11 +2378,11 @@ export struct Parser {
         this.advance();
     }
 
-    // extern [lang] pub? noemit? opaque? plain? inline?
+    // extern [lang] pub? noemit? (opaque|plain|ref|nocopy)*
     mut fn declModifiers(): Modifiers :: final {
         let m = Modifiers {
             externLang: 0, isPub: false, isNoemit: false,
-            isOpaque: false, isPlain: false, inlineByDefault: false,
+            isOpaque: false, isPlain: false, refByDefault: false, isNocopy: false,
         };
 
         if this.accept(TK.Extern) {
@@ -2381,7 +2399,8 @@ export struct Parser {
             if this.at(TK.Noemit) { this.advance(); m.isNoemit = true; continue; }
             if this.at(TK.Opaque) { this.advance(); m.isOpaque = true; continue; }
             if this.at(TK.Plain) { this.advance(); m.isPlain = true; continue; }
-            if this.at(TK.Inline) { this.advance(); m.inlineByDefault = true; continue; }
+            if this.at(TK.Ref) { this.advance(); m.refByDefault = true; continue; }
+            if this.at(TK.Nocopy) { this.advance(); m.isNocopy = true; continue; }
             break;
         }
         return m;
@@ -2628,6 +2647,7 @@ export struct Parser {
     // globalVariableDef
     mut fn globalVariable(start: Token, isExport: bool, mods: Modifiers): void :: final {
         let mutability = this.variableMutability();
+        let isStackref = this.accept(TK.Stackref);
         let isComptime = this.accept(TK.Comptime);
         let nameTok = this.expect(TK.Ident);
         let name = this.text(nameTok);
@@ -2712,7 +2732,7 @@ export struct Parser {
     }
 
 
-    // functionDefinition / struct method.
+    // functionDefinition / ref struct method.
     //
     // `methodType` (EMethodType) and `isStaticFlag` only matter inside a struct;
     // `operatorId` is the EOverloadedOperator for `operator+` style names.
@@ -2785,6 +2805,8 @@ export struct Parser {
         this.w.keyInt("methodType", methodType);
         if mods.methodMutability == 0 { this.w.keyNull("methodRequiredMutability"); }
         else { this.w.keyInt("methodRequiredMutability", mods.methodMutability); }
+        if mods.methodReceiverStorage == 0 { this.w.keyNull("methodReceiverStorage"); }
+        else { this.w.keyInt("methodReceiverStorage", mods.methodReceiverStorage); }
         if hasBody { this.w.keyRaw("funcbody", body); }
         this.locHere(start);
         this.w.keyString("originalSourcecode", this.sourceSpan(start, sourceEnd));
@@ -2793,6 +2815,7 @@ export struct Parser {
 
     fn canStartExpr(k: TK): bool {
         return k == TK.Ident || k == TK.Type || k == TK.LParen || k == TK.LBracket
+            || k == TK.Ref
             || k == TK.Do || k == TK.Attempt || k == TK.Typeof
             || k == TK.FStringStart || k == TK.FTripleStringStart
             || k == TK.Minus || k == TK.Plus || k == TK.Not
@@ -2837,7 +2860,8 @@ export struct Parser {
         this.w.keyBool("noemit", mods.isNoemit);
         this.w.keyBool("opaque", mods.isOpaque);
         this.w.keyBool("plain", mods.isPlain);
-        this.w.keyBool("inlineByDefault", mods.inlineByDefault);
+        this.w.keyBool("refByDefault", mods.refByDefault);
+        this.w.keyBool("nocopy", mods.isNocopy);
         this.w.keyBool("pub", mods.isPub);
         this.writeGenerics(generics, start);
         this.w.key("members");
@@ -2858,17 +2882,17 @@ export struct Parser {
         this.w.endObject();
     }
 
-    // One item inside a struct body: a member, a method, or a nested type.
+    // One item inside a ref struct body: a member, a method, or a nested type.
     mut fn structContent(members: mut []str, methods: mut []str, nested: mut []str): void :: final {
         let declStart = this.cur();
         let annotations = this.captureMetaAnnotation();
 
         // Nested struct / enum definitions, possibly behind modifiers such as
-        // `inline struct Args { ... }`.
+        // `struct Args { ... }`.
         if this.at(TK.Struct) || this.at(TK.Enum)
            || ((this.at(TK.Export) || this.at(TK.Extern) || this.at(TK.Pub)
                 || this.at(TK.Opaque) || this.at(TK.Plain) || this.at(TK.Noemit)
-                || this.at(TK.Inline))
+                || this.at(TK.Ref) || this.at(TK.Nocopy))
                && this.declAheadIsType()) {
             let isExport = this.accept(TK.Export);
             let mods = this.declModifiers();
@@ -2883,13 +2907,21 @@ export struct Parser {
         // Methods: [isStaticFlag] [mut|const] fn name(...)
         let mods = Modifiers {
             externLang: 0, isPub: false, isNoemit: false,
-            isOpaque: false, isPlain: false, inlineByDefault: false,
+            isOpaque: false, isPlain: false, refByDefault: false, isNocopy: false,
         };
         mods.isStatic = this.accept(TK.Static);
 
-        // EDatatypeMutability: Default=1 Mut=2 Const=3; null when unspecified.
-        if this.at(TK.Mut) && this.peekKind(1) == TK.Fn { this.advance(); mods.methodMutability = 2; }
-        else if this.at(TK.Const) && this.peekKind(1) == TK.Fn { this.advance(); mods.methodMutability = 3; }
+        // Method modifiers in any order before `fn`:
+        //   EDatatypeMutability: Default=1 Mut=2 Const=3; null when unspecified.
+        //   EStorageClass: Ref=2 Stackref=3; null when unspecified (`ref fn` / `stackref fn`).
+        while this.at(TK.Mut) || this.at(TK.Const) || this.at(TK.Ref) || this.at(TK.Stackref) {
+            let k = this.kind();
+            this.advance();
+            if k == TK.Mut { mods.methodMutability = 2; }
+            else if k == TK.Const { mods.methodMutability = 3; }
+            else if k == TK.Ref { mods.methodReceiverStorage = 2; }
+            else if k == TK.Stackref { mods.methodReceiverStorage = 3; }
+        }
 
         if this.at(TK.Fn) {
             // EMethodType (common.ts): Constructor=2 for a method literally
@@ -2945,7 +2977,7 @@ export struct Parser {
             let k = this.toks[i].kind;
             if k == TK.Struct || k == TK.Enum { return true; }
             if k == TK.Export || k == TK.Extern || k == TK.Pub || k == TK.Noemit
-               || k == TK.Opaque || k == TK.Plain || k == TK.Inline {
+               || k == TK.Opaque || k == TK.Plain || k == TK.Ref || k == TK.Nocopy {
                 i++;
                 continue;
             }
@@ -3083,25 +3115,27 @@ fn emptyCapture(): str {
 }
 
 // Collected parameters plus the trailing `...` flag.
-export struct ParamList {
+export ref struct ParamList {
     params: mut []str = [];
     ellipsis: bool = false;
 }
 
 // Leading modifiers shared by all declaration forms.
-export struct Modifiers {
+export ref struct Modifiers {
     externLang: int = 0;         // EExternLanguage
     isPub: bool = false;
     isNoemit: bool = false;
     isOpaque: bool = false;
     isPlain: bool = false;
-    inlineByDefault: bool = false;
+    refByDefault: bool = false;
+    isNocopy: bool = false;
     isStatic: bool = false;
     methodMutability: int = 0;   // 0 = unspecified, else EDatatypeMutability
+    methodReceiverStorage: int = 0;   // 0 = unspecified, else EStorageClass (Ref=2, Stackref=3)
 }
 
 // An if/while condition: either a plain expression or a `let` binding.
-export struct Condition {
+export ref struct Condition {
     isLet: bool = false;
     name: str = "";
     datatype: str = "";
