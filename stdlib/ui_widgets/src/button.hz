@@ -4,30 +4,10 @@ import ui_components
 import headwind
 type presets = headwind.presets;
 
-// === Button ===================================================
-//
-// The clickable rectangle every other widget in here is built out of. It
-// owns exactly one thing -- the idle/hover/pressed/disabled look and the
-// click -- and knows nothing about what it is for.
-//
-// Two things worth knowing before using it:
-//
-// `renderContent` is a SLOT. Supply it and the label is not drawn at all;
-// whatever the callback declares becomes the button's content instead
-// (an icon, an icon plus text, a colour swatch). This is the same
-// mechanism stdlib/tabs uses for `renderTab`, and it works for the same
-// reason: element declaration is ambient, so anything the callback
-// declares is parented to whatever div is open at the moment it runs.
-//
-
 export struct ButtonStyle {
-    // Transparent by default, so a button sitting in a toolbar shows the
-    // toolbar's own colour until it is pointed at -- the behaviour every
-    // menu bar and icon strip wants.
     bg: str = "#00000000";
     bgHover: str = "#2A2D2E";
     bgActive: str = "#37373D";
-    // Used instead of bgHover/bgActive whenever `selected` is set.
     bgSelected: str = "#37373D";
     textColor: str = "#CCCCCC";
     textColorDisabled: str = "#6A6A6A";
@@ -40,20 +20,12 @@ export struct ButtonStyle {
 export struct ButtonArgs {
     id: int;
     label: str = "";
-    // A disabled button still lays out and still shows its label, greyed;
-    // it just does not highlight and does not call back.
     enabled: bool = true;
-    // Forces the pressed look regardless of the pointer -- a menu-bar
-    // button whose menu is open, or a toggle that is currently on.
     selected: bool = false;
-    // Fill the parent's main axis instead of shrink-wrapping the label.
-    // Menu ITEMS want this; menu-bar buttons do not.
     grow: bool = false;
     style: ButtonStyle = {};
 
     onClick?: () => none;
-
-    // SLOT: replaces the label entirely. See the note above.
     renderContent?: () => none;
 
 
@@ -73,103 +45,75 @@ export struct ButtonArgs {
 
 export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
-        // Shrink-wrap unless the host asked to grow. Without this the
-        // component system's invisible wrapper defaults to Grow/Grow and
-        // every button in a row takes an equal share of it, which is not
-        // what a menu bar wants.
-        let initial = instance.props();
-        if initial.grow {
+        if instance.props().grow {
             ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
         } else {
             ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
         }
 
         let buttonRef = ui.elementRef<ui_elements.DivElement>();
-        // Polled rather than driven by onHoverEnter/onHoverLeave, matching
-        // every other hover effect in this codebase (see tabs.hz): the
-        // element wrapper already answers the CSS :hover / :active
-        // questions from this frame's hit path, so there is no separate
-        // piece of state to keep in step.
-        let isHovered = rx.computed(() => {
-            let element = rx.get(buttonRef);
-            return element ? element.hover() : false;
-        });
-        let isActive = rx.computed(() => {
-            let element = rx.get(buttonRef);
-            return element ? element.active() : false;
-        });
 
-        let pointerDown = (event: ui_components.PointerEvent) => {
-            // A press on a button is the button's business and
-            // nobody else's -- without this it would also reach
-            // whatever is underneath (in a menu, the scrim that
-            // exists to close it).
+        static_print(f"buttonRef: {typeof(buttonRef).prettyName}");
+        let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
+        let isActive = rx.computed(() => buttonRef?.active() ?? false);
+
+        let clicked = (event: ui_components.PointerEvent) => {
             event.stopPropagation();
             let p = instance.props();
-            if !p.enabled {
-                return;
-            }
-            let onClick = p.onClick;
-            if onClick {
-                onClick();
-            }
+            if !p.enabled { return; }
+            if p.onClick { p.onClick(); }
         };
+
+        let backgroundColor = rx.computed(() => {
+            let props = instance.props();
+            let style = props.style;
+
+            if !props.enabled {
+                return style.bg;
+            } else if props.selected {
+                return style.bgSelected;
+            } else if rx.get(isActive) {
+                return style.bgActive;
+            } else if rx.get(isHovered) {
+                return style.bgHover;
+            }
+            return style.bg;
+        });
 
         return (): void => {
             let props = instance.props();
             let style = props.style;
 
-            let background = style.bg;
-            if !props.enabled {
-                background = style.bg;
-            } else if props.selected {
-                background = style.bgSelected;
-            } else if rx.get(isActive) {
-                background = style.bgActive;
-            } else if rx.get(isHovered) {
-                background = style.bgHover;
-            }
-
             ui.div({
-                id: 1,
-                elementRef: buttonRef,
-                // Padding via `style` rather than presets.p(), because
-                // presets.p() is on the Tailwind 4px spacing scale and a
-                // button's padding is rarely a multiple of four -- and
-                // because it needs to differ per axis.
-                style: {
-                    padding: ui_styling.StylePaddingFull {
-                        left: style.paddingX,
-                        right: style.paddingX,
-                        top: style.paddingY,
-                        bottom: style.paddingY,
-                    },
-                },
-                onPointerDown: pointerDown,
-            }, (): void => {
-                let p = instance.props();
-                let renderContent = p.renderContent;
-                if renderContent {
-                    renderContent();
-                    return;
-                }
-                if p.label.length == 0 {
-                    return;
-                }
-                let size = style.fontSize;
-                ui.text({
                     id: 1,
-                    text: p.label,
+                    elementRef: buttonRef,
+                    onPointerDown: clicked,
+                }, (): void => {
+                    let p = instance.props();
+                    if p.renderContent {
+                        p.renderContent();
+                    }
+                    else if p.label.length > 0 {
+                        ui.text({
+                                id: 1,
+                                text: p.label,
+                            },
+                            presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
+                            presets.noWrap(),
+                            style.fontSize ? presets.fontSize(style.fontSize) : presets.noop()
+                        );
+                    }
                 },
-                    presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
-                    presets.noWrap(),
-                    size ? presets.fontSize(size) : presets.noop()
-                );
-            },
                 presets.row(),
                 presets.crossAlign(ui_styling.CrossAlign.Center),
                 presets.gap(0),
-                presets.bg(background),
+                presets.p({
+                    left: style.paddingX,
+                    right: style.paddingX,
+                    top: style.paddingY,
+                    bottom: style.paddingY,
+                }),
+                presets.bg(backgroundColor),
                 presets.rounded(style.rounded),
                 presets.hFit(),
                 props.grow ? presets.wGrow() : presets.wFit(),
