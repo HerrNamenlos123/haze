@@ -74,7 +74,7 @@ type PointerHandler = (e: ui_components.PointerEvent) => none;
 // row's CONTENT only; the row itself, its hover highlight and its click
 // handling still come from here.
 
-export ref struct DropdownItem {
+export struct DropdownItem {
     key: int = 0;
     label: str = "";
     // Right-aligned accelerator text ("Ctrl+O"). Cosmetic only -- this
@@ -114,7 +114,7 @@ export struct DropdownStyle {
     rounded: real = 4.0;
 }
 
-export ref struct DropdownArgs {
+export struct DropdownArgs {
     id: int;
     // See the note above: the owner holds this.
     open: bool = false;

@@ -37,7 +37,7 @@ export struct ButtonStyle {
     fontSize: real | none = none;
 }
 
-export ref struct ButtonArgs {
+export struct ButtonArgs {
     id: int;
     label: str = "";
     // A disabled button still lays out and still shows its label, greyed;

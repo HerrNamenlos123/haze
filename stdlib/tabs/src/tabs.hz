@@ -74,7 +74,7 @@ export ref struct TabItem {
 
 // Colours of the strip, so a host can theme it without forking the
 // component. Defaults are a neutral dark scheme.
-export ref struct TabsStyle {
+export struct TabsStyle {
     barBackground: str = "#1B1B1B";
     tabBackground: str = "#1B1B1B";
     tabHoverBackground: str = "#2A2A2A";
@@ -89,7 +89,7 @@ export ref struct TabsStyle {
     height: real = 34.0;
 }
 
-export ref struct TabsArgs {
+export struct TabsArgs {
     id: int;
     tabs: []TabItem;
     // Which tab's panel is visible. A key not present in `tabs` simply
@@ -193,7 +193,7 @@ export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
     });
 }
 
-ref struct TabButtonArgs {
+struct TabButtonArgs {
     id: int;
     tab: TabItem;
     active: bool;

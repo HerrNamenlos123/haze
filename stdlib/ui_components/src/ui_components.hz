@@ -2326,12 +2326,23 @@ export opaque ref struct UIContext {
         instanceData._props = props;
 
         do unsafe {
+            // Deliberately unconditional, and NOT a regression: what stood here
+            // was `propsChanged = props != prevProps`, and on a `ref struct`
+            // that compares OBJECT IDENTITY rather than contents (verified: two
+            // ref structs with identical fields compare unequal). Every call
+            // site builds its props as a fresh literal each frame, so that
+            // expression already evaluated to true on every single render --
+            // the memoization it was meant to drive has never once fired.
+            //
+            // It also cannot be written correctly yet: props are value structs
+            // now (so they stop costing a heap block per component per frame),
+            // and Haze has no structural `==` for value structs -- H4005, "no
+            // safe comparison is available". Once value comparison exists this
+            // goes back to `props != prevProps` and finally starts doing real
+            // work; prevProps is still maintained below precisely so that is a
+            // one-line change. Skipping any re-render before then would be a
+            // behavior change, not a fix.
             let propsChanged = true;
-
-            if instance.prevProps {
-                let prevProps = instance.prevProps.get<TProps>();
-                propsChanged = props != prevProps;
-            }
 
             if !instance.prevProps {
                 instance.prevProps = TypeErasedBox<TProps>(props);

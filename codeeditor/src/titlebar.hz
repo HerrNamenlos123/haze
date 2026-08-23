@@ -171,7 +171,7 @@ fn runFileMenuItem(key: int) {
     }
 }
 
-ref struct TitleBarArgs {
+struct TitleBarArgs {
     id: int;
     // What is being edited, for the middle of the bar. Empty when nothing
     // is open.
@@ -283,7 +283,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
     });
 }
 
-ref struct TitleBarMenusArgs {
+struct TitleBarMenusArgs {
     id: int;
     openMenu: int = -1;
     // The open menu's contents, built by the shell (buildFileMenuItems()).

@@ -149,13 +149,13 @@ type DivElement = ui_elements.DivElement;
 type TextElement = ui_elements.TextElement;
 type CanvasElement = ui_elements.CanvasElement;
 
-ref struct RootArgs {
+struct RootArgs {
     fn operator!=(other: RootArgs) {
         return false;
     }
 }
 
-ref struct EditorViewArgs {
+struct EditorViewArgs {
     // Doubles as the tab's key -- see EditorView's own comment. Stable for
     // the life of the tab.
     id: int;
