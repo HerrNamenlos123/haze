@@ -541,7 +541,16 @@ static void hzstd_fp_resolve_stack_bounds(void)
   hz_fp_stack_high = 1;
 }
 
-static void hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
+// noinline is load-bearing, not a micro-optimization hint: the skip
+// arithmetic below assumes this function has a real stack frame of its own
+// (see "Frame numbering" inside). Were the compiler to inline it into
+// hzstd_trace_memory_impl, __builtin_frame_address(0) would become THAT
+// function's frame, the first pc produced would move one frame outward, and
+// every recorded allocation stack would silently start one frame too late --
+// at the allocating function's caller, with the allocating function itself
+// gone. Pinning it makes the numbering independent of optimization level.
+__attribute__((noinline)) static void
+hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_frame_t *out, int skip_n_frames)
 {
   out->depth = 0;
 
@@ -562,19 +571,24 @@ static void hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentat
   //
   // The frame-pointer walk cannot start there. __builtin_frame_address(0)
   // is this function's own rbp, and the only thing that frame can tell us
-  // is [rbp+8] -- the return address into our caller. So the first pc this
-  // loop can possibly produce is already libunwind's frame 2 (the return
-  // site inside hzstd_trace_memory_impl), skipping frames 0 and 1 for free.
+  // is [rbp+8] -- the return address into our caller, hzstd_trace_memory_impl.
+  // That is libunwind's frame 1 (a caller frame's pc IS its return address,
+  // in both walkers), so frame 0 is skipped for free and exactly ONE fewer
+  // frame has to be discarded here: fp[i] == uw[i + 1].
   //
-  // Hence two fewer frames to discard. Verified empirically against
-  // libunwind on this target rather than derived: comparing both walkers
-  // invoked from one shared call site, fp[i] == uw[i + 2] with ZERO
-  // mismatches across all 34 frames of a 30-deep chain. Getting this wrong
-  // does not crash -- it silently shifts every recorded stack by a frame,
-  // which is exactly the kind of error that makes a profile quietly lie.
+  // (A previous version subtracted 2, on the strength of an empirical
+  // comparison against libunwind that happened to be made on a build where
+  // this function had been inlined into hzstd_trace_memory_impl -- which
+  // shifts the walk's starting point outward by one, see the noinline note
+  // above. Against the real, non-inlined layout the same "-2" left
+  // hzstd_heap_allocate / hzstd_allocate / hzstd_dynamic_array_create as
+  // the innermost frame of every single allocation stack. Getting this
+  // wrong does not crash -- it silently shifts every recorded stack by a
+  // frame, which is exactly the kind of error that makes a profile quietly
+  // lie; testsuite/src/cases_profiling_stacks.hz pins the correct answer.)
   uintptr_t fp = (uintptr_t)__builtin_frame_address(0);
 
-  int skip_total = skip_n_frames - 2;
+  int skip_total = skip_n_frames - 1;
   if (skip_total < 0) {
     skip_total = 0;
   }
