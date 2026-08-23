@@ -190,6 +190,43 @@ true 1 0
 true 1 0
 """);
 
+        // ── Reactive receivers ──────────────────────────────────────────────
+        // A ShallowReactive<T | null> (e.g. ui.ElementRef<T>) is read like a
+        // plain `.` would read it, so `?.` sees the value inside, and the read
+        // is tracked by an enclosing rx.computed. `bool | null ?? false`
+        // narrows by extracting the bool member, not by the truthiness rule.
+        s.run(
+            "optional chaining / nullish coalescing: reactive receivers, bool results, inside rx.computed",
+            """
+ref struct W { fn hover(): bool { return true; } v: int = 4; }
+type Ref = rx.ShallowReactive<W | null>;
+fn main(): int {
+    let r: Ref = rx.shallowReactive<W | null>(null);
+    let isHovered = rx.computed(() => r?.hover() ?? false);
+    let v = rx.computed(() => r?.v ?? -1);
+    let h: bool = isHovered; let vv: int = v;
+    fmt.println(f"{h} {vv}");
+    r := W {};
+    h = isHovered; vv = v;
+    fmt.println(f"{h} {vv}");
+    fmt.println(f"{r?.hover() ?? false} {(r ?? W { v: 9 }).v}");
+    r := null;
+    h = isHovered; vv = v;
+    fmt.println(f"{h} {vv} {(r ?? W { v: 9 }).v}");
+    let b: bool | null = null;
+    let t: bool | null = true;
+    fmt.println(f"{b ?? false} {t ?? false} {b ?? true}");
+    return 0;
+}
+""",
+            """
+false -1
+true 4
+true 4
+false -1 9
+false true true
+""");
+
         // ── Optional chaining: must-fail cases ──────────────────────────────
         s.compileFails(
             "optional chaining: parentheses end the chain",

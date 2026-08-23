@@ -4118,6 +4118,13 @@ export class SemanticElaborator {
     const op = this.sr.cc.exprNodes.get(opId);
 
     if (op.variant === Collect.ENode.OptionalChainingMemberAccessExpr) {
+      // A reactive/computed receiver (e.g. `ShallowReactive<T | null>`) is
+      // read first, exactly as a plain `.` would read it, so the `?.` sees
+      // the value inside.
+      const unwrappedId = this.unwrapReactiveOrComputedIfPossible(object[1]);
+      if (unwrappedId !== object[1]) {
+        object = [this.sr.exprNodes.get(unwrappedId), unwrappedId];
+      }
       const parts = this.nullishPartsOf(object[0].type);
       if (parts !== null) {
         if (parts.remaining.length === 0) {
