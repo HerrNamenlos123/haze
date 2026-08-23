@@ -9,6 +9,7 @@ import text_document
 import unicode
 import ui_elements
 import ui_components
+import ui_widgets
 import unicode
 import filedialog
 import tabs
@@ -2473,6 +2474,23 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         };
         vim.onGoToDefinition = goToDefinitionHook;
 
+        // Keep vim's indent unit in step with the setting.
+        //
+        // A computed rather than a one-off assignment: the width is
+        // toggled at runtime from the status bar, and `>`/`<` and
+        // insert-mode Tab all read this one field -- so an editor that
+        // captured it at mount would go on indenting by the old width for
+        // as long as its tab stayed open.
+        //
+        // Spaces, never a tab: U+0009 has no glyph in any font and the
+        // renderer has no fallback, so a literal tab is drawn as a tofu
+        // box. See settings.hz.
+        let trackIndentUnit = rx.computed(() => {
+            let unit = indentString();
+            vim.indentUnit = unit;
+            return unit;
+        });
+
         // Keep 'commentstring' current for `gc`. A computed rather than a
         // one-off, because in a .vue file the answer depends on which
         // block the caret is in and therefore changes as the caret moves.
@@ -3796,6 +3814,15 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return splitLineTokens(lineText, tokensForLine, noOverrides);
         };
 
+        // The status bar's indent-width control. Hoisted for the same
+        // reason every other stored handler here is: it is kept in the
+        // button's runtime data and called back at event-dispatch time, so
+        // a literal in the template would be a fresh heap environment on
+        // every rebuild.
+        let onToggleIndent = () => {
+            toggleIndentWidth();
+        };
+
         let onWheel = (event: ui_components.WheelEvent) => {
             scroll.handleWheel(event.delta);
             // The popup is anchored to a place in the text; once
@@ -3948,6 +3975,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             else if event.key == ui_components.Key.Delete {
                 texteditBehavior.deleteForward(ctrl);
             }
+            else if event.key == ui_components.Key.Tab {
+                // The same unit vim's `>` and insert-mode Tab use, so the
+                // two editing models cannot indent a file differently.
+                // Without this, Tab did nothing at all outside vim.
+                texteditBehavior.insertText(indentString());
+            }
             else if ctrl && event.key == ui_components.Key.A {
                 texteditBehavior.selectAll();
             }
@@ -4018,6 +4051,19 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                         }
                     }
 
+                    // Indent width, and the control that changes it --
+                    // VS Code puts the same thing in the same place, and a
+                    // setting you cannot see is a setting nobody knows they
+                    // have. Clicking flips between the two widths for the
+                    // whole application (see settings.hz), which is why it
+                    // is a plain toggle rather than a menu.
+                    ui_widgets.Button(ui, {
+                        id: 6,
+                        label: indentLabel(),
+                        style: statusBarButtonStyle(),
+                        onClick: onToggleIndent,
+                    });
+
                     // A chord waiting for its second stroke. Without this,
                     // pressing ctrl+k looks exactly like pressing nothing:
                     // the key is swallowed and the next one means something
@@ -4064,6 +4110,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // lets this tab act on a go-to-definition that landed in
                 // it -- see trackCommentString / applyPendingReveal.
                 rx.get(trackCommentString);
+                rx.get(trackIndentUnit);
                 rx.get(applyPendingReveal);
 
                 ui.div({

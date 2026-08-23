@@ -1,0 +1,87 @@
+// ═══ Editor settings ═════════════════════════════════════════════════════
+//
+// Preferences that belong to the APPLICATION rather than to a document or a
+// workspace, reached the same way workspace() and navigation() are: one
+// lazily-built global, because a preference is by definition not owned by
+// any one component and both ends of it (the status-bar control that
+// changes it, and every open editor that reads it) need the same object.
+//
+// One setting so far.
+
+// How many spaces one indent level is.
+//
+// Spaces rather than a tab character, and this is not a style preference --
+// it is the only thing that actually renders. There is no glyph fallback in
+// the text renderer, and U+0009 has no glyph in any font (it is a control
+// character; fonts are not required to carry one and none of the two shipped
+// here do). So a literal tab inserted by `>` came out as a tofu box, and
+// there was no width setting to reach for because the unit was not a width.
+//
+// Two values, toggled from the status bar. Not a free integer: the control
+// is a toggle, and 2 and 4 are what the choice is actually between.
+fn indentWidthNarrow(): int { return 2; }
+fn indentWidthWide(): int { return 4; }
+
+ref struct EditorSettings {
+    indentWidth: rx.Reactive<int>;
+
+    fn constructor(): mut EditorSettings {
+        let created = EditorSettings {
+            indentWidth: rx.reactive<int>(indentWidthWide()),
+        };
+        return created;
+    }
+}
+
+extern C let g_settings: mut EditorSettings | none = none;
+
+fn settings(): mut EditorSettings {
+    let existing = g_settings;
+    if existing {
+        return existing;
+    }
+    let created = EditorSettings();
+    // Restored on first use rather than from a startup hook, so nothing has
+    // to remember to call an initialiser before the first reader runs --
+    // the same shape keybindings() and appCache() already use.
+    let stored = appCache().data.indentWidth;
+    if stored {
+        created.indentWidth := normalizeIndentWidth(stored as int);
+    }
+    g_settings = created;
+    return created;
+}
+
+// Anything that is not one of the two supported widths becomes the default.
+// The value comes off disk, where a human may have edited it (or an older
+// build may have written something else), and an indent of 0 would make `>`
+// a no-op that looks like a broken editor.
+fn normalizeIndentWidth(value: int): int {
+    return value == indentWidthNarrow() ? indentWidthNarrow() : indentWidthWide();
+}
+
+// The string one indent level inserts.
+//
+// Built fresh per call from a two-branch literal rather than accumulated in
+// a loop: there are exactly two possible answers and they are both constants,
+// so there is nothing to build.
+fn indentString(): str {
+    return rx.get(settings().indentWidth) == indentWidthNarrow() ? "  " : "    ";
+}
+
+// The status-bar label, VS Code's wording.
+fn indentLabel(): str {
+    return rx.get(settings().indentWidth) == indentWidthNarrow()
+        ? "Spaces: 2"
+        : "Spaces: 4";
+}
+
+// Flip between the two. Persisted immediately -- an indent width that
+// resets on every restart is worse than not being configurable at all.
+fn toggleIndentWidth(): void {
+    let next = rx.get(settings().indentWidth) == indentWidthNarrow()
+        ? indentWidthWide()
+        : indentWidthNarrow();
+    settings().indentWidth := next;
+    appCache().data.indentWidth := next;
+}

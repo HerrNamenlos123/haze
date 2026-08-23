@@ -181,6 +181,10 @@ export ref struct Vim {
     // What one `>` level inserts. Vim's default is a literal tab
     // (noexpandtab, shiftwidth=8); an editor that prefers spaces sets
     // this to "    " and everything else follows.
+    //
+    // "everything else follows" is literal: `<` removes exactly this much
+    // again and insert-mode <Tab> inserts it, both via indentColumns()
+    // below. One setting, not three that can disagree.
     indentUnit: str = "\t";
 
     // `gd`. Stock vim's gd is "go to local declaration" -- a backward
@@ -588,7 +592,10 @@ export ref struct Vim {
             return;
         }
         if key == "<Tab>" {
-            this.ctx.insertText(String("    "));
+            // The same unit `>` inserts, not a hardcoded four spaces. An
+            // editor set to two would otherwise indent by two with `>>` and
+            // by four with the Tab key, in the same buffer.
+            this.ctx.insertText(String(this.indentUnit));
             return;
         }
         if key == "<Left>"  { this.ctx.moveCursorLeft(false); return; }
@@ -1831,6 +1838,19 @@ export ref struct Vim {
         return len > 0 ? unicode.previousClusterOffset(line, len) : 0;
     }
 
+    // How many SPACES one indent level is worth when removing one.
+    //
+    // Derived from indentUnit rather than configured separately, so `<`
+    // cannot fall out of step with `>`. A tab means vim's own default
+    // 'shiftwidth' of 8 -- with noexpandtab the two are the same thing and
+    // 8 is what the differential suites check against real neovim.
+    fn indentColumns(): int {
+        if this.indentUnit == "\t" {
+            return 8;
+        }
+        return this.indentUnit.length > 0 ? this.indentUnit.length : 1;
+    }
+
     mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
         let screenColumnBefore = this.screenColumnOf(startY, this.ctx.cursor().x);
         this.ctx.beginTransaction();
@@ -1848,13 +1868,16 @@ export ref struct Vim {
                 }
             } else {
                 // Remove one indent level: a leading tab, or up to the
-                // equivalent run of spaces.
+                // equivalent run of spaces. A leading TAB is always worth
+                // one whole level regardless of the setting -- the file may
+                // predate it, and half-eating a tab is not a thing.
                 let line = this.ctx.line(y);
+                let width = this.indentColumns();
                 let remove = 0;
                 if len > 0 && line.getAt(0) == b"\t" {
                     remove = 1;
                 } else {
-                    while remove < 8 && remove < len && line.getAt(remove) == b" " {
+                    while remove < width && remove < len && line.getAt(remove) == b" " {
                         remove = remove + 1;
                     }
                 }

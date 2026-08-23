@@ -93,6 +93,20 @@ fn primaryButtonStyle(): ui_widgets.ButtonStyle {
     };
 }
 
+// Status-bar controls: no chrome until pointed at, so the bar reads as a
+// line of text rather than a row of buttons -- which is what it mostly is.
+fn statusBarButtonStyle(): ui_widgets.ButtonStyle {
+    return {
+        bg: "#00000000",
+        bgHover: "#2A2D2E",
+        bgActive: "#37373D",
+        textColor: "#CCCCCC",
+        paddingX: 6.0,
+        paddingY: 0.0,
+        rounded: 3.0,
+    };
+}
+
 fn secondaryButtonStyle(): ui_widgets.ButtonStyle {
     return {
         bg: "#313131",

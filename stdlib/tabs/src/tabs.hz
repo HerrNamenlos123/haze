@@ -296,10 +296,20 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                 // unless the tab is hovered, again matching what editors
                 // do: the dot tells you there is something to lose, and
                 // reaching for the tab swaps it for the way to close it.
+                //
+                // U+2022 BULLET, not the U+25CF BLACK CIRCLE an editor's
+                // dot usually is. There is no glyph fallback here -- a
+                // character the current font does not cover renders as a
+                // tofu box, and this component draws in whatever font it
+                // inherits. Roboto (the default UI font) has 896 glyphs and
+                // U+25CF is not among them; U+2022 is, and is in every
+                // other font worth inheriting. A marker that turns into a
+                // box on some fonts is worse than a slightly smaller dot on
+                // all of them.
                 if props.tab.modified && !isHovered {
                     ui.text({
                         id: 3,
-                        text: "●",
+                        text: "•",
                     },
                         presets.textColor(style.tabActiveText)
                     );

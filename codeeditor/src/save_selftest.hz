@@ -374,6 +374,60 @@ fn runSaveSelfTest(run: mut KeyTestRun): void {
     registry.unregister(1234);
     run.checkBool("closing an unknown tab is allowed", registry.requestClose(1234), true);
 
+    // ── Indent width ─────────────────────────────────────────────────────
+    //
+    // The unit `>`, `<` and Tab all share. It is spaces and not a tab
+    // character for a rendering reason, not a style one: U+0009 has no
+    // glyph in any font and the renderer has no fallback, so a literal tab
+    // came out as a tofu box.
+    let startingWidth = rx.get(settings().indentWidth);
+
+    settings().indentWidth := indentWidthWide();
+    run.check("four-space indent string", indentString(), "    ");
+    run.check("four-space label", indentLabel(), "Spaces: 4");
+    settings().indentWidth := indentWidthNarrow();
+    run.check("two-space indent string", indentString(), "  ");
+    run.check("two-space label", indentLabel(), "Spaces: 2");
+
+    // Neither string may contain a tab -- that is the entire point.
+    settings().indentWidth := indentWidthWide();
+    run.checkBool("the wide indent is spaces only", indentString().contains("\t"), false);
+    settings().indentWidth := indentWidthNarrow();
+    run.checkBool("the narrow indent is spaces only", indentString().contains("\t"), false);
+
+    // The toggle is a toggle: two values, and it comes back.
+    settings().indentWidth := indentWidthWide();
+    toggleIndentWidth();
+    run.check("toggling from four gives two", indentLabel(), "Spaces: 2");
+    toggleIndentWidth();
+    run.check("toggling back gives four", indentLabel(), "Spaces: 4");
+
+    // A stored width is normalised on the way in. It comes off disk, where
+    // a human may have edited it, and an indent of 0 would make `>` a no-op
+    // that looks like a broken editor.
+    run.check("2 survives", f"{normalizeIndentWidth(2)}", "2");
+    run.check("4 survives", f"{normalizeIndentWidth(4)}", "4");
+    run.check("0 becomes the default", f"{normalizeIndentWidth(0)}", "4");
+    run.check("8 becomes the default", f"{normalizeIndentWidth(8)}", "4");
+    run.check("a negative width becomes the default", f"{normalizeIndentWidth(-3)}", "4");
+
+    // ── What the engine does with that unit ──────────────────────────────
+    //
+    // Checked through the real Vim, because the value only matters if `>`,
+    // `<` and Tab all agree on it -- three call sites that used to hold
+    // three different hardcoded answers (a tab, 8 spaces, and 4 spaces).
+    checkIndentRoundTrip(run, "two spaces", "  ");
+    checkIndentRoundTrip(run, "four spaces", "    ");
+
+    // The engine's DEFAULT must stay a tab worth 8 columns: that is vim's
+    // own noexpandtab/shiftwidth=8, and it is what the 2680-case
+    // differential suite checks against real neovim.
+    let stock = makeVimHarness("hello");
+    run.check("the engine still defaults to a tab", stock.vim.indentUnit, "\t");
+    run.check("...worth vim's default shiftwidth", f"{stock.vim.indentColumns()}", "8");
+
+    settings().indentWidth := startingWidth;
+
     // ── documentByteLength ───────────────────────────────────────────────
     //
     // The watcher's cheap prefilter: it decides whether a changed file can
@@ -469,6 +523,45 @@ fn runSaveSelfTest(run: mut KeyTestRun): void {
 // every ordinary call site (doc.lineText(caret.y) and friends).
 fn caretValue(component: int): int {
     return component;
+}
+
+// `>>` then `<<` on the same line must land exactly back where it started,
+// for whatever unit is configured. That round trip is what proves the two
+// halves agree: an indent of two removed as up to eight (the old hardcoded
+// dedent) eats the next level as well and the file quietly loses structure.
+fn checkIndentRoundTrip(run: mut KeyTestRun, name: str, unit: str): void {
+    let h = makeVimHarness("    already indented\nsecond");
+    h.vim.indentUnit = unit;
+    run.check(f"indent columns: {name}", f"{h.vim.indentColumns()}", f"{unit.length}");
+
+    feedText(h, ">>");
+    run.check(f"indent inserts the unit: {name}",
+        h.doc.lineText(0), f"{unit}    already indented");
+    // No tab may appear in the buffer, whatever the caret did.
+    run.checkBool(f"indent inserts no tab: {name}",
+        h.doc.lineText(0).contains("\t"), false);
+
+    feedText(h, "<<");
+    run.check(f"dedent removes exactly the unit: {name}",
+        h.doc.lineText(0), "    already indented");
+
+    // Insert-mode Tab inserts the same thing, rather than its own idea of
+    // an indent (it used to be four spaces, hardcoded).
+    //
+    // Asserted by LENGTH rather than by the resulting line, because `I`
+    // lands at the first non-blank and the unit is itself spaces -- so
+    // inserting it there and inserting it at column 0 produce the identical
+    // string, and a whole-line comparison would pass without proving the
+    // width was used at all.
+    let before = h.doc.lineText(0).length;
+    feedText(h, "I");
+    h.ctx.handleKey("<Tab>");
+    h.ctx.handleKey("<Esc>");
+    let after = h.doc.lineText(0).length;
+    run.check(f"insert-mode Tab inserts the unit: {name}",
+        f"{after - before}", f"{unit.length}");
+    run.checkBool(f"insert-mode Tab inserts no tab: {name}",
+        h.doc.lineText(0).contains("\t"), false);
 }
 
 fn checkByteLength(run: mut KeyTestRun, name: str, text: str): void {
