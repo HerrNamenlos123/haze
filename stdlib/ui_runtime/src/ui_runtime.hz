@@ -36,6 +36,13 @@ export opaque ref struct Runtime {
     // frame (see Renderer.reset) rather than rebuilt. Its contents are still
     // fully rebuilt every frame -- only the arrays' backing storage survives.
     screenRenderer?: mut renderer.gfx.Renderer;
+    // The Frame of the render pass currently in progress -- set for the
+    // duration of render() only. It exists so the render callbacks below can
+    // be plain METHODS of this Runtime instead of lambdas: a bound method
+    // passed as a callable uses the receiver pointer itself as its env and
+    // allocates nothing, while a lambda that captures `frame`/`r`/`this`
+    // heap-allocates a closure env on every single frame, per callback.
+    currentFrame?: mut renderer.gfx.Frame;
 
     fn constructor(args: RuntimeArgs) {
         let layout = ui_layout.Context({
@@ -100,84 +107,112 @@ export opaque ref struct Runtime {
         }
         let cachedRenderer = this.screenRenderer;
         assert(cachedRenderer);
-        // Rebound rather than used through the narrowed `this.screenRenderer`:
-        // narrowing does not flow into a lambda body, and `r` is captured by
-        // every render callback below.
         let r = cachedRenderer;
         // Idempotent on a just-constructed Renderer -- reset() leaves exactly
         // the state the constructor does -- so this one line covers both paths.
         r.reset(frame, canvas);
+        this.currentFrame = frame;
         let tree = this.ui.process();
         if !tree {
             r.commit();
+            this.currentFrame = none;
             return;
         }
 
+        // Bound methods, deliberately not lambdas: see currentFrame. Every
+        // callback reaches the renderer through this.screenRenderer (see
+        // activeRenderer()) and the frame through this.currentFrame.
         this.layout.render(tree, {
-            renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
-                r.drawRect({
-                    pos: position,
-                    size: size,
-                    fillColor: backgroundColor,
-                    cornerRadius: {
-                        topLeft: cornerRadius.topLeft,
-                        topRight: cornerRadius.topRight,
-                        bottomLeft: cornerRadius.bottomLeft,
-                        bottomRight: cornerRadius.bottomRight,
-                    },
-                });
-            },
-            renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
-                r.drawText({
-                    font: element.fontId,
-                    size: element.fontSize,
-                    position: element.position,
-                    text: element.text,
-                    color: element.color,
-                });
-            },
-            onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
-                ui_components.applyRenderFeedback(element, pos, size);
-            },
-            renderCanvas: (element: ui_elements.CanvasElement): void => {
-                this.renderCanvasElement(element, frame, r);
-            },
-            // Arrives already intersected through every clipping ancestor
-            // (see ui_layout.collectClipsRecursive), so this just replaces
-            // whatever was set for the previous draw rather than maintaining
-            // a stack. setClipRect takes the same screen-space min/max the
-            // per-primitive clipRect is stored as.
-            setClip: (clip: ui_layout.ResolvedClip): void => {
-                if clip.active {
-                    r.setClipRect(clip.minX, clip.minY, clip.maxX, clip.maxY);
-                }
-                else {
-                    r.clearClipRect();
-                }
-            },
-            renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {
-                r.drawRect({
-                    pos: position,
-                    size: size,
-                    fillColor: Color(0.0, 0.0, 0.0, 0.0),
-                    cornerRadius: {
-                        topLeft: cornerRadius.topLeft,
-                        topRight: cornerRadius.topRight,
-                        bottomLeft: cornerRadius.bottomLeft,
-                        bottomRight: cornerRadius.bottomRight,
-                    },
-                    borderColor: borderColor,
-                    borderWidths: {
-                        top: borderWidth.top,
-                        right: borderWidth.right,
-                        bottom: borderWidth.bottom,
-                        left: borderWidth.left,
-                    },
-                });
-            },
+            renderFilledRectangle: this.renderFilledRectangle,
+            renderText: this.renderText,
+            onBoundingBox: this.onBoundingBox,
+            renderCanvas: this.renderCanvas,
+            setClip: this.setClip,
+            renderBorder: this.renderBorder,
         });
 
+        this.currentFrame = none;
         r.commit();
+    }
+
+    // ── render callbacks (see render()) ──────────────────────────────────
+
+    // The screen Renderer while a render pass is in progress. Only ever
+    // called from the callbacks below, which ui_layout.render invokes
+    // synchronously from inside render() -- so both fields are always set.
+    fn activeRenderer(): mut renderer.gfx.Renderer {
+        let r = this.screenRenderer;
+        assert(r);
+        return r;
+    }
+
+    fn renderFilledRectangle(position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void {
+        this.activeRenderer().drawRect({
+            pos: position,
+            size: size,
+            fillColor: backgroundColor,
+            cornerRadius: {
+                topLeft: cornerRadius.topLeft,
+                topRight: cornerRadius.topRight,
+                bottomLeft: cornerRadius.bottomLeft,
+                bottomRight: cornerRadius.bottomRight,
+            },
+        });
+    }
+
+    fn renderText(element: ui_layout.ffi.hzui_draw_text_element_t): void {
+        this.activeRenderer().drawText({
+            font: element.fontId,
+            size: element.fontSize,
+            position: element.position,
+            text: element.text,
+            color: element.color,
+        });
+    }
+
+    fn onBoundingBox(element: ui_elements.Element, pos: Vec2, size: Vec2): void {
+        ui_components.applyRenderFeedback(element, pos, size);
+    }
+
+    fn renderCanvas(element: ui_elements.CanvasElement): void {
+        let frame = this.currentFrame;
+        assert(frame);
+        this.renderCanvasElement(element, frame, this.activeRenderer());
+    }
+
+    // Arrives already intersected through every clipping ancestor
+    // (see ui_layout.collectClipsRecursive), so this just replaces
+    // whatever was set for the previous draw rather than maintaining
+    // a stack. setClipRect takes the same screen-space min/max the
+    // per-primitive clipRect is stored as.
+    fn setClip(clip: ui_layout.ResolvedClip): void {
+        if clip.active {
+            this.activeRenderer().setClipRect(clip.minX, clip.minY, clip.maxX, clip.maxY);
+        }
+        else {
+            this.activeRenderer().clearClipRect();
+        }
+    }
+
+    fn renderBorder(position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void {
+        this.activeRenderer().drawRect({
+            pos: position,
+            size: size,
+            fillColor: Color(0.0, 0.0, 0.0, 0.0),
+            cornerRadius: {
+                topLeft: cornerRadius.topLeft,
+                topRight: cornerRadius.topRight,
+                bottomLeft: cornerRadius.bottomLeft,
+                bottomRight: cornerRadius.bottomRight,
+            },
+            borderColor: borderColor,
+            borderWidths: {
+                top: borderWidth.top,
+                right: borderWidth.right,
+                bottom: borderWidth.bottom,
+                left: borderWidth.left,
+            },
+        });
     }
 
     fn renderCanvasElement(element: ui_elements.CanvasElement, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {

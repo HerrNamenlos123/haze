@@ -295,7 +295,7 @@ export async function catchErrors(fn: () => Promise<void>) {
     } else if (e instanceof SilentError) {
       return false;
     } else {
-      msg = String(e);
+      msg = e instanceof Error && e.stack ? e.stack : String(e);
     }
     try {
       printLine(msg);
