@@ -303,8 +303,21 @@ indexList
     : subscriptExpr (COMMA subscriptExpr)* COMMA?
     ;
 
+// `...expr` spreads a compile-time parameter pack into the argument list:
+// `f(a, ...pack, b)` becomes `f(a, pack[0], pack[1], ..., b)`. The node is a
+// general SpreadExpr so that object/array spreading can reuse it later; the
+// semantic layer decides where it is allowed.
+spreadExpr
+    : ELLIPSIS expr
+    ;
+
+argExpr
+    : spreadExpr
+    | expr
+    ;
+
 argList
-    : expr (COMMA expr)* COMMA?
+    : argExpr (COMMA argExpr)* COMMA?
     ;
 
 aggregateBody

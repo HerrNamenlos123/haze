@@ -1,0 +1,240 @@
+// ============================================================================
+// REGRESSION TESTS — parameter pack forwarding with `...pack` spread.
+//
+//   * `f(a, ...pack, b)` expands to `f(a, pack[0], pack[1], ..., b)` at
+//     compile time; the callee sees a plain argument list, so overload
+//     resolution, generic deduction, optional parameters, implicit conversions
+//     and the callee's own pack all behave exactly as for a hand-written call
+//   * a pack can be forwarded through any number of layers, spread several
+//     times in one call, spread in the middle of the argument list, and be
+//     empty
+//   * a pack can only travel by being spread: passing it as one argument is
+//     an error, as is spreading anything that is not a pack
+//   * pack elements can be used from lambdas inside the pack function
+//   * a pack parameter must still be the last parameter
+//
+// Per framework.hz, everything a running program can verify is bundled into
+// ONE compile-and-run case; each must-fail-to-compile rule gets its own.
+// ============================================================================
+
+namespace cases_parameter_packs {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "parameter packs: spread forwarding through calls",
+            """
+fn bar(a: bool, b: int, c: str, d: bool) {
+    fmt.println(f"bar {a} {b} {c} {d}");
+}
+fn count(values: ...): int { return values.length; }
+
+// ── 1. the motivating shape: forward through two layers, spread in the middle
+fn impl(flag: bool, values: ...) {
+    fmt.println(f"impl {flag} {values.length}");
+    bar(flag, ...values, false);
+}
+fn foo(values: ...) { impl(true, ...values); }
+fn t1() { foo(3, "x"); }
+
+// ── 2. empty packs, multiple spreads, nested spread calls ──────────────────
+fn twice(values: ...): int { return count(...values, ...values); }
+fn nested(values: ...): int { return count(...values, count(...values)); }
+fn t2() {
+    fmt.println(f"2: {count()} {twice()} {twice(1)} {twice(1, 2, 3)} {nested(1, 2)}");
+}
+
+// ── 3. deep forwarding with arguments added on every layer ──────────────────
+fn sum3(a: int, b: int, c: int, d: int): int { return a + b + c + d; }
+fn deep3(values: ...): int { return sum3(...values); }
+fn deep2(values: ...): int { return deep3(0, ...values); }
+fn deep1(values: ...): int { return deep2(...values, 100); }
+fn t3() { fmt.println(f"3: {deep1(1, 2)}"); }
+
+// ── 4. overload resolution on the expanded list ─────────────────────────────
+fn o(a: int): str { return "one"; }
+fn o(a: int, b: int): str { return "two"; }
+fn o(a: str): str { return "str"; }
+fn pick(values: ...): str { return o(...values); }
+fn t4() { fmt.println(f"4: {pick(1)} {pick(1, 2)} {pick("s")}"); }
+
+// ── 5. generic deduction and explicit generics from spread arguments ────────
+fn add<T>(a: T, b: T): T { return a + b; }
+fn addFwd(values: ...): int { return add(...values); }
+fn gen<T>(values: ...): T { let s: T = 0; for comptime v in values { s = s + v; } return s; }
+fn genFwd(values: ...): int { return gen<int>(...values); }
+fn t5() { fmt.println(f"5: {addFwd(2, 3)} {genFwd(1, 2, 3)} {genFwd()}"); }
+
+// ── 6. optional / default parameters are filled after expansion ─────────────
+fn opt(a: int, b: int = 10, c: str = "dflt"): str { return f"{a} {b} {c}"; }
+fn optFwd(values: ...): str { return opt(...values); }
+fn t6() { fmt.println(f"6: {optFwd(1)} | {optFwd(1, 2)} | {optFwd(1, 2, "c")}"); }
+
+// ── 7. methods and constructors take spreads like any call ─────────────────
+struct P { x: int; y: int;
+    fn constructor(values: ...): P { return P { x: values[0], y: values[1] }; }
+    fn show(prefix: str, values: ...): str { return f"{prefix} {this.x} {this.y} n={values.length}"; }
+    fn add(values: ...): int { return this.x + this.y + genFwd(...values); }
+}
+fn mk(values: ...): P { return P(...values); }
+fn showIt(p: P, values: ...): str { return p.show(...values); }
+fn t7() {
+    let p = mk(1, 2);
+    fmt.println(f"7: {showIt(p, "p")} | {showIt(p, "q", 1, 2, 3)} | {p.add(1, 2)} {p.add()}");
+}
+
+// ── 8. callables (lambda values) are invoked with a spread ──────────────────
+fn callIt(f: (a: int, b: str) => str, values: ...): str { return f(...values); }
+fn t8() {
+    fmt.println(f"8: {callIt((a: int, b: str) => { return f"{a}{b}"; }, 7, "s")}");
+}
+
+// ── 9. pack elements from lambdas inside the pack function ──────────────────
+fn capt(values: ...): int {
+    let stackref f = () => { return values[0] + values.length; };
+    let stackref g = () => { let s = 0; for comptime v in values { s = s + v; } return s; };
+    let stackref h = () => { return genFwd(...values) + count(...values); };
+    let stackref outer = () => {
+        let stackref inner = () => { return values[1]; };   // transitive capture
+        return inner();
+    };
+    return f() * 1000 + g() * 100 + h() * 10 + outer();
+}
+fn t9() { fmt.println(f"9: {capt(1, 2, 3)}"); }
+
+// ── 10. the pack keeps the argument's type (structs, refs, arrays) ──────────
+ref struct Node { v: int; }
+fn readAll(n: ref Node, p: P, arr: []int): int { return n.v + p.x + arr.length; }
+fn readFwd(values: ...): int { return readAll(...values); }
+fn t10() {
+    let n: ref Node = { v: 100 };
+    let arr: []int = [1, 2, 3];
+    fmt.println(f"10: {readFwd(n, P { x: 5, y: 0 }, arr)}");
+}
+
+// ── 11. stdlib: print/println are now spread wrappers ───────────────────────
+fn t11() {
+    fmt.println(11, "a", true, 2.5);
+    fmt.print("11:", "no newline"); fmt.println();
+    fmt.println("11: single");
+}
+
+fn main(): int {
+    t1(); t2(); t3(); t4(); t5(); t6(); t7(); t8(); t9(); t10(); t11();
+    return 0;
+}
+""",
+            """
+impl true 2
+bar true 3 x false
+2: 0 0 2 6 3
+3: 103
+4: one two str
+5: 5 6 0
+6: 1 10 dflt | 1 2 dflt | 1 2 c
+7: p 1 2 n=0 | q 1 2 n=3 | 6 3
+8: 7s
+9: 4692
+10: 108
+11 a true 2.5
+11: no newline
+11: single
+""");
+
+        // ── Compile-time rules ──────────────────────────────────────────────
+        s.compileFails(
+            "spread: the expanded types must match the callee",
+            """
+fn bar(a: bool, b: int, c: str, d: bool) {}
+fn foo(values: ...) { bar(true, ...values, false); }
+fn main(): int { foo("x", 3); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "spread: too many arguments after expansion",
+            """
+fn bar(a: int, b: int) {}
+fn foo(values: ...) { bar(...values, 1); }
+fn main(): int { foo(1, 2); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCallRequiresArgumentsButWereGiven)]);
+
+        s.compileFails(
+            "spread: too few arguments after expansion",
+            """
+fn bar(a: int, b: int, c: int) {}
+fn foo(values: ...) { bar(...values); }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCallRequiresArgumentsButWereGiven)]);
+
+        s.compileFails(
+            "spread: only a parameter pack can be spread (variable)",
+            """
+fn bar(a: int) {}
+fn main(): int { let x: []int = [1]; bar(...x); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOperandNotParameterPack)]);
+
+        s.compileFails(
+            "spread: only a parameter pack can be spread (literal)",
+            """
+fn bar(a: int) {}
+fn main(): int { bar(...[1]); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOperandNotParameterPack)]);
+
+        s.compileFails(
+            "spread: a pack element is not a pack",
+            """
+fn bar(a: int) {}
+fn foo(values: ...) { bar(...values[0]); }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOperandNotParameterPack)]);
+
+        s.compileFails(
+            "a pack cannot be passed without spreading it",
+            """
+fn impl(values: ...) {}
+fn foo(values: ...) { impl(values); }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ParameterPackPassedWithoutSpread)]);
+
+        s.compileFails(
+            "a pack cannot be passed without spreading it (non-pack callee)",
+            """
+fn bar(a: int) {}
+fn foo(values: ...) { bar(values); }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ParameterPackPassedWithoutSpread)]);
+
+        s.compileFails(
+            "a pack parameter must still be last",
+            """
+fn foo(values: ..., x: int) {}
+fn main(): int { foo(1, 2); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ParameterPackMayOnlyAppearVeryEndParameter)]);
+
+        s.compileFails(
+            "spread is only syntax inside a call argument list",
+            """
+fn foo(values: ...) { let x = ...values; }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]);
+
+        s.compileFails(
+            "spread: pack index out of range is still checked",
+            """
+fn bar(a: int) {}
+fn foo(values: ...) { bar(values[1]); }
+fn main(): int { foo(1); return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ArrayOutOfBoundsInComptimeParameterPack)]);
+    }
+}

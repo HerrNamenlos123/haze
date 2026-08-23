@@ -119,6 +119,20 @@ export class SemanticElaborator {
   metaTypeValueStructTypeId: Semantic.TypeDefId | null = null;
   metaTaggedMemberStructTypeId: Semantic.TypeDefId | null = null;
   sourceLocationDefaultCallSite: SourceLoc | null = null;
+
+  // A parameter pack referenced from inside a lambda: the pack itself is a
+  // compile-time object and is never captured. Instead the lambda scope that
+  // was crossed is remembered per pack-valued expression, and the concrete
+  // element variable is captured where an element is actually taken out of
+  // the pack (`pack[i]`, `for comptime v in pack`).
+  packAccessCrossedLambda = new Map<Semantic.ExprId, Collect.ScopeId>();
+  // Pack element variable -> the pack's source name and element index, so a
+  // captured element can be re-resolved as `pack[i]` (it has no name of its
+  // own) when captures are propagated through nested lambdas.
+  packElementOrigin = new Map<
+    Semantic.SymbolId,
+    { packName: string; index: number }
+  >();
   // Guards against infinite recursion (and chained user-defined conversions) while
   // resolving an implicit struct-constructor conversion. While set, the conversion
   // machinery will not attempt another implicit constructor conversion.
@@ -1335,10 +1349,102 @@ export class SemanticElaborator {
     assert(false, "Unhandled intrinsic type: " + intrinsicExpr.intrinsicType);
   }
 
+  // `f(a, ...pack, b)` -> `f(a, pack[0], pack[1], ..., b)`.
+  //
+  // Spreading is a pure desugaring on the collected tree: every `...pack`
+  // argument is replaced by one synthetic `pack[i]` subscript per element,
+  // which the existing comptime pack indexing then resolves to the i-th pack
+  // parameter. Everything downstream (overload resolution, generic deduction,
+  // the callee's own pack, optional parameters, conversions) therefore sees a
+  // plain argument list and needs no knowledge of spreads: forwarding through
+  // several layers of `values: ...` works the same as writing the arguments
+  // out by hand, and a mismatch between the expanded types and the callee's
+  // parameters fails exactly like a hand-written call would.
+  //
+  // The returned node is a detached copy when anything was expanded; the
+  // original call expression is never mutated, because the same collected
+  // call is elaborated once per instantiation and each may see a pack of a
+  // different length.
+  expandSpreadArguments(callExpr: Collect.ExprCallExpr): Collect.ExprCallExpr {
+    if (
+      !callExpr.arguments.some(
+        (a) => this.sr.cc.exprNodes.get(a).variant === Collect.ENode.SpreadExpr
+      )
+    ) {
+      return callExpr;
+    }
+
+    const expanded: Collect.ExprId[] = [];
+    for (const argId of callExpr.arguments) {
+      const arg = this.sr.cc.exprNodes.get(argId);
+      if (arg.variant !== Collect.ENode.SpreadExpr) {
+        expanded.push(argId);
+        continue;
+      }
+
+      // An untyped literal (`...[1, 2]`, `...{ a: 1 }`) cannot be a pack and
+      // would only fail later with an unrelated inference error.
+      if (!IsExprDecisiveForOverloadResolution(this.sr, arg.expr)) {
+        throw new CompilerError(
+          `Only a parameter pack can be spread with '...'`,
+          arg.sourceloc,
+          HazeErrorCode.SpreadOperandNotParameterPack
+        );
+      }
+      const [operand] = this.expr(arg.expr, undefined);
+      const operandType = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(operand.type).type
+      );
+      if (operandType.variant !== Semantic.ENode.ParameterPackDatatype) {
+        throw new CompilerError(
+          `Only a parameter pack can be spread with '...', but this expression is of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, operand.type)}'`,
+          arg.sourceloc,
+          HazeErrorCode.SpreadOperandNotParameterPack
+        );
+      }
+      assert(operandType.parameters);
+
+      for (let i = 0; i < operandType.parameters.length; i++) {
+        const [_, indexId] = Collect.makeExpr(this.sr.cc, {
+          variant: Collect.ENode.LiteralExpr,
+          literal: { type: EPrimitive.int, value: BigInt(i), unit: null },
+          sourceloc: arg.sourceloc,
+        });
+        const [__, elementId] = Collect.makeExpr(this.sr.cc, {
+          variant: Collect.ENode.ArraySubscriptExpr,
+          expr: arg.expr,
+          indices: [{ type: "index", value: indexId }],
+          sourceloc: arg.sourceloc,
+        });
+        expanded.push(elementId);
+      }
+    }
+
+    return { ...callExpr, arguments: expanded };
+  }
+
+  // A pack can only travel through a call by being spread; handing the whole
+  // pack over as one argument is always a mistake (there is no runtime
+  // object behind it), so say so instead of failing in conversion.
+  assertArgumentIsNotBarePack(exprId: Semantic.ExprId) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const typeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(expr.type).type
+    );
+    if (typeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+      throw new CompilerError(
+        `A parameter pack cannot be passed as a single argument; spread it with '...' to forward its elements`,
+        expr.sourceloc,
+        HazeErrorCode.ParameterPackPassedWithoutSpread
+      );
+    }
+  }
+
   callExpr(
     callExpr: Collect.ExprCallExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
+    callExpr = this.expandSpreadArguments(callExpr);
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
     if (collectedExpr.variant === Collect.ENode.MemberAccessExpr) {
       const reflectionResult = this.tryResolveTypeReflectionCall(
@@ -1558,9 +1664,11 @@ export class SemanticElaborator {
     }[];
     callExpr.arguments.forEach((p, i) => {
       if (IsExprDecisiveForOverloadResolution(this.sr, p)) {
+        const exprId = this.sr.e.expr(p, inference)[1];
+        this.assertArgumentIsNotBarePack(exprId);
         decisiveArguments.push({
           index: i,
-          exprId: this.sr.e.expr(p, inference)[1],
+          exprId: exprId,
           collectExprId: p,
         });
       } else {
@@ -1707,10 +1815,12 @@ export class SemanticElaborator {
           index < parameterTypes.length
             ? parameterTypes[index].type
             : undefined;
-        return this.sr.e.expr(arg, {
+        const exprId = this.sr.e.expr(arg, {
           gonnaInstantiateStructWithType: paramType,
           unsafe: inference?.unsafe,
         })[1];
+        this.assertArgumentIsNotBarePack(exprId);
+        return exprId;
       });
     };
 
@@ -2036,6 +2146,10 @@ export class SemanticElaborator {
     // Fill in missing arguments with defaults or `none` for optional
     const result = [...givenArgs];
     for (let i = givenArgs.length; i < parameterTypes.length; i++) {
+      // An empty parameter pack: nothing to fill in, it simply has no elements.
+      if (this.isParameterPackType(parameterTypes[i].type)) {
+        continue;
+      }
       // Try to get default from elaborated function symbol first
       if (functionSymbol && i < functionSymbol.parameterNames.length) {
         const paramName = functionSymbol.parameterNames[i];
@@ -2789,6 +2903,15 @@ export class SemanticElaborator {
 
       case Collect.ENode.ExprCallExpr:
         return this.callExpr(expr, inference);
+
+      // Spreads are consumed by callExpr() before the arguments are
+      // elaborated; reaching one here means it sits somewhere else.
+      case Collect.ENode.SpreadExpr:
+        throw new CompilerError(
+          "'...' spread is only allowed inside a call argument list",
+          expr.sourceloc,
+          HazeErrorCode.SpreadNotAllowedHere
+        );
 
       case Collect.ENode.UnaryExpr:
         return this.unaryExpr(expr, inference);
@@ -6038,6 +6161,10 @@ export class SemanticElaborator {
                     consumed: false,
                     variableContext: EVariableContext.FunctionParameter,
                     sourceloc: func.sourceloc,
+                  });
+                  this.packElementOrigin.set(variableId, {
+                    packName: p.name,
+                    index: i,
                   });
                   return variableId;
                 }),
@@ -13463,6 +13590,14 @@ export class SemanticElaborator {
             assert(paramValue.type);
 
             syntheticMap.set(s.loopVariable, semanticParamId);
+            const crossedLambda = this.packAccessCrossedLambda.get(valueId);
+            if (crossedLambda) {
+              this.addCaptureToLambda(
+                crossedLambda,
+                this.sr.b.symbolValue(semanticParamId, s.sourceloc)[1],
+                semanticParamId
+              );
+            }
             if (s.indexVariable) {
               assert(loopIndexId && loopIndex);
               loopIndex.comptimeValue = this.sr.b.literalValue(
@@ -14566,11 +14701,18 @@ export class SemanticElaborator {
         }
 
         if (crossedLambdaScope) {
-          this.addCaptureToLambda(
-            crossedLambdaScope,
-            resultingExprId,
-            elaboratedSymbolId
+          const varTypeDef = this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(elaboratedSymbol.type).type
           );
+          if (varTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
+            this.packAccessCrossedLambda.set(resultingExprId, crossedLambdaScope);
+          } else {
+            this.addCaptureToLambda(
+              crossedLambdaScope,
+              resultingExprId,
+              elaboratedSymbolId
+            );
+          }
         }
 
         return [
@@ -15364,7 +15506,15 @@ export class SemanticElaborator {
         );
       }
       const param = valueType.parameters[Number(index)];
-      return this.sr.b.symbolValue(param, arraySubscript.sourceloc);
+      const [elementExpr, elementId] = this.sr.b.symbolValue(
+        param,
+        arraySubscript.sourceloc
+      );
+      const crossedLambda = this.packAccessCrossedLambda.get(valueId);
+      if (crossedLambda) {
+        this.addCaptureToLambda(crossedLambda, elementId, param);
+      }
+      return [elementExpr, elementId] as const;
     }
 
     if (
@@ -15966,6 +16116,35 @@ export class SemanticElaborator {
     for (const c of envValue.captures) {
       const varsym = this.sr.symbolNodes.get(c.variable);
       assert(varsym.variant === Semantic.ENode.VariableSymbol);
+      const packOrigin = this.packElementOrigin.get(c.variable);
+      if (packOrigin) {
+        // A parameter pack element is only reachable as `pack[i]`.
+        const [, packId] = Collect.makeExpr(this.sr.cc, {
+          variant: Collect.ENode.SymbolValueExpr,
+          genericArgs: [],
+          name: packOrigin.packName,
+          sourceloc: null,
+        });
+        const [, indexId] = Collect.makeExpr(this.sr.cc, {
+          variant: Collect.ENode.LiteralExpr,
+          literal: {
+            type: EPrimitive.int,
+            value: BigInt(packOrigin.index),
+            unit: null,
+          },
+          sourceloc: null,
+        });
+        this.expr(
+          Collect.makeExpr(this.sr.cc, {
+            variant: Collect.ENode.ArraySubscriptExpr,
+            expr: packId,
+            indices: [{ type: "index", value: indexId }],
+            sourceloc: null,
+          })[1],
+          undefined
+        );
+        continue;
+      }
       this.expr(
         Collect.makeExpr(this.sr.cc, {
           variant: Collect.ENode.SymbolValueExpr,

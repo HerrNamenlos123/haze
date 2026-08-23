@@ -254,6 +254,9 @@ export enum HazeErrorCode {
   StackrefOnGlobal = 7188, // 'let stackref' is not allowed at global scope
   WriteToByValueCapture = 7189, // Cannot write to a variable captured by value; the closure only holds a copy
   WriteAfterByValueCapture = 7190, // Variable captured by value by a closure above is assigned afterwards; the closure would hold a stale copy
+  SpreadOperandNotParameterPack = 7191, // Only a parameter pack can be spread with '...'
+  SpreadNotAllowedHere = 7192, // '...' spread is only allowed inside a call argument list
+  ParameterPackPassedWithoutSpread = 7193, // A parameter pack cannot be passed as a single argument; spread it with '...'
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

@@ -59,6 +59,7 @@ import {
   type ASTParenthesisExpr,
   type ASTPostIncrExpr,
   type ASTPreIncrExpr,
+  type ASTSpreadExpr,
   type ASTRaiseStatement,
   type ASTReturnStatement,
   type ASTScope,
@@ -159,6 +160,7 @@ import {
   type ParamsContext,
   type PostfixExprContext,
   type PrefixExprContext,
+  type SpreadExprContext,
   type PrimaryExprContext,
   type ProgContext,
   type RaiseStatementContext,
@@ -2199,6 +2201,19 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(produced[0]);
   };
 
+  exitSpreadExpr = (ctx: SpreadExprContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+    if (produced.length !== 1) {
+      throw new InternalError("SpreadExpr stack mismatch");
+    }
+    this.stack.push({
+      variant: "SpreadExpr",
+      expr: produced[0] as ASTExpr,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTSpreadExpr);
+  };
+
   exitPostfixExpr = (ctx: PostfixExprContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -2223,7 +2238,7 @@ class ASTBuilder extends HazeParserListener {
       }
 
       if (postfix.LB() && postfix.RB()) {
-        const argCount = postfix.argList()?.expr().length ?? 0;
+        const argCount = postfix.argList()?.argExpr().length ?? 0;
         const args = produced.slice(i, i + argCount) as ASTExpr[];
         i += argCount;
 

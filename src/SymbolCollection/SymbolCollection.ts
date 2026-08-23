@@ -177,6 +177,7 @@ export namespace Collect {
     UnaryExpr,
     TernaryExpr,
     ExprCallExpr,
+    SpreadExpr,
     SymbolValueExpr,
     ExplicitSymbolValueExpr,
     CallableExpr,
@@ -645,6 +646,14 @@ export namespace Collect {
     arguments: Collect.ExprId[];
   };
 
+  // `...expr`: expands a parameter pack into the surrounding argument list.
+  // Kept as a general expression so aggregate-literal spreading can be added
+  // later; elaboration rejects it anywhere it is not supported yet.
+  export type SpreadExpr = BaseExpr & {
+    variant: ENode.SpreadExpr;
+    expr: Collect.ExprId;
+  };
+
   export type TernaryExpr = BaseExpr & {
     variant: ENode.TernaryExpr;
     condition: Collect.ExprId;
@@ -871,6 +880,7 @@ export namespace Collect {
     | SymbolValueExpr
     | ExplicitSymbolValueExpr
     | ExprCallExpr
+    | SpreadExpr
     | TernaryExpr
     | ExplicitCastExpr
     | ExprIsTypeExpr
@@ -3087,6 +3097,13 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "SpreadExpr":
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.SpreadExpr,
+        expr: collectExpr(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      })[1];
+
     case "ExprCallExpr":
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.ExprCallExpr,
@@ -3739,6 +3756,10 @@ export const printCollectedExpr = (
 
     case Collect.ENode.UnaryExpr: {
       return `(${UnaryOperationToString(expr.operation)} ${printCollectedExpr(cc, expr.expr)})`;
+    }
+
+    case Collect.ENode.SpreadExpr: {
+      return `...${printCollectedExpr(cc, expr.expr)}`;
     }
 
     case Collect.ENode.ExprCallExpr: {

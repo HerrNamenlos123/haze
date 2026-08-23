@@ -6,61 +6,68 @@
 #include <stdlib.h>
 #include <string.h>
 
-hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator,
-                                 hzstd_str_t data) {
+hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data)
+{
   if (data.length > 0) {
     hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1, NULL);
     memcpy(buffer, data.data, data.length);
     buffer[data.length] = '\0';
     return buffer;
-  } else {
+  }
+  else {
     hzstd_cstr_t buffer = hzstd_allocate(allocator, 1, NULL);
     buffer[0] = '\0';
     return buffer;
   }
 }
 
-hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data) {
-  return (hzstd_str_t){
-      .data = data,
-      .length = strlen(data),
+hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data)
+{
+  return (hzstd_str_t) {
+    .data = data,
+    .length = strlen(data),
   };
 }
 
-hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data) {
-  return (hzstd_str_t){
-      .data = data,
-      .length = strlen(data),
+hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data)
+{
+  return (hzstd_str_t) {
+    .data = data,
+    .length = strlen(data),
   };
 }
 
-hzstd_str_t hzstd_str_dup(hzstd_str_t data) {
+hzstd_str_t hzstd_str_dup(hzstd_str_t data)
+{
   char *buffer = hzstd_heap_allocate_atomic(data.length, NULL);
   memcpy(buffer, data.data, data.length);
   return HZSTD_STRING(buffer, data.length);
 }
 
-hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data) {
+hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data)
+{
   return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), data);
 }
 
-hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator,
-                                    hzstd_cstr_t data) {
+hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data)
+{
   size_t length = strlen(data);
 
   if (length == 0) {
-    return (hzstd_str_t){.length = 0, .data = 0};
-  } else {
+    return (hzstd_str_t) { .length = 0, .data = 0 };
+  }
+  else {
     char *buffer = hzstd_allocate(allocator, length, NULL);
     memcpy(buffer, data, length);
-    return (hzstd_str_t){
-        .data = buffer,
-        .length = length,
+    return (hzstd_str_t) {
+      .data = buffer,
+      .length = length,
     };
   }
 }
 
-int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...) {
+int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...)
+{
   va_list args;
   va_start(args, fmt);
   int n = vsnprintf(buf, bufferSize, fmt, args);
@@ -68,7 +75,8 @@ int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...) {
   return n;
 }
 
-void hzstd_print_str_stdout(hzstd_str_t str) {
+void hzstd_print_str_stdout(hzstd_str_t str, bool noflush)
+{
   // Explicit flush: stdout is only line-buffered when it's a real TTY --
   // redirected to a file or pipe (a build tool wrapping the process, `... |
   // less`, output redirection, etc.) makes libc fully-buffer it instead, so
@@ -78,17 +86,21 @@ void hzstd_print_str_stdout(hzstd_str_t str) {
   // not hot-loop primitives, so the extra syscall per call is not a
   // meaningful cost here.
   fwrite(str.data, 1, str.length, stdout);
-  fflush(stdout);
+  if (!noflush) {
+    fflush(stdout);
+  }
 }
 
-hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b) {
+hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b)
+{
   if (a.length != b.length) {
     return false;
   }
   return memcmp(a.data, b.data, a.length) == 0;
 }
 
-const char *hzstd_raw_malloc_null_terminated_str(hzstd_str_t str) {
+const char *hzstd_raw_malloc_null_terminated_str(hzstd_str_t str)
+{
   char *buffer = malloc(str.length + 1);
   memcpy(buffer, str.data, str.length);
   buffer[str.length] = '\0';

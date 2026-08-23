@@ -3493,6 +3493,21 @@ export function lowerTypeDef(
     const ftype = lr.typeDefNodes.get(ftypeId);
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
+    // Callables are unique per function type in elaboration, but several of
+    // those can lower to the same function type (e.g. `(values: ...) => int`
+    // instantiated with an empty pack and a plain `() => int`): their env
+    // block is a `void*` either way, so they are the same C struct. Intern.
+    for (const [, id] of lr.loweredTypeDefs) {
+      const t = lr.typeDefNodes.get(id);
+      if (
+        t.variant === Lowered.ENode.CallableDatatype &&
+        t.functionType === ftypeId
+      ) {
+        lr.loweredTypeDefs.set(typeId, id);
+        return id;
+      }
+    }
+
     const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
       variant: Lowered.ENode.CallableDatatype,
       functionType: ftypeId,
@@ -4592,6 +4607,27 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       const originalFuncType = lr.sr.typeDefNodes.get(symbol.type);
       assert(originalFuncType.variant === Semantic.ENode.FunctionDatatype);
 
+      // The parameter list with the pack (if any) replaced by its elements,
+      // so that it lines up with `parameterNames` above. The lowered function
+      // type expands the pack the same way (see lowerTypeDef), and the
+      // trampoline below indexes parameters by name position.
+      const expandedParameters: { optional: boolean; type: Semantic.TypeUseId }[] =
+        [];
+      for (const p of originalFuncType.parameters) {
+        const pp = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(p.type).type);
+        if (pp.variant === Semantic.ENode.ParameterPackDatatype) {
+          for (const packParam of pp.parameters || []) {
+            const sym = lr.sr.symbolNodes.get(packParam);
+            assert(sym.variant === Semantic.ENode.VariableSymbol);
+            assert(sym.type);
+            expandedParameters.push({ optional: false, type: sym.type });
+          }
+        } else {
+          expandedParameters.push(p);
+        }
+      }
+      assert(expandedParameters.length === parameterNames.length);
+
       const hoistedParams = new Set<Semantic.VariableSymbol>();
       for (const param of symbol.parameterSymbols) {
         const sym = lr.sr.symbolNodes.get(param);
@@ -4604,9 +4640,9 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         }
       }
 
-      const mainFuncParameters = [...originalFuncType.parameters];
+      const mainFuncParameters = [...expandedParameters];
       const mainFuncParameterNames = [...parameterNames];
-      const trampolineFuncParameters = [...originalFuncType.parameters];
+      const trampolineFuncParameters = [...expandedParameters];
       const trampolineFuncParameterNames = [...parameterNames];
 
       let envType: Lowered.EnvBlockType = null;
@@ -4826,7 +4862,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               args.push(
                 Lowered.addExpr(lr, {
                   variant: Lowered.ENode.SymbolValueExpr,
-                  type: lowerTypeUse(lr, originalFuncType.parameters[i].type),
+                  type: lowerTypeUse(lr, expandedParameters[i].type),
                   name: {
                     mangledName: parameterNames[i],
                     prettyName: parameterNames[i],
@@ -4888,7 +4924,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               args.push(
                 Lowered.addExpr(lr, {
                   variant: Lowered.ENode.SymbolValueExpr,
-                  type: lowerTypeUse(lr, originalFuncType.parameters[i].type),
+                  type: lowerTypeUse(lr, expandedParameters[i].type),
                   name: {
                     mangledName: parameterNames[i],
                     prettyName: parameterNames[i],

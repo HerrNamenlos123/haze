@@ -111,7 +111,7 @@ hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data);
 hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data);
 
 int hzstd_snprintf(char *buf, size_t bufferSize, const char *fmt, ...);
-void hzstd_print_str_stdout(hzstd_str_t str);
+void hzstd_print_str_stdout(hzstd_str_t str, bool noflush);
 
 hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b);
 

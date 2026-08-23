@@ -3,7 +3,7 @@ fn watchBinary(): rx.ShallowReactive<Bytes> :: final;
 
 namespace ffi {
     export extern C noemit fn printf(fmt: ccstr, ...) :: final;
-    export extern C noemit fn hzstd_print_str_stdout(string: str) :: final;
+    export extern C noemit fn hzstd_print_str_stdout(string: str, noflush: bool) :: final;
 }
 
 namespace fmt {
@@ -105,55 +105,59 @@ namespace fmt {
         return writer.string();
     }
 
-    export fn print(args: ...) {
-        if comptime args.length == 1 && typeof(args[0]) == str {
-            ffi.hzstd_print_str_stdout(args[0]);
+    // Shared body of print()/println(): the arguments are forwarded as a
+    // parameter pack (`...args`), so both are thin wrappers and the
+    // measure/write two-pass formatting lives in one place. Exported only
+    // because pack functions are re-elaborated in the importing module.
+    export fn printImpl(newline: bool, args: ...) :: final {
+        // Nested because comptime `&&` does not short-circuit: `args[0]` must
+        // not be touched when the pack is empty.
+        if comptime args.length == 1 {
+            if comptime typeof(args[0]) == str {
+                ffi.hzstd_print_str_stdout(args[0], newline);
+                if newline {
+                    ffi.hzstd_print_str_stdout("\n", false);
+                }
+            }
+            else {
+                printFormatted(newline, ...args);
+            }
         }
         else {
-            let stackref reader = Writer();
-            for comptime arg, i in args {
-                format_to_proxy(reader, arg, {});
-                if comptime i != args.length - 1 {
-                    reader.write(" ");
-                }
-            }
-            let stackref writer = Writer(hzstd_make_heap_allocator(), reader.written);
-            for comptime arg, i in args {
-                format_to_proxy(writer, arg, {});
-                if comptime i != args.length - 1 {
-                    writer.write(" ");
-                }
-            }
-            ffi.hzstd_print_str_stdout(writer.string());
+            printFormatted(newline, ...args);
         }
     }
 
-    export fn println(args: ...) :: final {
-        if comptime args.length == 1 && typeof(args[0]) == str {
-            ffi.hzstd_print_str_stdout(args[0]);
-            ffi.hzstd_print_str_stdout("\n");
-        }
-        else {
-            // TODO: This should just call print() and append a \n, but for that we must support 
-            // passing parameter packs to other parameter packs, i.e. unwrapping them
-            let stackref reader = Writer();
-            for comptime arg, i in args {
-                format_to_proxy(reader, arg, {});
-                if comptime i != args.length - 1 {
-                    reader.write(" ");
-                }
+    export fn printFormatted(newline: bool, args: ...) :: final {
+        let stackref reader = Writer();
+        for comptime arg, i in args {
+            format_to_proxy(reader, arg, {});
+            if comptime i != args.length - 1 {
+                reader.write(" ");
             }
+        }
+        if newline {
             reader.write("\n");
-            let stackref writer = Writer(hzstd_make_heap_allocator(), reader.written);
-            for comptime arg, i in args {
-                format_to_proxy(writer, arg, {});
-                if comptime i != args.length - 1 {
-                    writer.write(" ");
-                }
-            }
-            writer.write("\n");
-            ffi.hzstd_print_str_stdout(writer.string());
         }
+        let stackref writer = Writer(hzstd_make_heap_allocator(), reader.written);
+        for comptime arg, i in args {
+            format_to_proxy(writer, arg, {});
+            if comptime i != args.length - 1 {
+                writer.write(" ");
+            }
+        }
+        if newline {
+            writer.write("\n");
+        }
+        ffi.hzstd_print_str_stdout(writer.string(), false);
+    }
+
+    export fn print(args: ...) {
+        printImpl(false, ...args);
+    }
+
+    export fn println(args: ...) :: final {
+        printImpl(true, ...args);
     }
 
     export fn format_to_proxy<T>(writer: mut stackref Writer, value: T, args: FormatArgs) :: final {

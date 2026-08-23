@@ -490,6 +490,15 @@ export type ASTPostIncrExpr = {
   sourceloc: SourceLoc;
 };
 
+// `...expr`. Only meaningful inside a call argument list today (parameter
+// pack expansion); kept as a general expression node so that aggregate
+// literal spreading can be added without touching the parsers.
+export type ASTSpreadExpr = {
+  variant: "SpreadExpr";
+  expr: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTExprCallExpr = {
   variant: "ExprCallExpr";
   calledExpr: ASTExpr;
@@ -723,6 +732,7 @@ export type ASTExpr =
   | ASTFStringExpr
   | ASTPostIncrExpr
   | ASTExprCallExpr
+  | ASTSpreadExpr
   | ASTExprMemberAccess
   | ASTOptionalChainingExprMemberAccess
   | ASTExprComptimeMemberAccess

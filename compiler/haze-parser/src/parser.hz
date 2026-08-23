@@ -492,6 +492,24 @@ export ref struct Parser {
         this.postfixExpr();
     }
 
+    // argExpr: spreadExpr | expr
+    // `...pack` inside a call argument list (parameter pack expansion).
+    mut fn argExpr(): str :: final {
+        if this.at(TK.Ellipsis) {
+            let start = this.cur();
+            this.advance();
+            let inner = this.captureExpr();
+            return this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "SpreadExpr");
+                this.w.keyRaw("expr", inner);
+                this.locHere(start);
+                this.w.endObject();
+            });
+        }
+        return this.captureExpr();
+    }
+
     // -----------------------------------------------------------------------
     // Postfix chain: calls, indexing, member access, casts, type tests.
     // Each postfix wraps the expression built so far, so we accumulate into a
@@ -534,10 +552,10 @@ export ref struct Parser {
                 this.allowBraceLiteral = true;
                 let args: mut []str = [];
                 if !this.at(TK.RParen) {
-                    args.push(this.captureExpr());
+                    args.push(this.argExpr());
                     while this.accept(TK.Comma) {
                         if this.at(TK.RParen) { break; }  // trailing comma
-                        args.push(this.captureExpr());
+                        args.push(this.argExpr());
                     }
                 }
                 this.allowBraceLiteral = savedAllow;

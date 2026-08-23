@@ -252,6 +252,9 @@ namespace errorcodes {
         StackrefOnGlobal = 7188,
         WriteToByValueCapture = 7189,
         WriteAfterByValueCapture = 7190,
+        SpreadOperandNotParameterPack = 7191, // Only a parameter pack can be spread with '...'
+        SpreadNotAllowedHere = 7192, // '...' spread is only allowed inside a call argument list
+        ParameterPackPassedWithoutSpread = 7193, // A parameter pack cannot be passed as a single argument; spread it with '...'
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,
