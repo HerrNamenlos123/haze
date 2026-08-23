@@ -55,6 +55,7 @@ fn main(): int {
     cases_profiling_stacks.register(suite);
     cases_value_equality.register(suite);
     cases_optional_chaining.register(suite);
+    cases_overload_aggregate_literal.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -5716,10 +5716,57 @@ export class SemanticElaborator {
     return parameterPackTypes;
   }
 
+  // Can an untyped aggregate literal (`{}`, `{ a: 1 }`, `[1, 2]`) be built
+  // as a value of this type? Mirrors what structInstantiation() accepts when
+  // given the type as its hint: a struct, an array, or a union whose only
+  // non-nullish member is one of those.
+  canBuildUntypedAggregateLiteralAs(typeUseId: Semantic.TypeUseId): boolean {
+    const resolved = this.resolveAlias(typeUseId);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (
+      def.variant === Semantic.ENode.StructDatatype ||
+      def.variant === Semantic.ENode.FixedArrayDatatype ||
+      def.variant === Semantic.ENode.DynamicArrayDatatype
+    ) {
+      return true;
+    }
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const parts = this.nullishPartsOf(resolved);
+      const candidates = parts ? parts.remaining : def.members;
+      return (
+        candidates.length === 1 &&
+        this.canBuildUntypedAggregateLiteralAs(candidates[0])
+      );
+    }
+    return false;
+  }
+
+  // The untyped aggregate literal behind a (possibly parenthesised)
+  // argument, or null.
+  untypedAggregateLiteralBehind(exprId: Collect.ExprId): Collect.ExprId | null {
+    const expr = this.sr.cc.exprNodes.get(exprId);
+    if (expr.variant === Collect.ENode.ParenthesisExpr) {
+      return this.untypedAggregateLiteralBehind(expr.expr);
+    }
+    if (
+      expr.variant === Collect.ENode.AggregateLiteralExpr &&
+      expr.structType === null
+    ) {
+      return exprId;
+    }
+    return null;
+  }
+
   FunctionOverloadChoose(
     overloadGroupId: Collect.SymbolId,
     calledWithArgs:
-      | { index: number; exprId: Semantic.ExprId | null }[]
+      | {
+          index: number;
+          exprId: Semantic.ExprId | null;
+          collectExprId?: Collect.ExprId;
+        }[]
       | undefined,
     usageSourceLocation: SourceLoc
   ) {
@@ -5841,6 +5888,29 @@ export class SemanticElaborator {
             !(passed && passed.exprId) ||
             signatureParam.kind === "param-pack"
           ) {
+            // An untyped aggregate literal (`p({})`) is deferred because its
+            // type comes from the parameter -- but it can only ever become a
+            // struct or an array, so a parameter that is neither (e.g. `real`)
+            // cannot take it. Without this, `p({})` against `p(real)` and
+            // `p(Full)` matched both and was reported as ambiguous.
+            if (
+              passed &&
+              passed.exprId === null &&
+              passed.collectExprId !== undefined &&
+              signatureParam.kind !== "param-pack" &&
+              signatureParam.type !== null &&
+              this.untypedAggregateLiteralBehind(passed.collectExprId) !==
+                null &&
+              isTypeConcrete(this.sr, signatureParam.type) &&
+              !this.canBuildUntypedAggregateLiteralAs(signatureParam.type)
+            ) {
+              matches = false;
+              reason = `Parameter #${i + 1} of type ${Semantic.serializeTypeUse(
+                this.sr,
+                signatureParam.type
+              )} cannot be built from an aggregate literal`;
+              return;
+            }
             // This parameter is not passed or is not concrete, so hope that the others are enough for a match
             // matches = false;
             // reason = `Parameter #${i + 1} does not have a concrete type`;
