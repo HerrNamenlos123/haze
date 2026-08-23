@@ -3151,6 +3151,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // toggleVim is passed as-is rather than wrapped in `() => { toggleVim(); }`,
         // which was one more allocation that did nothing but forward a call.
         let editorCommands = EditorCommands {
+            // Wrapped, unlike toggleVim beside it, because requestSave
+            // answers whether it actually wrote (a diverged file raises the
+            // dialog instead) and a CommandFn returns nothing. The wrapper
+            // is built once here with the rest of the struct, so it costs
+            // the same as any other handler in it.
+            save: () => { requestSave(); },
             toggleVim: toggleVim,
             // No longer a stub: this is the real jump list. The keymap
             // routes ctrl+o here rather than letting it reach the
