@@ -537,15 +537,19 @@ namespace profiling {
         // The Timings-track half (2. above). Stackless, so this is just one small event per
         // capture, reusing the name already computed for the flame-chart leaf.
         //
-        // Placed at the timestamp the allocation's SAMPLE reconstructs to, not at the
-        // capture's own timestamp. The marker carries no stack of its own; a viewer
-        // answers "what was running when this fired" by looking up the sample active at
-        // the marker's ts, and the sample timeline is built from integer microsecond
-        // deltas, so it can land a fraction of a microsecond off the real timestamp.
-        // Emitting the marker at the real timestamp (what this used to do) put it just
-        // BEFORE its own sample every time, and the lookup then returned the stack of the
-        // CPU sample preceding the allocation -- a plausible-looking stack pointing at
-        // code that never allocated anything.
+        // Placed half a microsecond AFTER the timestamp the allocation's SAMPLE
+        // reconstructs to -- not at the capture's own timestamp, and not exactly on the
+        // sample either. The marker carries no stack of its own: DevTools answers "what
+        // was running when this fired" by nesting the marker, by time, into the tree of
+        // entries derived from the samples, so the marker has to fall strictly inside its
+        // own sample's [start, start + 1us) interval (CpuProfileBuilder guarantees every
+        // sample is at least 1us wide and starts on an integer microsecond; see
+        // advanceTimeline). Exactly ON the start is not enough: DevTools round-trips
+        // sample timestamps through milliseconds, which can move them an ulp either way,
+        // and when that put the marker a hair before its sample it was nested under the
+        // CPU sample preceding the allocation instead -- a plausible-looking stack
+        // pointing at code that never allocated anything, and a different one each time.
+        // +0.5us is invisible at any zoom level and unreachable by float noise.
         if allocationCount > 0 {
             // One empty list shared by every marker rather than one built per capture:
             // addInstantMarker only ever reads it, and an empty array literal inside this
@@ -557,7 +561,7 @@ namespace profiling {
                 let frame = result.memoryInstrumentationFrames[i];
                 builder.addInstantMarker(
                     mainThreadTid,
-                    allocationSampleTimesUs[i],
+                    allocationSampleTimesUs[i] + 0.5,
                     allocationLeaves[i],
                     noFrames,
                     frame.dataType.length > 0 ? frame.dataType : none,
