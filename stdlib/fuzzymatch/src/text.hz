@@ -1,0 +1,251 @@
+// Byte-level string primitives shared by the rest of the module.
+//
+// === Why bytes, and what that costs ===========================
+//
+// VS Code's scorer indexes strings by UTF-16 code unit. Haze's `str` is
+// UTF-8, and `str.length` counts bytes, so every offset this module produces
+// or consumes is a BYTE OFFSET. For ASCII -- which is every character in a
+// realistic file path, and the case the scorer's bonuses were tuned for --
+// the two index spaces are identical and the ported behaviour is exact.
+//
+// For non-ASCII input two things differ from VS Code, deliberately:
+//
+//   1. Case folding is ASCII-only. 'Ä' does not fold to 'ä', so a query
+//      typed in the other case will not match it. Folding the full Unicode
+//      case tables would mean depending on utf8proc, which would make this
+//      module non-pure and pull I/O-capable code into a scorer that is
+//      supposed to be a leaf.
+//
+//   2. A multi-byte character is scored as its individual bytes. It still
+//      matches (byte equality is exact), and the resulting positions still
+//      merge into one contiguous span, but a 3-byte character contributes
+//      three character-match bonuses rather than one, so scores involving
+//      non-ASCII text are not comparable to VS Code's.
+//
+// Neither affects ranking among ASCII paths, which is what the module is for.
+
+// The byte at `index` as an UNSIGNED value 0..255, or -1 when the index is
+// outside the string. Callers rely on the out-of-range answer: several of the
+// scorer's bonuses look at `index - 1` and must simply not fire at the start
+// of a string, which -1 gives them for free (it equals no separator, no upper
+// case, nothing).
+//
+// The widening is not incidental. `str[i] as int` SIGN-EXTENDS, so byte 0xE2
+// arrives as -30, and every lead byte of a multi-byte UTF-8 sequence is
+// >= 0x80 and therefore negative. Reading bytes through this function is what
+// keeps the rest of the module from silently treating all non-ASCII input as
+// a run of negative numbers that match nothing.
+fn byteAt(text: str, index: int): int {
+    if index < 0 || index >= text.length {
+        return -1;
+    }
+    let code = text[index] as int;
+    return code < 0 ? code + 256 : code;
+}
+
+fn isUpperCode(code: int): bool {
+    return code >= 65 && code <= 90;      // 'A'..'Z'
+}
+
+fn isLowerCode(code: int): bool {
+    return code >= 97 && code <= 122;     // 'a'..'z'
+}
+
+// ASCII lower-casing. See the header for why this is not Unicode-aware.
+fn toLowerAscii(text: str): str {
+    let buffer = String(text);
+    for (let i = 0; i < buffer.length(); i++) {
+        let b = buffer.getAt(i);
+        if b >= b"A" && b <= b"Z" {
+            buffer.setAt(i, b + 32 as u8);
+        }
+    }
+    return buffer.cloneString();
+}
+
+// Byte-wise ASCII-case-insensitive equality, without allocating two lowered
+// copies to compare them.
+fn equalsIgnoreCase(a: str, b: str): bool {
+    if a.length != b.length {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        let ca = byteAt(a, i);
+        let cb = byteAt(b, i);
+        if isUpperCode(ca) { ca += 32; }
+        if isUpperCode(cb) { cb += 32; }
+        if ca != cb {
+            return false;
+        }
+    }
+    return true;
+}
+
+// True when `needle` occurs in `haystack` starting exactly at `offset`.
+// This is JavaScript's `String.prototype.startsWith(needle, offset)`, which
+// the scorer uses to ask "is the whole query contiguous from here?".
+fn startsWithAt(haystack: str, needle: str, offset: int): bool {
+    if offset < 0 || offset + needle.length > haystack.length {
+        return false;
+    }
+    for (let i = 0; i < needle.length; i++) {
+        if haystack[offset + i] != needle[i] {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn containsByte(text: str, code: int): bool {
+    for (let i = 0; i < text.length; i++) {
+        if byteAt(text, i) == code {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Ordering of two strings by ASCII-lowered bytes, then by length. Stands in
+// for JavaScript's locale-aware `localeCompare`, which is only reachable from
+// this module's very last tie-break (two candidates that already agree on
+// score, on match compactness and on every length). Using a locale here would
+// make ranking depend on the user's environment, which a pure scorer should
+// not do.
+fn compareIgnoreCase(a: str, b: str): int {
+    let shorter = a.length < b.length ? a.length : b.length;
+    for (let i = 0; i < shorter; i++) {
+        let ca = byteAt(a, i);
+        let cb = byteAt(b, i);
+        if isUpperCode(ca) { ca += 32; }
+        if isUpperCode(cb) { cb += 32; }
+        if ca != cb {
+            return ca < cb ? -1 : 1;
+        }
+    }
+    if a.length == b.length {
+        return 0;
+    }
+    return a.length < b.length ? -1 : 1;
+}
+
+// Does `text`, ASCII-lowered, start with `needle` -- where `needle` is
+// compared AS GIVEN, not lowered?
+//
+// That asymmetry looks like a bug and is not: it is what JavaScript's
+// `one.toLowerCase().startsWith(lookFor)` does in VS Code's comparer, and the
+// comparer is passed a query that has NOT been lowered. Folding the needle too
+// would make an upper-case query match where VS Code says it does not. The
+// point of this function over the obvious spelling is that it allocates
+// nothing -- it sits inside the sort comparison, which runs O(n log n) times.
+fn startsWithLowered(text: str, needle: str): bool {
+    if text.length < needle.length {
+        return false;
+    }
+    for (let i = 0; i < needle.length; i++) {
+        let code = byteAt(text, i);
+        if isUpperCode(code) { code += 32; }
+        if code != byteAt(needle, i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// `startsWithLowered`'s counterpart. Same asymmetry, same reason.
+fn endsWithLowered(text: str, needle: str): bool {
+    if text.length < needle.length {
+        return false;
+    }
+    let offset = text.length - needle.length;
+    for (let i = 0; i < needle.length; i++) {
+        let code = byteAt(text, offset + i);
+        if isUpperCode(code) { code += 32; }
+        if code != byteAt(needle, i) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn startsWithIgnoreCase(text: str, prefix: str): bool {
+    if text.length < prefix.length {
+        return false;
+    }
+    for (let i = 0; i < prefix.length; i++) {
+        let ca = byteAt(text, i);
+        let cb = byteAt(prefix, i);
+        if isUpperCode(ca) { ca += 32; }
+        if isUpperCode(cb) { cb += 32; }
+        if ca != cb {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn endsWithIgnoreCase(text: str, suffix: str): bool {
+    if text.length < suffix.length {
+        return false;
+    }
+    let offset = text.length - suffix.length;
+    for (let i = 0; i < suffix.length; i++) {
+        let ca = byteAt(text, offset + i);
+        let cb = byteAt(suffix, i);
+        if isUpperCode(ca) { ca += 32; }
+        if isUpperCode(cb) { cb += 32; }
+        if ca != cb {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One decoded UTF-8 scalar: its value and how many bytes it occupied.
+struct Decoded {
+    codepoint: int = 0;
+    size: int = 1;
+}
+
+// Decodes the scalar starting at `index`. A malformed or truncated sequence
+// decodes as its own lead byte with size 1, so a decoding pass always makes
+// progress and always covers the whole string -- this module never rejects
+// input, it only classifies it.
+fn decodeUtf8(text: str, index: int): Decoded {
+    let lead = byteAt(text, index);
+    if lead < 0 {
+        let eof = Decoded { codepoint: -1, size: 1 };
+        return eof;
+    }
+    if lead < 0x80 {
+        let one = Decoded { codepoint: lead, size: 1 };
+        return one;
+    }
+
+    let needed = 0;
+    let value = 0;
+    if lead >= 0xC2 && lead <= 0xDF {
+        needed = 1;
+        value = lead - 0xC0;
+    } else if lead >= 0xE0 && lead <= 0xEF {
+        needed = 2;
+        value = lead - 0xE0;
+    } else if lead >= 0xF0 && lead <= 0xF4 {
+        needed = 3;
+        value = lead - 0xF0;
+    } else {
+        let bad = Decoded { codepoint: lead, size: 1 };
+        return bad;
+    }
+
+    for (let i = 1; i <= needed; i++) {
+        let continuation = byteAt(text, index + i);
+        if continuation < 0x80 || continuation > 0xBF {
+            let truncated = Decoded { codepoint: lead, size: 1 };
+            return truncated;
+        }
+        value = value * 64 + (continuation - 0x80);
+    }
+
+    let decoded = Decoded { codepoint: value, size: needed + 1 };
+    return decoded;
+}
