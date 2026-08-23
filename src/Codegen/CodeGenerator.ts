@@ -2685,6 +2685,36 @@ class CodeGenerator {
               left = `((void*)${left})`;
               right = `((void*)${right})`;
             }
+            // A callable is compared as the pair it actually is: WHICH function,
+            // and WHICH captured environment. Two closures built from the same
+            // lambda are equal only when they share an env block -- so a handler
+            // rebuilt on every render never equals last render's, while one
+            // built once and handed around does. A stackref callable carries a
+            // checked reference rather than a bare pointer, so only the address
+            // it guards takes part (its generation is a fact about time, not
+            // about which environment this is).
+            if (
+              leftType.variant === Lowered.ENode.CallableDatatype &&
+              rightType.variant === Lowered.ENode.CallableDatatype
+            ) {
+              const envOf = (operand: string, isStackref: boolean) =>
+                isStackref
+                  ? `((void*)(${operand}).env.ptr)`
+                  : `((void*)(${operand}).env)`;
+              const equal =
+                `(((void*)(${left}).fn) == ((void*)(${right}).fn) && ` +
+                `${envOf(left, !!leftUse.stackref)} == ${envOf(
+                  right,
+                  !!rightUse.stackref
+                )})`;
+              outWriter.write(
+                expr.operation === EBinaryOperation.Equal
+                  ? equal
+                  : `(!${equal})`
+              );
+              break;
+            }
+
             if (
               leftType.variant === Lowered.ENode.PrimitiveDatatype &&
               rightType.variant === Lowered.ENode.PrimitiveDatatype &&

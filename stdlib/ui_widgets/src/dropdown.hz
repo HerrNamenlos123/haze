@@ -89,16 +89,6 @@ export struct DropdownItem {
     // A check/bullet down the left, for items representing a current
     // choice -- which workspace is open, which theme is active.
     checked: bool = false;
-
-    fn operator!=(other: DropdownItem) {
-        return this.key != other.key
-            || this.label != other.label
-            || this.shortcut != other.shortcut
-            || this.enabled != other.enabled
-            || this.separator != other.separator
-            || this.header != other.header
-            || this.checked != other.checked;
-    }
 }
 
 export struct DropdownStyle {

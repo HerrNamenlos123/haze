@@ -184,13 +184,6 @@ struct TitleBarArgs {
     // renders from reactives its props say nothing about is a component
     // whose props comparison is a lie.
     openMenu: int = -1;
-
-    fn operator!=(other: TitleBarArgs) {
-        return this.id != other.id
-            || this.documentName != other.documentName
-            || this.workspaceName != other.workspaceName
-            || this.openMenu != other.openMenu;
-    }
 }
 
 // The row. Declare this FIRST in the application root.

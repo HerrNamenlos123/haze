@@ -148,15 +148,29 @@ fn t7() {
     fmt.println(f"7: {f()} {callTwice(f)} {g()}");
 }
 
-// ── 8. identity comparison (§3.5) ────────────────────────────────────────────
+// ── 8. equality is by VALUE, whatever the storage class (§3.5, revised) ─────
+//
+// This case used to assert reference IDENTITY: `a == b` was FALSE for two
+// distinct objects with equal contents, and `a != b` was true. That rule is
+// gone -- equality is value-based throughout, so a ref, a stackref and the
+// object itself all answer the same question about contents, and none of them
+// answers "is this the same address". The expected output below changed with
+// it, deliberately. (Identity is a separate concept with no spelling yet; when
+// it gets one it belongs in its own case, not here.)
+//
+// `c` is here so the case still discriminates: with every comparison of equal
+// contents now true, a test made only of those would pass even if comparison
+// were hardcoded to true.
 fn t8() {
     let a: ref Node = { v: 1 };
     let b: ref Node = { v: 1 };
+    let c: ref Node = { v: 2 };
     let stackref sa = a;
     let stackref sb = b;
     let a2 = a;
     let stackref sa2 = a;
     fmt.println(f"8: {a == a2} {a == b} {sa == sa2} {sa == sb} {sa == a} {a != b}");
+    fmt.println(f"8b: {a == c} {a != c} {sa == c} {sa != c}");
 }
 
 // ── 9. storing a stackref is legal; it is the use that is checked (§5.5) ────
@@ -202,7 +216,8 @@ fn main(): int {
 5: after a=1 v.x=10 r.v=102 shared=2
 6: 2 0 2
 7: 12 24 6
-8: true false true false true true
+8: true true true true true false
+8b: false true false true
 9: 42
 10: ok
 """);

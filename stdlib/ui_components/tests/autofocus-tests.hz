@@ -1,9 +1,7 @@
 import ui_components
 import ui_elements
 
-ref struct TestArgs {
-    fn operator!=(other: TestArgs) { return false; }
-}
+ref struct TestArgs {}
 
 ref struct State {
     typed: str = "";

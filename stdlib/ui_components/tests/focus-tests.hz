@@ -13,11 +13,7 @@ import ui_elements
 // misses -- that is exactly why these tests drive focus programmatically and
 // never synthesise clicks.
 
-ref struct TestArgs {
-    fn operator!=(other: TestArgs) {
-        return false;
-    }
-}
+ref struct TestArgs {}
 
 // All mutable test state lives in one ref struct so the UI closures can capture a
 // single handle and still see later writes (the same reason the code editor's

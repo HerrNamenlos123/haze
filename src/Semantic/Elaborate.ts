@@ -852,335 +852,12 @@ export class SemanticElaborator {
         return built;
       }
 
-      // Try to find an overloaded operator on the left operand's type
-      const leftTypeUse = this.sr.typeUseNodes.get(
-        this.resolveAlias(left.type)
-      );
-      const leftTypeDef = this.sr.typeDefNodes.get(leftTypeUse.type);
-
-      if (leftTypeDef.variant === Semantic.ENode.StructDatatype) {
-        const original = this.sr.cc.typeDefNodes.get(
-          leftTypeDef.originalCollectedDefinition
-        );
-        assert(original.variant === Collect.ENode.StructTypeDef);
-
-        const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
-        assert(structScope.variant === Collect.ENode.StructLexicalScope);
-
-        // Map binary operations to overloaded operators
-        const operatorMap: Record<
-          EBinaryOperation,
-          EOverloadedOperator | null
-        > = {
-          [EBinaryOperation.Equal]: EOverloadedOperator.Equal,
-          [EBinaryOperation.NotEqual]: EOverloadedOperator.NotEqual,
-          [EBinaryOperation.LessThan]: EOverloadedOperator.LessThan,
-          [EBinaryOperation.GreaterThan]: EOverloadedOperator.GreaterThan,
-          [EBinaryOperation.LessEqual]: EOverloadedOperator.LessThanOrEqual,
-          [EBinaryOperation.GreaterEqual]:
-            EOverloadedOperator.GreaterThanOrEqual,
-          [EBinaryOperation.Add]: EOverloadedOperator.Add,
-          [EBinaryOperation.Subtract]: EOverloadedOperator.Sub,
-          [EBinaryOperation.Multiply]: EOverloadedOperator.Mul,
-          [EBinaryOperation.Divide]: EOverloadedOperator.Div,
-          [EBinaryOperation.Modulo]: EOverloadedOperator.Mod,
-          [EBinaryOperation.BitwiseOr]: null,
-          [EBinaryOperation.BoolAnd]: null,
-          [EBinaryOperation.BoolOr]: null,
-        };
-
-        const overloadedOp = operatorMap[binaryExpr.operation];
-        if (overloadedOp !== null) {
-          const overloadGroupId = [...structScope.symbols].find((mId) => {
-            const m = this.sr.cc.symbolNodes.get(mId);
-            return (
-              m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
-              m.overloadedOperator === overloadedOp
-            );
-          });
-
-          if (overloadGroupId) {
-            // Found an overloaded operator, try to use it
-            const decisiveArguments = [{ index: 0, exprId: rightId }];
-
-            try {
-              const operatorId = this.FunctionOverloadChoose(
-                overloadGroupId,
-                decisiveArguments,
-                binaryExpr.sourceloc
-              );
-
-              const collectedMethod = this.sr.cc.symbolNodes.get(operatorId);
-              assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
-
-              let elaboratedStructCache = null as Semantic.StructDef | null;
-              for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
-                for (const entry of cache) {
-                  if (entry.result === leftTypeUse.type) {
-                    elaboratedStructCache = entry;
-                  }
-                }
-              }
-              assert(elaboratedStructCache);
-
-              const parameterPackTypes = this.prepareParameterPackTypes(
-                collectedMethod.name,
-                collectedMethod.parameters,
-                undefined,
-                binaryExpr.sourceloc
-              );
-
-              const elaboratedMethodId = this.withContext(
-                {
-                  context: Semantic.mergeSubstitutionContext(
-                    elaboratedStructCache.substitutionContext,
-                    this.currentContext,
-                    {
-                      currentScope: this.currentContext.currentScope,
-                      genericsScope: this.currentContext.currentScope,
-                      instanceDeps: {
-                        instanceDependsOn: new Map(),
-                        structMembersDependOn: new Map(),
-                        symbolDependsOn: new Map(),
-                      },
-                    }
-                  ),
-                  inAttemptExpr: null,
-                  inFunction: null,
-                },
-                () =>
-                  this.elaborateFunctionSymbolWithGenerics(
-                    this.elaborateFunctionSignature(operatorId),
-                    [],
-                    binaryExpr.sourceloc,
-                    parameterPackTypes,
-                    {
-                      type: "method",
-                      thisExprType: makeTypeUse(
-                        this.sr,
-                        leftTypeUse.type,
-                        EDatatypeMutability.Mut,
-                        EStorageClass.Ref,
-                        binaryExpr.sourceloc
-                      )[1],
-                    }
-                  )
-              );
-              assert(elaboratedMethodId);
-              const elaboratedMethod =
-                this.sr.symbolNodes.get(elaboratedMethodId);
-              assert(
-                elaboratedMethod.variant === Semantic.ENode.FunctionSymbol
-              );
-
-              const operatorFunctype = this.sr.typeDefNodes.get(
-                elaboratedMethod.type
-              );
-              assert(
-                operatorFunctype.variant === Semantic.ENode.FunctionDatatype
-              );
-
-              // Create a callable expression that wraps the method with the this pointer
-              const callableExpr = this.sr.b.callableExpr(
-                elaboratedMethodId,
-                {
-                  type: "method",
-                  thisExprType: makeTypeUse(
-                    this.sr,
-                    leftTypeUse.type,
-                    EDatatypeMutability.Mut,
-                    EStorageClass.Ref,
-                    binaryExpr.sourceloc
-                  )[1],
-                },
-                {
-                  type: "method",
-                  thisExpr: leftId,
-                },
-                binaryExpr.sourceloc
-              )[1];
-
-              // Apply implicit conversions for the right operand
-              const rightParam = operatorFunctype.parameters[0];
-              const convertedRight = Conversion.MakeConversionOrThrow(
-                this.sr,
-                rightId,
-                rightParam.type,
-                this.currentContext.constraints,
-                binaryExpr.sourceloc,
-                Conversion.Mode.Implicit,
-                inference?.unsafe ?? false
-              );
-
-              assert(this.inFunction);
-              return this.sr.b.callExpr(
-                callableExpr,
-                [convertedRight],
-                this.inFunction,
-                binaryExpr.sourceloc
-              );
-            } catch (e) {
-              // If overload resolution fails, fall through to default behavior
-              console.error(
-                "Operator overload resolution failed:",
-                e instanceof Error ? e.message : String(e)
-              );
-            }
-          }
-        }
-      }
-
-      // Fall through to default comparison behavior
-      const resolvedLeftTypeUseId = this.resolveAlias(left.type);
-      const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
-        resolvedLeftTypeUseId
-      );
-      const resolvedRightTypeUseId = this.resolveAlias(_right2.type);
-      const resolvedRightTypeUse = this.sr.typeUseNodes.get(
-        resolvedRightTypeUseId
-      );
-      const leftTypeId = resolvedLeftTypeUse.type;
-      const rightTypeId = resolvedRightTypeUse.type;
-      const leftType = this.sr.typeDefNodes.get(leftTypeId);
-      const rightType = this.sr.typeDefNodes.get(rightTypeId);
-      const leftIsFloat = Conversion.isFloat(this.sr, leftTypeId);
-      const rightIsFloat = Conversion.isFloat(this.sr, rightTypeId);
-      const leftIsInteger = Conversion.isIntegerById(this.sr, leftTypeId);
-      const rightIsInteger = Conversion.isIntegerById(this.sr, rightTypeId);
-
-      if (leftIsFloat && rightIsInteger) {
-        const targetTypeUseId = makeTypeUse(
-          this.sr,
-          leftTypeId,
-          EDatatypeMutability.Const,
-          EStorageClass.Value,
-          binaryExpr.sourceloc
-        )[1];
-        rightId = Conversion.MakeConversionOrThrow(
-          this.sr,
-          rightId,
-          targetTypeUseId,
-          this.currentContext.constraints,
-          binaryExpr.sourceloc,
-          Conversion.Mode.Explicit,
-          inference?.unsafe ?? false
-        );
-      } else if (rightIsFloat && leftIsInteger) {
-        const targetTypeUseId = makeTypeUse(
-          this.sr,
-          rightTypeId,
-          EDatatypeMutability.Const,
-          EStorageClass.Value,
-          binaryExpr.sourceloc
-        )[1];
-        leftId = Conversion.MakeConversionOrThrow(
-          this.sr,
-          leftId,
-          targetTypeUseId,
-          this.currentContext.constraints,
-          binaryExpr.sourceloc,
-          Conversion.Mode.Explicit,
-          inference?.unsafe ?? false
-        );
-      }
-
-      if (
-        binaryExpr.operation === EBinaryOperation.Equal ||
-        binaryExpr.operation === EBinaryOperation.NotEqual
-      ) {
-        if (
-          (leftType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-            leftType.variant === Semantic.ENode.TaggedUnionDatatype) &&
-          (rightType.variant === Semantic.ENode.UntaggedUnionDatatype ||
-            rightType.variant === Semantic.ENode.TaggedUnionDatatype)
-        ) {
-          const leftMembers = new Set(
-            leftType.variant === Semantic.ENode.TaggedUnionDatatype
-              ? leftType.members.map((m) => m.type)
-              : leftType.members
-          );
-          const rightMembers = new Set(
-            rightType.variant === Semantic.ENode.TaggedUnionDatatype
-              ? rightType.members.map((m) => m.type)
-              : rightType.members
-          );
-
-          if (leftMembers.difference(rightMembers).size !== 0) {
-            throw new CompilerError(
-              `Cannot compare unions of incompatible types '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedLeftTypeUseId)}' and '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedRightTypeUseId)}'`,
-              binaryExpr.sourceloc,
-              HazeErrorCode.CannotCompareUnionsIncompatibleTypesAnd
-            );
-          }
-
-          // let a: (int | null | none)
-          // let b: (int | null | none)
-          // a == b
-          // Should turn into
-          // ((a is int && b is int) && a == b) || ((a is null && b is null) && a == b) || ((a is none && b is none) && a == b)
-          // a != b
-          // Should turn into
-          // ((a is int && b is int) && a != b) || ((a is null && b is null) && a != b) || ((a is none && b is none) && a != b)
-
-          const members = leftMembers;
-          const comparisons: Semantic.ExprId[] = [];
-          for (const member of members) {
-            // This is (a is int && b is int)
-            const narrowingCondition = this.sr.b.binaryExpr(
-              this.sr.b.unionTagCheckTypeIs(leftId, member)[1],
-              EBinaryOperation.BoolAnd,
-              this.sr.b.unionTagCheckTypeIs(rightId, member)[1],
-              binaryExpr.sourceloc
-            )[1];
-
-            const constraints = this.currentContext.constraints.clone();
-            this.buildLogicalConstraintSet(constraints, narrowingCondition);
-
-            // This is ((...) && a == b) or ((...) && a != b)
-            const actualCondition = this.sr.b.binaryExpr(
-              Conversion.MakeConversionOrThrow(
-                this.sr,
-                leftId,
-                member,
-                constraints,
-                binaryExpr.sourceloc,
-                Conversion.Mode.Implicit,
-                false
-              ),
-              binaryExpr.operation,
-              Conversion.MakeConversionOrThrow(
-                this.sr,
-                rightId,
-                member,
-                constraints,
-                binaryExpr.sourceloc,
-                Conversion.Mode.Implicit,
-                false
-              ),
-              binaryExpr.sourceloc
-            )[1];
-
-            // This is ((...) && ...)
-            comparisons.push(
-              this.sr.b.binaryExpr(
-                narrowingCondition,
-                EBinaryOperation.BoolAnd,
-                actualCondition,
-                binaryExpr.sourceloc
-              )[1]
-            );
-          }
-
-          // Now combine all of those using OR
-          return this.sr.b.binaryOr(comparisons, binaryExpr.sourceloc);
-        }
-      }
-
-      return this.sr.b.binaryExpr(
+      return this.compareElaboratedExprs(
         leftId,
-        binaryExpr.operation,
         rightId,
-        binaryExpr.sourceloc
+        binaryExpr.operation,
+        binaryExpr.sourceloc,
+        inference ? { unsafe: inference.unsafe } : undefined
       );
     }
     if (binaryExpr.operation === EBinaryOperation.Add) {
@@ -3142,6 +2819,525 @@ export class SemanticElaborator {
       fragments,
       allocator,
       fstring.sourceloc
+    );
+  }
+
+  // Compares two ALREADY-ELABORATED operands, and is the single place equality
+  // and ordering are decided. Split out of elaborateBinaryExpr (which works off
+  // the Collect AST) so that autogenerated structural comparison can re-enter
+  // it once per member: that re-entry is exactly what makes the recursion
+  // honour a member type's own operator==/operator!= instead of blindly
+  // comparing that member's fields. See Conversion.typeSupportsComparison for
+  // which types get a comparison at all.
+  // Builds the autogenerated comparison for one pair of operands, or returns
+  // null when the type is not one the compiler generates comparisons for (in
+  // which case the caller falls through to the primitive/union paths, and
+  // ultimately to "no safe comparison is available").
+  //
+  // The expansion is a plain conjunction of member comparisons, each built by
+  // re-entering compareElaboratedExprs. That is deliberate rather than emitting
+  // a memcmp or a hand-rolled C helper: every member is then compared the way
+  // THAT member's type says it should be -- a str by contents, a nested struct
+  // by its own operator if it declares one, an enum by value -- and padding
+  // bytes can never affect the result.
+  //
+  // `!=` is the negation of `==` rather than a separate walk, so the two can
+  // never disagree.
+  expandStructuralComparison(
+    leftId: Semantic.ExprId,
+    rightId: Semantic.ExprId,
+    operation: EBinaryOperation,
+    sourceloc: SourceLoc,
+    inference?: { unsafe?: boolean }
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const left = this.sr.exprNodes.get(leftId);
+    const right = this.sr.exprNodes.get(rightId);
+    const leftUse = this.sr.typeUseNodes.get(this.resolveAlias(left.type));
+    const rightUse = this.sr.typeUseNodes.get(this.resolveAlias(right.type));
+    if (leftUse.type !== rightUse.type) {
+      return null;
+    }
+    if (!Conversion.typeSupportsAutogeneratedComparison(this.sr, left.type)) {
+      return null;
+    }
+
+    const def = this.sr.typeDefNodes.get(leftUse.type);
+
+    // A fixed array is compared element by element, fully unrolled -- its
+    // length is part of its type, so there is nothing runtime about the walk.
+    // (A DYNAMIC array is not comparable at all; see typeSupportsComparison.)
+    if (def.variant === Semantic.ENode.FixedArrayDatatype) {
+      const count = Number(def.length);
+      if (count === 0) {
+        return this.sr.b.literal(
+          operation === EBinaryOperation.Equal,
+          sourceloc
+        );
+      }
+      const elements: Semantic.ExprId[] = [];
+      for (let i = 0; i < count; i++) {
+        const index = this.sr.b.literal(BigInt(i), sourceloc)[1];
+        const l = this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.ArraySubscriptExpr,
+          instanceIds: [],
+          expr: leftId,
+          indices: [index],
+          type: def.datatype,
+          isTemporary: true,
+          flow: left.flow,
+          writes: left.writes,
+          sourceloc: sourceloc,
+        })[1];
+        const r = this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.ArraySubscriptExpr,
+          instanceIds: [],
+          expr: rightId,
+          indices: [index],
+          type: def.datatype,
+          isTemporary: true,
+          flow: right.flow,
+          writes: right.writes,
+          sourceloc: sourceloc,
+        })[1];
+        elements.push(
+          this.compareElaboratedExprs(
+            l,
+            r,
+            EBinaryOperation.Equal,
+            sourceloc,
+            inference
+          )[1]
+        );
+      }
+      const allEqual = this.sr.b.binaryAnd(elements, sourceloc);
+      if (operation === EBinaryOperation.Equal) {
+        return allEqual;
+      }
+      return this.sr.b.unaryExpr(
+        allEqual[1],
+        EUnaryOperation.Negate,
+        this.sr.b.boolType(),
+        sourceloc
+      );
+    }
+
+    if (def.variant !== Semantic.ENode.StructDatatype) {
+      return null;
+    }
+
+    // A struct with no members has exactly one possible value, so every
+    // instance equals every other. Folding an empty conjunction would be
+    // ill-formed, so this is answered directly.
+    if (def.members.length === 0) {
+      return this.sr.b.literal(
+        operation === EBinaryOperation.Equal,
+        sourceloc
+      );
+    }
+
+    const parts: Semantic.ExprId[] = [];
+    for (const memberId of def.members) {
+      const member = this.sr.symbolNodes.get(memberId);
+      assert(
+        member.variant === Semantic.ENode.VariableSymbol &&
+          member.type !== null
+      );
+      const l = this.sr.b.memberAccessRaw(
+        leftId,
+        member.name,
+        member.type,
+        true,
+        sourceloc
+      )[1];
+      const r = this.sr.b.memberAccessRaw(
+        rightId,
+        member.name,
+        member.type,
+        true,
+        sourceloc
+      )[1];
+      parts.push(
+        this.compareElaboratedExprs(
+          l,
+          r,
+          EBinaryOperation.Equal,
+          sourceloc,
+          inference
+        )[1]
+      );
+    }
+
+    const allEqual = this.sr.b.binaryAnd(parts, sourceloc);
+    if (operation === EBinaryOperation.Equal) {
+      return allEqual;
+    }
+    return this.sr.b.unaryExpr(
+      allEqual[1],
+      EUnaryOperation.Negate,
+      this.sr.b.boolType(),
+      sourceloc
+    );
+  }
+
+  compareElaboratedExprs(
+    leftId: Semantic.ExprId,
+    rightId: Semantic.ExprId,
+    operation: EBinaryOperation,
+    sourceloc: SourceLoc,
+    inference?: { unsafe?: boolean }
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const left = this.sr.exprNodes.get(leftId);
+    const _right2 = this.sr.exprNodes.get(rightId);
+    // Try to find an overloaded operator on the left operand's type
+    const leftTypeUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(left.type)
+    );
+    const leftTypeDef = this.sr.typeDefNodes.get(leftTypeUse.type);
+
+    if (leftTypeDef.variant === Semantic.ENode.StructDatatype) {
+      const original = this.sr.cc.typeDefNodes.get(
+        leftTypeDef.originalCollectedDefinition
+      );
+      assert(original.variant === Collect.ENode.StructTypeDef);
+
+      const structScope = this.sr.cc.scopeNodes.get(original.lexicalScope);
+      assert(structScope.variant === Collect.ENode.StructLexicalScope);
+
+      // Map binary operations to overloaded operators
+      const operatorMap: Record<
+        EBinaryOperation,
+        EOverloadedOperator | null
+      > = {
+        [EBinaryOperation.Equal]: EOverloadedOperator.Equal,
+        [EBinaryOperation.NotEqual]: EOverloadedOperator.NotEqual,
+        [EBinaryOperation.LessThan]: EOverloadedOperator.LessThan,
+        [EBinaryOperation.GreaterThan]: EOverloadedOperator.GreaterThan,
+        [EBinaryOperation.LessEqual]: EOverloadedOperator.LessThanOrEqual,
+        [EBinaryOperation.GreaterEqual]:
+          EOverloadedOperator.GreaterThanOrEqual,
+        [EBinaryOperation.Add]: EOverloadedOperator.Add,
+        [EBinaryOperation.Subtract]: EOverloadedOperator.Sub,
+        [EBinaryOperation.Multiply]: EOverloadedOperator.Mul,
+        [EBinaryOperation.Divide]: EOverloadedOperator.Div,
+        [EBinaryOperation.Modulo]: EOverloadedOperator.Mod,
+        [EBinaryOperation.BitwiseOr]: null,
+        [EBinaryOperation.BoolAnd]: null,
+        [EBinaryOperation.BoolOr]: null,
+      };
+
+      const overloadedOp = operatorMap[operation];
+      if (overloadedOp !== null) {
+        const overloadGroupId = [...structScope.symbols].find((mId) => {
+          const m = this.sr.cc.symbolNodes.get(mId);
+          return (
+            m.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+            m.overloadedOperator === overloadedOp
+          );
+        });
+
+        if (overloadGroupId) {
+          // Found an overloaded operator, try to use it
+          const decisiveArguments = [{ index: 0, exprId: rightId }];
+
+          try {
+            const operatorId = this.FunctionOverloadChoose(
+              overloadGroupId,
+              decisiveArguments,
+              sourceloc
+            );
+
+            const collectedMethod = this.sr.cc.symbolNodes.get(operatorId);
+            assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+
+            let elaboratedStructCache = null as Semantic.StructDef | null;
+            for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
+              for (const entry of cache) {
+                if (entry.result === leftTypeUse.type) {
+                  elaboratedStructCache = entry;
+                }
+              }
+            }
+            assert(elaboratedStructCache);
+
+            const parameterPackTypes = this.prepareParameterPackTypes(
+              collectedMethod.name,
+              collectedMethod.parameters,
+              undefined,
+              sourceloc
+            );
+
+            const elaboratedMethodId = this.withContext(
+              {
+                context: Semantic.mergeSubstitutionContext(
+                  elaboratedStructCache.substitutionContext,
+                  this.currentContext,
+                  {
+                    currentScope: this.currentContext.currentScope,
+                    genericsScope: this.currentContext.currentScope,
+                    instanceDeps: {
+                      instanceDependsOn: new Map(),
+                      structMembersDependOn: new Map(),
+                      symbolDependsOn: new Map(),
+                    },
+                  }
+                ),
+                inAttemptExpr: null,
+                inFunction: null,
+              },
+              () =>
+                this.elaborateFunctionSymbolWithGenerics(
+                  this.elaborateFunctionSignature(operatorId),
+                  [],
+                  sourceloc,
+                  parameterPackTypes,
+                  {
+                    type: "method",
+                    thisExprType: makeTypeUse(
+                      this.sr,
+                      leftTypeUse.type,
+                      EDatatypeMutability.Mut,
+                      EStorageClass.Ref,
+                      sourceloc
+                    )[1],
+                  }
+                )
+            );
+            assert(elaboratedMethodId);
+            const elaboratedMethod =
+              this.sr.symbolNodes.get(elaboratedMethodId);
+            assert(
+              elaboratedMethod.variant === Semantic.ENode.FunctionSymbol
+            );
+
+            const operatorFunctype = this.sr.typeDefNodes.get(
+              elaboratedMethod.type
+            );
+            assert(
+              operatorFunctype.variant === Semantic.ENode.FunctionDatatype
+            );
+
+            // Create a callable expression that wraps the method with the this pointer
+            const callableExpr = this.sr.b.callableExpr(
+              elaboratedMethodId,
+              {
+                type: "method",
+                thisExprType: makeTypeUse(
+                  this.sr,
+                  leftTypeUse.type,
+                  EDatatypeMutability.Mut,
+                  EStorageClass.Ref,
+                  sourceloc
+                )[1],
+              },
+              {
+                type: "method",
+                thisExpr: leftId,
+              },
+              sourceloc
+            )[1];
+
+            // Apply implicit conversions for the right operand
+            const rightParam = operatorFunctype.parameters[0];
+            const convertedRight = Conversion.MakeConversionOrThrow(
+              this.sr,
+              rightId,
+              rightParam.type,
+              this.currentContext.constraints,
+              sourceloc,
+              Conversion.Mode.Implicit,
+              inference?.unsafe ?? false
+            );
+
+            assert(this.inFunction);
+            return this.sr.b.callExpr(
+              callableExpr,
+              [convertedRight],
+              this.inFunction,
+              sourceloc
+            );
+          } catch (e) {
+            // If overload resolution fails, fall through to default behavior
+            console.error(
+              "Operator overload resolution failed:",
+              e instanceof Error ? e.message : String(e)
+            );
+          }
+        }
+      }
+    }
+
+    // No user-defined operator on the left type. If this is a type the
+    // compiler is allowed to generate a comparison for, expand it right here,
+    // member by member, and recurse through compareElaboratedExprs for each
+    // pair -- so a member whose own type declares operator== uses it, and a
+    // member that is itself a plain struct expands again.
+    if (
+      operation === EBinaryOperation.Equal ||
+      operation === EBinaryOperation.NotEqual
+    ) {
+      const expanded = this.expandStructuralComparison(
+        leftId,
+        rightId,
+        operation,
+        sourceloc,
+        inference
+      );
+      if (expanded) {
+        return expanded;
+      }
+    }
+
+    // Fall through to default comparison behavior
+    const resolvedLeftTypeUseId = this.resolveAlias(left.type);
+    const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
+      resolvedLeftTypeUseId
+    );
+    const resolvedRightTypeUseId = this.resolveAlias(_right2.type);
+    const resolvedRightTypeUse = this.sr.typeUseNodes.get(
+      resolvedRightTypeUseId
+    );
+    const leftTypeId = resolvedLeftTypeUse.type;
+    const rightTypeId = resolvedRightTypeUse.type;
+    const leftType = this.sr.typeDefNodes.get(leftTypeId);
+    const rightType = this.sr.typeDefNodes.get(rightTypeId);
+    const leftIsFloat = Conversion.isFloat(this.sr, leftTypeId);
+    const rightIsFloat = Conversion.isFloat(this.sr, rightTypeId);
+    const leftIsInteger = Conversion.isIntegerById(this.sr, leftTypeId);
+    const rightIsInteger = Conversion.isIntegerById(this.sr, rightTypeId);
+
+    if (leftIsFloat && rightIsInteger) {
+      const targetTypeUseId = makeTypeUse(
+        this.sr,
+        leftTypeId,
+        EDatatypeMutability.Const,
+        EStorageClass.Value,
+        sourceloc
+      )[1];
+      rightId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        rightId,
+        targetTypeUseId,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Explicit,
+        inference?.unsafe ?? false
+      );
+    } else if (rightIsFloat && leftIsInteger) {
+      const targetTypeUseId = makeTypeUse(
+        this.sr,
+        rightTypeId,
+        EDatatypeMutability.Const,
+        EStorageClass.Value,
+        sourceloc
+      )[1];
+      leftId = Conversion.MakeConversionOrThrow(
+        this.sr,
+        leftId,
+        targetTypeUseId,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Explicit,
+        inference?.unsafe ?? false
+      );
+    }
+
+    if (
+      operation === EBinaryOperation.Equal ||
+      operation === EBinaryOperation.NotEqual
+    ) {
+      if (
+        (leftType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          leftType.variant === Semantic.ENode.TaggedUnionDatatype) &&
+        (rightType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+          rightType.variant === Semantic.ENode.TaggedUnionDatatype)
+      ) {
+        const leftMembers = new Set(
+          leftType.variant === Semantic.ENode.TaggedUnionDatatype
+            ? leftType.members.map((m) => m.type)
+            : leftType.members
+        );
+        const rightMembers = new Set(
+          rightType.variant === Semantic.ENode.TaggedUnionDatatype
+            ? rightType.members.map((m) => m.type)
+            : rightType.members
+        );
+
+        if (leftMembers.difference(rightMembers).size !== 0) {
+          throw new CompilerError(
+            `Cannot compare unions of incompatible types '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedLeftTypeUseId)}' and '${Semantic.serializeTypeUseWithAliasAKA(this.sr, resolvedRightTypeUseId)}'`,
+            sourceloc,
+            HazeErrorCode.CannotCompareUnionsIncompatibleTypesAnd
+          );
+        }
+
+        // let a: (int | null | none)
+        // let b: (int | null | none)
+        // a == b
+        // Should turn into
+        // ((a is int && b is int) && a == b) || ((a is null && b is null) && a == b) || ((a is none && b is none) && a == b)
+        // a != b
+        // Should turn into
+        // ((a is int && b is int) && a != b) || ((a is null && b is null) && a != b) || ((a is none && b is none) && a != b)
+
+        const members = leftMembers;
+        const comparisons: Semantic.ExprId[] = [];
+        for (const member of members) {
+          // This is (a is int && b is int)
+          const narrowingCondition = this.sr.b.binaryExpr(
+            this.sr.b.unionTagCheckTypeIs(leftId, member)[1],
+            EBinaryOperation.BoolAnd,
+            this.sr.b.unionTagCheckTypeIs(rightId, member)[1],
+            sourceloc
+          )[1];
+
+          const constraints = this.currentContext.constraints.clone();
+          this.buildLogicalConstraintSet(constraints, narrowingCondition);
+
+          // This is ((...) && a == b) or ((...) && a != b)
+          const actualCondition = this.sr.b.binaryExpr(
+            Conversion.MakeConversionOrThrow(
+              this.sr,
+              leftId,
+              member,
+              constraints,
+              sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            ),
+            operation,
+            Conversion.MakeConversionOrThrow(
+              this.sr,
+              rightId,
+              member,
+              constraints,
+              sourceloc,
+              Conversion.Mode.Implicit,
+              false
+            ),
+            sourceloc
+          )[1];
+
+          // This is ((...) && ...)
+          comparisons.push(
+            this.sr.b.binaryExpr(
+              narrowingCondition,
+              EBinaryOperation.BoolAnd,
+              actualCondition,
+              sourceloc
+            )[1]
+          );
+        }
+
+        // Now combine all of those using OR
+        return this.sr.b.binaryOr(comparisons, sourceloc);
+      }
+    }
+
+    return this.sr.b.binaryExpr(
+      leftId,
+      operation,
+      rightId,
+      sourceloc
     );
   }
 
