@@ -14,6 +14,26 @@ namespace ffi {
     // positional parameter list (hzui_define_div_element_t /
     // hzui_define_canvas_element_t below) -- named fields at the call site
     // are self-documenting and can't silently shift out of order.
+    // Checks a stackref's witness once and hands back the bare address it
+    // guards. The one way to give C a pointer to stack storage: `let stackref`
+    // deliberately cannot become a `ref` (H4001), because in general it may
+    // point at storage the GC neither manages nor keeps alive.
+    //
+    // Only sound when the callee cannot outlive the borrow. Every use here is
+    // Clay calling straight back into us, synchronously, from inside one
+    // Clay_RenderClayCommands call, with the storage owned by the frame that
+    // made that call -- see Context.render. The witness check catches a
+    // stackref whose scope is already gone at the moment of the borrow; it
+    // cannot follow the raw pointer afterwards, so the result must never be
+    // stored anywhere that outlives the call.
+    fn extractRawUnsafeStackrefPointer<T>(r: stackref T): cptr :: final {
+        do unsafe {
+            let p = none as cptr;
+            __c__("p = (void*)HZSTD_STACKREF_DEREF(char, r);");
+            return p;
+        };
+    }
+
     extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, config: hzui_define_div_element_t): void :: final;
     extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
     extern C noemit fn hzui_clay_define_canvas_element(config: hzui_define_canvas_element_t): void :: final;
@@ -483,6 +503,15 @@ export opaque ref struct Context {
     // meant for this instance would silently operate on whichever instance
     // happened to be constructed most recently, process-wide.
     clayContextPtr: cptr;
+    // Scratch buffer for the per-frame clip walk, owned by the Context rather
+    // than rebuilt inside render(). A fresh `[]ClipEntry` per frame is not one
+    // allocation but five: the initial buffer plus the whole doubling ladder as
+    // the walk fills it (measured on a real session: 192 -> 384 -> 768 -> 1536
+    // -> 3072 bytes, every single frame, plus ~5.8 KB of copying and five dead
+    // buffers handed to the GC). clear() only resets the length, so after the
+    // first frame this reuses the capacity it already grew to and allocates
+    // nothing at all.
+    clipScratch: mut []ClipEntry = [];
 
     fn constructor(opts: ContextOpts) {
         let measureTextBox: ref Box<MeasureTextCB> = { value: opts.measureText };
@@ -905,29 +934,27 @@ export opaque ref struct Context {
         // Clay, so layout is entirely unaffected by overflow. Costs nothing
         // for a tree that uses no overflow at all: the walk stops recording
         // the moment it finds no clipping ancestor.
-        let clipEntries: mut []ClipEntry = [];
+        let clipEntries = this.clipScratch;
+        clipEntries.clear();
         let unclipped: ResolvedClip = {};
         collectClipsRecursive(element, unclipped, clipEntries);
 
-        let dispatch = DispatchState {
+        // DispatchState is a value, and it lives on THIS frame: the trampolines
+        // below only ever run while Clay_RenderClayCommands is on the stack
+        // right here, so there is nothing for a heap allocation to outlive.
+        let stackref dispatch = DispatchState {
             callbacks: callbacks,
             clips: clipEntries,
         };
 
         do unsafe {
-            // `dispatch` is already a single heap pointer -- DispatchState is
-            // a plain (non-inline) struct, so the local itself is a
-            // reference, not a value copy. No need to box each callback
-            // separately just to get something cptr-sized to hand to Clay:
-            // the same one pointer, reinterpreted by each trampoline (see
-            // renderFilledRectTrampoline etc.) back into DispatchState and
-            // read straight off the matching field, covers every
-            // registration below. Safe for the GC too -- `dispatch` stays
-            // reachable via this local for exactly as long as
-            // Clay_RenderClayCommands (below) can still call back into it,
-            // since it's all one synchronous call stack.
-            let callbacksPtr = none as cptr;
-            __c__("callbacksPtr = dispatch;");
+            // One pointer, reinterpreted by each trampoline (see
+            // renderFilledRectTrampoline etc.) back into DispatchState and read
+            // straight off the matching field, covers every registration below
+            // -- no need to box each callback separately just to get something
+            // cptr-sized. Clay keeps nothing after the call returns, and the
+            // storage it points at is this frame's own.
+            let callbacksPtr = ffi.extractRawUnsafeStackrefPointer(dispatch);
 
             ffi.Clay_RenderClayCommands({
                 renderFilledRect: renderFilledRectTrampoline,
@@ -1057,7 +1084,10 @@ export struct ResolvedClip {
 // userData, so a draw callback can find its clip without any string work.
 // Safe to hold: these elements are kept alive for the whole frame by the
 // tree being rendered (see the DivElement branch of processTreeElement).
-struct ClipEntry {
+// Exported only because Context caches a []ClipEntry as its per-frame scratch
+// buffer (see Context.clipScratch), and the cross-module shim generator needs
+// to name the field's type even though `opaque` hides it from consumers.
+export struct ClipEntry {
     elementPtr: cptr;
     clip: ResolvedClip;
 }
@@ -1186,14 +1216,14 @@ fn collectClipsRecursive(
 // callbacks plus this frame's resolved clips. A plain (non-inline) struct, so
 // one pointer to it is all every trampoline needs -- same trick, and same
 // lifetime reasoning, as passing RenderCallbacks itself used to be.
-ref struct DispatchState {
+struct DispatchState {
     callbacks: RenderCallbacks;
     clips: []ClipEntry;
 }
 
 fn setClipTrampoline(userdata: cptr, elementPtr: cptr): void {
     do unsafe {
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         // A command with no userData belongs to no element (e.g. a spacer)
         // and is never clipped; lookupClip returns an inactive clip for it.
@@ -1206,7 +1236,7 @@ fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, hei
         // userdata is the RenderCallbacks ref struct itself (already a single
         // heap pointer -- see render()'s own comment), not a box -- no
         // separate allocation needed to reinterpret it back.
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         state.callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
     };
@@ -1214,7 +1244,7 @@ fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, hei
 
 fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
     do unsafe {
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         state.callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
     };
@@ -1222,7 +1252,7 @@ fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height:
 
 fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
     do unsafe {
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         state.callbacks.renderText(element);
     };
@@ -1246,7 +1276,7 @@ fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_
 // no union/tag needed to tell it apart from Div/Text.
 fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
 
         let canvasElement: ui_elements.CanvasElement = uninitialized;
@@ -1272,7 +1302,7 @@ fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w:
 // let Haze's own upcast turn that into the `Element` union `callable` wants.
 fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
-        let state: DispatchState = uninitialized;
+        let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
 
         if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_div {

@@ -59,7 +59,24 @@ export struct CommandEncoder {
                 __c__("timestampPtr = timestampRaw;");
             }
 
-            let stackref d = toFFI(descriptor, depthStencilPtr, timestampPtr);
+            // The attachments go into a fixed buffer on this frame instead of a
+            // freshly heap-allocated array per pass -- see ColorAttachmentBuffer.
+            // Left uninitialized on purpose: fillColorAttachments writes every
+            // slot up to the count it returns, and wgpu only ever reads that
+            // many -- zeroing 8 attachments per frame to overwrite one or two
+            // of them would be pure waste.
+            let colorAttachmentBuffer: ColorAttachmentBuffer = uninitialized;
+            let stackref colorAttachments = colorAttachmentBuffer;
+            let colorAttachmentCount = fillColorAttachments(colorAttachments, descriptor.colorAttachments);
+            let colorAttachmentsRaw = ffi.extractRawUnsafeStackrefPointer(colorAttachments);
+
+            let stackref d = toFFI(
+                descriptor,
+                colorAttachmentsRaw,
+                colorAttachmentCount,
+                depthStencilPtr,
+                timestampPtr,
+            );
             let dPtr: ref ffi.WGPURenderPassDescriptor = uninitialized;
             let dRaw = ffi.extractRawUnsafeStackrefPointer(d);
             __c__("dPtr = dRaw;");

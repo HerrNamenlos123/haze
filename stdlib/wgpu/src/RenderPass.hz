@@ -124,26 +124,54 @@ fn fromFFI(v: ffi.WGPURenderPassDescriptor): RenderPassDescriptor :: final {
     return c;
 }
 
-// The two pointer-valued fields are passed IN rather than built here: whoever
-// makes the wgpu call has to own that storage for the duration of the call, so
-// it cannot be created in this function's frame (see CommandEncoder.beginRenderPass,
-// the only caller, and borrowForCall in utils.hz for the full argument).
+// WebGPU's own ceiling on color attachments per render pass (the spec's
+// maxColorAttachments default, which wgpu enforces) -- so a fixed buffer this
+// size can always hold a legal pass, and anything larger was already invalid.
+const comptime maxColorAttachments = 8;
+
+// A stack-resident buffer for one render pass's color attachments. This exists
+// so the attachment array does not have to be a heap `[]ffi.WGPU...` rebuilt
+// every frame: `entries` lowers to a plain C array inline in this struct, so a
+// `let stackref` of one puts the whole thing on the caller's frame, and its
+// address is what WGPURenderPassDescriptor.colorAttachments wants.
+export struct ColorAttachmentBuffer {
+    entries: [maxColorAttachments]ffi.WGPURenderPassColorAttachment;
+}
+
+// Converts each attachment straight into `buffer`, in place. Returns the count
+// so the caller can hand it to toFFI alongside the buffer's address.
+fn fillColorAttachments(buffer: mut stackref ColorAttachmentBuffer, attachments: []RenderPassColorAttachment): usize :: final {
+    assert(
+        attachments.length <= maxColorAttachments,
+        f"render pass has {attachments.length} color attachments, but WebGPU allows at most {maxColorAttachments}",
+    );
+    for (let i = 0; i < attachments.length; i++) {
+        buffer.entries[i] = toFFI(attachments[i]);
+    }
+    assert(attachments.length >= 0);
+    return attachments.length;
+}
+
+// Every pointer this descriptor carries is passed IN rather than built here:
+// whoever makes the wgpu call has to own that storage for the duration of the
+// call, so none of it can be created in this function's frame (see
+// CommandEncoder.beginRenderPass, the only caller, and
+// ffi.extractRawUnsafeStackrefPointer in utils.hz for the full argument).
 fn toFFI(
     v: RenderPassDescriptor,
+    colorAttachments: cptr,
+    colorAttachmentCount: usize,
     depthStencilAttachment: ref ffi.WGPURenderPassDepthStencilAttachment | none,
     timestampWrites: ref ffi.WGPURenderPassTimestampWrites | none,
 ): ffi.WGPURenderPassDescriptor :: final {
-    do unsafe {
-        let colorAttachmentArray = arrayToFFI<RenderPassColorAttachment, ffi.WGPURenderPassColorAttachment>(v.colorAttachments);
-        return ffi.WGPURenderPassDescriptor {
-            nextInChain: none,
-            label: toOptionalFFI(v.debugLabel),
-            colorAttachmentCount: colorAttachmentArray.length,
-            colorAttachments: colorAttachmentArray.data,
-            depthStencilAttachment: depthStencilAttachment,
-            occlusionQuerySet: v.occlusionQuerySet ? v.occlusionQuerySet.handle : none,
-            timestampWrites: timestampWrites,
-        };
+    return ffi.WGPURenderPassDescriptor {
+        nextInChain: none,
+        label: toOptionalFFI(v.debugLabel),
+        colorAttachmentCount: colorAttachmentCount,
+        colorAttachments: colorAttachments,
+        depthStencilAttachment: depthStencilAttachment,
+        occlusionQuerySet: v.occlusionQuerySet ? v.occlusionQuerySet.handle : none,
+        timestampWrites: timestampWrites,
     };
 }
 
