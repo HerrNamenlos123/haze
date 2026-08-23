@@ -263,6 +263,10 @@ export namespace Lowered {
     envValue: EnvBlockValue;
     function: FunctionId;
     type: TypeUseId;
+    // The env block may live in the enclosing statement's frame: the
+    // callable is a lambda literal passed to a parameter its callee never
+    // retains (see Semantic.CallableExpr.stackEnv).
+    stackEnv: boolean;
   };
 
   export type DereferenceExpr = {
@@ -2150,6 +2154,7 @@ export function lowerExpr(
         function: callableFunc,
         envType: envType,
         envValue: envValue,
+        stackEnv: expr.stackEnv === true,
         type: lowerTypeUse(lr, expr.type),
         functionType: makeLowerTypeUse(
           lr,

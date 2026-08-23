@@ -962,6 +962,24 @@ implementation refined or extended the design; each is normative from here on.
   field. Refs, dynamic arrays and reactive cells are shared (their field is the pointer). Variable
   hoisting (the old "captured variable lives on the heap and is shared") is gone, and so is the
   per-capture `HZSTD_HOIST` cell an earlier cut of this implementation used.
+- **`immediate` callable parameters and non-escaping inference (2026-08-23).** `fn f(cb:
+  immediate () => T)` is a verified contract: inside `f`, `cb` may only be called, tested (`if cb`,
+  `cb is none`), forwarded to another non-retaining parameter, or captured by an in-place
+  (`let stackref`) closure; storing it, returning it, assigning it to a local, capturing it in a
+  heap closure, or handing it to a callable value is H7196. The same property is *inferred*
+  (compiler-internal `nonEscaping` flag, per parameter, finalised when the body is done; recursion
+  counts as retaining) for every un-annotated callable parameter, during the normal depth-first
+  elaboration pass. A lambda literal passed to either kind of parameter gets its env block in the
+  caller's statement frame (`CallableExpr.stackEnv`): no allocation. Optional callables
+  (`cb?: immediate () => T`) are supported; `immediate` is a contextual keyword (still an
+  identifier elsewhere) and is exported in signatures as part of the contract.
+- **Narrowing and closures.** A lambda body starts from the captured variables' *declared* types:
+  whatever was narrowed in the enclosing function is dropped, because nobody knows when the
+  closure runs and what the variable holds by then. The one exception is a lambda literal passed
+  to an `immediate` parameter, which runs inside the call: the creation-point narrowings hold in
+  its body (this is why `ui.div(props, () => { ... })` can use a narrowed `element` inside).
+  Lambda literals are therefore never overload-decisive up front; they are elaborated once the
+  callee is known and promoted on retry if generic deduction or overload resolution needs them.
 - **Assigning to a by-value capture inside the closure is an error** (H7189): the write would
   only touch the copy. Share it through a stackref/ref instead. Assigning to a variable in the
   declaring scope *after* a closure captured it by value is a **warning** (H7190): the closure may

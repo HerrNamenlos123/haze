@@ -1806,6 +1806,25 @@ export namespace Conversion {
           sr.typeUseNodes.get(sr.e.resolveAlias(m)).type !==
           sr.typeUseNodes.get(resolvedSourceTypeUseId).type
         ) {
+          // A callable member still accepts a compatible callable -- a pure
+          // lambda into an `(() => int) | none` slot is the everyday case
+          // (`f?: () => int`); purity is inferred per lambda, so the type
+          // ids rarely coincide even when the signatures do.
+          const mDef = sr.typeDefNodes.get(sr.typeUseNodes.get(sr.e.resolveAlias(m)).type);
+          const sDef = sr.typeDefNodes.get(sr.typeUseNodes.get(resolvedSourceTypeUseId).type);
+          if (
+            mDef.variant === Semantic.ENode.CallableDatatype &&
+            sDef.variant === Semantic.ENode.CallableDatatype
+          ) {
+            const fType = sr.typeDefNodes.get(sDef.functionType);
+            const tType = sr.typeDefNodes.get(mDef.functionType);
+            assert(fType.variant === Semantic.ENode.FunctionDatatype);
+            assert(tType.variant === Semantic.ENode.FunctionDatatype);
+            return (
+              checkFunctionDatatypeCompatibility(sr, fType, "", tType, "") ===
+              "success"
+            );
+          }
           return false;
         }
 
@@ -2402,9 +2421,42 @@ export namespace Conversion {
       }
 
       case "value-to-union": {
+        // A callable accepted into a member of a different (compatible)
+        // callable type first takes the member's type, so the union slot is
+        // filled with the exact C struct the member declares.
+        let valueId = sourceExprId;
+        {
+          const targetDef = sr.typeDefNodes.get(
+            sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeId)).type
+          );
+          if (targetDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
+            const memberTypeId = sr.e.resolveAlias(targetDef.members[conversionPlan.index]);
+            const memberDef = sr.typeDefNodes.get(sr.typeUseNodes.get(memberTypeId).type);
+            const srcDef = sr.typeDefNodes.get(
+              sr.typeUseNodes.get(sr.e.resolveAlias(sourceExpr.type)).type
+            );
+            if (
+              memberDef.variant === Semantic.ENode.CallableDatatype &&
+              srcDef.variant === Semantic.ENode.CallableDatatype &&
+              memberDef !== srcDef
+            ) {
+              valueId = sr.b.addExpr(sr, {
+                variant: Semantic.ENode.ExplicitCastExpr,
+                instanceIds: sourceExpr.instanceIds,
+                expr: sourceExprId,
+                type: memberTypeId,
+                integerNarrowingRange: null,
+                sourceloc: sourceloc,
+                isTemporary: sourceExpr.isTemporary,
+                flow: sourceExpr.flow,
+                writes: sourceExpr.writes,
+              })[1];
+            }
+          }
+        }
         return sr.b.addExpr(sr, {
           variant: Semantic.ENode.ValueToUnionCastExpr,
-          expr: sourceExprId,
+          expr: valueId,
           instanceIds: sourceExpr.instanceIds,
           type: targetTypeId,
           index: conversionPlan.index,
@@ -2445,6 +2497,8 @@ export namespace Conversion {
       }
 
       case "union-tag-check": {
+        // Testing an optional callable parameter (`if f`) does not retain it.
+        sr.e.consumeParamUse(sourceExprId);
         return sr.b.addExpr(sr, {
           variant: Semantic.ENode.UnionTagCheckExpr,
           comparisonTypesAnd: conversionPlan.comparisonTypesAnd,

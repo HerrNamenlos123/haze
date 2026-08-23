@@ -45,6 +45,7 @@ import {
   type ASTInlineCStatement,
   type ASTRefTypeExpr,
   type ASTStackrefTypeExpr,
+  type ASTImmediateTypeExpr,
   type ASTLambda,
   type ASTLambdaExpr,
   type ASTLiteralExpr,
@@ -1037,6 +1038,19 @@ class ASTBuilder extends HazeParserListener {
         type: produced[0] as ASTExpr,
         sourceloc: this.loc(ctx),
       } satisfies ASTStackrefTypeExpr);
+      return;
+    }
+
+    if (ctx.IMMEDIATE()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified immediate stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "ImmediateTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTImmediateTypeExpr);
       return;
     }
 

@@ -979,7 +979,7 @@
         },
         {
           "name": "storage.modifier.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(mut|const|ref|stackref|nodiscard)\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(mut|const|ref|stackref|immediate|nodiscard)\\b"
         },
         {
           "name": "keyword.operator.expression.typeof.haze",

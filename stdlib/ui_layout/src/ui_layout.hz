@@ -700,7 +700,7 @@ export opaque ref struct Context {
 
             let renderChildren = () => {
                 let i = 0;
-                for child in element.children {
+                for child in divElement.children {
                     this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
                     if spaceBetween && i < lastIndex {
                         defineSpacer(elementId + "/__spacer_" + f"{i}", mainAxisIsWidth);

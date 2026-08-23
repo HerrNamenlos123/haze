@@ -126,6 +126,213 @@ export class SemanticElaborator {
   // element variable is captured where an element is actually taken out of
   // the pack (`pack[i]`, `for comptime v in pack`).
   packAccessCrossedLambda = new Map<Semantic.ExprId, Collect.ScopeId>();
+
+  // ── Escape tracking for callable parameters ───────────────────────────────
+  //
+  // Decides, during the one depth-first elaboration pass, whether a callable
+  // parameter can be retained by the function that receives it. A use of the
+  // parameter is recorded the moment its SymbolValueExpr is produced and is
+  // *consumed* again by the few constructs that provably do not retain it:
+  // being the callee of a call, being forwarded to a parameter that is
+  // `immediate` or already known non-escaping, or being captured by a lambda
+  // that is itself built in place (`let stackref`) or passed to such a
+  // parameter. Whatever is still recorded when the body is done is an
+  // escape: assignment to a local, storage into a field/array, return, a
+  // heap closure capture, a call through a callable value, __c__, ...
+  //
+  // `immediate` parameters must end with no escapes (error otherwise); for
+  // every other callable parameter the result is the inferred, weaker,
+  // compiler-internal `nonEscaping` flag. Both let a call site build a
+  // lambda literal's env block on the stack (CallableExpr.stackEnv).
+  paramUses = new Map<Semantic.SymbolId, Map<Semantic.ExprId, SourceLoc>>();
+  lambdaCaptureUses = new Map<Semantic.ExprId, Semantic.ExprId[]>();
+
+  isCallableishType(typeUseId: Semantic.TypeUseId): boolean {
+    const use = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const def = this.sr.typeDefNodes.get(use.type);
+    if (def.variant === Semantic.ENode.CallableDatatype) {
+      return true;
+    }
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      return def.members.some((m) => this.isCallableishType(m));
+    }
+    if (def.variant === Semantic.ENode.TaggedUnionDatatype) {
+      return def.members.some((m) => this.isCallableishType(m.type));
+    }
+    return false;
+  }
+
+  isTrackedCallableParam(variableId: Semantic.SymbolId): boolean {
+    const v = this.sr.symbolNodes.get(variableId);
+    return (
+      v.variant === Semantic.ENode.VariableSymbol &&
+      v.variableContext === EVariableContext.FunctionParameter &&
+      v.type !== null &&
+      v.name !== "this" &&
+      this.isCallableishType(v.type)
+    );
+  }
+
+  recordParamUse(variableId: Semantic.SymbolId, exprId: Semantic.ExprId, loc: SourceLoc) {
+    let uses = this.paramUses.get(variableId);
+    if (!uses) {
+      uses = new Map();
+      this.paramUses.set(variableId, uses);
+    }
+    uses.set(exprId, loc);
+  }
+
+  // The parameter SymbolValueExpr behind `exprId`, looking through the
+  // wrappers a use may have picked up (narrowing casts of an optional
+  // callable, union wrapping, dereference, parentheses).
+  private paramUseBehind(exprId: Semantic.ExprId): { variable: Semantic.SymbolId; chain: Semantic.ExprId[] } | null {
+    let id = exprId;
+    // The use was recorded on whatever expression the symbol lookup
+    // produced -- possibly already a narrowing cast around the raw symbol
+    // value -- so every id on the way down may be the recorded one.
+    const chain: Semantic.ExprId[] = [];
+    for (let guard = 0; guard < 16; guard++) {
+      chain.push(id);
+      const e = this.sr.exprNodes.get(id);
+      switch (e.variant) {
+        case Semantic.ENode.SymbolValueExpr: {
+          const sym = this.sr.symbolNodes.get(e.symbol);
+          if (sym.variant === Semantic.ENode.VariableSymbol && this.paramUses.has(e.symbol)) {
+            return { variable: e.symbol, chain };
+          }
+          return null;
+        }
+        case Semantic.ENode.UnionToValueCastExpr:
+        case Semantic.ENode.UnionToUnionCastExpr:
+        case Semantic.ENode.ValueToUnionCastExpr:
+        case Semantic.ENode.ExplicitCastExpr:
+        case Semantic.ENode.DereferenceExpr:
+          id = e.expr;
+          continue;
+        default:
+          return null;
+      }
+    }
+    return null;
+  }
+
+  consumeParamUse(exprId: Semantic.ExprId) {
+    const found = this.paramUseBehind(exprId);
+    if (found) {
+      const uses = this.paramUses.get(found.variable);
+      for (const id of found.chain) {
+        uses?.delete(id);
+      }
+    }
+  }
+
+  // The lambda literal behind `exprId` (through union wrapping/parentheses),
+  // or null if the argument is not a literal closure.
+  callableLiteralBehind(exprId: Semantic.ExprId): Semantic.ExprId | null {
+    let id = exprId;
+    for (let guard = 0; guard < 16; guard++) {
+      const e = this.sr.exprNodes.get(id);
+      if (e.variant === Semantic.ENode.CallableExpr) {
+        return e.envType?.type === "lambda" ? id : null;
+      }
+      if (
+        e.variant === Semantic.ENode.ValueToUnionCastExpr ||
+        e.variant === Semantic.ENode.UnionToUnionCastExpr ||
+        e.variant === Semantic.ENode.ExplicitCastExpr
+      ) {
+        id = e.expr;
+        continue;
+      }
+      return null;
+    }
+    return null;
+  }
+
+  // A lambda literal that provably cannot be retained (built in place, or
+  // handed to a non-retaining parameter): its captures of callable
+  // parameters are not escapes either.
+  consumeLambdaCaptures(lambdaExprId: Semantic.ExprId) {
+    const uses = this.lambdaCaptureUses.get(lambdaExprId);
+    if (!uses) {
+      return;
+    }
+    for (const useId of uses) {
+      this.consumeParamUse(useId);
+    }
+  }
+
+  calleeParamIsImmediate(callee: Semantic.FunctionSymbol, index: number): boolean {
+    return callee.parameterImmediate?.[index] === true;
+  }
+
+  // Does parameter `index` of `callee` promise not to retain its argument?
+  calleeParamIsNonRetaining(callee: Semantic.FunctionSymbol, index: number): boolean {
+    if (this.calleeParamIsImmediate(callee, index)) {
+      return true;
+    }
+    const name = callee.parameterNames[index];
+    if (name === undefined) {
+      return false;
+    }
+    for (const pId of callee.parameterSymbols) {
+      const p = this.sr.symbolNodes.get(pId);
+      if (p.variant !== Semantic.ENode.VariableSymbol || p.name !== name) {
+        continue;
+      }
+      // Inferred: only trustworthy once the callee's body is done (a callee
+      // still being elaborated -- recursion -- counts as retaining).
+      return callee.escapeAnalysisDone === true && p.nonEscaping === true;
+    }
+    return false;
+  }
+
+  // Called for every argument list handed to a known function: consumes the
+  // uses that are forwarded to non-retaining parameters and marks lambda
+  // literals in those positions as stack-env closures.
+  noteCallArguments(callee: Semantic.FunctionSymbol | undefined, args: Semantic.ExprId[]) {
+    if (!callee) {
+      return;
+    }
+    args.forEach((argId, i) => {
+      if (!this.calleeParamIsNonRetaining(callee, i)) {
+        return;
+      }
+      this.consumeParamUse(argId);
+      const literalId = this.callableLiteralBehind(argId);
+      if (literalId !== null) {
+        const literal = this.sr.exprNodes.get(literalId);
+        assert(literal.variant === Semantic.ENode.CallableExpr);
+        literal.stackEnv = true;
+        this.consumeLambdaCaptures(literalId);
+      }
+    });
+  }
+
+  // Runs once the function body is elaborated: fixes every callable
+  // parameter's `nonEscaping`, and rejects an `immediate` one that escaped.
+  finalizeEscapeAnalysis(symbol: Semantic.FunctionSymbol) {
+    for (const pId of symbol.parameterSymbols) {
+      const p = this.sr.symbolNodes.get(pId);
+      if (p.variant !== Semantic.ENode.VariableSymbol) {
+        continue;
+      }
+      const uses = this.paramUses.get(pId);
+      this.paramUses.delete(pId);
+      if (!this.isTrackedCallableParam(pId)) {
+        continue;
+      }
+      const remaining = uses ? [...uses.entries()] : [];
+      p.nonEscaping = remaining.length === 0;
+      if (p.immediate && remaining.length > 0) {
+        throw new CompilerError(
+          `'${p.name}' is an 'immediate' parameter: it may only be called, forwarded to another 'immediate' parameter, or captured by an in-place ('let stackref') closure -- this use would let it outlive the call`,
+          remaining[0][1],
+          HazeErrorCode.ImmediateParameterEscapes
+        );
+      }
+    }
+    symbol.escapeAnalysisDone = true;
+  }
   // Pack element variable -> the pack's source name and element index, so a
   // captured element can be re-resolved as `pack[i]` (it has no name of its
   // own) when captures are propagated through nested lambdas.
@@ -1702,17 +1909,28 @@ export class SemanticElaborator {
     let calledExprId: Semantic.ExprId;
     try {
       [calledExpr, calledExprId] = resolveCalledExpr();
+      // Being called is the one use of a callable parameter that never
+      // retains it.
+      this.consumeParamUse(calledExprId);
     } catch (e) {
-      if (!(e instanceof GenericDeductionIncompleteError)) {
+      // Lambda literals are never decisive up front (they are elaborated
+      // once the callee -- and so whether their parameter is `immediate` --
+      // is known). Two situations still need them early: generic deduction
+      // with no other candidate for a parameter, and an overload set that
+      // only the closure's type can disambiguate. Promote and retry once.
+      const ambiguousOverload =
+        e instanceof CompilerError &&
+        e.code === HazeErrorCode.AmbiguousOverloadCandidates;
+      if (!(e instanceof GenericDeductionIncompleteError) && !ambiguousOverload) {
         throw e;
       }
 
-      // Generic deduction failed because it had no candidates for some parameter. If any
-      // argument was deferred specifically because it's a return-type-less closure, promote
-      // it to decisive now (eagerly elaborate it from its body, exactly as the decisive path
-      // above would have) and retry once. Closures deferred for other reasons (e.g. untyped
-      // anonymous struct literals) are left alone -- they have no body-inference fallback and
-      // promoting them would just relocate an unrelated, unfixable failure.
+      // Promote deferred closures to decisive now (eagerly elaborate them
+      // from their body, exactly as the decisive path above would have) and
+      // retry once. Arguments deferred for other reasons (e.g. untyped
+      // anonymous struct literals) are left alone -- they have no
+      // body-inference fallback and promoting them would just relocate an
+      // unrelated, unfixable failure.
       let promotedAny = false;
       callExpr.arguments.forEach((p, i) => {
         if (decisiveArguments[i].exprId !== null) {
@@ -1815,9 +2033,15 @@ export class SemanticElaborator {
           index < parameterTypes.length
             ? parameterTypes[index].type
             : undefined;
+        // A lambda literal handed to an `immediate` parameter runs inside
+        // the call: narrowings at the call site hold in its body.
+        const immediateCallable =
+          calledFunctionSymbol !== undefined &&
+          this.calleeParamIsImmediate(calledFunctionSymbol, index);
         const exprId = this.sr.e.expr(arg, {
           gonnaInstantiateStructWithType: paramType,
           unsafe: inference?.unsafe,
+          immediateCallable: immediateCallable,
         })[1];
         this.assertArgumentIsNotBarePack(exprId);
         return exprId;
@@ -1913,6 +2137,7 @@ export class SemanticElaborator {
         ftype.vararg,
         hasParameterPack
       );
+      this.noteCallArguments(calledFunctionSymbol, finalArgs);
 
       return this.sr.b.callExpr(
         calledExprId,
@@ -1953,6 +2178,7 @@ export class SemanticElaborator {
         calledExprType.vararg,
         hasParameterPack
       );
+      this.noteCallArguments(calledFunctionSymbol, actualArgs);
 
       if (
         calledFunctionSymbol?.envType?.type === "method" &&
@@ -2062,9 +2288,19 @@ export class SemanticElaborator {
         writes: e.writes,
       });
     }
-    if (calledExprType.variant === Semantic.ENode.PrimitiveDatatype) {
+    if (
+      calledExprType.variant === Semantic.ENode.PrimitiveDatatype ||
+      calledExprType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      calledExprType.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      // An optional callable (`cb: (() => void) | none`) must be narrowed
+      // first. Inside a lambda that is not passed to an `immediate`
+      // parameter, a narrowing from the enclosing function does not apply.
       throw new CompilerError(
-        `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, calledExpr.type)} is not callable`,
+        `Expression of type ${Semantic.serializeTypeUseWithAliasAKA(this.sr, calledExpr.type)} is not callable` +
+          (calledExprType.variant !== Semantic.ENode.PrimitiveDatatype
+            ? " (narrow it first; an enclosing narrowing does not reach into a closure unless the closure is passed to an 'immediate' parameter)"
+            : ""),
         callExpr.sourceloc,
         HazeErrorCode.ExpressionTypeNotCallable
       );
@@ -5979,7 +6215,7 @@ export class SemanticElaborator {
     parentSymbolId: Semantic.SymbolId | null,
     paramPackTypes: Semantic.TypeUseId[],
     env: Semantic.EnvBlockType,
-    args?: { bypassCache?: boolean }
+    args?: { bypassCache?: boolean; immediateClosure?: boolean }
   ): Semantic.SymbolId {
     const functionSignature = this.sr.symbolNodes.get(functionSignatureId);
     assert(functionSignature.variant === Semantic.ENode.FunctionSignature);
@@ -6000,7 +6236,14 @@ export class SemanticElaborator {
       pathEntry: pathEntry,
       genericsScope: func.functionScope || func.parentScope,
       currentScope: func.functionScope || func.parentScope,
-      constraints: this.currentContext.constraints,
+      // A lambda body (bypassCache is the lambda path) does not inherit the
+      // creation site's narrowings: nobody knows when it will run and what
+      // the captured variables hold by then. Unless it is a literal passed
+      // to an `immediate` parameter, which runs inside the call.
+      constraints:
+        args?.bypassCache && !args?.immediateClosure
+          ? ConstraintSet.empty()
+          : this.currentContext.constraints,
       instanceDeps: {
         instanceDependsOn: new Map(),
         structMembersDependOn: new Map(),
@@ -6073,6 +6316,9 @@ export class SemanticElaborator {
             parameterSymbols: new Set<Semantic.SymbolId>(),
             envType: null,
             parameterNames: func.parameters.map((p) => p.name),
+            parameterImmediate: func.parameters.map(
+              (p) => p.kind === "normal" && p.immediate
+            ),
             methodRequiredMutability: func.methodRequiredMutability,
             methodReceiverStorage: func.methodReceiverStorage,
             returnedDatatypes: new Set(),
@@ -6628,6 +6874,21 @@ export class SemanticElaborator {
                     const varSymId = this.elaborateVariableSymbolInScope(sId);
                     if (varSymId) {
                       symbol.parameterSymbols.add(varSymId);
+                      const collectedParam = func.parameters.find(
+                        (p) => p.kind === "normal" && p.name === varSymbol.name
+                      );
+                      if (collectedParam?.kind === "normal" && collectedParam.immediate) {
+                        const v = this.sr.symbolNodes.get(varSymId);
+                        assert(v.variant === Semantic.ENode.VariableSymbol);
+                        if (!v.type || !this.isCallableishType(v.type)) {
+                          throw new CompilerError(
+                            `'immediate' requires a callable (or optional callable) parameter, but '${v.name}' is '${v.type ? Semantic.serializeTypeUse(this.sr, v.type) : "?"}'`,
+                            collectedParam.sourceloc,
+                            HazeErrorCode.ImmediateOnNonCallable
+                          );
+                        }
+                        v.immediate = true;
+                      }
                     }
                   }
                 );
@@ -6647,6 +6908,7 @@ export class SemanticElaborator {
                 })
             );
             symbol.scope = scopeId;
+            this.finalizeEscapeAnalysis(symbol);
 
             if (func.name === "main" && parentSymbolId) {
               const modulePrefix = getModuleGlobalNamespaceName(
@@ -8698,6 +8960,7 @@ export class SemanticElaborator {
           kind: "normal",
           name: p.name,
           type: null,
+          immediate: p.immediate,
         };
       } else {
         const isolatedContext = Semantic.isolateElaborationContext(
@@ -8734,6 +8997,7 @@ export class SemanticElaborator {
           kind: "normal",
           name: p.name,
           type: type,
+          immediate: p.immediate,
         };
       }
     });
@@ -13084,6 +13348,10 @@ export class SemanticElaborator {
               srcExpr.envValue?.type === "lambda"
             ) {
               stackrefInit = "lambda";
+              // Built in place: capturing a callable parameter here does
+              // not let it outlive the frame (a stored stackref callable
+              // is witness-checked before its env is ever touched).
+              this.consumeLambdaCaptures(valueId);
             } else if (
               srcExpr.variant === Semantic.ENode.CallableExpr &&
               srcExpr.envValue?.type === "method"
@@ -14388,6 +14656,17 @@ export class SemanticElaborator {
         variable: capturedVariableId,
         value: rawValueId,
       });
+      // Capturing a callable parameter is an escape unless the lambda turns
+      // out to be non-retained itself (consumeLambdaCaptures).
+      if (this.isTrackedCallableParam(capturedVariableId)) {
+        this.recordParamUse(capturedVariableId, rawValueId, resultingExpr.sourceloc);
+        let list = this.lambdaCaptureUses.get(lambda);
+        if (!list) {
+          list = [];
+          this.lambdaCaptureUses.set(lambda, list);
+        }
+        list.push(rawValueId);
+      }
     }
   }
 
@@ -14742,6 +15021,10 @@ export class SemanticElaborator {
             }
             // else: no narrowing possible, leave resultingExprId as reactive
           }
+        }
+
+        if (this.isTrackedCallableParam(elaboratedSymbolId)) {
+          this.recordParamUse(elaboratedSymbolId, resultingExprId, sourceloc);
         }
 
         if (crossedLambdaScope) {
@@ -16143,7 +16426,7 @@ export class SemanticElaborator {
       functionSignature.parentSymbolId,
       [],
       envType,
-      { bypassCache: true }
+      { bypassCache: true, immediateClosure: inference?.immediateCallable === true }
     );
     const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
     assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
@@ -16189,7 +16472,10 @@ export class SemanticElaborator {
         );
         continue;
       }
-      this.expr(
+      // This synthetic re-resolution is not a use of the variable (the real
+      // one was recorded inside the lambda body); the capture it may add to
+      // an enclosing lambda is recorded by addCaptureToLambda as usual.
+      const [, transitiveId] = this.expr(
         Collect.makeExpr(this.sr.cc, {
           variant: Collect.ENode.SymbolValueExpr,
           genericArgs: [],
@@ -16198,6 +16484,7 @@ export class SemanticElaborator {
         })[1],
         undefined
       );
+      this.consumeParamUse(transitiveId);
     }
 
     // Now we know what is being captured, overwrite the env block of the function (globally unique so we can mutate it)
@@ -17430,15 +17717,13 @@ export function IsExprDecisiveForOverloadResolution(
     // on this very closure (e.g. a generic parameter that can only be deduced
     // from it), callExpr() will catch the resulting GenericDeductionIncompleteError
     // and promote it to decisive on retry — see isDeferredClosureArgument below.
+    // Never decisive: a lambda literal is elaborated only once the callee is
+    // resolved, because whether its parameter is `immediate` decides which
+    // narrowings its body may assume (see callExpr's elaborateCallingArguments).
+    // callExpr() promotes it on retry if generic deduction or overload
+    // resolution turns out to need it -- see isDeferredClosureArgument.
     case Collect.ENode.CallableExpr: {
-      const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
-      if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
-        return true;
-      }
-      const allParamsExplicit = funcSym.parameters.every(
-        (p) => p.kind !== "normal" || p.type !== null
-      );
-      return funcSym.returnType !== null && allParamsExplicit;
+      return false;
     }
 
     default:
@@ -17446,11 +17731,11 @@ export function IsExprDecisiveForOverloadResolution(
   }
 }
 
-// Identifies arguments that IsExprDecisiveForOverloadResolution deferred specifically because
-// they are closures with a missing return type and/or a missing parameter type (as opposed to
-// e.g. untyped anonymous struct literals, which are also deferred but have no body-inference
-// fallback and must never be promoted). Used by callExpr()'s promote-and-retry logic after a
-// failed generic deduction.
+// Identifies arguments that IsExprDecisiveForOverloadResolution deferred because they are
+// lambda literals (as opposed to e.g. untyped anonymous struct literals, which are also
+// deferred but have no body-inference fallback and must never be promoted). Used by
+// callExpr()'s promote-and-retry logic after a failed generic deduction or an ambiguous
+// overload set.
 function isDeferredClosureArgument(
   sr: Semantic.Context,
   exprId: Collect.ExprId
@@ -17459,15 +17744,5 @@ function isDeferredClosureArgument(
   if (expr.variant === Collect.ENode.ParenthesisExpr) {
     return isDeferredClosureArgument(sr, expr.expr);
   }
-  if (expr.variant !== Collect.ENode.CallableExpr) {
-    return false;
-  }
-  const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
-  if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
-    return false;
-  }
-  const hasInferredParam = funcSym.parameters.some(
-    (p) => p.kind === "normal" && p.type === null
-  );
-  return funcSym.returnType === null || hasInferredParam;
+  return expr.variant === Collect.ENode.CallableExpr;
 }

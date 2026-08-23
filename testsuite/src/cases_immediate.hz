@@ -1,0 +1,197 @@
+// ============================================================================
+// REGRESSION TESTS — `immediate` callable parameters and non-escaping
+// closure inference.
+//
+//   * `f: immediate () => T` is a contract: the callee invokes the callable
+//     synchronously inside its own body and never retains it. It is verified:
+//     the parameter may only be called, forwarded to another non-retaining
+//     parameter, tested (`if f`, `f is none`), or captured by an in-place
+//     (`let stackref`) closure. Storing it, returning it, assigning it to a
+//     local or capturing it in a heap closure is an error (H7196).
+//   * the same property is inferred (compiler-internal, weaker flag) for
+//     every un-annotated callable parameter whose body happens to satisfy it
+//   * a lambda literal handed to such a parameter gets its env block on the
+//     caller's stack: zero allocations per call
+//   * narrowing from the enclosing function reaches into a lambda body ONLY
+//     when the lambda is a literal argument to an `immediate` parameter --
+//     any other closure may run at an arbitrary later time, when the
+//     captured variable may hold anything again
+//   * `immediate` is a contextual keyword: still a valid identifier
+//
+// Per framework.hz, everything a running program can verify is bundled into
+// ONE compile-and-run case; each must-fail-to-compile rule gets its own.
+// ============================================================================
+
+namespace cases_immediate {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "immediate: calls, forwarding, optionals, in-place capture, inference, narrowing, no allocations",
+            """
+struct Foo { v: int; }
+fn run(f: immediate () => int): int { return f(); }
+fn runTwice(f: immediate () => int): int { return run(f) + run(f); }           // forward to immediate
+fn runOpt(f?: immediate () => int): int { if f { return f(); } return -1; }    // optional callable, tested then called
+fn runOptIs(f?: immediate () => int): int { if f is none { return -2; } return f(); }
+fn viaStackref(f: immediate () => int): int {
+    let stackref g = () => { return f() + 1; };                                // in-place capture is fine
+    return g();
+}
+fn inferred(f: () => int): int { return f(); }                                  // not annotated: inferred non-escaping
+fn inferredFwd(f: () => int): int { return inferred(f); }                       // forwarded to an inferred one
+fn stores(f: () => int): () => int { return f; }                                // escapes: heap as usual
+fn withArg(f: immediate (x: int) => int, x: int): int { return f(x) * 2; }
+fn count(values: ...): int { return values.length; }
+
+// ── 1. semantics ────────────────────────────────────────────────────────────
+fn t1() {
+    let a = 10;
+    let kept = stores(() => { return a; });
+    fmt.println(f"1: {run(() => { return a; })} {runTwice(() => { return a; })} {runOpt(() => { return a * 2; })} {runOpt()} {runOptIs(() => { return 7; })} {runOptIs()}");
+    fmt.println(f"1: {viaStackref(() => { return a; })} {inferred(() => { return a + 1; })} {inferredFwd(() => { return a + 2; })} {kept()} {withArg((x: int) => { return x + a; }, 5)}");
+}
+
+// ── 2. narrowing flows into an immediate lambda ─────────────────────────────
+fn t2() {
+    let x: Foo | none = Foo { v: 5 };
+    assert(x is Foo);
+    let r = run(() => { return x.v; });     // x is Foo inside: the call runs right now
+    let o = runOpt(() => { return x.v; });  // through an optional immediate parameter too
+    fmt.println(f"2: {r} {o}");
+}
+
+// ── 3. the non-immediate closure sees the declared type again ───────────────
+// (x is a value here, so the closure holds its own copy and keeps seeing Foo
+// at runtime -- the point is the TYPE rule: the body must re-narrow.)
+fn t3() {
+    let x: Foo | none = Foo { v: 5 };
+    assert(x is Foo);
+    let later = stores(() => { if x is Foo { return x.v; } return -1; });   // must re-narrow itself
+    fmt.println(f"3: {later()} {later()}");
+}
+
+// ── 5. `immediate` stays usable as an identifier ────────────────────────────
+struct Options { immediate: bool = false; }
+fn t5() {
+    let o = Options { immediate: true };
+    let immediate = 3;
+    fmt.println(f"5: {o.immediate} {immediate}");
+}
+
+fn main(): int {
+    t1(); t2(); t3(); t5();
+    return 0;
+}
+""",
+            """
+1: 10 20 20 -1 7 -2
+1: 11 11 12 10 30
+2: 5 5
+3: 5 5
+5: true 3
+""");
+
+        // The profiler writes its progress to stdout, so the allocation count
+        // is asserted rather than compared as output.
+        s.runExitCode(
+            "immediate / inferred non-escaping: a lambda literal argument allocates nothing",
+            """
+fn run(f: immediate () => int): int { return f(); }
+fn runOpt(f?: immediate () => int): int { if f { return f(); } return -1; }
+fn inferred(f: () => int): int { return f(); }
+fn withArg(f: immediate (x: int) => int, x: int): int { return f(x) * 2; }
+fn main(): int {
+    let a = 1;
+    let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+    let total = 0;
+    for (let i = 0; i < 50; i++) {
+        let b = i;
+        total = total + run(() => { return a + b; }) + inferred(() => { return b; }) + runOpt(() => { return b; }) + withArg((x: int) => { return x + b; }, 1);
+    }
+    let result = p.stop();
+    assert(total == 6275, "wrong total");
+    // The Profiler object itself is the one allocation inside the window.
+    assert(result.memoryInstrumentationFrames.length == 1, f"expected no closure allocations, got {result.memoryInstrumentationFrames.length - 1}");
+    return 0;
+}
+""",
+            0);
+
+        // ── Compile-time rules ──────────────────────────────────────────────
+        s.compileFails(
+            "immediate: storing the callable is an escape",
+            """
+ref struct Holder { f: (() => int) | none = none; }
+fn keep(h: ref Holder, f: immediate () => int) { h.f = f; }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);
+
+        s.compileFails(
+            "immediate: returning the callable is an escape",
+            """
+fn give(f: immediate () => int): () => int { return f; }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);
+
+        s.compileFails(
+            "immediate: assigning to a local is an escape",
+            """
+fn viaLocal(f: immediate () => int): int { let g = f; return g(); }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);
+
+        s.compileFails(
+            "immediate: capturing in a heap closure is an escape",
+            """
+fn stores(f: () => int): () => int { return f; }
+fn wrap(f: immediate () => int): () => int { return stores(() => { return f(); }); }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);
+
+        s.compileFails(
+            "immediate: forwarding to a parameter that retains is an escape",
+            """
+fn stores(f: () => int): () => int { return f; }
+fn fwd(f: immediate () => int): int { let k = stores(f); return k(); }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);
+
+        s.compileFails(
+            "immediate: only on callable parameters",
+            """
+fn f(x: immediate int): int { return x; }
+fn main(): int { return f(1); }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateOnNonCallable)]);
+
+        s.compileFails(
+            "immediate: only in parameter position",
+            """
+fn main(): int {
+    let g: immediate () => int = () => { return 1; };
+    return g();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ImmediateOnlyOnParameters)]);
+
+        s.compileFails(
+            "narrowing does not reach into a closure that is not immediately called",
+            """
+struct Foo { v: int; }
+fn stores(f: () => int): () => int { return f; }
+fn main(): int {
+    let x: Foo | none = Foo { v: 5 };
+    assert(x is Foo);
+    let later = stores(() => { return x.v; });
+    return later();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ExpressionTypeDoesNotHaveMemberCalled)]);
+    }
+}

@@ -308,6 +308,12 @@ export namespace Collect {
         // to be inferred from context during elaboration; see Elaborate.ts callableExpr().
         type: Collect.ExprId | null;
         optional: boolean;
+        // `immediate (..) => R`: the function promises to call this callable
+        // synchronously inside its own body and never retain it (verified in
+        // elaboration, see Elaborate.ts escape tracking). Lets a call site
+        // build the closure's env on the stack and lets narrowing flow into
+        // the lambda body.
+        immediate: boolean;
         defaultParameterValue: Collect.ExprId | null;
         sourceloc: SourceLoc;
       }
@@ -1687,6 +1693,11 @@ function collectSymbol(
           // type; a regular `fn` parameter always has one.
           assert(p.datatype !== null);
           let datatype = p.datatype;
+          let immediate = false;
+          if (datatype.variant === "ImmediateTypeExpr") {
+            immediate = true;
+            datatype = datatype.type;
+          }
           if (p.optional) {
             datatype = wrapASTTypeInNoneUnion(datatype);
           }
@@ -1696,6 +1707,7 @@ function collectSymbol(
             name: p.name,
             type: collectExpr(cc, datatype, args),
             optional: p.optional,
+            immediate: immediate,
             defaultParameterValue: p.defaultValue
               ? collectExpr(cc, p.defaultValue, args)
               : null,
@@ -2765,17 +2777,24 @@ function collectExpr(
               HazeErrorCode.LambdaFunctionsCannotHaveParameterPacks
             );
           }
+          let datatype = p.datatype;
+          let immediate = false;
+          if (datatype && datatype.variant === "ImmediateTypeExpr") {
+            immediate = true;
+            datatype = datatype.type;
+          }
           return {
             kind: "normal",
             name: p.name,
             optional: p.optional,
+            immediate: immediate,
             defaultParameterValue: p.defaultValue
               ? collectExpr(cc, p.defaultValue, args)
               : null,
             sourceloc: p.sourceloc,
             // null means the type is inferred from context; only valid for
             // kind === "closure" lambdas, enforced just below.
-            type: p.datatype ? collectExpr(cc, p.datatype, args) : null,
+            type: datatype ? collectExpr(cc, datatype, args) : null,
           };
         }),
         hasParamPack: false,
@@ -3211,6 +3230,17 @@ function collectExpr(
         modifier: ETypeModifier.Stackref,
         sourceloc: item.sourceloc,
       })[1];
+    }
+
+    // Parameter collection strips `immediate` into the parameter's flag
+    // before the type is collected; reaching it here means it was written
+    // somewhere it does not belong.
+    case "ImmediateTypeExpr": {
+      throw new CompilerError(
+        "'immediate' is only allowed on a parameter's type",
+        item.sourceloc,
+        HazeErrorCode.ImmediateOnlyOnParameters
+      );
     }
 
     // =================================================================================================================

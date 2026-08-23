@@ -2151,6 +2151,8 @@ export class SemanticBuilder {
       assert(false, "Union comparison on a non-union");
     }
 
+    // `f is T` only tests the parameter.
+    this.sr.e.consumeParamUse(exprId);
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.UnionTagCheckExpr,
       expr: exprId,
@@ -2193,6 +2195,7 @@ export class SemanticBuilder {
       assert(false, "Union comparison on a non-union");
     }
 
+    this.sr.e.consumeParamUse(exprId);
     return this.addExpr(this.sr, {
       variant: Semantic.ENode.UnionTagCheckExpr,
       expr: exprId,

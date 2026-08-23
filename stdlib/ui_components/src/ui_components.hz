@@ -1291,7 +1291,10 @@ export opaque ref struct UIContext {
             oldData.focusVersion := !oldData.focusVersion;
             let cb = oldData.onBlur;
             if cb {
-                eventQueue.push((): void => { cb(); });
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
+                eventQueue.push((): void => { fire(); });
             }
         }
 
@@ -1300,7 +1303,10 @@ export opaque ref struct UIContext {
             newTarget.focusVersion := !newTarget.focusVersion;
             let cb = newTarget.onFocus;
             if cb {
-                eventQueue.push((): void => { cb(); });
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
+                eventQueue.push((): void => { fire(); });
             }
         }
     }
@@ -1424,11 +1430,14 @@ export opaque ref struct UIContext {
 
             let cb = hover ? data.onHoverEnter : data.onHoverLeave;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 let pos = mousePos;
                 let b = buttons;
                 eventQueue.push((): void => {
                     let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
-                    cb(e);
+                    fire(e);
                 });
             }
             // Deliberately NOT resetting pointerDownHere here on hover-loss.
@@ -1451,11 +1460,14 @@ export opaque ref struct UIContext {
 
             let cb = hit ? data.onHitEnter : data.onHitLeave;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 let pos = mousePos;
                 let b = buttons;
                 eventQueue.push((): void => {
                     let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
-                    cb(e);
+                    fire(e);
                 });
             }
         }
@@ -1487,9 +1499,12 @@ export opaque ref struct UIContext {
             else if kind == PointerEventKind.Up { cb = data.onPointerUpCapture; }
             else if kind == PointerEventKind.Move { cb = data.onPointerMoveCapture; }
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i + 1;
@@ -1506,9 +1521,12 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheelCapture;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i + 1;
@@ -1521,9 +1539,12 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheel;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i - 1;
@@ -1542,9 +1563,12 @@ export opaque ref struct UIContext {
             if kind == KeyEdgeKind.Pressed { cb = data.onKeyDownCapture; }
             else { cb = data.onKeyUpCapture; }
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i + 1;
@@ -1559,9 +1583,12 @@ export opaque ref struct UIContext {
             if kind == KeyEdgeKind.Pressed { cb = data.onKeyDown; }
             else { cb = data.onKeyUp; }
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i - 1;
@@ -1574,9 +1601,12 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(focusPath[i]);
             let cb = data.onTextInputCapture;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i + 1;
@@ -1589,9 +1619,12 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(focusPath[i]);
             let cb = data.onTextInput;
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i - 1;
@@ -1613,9 +1646,12 @@ export opaque ref struct UIContext {
             else if kind == PointerEventKind.Up { cb = data.onPointerUp; }
             else if kind == PointerEventKind.Move { cb = data.onPointerMove; }
             if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
-                    cb(event);
+                    fire(event);
                 });
             }
             i = i - 1;
@@ -2271,7 +2307,7 @@ export opaque ref struct UIContext {
     fn defineComponent<TProps>(
         id: int,
         props: TProps,
-        setupFn: (instance: InstanceData<TProps>) => (() => void)
+        setupFn: immediate (instance: InstanceData<TProps>) => (() => void)
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
@@ -2385,13 +2421,18 @@ export opaque ref struct UIContext {
     // computeDivStyle() unrolls them at compile time straight off the
     // caller's stack. Only this thin wrapper is instantiated per distinct
     // preset combination; the element work lives in divImpl() once.
-    fn div(props: DivProps, childrenFn: () => void, presets: ...) {
+    //
+    // `childrenFn` is `immediate`: it is invoked right here, inside this
+    // call, and never kept -- so a call site's `() => { ... }` literal gets
+    // its env on the stack (no allocation per div per render) and the
+    // narrowings in effect at the call site hold inside the child tree.
+    fn div(props: DivProps, childrenFn: immediate () => void, presets: ...) {
         let rawStyle: ui_styling.DivStyle = {};
         if props.style is not none { rawStyle := props.style; }
         return this.divImpl(props, ui_styling.computeDivStyle(rawStyle, ...presets), childrenFn);
     }
 
-    fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: () => void) {
+    fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: immediate () => void) {
         let parent = this.getCurrentParent();
         let lookup = getOrCreateDiv(parent, props.id, this.getCurrentIdPath());
         let element = lookup.element;

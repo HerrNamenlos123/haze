@@ -40,6 +40,16 @@ function isSourceLocationDefaultValue(
   }
 }
 
+// `immediate` is part of a function's contract: importers must see it so
+// their call sites get the stack env and the narrowing.
+function paramIsImmediate(
+  sr: Semantic.Context,
+  fn: Semantic.FunctionSymbol,
+  index: number
+): boolean {
+  return fn.parameterImmediate?.[index] === true;
+}
+
 function nsOpenLine(ns: {
   pretty: string;
   isModuleNamespace: boolean;
@@ -208,7 +218,7 @@ export function ExportTypeDef(
             .map((p, i) => {
               let paramStr = `${method.parameterNames[i]}${
                 p.optional ? "?" : ""
-              }: ${Semantic.serializeTypeUse(sr, p.type)}`;
+              }: ${paramIsImmediate(sr, method, i) ? "immediate " : ""}${Semantic.serializeTypeUse(sr, p.type)}`;
               const defaultValue = method.parameterDefaultValues.find(
                 (dv) => dv.parameterName === method.parameterNames[i]
               );
@@ -444,7 +454,7 @@ export function ExportSymbol(
         "(" +
           functype.parameters
             .map((p, i) => {
-              let paramStr = `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(
+              let paramStr = `${symbol.parameterNames[i]}${p.optional ? "?" : ""}: ${paramIsImmediate(sr, symbol, i) ? "immediate " : ""}${Semantic.serializeTypeUse(
                 sr,
                 p.type
               )}`;

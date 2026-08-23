@@ -166,6 +166,12 @@ export namespace Semantic {
     export: boolean;
     extern: EExternLanguage;
     variableContext: EVariableContext;
+    // Parameters only. `immediate`: declared with `immediate` (callable
+    // must be invoked synchronously inside the body, never retained --
+    // verified). `nonEscaping`: the same property, inferred; valid once the
+    // owning function's escapeAnalysisDone is set.
+    immediate?: boolean;
+    nonEscaping?: boolean;
     // Legacy: variables used to be hoisted to the heap when captured. Captures
     // now copy (by value) or share the pointer (refs); this is never set.
     requiresHoisting: boolean;
@@ -209,6 +215,7 @@ export namespace Semantic {
           // signature is used to elaborate the function body. See Elaborate.ts
           // callableExpr().
           type: TypeUseId | null;
+          immediate: boolean;
         }
       | {
           kind: "param-pack";
@@ -225,6 +232,10 @@ export namespace Semantic {
     noemit: boolean;
     generics: Semantic.ExprId[];
     parameterNames: string[];
+    // Aligned with parameterNames: declared `immediate`. Lives here (not
+    // only on the parameter variables) so a body-less declaration -- an
+    // imported function -- still carries its contract.
+    parameterImmediate?: boolean[];
     parameterPack: boolean;
     parameterDefaultValues: {
       parameterName: string;
@@ -240,6 +251,9 @@ export namespace Semantic {
     scope: Semantic.BlockScopeId | null;
     overloadedOperator?: EOverloadedOperator;
     parameterSymbols: Set<Semantic.SymbolId>;
+    // Set once the body has been elaborated and every parameter's
+    // `nonEscaping` is final (see Elaborate.ts finalizeEscapeAnalysis).
+    escapeAnalysisDone?: boolean;
     export: boolean;
     envType: EnvBlockType;
     createsInstanceIds: Set<Semantic.InstanceId>;
@@ -586,6 +600,11 @@ export namespace Semantic {
     // expression. A method on a value receiver may only be used this way
     // (R&D/Storage Classes and References.md §12.4).
     immediatelyCalled?: boolean;
+    // Set by call elaboration when this lambda literal is passed to a
+    // parameter the callee provably never retains (`immediate`, or inferred
+    // non-escaping): the env block can live in the caller's frame for the
+    // duration of the call instead of on the heap.
+    stackEnv?: boolean;
   };
 
   export type SymbolValueExpr = BaseExpr & {
@@ -1010,6 +1029,10 @@ export namespace Semantic {
         }[];
         gonnaInstantiateStructWithType?: Semantic.TypeUseId;
         unsafe?: boolean;
+        // The expression is a lambda literal passed to an `immediate`
+        // parameter: it runs synchronously inside the call, so the
+        // creation-point narrowings are valid inside its body.
+        immediateCallable?: boolean;
       };
 
   export type RegexData = {

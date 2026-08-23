@@ -50,6 +50,7 @@ fn main(): int {
     cases_union_alias_dedup.register(suite);
     cases_storage_classes.register(suite);
     cases_parameter_packs.register(suite);
+    cases_immediate.register(suite);
     cases_profiling.register(suite);
 
     return testsuite.runAll(config, suite);

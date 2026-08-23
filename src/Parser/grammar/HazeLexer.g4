@@ -30,6 +30,7 @@ RAISE: 'raise';
 EMIT: 'emit';
 REF: 'ref';
 STACKREF: 'stackref';
+IMMEDIATE: 'immediate';
 NOCOPY: 'nocopy';
 ATTEMPT: 'attempt';
 RECOVER: 'recover';

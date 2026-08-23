@@ -576,8 +576,11 @@ namespace json {
                             return Result<T, Error>.Ok(attemptResult);
                         }
                         else {
+                            // Rebind the narrowed Err: a closure does not
+                            // inherit the narrowing above (it is called later).
+                            let failed = attemptResult;
                             attemptErrors[errorCount] = () => {
-                                return f"{variantName}: {attemptResult.error()}";
+                                return f"{variantName}: {failed.error()}";
                             };
                             errorCount = errorCount + 1;
                         }

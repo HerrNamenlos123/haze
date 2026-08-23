@@ -601,7 +601,7 @@ namespace profiling {
     // Deliberately returns void rather than forwarding the closure's own return
     // value: a generic `TRet` here would force every call site that profiles a
     // plain statement block to pin down a return type it doesn't have.
-    export fn profile(body: () => void, path: str = "trace.json", args: Profiler.Args = {}): void {
+    export fn profile(body: immediate () => void, path: str = "trace.json", args: Profiler.Args = {}): void {
         let profiler = Profiler(args);
         body();
         profiler.stopAndSave(path);

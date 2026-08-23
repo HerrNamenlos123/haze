@@ -1342,6 +1342,7 @@ class CodeGenerator {
   }
 
   private emittedEnvStructs = new Set<Lowered.FunctionId>();
+  private stackEnvCounter = 0;
 
   // A CallableExpr points at the trampoline; the env struct is named after
   // the lambda's main function.
@@ -2795,14 +2796,28 @@ class CodeGenerator {
         ) {
           assert(expr.envType?.type === "lambda");
           const envStruct = this.closureEnvStructNameFor(expr.function);
-          // One allocation for the whole env; by-value captures are copied
-          // straight into their field (no per-capture heap cell).
-          const setters = expr.envValue.captures.map((c, i) => {
-            const e = this.emitExpr(c);
-            tempWriter.write(e.temp);
-            return `env->c${i} = ${e.out.get()};`;
-          });
-          env = `({ ${envStruct}* env = hzstd_heap_allocate(sizeof(${envStruct}), "Closure env"); ${setters.join(" ")} (void*)env; })`;
+          if (expr.stackEnv) {
+            // The callee provably never retains this closure (`immediate`
+            // or inferred non-escaping parameter): the env is a temp of the
+            // enclosing statement, which outlives the call. No allocation.
+            const envVar = `__hz_senv_${this.stackEnvCounter++}`;
+            tempWriter.writeLine(`${envStruct} ${envVar};`);
+            expr.envValue.captures.forEach((c, i) => {
+              const e = this.emitExpr(c);
+              tempWriter.write(e.temp);
+              tempWriter.writeLine(`${envVar}.c${i} = ${e.out.get()};`);
+            });
+            env = `(void*)&${envVar}`;
+          } else {
+            // One allocation for the whole env; by-value captures are copied
+            // straight into their field (no per-capture heap cell).
+            const setters = expr.envValue.captures.map((c, i) => {
+              const e = this.emitExpr(c);
+              tempWriter.write(e.temp);
+              return `env->c${i} = ${e.out.get()};`;
+            });
+            env = `({ ${envStruct}* env = hzstd_heap_allocate(sizeof(${envStruct}), "Closure env"); ${setters.join(" ")} (void*)env; })`;
+          }
         }
         const func = this.lr.functionNodes.get(expr.function);
         outWriter.write(

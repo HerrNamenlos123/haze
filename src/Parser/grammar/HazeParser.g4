@@ -156,6 +156,10 @@ typeExprSimple
 typeExprModified
     : REF typeExprModified
     | STACKREF typeExprModified
+    // `immediate (x: T) => R` on a parameter: the callee promises to invoke
+    // the callable synchronously inside the call and never retain it. Only
+    // valid on parameter types; SymbolCollection strips it into a flag.
+    | IMMEDIATE typeExprModified
     | MUT typeExprModified
     | CONST typeExprModified
     // The array size is a general expression (a literal, a generic
@@ -438,10 +442,13 @@ statement
     ;
 
 memberNameId
-    : RAW_ID
+    : id
     | TYPE
     ;
 
+// `immediate` is contextual: a modifier in type position (typeExprModified
+// lists it first), an ordinary identifier everywhere else.
 id
     : RAW_ID
+    | IMMEDIATE
     ;

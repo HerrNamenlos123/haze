@@ -1386,10 +1386,15 @@ export ref struct Parser {
         let start = this.cur();
         let k = this.kind();
 
-        if k == TK.Ref || k == TK.Stackref || k == TK.Mut || k == TK.Const {
+        // `immediate` is a contextual keyword: only in type position, and
+        // only by its text, so it stays usable as a plain identifier
+        // (`config.immediate`) everywhere else.
+        let isImmediate = k == TK.Ident && this.text(this.cur()) == "immediate";
+        if k == TK.Ref || k == TK.Stackref || k == TK.Mut || k == TK.Const || isImmediate {
             this.advance();
             let variant = "RefTypeExpr";
             if k == TK.Stackref { variant = "StackrefTypeExpr"; }
+            else if isImmediate { variant = "ImmediateTypeExpr"; }
             else if k == TK.Mut { variant = "MutTypeExpr"; }
             else if k == TK.Const { variant = "ConstTypeExpr"; }
 

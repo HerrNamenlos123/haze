@@ -646,6 +646,13 @@ export type ASTStackrefTypeExpr = {
   sourceloc: SourceLoc;
 };
 
+// `immediate T` -- only meaningful on a parameter's type (see HazeParser.g4).
+export type ASTImmediateTypeExpr = {
+  variant: "ImmediateTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTDynamicArrayTypeExpr = {
   variant: "DynamicArrayTypeExpr";
   type: ASTExpr;
@@ -750,6 +757,7 @@ export type ASTExpr =
   | ASTMutTypeExpr
   | ASTRefTypeExpr
   | ASTStackrefTypeExpr
+  | ASTImmediateTypeExpr
   | ASTDynamicArrayTypeExpr
   | ASTStaticArrayTypeExpr
   | ASTNodiscardTypeExpr

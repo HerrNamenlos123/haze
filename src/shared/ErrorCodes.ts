@@ -257,6 +257,9 @@ export enum HazeErrorCode {
   SpreadOperandNotParameterPack = 7191, // Only a parameter pack can be spread with '...'
   SpreadNotAllowedHere = 7192, // '...' spread is only allowed inside a call argument list
   ParameterPackPassedWithoutSpread = 7193, // A parameter pack cannot be passed as a single argument; spread it with '...'
+  ImmediateOnlyOnParameters = 7194, // 'immediate' is only allowed on a parameter's type
+  ImmediateOnNonCallable = 7195, // 'immediate' requires a callable (or optional callable) parameter
+  ImmediateParameterEscapes = 7196, // An 'immediate' parameter may only be called, forwarded to another 'immediate' parameter, or captured by an in-place closure
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:
