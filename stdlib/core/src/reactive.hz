@@ -82,8 +82,11 @@ namespace rx {
                 let resultValue = rx.get(func());
                 do unsafe {
                     let slot = none as cptr;
+                    // Re-runs write into the node's existing result slot
+                    // (readers copy out of it immediately), so only the
+                    // first evaluation allocates.
                     __c__("""
-                        slot = hzstd_slot_alloc(sizeof(resultValue));
+                        slot = hzstd_computed_result_slot(sizeof(resultValue));
                         hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
                     """);
                     return slot;

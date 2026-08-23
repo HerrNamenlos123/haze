@@ -28,12 +28,25 @@ static void register_dependency(hzstd_node_t* src, hzstd_computed_node_t* dst)
     return;
   }
 
-  hzstd_dep_edge_t* edge = hzstd_heap_allocate(sizeof(*edge), "hzstd_dep_edge_t");
+  // Both records are owned by `dst`: they only ever sit in lists that
+  // dst's own clear_dependencies() unlinks, so recycling them per computed
+  // is safe.
+  hzstd_dep_edge_t* edge = dst->free_edges;
+  if (edge) {
+    dst->free_edges = edge->next;
+  } else {
+    edge = hzstd_heap_allocate(sizeof(*edge), "hzstd_dep_edge_t");
+  }
   edge->node = (hzstd_node_t*)dst;
   edge->next = src->dependents;
   src->dependents = edge;
 
-  hzstd_cell_dep_t* dep = hzstd_heap_allocate(sizeof(*dep), "hzstd_cell_dep_t");
+  hzstd_cell_dep_t* dep = dst->free_deps;
+  if (dep) {
+    dst->free_deps = dep->next;
+  } else {
+    dep = hzstd_heap_allocate(sizeof(*dep), "hzstd_cell_dep_t");
+  }
   dep->node = src;
   dep->next = dst->deps;
   dst->deps = dep;
@@ -45,9 +58,12 @@ hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env)
   c->base.dependents = NULL;
   c->dirty = 1;
   c->cached = NULL;
+  c->cached_size = 0;
   c->fn = fn;
   c->env = env;
   c->deps = NULL;
+  c->free_deps = NULL;
+  c->free_edges = NULL;
   return c;
 }
 
@@ -65,13 +81,34 @@ static void clear_dependencies(hzstd_computed_node_t* comp)
     }
 
     if (*p) {
-      *p = (*p)->next;
+      hzstd_dep_edge_t* edge = *p;
+      *p = edge->next;
+      edge->node = NULL;
+      edge->next = comp->free_edges;
+      comp->free_edges = edge;
     }
 
-    dep = dep->next;
+    hzstd_cell_dep_t* next = dep->next;
+    dep->node = NULL;
+    dep->next = comp->free_deps;
+    comp->free_deps = dep;
+    dep = next;
   }
 
   comp->deps = NULL;
+}
+
+void* hzstd_computed_result_slot(size_t size)
+{
+  hzstd_computed_node_t* comp = g_current_computed;
+  if (comp && comp->cached && comp->cached_size == size) {
+    return comp->cached;
+  }
+  void* slot = hzstd_heap_allocate(size, NULL);
+  if (comp) {
+    comp->cached_size = size;
+  }
+  return slot;
 }
 
 void* hzstd_computed_read(hzstd_computed_node_t* c)

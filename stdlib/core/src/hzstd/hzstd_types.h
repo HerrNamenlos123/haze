@@ -716,11 +716,21 @@ struct hzstd_computed_node_t {
 
   int dirty;
   void *cached;
+  // Size of the value behind `cached`, so a re-run can write its result
+  // into the same slot instead of allocating a new one every time (see
+  // hzstd_computed_result_slot). 0 until the first run.
+  size_t cached_size;
 
   hzstd_computed_fn_t fn;
   void *env;
 
   hzstd_cell_dep_t *deps;
+  // Edge/dep records unlinked by the last clear_dependencies(), kept for
+  // reuse: a computed almost always re-registers the very same
+  // dependencies it had before, so in steady state a re-run allocates
+  // nothing for the graph.
+  hzstd_cell_dep_t *free_deps;
+  hzstd_dep_edge_t *free_edges;
 };
 
 // ── Regex ────────────────────────────────────────────────────────────────────

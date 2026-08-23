@@ -29,6 +29,10 @@ void* hzstd_computed_read(hzstd_computed_node_t* c);
 void* hzstd_computed_get(hzstd_computed_node_t* comp);
 
 void* hzstd_slot_alloc(size_t size);
+// The slot a computed's wrapper should write its result into: the node's
+// existing cached slot when it is being re-run (same size every time), a
+// fresh one only on the first run or outside any computed.
+void* hzstd_computed_result_slot(size_t size);
 void hzstd_slot_write(void* slot, void* src, size_t size);
 void hzstd_slot_read(void* dst, void* slot, size_t size);
 
