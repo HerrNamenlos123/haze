@@ -45,6 +45,20 @@ fn fileExists(path: str): bool {
     return false;
 }
 
+// The default auto-profile output lands in the *current directory*, which
+// the harness shares with everything else that ever ran from the repo root
+// -- so "trace.json does not exist" is not a precondition this program can
+// assume (any earlier `haze run --profile`, or a profiler harness, leaves one
+// behind for good). What the inert hooks must guarantee is that they do not
+// WRITE one: compare a fingerprint of whatever is there before and after.
+fn traceFingerprint(): str {
+    let st = fs.statFile("trace.json");
+    if st is none {
+        return "absent";
+    }
+    return f"{st.mtime}/{st.size}";
+}
+
 // profiling.profile() must actually run the closure it was given, exactly
 // once, and must leave a trace file behind at the requested path. This is
 // the whole contract of the scoped form: the caller writes no start/stop
@@ -108,11 +122,13 @@ fn checkScopedProfilesCanRepeat(): void {
 fn checkAutoProfilingHooksAreInertWhenNotRequested(): void {
     assert(!profiling.autoProfileEnabled(), "expected auto-profiling to be disabled when HAZE_PROFILE is unset");
 
+    let before = traceFingerprint();
     profiling.beginAutoProfiling();
     profiling.endAutoProfiling();
 
-    // No trace at the default path -- an inert begin/end pair must not write one.
-    assert(!fileExists("trace.json"), "expected no trace.json when auto-profiling was not requested");
+    // No trace written at the default path -- an inert begin/end pair must
+    // leave whatever was (or wasn't) there untouched.
+    assert(traceFingerprint() == before, "expected no trace.json to be written when auto-profiling was not requested");
 
     let ran: ref Box<int> = { value: 0 };
     profiling.profile(() => {
@@ -125,6 +141,7 @@ fn checkAutoProfilingHooksAreInertWhenNotRequested(): void {
 // begin/end must tolerate repetition -- generated main only ever calls them
 // in a matched pair, but neither may panic or write a trace on its own.
 fn checkAutoProfilingHooksAreIdempotent(): void {
+    let before = traceFingerprint();
     profiling.endAutoProfiling();
     profiling.endAutoProfiling();
     profiling.beginAutoProfiling();
@@ -132,7 +149,7 @@ fn checkAutoProfilingHooksAreIdempotent(): void {
     profiling.endAutoProfiling();
     profiling.endAutoProfiling();
 
-    assert(!fileExists("trace.json"), "expected no trace.json from repeated inert auto-profiling hooks");
+    assert(traceFingerprint() == before, "expected no trace.json to be written by repeated inert auto-profiling hooks");
 }
 
 // The default output path is what an unconfigured HAZE_PROFILE=1 run writes,

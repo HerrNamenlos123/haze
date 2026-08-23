@@ -1461,8 +1461,13 @@ export class SemanticBuilder {
     // Inject a synthetic env block
     symbol.envType = args.envType;
 
+    // A wall-clock-based diagnostic is nondeterministic by nature (it fires
+    // whenever the machine is busy, e.g. under the test runner), and warnings
+    // share stdout with the compiled program under `haze exec`, so it must
+    // never be on by default: it made every test using synthetic functions
+    // (json hooks, LinearMap) flaky. Opt in with HAZE_PERF_WARNINGS=1.
     const end = performance.now();
-    if (end - start > 10) {
+    if (process.env["HAZE_PERF_WARNINGS"] && end - start > 10) {
       printWarningMessage(
         `Slow operation 'Synthetic Function' took over ${end - start} ms`,
         null,
