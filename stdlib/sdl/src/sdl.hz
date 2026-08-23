@@ -191,24 +191,24 @@ export enum Key {
 	RGui = 231,
 }
 
-export ref struct KeyEvent {
+export struct KeyEvent {
 	key: Key;
 	repeat: bool;
 	modifiers: KeyModifiers;
 }
 
-export ref struct ResizeEvent {
+export struct ResizeEvent {
 	width: int;
 	height: int;
 }
 
-export ref struct MouseMoveEvent {
+export struct MouseMoveEvent {
 	pos: Vec2;
 	modifiers: KeyModifiers;
 }
 
 // button: 0=left, 1=middle, 2=right
-export ref struct MouseButtonEvent {
+export struct MouseButtonEvent {
 	button: int;
 	pos: Vec2;
 	modifiers: KeyModifiers;
@@ -217,7 +217,7 @@ export ref struct MouseButtonEvent {
 // x/y: signed scroll amount (positive = right/away-from-user); pos: mouse
 // position at the time of the scroll, window-relative like every other
 // event here.
-export ref struct MouseWheelEvent {
+export struct MouseWheelEvent {
 	delta: Vec2;
 	pos: Vec2;
 	modifiers: KeyModifiers;
@@ -228,7 +228,7 @@ export ref struct MouseWheelEvent {
 // whether that produced "a", "A", "ä", or (mid-IME-composition) nothing at
 // all yet. This is the already-resolved character(s) to actually insert,
 // same division of labor as the DOM's keydown vs. input events.
-export ref struct TextInputEvent {
+export struct TextInputEvent {
 	text: str;
 }
 
@@ -247,32 +247,32 @@ export type TextInputEventCallback = (e: TextInputEvent) => bool :: final;
 // Internal handler structs (one per event category)
 // ---------------------------------------------------------------------------
 
-export ref struct KeyHandler {
+export struct KeyHandler {
 	id: int;
 	callback: KeyEventCallback;
 }
 
-export ref struct ResizeHandler {
+export struct ResizeHandler {
 	id: int;
 	callback: ResizeEventCallback;
 }
 
-export ref struct MouseMoveHandler {
+export struct MouseMoveHandler {
 	id: int;
 	callback: MouseMoveEventCallback;
 }
 
-export ref struct MouseButtonHandler {
+export struct MouseButtonHandler {
 	id: int;
 	callback: MouseButtonEventCallback;
 }
 
-export ref struct MouseWheelHandler {
+export struct MouseWheelHandler {
 	id: int;
 	callback: MouseWheelEventCallback;
 }
 
-export ref struct TextInputHandler {
+export struct TextInputHandler {
 	id: int;
 	callback: TextInputEventCallback;
 }

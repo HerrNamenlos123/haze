@@ -47,7 +47,7 @@ export enum PointerEventKind { Down, Up, Move }
 // Covers mouse, touch, and stylus in one type. stopPropagation() halts both
 // the remaining capture and bubble phases -- see dispatchCapturing()/
 // dispatchBubbling() below for exactly how.
-export ref struct PointerEvent {
+export struct PointerEvent {
     pointerId: int;
     pointerType: str;
     pos: Vec2;
