@@ -263,6 +263,12 @@ export namespace Lowered {
     envValue: EnvBlockValue;
     function: FunctionId;
     type: TypeUseId;
+    // Where the callable expression itself sits in the Haze source. Codegen
+    // pins a #line to it around the closure env allocation, so that an
+    // allocation made for a lambda deep inside a long multi-line statement is
+    // attributed to the lambda's line, not to "statement line + however many
+    // physical C lines the generated expression happened to span so far".
+    sourceloc: SourceLoc;
     // The env block may live in the enclosing statement's frame: the
     // callable is a lambda literal passed to a parameter its callee never
     // retains (see Semantic.CallableExpr.stackEnv).
@@ -2155,6 +2161,7 @@ export function lowerExpr(
         envType: envType,
         envValue: envValue,
         stackEnv: expr.stackEnv === true,
+        sourceloc: expr.sourceloc,
         type: lowerTypeUse(lr, expr.type),
         functionType: makeLowerTypeUse(
           lr,
@@ -4431,6 +4438,7 @@ function lowerBlockScope(
 
   // undefined = no return, null = return nothing, expr = return expr
   let returnedExpr: Lowered.ExprId | null | undefined;
+  let returnedSourceloc: SourceLoc = null;
   // Set once a break/continue has been emitted in this scope. Unlike a return,
   // these are emitted in place (they jump within the enclosing loop, so there is
   // nothing to hoist to the end of the scope), but everything following them in
@@ -4473,6 +4481,7 @@ function lowerBlockScope(
 
       if (innerStatement.variant === Lowered.ENode.ReturnStatement) {
         // If we find a return statement, store the returned expression separately, and strip everything after
+        returnedSourceloc = innerStatement.sourceloc;
         if (innerStatement.expr) {
           // Only store in extra variable if necessary
           const thisReturnedExpression = lr.exprNodes.get(innerStatement.expr);
@@ -4526,7 +4535,13 @@ function lowerBlockScope(
       Lowered.addStatement(lr, {
         variant: Lowered.ENode.ReturnStatement,
         expr: returnedExpr,
-        sourceloc: null,
+        // The original return's location, not null: this is the statement the
+        // returned expression is emitted under, and when the expression is
+        // not just a symbol read (it is evaluated right here, in the emitted
+        // return), it is the only #line any runtime call inside it -- an
+        // allocation, a panic -- can be attributed to. A null here made the
+        // line table count on from whatever statement came before.
+        sourceloc: returnedSourceloc,
       })[1]
     );
   }

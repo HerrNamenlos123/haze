@@ -21,7 +21,7 @@ import {
   ModuleType,
 } from "../shared/Config";
 import { EPrimitive, type NameSet, primitiveToString } from "../shared/common";
-import { assert, GeneralError, InternalError } from "../shared/Errors";
+import { assert, GeneralError, InternalError, type SourceLocNotNull } from "../shared/Errors";
 import { requestSync } from "../Parser/SyncBridge";
 import { OutputWriter } from "./OutputWriter";
 
@@ -1343,6 +1343,25 @@ class CodeGenerator {
 
   private emittedEnvStructs = new Set<Lowered.FunctionId>();
   private stackEnvCounter = 0;
+  // The source location whose #line directive is currently in effect for the
+  // statement being emitted (null when none was emitted -- sourceloc disabled,
+  // or a synthesized statement). An expression that needs a #line of its own
+  // in the middle of a statement (see the closure env allocation in
+  // emitExpr/CallableExpr) restores this one afterwards, so the attribution of
+  // everything that follows in the same statement is unchanged by its presence.
+  private currentStatementSourceloc: SourceLocNotNull | null = null;
+
+  // `#line` pins only the NEXT physical line of C; each physical line after it
+  // counts up from there. The codegen emits one directive per Haze statement
+  // (see emitStatement), which is exactly right for everything that is one line
+  // of C -- and silently wrong for anything inside a long multi-line expression:
+  // a runtime call on the 50th generated line of a statement is reported by the
+  // line table as `statement line + 49`, a number that describes the generated
+  // C's layout, not the program. This returns the directive that pins `loc`
+  // right here, on its own line, for exactly that case.
+  private lineDirective(loc: SourceLocNotNull): string {
+    return `\n#line ${loc.start.line} ${JSON.stringify(loc.filename)}\n`;
+  }
 
   // A CallableExpr points at the trampoline; the env struct is named after
   // the lambda's main function.
@@ -1638,6 +1657,31 @@ class CodeGenerator {
   } {
     const statement = this.lr.statementNodes.get(statementId);
 
+    // Mirrors the per-variant `#line` emission below: exactly those statements
+    // get a directive, and this is what it says. Saved/restored around the
+    // statement so a nested block never leaves its own location behind for the
+    // enclosing statement's remaining expressions.
+    const outerStatementSourceloc = this.currentStatementSourceloc;
+    this.currentStatementSourceloc =
+      statement.sourceloc &&
+      this.lr.sr.cc.config.includeSourceloc &&
+      !noSourceloc
+        ? statement.sourceloc
+        : null;
+    try {
+      return this.emitStatementImpl(statement, noSourceloc);
+    } finally {
+      this.currentStatementSourceloc = outerStatementSourceloc;
+    }
+  }
+
+  private emitStatementImpl(
+    statement: Lowered.Statement,
+    noSourceloc: boolean
+  ): {
+    temp: OutputWriter;
+    out: OutputWriter;
+  } {
     const tempWriter = new OutputWriter();
     const outWriter = new OutputWriter();
     switch (statement.variant) {
@@ -2846,7 +2890,22 @@ class CodeGenerator {
               tempWriter.write(e.temp);
               return `env->c${i} = ${e.out.get()};`;
             });
-            env = `({ ${envStruct}* env = hzstd_heap_allocate(sizeof(${envStruct}), "Closure env"); ${setters.join(" ")} (void*)env; })`;
+            // Pinned to the lambda's own line (and the enclosing statement's
+            // line restored afterwards) -- see lineDirective. Without this, a
+            // lambda that is the Nth argument of a big multi-line call had its
+            // env allocation attributed to `statement line + N-ish` by the
+            // line table: a line that is usually a comment, a closing paren or
+            // an unrelated statement, and that no amount of searching the
+            // generated C can explain.
+            const pinLine =
+              this.lr.sr.cc.config.includeSourceloc && expr.sourceloc
+                ? this.lineDirective(expr.sourceloc)
+                : "";
+            const restoreLine =
+              pinLine !== "" && this.currentStatementSourceloc !== null
+                ? this.lineDirective(this.currentStatementSourceloc)
+                : "";
+            env = `({ ${pinLine}${envStruct}* env = hzstd_heap_allocate(sizeof(${envStruct}), "Closure env"); ${setters.join(" ")} (void*)env; ${restoreLine}})`;
           }
         }
         const func = this.lr.functionNodes.get(expr.function);

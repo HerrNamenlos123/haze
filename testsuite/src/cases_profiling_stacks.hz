@@ -174,5 +174,72 @@ fn main(): int {
 """,
             0
         );
+
+        // A #line directive only pins the NEXT physical line of C; every physical line
+        // after it counts up from there. The codegen emits one directive per Haze
+        // statement, so an allocation buried deep inside a long multi-line statement --
+        // a closure env for a lambda passed as one argument of a big call, the normal
+        // shape of UI code -- used to be attributed to `statement line + however many C
+        // lines the generated expression happened to span before it`. That number is a
+        // property of the generated C's layout, not of the program: it pointed at
+        // whatever Haze line happened to have that index (a closing paren, a comment,
+        // a different statement entirely), and could not be found by searching the C.
+        s.runExitCode(
+            "profiling: a closure env allocated deep inside a multi-line statement is attributed to the lambda's own line",
+            """
+struct Handlers {
+    first: () => int;
+    second: () => int;
+    third: () => int;
+}
+
+fn keep(h: Handlers): Handlers {
+    return h;
+}
+
+fn lineOf(loc: SourceLocation): int {
+    if let l = loc.line() {
+        return l;
+    }
+    return 0;
+}
+
+fn build(x: int): Handlers {
+    let a = x + 1;
+    let b = x + 2;
+    let c = x + 3;
+    return keep(Handlers {
+        // Only `third` captures anything, so the single "Closure env"
+        // allocation in this program belongs to the lambda on the line
+        // marked LAMBDA_LINE -- many physical lines after this statement
+        // began, with two other lambdas (that allocate nothing) in between.
+        first: () => 1,
+        second: () => 2,
+        third: () => a + b + c, // LAMBDA_LINE
+    });
+}
+
+fn main(): int {
+    let profiler = Profiler({ samplingRate: 100 });
+    let h = build(1);
+    let result = profiler.stop();
+    assert(h.third() == 9);
+
+    let seen = 0;
+    for capture in result.memoryInstrumentationFrames {
+        if capture.dataType == "Closure env" {
+            seen += 1;
+            let top = capture.stacktrace.frames[0];
+            assert(top.name.contains("build"), f"innermost frame should be build, got '{top.name}'");
+            assert(lineOf(top.sourceloc) == 29,
+                f"closure env should be attributed to LAMBDA_LINE (29), got line {lineOf(top.sourceloc)}");
+        }
+    }
+    assert(seen == 1, f"expected exactly one closure env capture, got {seen}");
+    return 0;
+}
+""",
+            0
+        );
     }
 }
