@@ -75,7 +75,7 @@ fn toFFI(v: RenderPassEncoder): mut ffi.WGPURenderPassEncoderImpl :: final {
     return v.handle;
 }
 
-export ref struct RenderPassDescriptor {
+export struct RenderPassDescriptor {
     debugLabel?: str;
     colorAttachments: []RenderPassColorAttachment = [];
     depthStencilAttachment: RenderPassDepthStencilAttachment | none = none;
@@ -139,7 +139,7 @@ fn toFFI(v: RenderPassDescriptor): ref ffi.WGPURenderPassDescriptor :: final {
     };
 }
 
-export ref struct RenderPassDepthStencilAttachment {
+export struct RenderPassDepthStencilAttachment {
     view: TextureView;
     depthLoadOp: LoadOp;
     depthStoreOp: StoreOp;
@@ -179,7 +179,7 @@ fn toFFI(v: RenderPassDepthStencilAttachment): ref ffi.WGPURenderPassDepthStenci
     };
 }
 
-export ref struct RenderPassTimestampWrites {
+export struct RenderPassTimestampWrites {
     querySet: QuerySet;
     beginningOfPassWriteIndex: u32;
     endOfPassWriteIndex: u32;
@@ -201,7 +201,7 @@ fn toFFI(v: RenderPassTimestampWrites): ref ffi.WGPURenderPassTimestampWrites ::
     };
 }
 
-export ref struct RenderPassColorAttachment {
+export struct RenderPassColorAttachment {
     view: TextureView | none = none;
     depthSlice: u32 | none = none;
     resolveTarget: TextureView | none = none;
@@ -226,8 +226,8 @@ fn fromFFI(v: ffi.WGPURenderPassColorAttachment): RenderPassColorAttachment :: f
     };
 }
 
-fn toFFI(v: RenderPassColorAttachment): ref ffi.WGPURenderPassColorAttachment :: final {
-    return (ref ffi.WGPURenderPassColorAttachment {
+fn toFFI(v: RenderPassColorAttachment): ffi.WGPURenderPassColorAttachment :: final {
+    return (ffi.WGPURenderPassColorAttachment {
         nextInChain: none,
         view: v.view ? v.view.handle : none,
         depthSlice: v.depthSlice ? v.depthSlice : WGPU_DEPTH_SLICE_UNDEFINED,
@@ -240,5 +240,5 @@ fn toFFI(v: RenderPassColorAttachment): ref ffi.WGPURenderPassColorAttachment ::
             b: v.clearValue.b,
             a: v.clearValue.a,
         }
-    }) as ref ffi.WGPURenderPassColorAttachment;
+    }) as ffi.WGPURenderPassColorAttachment;
 }

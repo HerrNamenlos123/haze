@@ -1191,7 +1191,7 @@ export opaque ref struct Canvas {
                 surfaceTexture.status != wgpu.SurfaceGetCurrentTextureStatus.SuccessSuboptimal
             {
                 let code = 0;
-                __c__("code = (int)surfaceTexture->status;");
+                __c__("code = (int)surfaceTexture.status;");
                 return f"wgpu.SurfaceGetCurrentTextureStatus ({code})";
             }
 

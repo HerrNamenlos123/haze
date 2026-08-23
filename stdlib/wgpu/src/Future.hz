@@ -1,6 +1,6 @@
 
 
-export ref struct Future {
+export struct Future {
     id: u64;
 }
 

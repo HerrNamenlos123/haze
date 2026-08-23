@@ -45,7 +45,7 @@ export struct Surface {
     }
 }
 
-export ref struct SurfaceTexture {
+export struct SurfaceTexture {
     texture: Texture | none;
     status: SurfaceGetCurrentTextureStatus;
 }
@@ -65,7 +65,7 @@ fn toFFI(v: SurfaceTexture): ref ffi.WGPUSurfaceTexture :: final {
     };
 }
 
-export ref struct SurfaceConfiguration {
+export struct SurfaceConfiguration {
     format: TextureFormat = TextureFormat.Undefined;
     usage: TextureUsage = TextureUsage.None;
     width: int = 0;
@@ -117,7 +117,7 @@ fn toFFI(v: SurfaceConfiguration): ref ffi.WGPUSurfaceConfiguration :: final {
     };
 }
 
-export ref struct SurfaceCapabilities {
+export struct SurfaceCapabilities {
     usages: TextureUsage = TextureUsage.None;
     formats: []TextureFormat = [];
     presentModes: []PresentMode = [];

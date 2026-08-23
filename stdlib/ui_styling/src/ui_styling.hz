@@ -269,7 +269,7 @@ export type AnchorTarget = rx.ShallowReactive<TypeErasedBox | null>;
 export enum TextWrap { Words, Newlines, None }
 
 export enum LineHeightMode { Auto, Relative, Pixels }
-export ref struct LineHeight {
+export struct LineHeight {
     mode: LineHeightMode;
     value: real;
 };

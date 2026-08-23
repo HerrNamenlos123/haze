@@ -1,5 +1,5 @@
 
-export ref struct DepthStencilState {
+export struct DepthStencilState {
     format: TextureFormat;
     depthWriteEnabled: bool | none = none;
     depthCompare: CompareFunction;
@@ -62,7 +62,7 @@ fn toFFI(v: DepthStencilState): ref ffi.WGPUDepthStencilState :: final {
     };
 }
 
-export ref struct StencilFaceState {
+export struct StencilFaceState {
     compare: CompareFunction;
     failOp: StencilOperation;
     depthFailOp: StencilOperation;
@@ -78,7 +78,7 @@ fn fromFFI(v: ffi.WGPUStencilFaceState): StencilFaceState :: final {
     };
 }
 
-fn toFFI(v: StencilFaceState): ref ffi.WGPUStencilFaceState :: final {
+fn toFFI(v: StencilFaceState): ffi.WGPUStencilFaceState :: final {
     return {
         compare: toFFI(v.compare),
         failOp: toFFI(v.failOp),

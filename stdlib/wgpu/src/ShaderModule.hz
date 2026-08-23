@@ -1,5 +1,5 @@
 
-export ref struct ShaderModuleDescriptor {
+export struct ShaderModuleDescriptor {
     debugLabel?: str;
     code: str;
 }

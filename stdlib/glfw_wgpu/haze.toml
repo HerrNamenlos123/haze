@@ -1,4 +1,5 @@
 name = "glfw_wgpu"
+id = "1l0G8933"
 version = "1.0.0"
 description = "WebGPU Integration for GLFW"
 license = "MIT"

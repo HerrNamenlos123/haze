@@ -13,7 +13,7 @@ fn toFFI(v: Sampler): mut ffi.WGPUSamplerImpl :: final {
     return v.handle;
 }
 
-export ref struct SamplerDescriptor {
+export struct SamplerDescriptor {
     debugLabel?: str;
     addressModeU: AddressMode = AddressMode.Undefined;
     addressModeV: AddressMode = AddressMode.Undefined;

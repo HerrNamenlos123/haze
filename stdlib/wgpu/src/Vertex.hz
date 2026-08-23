@@ -1,6 +1,6 @@
 
 
-export ref struct VertexAttribute {
+export struct VertexAttribute {
     format: VertexFormat;
     offset: int;
     shaderLocation: int;
@@ -15,17 +15,17 @@ fn fromFFI(v: ffi.WGPUVertexAttribute): VertexAttribute :: final {
     };
 }
 
-fn toFFI(v: VertexAttribute): ref ffi.WGPUVertexAttribute :: final {
+fn toFFI(v: VertexAttribute): ffi.WGPUVertexAttribute :: final {
     assert(v.offset >= u64.min && v.offset <= u64.max);
     assert(v.shaderLocation >= u32.min && v.shaderLocation <= u32.max);
-    return ref ffi.WGPUVertexAttribute {
+    return ffi.WGPUVertexAttribute {
         format: toFFI(v.format),
         offset: v.offset,
         shaderLocation: v.shaderLocation,
     };
 }
 
-export ref struct VertexState {
+export struct VertexState {
     module: ShaderModule;
     entryPoint: str;
     constants: []ConstantEntry = [];
@@ -41,10 +41,10 @@ fn fromFFI(v: ffi.WGPUVertexState): VertexState :: final {
     };
 }
 
-fn toFFI(v: VertexState): ref ffi.WGPUVertexState :: final {
+fn toFFI(v: VertexState): ffi.WGPUVertexState :: final {
     let constants = arrayToFFI<ConstantEntry, ffi.WGPUConstantEntry>(v.constants);
     let buffers = arrayToFFI<VertexBufferLayout, ffi.WGPUVertexBufferLayout>(v.buffers);
-    return ref ffi.WGPUVertexState {
+    return ffi.WGPUVertexState {
         nextInChain: none,
         module: toFFI(v.module),
         entryPoint: toFFI(v.entryPoint),
@@ -55,7 +55,7 @@ fn toFFI(v: VertexState): ref ffi.WGPUVertexState :: final {
     };
 }
 
-export ref struct FragmentState {
+export struct FragmentState {
     module: ShaderModule;
     entryPoint: str;
     constants: []ConstantEntry = [];
@@ -87,7 +87,7 @@ fn toFFI(v: FragmentState): ref ffi.WGPUFragmentState :: final {
     };
 }
 
-export ref struct ColorTargetState {
+export struct ColorTargetState {
     format: TextureFormat;
     blend?: BlendState;
     writeMask: ColorWriteMask = ColorWriteMask.Red | ColorWriteMask.Green | ColorWriteMask.Blue | ColorWriteMask.Alpha;
@@ -101,7 +101,7 @@ fn fromFFI(v: ffi.WGPUColorTargetState): ColorTargetState :: final {
     };
 }
 
-fn toFFI(v: ColorTargetState): ref ffi.WGPUColorTargetState :: final {
+fn toFFI(v: ColorTargetState): ffi.WGPUColorTargetState :: final {
     return {
         nextInChain: none,
         format: toFFI(v.format),
@@ -110,7 +110,7 @@ fn toFFI(v: ColorTargetState): ref ffi.WGPUColorTargetState :: final {
     };
 }
 
-export ref struct BlendState {
+export struct BlendState {
     color: BlendComponent;
     alpha: BlendComponent;
 }
@@ -129,7 +129,7 @@ fn toFFI(v: BlendState): ref ffi.WGPUBlendState :: final {
     };
 }
 
-export ref struct BlendComponent {
+export struct BlendComponent {
     operation: BlendOperation = BlendOperation.Undefined;
     srcFactor: BlendFactor;
     dstFactor: BlendFactor;
@@ -143,7 +143,7 @@ fn fromFFI(v: ffi.WGPUBlendComponent): BlendComponent :: final {
     };
 }
 
-fn toFFI(v: BlendComponent): ref ffi.WGPUBlendComponent :: final {
+fn toFFI(v: BlendComponent): ffi.WGPUBlendComponent :: final {
     return {
         operation: toFFI(v.operation),
         srcFactor: toFFI(v.srcFactor),

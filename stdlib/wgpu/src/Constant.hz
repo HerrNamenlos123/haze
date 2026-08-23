@@ -1,5 +1,5 @@
 
-export ref struct ConstantEntry {
+export struct ConstantEntry {
     key: str;
     value: real;
 }
@@ -11,8 +11,8 @@ fn fromFFI(v: ffi.WGPUConstantEntry): ConstantEntry :: final {
     };
 }
 
-fn toFFI(v: ConstantEntry): ref ffi.WGPUConstantEntry :: final {
-    return ref ffi.WGPUConstantEntry {
+fn toFFI(v: ConstantEntry): ffi.WGPUConstantEntry :: final {
+    return ffi.WGPUConstantEntry {
         nextInChain: none,
         key: toFFI(v.key),
         value: v.value,

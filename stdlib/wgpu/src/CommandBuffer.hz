@@ -13,7 +13,7 @@ fn toFFI(v: CommandBuffer): mut ffi.WGPUCommandBufferImpl :: final {
     return v.handle;
 }
 
-export ref struct CommandBufferDescriptor {
+export struct CommandBufferDescriptor {
     debugLabel?: str;
 }
 

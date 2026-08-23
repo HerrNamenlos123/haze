@@ -49,7 +49,7 @@ fn fromFFI(view: ffi.WGPUStringView): str :: final {
     };
 }
 
-ref struct ArrayFFIResult {
+struct ArrayFFIResult {
     data: cptr = none;
     length: usize = 0;
 }
@@ -73,7 +73,7 @@ fn arrayToFFI<T, ffiT>(array: []T) {
     }
 
     let result = ArrayFFIResult {};
-    __c__("result->data = hzstd_dynamic_array_raw_buffer(ffiArray);");
-    __c__("result->length = hzstd_dynamic_array_size(ffiArray);");
+    __c__("result.data = hzstd_dynamic_array_raw_buffer(ffiArray);");
+    __c__("result.length = hzstd_dynamic_array_size(ffiArray);");
     return result;
 }

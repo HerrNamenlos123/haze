@@ -1,5 +1,5 @@
 
-export ref struct BufferDescriptor {
+export struct BufferDescriptor {
     debugLabel?: str;
     usage: BufferUsage;
     size: int;
@@ -60,7 +60,7 @@ fn toFFI(v: Buffer): mut ffi.WGPUBufferImpl :: final {
     return v.handle;
 }
 
-export ref struct VertexBufferLayout {
+export struct VertexBufferLayout {
     stepMode: VertexStepMode;
     arrayStride: int;
     attributes: []VertexAttribute;
@@ -77,10 +77,10 @@ fn fromFFI(v: ffi.WGPUVertexBufferLayout): VertexBufferLayout :: final {
     };
 }
 
-fn toFFI(v: VertexBufferLayout): ref ffi.WGPUVertexBufferLayout :: final {
+fn toFFI(v: VertexBufferLayout): ffi.WGPUVertexBufferLayout :: final {
     assert(v.arrayStride >= u64.min && v.arrayStride <= u64.max, "Vertex Buffer Layout: Array Stride out of bounds");
     let attributes = arrayToFFI<VertexAttribute, ffi.WGPUVertexAttribute>(v.attributes);
-    return ref ffi.WGPUVertexBufferLayout {
+    return ffi.WGPUVertexBufferLayout {
         stepMode: toFFI(v.stepMode),
         arrayStride: v.arrayStride,
         attributeCount: attributes.length,

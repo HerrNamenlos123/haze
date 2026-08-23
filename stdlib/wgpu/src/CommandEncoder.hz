@@ -1,5 +1,5 @@
 
-export ref struct CommandEncoderDescriptor {
+export struct CommandEncoderDescriptor {
     label: str;
 }
 

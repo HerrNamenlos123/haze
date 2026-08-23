@@ -1,5 +1,5 @@
 
-export ref struct TextureViewDescriptor {
+export struct TextureViewDescriptor {
     debugLabel?: str;
     format: TextureFormat;
     dimension: TextureViewDimension;
@@ -128,7 +128,7 @@ fn fromFFI(v: ffi.WGPUExtent3D): Extent3D :: final {
     };
 }
 
-fn toFFI(v: Extent3D): ref ffi.WGPUExtent3D :: final {
+fn toFFI(v: Extent3D): ffi.WGPUExtent3D :: final {
     assert(v.width >= u32.min && v.width <= u32.max);
     assert(v.height >= u32.min && v.height <= u32.max);
     assert(v.depthOrArrayLayers >= u32.min && v.depthOrArrayLayers <= u32.max);
@@ -139,7 +139,22 @@ fn toFFI(v: Extent3D): ref ffi.WGPUExtent3D :: final {
     };
 }
 
-export ref struct TextureDescriptor {
+// The one caller that cannot take the value form above: wgpuQueueWriteTexture's
+// `writeSize` is a `WGPUExtent3D const*`, so it needs an address, and a `ref` is
+// the only thing in the language that can produce one that outlives the
+// expression (a `stackref` deliberately cannot become a `ref`). Everywhere else
+// an Extent3D is copied straight into a by-value field (WGPUTextureDescriptor.size)
+// and allocates nothing.
+fn toRefFFI(v: Extent3D): ref ffi.WGPUExtent3D :: final {
+    let e = toFFI(v);
+    return ref ffi.WGPUExtent3D {
+        width: e.width,
+        height: e.height,
+        depthOrArrayLayers: e.depthOrArrayLayers,
+    };
+}
+
+export struct TextureDescriptor {
     debugLabel?: str;
     usage: TextureUsage;
     dimension: TextureDimension = TextureDimension.Undefined;
@@ -194,7 +209,7 @@ fn toFFI(v: TextureDescriptor): ref ffi.WGPUTextureDescriptor :: final {
     };
 }
 
-export ref struct TexelCopyBufferLayout {
+export struct TexelCopyBufferLayout {
     offset: int;
     bytesPerRow: int;
     rowsPerImage: int;
@@ -220,7 +235,7 @@ fn toFFI(v: TexelCopyBufferLayout): ref ffi.WGPUTexelCopyBufferLayout :: final {
     };
 }
 
-export ref struct TexelCopyTextureInfo {
+export struct TexelCopyTextureInfo {
     texture: Texture;
     mipLevel: int = 0;
     origin: Vec3i = { x: 0, y: 0, z: 0 };

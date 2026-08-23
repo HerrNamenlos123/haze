@@ -4,13 +4,41 @@ __c__("#pragma clang diagnostic ignored \"-Wincompatible-pointer-types-discards-
 export __c__("#include \"wgpu.h\"");
 __c__("#include \"wgpu_impl.c\"");
 
+// ── `ref` policy for this module ──────────────────────────────────────────
+//
+// Every wrapper type in these files is a plain VALUE struct, and every
+// `fn toFFI(...)` returns its `ffi.WGPU*` counterpart BY VALUE, unless the C
+// API it feeds genuinely needs an address. That is the whole rule, and it is
+// worth stating because getting it wrong is invisible: a `ref struct` and a
+// `ref ffi.X { ... }` literal each cost one GC allocation, per call, per
+// frame, and nothing about the code reads any differently.
+//
+// A `ref` here is justified in exactly two situations, both forced by the C
+// side rather than chosen:
+//
+//   1. The value is passed as a `WGPUFoo const*` parameter (every
+//      `...Descriptor`, plus out-parameters like wgpuSurfaceGetCurrentTexture's
+//      WGPUSurfaceTexture), or stored into a pointer FIELD of another FFI
+//      struct (`depthStencilAttachment`, `fragment`, `blend`, `depthStencil`,
+//      `nextInChain`). A pointer must exist, it must stay valid for the call,
+//      and `ref` is the only thing that can produce one -- `let stackref`
+//      deliberately cannot become a `ref` (H4001), precisely because it may
+//      point at scope-resident storage the GC does not manage.
+//   2. Callback userdata (`ref Box<...Callback>`): wgpu keeps the pointer past
+//      the call that registered it, so it has to be GC-owned.
+//
+// Everything else -- anything copied into a by-value field of another FFI
+// struct, and anything that becomes an element of an array built by
+// arrayToFFI -- is a value and allocates nothing. When adding a binding, check
+// which of the two the C signature actually asks for before reaching for `ref`.
+
 export struct QuerySet {
     handle: mut ffi.WGPUQuerySetImpl;
 }
 
 extern C const WGPU_DEPTH_SLICE_UNDEFINED: u32;
 
-export ref struct RequestAdapterOptions {
+export struct RequestAdapterOptions {
     featureLevel: FeatureLevel = FeatureLevel.Core;
     powerPreference: PowerPreference = PowerPreference.Undefined;
     forceFallbackAdapter: bool = false;
@@ -19,7 +47,7 @@ export ref struct RequestAdapterOptions {
 }
 
 export type RequestAdapterCallback = (status: RequestAdapterStatus, adapter: Adapter, message: str) => void :: final;
-export ref struct RequestAdapterCallbackInfo {
+export struct RequestAdapterCallbackInfo {
     callback: RequestAdapterCallback;
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
 }
@@ -34,7 +62,7 @@ fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mu
 
 
 
-export ref struct Limits {
+export struct Limits {
     maxTextureDimension1D: u32 = 0;
     maxTextureDimension2D: u32 = 0;
     maxTextureDimension3D: u32 = 0;
@@ -105,11 +133,11 @@ export ref struct Limits {
     }
 }
 
-export ref struct QueueDescriptor {
+export struct QueueDescriptor {
     debugLabel?: str;
 }
 
-export ref struct DeviceDescriptor {
+export struct DeviceDescriptor {
     debugLabel?: str;
     requiredFeatures: []FeatureName = [];
     requiredLimits: Limits | none = none;
@@ -119,7 +147,7 @@ export ref struct DeviceDescriptor {
 }
 
 export type RequestDeviceCallback = (status: RequestDeviceStatus, device: Device, message: str) => void :: final;
-export ref struct RequestDeviceCallbackInfo {
+export struct RequestDeviceCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
     callback: RequestDeviceCallback;
 }
