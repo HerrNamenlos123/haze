@@ -1951,8 +1951,20 @@ export namespace Conversion {
       members.addVariants(unionMembers);
       members.constrainFromConstraints(constraints, sourceExprId);
 
+      // A union already narrowed down to its bool member (`bool | null`
+      // after an `is not null` check) converts by extracting that member,
+      // not by the existence check below, which would need a nullish
+      // variant that the narrowing just ruled out.
+      const narrowedToTargetBool =
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.bool &&
+        members.possibleVariants.size === 1 &&
+        sr.e.resolveAlias([...members.possibleVariants][0]) ===
+          resolvedTargetTypeUseId;
+
       // Union to bool
       if (
+        !narrowedToTargetBool &&
         resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
         resolvedTargetTypeDef.primitive === EPrimitive.bool
       ) {

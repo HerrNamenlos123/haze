@@ -1,0 +1,58 @@
+// ============================================================================
+// REGRESSION TEST — overload resolution with an untyped aggregate literal.
+//
+// An untyped literal argument (`{}`, `{ top: 1 }`, `[]`) is deferred during
+// overload matching because its type comes from the chosen parameter. It used
+// to disqualify NO overload, so `p({})` against `p(value: real)` and
+// `p(value: Full)` matched both "exactly" and was reported as ambiguous
+// (H7058). Such a literal can only ever become a struct or an array, so an
+// overload whose parameter is neither (nor a nullable union of one) is now
+// rejected for it (src/Semantic/Elaborate.ts, FunctionOverloadChoose).
+// ============================================================================
+
+namespace cases_overload_aggregate_literal {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "overloads: an untyped aggregate literal picks the struct/array overload",
+            """
+struct Full { top: real = 0; }
+struct Op { v: real = 0; }
+fn p(value: real): Op { return Op { v: value }; }
+fn p(value: Full): Op { return Op { v: value.top + 100.0 }; }
+fn q(value: real): Op { return Op { v: value }; }
+fn q(value: Full | none): Op { if value is Full { return Op { v: value.top + 100.0 }; } return Op { v: -1.0 }; }
+fn r(value: str): Op { return Op { v: 1.0 }; }
+fn r(value: []int): Op { return Op { v: 2.0 }; }
+fn s2(a: int, value: real): Op { return Op { v: value }; }
+fn s2(a: int, value: Full): Op { return Op { v: value.top + 100.0 }; }
+fn main(): int {
+    fmt.println(f"{p(1).v} {p({}).v} {p({ top: 2 }).v}");
+    fmt.println(f"{q(1).v} {q({}).v} {q(({ top: 3 })).v}");
+    fmt.println(f"{r("x").v} {r([1]).v} {r([]).v}");
+    fmt.println(f"{s2(1, 2).v} {s2(1, {}).v}");
+    return 0;
+}
+""",
+            """
+1 100 102
+1 100 103
+1 2 2
+2 100
+""");
+
+        s.compileFails(
+            "overloads: two struct overloads are still ambiguous for an untyped literal",
+            """
+struct A { x: int = 0; }
+struct B { y: int = 0; }
+fn p(value: A): int { return 1; }
+fn p(value: B): int { return 2; }
+fn main(): int {
+    return p({});
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.AmbiguousOverloadCandidates)]);
+    }
+}

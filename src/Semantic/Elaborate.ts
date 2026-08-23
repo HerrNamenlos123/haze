@@ -689,6 +689,9 @@ export class SemanticElaborator {
   }
 
   binaryExpr(binaryExpr: Collect.BinaryExpr, inference: Semantic.Inference) {
+    if (binaryExpr.operation === EBinaryOperation.NullishCoalesce) {
+      return this.nullishCoalesce(binaryExpr, inference);
+    }
     if (binaryExpr.operation === EBinaryOperation.BoolAnd) {
       let [left, leftId] = this.expr(binaryExpr.left, inference);
       this.assertNotIntrinsic(left, "used in binary operations");
@@ -3054,6 +3057,7 @@ export class SemanticElaborator {
           [EBinaryOperation.BitwiseOr]: null,
           [EBinaryOperation.BoolAnd]: null,
           [EBinaryOperation.BoolOr]: null,
+          [EBinaryOperation.NullishCoalesce]: null,
         };
 
       const overloadedOp = operatorMap[operation];
@@ -3367,7 +3371,20 @@ export class SemanticElaborator {
     exprId: Collect.ExprId,
     inference: Semantic.Inference
   ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const preElaborated = this.preElaboratedExprs.get(exprId);
+    if (preElaborated) {
+      return preElaborated;
+    }
+
     const expr = this.sr.cc.exprNodes.get(exprId);
+
+    // A postfix chain containing a `?.` is elaborated as a unit from its top.
+    if (
+      this.postfixObjectOf(expr) !== null &&
+      this.spineHasOptionalChaining(exprId)
+    ) {
+      return this.elaborateOptionalChain(exprId, inference);
+    }
 
     let result: Semantic.Expression;
     let resultId: Semantic.ExprId;
@@ -3937,83 +3954,242 @@ export class SemanticElaborator {
     return enumTypeId;
   }
 
-  optionalChainingMemberAccess(
-    memberAccess: Collect.OptionalChainingMemberAccessExpr,
+  // ── Optional chaining (`?.`) and nullish coalescing (`??`) ─────────────────
+  //
+  // Both follow TypeScript. A `?.` short-circuits the REST of its postfix
+  // chain: in `a?.b.c()` a nullish `a` makes the whole expression yield the
+  // nullish value `a` held (null stays null, none stays none), and `.c()` is
+  // never evaluated. Parentheses end a chain: `(a?.b).c` accesses `.c` on the
+  // `B | null` union and is an error, as in TypeScript.
+  //
+  // The AST nests postfix operations as ordinary expressions
+  // (`Call(Member(OptMember(a, "b"), "c"))`), which is kept as is. The chain
+  // is instead elaborated as a unit: the postfix spine is collected, and each
+  // `?.` on it whose receiver can be nullish wraps the elaboration of all the
+  // operations above it in the short-circuit block below. Operations above a
+  // `?.` are elaborated through their normal elaborators, with the already
+  // narrowed receiver handed in via preElaboratedExprs, so member lookup,
+  // overload resolution, subscripts and reflection calls all behave exactly
+  // as they do outside a chain.
+
+  // Collect expressions whose semantic result is already known. expr()
+  // consults this first; the chain elaborator uses it to hand a narrowed
+  // receiver to the normal member/call/subscript elaborators.
+  preElaboratedExprs: Map<
+    Collect.ExprId,
+    readonly [Semantic.Expression, Semantic.ExprId]
+  > = new Map();
+
+  // The operand a postfix node applies to, or null for non-postfix nodes.
+  postfixObjectOf(expr: Collect.Expressions): Collect.ExprId | null {
+    switch (expr.variant) {
+      case Collect.ENode.MemberAccessExpr:
+      case Collect.ENode.OptionalChainingMemberAccessExpr:
+      case Collect.ENode.ArraySubscriptExpr:
+        return expr.expr;
+      case Collect.ENode.ExprCallExpr:
+        return expr.calledExpr;
+      default:
+        return null;
+    }
+  }
+
+  // Does a `?.` that still needs short-circuit handling lie on the postfix
+  // spine of exprId? A `?.` whose receiver is pre-elaborated has already been
+  // narrowed by the chain elaborator and behaves like a plain `.`.
+  spineHasOptionalChaining(exprId: Collect.ExprId): boolean {
+    let cur = exprId;
+    for (;;) {
+      const node = this.sr.cc.exprNodes.get(cur);
+      const object = this.postfixObjectOf(node);
+      if (object === null || this.preElaboratedExprs.has(object)) {
+        return false;
+      }
+      if (node.variant === Collect.ENode.OptionalChainingMemberAccessExpr) {
+        return true;
+      }
+      cur = object;
+    }
+  }
+
+  withPreElaborated<T>(
+    collectId: Collect.ExprId,
+    value: readonly [Semantic.Expression, Semantic.ExprId],
+    fn: () => T
+  ): T {
+    const previous = this.preElaboratedExprs.get(collectId);
+    this.preElaboratedExprs.set(collectId, value);
+    try {
+      return fn();
+    } finally {
+      if (previous) {
+        this.preElaboratedExprs.set(collectId, previous);
+      } else {
+        this.preElaboratedExprs.delete(collectId);
+      }
+    }
+  }
+
+  // Split a possibly-nullish union into its `null`/`none` members and the
+  // rest. Returns null when the type is not a union containing `null` or
+  // `none`, i.e. when a value of it can never be nullish.
+  nullishPartsOf(typeUseId: Semantic.TypeUseId): {
+    hasNull: boolean;
+    hasNone: boolean;
+    remaining: Semantic.TypeUseId[];
+  } | null {
+    const resolved = this.resolveAlias(typeUseId);
+    const use = this.sr.typeUseNodes.get(resolved);
+    const def = this.sr.typeDefNodes.get(use.type);
+    // A bare `null` / `none` value is always nullish.
+    if (resolved === this.sr.b.nullType()) {
+      return { hasNull: true, hasNone: false, remaining: [] };
+    }
+    if (resolved === this.sr.b.noneType()) {
+      return { hasNull: false, hasNone: true, remaining: [] };
+    }
+    let members: Semantic.TypeUseId[];
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      members = def.members;
+    } else if (def.variant === Semantic.ENode.TaggedUnionDatatype) {
+      members = def.members.map((m) => m.type);
+    } else {
+      return null;
+    }
+    const nullType = this.sr.b.nullType();
+    const noneType = this.sr.b.noneType();
+    const hasNull = members.some((m) => this.resolveAlias(m) === nullType);
+    const hasNone = members.some((m) => this.resolveAlias(m) === noneType);
+    if (!hasNull && !hasNone) {
+      return null;
+    }
+    const remaining = members.filter((m) => {
+      const r = this.resolveAlias(m);
+      return r !== nullType && r !== noneType;
+    });
+    return { hasNull, hasNone, remaining };
+  }
+
+  // Entry point for the top of a postfix chain containing a `?.`.
+  elaborateOptionalChain(
+    topId: Collect.ExprId,
     inference: Semantic.Inference
   ): readonly [Semantic.Expression, Semantic.ExprId] {
-    let [object, objectId] = this.expr(memberAccess.expr, inference);
-    let objectTypeUse = this.sr.typeUseNodes.get(object.type);
-    let objectTypeDef = this.sr.typeDefNodes.get(objectTypeUse.type);
+    // Collect the postfix spine, top first, down to the first non-postfix
+    // (or already elaborated) node.
+    const spine: Collect.ExprId[] = [];
+    let cur = topId;
+    for (;;) {
+      const node = this.sr.cc.exprNodes.get(cur);
+      const object = this.postfixObjectOf(node);
+      if (object === null || this.preElaboratedExprs.has(object)) {
+        break;
+      }
+      spine.push(cur);
+      cur = object;
+    }
+    // Bottom first. Everything below the lowest `?.` is an ordinary
+    // expression and is elaborated as one.
+    spine.reverse();
+    const lowest = spine.findIndex(
+      (id) =>
+        this.sr.cc.exprNodes.get(id).variant ===
+        Collect.ENode.OptionalChainingMemberAccessExpr
+    );
+    assert(lowest !== -1, "spine has no optional chaining node");
+    const ops = spine.slice(lowest);
+    const baseId = this.postfixObjectOf(this.sr.cc.exprNodes.get(ops[0]))!;
 
-    if (
-      objectTypeDef.variant !== Semantic.ENode.UntaggedUnionDatatype &&
-      objectTypeDef.variant !== Semantic.ENode.TaggedUnionDatatype
-    ) {
-      throw new CompilerError(
-        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
-        memberAccess.sourceloc,
-        HazeErrorCode.ExpressionTypeDoesNotAllowOptionalChainingAs
-      );
+    const base = this.expr(baseId, { unsafe: inference?.unsafe });
+    return this.applyChainOps(ops, 0, base, inference);
+  }
+
+  // Apply ops[i..] to an already elaborated receiver.
+  applyChainOps(
+    ops: Collect.ExprId[],
+    i: number,
+    object: readonly [Semantic.Expression, Semantic.ExprId],
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    if (i >= ops.length) {
+      return object;
+    }
+    const opId = ops[i];
+    const op = this.sr.cc.exprNodes.get(opId);
+
+    if (op.variant === Collect.ENode.OptionalChainingMemberAccessExpr) {
+      // A reactive/computed receiver (e.g. `ShallowReactive<T | null>`) is
+      // read first, exactly as a plain `.` would read it, so the `?.` sees
+      // the value inside.
+      const unwrappedId = this.unwrapReactiveOrComputedIfPossible(object[1]);
+      if (unwrappedId !== object[1]) {
+        object = [this.sr.exprNodes.get(unwrappedId), unwrappedId];
+      }
+      const parts = this.nullishPartsOf(object[0].type);
+      if (parts !== null) {
+        if (parts.remaining.length === 0) {
+          throw new CompilerError(
+            `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object[0].type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant and at least one other variant.`,
+            op.sourceloc,
+            HazeErrorCode.ExpressionTypeDoesNotAllowOptionalChainingAs3
+          );
+        }
+        return this.shortCircuitChainStep(ops, i, object, parts, inference);
+      }
+      // The receiver can never be null or none: `?.` behaves like `.`.
     }
 
-    const members =
-      objectTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
-        ? objectTypeDef.members
-        : objectTypeDef.members.map((m) => m.type);
+    // `recv.m(args)` / `recv?.m(args)` is one unit, so that the call's
+    // overload resolution (which drives the member lookup) sees the member.
+    const next = i + 1 < ops.length ? this.sr.cc.exprNodes.get(ops[i + 1]) : null;
+    const isMemberNode =
+      op.variant === Collect.ENode.MemberAccessExpr ||
+      op.variant === Collect.ENode.OptionalChainingMemberAccessExpr;
+    const isMethodCall =
+      isMemberNode &&
+      next !== null &&
+      next.variant === Collect.ENode.ExprCallExpr &&
+      next.calledExpr === opId;
+    const unitTop = isMethodCall ? ops[i + 1] : opId;
+    const consumed = isMethodCall ? 2 : 1;
+    const isLast = i + consumed >= ops.length;
 
-    let nullIndex = members.findIndex((m) => m === this.sr.b.nullType());
-    let noneIndex = members.findIndex((m) => m === this.sr.b.noneType());
+    const objectCollectId = this.postfixObjectOf(op)!;
+    const result = this.withPreElaborated(objectCollectId, object, () =>
+      this.expr(unitTop, isLast ? inference : { unsafe: inference?.unsafe })
+    );
+    return this.applyChainOps(ops, i + consumed, result, inference);
+  }
 
-    if (noneIndex === -1 && nullIndex === -1) {
-      throw new CompilerError(
-        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant.`,
-        memberAccess.sourceloc,
-        HazeErrorCode.ExpressionTypeDoesNotAllowOptionalChainingAs2
-      );
-    }
+  // One `?.` whose receiver can be nullish. Emits
+  //
+  //   do {
+  //     let tmp = <receiver>;
+  //     let result: <rest type> | null | none;
+  //     if (tmp is not null && tmp is not none) { result = <ops[i..] on narrowed tmp>; }
+  //     else if (tmp is none) { result = none; }
+  //     else if (tmp is null) { result = null; }
+  //     else { unreachable(); }
+  //     result
+  //   }
+  //
+  // where only the null/none variants the receiver actually has are checked
+  // and added to the result type, so the chain yields exactly the nullish
+  // value the receiver held.
+  shortCircuitChainStep(
+    ops: Collect.ExprId[],
+    i: number,
+    object: readonly [Semantic.Expression, Semantic.ExprId],
+    parts: { hasNull: boolean; hasNone: boolean; remaining: Semantic.TypeUseId[] },
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const op = this.sr.cc.exprNodes.get(ops[i]);
+    const sourceloc = op.sourceloc;
+    const [receiver, receiverId] = object;
 
-    let remainingMembers = new Set(members);
-    remainingMembers.delete(this.sr.b.nullType());
-    remainingMembers.delete(this.sr.b.noneType());
-
-    if (remainingMembers.size === 0) {
-      throw new CompilerError(
-        `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, object.type)}' does not allow optional chaining, as it requires a union with a 'null' or 'none' variant and at least one other variant.`,
-        memberAccess.sourceloc,
-        HazeErrorCode.ExpressionTypeDoesNotAllowOptionalChainingAs3
-      );
-    }
-
-    // Example:
-    // foo?.bar
-    // should turn into
-    // do unsafe {
-    //   let tmp = foo;
-    //   let result = uninitialized;
-    //   if (tmp is not null && tmp is not none) {
-    //     result = tmp.bar;
-    //   }
-    //   else if (tmp is none) {
-    //     result = none;
-    //   }
-    //   else if (tmp is null) {
-    //     result = null;
-    //   }
-    //   else {
-    //     unreachable();
-    //   }
-    //   result;
-    // })
-
-    // Example:
-    // foo = Foo | null | none
-    // Foo.bar = str
-    // foo?.bar = str | null | none
-
-    // narrowedSourceType = Foo
-    const narrowedSourceType = this.sr.b.untaggedUnionTypeUse(
-      [...remainingMembers],
-      memberAccess.sourceloc
+    const narrowedType = this.sr.b.untaggedUnionTypeUse(
+      parts.remaining,
+      sourceloc
     );
 
     const [tempVariable, tempVariableId] = this.sr.b.addSymbol(this.sr, {
@@ -4027,63 +4203,95 @@ export class SemanticElaborator {
       mutability: EVariableMutability.Default,
       requiresHoisting: false,
       name: makeTempName(),
-      sourceloc: memberAccess.sourceloc,
+      sourceloc: sourceloc,
       parentSymbolId: null,
-      type: object.type,
+      // Resolved so that the tag checks below see the union itself, not an alias of it.
+      type: this.resolveAlias(receiver.type),
       consumed: false,
       variableContext: EVariableContext.FunctionLocal,
     });
 
-    // The condition for the IF
-    // condition = (foo is not null && foo is not none)
     const narrowingTypes: Semantic.TypeUseId[] = [];
-    if (nullIndex !== -1) {
+    if (parts.hasNull) {
       narrowingTypes.push(this.sr.b.nullType());
     }
-    if (noneIndex !== -1) {
+    if (parts.hasNone) {
       narrowingTypes.push(this.sr.b.noneType());
     }
     const [_, narrowingConditionId] = this.sr.b.unionTagCheckTypeIsNeitherOf(
-      this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
+      this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
       narrowingTypes
     );
 
     const constraints = this.currentContext.constraints.clone();
     this.sr.e.buildLogicalConstraintSet(constraints, narrowingConditionId);
-    // narrowedValueId = foo (actual Foo)
     const narrowedValueId = Conversion.MakeConversionOrThrow(
       this.sr,
-      this.sr.b.symbolValue(tempVariableId, memberAccess.sourceloc)[1],
-      narrowedSourceType,
+      this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+      narrowedType,
       constraints,
-      memberAccess.sourceloc,
+      sourceloc,
       Conversion.Mode.Implicit,
       false
     );
+    const narrowedValue = this.sr.exprNodes.get(narrowedValueId);
 
-    // resultMember = foo.bar (string)
-    const [resultMember, resultMemberId] = this.resolveMemberAccess(
-      narrowedValueId,
-      memberAccess.memberName,
-      memberAccess.genericArgs,
-      inference,
-      memberAccess.sourceloc
+    // The rest of the chain, applied to the narrowed receiver.
+    const [rest, restId] = this.withAdditionalConstraints(constraints, () =>
+      this.applyChainOps(ops, i, [narrowedValue, narrowedValueId], inference)
     );
 
-    const resultMembers = [resultMember.type];
-    if (nullIndex !== -1) {
+    if (Conversion.isVoidById(this.sr, rest.type)) {
+      // The chain produces no value (e.g. `a?.items.push(x)`): emit just
+      // the guarded statement, no result variable.
+      const blockScopeId = this.sr.b.blockScope(
+        [
+          this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.VariableStatement,
+            name: tempVariable.name,
+            comptime: false,
+            sourceloc: sourceloc,
+            value: receiverId,
+            intrinsicTakeAddrOfValue: false,
+            stackrefInit: null,
+            variableSymbol: tempVariableId,
+          })[1],
+          this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.IfStatement,
+            isLetBinding: false,
+            condition: narrowingConditionId,
+            elseIfs: [],
+            sourceloc: sourceloc,
+            thenBlock: this.sr.b.blockScope(
+              [this.sr.b.exprStatement(restId)[1]],
+              this.sr.b.noneExpr()[1],
+              sourceloc
+            )[1],
+          })[1],
+        ],
+        this.sr.b.noneExpr()[1],
+        sourceloc
+      )[1];
+      return this.sr.b.blockScopeExpr(
+        blockScopeId,
+        Semantic.FlowResult.fallthrough()
+          .withAll(receiver.flow)
+          .withAll(rest.flow),
+        Semantic.WriteResult.empty()
+          .withAll(receiver.writes)
+          .withAll(rest.writes)
+      );
+    }
+
+    const resultMembers = [rest.type];
+    if (parts.hasNull) {
       resultMembers.push(this.sr.b.nullType());
     }
-    if (noneIndex !== -1) {
+    if (parts.hasNone) {
       resultMembers.push(this.sr.b.noneType());
     }
-    // resultType = str | null | none
-    const resultType = this.sr.b.untaggedUnionTypeUse(
-      resultMembers,
-      memberAccess.sourceloc
-    );
+    const resultType = this.sr.b.untaggedUnionTypeUse(resultMembers, sourceloc);
 
-    // resultVariable = str | null | none
     const [resultVariable, resultVariableId] = this.sr.b.addSymbol(this.sr, {
       variant: Semantic.ENode.VariableSymbol,
       comptime: false,
@@ -4095,12 +4303,53 @@ export class SemanticElaborator {
       mutability: EVariableMutability.Default,
       requiresHoisting: false,
       name: makeTempName(),
-      sourceloc: memberAccess.sourceloc,
+      sourceloc: sourceloc,
       parentSymbolId: null,
       type: resultType,
       consumed: false,
       variableContext: EVariableContext.FunctionLocal,
     });
+
+    const assignResult = (valueId: Semantic.ExprId) =>
+      this.sr.b.blockScope(
+        [
+          this.sr.b.exprStatement(
+            this.sr.b.assignment(
+              this.sr.b.symbolValue(resultVariableId, sourceloc)[1],
+              EAssignmentOperation.Rebind,
+              valueId,
+              constraints,
+              sourceloc,
+              inference
+            )[1]
+          )[1],
+        ],
+        this.sr.b.noneExpr()[1],
+        sourceloc
+      )[1];
+
+    const elseIfs: {
+      condition: Semantic.ExprId;
+      thenBlock: Semantic.BlockScopeId;
+    }[] = [];
+    if (parts.hasNone) {
+      elseIfs.push({
+        condition: this.sr.b.unionTagCheckTypeIs(
+          this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+          this.sr.b.noneType()
+        )[1],
+        thenBlock: assignResult(this.sr.b.noneExpr()[1]),
+      });
+    }
+    if (parts.hasNull) {
+      elseIfs.push({
+        condition: this.sr.b.unionTagCheckTypeIs(
+          this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+          this.sr.b.nullType()
+        )[1],
+        thenBlock: assignResult(this.sr.b.nullExpr()[1]),
+      });
+    }
 
     const blockScopeId = this.sr.b.blockScope(
       [
@@ -4108,8 +4357,8 @@ export class SemanticElaborator {
           variant: Semantic.ENode.VariableStatement,
           name: tempVariable.name,
           comptime: false,
-          sourceloc: memberAccess.sourceloc,
-          value: objectId,
+          sourceloc: sourceloc,
+          value: receiverId,
           intrinsicTakeAddrOfValue: false,
           stackrefInit: null,
           variableSymbol: tempVariableId,
@@ -4118,7 +4367,7 @@ export class SemanticElaborator {
           variant: Semantic.ENode.VariableStatement,
           name: resultVariable.name,
           comptime: false,
-          sourceloc: memberAccess.sourceloc,
+          sourceloc: sourceloc,
           value: null,
           intrinsicTakeAddrOfValue: false,
           stackrefInit: null,
@@ -4128,119 +4377,300 @@ export class SemanticElaborator {
           variant: Semantic.ENode.IfStatement,
           isLetBinding: false,
           condition: narrowingConditionId,
-          elseIfs: (() => {
-            const elseIfs: {
-              condition: Semantic.ExprId;
-              thenBlock: Semantic.BlockScopeId;
-            }[] = [];
-
-            if (noneIndex !== -1) {
-              elseIfs.push({
-                condition: this.sr.b.unionTagCheckTypeIs(
-                  this.sr.b.symbolValue(
-                    tempVariableId,
-                    memberAccess.sourceloc
-                  )[1],
-                  this.sr.b.noneType()
-                )[1],
-                thenBlock: this.sr.b.blockScope(
-                  [
-                    this.sr.b.exprStatement(
-                      this.sr.b.assignment(
-                        this.sr.b.symbolValue(
-                          resultVariableId,
-                          memberAccess.sourceloc
-                        )[1],
-                        EAssignmentOperation.Rebind,
-                        this.sr.b.noneExpr()[1],
-                        constraints,
-                        memberAccess.sourceloc,
-                        inference
-                      )[1]
-                    )[1],
-                  ],
-                  this.sr.b.noneExpr()[1],
-                  memberAccess.sourceloc
-                )[1],
-              });
-            }
-
-            if (nullIndex !== -1) {
-              elseIfs.push({
-                condition: this.sr.b.unionTagCheckTypeIs(
-                  this.sr.b.symbolValue(
-                    tempVariableId,
-                    memberAccess.sourceloc
-                  )[1],
-                  this.sr.b.nullType()
-                )[1],
-                thenBlock: this.sr.b.blockScope(
-                  [
-                    this.sr.b.exprStatement(
-                      this.sr.b.assignment(
-                        this.sr.b.symbolValue(
-                          resultVariableId,
-                          memberAccess.sourceloc
-                        )[1],
-                        EAssignmentOperation.Rebind,
-                        this.sr.b.nullExpr()[1],
-                        constraints,
-                        memberAccess.sourceloc,
-                        inference
-                      )[1]
-                    )[1],
-                  ],
-                  this.sr.b.noneExpr()[1],
-                  memberAccess.sourceloc
-                )[1],
-              });
-            }
-
-            return elseIfs;
-          })(),
-          sourceloc: memberAccess.sourceloc,
-          thenBlock: this.sr.b.blockScope(
-            [
-              this.sr.b.exprStatement(
-                this.sr.b.assignment(
-                  this.sr.b.symbolValue(
-                    resultVariableId,
-                    memberAccess.sourceloc
-                  )[1],
-                  EAssignmentOperation.Rebind,
-                  resultMemberId,
-                  constraints,
-                  memberAccess.sourceloc,
-                  inference
-                )[1]
-              )[1],
-            ],
-            this.sr.b.noneExpr()[1],
-            memberAccess.sourceloc
-          )[1],
+          elseIfs: elseIfs,
+          sourceloc: sourceloc,
+          thenBlock: assignResult(restId),
           else: this.sr.b.blockScope(
             [
               this.sr.b.exprStatement(
-                this.sr.b.callUnreachable(memberAccess.sourceloc)[1]
+                this.sr.b.callUnreachable(sourceloc)[1]
               )[1],
             ],
             this.sr.b.noneExpr()[1],
-            memberAccess.sourceloc
+            sourceloc
           )[1],
         })[1],
       ],
-      this.sr.b.symbolValue(resultVariableId, memberAccess.sourceloc)[1],
-      memberAccess.sourceloc
+      this.sr.b.symbolValue(resultVariableId, sourceloc)[1],
+      sourceloc
     )[1];
 
     return this.sr.b.blockScopeExpr(
       blockScopeId,
       Semantic.FlowResult.fallthrough()
         .with(Semantic.FlowType.Return)
-        .withAll(object.flow),
-      Semantic.WriteResult.empty().withAll(object.writes)
+        .withAll(receiver.flow)
+        .withAll(rest.flow),
+      Semantic.WriteResult.empty().withAll(receiver.writes).withAll(rest.writes)
     );
   }
+
+  // A `?.` reached through the normal dispatch. Its receiver has already
+  // been narrowed by the chain elaborator (see spineHasOptionalChaining), so
+  // this is a plain member access.
+  optionalChainingMemberAccess(
+    memberAccess: Collect.OptionalChainingMemberAccessExpr,
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    assert(
+      this.preElaboratedExprs.has(memberAccess.expr),
+      "optional chaining node reached outside of chain elaboration"
+    );
+    const [_object, objectId] = this.expr(memberAccess.expr, inference);
+    return this.resolveMemberAccess(
+      objectId,
+      memberAccess.memberName,
+      memberAccess.genericArgs,
+      inference,
+      memberAccess.sourceloc
+    );
+  }
+
+  // `a ?? b`: `a` unless it is null or none, in which case `b`. Emits
+  //
+  //   do { let tmp = a; (tmp is not null && tmp is not none) ? narrowed(tmp) : b }
+  //
+  // with the result type `narrowed(a) | typeof b`, so `a ?? b` with a
+  // nullable `b` stays nullable and with a non-nullable `b` strips both
+  // `null` and `none` from `a`.
+  nullishCoalesce(
+    binaryExpr: Collect.BinaryExpr,
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const sourceloc = binaryExpr.sourceloc;
+    let [left, leftId] = this.expr(binaryExpr.left, {
+      unsafe: inference?.unsafe,
+    });
+    this.assertNotIntrinsic(left, "used in binary operations");
+    leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
+    left = this.sr.exprNodes.get(leftId);
+
+    const parts = this.nullishPartsOf(left.type);
+    if (parts === null) {
+      // The left side can never be nullish, so the right side is dead. It is
+      // still elaborated so that it is type-checked.
+      printWarningMessage(
+        `The left operand of '??' has type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, left.type)}', which can never be null or none; the right operand is never used`,
+        sourceloc,
+        HazeErrorCode.NullishCoalesceLeftNeverNullish
+      );
+      this.expr(binaryExpr.right, {
+        gonnaInstantiateStructWithType: left.type,
+        unsafe: inference?.unsafe,
+      });
+      return [left, leftId];
+    }
+
+    const narrowedType =
+      parts.remaining.length > 0
+        ? this.sr.b.untaggedUnionTypeUse(parts.remaining, sourceloc)
+        : null;
+
+    const [tempVariable, tempVariableId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: false,
+      export: false,
+      extern: EExternLanguage.None,
+      memberOfStruct: null,
+      mutability: EVariableMutability.Default,
+      requiresHoisting: false,
+      name: makeTempName(),
+      sourceloc: sourceloc,
+      parentSymbolId: null,
+      type: this.resolveAlias(left.type),
+      consumed: false,
+      variableContext: EVariableContext.FunctionLocal,
+    });
+
+    const tempStatement = this.sr.b.addStatement(this.sr, {
+      variant: Semantic.ENode.VariableStatement,
+      name: tempVariable.name,
+      comptime: false,
+      sourceloc: sourceloc,
+      value: leftId,
+      intrinsicTakeAddrOfValue: false,
+      stackrefInit: null,
+      variableSymbol: tempVariableId,
+    })[1];
+
+    if (narrowedType === null) {
+      // The left side is ALWAYS null or none (e.g. a literal `none`): the
+      // result is just the right side. The left side is still evaluated
+      // for its side effects.
+      const [right, rightId] = this.expr(binaryExpr.right, inference);
+      const blockScopeId = this.sr.b.blockScope(
+        [tempStatement],
+        rightId,
+        sourceloc
+      )[1];
+      return this.sr.b.blockScopeExpr(
+        blockScopeId,
+        Semantic.FlowResult.fallthrough()
+          .withAll(left.flow)
+          .withAll(right.flow),
+        Semantic.WriteResult.empty().withAll(left.writes).withAll(right.writes)
+      );
+    }
+
+    const narrowingTypes: Semantic.TypeUseId[] = [];
+    if (parts.hasNull) {
+      narrowingTypes.push(this.sr.b.nullType());
+    }
+    if (parts.hasNone) {
+      narrowingTypes.push(this.sr.b.noneType());
+    }
+    const [condition, conditionId] = this.sr.b.unionTagCheckTypeIsNeitherOf(
+      this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+      narrowingTypes
+    );
+
+    const constraints = this.currentContext.constraints.clone();
+    this.sr.e.buildLogicalConstraintSet(constraints, conditionId);
+    const narrowedValueId = Conversion.MakeConversionOrThrow(
+      this.sr,
+      this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+      narrowedType,
+      constraints,
+      sourceloc,
+      Conversion.Mode.Implicit,
+      false
+    );
+
+    // The right side is only evaluated when the left is nullish; it gets the
+    // narrowed left type as a hint so that e.g. `x ?? Foo {}` infers.
+    let [right, rightId] = this.expr(binaryExpr.right, {
+      gonnaInstantiateStructWithType: narrowedType,
+      unsafe: inference?.unsafe,
+    });
+    rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
+    right = this.sr.exprNodes.get(rightId);
+    this.assertNotIntrinsic(right, "used in binary operations");
+
+    const rightProducesValue = right.flow.has(Semantic.FlowType.Fallthrough);
+
+    if (rightProducesValue && Conversion.isVoidById(this.sr, right.type)) {
+      // `a ?? sideEffect()` with a void right side: a statement, no value.
+      const blockScopeId = this.sr.b.blockScope(
+        [
+          tempStatement,
+          this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.IfStatement,
+            isLetBinding: false,
+            condition: this.sr.b.unionTagCheckTypeIsAnyOf(
+              this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+              narrowingTypes
+            )[1],
+            elseIfs: [],
+            sourceloc: sourceloc,
+            thenBlock: this.sr.b.blockScope(
+              [this.sr.b.exprStatement(rightId)[1]],
+              this.sr.b.noneExpr()[1],
+              sourceloc
+            )[1],
+          })[1],
+        ],
+        this.sr.b.noneExpr()[1],
+        sourceloc
+      )[1];
+      return this.sr.b.blockScopeExpr(
+        blockScopeId,
+        Semantic.FlowResult.fallthrough()
+          .withAll(left.flow)
+          .withAll(right.flow),
+        Semantic.WriteResult.empty().withAll(left.writes).withAll(right.writes)
+      );
+    }
+
+    // Result type: prefer the narrowed left type if the right side converts
+    // to it (`x ?? 0`, `r ?? R {}`), else the right type if the narrowed left
+    // converts to it, else the union of both (`x ?? "fallback"`).
+    let resultType: Semantic.TypeUseId = narrowedType;
+    let thenId: Semantic.ExprId = narrowedValueId;
+    let elseId: Semantic.ExprId = rightId;
+    if (rightProducesValue) {
+      const rightToLeft = Conversion.MakeConversion(
+        this.sr,
+        rightId,
+        narrowedType,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        inference?.unsafe ?? false
+      );
+      if (rightToLeft.ok) {
+        elseId = rightToLeft.expr;
+      } else {
+        const leftToRight = Conversion.MakeConversion(
+          this.sr,
+          narrowedValueId,
+          right.type,
+          constraints,
+          sourceloc,
+          Conversion.Mode.Implicit,
+          inference?.unsafe ?? false
+        );
+        if (leftToRight.ok) {
+          resultType = right.type;
+          thenId = leftToRight.expr;
+        } else {
+          resultType = this.sr.b.untaggedUnionTypeUse(
+            [narrowedType, right.type],
+            sourceloc
+          );
+          thenId = Conversion.MakeConversionOrThrow(
+            this.sr,
+            narrowedValueId,
+            resultType,
+            constraints,
+            sourceloc,
+            Conversion.Mode.Implicit,
+            inference?.unsafe ?? false
+          );
+          elseId = Conversion.MakeConversionOrThrow(
+            this.sr,
+            rightId,
+            resultType,
+            this.currentContext.constraints,
+            sourceloc,
+            Conversion.Mode.Implicit,
+            inference?.unsafe ?? false
+          );
+        }
+      }
+    }
+
+    const flow = Semantic.FlowResult.fallthrough()
+      .withAll(left.flow)
+      .withAll(right.flow);
+    const writes = Semantic.WriteResult.empty()
+      .withAll(left.writes)
+      .withAll(right.writes);
+
+    const [_ternary, ternaryId] = this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.TernaryExpr,
+      condition: conditionId,
+      thenExpr: thenId,
+      else: elseId,
+      flow: flow,
+      writes: writes,
+      instanceIds: [],
+      isTemporary: true,
+      sourceloc: sourceloc,
+      type: resultType,
+      thenProducesValue: true,
+      elseProducesValue: rightProducesValue,
+    });
+
+    const blockScopeId = this.sr.b.blockScope(
+      [tempStatement],
+      ternaryId,
+      sourceloc
+    )[1];
+    return this.sr.b.blockScopeExpr(blockScopeId, flow, writes);
+  }
+
 
   memberAccess(
     memberAccess: Collect.MemberAccessExpr,
@@ -5286,10 +5716,57 @@ export class SemanticElaborator {
     return parameterPackTypes;
   }
 
+  // Can an untyped aggregate literal (`{}`, `{ a: 1 }`, `[1, 2]`) be built
+  // as a value of this type? Mirrors what structInstantiation() accepts when
+  // given the type as its hint: a struct, an array, or a union whose only
+  // non-nullish member is one of those.
+  canBuildUntypedAggregateLiteralAs(typeUseId: Semantic.TypeUseId): boolean {
+    const resolved = this.resolveAlias(typeUseId);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (
+      def.variant === Semantic.ENode.StructDatatype ||
+      def.variant === Semantic.ENode.FixedArrayDatatype ||
+      def.variant === Semantic.ENode.DynamicArrayDatatype
+    ) {
+      return true;
+    }
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const parts = this.nullishPartsOf(resolved);
+      const candidates = parts ? parts.remaining : def.members;
+      return (
+        candidates.length === 1 &&
+        this.canBuildUntypedAggregateLiteralAs(candidates[0])
+      );
+    }
+    return false;
+  }
+
+  // The untyped aggregate literal behind a (possibly parenthesised)
+  // argument, or null.
+  untypedAggregateLiteralBehind(exprId: Collect.ExprId): Collect.ExprId | null {
+    const expr = this.sr.cc.exprNodes.get(exprId);
+    if (expr.variant === Collect.ENode.ParenthesisExpr) {
+      return this.untypedAggregateLiteralBehind(expr.expr);
+    }
+    if (
+      expr.variant === Collect.ENode.AggregateLiteralExpr &&
+      expr.structType === null
+    ) {
+      return exprId;
+    }
+    return null;
+  }
+
   FunctionOverloadChoose(
     overloadGroupId: Collect.SymbolId,
     calledWithArgs:
-      | { index: number; exprId: Semantic.ExprId | null }[]
+      | {
+          index: number;
+          exprId: Semantic.ExprId | null;
+          collectExprId?: Collect.ExprId;
+        }[]
       | undefined,
     usageSourceLocation: SourceLoc
   ) {
@@ -5411,6 +5888,29 @@ export class SemanticElaborator {
             !(passed && passed.exprId) ||
             signatureParam.kind === "param-pack"
           ) {
+            // An untyped aggregate literal (`p({})`) is deferred because its
+            // type comes from the parameter -- but it can only ever become a
+            // struct or an array, so a parameter that is neither (e.g. `real`)
+            // cannot take it. Without this, `p({})` against `p(real)` and
+            // `p(Full)` matched both and was reported as ambiguous.
+            if (
+              passed &&
+              passed.exprId === null &&
+              passed.collectExprId !== undefined &&
+              signatureParam.kind !== "param-pack" &&
+              signatureParam.type !== null &&
+              this.untypedAggregateLiteralBehind(passed.collectExprId) !==
+                null &&
+              isTypeConcrete(this.sr, signatureParam.type) &&
+              !this.canBuildUntypedAggregateLiteralAs(signatureParam.type)
+            ) {
+              matches = false;
+              reason = `Parameter #${i + 1} of type ${Semantic.serializeTypeUse(
+                this.sr,
+                signatureParam.type
+              )} cannot be built from an aggregate literal`;
+              return;
+            }
             // This parameter is not passed or is not concrete, so hope that the others are enough for a match
             // matches = false;
             // reason = `Parameter #${i + 1} does not have a concrete type`;

@@ -1,4 +1,4 @@
-import { EBinaryOperation } from "../shared/AST";
+import { BinaryOperationToString, EBinaryOperation } from "../shared/AST";
 import {
   type CTValue,
   CTValueHelpers,
@@ -227,8 +227,11 @@ export function EvalCTFE(
         }
 
         default:
-          assert(false, expr.operation.toString());
-          throw new Error();
+          // Not folded at compile time; callers fall back to the runtime
+          // expression.
+          return err(
+            `Binary operation '${BinaryOperationToString(expr.operation)}' cannot be evaluated at compile time`
+          );
       }
     }
 

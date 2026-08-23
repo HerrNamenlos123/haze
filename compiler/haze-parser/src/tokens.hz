@@ -145,6 +145,7 @@ export enum TK {
     AmpersandQuestion,  // &?
     QuestionAmpersand,  // ?&
     QuestionDot,        // ?.
+    DoubleQuestion,     // ??
     QuestionExcl,       // ?!
     Or,                 // |
     DoubleAnd,          // &&
@@ -302,6 +303,7 @@ export fn tokenName(k: TK): str {
     if k == TK.AmpersandQuestion { return "&?"; }
     if k == TK.QuestionAmpersand { return "?&"; }
     if k == TK.QuestionDot { return "?."; }
+    if k == TK.DoubleQuestion { return "??"; }
     if k == TK.QuestionExcl { return "?!"; }
     if k == TK.Or { return "|"; }
     if k == TK.DoubleAnd { return "&&"; }

@@ -2210,6 +2210,49 @@ export class SemanticBuilder {
     });
   }
 
+  unionTagCheckTypeIsAnyOf(
+    exprId: Semantic.ExprId,
+    comparedWith: Semantic.TypeUseId[]
+  ) {
+    const expr = this.sr.exprNodes.get(exprId);
+    const exprTypeUse = this.sr.typeUseNodes.get(expr.type);
+    const exprType = this.sr.typeDefNodes.get(exprTypeUse.type);
+
+    if (exprType.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const members = new Set(exprType.members);
+      for (const id of comparedWith) {
+        assert(
+          members.has(id),
+          "Union does not contain the type it is compared with"
+        );
+      }
+    } else if (exprType.variant === Semantic.ENode.TaggedUnionDatatype) {
+      const members = new Set(exprType.members.map((m) => m.type));
+      for (const id of comparedWith) {
+        assert(
+          members.has(id),
+          "Union does not contain the type it is compared with"
+        );
+      }
+    } else {
+      assert(false, "Union comparison on a non-union");
+    }
+
+    this.sr.e.consumeParamUse(exprId);
+    return this.addExpr(this.sr, {
+      variant: Semantic.ENode.UnionTagCheckExpr,
+      expr: exprId,
+      comparisonTypesAnd: comparedWith,
+      invertCheck: false,
+      isTemporary: true,
+      sourceloc: expr.sourceloc,
+      type: this.sr.b.boolType(),
+      instanceIds: [],
+      flow: expr.flow,
+      writes: expr.writes,
+    });
+  }
+
   unionTagRefTypeDef() {
     return this.addType(this.sr, {
       variant: Semantic.ENode.UnionTagRefDatatype,

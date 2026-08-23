@@ -42,6 +42,12 @@ namespace presets {
         };
     }
 
+    export fn p(value: ui_styling.StylePaddingFull): ui_styling.PaddingOp {
+        return ui_styling.PaddingOp {
+            padding: value,
+        };
+    }
+
     export fn gap(value: real): ui_styling.GapOp {
         return ui_styling.GapOp { value: computeSize(value) };
     }

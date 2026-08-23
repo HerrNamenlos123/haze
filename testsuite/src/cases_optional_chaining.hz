@@ -1,0 +1,418 @@
+// ============================================================================
+// REGRESSION TEST — optional chaining (`?.`) and nullish coalescing (`??`).
+//
+// Both follow TypeScript:
+//
+//   * `a ?? b` yields `a` unless it is `null` or `none`, in which case `b`.
+//     `b` is only evaluated when it is used; `a` is evaluated exactly once.
+//     The result type is the narrowed left type when the right converts to
+//     it, else the right type, else the union of both. `??` binds looser than
+//     every other binary operator and tighter than `?:`.
+//
+//   * `a?.b` short-circuits the REST of its postfix chain. `a?.b.c.d()` with
+//     a nullish `a` yields exactly the nullish value `a` held (null stays
+//     null, none stays none) and evaluates nothing further. Any mix of
+//     `.member`, `?.member`, `(args)` and `[index]` may follow a `?.`;
+//     parentheses end a chain. A `?.` on a receiver that can never be
+//     nullish is simply a `.`.
+//
+// Historically only the single-hop `a?.b` shape worked: the elaborator
+// rewrote each `?.` in isolation, so `.c` after `a?.b` was applied to the
+// `B | null` union and failed, and `a?.m()` produced an uncallable
+// `(closure | null)`. The chain is now elaborated as one unit from its top
+// (src/Semantic/Elaborate.ts, elaborateOptionalChain). `??` did not exist.
+//
+// The type checks are static_asserts on prettyName. Struct names are
+// module-qualified in prettyName, so unions that contain a struct are compared
+// against the prettyName of an explicitly declared variable of the expected
+// type rather than against a string.
+// ============================================================================
+
+namespace cases_optional_chaining {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── Optional chaining: values, types, every postfix shape ───────────
+        s.run(
+            "optional chaining: short-circuits the whole chain, yields the nullish value held",
+            """
+struct C { x: int = 7; fn twice(): int { return this.x * 2; } }
+struct B {
+    c: C | null = null;
+    arr: []int = [1, 2, 3];
+    fn getC(): C | none { return this.c is C ? this.c : none; }
+    fn val(): int { return 5; }
+    fn gen<T>(v: T): T { return v; }
+}
+ref struct A { b: B | none = none; }
+type MaybeA = A | null;
+fn mk(x: int): A | null { if x > 0 { return A { b: B { c: C {} } }; } return null; }
+fn show(name: str, v: int | null | none) {
+    if v is none { fmt.println(f"{name}: none"); }
+    else if v is null { fmt.println(f"{name}: null"); }
+    else { fmt.println(f"{name}: {v}"); }
+}
+
+fn main(): int {
+    let full: A | null = A { b: B { c: C {} } };
+    let aNull: A | null = null;
+    let bNone: A | null = A {};
+    let cNull: A | null = A { b: B {} };
+
+    // 1. Every hop optional. The result carries exactly the nullish variants
+    //    the receivers on the way can hold.
+    static_assert(typeof(full?.b?.c?.x).prettyName == "(int | null | none)", typeof(full?.b?.c?.x).prettyName);
+    let tB: B | null | none = none;
+    static_assert(typeof(full?.b).prettyName == typeof(tB).prettyName, typeof(full?.b).prettyName);
+    show("1 full", full?.b?.c?.x);
+    show("1 aNull", aNull?.b?.c?.x);
+    show("1 bNone", bNone?.b?.c?.x);
+    show("1 cNull", cNull?.b?.c?.x);
+
+    // 2. Plain `.` and `[]` after a `?.` are part of the chain.
+    static_assert(typeof(full?.b?.arr[0]).prettyName == "(int | null | none)", typeof(full?.b?.arr[0]).prettyName);
+    show("2 arr", full?.b?.arr[0]);
+    show("2 arr aNull", aNull?.b?.arr[0]);
+    let plainB: B | null = B { c: C {} };
+    static_assert(typeof(plainB?.c).prettyName == typeof(plainB?.c).prettyName);
+    show("2 dot", plainB?.arr[2]);
+
+    // 3. Method calls after a `?.`, including on a member further down.
+    show("3 val", full?.b?.val());
+    show("3 val bNone", bNone?.b?.val());
+    show("3 twice", full?.b?.c?.twice());
+    show("3 twice cNull", cNull?.b?.c?.twice());
+    show("3 twice aNull", aNull?.b?.c?.twice());
+
+    // 4. A method returning a nullable, then `?.` again.
+    static_assert(typeof(full?.b?.getC()?.x).prettyName == "(int | null | none)", typeof(full?.b?.getC()?.x).prettyName);
+    show("4 getC", full?.b?.getC()?.x);
+    show("4 getC cNull", cNull?.b?.getC()?.x);
+
+    // 5. Generic method call in a chain.
+    show("5 gen", full?.b?.gen<int>(9));
+    show("5 gen aNull", aNull?.b?.gen<int>(9));
+
+    // 6. `?.` on a receiver that can never be nullish is a plain `.`.
+    let pl = B {};
+    static_assert(typeof(pl?.val()).prettyName == "int", typeof(pl?.val()).prettyName);
+    show("6 plain", pl?.val());
+    // ... also in the middle of a chain (`b` here is a non-nullable member).
+    let a2: A | null = A { b: B { c: C {} } };
+    show("6 mid", a2?.b?.arr[1]);
+
+    // 7. A call as the chain's base, and a type alias as the receiver type.
+    show("7 mk1", mk(1)?.b?.c?.x);
+    show("7 mk0", mk(0)?.b?.c?.x);
+    let m: MaybeA = null;
+    show("7 alias", m?.b?.val());
+
+    // 8. Chains inside other expressions: arithmetic, conditions, f-strings,
+    //    call arguments, lambdas, loops, nested chains.
+    let sum = (full?.b?.val() ?? 0) + (aNull?.b?.val() ?? 100);
+    fmt.println(f"8 sum {sum}");
+    if (full?.b?.c?.x ?? 0) == 7 { fmt.println("8 cond"); }
+    fmt.println(f"8 fstr {full?.b?.val()} {aNull?.b?.val()}");
+    show("8 nested", full?.b?.gen<int>(cNull?.b?.val() ?? -1));
+    let f = (a: A | null) => { return a?.b?.c?.x; };
+    show("8 lambda", f(full));
+    show("8 lambda null", f(aNull));
+    for (let i = 0; i < 2; i++) { show(f"8 loop{i}", mk(i)?.b?.val()); }
+
+    // 9. A void chain is a statement; mutation through a chain reaches the
+    //    original (ref) object.
+    let r: A | null = A { b: B {} };
+    r?.b?.arr.push(99);
+    aNull?.b?.arr.push(99);
+    fmt.println(f"9 len {r?.b?.arr.length ?? -1} {aNull?.b?.arr.length ?? -1}");
+    return 0;
+}
+""",
+            """
+1 full: 7
+1 aNull: null
+1 bNone: none
+1 cNull: null
+2 arr: 1
+2 arr aNull: null
+2 dot: 3
+3 val: 5
+3 val bNone: none
+3 twice: 14
+3 twice cNull: null
+3 twice aNull: null
+4 getC: 7
+4 getC cNull: none
+5 gen: 9
+5 gen aNull: null
+6 plain: 5
+6 mid: 2
+7 mk1: 7
+7 mk0: null
+7 alias: null
+8 sum 105
+8 cond
+8 fstr 5 null
+8 nested: 5
+8 lambda: 7
+8 lambda null: null
+8 loop0: null
+8 loop1: 5
+9 len 4 -1
+""");
+
+        // ── Optional chaining: the receiver is evaluated exactly once ───────
+        s.run(
+            "optional chaining: each receiver is evaluated once, nothing after a nullish hop runs",
+            """
+let getBCalls = 0;
+let mCalls = 0;
+struct C { x: int = 1; fn m(): int { mCalls++; return this.x; } }
+ref struct B { c: C | null = C {}; }
+fn getB(v: B | null): B | null { getBCalls++; return v; }
+fn main(): int {
+    let b: B | null = B {};
+    let r1 = getB(b)?.c?.m();
+    fmt.println(f"{r1 is int} {getBCalls} {mCalls}");
+    getBCalls = 0; mCalls = 0;
+    let r2 = getB(null)?.c?.m();
+    fmt.println(f"{r2 is null} {getBCalls} {mCalls}");
+    getBCalls = 0; mCalls = 0;
+    let bn: B | null = B { c: null };
+    let r3 = getB(bn)?.c?.m();
+    fmt.println(f"{r3 is null} {getBCalls} {mCalls}");
+    return 0;
+}
+""",
+            """
+true 1 1
+true 1 0
+true 1 0
+""");
+
+        // ── Reactive receivers ──────────────────────────────────────────────
+        // A ShallowReactive<T | null> (e.g. ui.ElementRef<T>) is read like a
+        // plain `.` would read it, so `?.` sees the value inside, and the read
+        // is tracked by an enclosing rx.computed. `bool | null ?? false`
+        // narrows by extracting the bool member, not by the truthiness rule.
+        s.run(
+            "optional chaining / nullish coalescing: reactive receivers, bool results, inside rx.computed",
+            """
+ref struct W { fn hover(): bool { return true; } v: int = 4; }
+type Ref = rx.ShallowReactive<W | null>;
+fn main(): int {
+    let r: Ref = rx.shallowReactive<W | null>(null);
+    let isHovered = rx.computed(() => r?.hover() ?? false);
+    let v = rx.computed(() => r?.v ?? -1);
+    let h: bool = isHovered; let vv: int = v;
+    fmt.println(f"{h} {vv}");
+    r := W {};
+    h = isHovered; vv = v;
+    fmt.println(f"{h} {vv}");
+    fmt.println(f"{r?.hover() ?? false} {(r ?? W { v: 9 }).v}");
+    r := null;
+    h = isHovered; vv = v;
+    fmt.println(f"{h} {vv} {(r ?? W { v: 9 }).v}");
+    let b: bool | null = null;
+    let t: bool | null = true;
+    fmt.println(f"{b ?? false} {t ?? false} {b ?? true}");
+    return 0;
+}
+""",
+            """
+false -1
+true 4
+true 4
+false -1 9
+false true true
+""");
+
+        // ── Optional chaining: must-fail cases ──────────────────────────────
+        s.compileFails(
+            "optional chaining: parentheses end the chain",
+            """
+struct B { v: int = 1; }
+struct A { b: B = B {}; }
+fn main(): int {
+    let a: A | null = null;
+    let x = (a?.b).v;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ExpressionTypeDoesNotHaveMemberCalled)]);
+
+        s.compileFails(
+            "optional chaining: a bare none/null receiver has nothing to access",
+            """
+fn main(): int {
+    let n: none = none;
+    let x = n?.v;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ExpressionTypeDoesNotAllowOptionalChainingAs3)]);
+
+        s.compileFails(
+            "optional chaining: a chain is not an assignment target",
+            """
+struct B { v: int = 1; }
+struct A { b: B = B {}; }
+fn main(): int {
+    let a: A | null = null;
+    a?.b.v = 5;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.CannotAssignTemporaryType)]);
+
+        s.compileFails(
+            "optional chaining: unknown members are still reported",
+            """
+struct A { v: int = 1; }
+fn main(): int {
+    let a: A | null = null;
+    let x = a?.nope;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ExpressionTypeDoesNotHaveMemberCalled)]);
+
+        // ── Nullish coalescing ──────────────────────────────────────────────
+        s.run(
+            "nullish coalescing: values, types, precedence, evaluation order",
+            """
+struct P { x: int = 1; y: int = 2; }
+ref struct R { v: int = 3; }
+type MaybeInt = int | none;
+let calls = 0;
+fn side(v: int | null): int | null { calls++; return v; }
+fn rhs(): int { calls += 100; return 77; }
+fn main(): int {
+    let n: int | null = null;
+    let m: int | none = none;
+    let b: int | null | none = none;
+    let v: int | null = 4;
+
+    // 1. Strips null, none, or both; a nullable right side stays nullable;
+    //    otherwise-unrelated types form a union.
+    static_assert(typeof(n ?? 1).prettyName == "int", typeof(n ?? 1).prettyName);
+    static_assert(typeof(m ?? 1).prettyName == "int", typeof(m ?? 1).prettyName);
+    static_assert(typeof(b ?? 1).prettyName == "int", typeof(b ?? 1).prettyName);
+    let tIN: int | none = none;
+    static_assert(typeof(n ?? m).prettyName == typeof(tIN).prettyName, typeof(n ?? m).prettyName);
+    let tIS: int | str = 1;
+    static_assert(typeof(n ?? "s").prettyName == typeof(tIS).prettyName, typeof(n ?? "s").prettyName);
+    fmt.println(f"1 {n ?? 1} {m ?? 2} {b ?? 3} {v ?? 4}");
+
+    // 2. Chains are left-associative and keep going until a non-nullish value.
+    fmt.println(f"2 {n ?? m ?? 9} {n ?? v ?? 9} {v ?? n ?? 9} {n ?? (m ?? 13)}");
+
+    // 3. Precedence (as in TypeScript): looser than arithmetic and
+    //    comparison, tighter than the ternary.
+    fmt.println(f"3 {n ?? 2 * 3} {(v ?? 0) + 1} {n ?? 1 + 1} {(n ?? 1) * (m ?? 2)}");
+    let t = (n ?? 0) > 0 ? "truthy" : "falsy";
+    fmt.println(f"3 {t}");
+    let c = v ?? 0 > 3;   // v ?? (0 > 3)
+    let tIB: int | bool = 1;
+    static_assert(typeof(c).prettyName == typeof(tIB).prettyName, typeof(c).prettyName);
+    if c is int { fmt.println(f"3 {c}"); }
+
+    // 4. The left side is evaluated once; the right side only when the left
+    //    is nullish.
+    calls = 0; let r1 = side(null) ?? rhs(); fmt.println(f"4 {r1} {calls}");
+    calls = 0; let r2 = side(5) ?? rhs(); fmt.println(f"4 {r2} {calls}");
+
+    // 5. A literal none/null on the left is always nullish.
+    fmt.println(f"5 {none ?? 6} {null ?? 7}");
+
+    // 6. A struct literal on the right is inferred from the left; value and
+    //    ref structs; result type stays the struct, not a union.
+    let p: P | null = null;
+    let p2 = p ?? P { x: 10 };
+    fmt.println(f"6 {p2.x} {p2.y}");
+    let pp: P | null = P { x: 5 };
+    fmt.println(f"6 {(pp ?? P {}).x}");
+    let r: R | none = none;
+    let rr = r ?? R { v: 8 };
+    fmt.println(f"6 {rr.v}");
+    let rset: R | none = R { v: 1 };
+    fmt.println(f"6 {(rset ?? R { v: 8 }).v}");
+
+    // 7. Through a type alias.
+    let mi: MaybeInt = none;
+    fmt.println(f"7 {mi ?? 11}");
+
+    // 8. In lambdas, conditions and together with `?.`.
+    let f = (x: int | null) => { return x ?? -1; };
+    fmt.println(f"8 {f(null)} {f(3)}");
+    if (n ?? 0) == 0 { fmt.println("8 cond"); }
+    let q: P | null = null;
+    fmt.println(f"8 {q?.x ?? -5} {pp?.x ?? -5}");
+    let pn: P | none = none;
+    fmt.println(f"8 {(pn ?? P { x: 6 }).x}");
+
+    // 9. A void right side makes the whole thing a statement.
+    calls = 0;
+    n ?? rhs();
+    v ?? rhs();
+    fmt.println(f"9 {calls}");
+    return 0;
+}
+""",
+            """
+1 1 2 3 4
+2 9 4 4 13
+3 6 5 2 2
+3 falsy
+3 4
+4 77 101
+4 5 1
+5 6 7
+6 10 2
+6 5
+6 8
+6 1
+7 11
+8 -1 3
+8 cond
+8 -5 5
+8 6
+9 100
+""");
+
+        s.compileOkWithChecks(
+            "nullish coalescing: a left side that can never be nullish warns",
+            """
+struct A { v: int = 1; }
+fn main(): int {
+    let a: A = A {};
+    let x = a ?? A {};
+    let i = 3 ?? 4;
+    return x.v + i;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.NullishCoalesceLeftNeverNullish, 2)]);
+
+        s.compileFails(
+            "nullish coalescing: the result keeps a nullable right side",
+            """
+fn main(): int {
+    let n: int | null = null;
+    let x: int = n ?? null;
+    return x;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "nullish coalescing: the right side is type-checked even when dead",
+            """
+fn main(): int {
+    let a: int = 1;
+    let x = a ?? undefinedSymbol;
+    return x;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasNotDeclaredThisScope)]);
+    }
+}

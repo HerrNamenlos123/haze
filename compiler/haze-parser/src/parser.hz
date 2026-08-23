@@ -251,7 +251,7 @@ export ref struct Parser {
         }
 
         let start = this.cur();
-        let cond = this.captureWith(() => { this.logical(); });
+        let cond = this.captureWith(() => { this.nullish(); });
 
         if !this.at(TK.Question) {
             this.w.rawValue(cond);
@@ -403,6 +403,14 @@ export ref struct Parser {
             this.writeLoc(start, endTok);
             this.w.endObject();
         }
+    }
+
+    // nullish: logical (?? logical)*
+    mut fn nullish(): void :: final {
+        this.binaryLevel(() => { this.logical(); }, (k: TK) => {
+            if k == TK.DoubleQuestion { return 14; }  // NullishCoalesce
+            return -1;
+        });
     }
 
     // logical: equality ((&& || |) equality)*
