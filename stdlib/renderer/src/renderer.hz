@@ -18,7 +18,10 @@ fn max<T>(a: T, b: T): T => {
 // be given to every individual shape without bloating per-vertex data with a
 // whole matrix. `time` is provided for custom vertex/fragment shaders (e.g. a
 // wavy-text effect) that want to animate independently of CPU-side state.
-struct Globals {
+// Exported only because Renderer keeps a []Globals scratch buffer as a field
+// (see Renderer._globalsScratch): the cross-module shim generator names every
+// field's type even though `opaque` hides them from consumers.
+export struct Globals {
     viewProj: mat4.Mat4f;
     time: f32 = 0.0;
     _pad0: f32 = 0.0;
@@ -1461,10 +1464,40 @@ export opaque ref struct Renderer {
     // common "no transform" case never has to grow this array.
     transforms: []mat4.Mat4f = [];
 
+    // Two one-element arrays commit() has to hand to wgpu every frame. They
+    // are pure argument buffers -- written immediately before the call, read
+    // by it, never retained -- so they are filled in place here rather than
+    // built fresh, which is two allocations a frame for a single element each.
+    _globalsScratch: []Globals = [];
+    _colorAttachmentScratch: []wgpu.RenderPassColorAttachment = [];
+
     fn constructor(frame: mut Frame, canvas: mut Canvas) {
         let r = Renderer { canvas: canvas, frame: frame };
         r.transforms.push(mat4.identity());
         return r;
+    }
+
+    // Re-arms this Renderer for another frame instead of building a new one.
+    // Leaves it in EXACTLY the state the constructor above does -- same fields
+    // set, same lone identity transform seeded -- so a reused Renderer and a
+    // fresh one are indistinguishable to everything downstream.
+    //
+    // Worth having because a Renderer is five dynamic arrays plus the struct:
+    // eleven heap blocks per frame just to exist, and then the same doubling
+    // ladder every frame as the arrays refill from empty (measured: another
+    // ~14 growth allocations per frame across primitives/transforms). clear()
+    // keeps each array's capacity, so after the first few frames a reused
+    // Renderer allocates nothing at all -- which is the whole point, since the
+    // arrays are rebuilt from scratch every frame either way.
+    fn reset(frame: mut Frame, canvas: mut Canvas) {
+        this.canvas = canvas;
+        this.frame = frame;
+        this.primitives.clear();
+        this._clipStack.clear();
+        this.meshVertices.clear();
+        this.textureRuns.clear();
+        this.transforms.clear();
+        this.transforms.push(mat4.identity());
     }
 
     // Records that primitives[start..start+count) need `texture` bound at
@@ -1840,16 +1873,17 @@ export opaque ref struct Renderer {
 
         gfx.updateFontAtlasIfDirty();
 
-        gfx.queue.writeBuffer<Globals>(canvas.globalsBuffer, [
-            {
-                viewProj: canvas.resolvedViewProj(),
-                // Session-relative, not raw seconds-since-epoch -- see
-                // Context.startTime for why (epoch time cast straight to f32
-                // loses all sub-second precision, so an animated shader
-                // reading this would barely see it move).
-                time: (time.now() - gfx.startTime) as f32,
-            }
-        ]);
+        let globals = this._globalsScratch;
+        globals.clear();
+        globals.push({
+            viewProj: canvas.resolvedViewProj(),
+            // Session-relative, not raw seconds-since-epoch -- see
+            // Context.startTime for why (epoch time cast straight to f32
+            // loses all sub-second precision, so an animated shader
+            // reading this would barely see it move).
+            time: (time.now() - gfx.startTime) as f32,
+        });
+        gfx.queue.writeBuffer<Globals>(canvas.globalsBuffer, globals);
 
         // Transform pool: always at least the identity entry from the
         // Renderer constructor, so this buffer is never empty.
@@ -1955,8 +1989,11 @@ export opaque ref struct Renderer {
             stencilReadOnly: true,
         };
 
+        let colorAttachments = this._colorAttachmentScratch;
+        colorAttachments.clear();
+        colorAttachments.push(colorAttachment);
         let pass = encoder.beginRenderPass({
-            colorAttachments: { colorAttachment },
+            colorAttachments: colorAttachments,
             depthStencilAttachment: depthAttachment,
         });
         if !pass {

@@ -512,6 +512,12 @@ export opaque ref struct Context {
     // first frame this reuses the capacity it already grew to and allocates
     // nothing at all.
     clipScratch: mut []ClipEntry = [];
+    // The traversal context, owned by the Context instead of built per render.
+    // It is six dynamic stacks plus the struct itself -- thirteen heap blocks
+    // every frame, measured -- and every one of them is empty again by the time
+    // the traversal ends (validateEmpty asserts exactly that), so there was
+    // never anything frame-specific about the object itself, only its contents.
+    traverseScratch: TreeTraverseContext = {};
 
     fn constructor(opts: ContextOpts) {
         let measureTextBox: ref Box<MeasureTextCB> = { value: opts.measureText };
@@ -535,7 +541,7 @@ export opaque ref struct Context {
         ffi.hzui_clay_set_layout_dimensions(width, height);
     }
 
-    ref struct TreeTraverseContext {
+    export ref struct TreeTraverseContext {
         fontFamilyStack: []str = [];
         fontSizeStack: []real = [];
         fontWeightStack: []real = [];
@@ -544,6 +550,20 @@ export opaque ref struct Context {
         // Stack of Clay ids for enclosing Relative/Absolute/Fixed/anchored
         // ancestors, nearest last -- see resolveFloating's doc comment.
         positioningContext: []str = [];
+
+        // Reset for a fresh traversal. clear() keeps each stack's capacity, so
+        // a reused context stops allocating entirely after the first frame --
+        // see Context.traverseScratch. Called at the START of a render rather
+        // than the end, so a traversal that unwound early (an attempt/panic in
+        // a child component) cannot leave stale entries behind for the next.
+        fn clear() {
+            this.fontFamilyStack.clear();
+            this.fontSizeStack.clear();
+            this.fontWeightStack.clear();
+            this.lineHeightStack.clear();
+            this.textColorStack.clear();
+            this.positioningContext.clear();
+        }
 
         fn validateEmpty() {
             assert(this.fontFamilyStack.length == 0);
@@ -895,7 +915,8 @@ export opaque ref struct Context {
         ffi.hzui_clay_activate_context(this.clayContextPtr);
         ffi.Clay_BeginLayout();
 
-        let ctx = TreeTraverseContext {};
+        let ctx = this.traverseScratch;
+        ctx.clear();
 
         const DEFAULT_FONT_SIZE = 16.0;
         const DEFAULT_FONT_WEIGHT = 400.0;

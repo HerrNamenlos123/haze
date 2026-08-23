@@ -13,8 +13,13 @@ const comptime vsync = true;
 // having either module import the other's types) so app stays ignorant of
 // the UI component tree and ui_components stays ignorant of SDL/app, same
 // as mousePos/wheelDelta/modifiers just below.
-fn toUIPointerEdges(a: app.App): []ui_components.PointerEdge {
-    let result: []ui_components.PointerEdge = [];
+// `out` is the caller's reusable buffer rather than a fresh array: this runs
+// once per frame, and ui_components only reads the result inside the same
+// process() call (see its `edges` local), so nothing outlives the frame and
+// clear() lets the buffer keep the capacity it already grew to.
+fn toUIPointerEdges(a: app.App, out: mut []ui_components.PointerEdge): []ui_components.PointerEdge {
+    let result = out;
+    result.clear();
     for e in a.pointerEdges() {
         let button = ui_components.PointerButton.None;
         if e.button == 0 { button = ui_components.PointerButton.Left; }
@@ -44,8 +49,10 @@ fn sdlKeyToUIKey<T>(k: T): ui_components.Key :: final {
 
 // Translates app's platform-level key edge queue into ui_components' own
 // KeyEdge type.
-fn toUIKeyEdges(a: app.App): []ui_components.KeyEdge {
-    let result: []ui_components.KeyEdge = [];
+// Reuses the caller's buffer, same as toUIPointerEdges above.
+fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.KeyEdge {
+    let result = out;
+    result.clear();
     for e in a.keyEdges() {
         let kind = e.kind == app.KeyEdgeKind.Pressed ? ui_components.KeyEdgeKind.Pressed : ui_components.KeyEdgeKind.Released;
         result.push({ key: sdlKeyToUIKey(e.key), kind: kind, repeat: e.repeat, modifiers: e.modifiers });
@@ -80,6 +87,11 @@ fn main(): int {
             "codeeditor/resources/JetBrainsMonoNerdFont-Regular.ttf"
         );
 
+        // Reused every frame by the two edge-queue callbacks below, so the
+        // per-frame translation costs no allocation after the first frame.
+        let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
+        let keyEdgeScratch: mut []ui_components.KeyEdge = [];
+
         let runtime = ui_runtime.Runtime({
             gfx: a.gfx,
             windowState: a.windowState,
@@ -97,14 +109,14 @@ fn main(): int {
                 leftHeld: () => a.pointerLeftHeld(),
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
-                edgesThisFrame: () => toUIPointerEdges(a),
+                edgesThisFrame: () => toUIPointerEdges(a, pointerEdgeScratch),
             },
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),
                 modifiers: () => a.wheelModifiers(),
             },
             keyboard: ui_components.KeyboardCallbacks {
-                keyEdgesThisFrame: () => toUIKeyEdges(a),
+                keyEdgesThisFrame: () => toUIKeyEdges(a, keyEdgeScratch),
                 textInputThisFrame: () => a.textInput(),
             },
             // The index is a ui_styling.Cursor; app maps it to the platform

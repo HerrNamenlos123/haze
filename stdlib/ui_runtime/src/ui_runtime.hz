@@ -32,6 +32,10 @@ export opaque ref struct Runtime {
     layout: mut ui_layout.Context;
     ui: mut ui_components.UIContext;
     dpiScale: real;
+    // The screen Renderer, kept for the Runtime's lifetime and re-armed each
+    // frame (see Renderer.reset) rather than rebuilt. Its contents are still
+    // fully rebuilt every frame -- only the arrays' backing storage survives.
+    screenRenderer?: mut renderer.gfx.Renderer;
 
     fn constructor(args: RuntimeArgs) {
         let layout = ui_layout.Context({
@@ -91,7 +95,18 @@ export opaque ref struct Runtime {
     // this way), since those are renderer-module concerns this runtime has
     // no opinion about.
     fn render(frame: mut renderer.gfx.Frame, canvas: mut renderer.gfx.Canvas) {
-        let r = renderer.gfx.Renderer(frame, canvas);
+        if !this.screenRenderer {
+            this.screenRenderer = renderer.gfx.Renderer(frame, canvas);
+        }
+        let cachedRenderer = this.screenRenderer;
+        assert(cachedRenderer);
+        // Rebound rather than used through the narrowed `this.screenRenderer`:
+        // narrowing does not flow into a lambda body, and `r` is captured by
+        // every render callback below.
+        let r = cachedRenderer;
+        // Idempotent on a just-constructed Renderer -- reset() leaves exactly
+        // the state the constructor does -- so this one line covers both paths.
+        r.reset(frame, canvas);
         let tree = this.ui.process();
         if !tree {
             r.commit();
