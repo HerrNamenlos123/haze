@@ -146,6 +146,11 @@ export class SemanticElaborator {
   // lambda literal's env block on the stack (CallableExpr.stackEnv).
   paramUses = new Map<Semantic.SymbolId, Map<Semantic.ExprId, SourceLoc>>();
   lambdaCaptureUses = new Map<Semantic.ExprId, Semantic.ExprId[]>();
+  // Functions whose body contains inline C: the C text can do anything with
+  // a parameter (the synthesized array `push` stores it, for one), and the
+  // tracker cannot see into it -- every callable parameter of such a
+  // function counts as retained.
+  functionsWithInlineC = new Set<Semantic.SymbolId>();
 
   isCallableishType(typeUseId: Semantic.TypeUseId): boolean {
     const use = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
@@ -256,6 +261,15 @@ export class SemanticElaborator {
     if (!uses) {
       return;
     }
+    // A lambda whose body has inline C may do anything with what it
+    // captured; its captures stay escapes.
+    const lambda = this.sr.exprNodes.get(lambdaExprId);
+    if (
+      lambda.variant === Semantic.ENode.CallableExpr &&
+      this.functionsWithInlineC.has(lambda.functionSymbol)
+    ) {
+      return;
+    }
     for (const useId of uses) {
       this.consumeParamUse(useId);
     }
@@ -310,7 +324,8 @@ export class SemanticElaborator {
 
   // Runs once the function body is elaborated: fixes every callable
   // parameter's `nonEscaping`, and rejects an `immediate` one that escaped.
-  finalizeEscapeAnalysis(symbol: Semantic.FunctionSymbol) {
+  finalizeEscapeAnalysis(symbol: Semantic.FunctionSymbol, symbolId: Semantic.SymbolId) {
+    const opaqueBody = this.functionsWithInlineC.has(symbolId);
     for (const pId of symbol.parameterSymbols) {
       const p = this.sr.symbolNodes.get(pId);
       if (p.variant !== Semantic.ENode.VariableSymbol) {
@@ -322,7 +337,14 @@ export class SemanticElaborator {
         continue;
       }
       const remaining = uses ? [...uses.entries()] : [];
-      p.nonEscaping = remaining.length === 0;
+      p.nonEscaping = remaining.length === 0 && !opaqueBody;
+      if (p.immediate && opaqueBody) {
+        throw new CompilerError(
+          `'${p.name}' is an 'immediate' parameter, but this function contains inline C, so the compiler cannot verify that it is never retained`,
+          p.sourceloc ?? symbol.sourceloc,
+          HazeErrorCode.ImmediateParameterEscapes
+        );
+      }
       if (p.immediate && remaining.length > 0) {
         throw new CompilerError(
           `'${p.name}' is an 'immediate' parameter: it may only be called, forwarded to another 'immediate' parameter, or captured by an in-place ('let stackref') closure -- this use would let it outlive the call`,
@@ -6908,7 +6930,7 @@ export class SemanticElaborator {
                 })
             );
             symbol.scope = scopeId;
-            this.finalizeEscapeAnalysis(symbol);
+            this.finalizeEscapeAnalysis(symbol, symbolId);
 
             if (func.name === "main" && parentSymbolId) {
               const modulePrefix = getModuleGlobalNamespaceName(
@@ -12382,6 +12404,9 @@ export class SemanticElaborator {
           );
         }
 
+        if (this.inFunction !== null) {
+          this.functionsWithInlineC.add(this.inFunction);
+        }
         return {
           statementId: this.sr.b.addStatement(this.sr, {
             variant: Semantic.ENode.InlineCStatement,
