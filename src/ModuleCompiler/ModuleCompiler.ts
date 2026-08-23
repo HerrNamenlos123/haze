@@ -26,6 +26,7 @@ import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
+import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
@@ -119,10 +120,7 @@ export const HAZE_TOOLCHAIN_INSTALLED_MARKER =
  * Process-wide because every module writes into the one workspace
  * compile_commands.json, and modules build concurrently.
  */
-const accumulatedCompileCommands = new Map<
-  string,
-  CompileCommands[number]
->();
+const accumulatedCompileCommands = new Map<string, CompileCommands[number]>();
 
 /** Wrapped around every generated module .c so clang-format leaves it alone. */
 const C_FILE_PREAMBLE = "// clang-format off\n\n";
@@ -925,6 +923,11 @@ const generatorOutputMutex = new Mutex();
 
 export class ModuleCompiler {
   cc: CollectionContext;
+  // Lazily loaded from this module's [plugins] config. Generic -- the
+  // compiler knows nothing about what any plugin does. See
+  // src/Plugins/PluginInterface.ts.
+  private pluginHost: PluginHost | null = null;
+  private pluginHostLoaded = false;
   currentModuleRootDir: string | null = null;
   currentUnitScope: Collect.ScopeId | null = null;
   private cachedDependencyMetadata: ModuleMetadata[] | null = null;
@@ -943,6 +946,82 @@ export class ModuleCompiler {
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
+  }
+
+  // ---------------------------------------------------------------------
+  // Plugin transforms. Every source file of THIS module (non-inheriting:
+  // dep files are transformed by the dep module's own build, never here)
+  // passes through the declared plugins between readFile and parse. The
+  // hook is the single choke point all ingestion funnels through, so
+  // watching/caching/incremental all see transformed content uniformly.
+  //
+  // TODO(plugin-cache): key cached ASTs additionally by plugin versions so
+  // editing a plugin invalidates all files of modules that declare it.
+  // ---------------------------------------------------------------------
+
+  private async ensurePluginHost(): Promise<PluginHost | null> {
+    if (!this.pluginHostLoaded) {
+      this.pluginHostLoaded = true;
+      if (this.config.plugins && this.config.plugins.length > 0) {
+        // Resolve against cwd so a relative configFilePath (e.g. from
+        // --dir) still yields an absolute plugin base directory.
+        const baseDir = path.resolve(
+          this.config.configFilePath
+            ? dirname(this.config.configFilePath)
+            : this.moduleDir
+        );
+        this.pluginHost = await PluginHost.load(this.config.plugins, baseDir);
+      }
+    }
+    return this.pluginHost;
+  }
+
+  /**
+   * Is this a module source file? `.hz` always; otherwise any extension a
+   * loaded plugin claims (e.g. `.hzui`). Must be called after
+   * ensurePluginHost().
+   */
+  private isSourceFile(fullPath: string): boolean {
+    const ext = extname(fullPath);
+    if (ext === ".hz") {
+      return true;
+    }
+    return this.pluginHost?.claimsExtension(ext) ?? false;
+  }
+
+  private async transformWithPlugins(
+    filepath: string,
+    fileText: string
+  ): Promise<string> {
+    await this.ensurePluginHost();
+    if (!this.pluginHost || this.pluginHost.isEmpty) {
+      return fileText;
+    }
+    const transformed = this.pluginHost.transform(filepath, fileText);
+    if (transformed !== fileText) {
+      // A plugin claimed this file. Dump the composed output into this
+      // module's build directory, mirroring the source tree:
+      //   __haze__/<module>/build/transformed/<path relative to src>.hz
+      // so it sits next to import.hz and the generated C. Inspection aid
+      // only -- the transform otherwise exists only in memory.
+      try {
+        const rel =
+          this.config.source.type === "src-dir"
+            ? path.relative(this.config.source.dirpath, filepath)
+            : basename(filepath);
+        const dumpPath = path.join(
+          this.moduleDir,
+          "build",
+          "transformed",
+          `${rel}.hz`
+        );
+        fs.mkdirSync(path.dirname(dumpPath), { recursive: true });
+        fs.writeFileSync(dumpPath, transformed, "utf8");
+      } catch {
+        // Inspection aid only -- never fail the build over it.
+      }
+    }
+    return transformed;
   }
 
   // -------------------------------------------------------------------------
@@ -1036,7 +1115,10 @@ export class ModuleCompiler {
   }
 
   async collectFileAsRoot(filepath: string, collectionMode: ECollectionMode) {
-    const fileText = await readFile(filepath, "utf-8");
+    const fileText = await this.transformWithPlugins(
+      filepath,
+      await readFile(filepath, "utf-8")
+    );
     const ast = await Parser.parseTextToASTAsync(
       this.config,
       fileText,
@@ -1055,7 +1137,10 @@ export class ModuleCompiler {
   }
 
   async collectFile(filepath: string, collectionMode: ECollectionMode) {
-    const fileText = await readFile(filepath, "utf-8");
+    const fileText = await this.transformWithPlugins(
+      filepath,
+      await readFile(filepath, "utf-8")
+    );
     const ast = await Parser.parseTextToASTAsync(
       this.config,
       fileText,
@@ -1087,6 +1172,7 @@ export class ModuleCompiler {
   }
 
   async collectDirectory(dirpath: string, collectionMode: ECollectionMode) {
+    await this.ensurePluginHost();
     for (const file of readdirSync(dirpath)) {
       if (file === "__haze__") {
         continue;
@@ -1102,7 +1188,7 @@ export class ModuleCompiler {
           this.collectedDepModules.add(file);
         }
         await this.collectDirectory(fullPath, collectionMode);
-      } else if (extname(fullPath) === ".hz") {
+      } else if (this.isSourceFile(fullPath)) {
         await this.collectFile(fullPath, collectionMode);
       }
     }
@@ -1126,7 +1212,10 @@ export class ModuleCompiler {
       const fullPath = join(dirpath, file);
       if (statSync(fullPath).isDirectory()) {
         await this.collectDepDirectory(fullPath, depName, libMtimeMs);
-      } else if (extname(fullPath) === ".hz") {
+      } else if (this.isSourceFile(fullPath)) {
+        // NOTE: dep files are NOT transformed here (plugins are
+        // non-inheriting); a dep built from plugin sources must ship its
+        // transformed output. TODO(plugin-deps).
         await this.collectDepFile(fullPath, depName, libMtimeMs);
       }
     }
@@ -1173,6 +1262,7 @@ export class ModuleCompiler {
   }
 
   async scanProjectSourceFiles() {
+    await this.ensurePluginHost();
     const files = new Set<string>();
 
     const addDir = async (dirpath: string) => {
@@ -1184,7 +1274,7 @@ export class ModuleCompiler {
         const stats = statSync(fullPath);
         if (stats.isDirectory()) {
           await addDir(fullPath);
-        } else if (extname(fullPath) === ".hz") {
+        } else if (this.isSourceFile(fullPath)) {
           files.add(fullPath);
         } else if (extname(fullPath) === ".c") {
           files.add(fullPath);
@@ -2227,13 +2317,14 @@ export class ModuleCompiler {
           // received a cache file but no artifacts), the cache would happily
           // report "up to date" and the module would never be rebuilt.
           const outputMissing = !this.primaryOutputExists();
-          const moduleChanged = forceFullRebuild || outputMissing
-            ? true
-            : buildCache.hasModuleChanged(
-                this.config.name,
-                initialRelevantFiles,
-                compilerKey
-              );
+          const moduleChanged =
+            forceFullRebuild || outputMissing
+              ? true
+              : buildCache.hasModuleChanged(
+                  this.config.name,
+                  initialRelevantFiles,
+                  compilerKey
+                );
 
           if (!(moduleChanged || generatorsNeedRun)) {
             this.maybeStripExecutable();

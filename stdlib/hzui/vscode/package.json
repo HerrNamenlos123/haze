@@ -1,0 +1,39 @@
+{
+  "name": "hzui",
+  "displayName": "hzui SFC (haze UI components)",
+  "description": "Language support for hzui single-file components (.hzui): section markers, template syntax, tailwind-style class tokens; embeds the haze grammar (requires the base haze extension). Grammar-only -- the core haze extension stays untouched.",
+  "version": "0.0.1",
+  "publisher": "haze",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "hzui",
+        "aliases": [
+          "hzui SFC",
+          "hzui"
+        ],
+        "extensions": [
+          ".hzui"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "hzui",
+        "scopeName": "source.hzui",
+        "path": "./syntaxes/hzui.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.expression.hzui": "haze"
+        }
+      }
+    ]
+  }
+}

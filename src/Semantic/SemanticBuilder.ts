@@ -20,6 +20,7 @@ import {
   InternalError,
   printWarningMessage,
   type SourceLoc,
+  formatSourceLoc,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import {
@@ -1924,7 +1925,7 @@ export class SemanticBuilder {
         if (typeDef.variant !== Semantic.ENode.StructDatatype) {
           return 0;
         }
-        if ((typeUse.storage === EStorageClass.Value)) {
+        if (typeUse.storage === EStorageClass.Value) {
           return 2;
         }
         return 1;
@@ -2192,7 +2193,13 @@ export class SemanticBuilder {
         );
       }
     } else {
-      assert(false, "Union comparison on a non-union");
+      const loc = expr.sourceloc
+        ? formatSourceLoc(expr.sourceloc)
+        : "<unknown>";
+      assert(
+        false,
+        `Union comparison on a non-union: the value is already narrowed to a single type at ${loc}`
+      );
     }
 
     this.sr.e.consumeParamUse(exprId);

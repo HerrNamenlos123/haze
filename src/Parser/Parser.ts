@@ -136,6 +136,7 @@ import {
   type FunctionDefinitionContext,
   type GlobalDeclarationContext,
   type GlobalDeclarationWithSourceContext,
+  type StatementWithSourceContext,
   type GlobalVariableDefinitionContext,
   HazeParser,
   type HexIntegerLiteralContext,
@@ -348,10 +349,21 @@ export namespace Parser {
   }
 }
 
+import * as nodePath from "node:path";
+
+// A #source override. `pin` relocates every node inside the block to one
+// exact span (the historical behavior, used by generated import files).
+// `offset` (line-only spec, "file:line") maps the block's contents
+// line-by-line: the first line after the directive line corresponds to
+// `line`, and columns pass through unchanged -- C's #line, essentially.
+type SourcelocOverrideEntry =
+  | { kind: "pin"; loc: SourceLoc }
+  | { kind: "offset"; filename: string; line: number; anchorLine: number };
+
 class ASTBuilder extends HazeParserListener {
   stack: any[] = [];
   private marks: number[] = [];
-  sourcelocOverride: SourceLoc[] = [];
+  sourcelocOverride: SourcelocOverrideEntry[] = [];
   private sourcelocOverridePending: boolean[] = [];
 
   debug = true;
@@ -399,7 +411,24 @@ class ASTBuilder extends HazeParserListener {
 
   loc(ctx: ParserRuleContext): SourceLoc {
     if (this.sourcelocOverride.length > 0) {
-      return this.sourcelocOverride[this.sourcelocOverride.length - 1];
+      const entry = this.sourcelocOverride[this.sourcelocOverride.length - 1];
+      if (entry.kind === "pin") {
+        return entry.loc;
+      }
+      // Offset mode: shift lines so that anchorLine + 1 (the first line
+      // after the directive) maps to entry.line; keep columns.
+      const delta = entry.line - (entry.anchorLine + 1);
+      return {
+        filename: entry.filename,
+        start: {
+          line: (ctx.start?.line ?? 0) + delta,
+          column: ctx.start?.column ?? 0,
+        },
+        end: {
+          line: (ctx.stop?.line ?? 0) + delta,
+          column: ctx.stop?.column ?? 0,
+        },
+      };
     }
 
     return {
@@ -3817,7 +3846,9 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push(flat);
   };
 
-  computeSourceLoc = (ctx: SourceLocationPrefixRuleContext): SourceLoc => {
+  computeSourceLoc = (
+    ctx: SourceLocationPrefixRuleContext
+  ): SourcelocOverrideEntry => {
     const stringLiteral = ctx.STRING_LITERAL();
     if (!stringLiteral) {
       throw new CompilerError(
@@ -3833,20 +3864,37 @@ class ASTBuilder extends HazeParserListener {
       this.loc(ctx)
     );
 
-    // Parse the new format: "/path/to/file.hz:line:col-endcol"
-    // Find the location suffix by looking for ":digits:" pattern
-    const match = fullPath.match(/^(.+?):(\d+):(\d+)(?:-(\d+))?(?:\.(\d+))?$/);
+    // "path:line:col[-endcol][.endline]"  -> pin mode (historical)
+    // "path:line"                          -> offset (line-map) mode
+    const match = fullPath.match(
+      /^(.+?):(\d+)(?::(\d+)(?:-(\d+))?(?:\.(\d+))?)?$/
+    );
 
     if (!match) {
       throw new CompilerError(
-        `Invalid source location format: expected "/path/to/file.hz:line:col[-endcol]", got "${fullPath}"`,
+        `Invalid source location format: expected "path/to/file.hz:line[:col[-endcol]]", got "${fullPath}"`,
         this.loc(ctx),
         HazeErrorCode.InvalidSourceLocationFormatExpectedPathFileHz
       );
     }
 
-    const filename = match[1];
+    // Relative paths are resolved against the directory of the file that
+    // contains the directive, so generated files can carry portable paths.
+    let filename = match[1];
+    if (!nodePath.isAbsolute(filename)) {
+      filename = nodePath.resolve(nodePath.dirname(this.filename), filename);
+    }
     const line = Number.parseInt(match[2], 10);
+
+    if (match[3] === undefined) {
+      return {
+        kind: "offset",
+        filename: filename,
+        line: line,
+        anchorLine: ctx.start?.line ?? 0,
+      };
+    }
+
     const startCol = Number.parseInt(match[3], 10);
     const endCol = match[4] ? Number.parseInt(match[4], 10) : undefined;
     const endLine = match[5] ? Number.parseInt(match[5], 10) : undefined;
@@ -3864,7 +3912,24 @@ class ASTBuilder extends HazeParserListener {
       }
     }
 
-    return result;
+    return { kind: "pin", loc: result };
+  };
+
+  enterStatementWithSource = (_ctx: StatementWithSourceContext) => {
+    this.sourcelocOverridePending.push(false);
+  };
+  exitStatementWithSource = (ctx: StatementWithSourceContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start);
+    const didOverride = this.sourcelocOverridePending.pop();
+    if (didOverride) {
+      this.sourcelocOverride.pop();
+    }
+    // Push the inner statements back individually -- the enclosing scope
+    // collects them exactly as if the directive block were not there.
+    for (const stmt of produced) {
+      this.stack.push(stmt);
+    }
   };
 
   enterStructContentWithSourceloc = (

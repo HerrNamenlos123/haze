@@ -21,7 +21,19 @@ export ref struct ParseError {
     col: int = 0;
 }
 
-export ref struct Parser {
+export struct SourceOverrideState {
+    active: bool;
+    file: str;
+    startLine: int;
+    startCol: int;
+    endLine: int;
+    endCol: int;
+    hasEnd: bool;
+    offsetMode: bool;
+    anchorLine: int;
+}
+
+ref struct Parser {
     src: str = "";
     filename: str = "";
     toks: mut []Token = [];
@@ -40,6 +52,11 @@ export ref struct Parser {
     overrideEndLine: int = 0;
     overrideEndCol: int = 0;
     overrideHasEnd: bool = false;
+    // Offset (line-map) mode: spec was "file:line" with no column. Contents
+    // are mapped line-by-line -- the first line after the directive line
+    // corresponds to overrideStartLine, columns pass through unchanged.
+    overrideOffsetMode: bool = false;
+    overrideAnchorLine: int = 0;
 
     static fn create(src: str, filename: str, toks: mut []Token): mut Parser {
         let p = Parser {
@@ -125,6 +142,18 @@ export ref struct Parser {
     // common case); a `#source` override emits "F" alongside. The TS bridge
     // expands this back during the revive walk it already performs.
     mut fn writeLoc(startTok: Token, endTok: Token) {
+        if this.sourcelocOverride && this.overrideOffsetMode {
+            let delta = this.overrideStartLine - (this.overrideAnchorLine + 1);
+            this.w.key("L");
+            this.w.beginArray();
+            this.w.intValue(startTok.line + delta);
+            this.w.intValue(startTok.col);
+            this.w.intValue(endTok.line + delta);
+            this.w.intValue(endTok.col);
+            this.w.endArray();
+            this.w.keyString("F", this.overrideFile);
+            return;
+        }
         if this.sourcelocOverride {
             this.w.key("L");
             this.w.beginArray();
@@ -1751,6 +1780,20 @@ export ref struct Parser {
 
         let stmts: mut []str = [];
         while !this.at(TK.RCurly) && !this.atEnd() {
+            // #source at statement position: relocates the statements inside
+            // the block; they land in the enclosing scope's statement list as
+            // if the directive were not there.
+            if this.at(TK.SourceDirective) {
+                let saved = this.beginSourceBlock();
+                while !this.at(TK.RCurly) && !this.atEnd() {
+                    let beforeInner = this.pos;
+                    stmts.push(this.captureWith(() => { this.statement(); }));
+                    if this.pos == beforeInner { this.advance(); }
+                }
+                this.restoreOverride(saved);
+                this.expect(TK.RCurly);
+                continue;
+            }
             let before = this.pos;
             stmts.push(this.captureWith(() => { this.statement(); }));
             // Guarantee forward progress even if a statement failed to parse.
@@ -2597,48 +2640,66 @@ export ref struct Parser {
         this.w.endObject();
     }
 
+    // Snapshot of the #source override state, so directive blocks can nest.
+    mut fn saveOverride(): SourceOverrideState :: final {
+        return SourceOverrideState {
+            active: this.sourcelocOverride,
+            file: this.overrideFile,
+            startLine: this.overrideStartLine,
+            startCol: this.overrideStartCol,
+            endLine: this.overrideEndLine,
+            endCol: this.overrideEndCol,
+            hasEnd: this.overrideHasEnd,
+            offsetMode: this.overrideOffsetMode,
+            anchorLine: this.overrideAnchorLine,
+        };
+    }
+
+    mut fn restoreOverride(saved: SourceOverrideState): void :: final {
+        this.sourcelocOverride = saved.active;
+        this.overrideFile = saved.file;
+        this.overrideStartLine = saved.startLine;
+        this.overrideStartCol = saved.startCol;
+        this.overrideEndLine = saved.endLine;
+        this.overrideEndCol = saved.endCol;
+        this.overrideHasEnd = saved.hasEnd;
+        this.overrideOffsetMode = saved.offsetMode;
+        this.overrideAnchorLine = saved.anchorLine;
+    }
+
+    // Parses `#source "spec" {` and activates the override; the caller loops
+    // its own contents and then restores + expects the closing RCurly.
+    mut fn beginSourceBlock(): SourceOverrideState :: final {
+        let dirTok = this.expect(TK.SourceDirective);
+        let pathTok = this.expect(TK.StringLit);
+        let spec = stringLiteralValue(this.text(pathTok), 1);
+        this.expect(TK.LCurly);
+        let saved = this.saveOverride();
+        this.applySourceSpec(spec, dirTok.line);
+        return saved;
+    }
+
     // #source "file:line:col" { globalDeclaration* }
     // The directive overrides the sourceloc of everything inside it.
     mut fn sourceLocationBlock(): void :: final {
-        this.expect(TK.SourceDirective);
-        let pathTok = this.expect(TK.StringLit);
-        let spec = stringLiteralValue(this.text(pathTok), 1);
-
-        this.expect(TK.LCurly);
-
-        // Save the enclosing override so blocks can nest.
-        let savedActive = this.sourcelocOverride;
-        let savedFile = this.overrideFile;
-        let savedStartLine = this.overrideStartLine;
-        let savedStartCol = this.overrideStartCol;
-        let savedEndLine = this.overrideEndLine;
-        let savedEndCol = this.overrideEndCol;
-        let savedHasEnd = this.overrideHasEnd;
-
-        this.applySourceSpec(spec);
+        let saved = this.beginSourceBlock();
 
         while !this.at(TK.RCurly) && !this.atEnd() {
             let before = this.pos;
-            this.globalDeclaration();
+            this.topLevelDeclaration();
             if this.pos == before { this.advance(); }
         }
 
-        this.sourcelocOverride = savedActive;
-        this.overrideFile = savedFile;
-        this.overrideStartLine = savedStartLine;
-        this.overrideStartCol = savedStartCol;
-        this.overrideEndLine = savedEndLine;
-        this.overrideEndCol = savedEndCol;
-        this.overrideHasEnd = savedHasEnd;
-
+        this.restoreOverride(saved);
         this.expect(TK.RCurly);
     }
 
     // Parse `"/path/to/file.hz:line:col[-endcol][.endline]"`. The path itself may
     // contain colons on some platforms, so the numeric suffix is found by
     // scanning back from the end rather than splitting on the first colon.
-    mut fn applySourceSpec(spec: str) {
-        // Find the two colons that introduce line and column.
+    mut fn applySourceSpec(spec: str, anchorLine: int) {
+        // Find the two colons that introduce line and column. A spec with a
+        // single trailing ":line" (no column) selects offset mode instead.
         let lastColon = -1;
         let prevColon = -1;
         for (let i = spec.length - 1; i >= 0; i--) {
@@ -2647,7 +2708,15 @@ export ref struct Parser {
                 else { prevColon = i; return this.finishSourceSpec(spec, prevColon, lastColon); }
             }
         }
-        // Malformed: leave the real locations in place.
+        if lastColon >= 0 {
+            // "file:line" -> offset (line-map) mode.
+            this.overrideFile = spec.slice(0, lastColon);
+            this.overrideStartLine = parseIntPrefix(spec.slice(lastColon + 1));
+            this.overrideAnchorLine = anchorLine;
+            this.overrideOffsetMode = true;
+            this.sourcelocOverride = true;
+        }
+        // Malformed (no colon at all): leave the real locations in place.
     }
 
     mut fn finishSourceSpec(spec: str, prevColon: int, lastColon: int) {
@@ -2672,6 +2741,7 @@ export ref struct Parser {
             }
         }
 
+        this.overrideOffsetMode = false;
         this.sourcelocOverride = true;
     }
 
@@ -2915,6 +2985,18 @@ export ref struct Parser {
 
     // One item inside a ref struct body: a member, a method, or a nested type.
     mut fn structContent(members: mut []str, methods: mut []str, nested: mut []str): void :: final {
+        // #source at struct-content position: relocates the members inside.
+        if this.at(TK.SourceDirective) {
+            let saved = this.beginSourceBlock();
+            while !this.at(TK.RCurly) && !this.atEnd() {
+                let before = this.pos;
+                this.structContent(members, methods, nested);
+                if this.pos == before { this.advance(); }
+            }
+            this.restoreOverride(saved);
+            this.expect(TK.RCurly);
+            return;
+        }
         let declStart = this.cur();
         let annotations = this.captureMetaAnnotation();
 

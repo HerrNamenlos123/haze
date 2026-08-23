@@ -1,0 +1,496 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "hzui SFC",
+  "scopeName": "source.hzui",
+  "patterns": [
+    {
+      "include": "#decl-section"
+    },
+    {
+      "include": "#section-marker"
+    },
+    {
+      "include": "#template-block"
+    },
+    {
+      "comment": "everything else (prelude, @setup body) is plain haze",
+      "include": "source.hz"
+    }
+  ],
+  "repository": {
+    "section-marker": {
+      "comment": "@props / @emit / @slot / @setup markers (open-only, line-anchored)",
+      "match": "^(@setup)\\s*$",
+      "captures": {
+        "1": {
+          "name": "keyword.control.section.hzui"
+        }
+      }
+    },
+    "template-block": {
+      "comment": "@template owns the rest of the file (fixed section order); its body has its own syntax",
+      "begin": "^(@template)\\b",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.section.hzui"
+        }
+      },
+      "end": "^(?=@(?:props|emit|slot|setup|template)\\b)",
+      "name": "meta.template.hzui",
+      "patterns": [
+        {
+          "include": "#template-content"
+        }
+      ]
+    },
+    "template-content": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#control-attr"
+        },
+        {
+          "include": "#event-attr"
+        },
+        {
+          "include": "#slot-render"
+        },
+        {
+          "include": "#slot-provide"
+        },
+        {
+          "include": "#attr-value-bracket"
+        },
+        {
+          "include": "#attr-value-bare"
+        },
+        {
+          "include": "#class-list"
+        },
+        {
+          "include": "#content-bracket"
+        },
+        {
+          "include": "#attr"
+        },
+        {
+          "include": "#component-tag"
+        },
+        {
+          "include": "#element-tag"
+        },
+        {
+          "include": "#braces"
+        },
+        {
+          "include": "#content-bare"
+        }
+      ]
+    },
+    "comment": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.hzui"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.hzui",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.hzui"
+        }
+      ]
+    },
+    "control-attr": {
+      "comment": "if= / else-if= / else / for= / key=",
+      "patterns": [
+        {
+          "comment": "if=[expr] etc. as a REGION: vscode-textmate only honors \\G right after a begin, so the class list that may follow is matched inside via #class-list-anchored; otherwise the region ends immediately (empty end, tried last)",
+          "begin": "\\b(if|else-if|for|key)(=)(\\[)([^\\]]*)(\\])\\s*",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.conditional.hzui"
+            },
+            "2": {
+              "name": "keyword.operator.assignment.hzui"
+            },
+            "3": {
+              "name": "punctuation.definition.expression.begin.hzui"
+            },
+            "4": {
+              "name": "meta.embedded.expression.hzui",
+              "patterns": [
+                {
+                  "include": "source.hz#expression"
+                },
+                {
+                  "include": "source.hz"
+                }
+              ]
+            },
+            "5": {
+              "name": "punctuation.definition.expression.end.hzui"
+            }
+          },
+          "end": "(?=[\\s\\S])|$",
+          "applyEndPatternLast": 1,
+          "patterns": [
+            {
+              "include": "#class-list-anchored"
+            }
+          ]
+        },
+        {
+          "match": "\\b(if|else-if|for|key)(=)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.conditional.hzui"
+            },
+            "2": {
+              "name": "keyword.operator.assignment.hzui"
+            }
+          }
+        },
+        {
+          "match": "\\belse\\b",
+          "name": "keyword.control.conditional.hzui"
+        }
+      ]
+    },
+    "event-attr": {
+      "comment": "@pointerdown=handler",
+      "match": "(@)([A-Za-z][\\w-]*)(=)",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.event.hzui"
+        },
+        "2": {
+          "name": "entity.other.attribute-name.html.hzui"
+        },
+        "3": {
+          "name": "keyword.operator.assignment.hzui"
+        }
+      }
+    },
+    "slot-render": {
+      "comment": "child side: slot content ...",
+      "match": "\\b(slot)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.slot.hzui"
+        },
+        "2": {
+          "name": "entity.name.tag.html.hzui"
+        }
+      }
+    },
+    "slot-provide": {
+      "comment": "parent side: #content payload { ... }",
+      "match": "(#[A-Za-z_]\\w*)",
+      "name": "entity.name.tag.html.hzui"
+    },
+    "attr": {
+      "comment": "plain attribute: ref=x, label=\"...\"  (after control/event rules)",
+      "match": "\\b([a-z][\\w-]*)(=)",
+      "captures": {
+        "1": {
+          "name": "entity.other.attribute-name.html.hzui"
+        },
+        "2": {
+          "name": "keyword.operator.assignment.hzui"
+        }
+      }
+    },
+    "component-tag": {
+      "comment": "Capitalized head = component",
+      "match": "^\\s*([A-Z]\\w*)\\b",
+      "captures": {
+        "1": {
+          "name": "entity.name.tag.html.hzui support.class.component.hzui"
+        }
+      }
+    },
+    "element-tag": {
+      "comment": "lowercase head = builtin element (must not look like attr=...)",
+      "match": "^\\s*(?!slot\\b)([a-z]\\w*)\\b(?!\\s*=)(?![\\w-]*=)",
+      "captures": {
+        "1": {
+          "name": "entity.name.tag.html.hzui"
+        }
+      }
+    },
+    "braces": {
+      "match": "[{}]",
+      "name": "punctuation.section.block.hzui"
+    },
+    "class-list": {
+      "comment": "the tailwind-style class bracket: [row gap-0 px-[expr] enabled?cursor-pointer]  -- a '[' NOT preceded by '='",
+      "begin": "(?<![=\\w])(?<!\\]\\s)\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.classlist.begin.hzui"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.classlist.end.hzui"
+        }
+      },
+      "name": "meta.class-list.hzui",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "comment": "'-' joining a class name to its [value] bracket",
+          "match": "-(?=\\[)",
+          "name": "entity.other.attribute-name.class.css.hzui punctuation.separator.class-value.hzui"
+        },
+        {
+          "include": "#class-value-bracket"
+        },
+        {
+          "comment": "unit suffix directly after a value bracket: px-[expr]px / w-[10]em / w-[50]%",
+          "match": "(?<=\\])(px|em|%)",
+          "name": "keyword.other.unit.css.hzui"
+        },
+        {
+          "comment": "ILLEGAL: dotted condition -- member access must be bracketed: [a.b]?",
+          "match": "(!?[A-Za-z_]\\w*(?:\\.\\w+)+)(\\?)",
+          "captures": {
+            "1": {
+              "name": "invalid.illegal.member-access-needs-brackets.hzui invalid.illegal.bad-ampersand.html"
+            },
+            "2": {
+              "name": "keyword.operator.ternary.hzui"
+            }
+          }
+        },
+        {
+          "comment": "condition prefix: enabled? / !grow?  (single identifier)",
+          "match": "(!?[A-Za-z_]\\w*)(\\?)",
+          "captures": {
+            "1": {
+              "name": "variable.language.condition.hzui"
+            },
+            "2": {
+              "name": "keyword.operator.ternary.hzui"
+            }
+          }
+        },
+        {
+          "comment": "'?' after a bracketed [expr] condition",
+          "match": "(?<=\\])\\?",
+          "name": "keyword.operator.ternary.hzui"
+        },
+        {
+          "comment": "a class token: row, gap-0, cross-align-center, w-fit",
+          "match": "[A-Za-z][\\w]*(?:-[\\w]+)*",
+          "name": "entity.other.attribute-name.class.css.hzui"
+        }
+      ]
+    },
+    "class-value-bracket": {
+      "comment": "arbitrary-value bracket inside a class token: holds a real haze expression",
+      "begin": "\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.begin.hzui"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.end.hzui"
+        }
+      },
+      "contentName": "meta.embedded.expression.hzui",
+      "patterns": [
+        {
+          "include": "source.hz#expression"
+        },
+        {
+          "include": "source.hz"
+        }
+      ]
+    },
+    "attr-value-bracket": {
+      "comment": "attribute value in brackets: if=[expr], for=[item in items] -- embedded haze",
+      "begin": "(?<==)\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.begin.hzui"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.end.hzui"
+        }
+      },
+      "contentName": "meta.embedded.expression.hzui",
+      "patterns": [
+        {
+          "include": "source.hz#expression"
+        },
+        {
+          "include": "source.hz"
+        }
+      ]
+    },
+    "attr-value-bare": {
+      "comment": "bare attribute value must be ONE identifier; member access needs [ ]",
+      "patterns": [
+        {
+          "match": "(?<==)(!?[A-Za-z_]\\w*(?:\\.\\w+)+)",
+          "name": "invalid.illegal.member-access-needs-brackets.hzui invalid.illegal.bad-ampersand.html"
+        },
+        {
+          "match": "(?<==)(!?[A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "support.variable.property.hzui"
+            }
+          }
+        }
+      ]
+    },
+    "decl-section": {
+      "comment": "@props / @slot / @emit bodies are struct-body syntax",
+      "begin": "^(@(?:props|slot|emit))\\s*$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.section.hzui"
+        }
+      },
+      "end": "^(?=@(?:props|emit|slot|setup|template)\\b)",
+      "name": "meta.declarations.hzui",
+      "patterns": [
+        {
+          "include": "source.hz#comments"
+        },
+        {
+          "include": "source.hz#struct-member"
+        },
+        {
+          "include": "source.hz#struct-body"
+        },
+        {
+          "match": "[;]",
+          "name": "punctuation.terminator.statement.hzui"
+        }
+      ]
+    },
+    "content-bracket": {
+      "comment": "content expression after the class list: text [w-4] [s.label]",
+      "begin": "(?<=\\]\\s)\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.begin.hzui"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.expression.end.hzui"
+        }
+      },
+      "contentName": "meta.embedded.expression.hzui",
+      "patterns": [
+        {
+          "include": "source.hz#expression"
+        },
+        {
+          "include": "source.hz"
+        }
+      ]
+    },
+    "content-bare": {
+      "patterns": [
+        {
+          "match": "\\b[A-Za-z_]\\w*(?:\\.\\w+)+\\b",
+          "name": "invalid.illegal.member-access-needs-brackets.hzui invalid.illegal.bad-ampersand.html"
+        },
+        {
+          "match": "\\b[A-Za-z_]\\w*\\b",
+          "name": "support.variable.property.hzui"
+        }
+      ]
+    },
+    "class-list-anchored": {
+      "comment": "class list directly after a bracketed control attr (anchored inside its region)",
+      "begin": "\\G\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.classlist.begin.hzui"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.classlist.end.hzui"
+        }
+      },
+      "name": "meta.class-list.hzui",
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "comment": "'-' joining a class name to its [value] bracket",
+          "match": "-(?=\\[)",
+          "name": "entity.other.attribute-name.class.css.hzui punctuation.separator.class-value.hzui"
+        },
+        {
+          "include": "#class-value-bracket"
+        },
+        {
+          "comment": "unit suffix directly after a value bracket: px-[expr]px / w-[10]em / w-[50]%",
+          "match": "(?<=\\])(px|em|%)",
+          "name": "keyword.other.unit.css.hzui"
+        },
+        {
+          "comment": "ILLEGAL: dotted condition -- member access must be bracketed: [a.b]?",
+          "match": "(!?[A-Za-z_]\\w*(?:\\.\\w+)+)(\\?)",
+          "captures": {
+            "1": {
+              "name": "invalid.illegal.member-access-needs-brackets.hzui invalid.illegal.bad-ampersand.html"
+            },
+            "2": {
+              "name": "keyword.operator.ternary.hzui"
+            }
+          }
+        },
+        {
+          "comment": "condition prefix: enabled? / !grow?  (single identifier)",
+          "match": "(!?[A-Za-z_]\\w*)(\\?)",
+          "captures": {
+            "1": {
+              "name": "variable.language.condition.hzui"
+            },
+            "2": {
+              "name": "keyword.operator.ternary.hzui"
+            }
+          }
+        },
+        {
+          "comment": "'?' after a bracketed [expr] condition",
+          "match": "(?<=\\])\\?",
+          "name": "keyword.operator.ternary.hzui"
+        },
+        {
+          "comment": "a class token: row, gap-0, cross-align-center, w-fit",
+          "match": "[A-Za-z][\\w]*(?:-[\\w]+)*",
+          "name": "entity.other.attribute-name.class.css.hzui"
+        }
+      ]
+    }
+  }
+}

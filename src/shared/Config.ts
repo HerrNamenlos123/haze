@@ -196,6 +196,11 @@ export type ModuleConfig = {
   moduleType: ModuleType;
   configFilePath?: string;
   dependencies: ModuleDependency[];
+  // [plugins] table -- dependency-style entries. Non-inheriting: a plugin
+  // applies only to the source files of the module whose haze.toml declares
+  // it. The compiler core knows nothing about what any plugin does -- see
+  // src/Plugins/PluginInterface.ts.
+  plugins: { name: string; path: string }[];
   linkerFlags: PlatformStrings;
   interfaceLinkerFlags: PlatformStrings;
   compilerFlags: PlatformStrings;
@@ -632,6 +637,28 @@ export class ConfigParser {
     return deps;
   }
 
+  // Mirrors getDependencies: [plugins] entries are { path = "..." } tables.
+  // The name (toml key) is informational for now.
+  getPlugins(toml: any) {
+    const plugins = [] as { name: string; path: string }[];
+    if (toml["plugins"]) {
+      for (const [name, props] of Object.entries(toml["plugins"])) {
+        if (typeof props !== "object" || props === null) {
+          throw new GeneralError(
+            `Plugin props for plugin '${name}' in file ${this.configPath} must be an object`
+          );
+        }
+        if (!("path" in props) || typeof props["path"] !== "string") {
+          throw new GeneralError(
+            `Plugin '${name}' in file ${this.configPath} requires a path attribute of type string`
+          );
+        }
+        plugins.push({ name: name, path: props["path"] });
+      }
+    }
+    return plugins;
+  }
+
   static readonly MODULE_ID_PATTERN = /^[0-9A-Za-z]{8}$/;
 
   // Validates an existing `id` against the exact schema, or generates and
@@ -708,6 +735,7 @@ export class ConfigParser {
           [],
       },
       dependencies: this.getDependencies(toml),
+      plugins: this.getPlugins(toml),
       source: {
         type: "src-dir",
         dirpath: join(

@@ -36,20 +36,65 @@ namespace presets {
         return ui_styling.TextWrapOp { value: ui_styling.TextWrap.None };
     }
 
-    export fn p(value: real): ui_styling.PaddingOp {
-        return ui_styling.PaddingOp {
-            padding: ui_styling.StylePaddingSimple { value: computeSize(value) },
-        };
+    // Padding. `real` = Tailwind spacing scale (p-4 = 16px); Length = explicit
+    // (p-[8] = 8px, p-[1.5]em, p-[2]rem). Each shorthand sets only its sides,
+    // so `p-4 px-2 pb-1` composes by field and `px-2 p-4` overrides (last-wins).
+    fn pxLen(value: real): ui_styling.Length {
+        return ui_styling.Px { value: computeSize(value) };
     }
 
+    export fn p(value: real): ui_styling.PaddingOp {
+        let l = pxLen(value);
+        return ui_styling.PaddingOp { top: l, right: l, bottom: l, left: l };
+    }
+    export fn p(value: ui_styling.Length): ui_styling.PaddingOp {
+        return ui_styling.PaddingOp { top: value, right: value, bottom: value, left: value };
+    }
+    // real|none -> Length|none without a union-to-union conversion (a
+    // ternary would produce `Px | none`, which the compiler can't convert).
+    fn optPx(v: real | none): ui_styling.Length | none {
+        if v is none { return none; }
+        let l: ui_styling.Length = ui_styling.Px { value: v };
+        return l;
+    }
+
+    // Explicit per-side pixel values (legacy form).
     export fn p(value: ui_styling.StylePaddingFull): ui_styling.PaddingOp {
         return ui_styling.PaddingOp {
-            padding: value,
+            top: optPx(value.top),
+            right: optPx(value.right),
+            bottom: optPx(value.bottom),
+            left: optPx(value.left),
         };
     }
+    export fn px(value: real): ui_styling.PaddingOp {
+        let l = pxLen(value);
+        return ui_styling.PaddingOp { left: l, right: l };
+    }
+    export fn px(value: ui_styling.Length): ui_styling.PaddingOp {
+        return ui_styling.PaddingOp { left: value, right: value };
+    }
+    export fn py(value: real): ui_styling.PaddingOp {
+        let l = pxLen(value);
+        return ui_styling.PaddingOp { top: l, bottom: l };
+    }
+    export fn py(value: ui_styling.Length): ui_styling.PaddingOp {
+        return ui_styling.PaddingOp { top: value, bottom: value };
+    }
+    export fn pt(value: real): ui_styling.PaddingOp { return ui_styling.PaddingOp { top: pxLen(value) }; }
+    export fn pt(value: ui_styling.Length): ui_styling.PaddingOp { return ui_styling.PaddingOp { top: value }; }
+    export fn pr(value: real): ui_styling.PaddingOp { return ui_styling.PaddingOp { right: pxLen(value) }; }
+    export fn pr(value: ui_styling.Length): ui_styling.PaddingOp { return ui_styling.PaddingOp { right: value }; }
+    export fn pb(value: real): ui_styling.PaddingOp { return ui_styling.PaddingOp { bottom: pxLen(value) }; }
+    export fn pb(value: ui_styling.Length): ui_styling.PaddingOp { return ui_styling.PaddingOp { bottom: value }; }
+    export fn pl(value: real): ui_styling.PaddingOp { return ui_styling.PaddingOp { left: pxLen(value) }; }
+    export fn pl(value: ui_styling.Length): ui_styling.PaddingOp { return ui_styling.PaddingOp { left: value }; }
 
     export fn gap(value: real): ui_styling.GapOp {
-        return ui_styling.GapOp { value: computeSize(value) };
+        return ui_styling.GapOp { value: ui_styling.Px { value: computeSize(value) } };
+    }
+    export fn gap(value: ui_styling.Length): ui_styling.GapOp {
+        return ui_styling.GapOp { value: value };
     }
 
     // hidden / block: CSS `display: none` and back again.
@@ -112,9 +157,15 @@ namespace presets {
     export fn w(value: real): ui_styling.WidthOp {
         return ui_styling.WidthOp { value: computeSize(value) };
     }
+    export fn w(value: ui_styling.Length): ui_styling.WidthLengthOp {
+        return ui_styling.WidthLengthOp { value: value };
+    }
 
     export fn h(value: real): ui_styling.HeightOp {
         return ui_styling.HeightOp { value: computeSize(value) };
+    }
+    export fn h(value: ui_styling.Length): ui_styling.HeightLengthOp {
+        return ui_styling.HeightLengthOp { value: value };
     }
 
     // w-fit/h-fit: wrap tightly to content. w-grow/h-grow (Tailwind has no
@@ -291,6 +342,10 @@ namespace presets {
         return ui_styling.BorderColorOp { color: color };
     }
 
+    export fn rounded(value: ui_styling.Length): ui_styling.RoundedOp {
+        return ui_styling.RoundedOp { value: value };
+    }
+
     export fn rounded(value: real): ui_styling.CornerRadiusOp {
         return ui_styling.CornerRadiusOp {
             cornerRadius: ui_styling.StyleCornerRadiusSimple { value: value },
@@ -300,6 +355,22 @@ namespace presets {
     export fn fontSize(value: real): ui_styling.FontSizeOp {
         return ui_styling.FontSizeOp { value: value };
     }
+    export fn fontSize(value: ui_styling.Length): ui_styling.FontSizeLengthOp {
+        return ui_styling.FontSizeLengthOp { value: value };
+    }
+
+    // ---- Aliases matching the SFC class-token naming rule (kebab -> camel):
+    // text-nowrap, cross-align-center, ... The rule is mechanical; the names
+    // it produces are provided here rather than special-cased in the plugin.
+    export fn textNowrap(): ui_styling.TextWrapOp { return noWrap(); }
+    export fn crossAlignStart(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Start); }
+    export fn crossAlignCenter(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Center); }
+    export fn crossAlignEnd(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.End); }
+    export fn crossAlignStretch(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Stretch); }
+    export fn itemsStart(): ui_styling.CrossAlignOp { return crossAlignStart(); }
+    export fn itemsCenter(): ui_styling.CrossAlignOp { return crossAlignCenter(); }
+    export fn itemsEnd(): ui_styling.CrossAlignOp { return crossAlignEnd(); }
+    export fn itemsStretch(): ui_styling.CrossAlignOp { return crossAlignStretch(); }
 
     export fn fontFamily(value: str): ui_styling.FontFamilyOp {
         return ui_styling.FontFamilyOp { value: value };

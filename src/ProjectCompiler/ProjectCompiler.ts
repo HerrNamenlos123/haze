@@ -119,6 +119,7 @@ export class ProjectCompiler {
       config = {
         configFilePath: undefined,
         dependencies: [],
+        plugins: [],
         linkerFlags: new PlatformStrings(),
         interfaceLinkerFlags: new PlatformStrings(),
         moduleType: ModuleType.Executable,

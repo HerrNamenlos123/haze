@@ -1,126 +1,126 @@
-import ui_elements
-import ui_styling
-import ui_components
-import headwind
-type presets = headwind.presets;
+// import ui_elements
+// import ui_styling
+// import ui_components
+// import headwind
+// type presets = headwind.presets;
 
-export struct ButtonStyle {
-    bg: str = "#00000000";
-    bgHover: str = "#2A2D2E";
-    bgActive: str = "#37373D";
-    bgSelected: str = "#37373D";
-    textColor: str = "#CCCCCC";
-    textColorDisabled: str = "#6A6A6A";
-    paddingX: real = 8.0;
-    paddingY: real = 4.0;
-    rounded: real = 3.0;
-    fontSize: real | none = none;
-}
+// export struct ButtonStyle {
+//     bg: str = "#00000000";
+//     bgHover: str = "#2A2D2E";
+//     bgActive: str = "#37373D";
+//     bgSelected: str = "#37373D";
+//     textColor: str = "#CCCCCC";
+//     textColorDisabled: str = "#6A6A6A";
+//     paddingX: real = 8.0;
+//     paddingY: real = 4.0;
+//     rounded: real = 3.0;
+//     fontSize: real | none = none;
+// }
 
-export struct ButtonArgs {
-    id: int;
-    label: str = "";
-    enabled: bool = true;
-    selected: bool = false;
-    grow: bool = false;
-    style: ButtonStyle = {};
+// export struct ButtonArgs {
+//     id: int;
+//     label: str = "";
+//     enabled: bool = true;
+//     selected: bool = false;
+//     grow: bool = false;
+//     style: ButtonStyle = {};
 
-    onClick?: () => none;
-    renderContent?: () => none;
+//     onClick?: () => none;
+//     renderContent?: () => none;
 
 
-    fn operator!=(other: ButtonArgs) {
-        // Callbacks are deliberately NOT compared. A host
-        // writes fresh closures every frame, so comparing them would
-        // report "changed" on every single frame and defeat the whole
-        // point of props equality. Same reasoning as TabsArgs in
-        // stdlib/tabs.
-        return this.id != other.id
-            || this.label != other.label
-            || this.enabled != other.enabled
-            || this.selected != other.selected
-            || this.grow != other.grow;
-    }
-}
+//     fn operator!=(other: ButtonArgs) {
+//         // Callbacks are deliberately NOT compared. A host
+//         // writes fresh closures every frame, so comparing them would
+//         // report "changed" on every single frame and defeat the whole
+//         // point of props equality. Same reasoning as TabsArgs in
+//         // stdlib/tabs.
+//         return this.id != other.id
+//             || this.label != other.label
+//             || this.enabled != other.enabled
+//             || this.selected != other.selected
+//             || this.grow != other.grow;
+//     }
+// }
 
-export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
-        if instance.props().grow {
-            ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
-        } else {
-            ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
-        }
+// export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
+//     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
+//         if instance.props().grow {
+//             ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
+//         } else {
+//             ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
+//         }
 
-        let buttonRef = ui.elementRef<ui_elements.DivElement>();
+//         let buttonRef = ui.elementRef<ui_elements.DivElement>();
 
-        let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
-        let isActive = rx.computed(() => buttonRef?.active() ?? false);
+//         let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
+//         let isActive = rx.computed(() => buttonRef?.active() ?? false);
 
-        let clicked = (event: ui_components.PointerEvent) => {
-            event.stopPropagation();
-            let p = instance.props();
-            if !p.enabled { return; }
-            if p.onClick { p.onClick(); }
-        };
+//         let clicked = (event: ui_components.PointerEvent) => {
+//             event.stopPropagation();
+//             let p = instance.props();
+//             if !p.enabled { return; }
+//             if p.onClick { p.onClick(); }
+//         };
 
-        let backgroundColor = rx.computed(() => {
-            let props = instance.props();
-            let style = props.style;
+//         let backgroundColor = rx.computed(() => {
+//             let props = instance.props();
+//             let style = props.style;
 
-            if !props.enabled {
-                return style.bg;
-            } else if props.selected {
-                return style.bgSelected;
-            } else if rx.get(isActive) {
-                return style.bgActive;
-            } else if rx.get(isHovered) {
-                return style.bgHover;
-            }
-            return style.bg;
-        });
+//             if !props.enabled {
+//                 return style.bg;
+//             } else if props.selected {
+//                 return style.bgSelected;
+//             } else if rx.get(isActive) {
+//                 return style.bgActive;
+//             } else if rx.get(isHovered) {
+//                 return style.bgHover;
+//             }
+//             return style.bg;
+//         });
 
-        return (): void => {
-            let props = instance.props();
-            let style = props.style;
+//         return (): void => {
+//             let props = instance.props();
+//             let style = props.style;
 
-            ui.div({
-                    id: 1,
-                    elementRef: buttonRef,
-                    onPointerDown: clicked,
-                }, (): void => {
-                    let p = instance.props();
-                    if p.renderContent {
-                        p.renderContent();
-                    }
-                    else if p.label.length > 0 {
-                        ui.text({
-                                id: 1,
-                                text: p.label,
-                            },
-                            presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
-                            presets.noWrap(),
-                            style.fontSize ? presets.fontSize(style.fontSize) : presets.noop()
-                        );
-                    }
-                },
-                presets.row(),
-                presets.crossAlign(ui_styling.CrossAlign.Center),
-                presets.gap(0),
-                presets.p({
-                    left: style.paddingX,
-                    right: style.paddingX,
-                    top: style.paddingY,
-                    bottom: style.paddingY,
-                }),
-                presets.bg(backgroundColor),
-                presets.rounded(style.rounded),
-                presets.hFit(),
-                props.grow ? presets.wGrow() : presets.wFit(),
-                // An arrow, not the editor's I-beam -- the cursor is
-                // inherited down the hit path, so a button sitting inside
-                // a text area would otherwise keep the caret cursor.
-                props.enabled ? presets.cursorPointer() : presets.cursorDefault()
-            );
-        };
-    });
-}
+//             ui.div({
+//                     id: 1,
+//                     elementRef: buttonRef,
+//                     onPointerDown: clicked,
+//                 }, (): void => {
+//                     let p = instance.props();
+//                     if p.renderContent {
+//                         p.renderContent();
+//                     }
+//                     else if p.label.length > 0 {
+//                         ui.text({
+//                                 id: 1,
+//                                 text: p.label,
+//                             },
+//                             presets.textColor(p.enabled ? style.textColor : style.textColorDisabled),
+//                             presets.noWrap(),
+//                             style.fontSize ? presets.fontSize(style.fontSize) : presets.noop()
+//                         );
+//                     }
+//                 },
+//                 presets.row(),
+//                 presets.crossAlign(ui_styling.CrossAlign.Center),
+//                 presets.gap(0),
+//                 presets.p({
+//                     left: style.paddingX,
+//                     right: style.paddingX,
+//                     top: style.paddingY,
+//                     bottom: style.paddingY,
+//                 }),
+//                 presets.bg(backgroundColor),
+//                 presets.rounded(style.rounded),
+//                 presets.hFit(),
+//                 props.grow ? presets.wGrow() : presets.wFit(),
+//                 // An arrow, not the editor's I-beam -- the cursor is
+//                 // inherited down the hit path, so a button sitting inside
+//                 // a text area would otherwise keep the caret cursor.
+//                 props.enabled ? presets.cursorPointer() : presets.cursorDefault()
+//             );
+//         };
+//     });
+// }

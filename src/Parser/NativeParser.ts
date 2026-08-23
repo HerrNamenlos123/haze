@@ -119,7 +119,14 @@ export function reviveAST(root: unknown): ASTRoot {
         start: { line: number; column: number };
         end?: { line: number; column: number };
       } = {
-        filename: typeof obj.F === "string" ? obj.F : filename,
+        // A relative F (from a #source directive) is resolved against the
+        // directory of the file that contains the directive.
+        filename:
+          typeof obj.F === "string"
+            ? path.isAbsolute(obj.F)
+              ? obj.F
+              : path.resolve(path.dirname(filename), obj.F)
+            : filename,
         start: { line: l[0] ?? 0, column: l[1] ?? 0 },
       };
       if (l.length >= 4) {

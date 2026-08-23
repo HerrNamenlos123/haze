@@ -1,0 +1,18 @@
+// hzui -- SFC UI framework runtime helpers.
+//
+// The SFC transformer lives in ../plugin (TypeScript, v0; haze in Phase 1).
+// Consumers enable it with a single line in their haze.toml:
+//
+//   [plugins]
+//   hzui = { path = "path/to/stdlib/hzui" }
+//
+// Runtime helpers referenced by generated code live here.
+
+import ui_components
+
+// TODO(v0): id derivation for keyed loop elements: hash(staticId, key).
+// Referenced by lowered `for=`/`key=` template code.
+export fn keyId(staticId: int, key: int): int {
+    // Placeholder mixing; replace with a real hash.
+    return staticId ^ (key * 2654435761);
+}

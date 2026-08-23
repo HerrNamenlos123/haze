@@ -34,10 +34,11 @@ current runtime (swapped into `ui_widgets`, built clean).
 
 ### 3.1 Sections
 
-A file is split by **line-anchored, open-only markers**: a line matching
-`^@(props|emit|slot|setup|template)` starts a section; the next marker ends it. No closing
-markers, no brace counting — splitting is a single regex pass with **no parsing**. Fixed order,
-each section at most once:
+SFC files use the **`.hzui`** extension. A file is split by **line-anchored, open-only
+markers**: a line matching `^@(props|emit|slot|setup|template)` starts a section; the next
+marker ends it. No closing markers, no brace counting — splitting is a single regex pass with
+**no parsing**. Each section at most once; `@props`/`@emit`/`@slot` in any order, then
+`@setup`, then `@template`:
 
 ```
 <prelude>     plain haze, verbatim: imports, exported types (Vue's plain <script>)
@@ -59,9 +60,19 @@ Element head, fixed order — every element reads identically:
 tag  if=/for=  [class-tokens]  attrs  content  { children }
 ```
 
-- **Head boundary:** the head ends at the first `{` at bracket-depth 0. Attribute values and
-  conditions are a single token; wrap in `[ ]` when they contain whitespace:
-  `if=[label.length > 0]`, `@click=save`, `label="Save"`.
+- **Head boundary:** the head ends at the first `{` at bracket-depth 0.
+- **Strict value rule (template-wide, LOCKED 2026-08-23):** every attribute value, event
+  handler, `if=`/`for=`/`key=` value, class-token condition, and content expression is exactly
+  one of: a **single identifier** (`enabled`, `!grow`, `clicked`), a **string literal**, a
+  number, or a **bracketed `[expression]`**. Member access, calls and operators MUST be
+  bracketed: `[props.grow]?w-grow`, `label=[props.label]`, `if=[label.length > 0]`,
+  `text [w-4] [s.label]`. Enforced by the transformer (error names the fix) and shown by the
+  grammar (dotted bare values render as `invalid.illegal`). Rationale: the head stays
+  tokenizable without an expression parser, and the rule is visible at a glance.
+- **Content vs class list:** the first `[ ]` group after the tag/control attrs is the class
+  list; a later `[ ]` group is the content expression. `text [expr]` is therefore a class
+  list — write `text [] [expr]` for bracketed content without classes (rare; identifiers and
+  strings need no brackets).
 - **Control flow:** `if=` / `else-if=` / `else` / `for=[item in items] key=expr` as attributes
   (v-if/v-for). Plain haze `if`/`for` statements also pass through (immediate-mode escape hatch),
   but see the no-logic lints below.
@@ -79,17 +90,27 @@ Whitespace-separated only — no commas, no quotes, no parens between tokens.
 - `row`, `gap-0`, `cross-align-center` — static token → preset call (`presets.row()` …).
   Lowering is a **naming rule** (`px-2` → `px(2)`, `w-fit` → `wFit()`), not a table: the real
   compiler resolves the call, and any `export fn` in a preset namespace is automatically a token.
-- **Arbitrary/dynamic values:** `[ ]` holds a real haze expression, spliced verbatim:
-  `bg-[backgroundColor]`, `px-[style.paddingX]px`, `rounded-[3]px`. Unit suffix sits **outside**
-  the bracket (the bracket is an expression, not a string); bare `[]` defaults to px; `em`, `%`
-  as suffixes.
-- **Conditionals:** `cond?token` — cond is a bool identifier path (bare `!` negation allowed) or
-  `[expr]`. Lowered to `cond ? op : noop()`. Combined with last-wins merge, no else-branch is
+- **Scale numbers:** `gap-0`, `p-4`, `w-2.5` — any integer or float; the preset applies the
+  Tailwind spacing scale (`headwind.computeSize`, 4px per unit). Fractions (`w-1/2`) are
+  rejected until `Size` gains a percent variant.
+- **Explicit values:** `[ ]` holds a real haze expression, spliced verbatim, and is **never
+  scaled**: `p-[8]` = 8px. Unit suffix sits **outside** the bracket (the bracket is an
+  expression, not a string): default/`px` → `ui_styling.Px`, `em` → `Em` (× the element's own
+  font size, or the root size if none is set — so put `font-size` tokens first), `rem` → `Rem`
+  (× `ui_styling.rootFontSize` = 16, matching ui_layout). Presets take these via `Length`
+  overloads (`p(real)` scale vs `p(Length)` explicit) — p/px/py/pt/pr/pb/pl, gap, w, h,
+  rounded, font-size. IMPLEMENTED 2026-08-24.
+- **Conditionals:** `cond?token` — cond is a single bool identifier (bare `!` negation allowed)
+  or `[expr]` (member access must be bracketed, per the strict value rule). Lowered to `cond ? op : noop()`. Combined with last-wins merge, no else-branch is
   needed: `w-fit grow?w-grow`.
 - **State variants:** `hover:`/`active:`/`focus:` prefix — lowered against the element's own
   (auto-generated) elementRef: `hover:bg-[style.bgHover]` → `ref.hover() ? op : noop()`.
   `:` means *element state*, `?` means *arbitrary condition* — never mixed.
-- **Merging is last-wins** (Tailwind semantics). See §5: the runtime currently merges first-wins.
+- **Merging is last-wins per field** (Tailwind semantics) — IMPLEMENTED 2026-08-24 in
+  `ui_styling.applyDivOp`/`applyTextOp`; explicit `style:` fields still win over every preset
+  (ops apply onto an empty style, explicit fields are overlaid afterwards). Padding is a single
+  `PaddingOp` with optional per-side `Length` fields, so `p-4 px-2 pb-1` composes by side and
+  `px-2 p-4` is overridden by `p-4`. Tokens are emitted in source order (no reversal).
 - **`class` passthrough:** every component implicitly accepts a `class` prop (`[]Op`, plain
   stack data, compared by generated `!=`); the child splices it with a literal `class` token at
   the position of its choice. This + variants + theme tokens is intended to replace per-component
@@ -130,9 +151,11 @@ of scope for now.
   excluded by construction. Field-wise equality for plain prop structs is generated in-language
   via `for comptime field in T.fields` (pattern already used in
   [reactive.hz:53](../stdlib/core/src/reactive.hz#L53)) — no core feature needed.
-- **Dialect vocabulary** (`computed`, `elementRef`, `emit`, `slots`, …) is reserved by the SFC
-  dialect and bound by a composer-generated prelude / fixed textual rewrite — users cannot
-  shadow these names in SFC files.
+- **Dialect vocabulary** (`computed`, `elementRef`, `props.`, `slots.`, `emits`) is reserved by
+  the SFC dialect and forwarded by fixed **textual rewrite** (`computed(` → `rx.computed(`,
+  `elementRef` → `ui.elementRef`): haze has no generic function values (`let computed =
+  rx.computed;` fails with "expects 1 type parameters"), so forwarding by variable assignment is
+  not possible. Users cannot shadow these names in SFC files.
 
 ---
 
@@ -144,24 +167,40 @@ boilerplate, template lowered to `ui.div`/`ui.text`/component calls with preset 
 `//@plugin:` notes at each decision: generated Props struct + `!=`, slot payload struct, emit
 struct, auto ids, slot/fallback lowering, usage-side lowering.
 
-**Source locations use the existing `#source` directive** — the same mechanism generated
-`import.hz` files use (`#source "path:line:colStart-colEnd" { ... }`, see any
-`__haze__/*/build/import.hz`). The composer wraps every spliced region (verbatim sections
-line-by-line or block-wise; each lowered template fragment pointing at its SFC source span) in
-`#source` blocks. Diagnostics therefore come out pointing at SFC lines with **zero new mapping
-infrastructure** — no lineMap format, no sink changes. The LSP may later want a reverse map
-(SFC position → generated position) for completions; not needed for v0 diagnostics.
+**Source locations use the `#source` directive — IMPLEMENTED (2026-08-23), in both parsers.**
+The directive now has two modes and three positions:
+
+- **Pin mode** (historical): `#source "path:line:col[-endcol][.endline]" { ... }` — every node
+  inside reports exactly that span. Used by generated `import.hz` and by the SFC transformer
+  for lowered template statements (pointing at the element head).
+- **Offset mode** (new): `#source "path:line" { ... }` — line-map semantics like C's `#line`:
+  the first line after the directive corresponds to `line`, subsequent lines shift with it,
+  columns pass through unchanged. Used for verbatim sections (prelude/props/setup), which are
+  spliced at their original indentation so columns stay exact.
+- **Positions**: global declarations (incl. imports), struct content, and **statements** — all
+  three grammar positions exist in the ANTLR grammar (as dedicated rules, since parse-time
+  listeners never receive enter events for labeled alternatives — the pre-existing
+  struct-content directive was silently broken for exactly that reason in the ANTLR path, and
+  entirely missing in the native parser) and in `compiler/haze-parser`.
+- **Relative paths** resolve against the directory of the file being parsed (ANTLR:
+  `computeSourceLoc`; native: the bridge's revive walk). The transformer emits just the
+  basename, since transform output is parsed under the original filepath.
+
+Verified end-to-end: an SFC compiled through the dev compiler reports setup errors, template
+errors, and props errors at their original file:line:column (column-exact for verbatim
+sections); `--parser assert` confirms both parsers produce identical ASTs. Diagnostics needed
+**zero sink changes**. The LSP may later want a reverse map (SFC position → generated position)
+for completions; not needed for diagnostics.
 
 ---
 
 ## 5. Runtime / stdlib changes required (found by compiling the lowered file)
 
-1. **Op merge order:** [applyDivOp](../stdlib/ui_styling/src/ui_styling.hz#L690) is first-wins
-   ("presets only fill gaps"); Tailwind idioms need last-wins. Either flip the runtime (preferred)
-   or the plugin emits token lists reversed.
-2. **Granular padding:** `PaddingOp` is monolithic; `px-`/`py-`/per-side ops are needed so a
-   parent `p-4` merges correctly with a child's `px-2`. Rule: one op per property; compound
-   tokens expand.
+1. ~~Op merge order~~ DONE 2026-08-24: runtime is last-wins per field, explicit style wins.
+2. ~~Granular padding~~ DONE 2026-08-24: `PaddingOp` has optional per-side `Length` fields;
+   `Length = Px | Em | Rem` with `resolveLength`; `WidthLengthOp`/`HeightLengthOp`/`RoundedOp`/
+   `FontSizeLengthOp` for explicit sizes; headwind aliases for the mechanical naming rule
+   (`textNowrap`, `crossAlignCenter`, `itemsCenter`, …).
 3. **`class` passthrough prop:** `[]DivStyleOp`-typed prop + splice token support.
 4. **Hover/active variants:** auto elementRef per styled element + conditional ops (no new
    runtime primitives; lowering only).
@@ -235,11 +274,12 @@ hzui = { path = "stdlib/hzui" }    # name is irrelevant for now
 
 - **Non-inheriting:** a plugin applies only to the source files of the module that declares it.
   A dep built from SFCs declares the plugin in its own `haze.toml`.
-- **Routing (v0):** no new file extensions planned. The plugin receives the module's source
-  files and decides for itself (e.g. by markers or filename), returning the input unchanged to
-  decline. Future option (not now): suffix-based matching where `.ui.hz` files route only to
-  plugins claiming that suffix while plain `.hz` matches both — `extname()`-based filtering
-  would move to endsWith.
+- **Routing — `.hzui` (decided 2026-08-23):** SFC files use the `.hzui` extension. Plugins
+  declare the extensions they claim (`extensions: [".hzui"]`); the compiler collects claimed
+  extensions as module sources exactly like `.hz` (discovery, watching, hashing) and routes
+  every source file through the loaded plugins. The hzui plugin claims `.hzui` only — plain
+  `.hz` files are never touched; a `.hzui` file without section markers is an error. The core
+  knows nothing about `.hzui` itself, only about the registry.
 - **Diagnostics:** no per-plugin error-code registry — codes can't be unique across plugins
   anyway. A plugin throws/returns a plugin error carrying its name and a message string; the
   compiler surfaces it under one generic plugin-error code, located via `#source`.
@@ -327,8 +367,10 @@ linting.
 | Emit call form | `<emitName>.click(e)` method (names TBD; `emit` lexer entry is a leak, not a keyword) | checked by the ordinary compiler; no string dispatch |
 | Plugin registration | `[plugins] name = { path = "…" }`, dependency-style, non-inheriting | one line enables everything; compiler core stays UI-agnostic |
 | Plugin errors | one generic code + plugin name + message string | codes can't be unique across plugins |
-| Source mapping | existing `#source` directive in composed output | zero new infrastructure; proven by generated import.hz |
-| File extensions | none new; plugin inspects filename/content itself | suffix matching (`.ui.hz`) is a possible future, not now |
+| Source mapping | `#source` with pin + offset (line-map) modes, at global/struct/statement positions, relative paths | implemented in both parsers; zero diagnostic-sink changes |
+| File extension | `.hzui`, registered by the plugin (`extensions`), collected like `.hz` by the core | unambiguous routing; editor language id; core stays extension-agnostic |
+| Section order | `@props`/`@emit`/`@slot` any order, then `@setup`, then `@template` | matches how drafts were actually written |
+| Editor support | separate grammar-only VS Code extension `stdlib/hzui/vscode` (language `hzui`, embeds `source.hz`) | base haze extension never accumulates project-specific rules |
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
 | Prop access | bare identifiers in setup **and** template | copy-paste between sections; explicit `props.x` remains |
 | IDs | auto (source order) + mandatory `key=` in loops | biggest ergonomic gotcha removed |

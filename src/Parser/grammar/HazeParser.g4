@@ -33,7 +33,7 @@ sourceLocationPrefixRule
     ;
 
 globalDeclarationWithSource
-    : sourceLocationPrefixRule LCURLY globalDeclaration* RCURLY
+    : sourceLocationPrefixRule LCURLY (importStatements | globalDeclaration)* RCURLY
     ;
 
 globalDeclaration
@@ -185,8 +185,12 @@ genericLiteral
     : typeExpr
     ;
 
+structContentWithSourceloc
+    : sourceLocationPrefixRule LCURLY structContent* RCURLY
+    ;
+
 structContent
-    : sourceLocationPrefixRule LCURLY structContent* RCURLY                                                 #StructContentWithSourceloc
+    : structContentWithSourceloc                                                                            #StructContentWithSourcelocAlt
     | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
     | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
@@ -416,8 +420,20 @@ ifStatementConditionImpl
     | LET id (COLON typeExpr)? EQUALS letExpr=expr (SEMI guardExpr=expr)? #IfLetStatementCondition
     ;
 
+// Dedicated rule (NOT a labeled alternative): parse-time listeners only
+// receive enter events for real rules, and the #source machinery needs its
+// enter hook to fire before the inner statements are walked.
+statementWithSource
+    : sourceLocationPrefixRule LCURLY statement* RCURLY
+    ;
+
 statement
     : INLINEC LB expr RB SEMI?                                                      #CInlineStatement
+    // #source at statement position: relocates the statements inside. With a
+    // line-only spec ("file:line") the contents are mapped line-by-line
+    // (offset mode); with a full span ("file:line:col[-endcol][.endline]")
+    // every node inside is pinned to that span, as at global scope.
+    | statementWithSource                                                           #StatementWithSourceStmt
     | typeDef SEMI                                                                  #TypeAliasStatement
     // These two must come before ExprStatement: `do { ... }` and `attempt { ... }`
     // are also reachable as plain expressions (primaryExpr / ternary), so without
