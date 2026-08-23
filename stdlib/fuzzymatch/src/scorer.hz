@@ -1,0 +1,324 @@
+// The core scorer: a Smith-Waterman-style alignment of the query against one
+// candidate string, ported from VS Code's `scoreFuzzy`.
+//
+// === How the score is built ===================================
+//
+// A matrix of query rows by target columns is filled left to right, top to
+// bottom. Cell (q, t) holds the best score achievable by matching the first
+// q+1 query characters somewhere within the first t+1 target characters, and
+// a parallel matrix holds the LENGTH of the contiguous run ending at that
+// cell. Every cell either extends the diagonal (the characters match and it
+// is worth taking the match here) or inherits the cell to its left (skip this
+// target character). Walking back from the bottom-right corner recovers which
+// target positions were used.
+//
+// What makes the ranking good is not the alignment -- it is which matches get
+// a bonus:
+//
+//   start of the string          +8    "main" over "domain"
+//   after a path separator       +5    the separator bonuses are why a query
+//   after another separator      +4      that spans "/" lands on a real
+//                                        segment boundary rather than mid-word
+//   inside-word upper case       +2    "NPE" finds NullPointerException
+//   same case as typed           +1    "Color" beats "color" when both exist
+//   a plain character match      +1
+//   continuing a run             +6 per character for the first three,
+//                                +3 per character after that
+//
+// The run bonus is what makes contiguous matches dominate scattered ones, and
+// the taper after three characters is what stops a long accidental run from
+// burying a short deliberate one.
+
+// A match against a single string: the score, and the byte offsets in that
+// string which the query landed on, ascending.
+export struct RawScore {
+    score: int = 0;
+    positions: []int = [];
+}
+
+// Working buffers, threaded through every candidate in a ranking pass.
+//
+// Two separate reasons this exists, both measured rather than assumed:
+//
+//   * the score/run matrices would otherwise be reallocated per candidate;
+//     nothing in them is read before it is written on each pass, so leftovers
+//     from a larger candidate are harmless and the buffers only ever grow.
+//
+//   * `noPositions` / `noSpans` are a SHARED EMPTY array handed to every
+//     "no match" result. A struct field declared `[]T = []` allocates when the
+//     struct is built -- around a microsecond each in this toolchain -- and
+//     the no-match path is the one taken by almost every candidate, several
+//     times each. Handing out one already-built empty array instead turned out
+//     to be worth more than every other optimisation here combined. Nothing
+//     ever writes to them, so sharing is safe.
+export ref struct Workspace {
+    scores: []int = [];
+    runs: []int = [];
+    // Scratch for the backtrack, which produces positions in reverse order.
+    backtrack: []int = [];
+    noPositions: []int = [];
+    noSpans: []Span = [];
+
+    mut fn ensure(cells: int) {
+        while this.scores.length < cells {
+            this.scores.push(0);
+            this.runs.push(0);
+        }
+    }
+
+    mut fn resetBacktrack() {
+        while this.backtrack.length > 0 {
+            this.backtrack.pop();
+        }
+    }
+
+    // The shared "nothing matched" result.
+    fn noScore(): RawScore {
+        let empty = RawScore { score: 0, positions: this.noPositions };
+        return empty;
+    }
+}
+
+// Forward and backward slashes are the same character as far as matching is
+// concerned, so a query typed with either separator finds paths spelled with
+// the other.
+fn considerAsEqual(a: int, b: int): bool {
+    if a == b {
+        return true;
+    }
+    if a == 47 || a == 92 {                // '/' or '\'
+        return b == 47 || b == 92;
+    }
+    return false;
+}
+
+// How much a match immediately after this character is worth. Path
+// separators score highest: landing right after one means the query hit the
+// start of a real path segment, which is almost always what the user meant.
+fn scoreSeparatorAtPos(code: int): int {
+    if code == 47 || code == 92 {          // '/'  '\'
+        return 5;
+    }
+    if code == 95 || code == 45 || code == 46 || code == 32 {   // '_' '-' '.' ' '
+        return 4;
+    }
+    if code == 39 || code == 34 || code == 58 {                 // '\'' '"' ':'
+        return 4;
+    }
+    return 0;
+}
+
+// The value of matching one query character at one target position, given how
+// long the contiguous run leading into it already is.
+fn computeCharScore(
+    queryCode: int,
+    queryLowerCode: int,
+    target: str,
+    targetLower: str,
+    targetIndex: int,
+    runLength: int,
+): int {
+    if !considerAsEqual(queryLowerCode, byteAt(targetLower, targetIndex)) {
+        return 0;                          // not a match at all
+    }
+
+    let score = 1;                         // character match
+
+    if runLength > 0 {
+        let capped = runLength < 3 ? runLength : 3;
+        let excess = runLength > 3 ? runLength - 3 : 0;
+        score += capped * 6 + excess * 3;  // contiguity, tapering after three
+    }
+
+    if queryCode == byteAt(target, targetIndex) {
+        score += 1;                        // typed in the same case
+    }
+
+    if targetIndex == 0 {
+        score += 8;                        // start of the string
+    } else {
+        let separatorBonus = scoreSeparatorAtPos(byteAt(target, targetIndex - 1));
+        if separatorBonus != 0 {
+            score += separatorBonus;
+        } else if isUpperCode(byteAt(target, targetIndex)) && runLength == 0 {
+            // A camel-case hump, but only when starting a fresh run: "NPE"
+            // should be boosted against NullPointerException, while "HTTP"
+            // matching HTTP contiguously should not be boosted four times.
+            score += 2;
+        }
+    }
+
+    return score;
+}
+
+// A necessary condition for any non-zero score: every query character must
+// occur in the target, in order. The matrix cannot produce a score without a
+// complete diagonal chain, so a candidate that fails this test would fill
+// thousands of cells only to return 0.
+//
+// This is a pure optimisation -- it never changes an answer -- but it is the
+// difference between rejecting a non-matching candidate in a few dozen byte
+// comparisons and running the full alignment on it. In a file picker most
+// candidates do not match, so most of the work is exactly this rejection.
+fn isSubsequence(targetLower: str, queryLower: str): bool {
+    let targetIndex = 0;
+    for (let queryIndex = 0; queryIndex < queryLower.length; queryIndex++) {
+        let queryCode = byteAt(queryLower, queryIndex);
+        let found = false;
+        while targetIndex < targetLower.length {
+            let matched = considerAsEqual(queryCode, byteAt(targetLower, targetIndex));
+            targetIndex += 1;
+            if matched {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn doScoreFuzzy(
+    workspace: mut Workspace,
+    query: str,
+    queryLower: str,
+    target: str,
+    targetLower: str,
+    allowNonContiguousMatches: bool,
+): RawScore {
+    let queryLength = query.length;
+    let targetLength = target.length;
+    let cells = queryLength * targetLength;
+    workspace.ensure(cells);
+
+    for (let queryIndex = 0; queryIndex < queryLength; queryIndex++) {
+        let rowOffset = queryIndex * targetLength;
+        let previousRowOffset = rowOffset - targetLength;
+        let afterFirstQueryChar = queryIndex > 0;
+        let queryCode = byteAt(query, queryIndex);
+        let queryLowerCode = byteAt(queryLower, queryIndex);
+
+        for (let targetIndex = 0; targetIndex < targetLength; targetIndex++) {
+            let afterFirstTargetChar = targetIndex > 0;
+
+            let currentIndex = rowOffset + targetIndex;
+            let leftIndex = currentIndex - 1;
+            let diagIndex = previousRowOffset + targetIndex - 1;
+
+            let leftScore = afterFirstTargetChar ? workspace.scores[leftIndex] : 0;
+            let diagScore = 0;
+            let runLength = 0;
+            if afterFirstQueryChar && afterFirstTargetChar {
+                diagScore = workspace.scores[diagIndex];
+                runLength = workspace.runs[diagIndex];
+            }
+
+            // Past the first query character a match is only real if the
+            // previous query character matched just before it. Without this,
+            // query "de" against target "ede" would score the 'e' at index 0
+            // as a start-of-word hit and rank a nonsense alignment highly.
+            let score = 0;
+            if diagScore != 0 || !afterFirstQueryChar {
+                score = computeCharScore(
+                    queryCode, queryLowerCode, target, targetLower, targetIndex, runLength);
+            }
+
+            let takeMatch = score != 0 && diagScore + score >= leftScore;
+            if takeMatch && !allowNonContiguousMatches {
+                // A contiguous-only search accepts this cell either because
+                // the run is already established (we are past the first query
+                // character, which can only have a score if the run held) or
+                // because the entire query sits here as a literal substring.
+                takeMatch = afterFirstQueryChar || startsWithAt(targetLower, queryLower, targetIndex);
+            }
+
+            if takeMatch {
+                workspace.runs[currentIndex] = runLength + 1;
+                workspace.scores[currentIndex] = diagScore + score;
+            } else {
+                workspace.runs[currentIndex] = 0;
+                workspace.scores[currentIndex] = leftScore;
+            }
+        }
+    }
+
+    // Walk back from the bottom-right corner. A cell with no run means the
+    // target character there was skipped, so step left; otherwise take it and
+    // step diagonally. The walk yields positions in reverse, so it goes into
+    // the workspace's scratch buffer and is copied out in order.
+    workspace.resetBacktrack();
+    let queryIndex = queryLength - 1;
+    let targetIndex = targetLength - 1;
+    while queryIndex >= 0 && targetIndex >= 0 {
+        let currentIndex = queryIndex * targetLength + targetIndex;
+        if workspace.runs[currentIndex] == 0 {
+            targetIndex -= 1;
+        } else {
+            workspace.backtrack.push(targetIndex);
+            queryIndex -= 1;
+            targetIndex -= 1;
+        }
+    }
+
+    let positions: []int = [];
+    for (let i = workspace.backtrack.length - 1; i >= 0; i--) {
+        positions.push(workspace.backtrack[i]);
+    }
+
+    let result = RawScore {
+        score: workspace.scores[cells - 1],
+        positions: positions,
+    };
+    return result;
+}
+
+// Scores one candidate against one already-normalised query.
+//
+// `query` and `queryLower` come from a `Query`'s `normalized` /
+// `normalizedLowercase`; passing raw user input here would score the spaces
+// and quotes that preparation exists to remove. `targetLower` must be the
+// ASCII-lowered `target` -- the caller passes it in rather than having it
+// derived here so that a candidate lowered once when it was built is not
+// lowered again on every keystroke.
+//
+// `allowNonContiguousMatches` false demands that the query appear as a
+// literal substring -- what a quoted query asks for.
+//
+// A score of 0 means no match. There is no separate "no match" value because
+// a real match always scores at least 1.
+export fn scoreFuzzyWith(
+    workspace: mut Workspace,
+    target: str,
+    targetLower: str,
+    query: str,
+    queryLower: str,
+    allowNonContiguousMatches: bool,
+): RawScore {
+    if target.length == 0 || query.length == 0 {
+        return workspace.noScore();
+    }
+    if target.length < query.length {
+        return workspace.noScore();        // the query cannot fit
+    }
+    if !isSubsequence(targetLower, queryLower) {
+        return workspace.noScore();
+    }
+    return doScoreFuzzy(
+        workspace, query, queryLower, target, targetLower, allowNonContiguousMatches);
+}
+
+// `scoreFuzzyWith` with a throwaway workspace and a freshly lowered target,
+// for one-off calls. Scoring a whole candidate list this way lowers and
+// allocates per candidate; build `Item`s and call `rank` for that.
+export fn scoreFuzzy(
+    target: str,
+    query: str,
+    queryLower: str,
+    allowNonContiguousMatches: bool,
+): RawScore {
+    let workspace = Workspace {};
+    return scoreFuzzyWith(
+        workspace, target, toLowerAscii(target), query, queryLower, allowNonContiguousMatches);
+}

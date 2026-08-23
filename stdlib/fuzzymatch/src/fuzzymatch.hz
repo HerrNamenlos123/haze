@@ -1,0 +1,829 @@
+// fuzzymatch -- VS Code's file-picker fuzzy scoring and ranking, in pure Haze.
+//
+// This is a port of `scoreFuzzy` / `scoreItemFuzzy` / `compareItemsByFuzzyScore`
+// from vscode/src/vs/base/common/fuzzyScorer.ts (MIT). It is the matcher
+// behind Ctrl+P, not the one behind IntelliSense -- the two are different
+// algorithms in VS Code and this is the one tuned for paths.
+//
+// === Using it =================================================
+//
+//     // once, when the file list changes
+//     let items = fuzzymatch.itemsFromPaths(paths);
+//
+//     // per keystroke
+//     let query = fuzzymatch.prepareQuery(typed);
+//     let hits = fuzzymatch.rank(items, query, fuzzymatch.Options { limit: 100 });
+//
+//     for hit in hits {
+//         let item = items[hit.index];        // what to draw
+//         // hit.labelSpans / hit.descriptionSpans are what to highlight
+//     }
+//
+// `hits` comes back best-first. Two things are worth doing in the right
+// place: build the items ONCE (the constructors precompute per-candidate
+// state that would otherwise be recomputed for every file on every
+// keystroke), and set a `limit` (with one, ranking selects the top N as it
+// goes and never sorts the rest -- for a one-character query over a large
+// tree that is most of the work).
+//
+// The module does no I/O and has no dependencies beyond core: it receives
+// strings and returns numbers and offsets. Enumerating the files, watching
+// them for changes and drawing the highlights are all the caller's job.
+//
+// === What "an item" is ========================================
+//
+// Three strings, matching VS Code's accessor triple:
+//
+//     label        the file name          "main.hz"
+//     description  the containing folder  "src"
+//     path         the full path          "src/main.hz"
+//
+// The split is not cosmetic -- it is what makes the ranking good. A query
+// with no path separator is scored against the LABEL alone and gets a large
+// baseline bonus for doing so, which is why typing "main" surfaces
+// `src/main.hz` ahead of `main/src/util.hz`. Once the query does contain a
+// separator, the folder joins in and full paths compete on equal terms.
+// Passing the same string as all three is legal but throws that away.
+//
+// === Score ranges =============================================
+//
+// A raw score is only comparable WITHIN one query -- it depends on the query's
+// length and on which bonuses happened to fire, so the number itself means
+// little. What is comparable is which tier it falls in, and `tierOf` reports
+// that: PathIdentity, LabelPrefix, Label, Path, None, in that order.
+//
+// `rank` already orders by tier first, so a caller only needs `tierOf` to
+// group or badge results -- "file name matches" above "path matches".
+//
+// === Fidelity =================================================
+//
+// Verified case-for-case against VS Code's own scorer over eleven thousand
+// generated cases, plus its published test suite (see fuzzymatchtest/). Three
+// deliberate deviations, all confined to input a file picker rarely sees:
+//
+//   * offsets and lengths are UTF-8 BYTES, and case folding is ASCII-only
+//     (see text.hz for why, and for what that means for non-ASCII paths);
+//   * the last tie-break orders by lowercased bytes rather than by the user's
+//     locale, so ranking does not depend on the environment;
+//   * path separators are normalised towards "/", the POSIX convention.
+
+// A contiguous run of matched bytes, end-exclusive -- one highlight.
+export struct Span {
+    start: int = 0;
+    end: int = 0;
+}
+
+// One candidate, built ONCE and then scored against every keystroke.
+//
+// The first three fields are the candidate itself; see the header for why
+// they are worth keeping apart. An absent description or path is the empty
+// string, not a sentinel.
+//
+// The rest is derived, and is the reason to build items up front rather than
+// passing raw strings to `rank`: lower-casing the candidate and splicing
+// "<description>/<label>" are per-candidate costs that would otherwise be
+// paid again on every keystroke, for every file in the tree. Build these with
+// `item` / `itemFromPath` / `itemsFromPaths` -- a struct literal would leave
+// the derived fields empty and the candidate would match nothing.
+export struct Item {
+    label: str = "";
+    description: str = "";
+    path: str = "";
+
+    labelLower: str = "";
+    // "<description>/<label>", which is what a query spanning a separator is
+    // matched against, and its lowered form.
+    combined: str = "";
+    combinedLower: str = "";
+}
+
+// What one candidate scored, and where it matched.
+export struct ItemScore {
+    // 0 means no match. Nothing that matches ever scores 0.
+    score: int = 0;
+    labelSpans: []Span = [];
+    descriptionSpans: []Span = [];
+}
+
+// A scored candidate, carrying the index of the `Item` it came from.
+export struct Hit {
+    index: int = 0;
+    score: int = 0;
+    labelSpans: []Span = [];
+    descriptionSpans: []Span = [];
+}
+
+export struct Options {
+    // Allow the query's characters to be scattered through the candidate
+    // rather than appearing as one run. A quoted query overrides this to
+    // false for itself regardless of what is set here.
+    allowNonContiguousMatches: bool = true;
+    // Whether the full-path identity check is case-sensitive. True matches
+    // Linux; set it false for a case-insensitive filesystem so that typing a
+    // path in the wrong case still gets the identity boost.
+    caseSensitivePaths: bool = true;
+    // Keep at most this many hits. 0 means keep everything.
+    //
+    // Worth setting, and not only to bound the result: with a limit, ranking
+    // selects the top N as it goes and never sorts the rest, which for a
+    // one-character query over a large tree is most of the work. A picker that
+    // shows a page of results should say so here.
+    limit: int = 0;
+}
+
+// Baselines added to a match depending on WHERE it landed, which is what
+// makes the four tiers below strictly ordered no matter what the underlying
+// character scores were. Callers read the tier through `tierOf`, not these.
+const comptime PATH_IDENTITY_SCORE = 262144;          // 1 << 18
+const comptime LABEL_PREFIX_SCORE_THRESHOLD = 131072; // 1 << 17
+const comptime LABEL_SCORE_THRESHOLD = 65536;         // 1 << 16
+
+// How good a match is, in the only terms that are comparable ACROSS queries.
+// Raw scores are not: they depend on the query's length and on which bonuses
+// happened to fire, so a score of 400 means nothing on its own. Which tier it
+// falls in does.
+export enum Tier {
+    // No match.
+    None,
+    // Matched, but only with the folder's help.
+    Path,
+    // Matched somewhere inside the file name.
+    Label,
+    // The file name starts with the query.
+    LabelPrefix,
+    // The query is the whole path, exactly.
+    PathIdentity,
+}
+
+// Classifies a score. Use this to group or badge results ("file name matches"
+// above "path matches"); `rank` already orders by it.
+export fn tierOf(score: int): Tier {
+    if score >= PATH_IDENTITY_SCORE {
+        return Tier.PathIdentity;
+    }
+    if score >= LABEL_PREFIX_SCORE_THRESHOLD {
+        return Tier.LabelPrefix;
+    }
+    if score >= LABEL_SCORE_THRESHOLD {
+        return Tier.Label;
+    }
+    if score > 0 {
+        return Tier.Path;
+    }
+    return Tier.None;
+}
+
+// === Item construction ========================================
+
+// Builds a candidate, deriving everything the scorer needs from the three
+// strings that describe it. This is where the per-candidate work happens.
+export fn item(label: str, description: str, path: str): Item {
+    let combined = label;
+    if description.length != 0 {
+        // A separator is spliced in only when there is a path, matching where
+        // the label would actually sit; without one the description is a
+        // plain prefix.
+        combined = path.length != 0
+            ? f"{description}/{label}"
+            : f"{description}{label}";
+    }
+    let built = Item {
+        label: label,
+        description: description,
+        path: path,
+        labelLower: toLowerAscii(label),
+        combined: combined,
+        combinedLower: toLowerAscii(combined),
+    };
+    return built;
+}
+
+// Splits a path into the label/description/path triple the scorer wants.
+// Both separators are accepted; the last one wins.
+export fn itemFromPath(path: str): Item {
+    let cut = -1;
+    for (let i = path.length - 1; i >= 0; i--) {
+        if path[i] == b"/" || path[i] == b"\\" {
+            cut = i;
+            break;
+        }
+    }
+    if cut < 0 {
+        return item(path, "", path);
+    }
+    return item(path.slice(cut + 1, path.length), path.slice(0, cut), path);
+}
+
+// Convenience for the common shape of the caller's data: a flat list of
+// paths in, a list of items out. Do this once, when the file list changes --
+// not once per keystroke.
+export fn itemsFromPaths(paths: []str): []Item {
+    let items: []Item = [];
+    for path in paths {
+        items.push(itemFromPath(path));
+    }
+    return items;
+}
+
+// === Span bookkeeping =========================================
+
+// Turns ascending match offsets into merged highlight ranges.
+fn createSpans(positions: []int): []Span {
+    let spans: []Span = [];
+    let open = false;
+    let start = 0;
+    let end = 0;
+    for position in positions {
+        if open && end == position {
+            end = position + 1;                 // the run continues
+        } else {
+            if open {
+                spans.push(Span { start: start, end: end });
+            }
+            open = true;
+            start = position;
+            end = position + 1;
+        }
+    }
+    if open {
+        spans.push(Span { start: start, end: end });
+    }
+    return spans;
+}
+
+// Sorts spans by start and merges any that touch or overlap. Needed because
+// a multi-piece query scores each piece independently, so the pieces' spans
+// arrive interleaved and can abut.
+fn normalizeSpans(spans: []Span): []Span {
+    // Stable insertion sort: a query never has enough pieces for the O(n^2)
+    // to matter, and stability keeps equal starts in the order the pieces ran.
+    let sorted: []Span = [];
+    for span in spans {
+        let at = sorted.length;
+        while at > 0 && sorted[at - 1].start > span.start {
+            at -= 1;
+        }
+        sorted.insert(at, span);
+    }
+
+    let merged: []Span = [];
+    let open = false;
+    let start = 0;
+    let end = 0;
+    for span in sorted {
+        if !open {
+            open = true;
+            start = span.start;
+            end = span.end;
+            continue;
+        }
+        // Touching counts as overlapping: two abutting highlights are one.
+        if end < span.start || span.end < start {
+            merged.push(Span { start: start, end: end });
+            start = span.start;
+            end = span.end;
+        } else {
+            if span.start < start { start = span.start; }
+            if span.end > end { end = span.end; }
+        }
+    }
+    if open {
+        merged.push(Span { start: start, end: end });
+    }
+    return merged;
+}
+
+// === Item scoring =============================================
+
+// The shared "nothing matched" result. Built from the workspace's pre-made
+// empty arrays rather than from `ItemScore {}`, whose two `[]Span = []`
+// defaults would each allocate -- on the code path that almost every
+// candidate takes. See Workspace in scorer.hz.
+fn noItemScore(workspace: mut Workspace): ItemScore {
+    let blank = ItemScore {
+        score: 0,
+        labelSpans: workspace.noSpans,
+        descriptionSpans: workspace.noSpans,
+    };
+    return blank;
+}
+
+// Does `label` start with `query`, ignoring case? A prefix hit is worth a
+// lot: it is the difference between "window" finding window.ts and finding
+// some file that merely contains those letters.
+//
+// This answers with a bool rather than a span list because it is asked once
+// per candidate per keystroke, and the answer is usually no -- returning an
+// empty array would mean an allocation per candidate to say "nothing".
+fn hasLabelPrefix(query: str, label: str): bool {
+    if label.length == 0 || label.length < query.length {
+        return false;
+    }
+    return startsWithIgnoreCase(label, query);
+}
+
+fn scoreItemSingle(
+    workspace: mut Workspace,
+    item: Item,
+    piece: QueryPiece,
+    preferLabelMatches: bool,
+    allowNonContiguousMatches: bool,
+): ItemScore {
+    let allowScattered = allowNonContiguousMatches && !piece.expectContiguousMatch;
+
+    // Score against the file name alone first. Anything that matches here
+    // outranks everything that only matches with the folder's help, because
+    // of the baseline thresholds added below.
+    if preferLabelMatches || item.description.length == 0 {
+        let labelScore = scoreFuzzyWith(
+            workspace, item.label, item.labelLower,
+            piece.normalized, piece.normalizedLowercase, allowScattered);
+        if labelScore.score != 0 {
+            let baseScore = LABEL_SCORE_THRESHOLD;
+            let spans: []Span = [];
+            if hasLabelPrefix(piece.normalized, item.label) {
+                // Among prefix matches, prefer the one the query covers most
+                // of: given "window", window.ts should beat windowActions.ts.
+                let coverage = (piece.normalized.length * 200 + item.label.length)
+                    / (2 * item.label.length);
+                baseScore = LABEL_PREFIX_SCORE_THRESHOLD + coverage;
+                // The prefix IS the highlight, so the per-character positions
+                // the matrix produced are not needed at all here.
+                spans.push(Span { start: 0, end: piece.normalized.length });
+            } else {
+                spans = createSpans(labelScore.positions);
+            }
+            let result = ItemScore {
+                score: baseScore + labelScore.score,
+                labelSpans: spans,
+                descriptionSpans: workspace.noSpans,
+            };
+            return result;
+        }
+    }
+
+    // Otherwise let the folder help. The label is scored as the tail of
+    // "<description>/<label>" so that a query spanning the separator can
+    // match across it, and the resulting spans are cut back apart afterwards.
+    if item.description.length != 0 {
+        let prefixLength = item.combined.length - item.label.length;
+
+        let combinedScore = scoreFuzzyWith(
+            workspace, item.combined, item.combinedLower,
+            piece.normalized, piece.normalizedLowercase, allowScattered);
+        if combinedScore.score != 0 {
+            let combinedSpans = createSpans(combinedScore.positions);
+            let labelSpans: []Span = [];
+            let descriptionSpans: []Span = [];
+            for span in combinedSpans {
+                if span.start < prefixLength && span.end > prefixLength {
+                    // Straddles the separator, so it becomes two highlights.
+                    labelSpans.push(Span { start: 0, end: span.end - prefixLength });
+                    descriptionSpans.push(Span { start: span.start, end: prefixLength });
+                } else if span.start >= prefixLength {
+                    labelSpans.push(Span {
+                        start: span.start - prefixLength,
+                        end: span.end - prefixLength,
+                    });
+                } else {
+                    descriptionSpans.push(span);
+                }
+            }
+            let result = ItemScore {
+                score: combinedScore.score,
+                labelSpans: labelSpans,
+                descriptionSpans: descriptionSpans,
+            };
+            return result;
+        }
+    }
+
+    return noItemScore(workspace);
+}
+
+// Every piece of a multi-piece query must match, and the scores add up. A
+// query of "src main" therefore finds files whose path mentions both, in
+// either order.
+fn scoreItemMultiple(
+    workspace: mut Workspace,
+    item: Item,
+    pieces: []QueryPiece,
+    preferLabelMatches: bool,
+    allowNonContiguousMatches: bool,
+): ItemScore {
+    // The first piece is scored before anything is allocated: most candidates
+    // fail on it, and a candidate that fails should cost nothing but the
+    // scoring itself.
+    let first = scoreItemSingle(
+        workspace, item, pieces[0], preferLabelMatches, allowNonContiguousMatches);
+    if first.score == 0 {
+        return noItemScore(workspace);
+    }
+
+    let total = first.score;
+    let labelSpans: []Span = [];
+    let descriptionSpans: []Span = [];
+    for span in first.labelSpans {
+        labelSpans.push(span);
+    }
+    for span in first.descriptionSpans {
+        descriptionSpans.push(span);
+    }
+
+    for (let i = 1; i < pieces.length; i++) {
+        let partial = scoreItemSingle(
+            workspace, item, pieces[i], preferLabelMatches, allowNonContiguousMatches);
+        if partial.score == 0 {
+            return noItemScore(workspace);
+        }
+        total += partial.score;
+        for span in partial.labelSpans {
+            labelSpans.push(span);
+        }
+        for span in partial.descriptionSpans {
+            descriptionSpans.push(span);
+        }
+    }
+
+    let result = ItemScore {
+        score: total,
+        labelSpans: normalizeSpans(labelSpans),
+        descriptionSpans: normalizeSpans(descriptionSpans),
+    };
+    return result;
+}
+
+// The scoring core. `single` is the whole query viewed as one piece, which
+// `rank` computes once and hands to every candidate rather than rebuilding it
+// fifty thousand times.
+fn scoreItemCore(
+    workspace: mut Workspace,
+    item: Item,
+    query: Query,
+    single: QueryPiece,
+    options: Options,
+): ItemScore {
+    if query.normalized.length == 0 || item.label.length == 0 {
+        return noItemScore(workspace);
+    }
+
+    // With no separator typed, the file name is what the user is after and
+    // the folder is only a tie-breaker. Once a separator appears, they are
+    // navigating, and the whole path is fair game.
+    let preferLabelMatches = item.path.length == 0 || !query.containsPathSeparator;
+
+    if item.path.length != 0 {
+        let identical = options.caseSensitivePaths
+            ? query.pathNormalized == item.path
+            : equalsIgnoreCase(query.pathNormalized, item.path);
+        if identical {
+            let labelSpans: []Span = [];
+            labelSpans.push(Span { start: 0, end: item.label.length });
+            let descriptionSpans = workspace.noSpans;
+            if item.description.length != 0 {
+                let owned: []Span = [];
+                owned.push(Span { start: 0, end: item.description.length });
+                descriptionSpans = owned;
+            }
+            let exact = ItemScore {
+                score: PATH_IDENTITY_SCORE,
+                labelSpans: labelSpans,
+                descriptionSpans: descriptionSpans,
+            };
+            return exact;
+        }
+    }
+
+    if query.values.length > 1 {
+        return scoreItemMultiple(
+            workspace, item, query.values, preferLabelMatches, options.allowNonContiguousMatches);
+    }
+    return scoreItemSingle(
+        workspace, item, single, preferLabelMatches, options.allowNonContiguousMatches);
+}
+
+// Scores one candidate, reusing a caller-held workspace. `rank` is the usual
+// entry point; reach for this when driving the scoring loop yourself.
+export fn scoreItemWith(
+    workspace: mut Workspace,
+    item: Item,
+    query: Query,
+    options: Options,
+): ItemScore {
+    return scoreItemCore(workspace, item, query, wholeQueryPiece(query), options);
+}
+
+// Scores one candidate against a prepared query.
+export fn scoreItem(item: Item, query: Query, options: Options): ItemScore {
+    let workspace = Workspace {};
+    return scoreItemWith(workspace, item, query, options);
+}
+
+// === Ordering =================================================
+
+// Distance from the first highlight to the last, across both fields. Smaller
+// means the match is more compact, which reads as more deliberate.
+fn matchDistance(item: Item, score: ItemScore): int {
+    let matchStart = -1;
+    let matchEnd = -1;
+
+    if score.descriptionSpans.length > 0 {
+        matchStart = score.descriptionSpans[0].start;
+    } else if score.labelSpans.length > 0 {
+        matchStart = score.labelSpans[0].start;
+    }
+
+    if score.labelSpans.length > 0 {
+        matchEnd = score.labelSpans[score.labelSpans.length - 1].end;
+        if score.descriptionSpans.length > 0 {
+            matchEnd += item.description.length;
+        }
+    } else if score.descriptionSpans.length > 0 {
+        matchEnd = score.descriptionSpans[score.descriptionSpans.length - 1].end;
+    }
+
+    return matchEnd - matchStart;
+}
+
+fn compareByMatchLength(a: []Span, b: []Span): int {
+    if a.length == 0 && b.length == 0 {
+        return 0;
+    }
+    if b.length == 0 {
+        return -1;
+    }
+    if a.length == 0 {
+        return 1;
+    }
+    let lengthA = a[a.length - 1].end - a[0].start;
+    let lengthB = b[b.length - 1].end - b[0].start;
+    if lengthA == lengthB {
+        return 0;
+    }
+    return lengthB < lengthA ? 1 : -1;      // prefer the shorter span
+}
+
+fn compareByPrefix(one: str, other: str, lookFor: str): int {
+    let prefixA = startsWithLowered(one, lookFor);
+    let prefixB = startsWithLowered(other, lookFor);
+    if prefixA != prefixB {
+        return prefixA ? -1 : 1;
+    }
+    if prefixA && prefixB {
+        if one.length < other.length { return -1; }
+        if one.length > other.length { return 1; }
+    }
+    return 0;
+}
+
+// The final tie-break, reached only when two candidates agree on everything
+// measurable. Prefix beats suffix beats plain order.
+fn compareAnything(one: str, other: str, lookFor: str): int {
+    let prefixCompare = compareByPrefix(one, other, lookFor);
+    if prefixCompare != 0 {
+        return prefixCompare;
+    }
+    let suffixA = endsWithLowered(one, lookFor);
+    let suffixB = endsWithLowered(other, lookFor);
+    if suffixA != suffixB {
+        return suffixA ? -1 : 1;
+    }
+    return compareIgnoreCase(one, other);
+}
+
+fn fallbackCompare(a: Item, b: Item, query: Query): int {
+    let lengthA = a.label.length + a.description.length;
+    let lengthB = b.label.length + b.description.length;
+    if lengthA != lengthB {
+        return lengthA - lengthB;
+    }
+
+    if a.path.length != 0 && b.path.length != 0 && a.path.length != b.path.length {
+        return a.path.length - b.path.length;
+    }
+
+    if a.label != b.label {
+        return compareAnything(a.label, b.label, query.normalized);
+    }
+    if a.description.length != 0 && b.description.length != 0 && a.description != b.description {
+        return compareAnything(a.description, b.description, query.normalized);
+    }
+    if a.path.length != 0 && b.path.length != 0 && a.path != b.path {
+        return compareAnything(a.path, b.path, query.normalized);
+    }
+    return 0;
+}
+
+// Orders two already-scored candidates. Negative means `a` ranks first.
+//
+// The ordering is deliberately layered rather than a single number, because
+// the things that matter are not commensurable: an exact path beats
+// everything; a file-name match beats a folder-assisted one no matter how
+// well the latter scored; and only once those are settled do compactness and
+// length get a say.
+export fn compareScored(a: Item, scoreA: ItemScore, b: Item, scoreB: ItemScore, query: Query): int {
+    // 1. An exact path wins outright.
+    if scoreA.score == PATH_IDENTITY_SCORE || scoreB.score == PATH_IDENTITY_SCORE {
+        if scoreA.score != scoreB.score {
+            return scoreA.score == PATH_IDENTITY_SCORE ? -1 : 1;
+        }
+    }
+
+    // 2. A match inside the file name outranks a folder-assisted match.
+    if scoreA.score > LABEL_SCORE_THRESHOLD || scoreB.score > LABEL_SCORE_THRESHOLD {
+        if scoreA.score != scoreB.score {
+            return scoreA.score > scoreB.score ? -1 : 1;
+        }
+        // Among non-prefix label matches, the more compact one wins. Prefix
+        // matches are excluded: there a LONGER match is the better one.
+        if scoreA.score < LABEL_PREFIX_SCORE_THRESHOLD
+            && scoreB.score < LABEL_PREFIX_SCORE_THRESHOLD {
+            let byMatchLength = compareByMatchLength(scoreA.labelSpans, scoreB.labelSpans);
+            if byMatchLength != 0 {
+                return byMatchLength;
+            }
+        }
+        if a.label.length != b.label.length {
+            return a.label.length - b.label.length;
+        }
+    }
+
+    // 3. Otherwise the combined score decides.
+    if scoreA.score != scoreB.score {
+        return scoreA.score > scoreB.score ? -1 : 1;
+    }
+
+    // 4. Equal scores: a hit in the file name beats one only in the folder.
+    let hasLabelA = scoreA.labelSpans.length > 0;
+    let hasLabelB = scoreB.labelSpans.length > 0;
+    if hasLabelA && !hasLabelB {
+        return -1;
+    }
+    if hasLabelB && !hasLabelA {
+        return 1;
+    }
+
+    // 5. Still equal: prefer the more compact match.
+    let distanceA = matchDistance(a, scoreA);
+    let distanceB = matchDistance(b, scoreB);
+    if distanceA != 0 && distanceB != 0 && distanceA != distanceB {
+        return distanceB > distanceA ? -1 : 1;
+    }
+
+    // 6. Length, then name.
+    return fallbackCompare(a, b, query);
+}
+
+// Scores both candidates and orders them. Convenient for a caller that keeps
+// its own list; `rank` avoids re-scoring and should be preferred for a sweep.
+export fn compareItems(a: Item, b: Item, query: Query, options: Options): int {
+    let workspace = Workspace {};
+    let scoreA = scoreItemWith(workspace, a, query, options);
+    let scoreB = scoreItemWith(workspace, b, query, options);
+    return compareScored(a, scoreA, b, scoreB, query);
+}
+
+// === Ranking ==================================================
+
+// Stable bottom-up merge sort of `hits` by `compareScored`. Stability matters:
+// candidates that tie on every criterion keep the order the caller supplied,
+// so a caller who pre-sorted by recency or by "currently open" keeps that
+// signal instead of having it scrambled.
+fn sortHits(items: []Item, hits: []Hit, query: Query): []Hit {
+    let count = hits.length;
+    if count < 2 {
+        return hits;
+    }
+
+    let current = hits;
+    let width = 1;
+    while width < count {
+        let next: []Hit = [];
+        let start = 0;
+        while start < count {
+            let middle = start + width;
+            if middle > count { middle = count; }
+            let end = start + width * 2;
+            if end > count { end = count; }
+
+            let left = start;
+            let right = middle;
+            while left < middle && right < end {
+                let a = current[left];
+                let b = current[right];
+                let order = compareScored(
+                    items[a.index], scoreOf(a), items[b.index], scoreOf(b), query);
+                if order <= 0 {
+                    next.push(a);
+                    left += 1;
+                } else {
+                    next.push(b);
+                    right += 1;
+                }
+            }
+            while left < middle {
+                next.push(current[left]);
+                left += 1;
+            }
+            while right < end {
+                next.push(current[right]);
+                right += 1;
+            }
+
+            start += width * 2;
+        }
+        current = next;
+        width *= 2;
+    }
+    return current;
+}
+
+// A `Hit` viewed as the `ItemScore` the comparator wants. Both array fields
+// are handed over as existing handles, so this allocates nothing even though
+// it runs once per comparison.
+fn scoreOf(hit: Hit): ItemScore {
+    let score = ItemScore {
+        score: hit.score,
+        labelSpans: hit.labelSpans,
+        descriptionSpans: hit.descriptionSpans,
+    };
+    return score;
+}
+
+// Keeps the best `limit` hits as they stream past, without ever sorting the
+// rest. A candidate that is not better than the current worst costs exactly
+// one comparison, which is what makes a one-character query over a large tree
+// affordable: almost every candidate takes that path.
+//
+// The result is identical to sorting everything and taking the first `limit`,
+// ties included -- a hit is inserted AFTER every hit it does not beat, so
+// candidates the comparator cannot separate keep the caller's order.
+fn selectTop(items: []Item, hits: []Hit, query: Query, limit: int): []Hit {
+    let top: []Hit = [];
+    for hit in hits {
+        let full = top.length >= limit;
+        if full {
+            let worst = top[top.length - 1];
+            let against = compareScored(
+                items[hit.index], scoreOf(hit), items[worst.index], scoreOf(worst), query);
+            if against >= 0 {
+                continue;                  // cannot displace the current worst
+            }
+        }
+        let at = top.length;
+        while at > 0 {
+            let above = top[at - 1];
+            let against = compareScored(
+                items[hit.index], scoreOf(hit), items[above.index], scoreOf(above), query);
+            if against >= 0 {
+                break;
+            }
+            at -= 1;
+        }
+        top.insert(at, hit);
+        if top.length > limit {
+            top.remove(top.length - 1);
+        }
+    }
+    return top;
+}
+
+// Scores every candidate and returns the matches, best first.
+//
+// This is the whole module in one call: hand it the candidate list you built
+// once, the query you prepared this keystroke, and get back what to draw.
+// Non-matching candidates are dropped; `options.limit` bounds the result
+// without affecting the ordering of what survives.
+export fn rank(items: []Item, query: Query, options: Options): []Hit {
+    let hits: []Hit = [];
+    if query.normalized.length == 0 {
+        return hits;
+    }
+
+    let workspace = Workspace {};
+    let single = wholeQueryPiece(query);
+    for (let i = 0; i < items.length; i++) {
+        let score = scoreItemCore(workspace, items[i], query, single, options);
+        if score.score == 0 {
+            continue;
+        }
+        hits.push(Hit {
+            index: i,
+            score: score.score,
+            labelSpans: score.labelSpans,
+            descriptionSpans: score.descriptionSpans,
+        });
+    }
+
+    if options.limit > 0 {
+        return selectTop(items, hits, query, options.limit);
+    }
+    return sortHits(items, hits, query);
+}
+
+// `rank` straight from a list of paths, for the common case where the caller
+// has nothing but a flat file list. Building the items once and calling
+// `rank` is cheaper across repeated keystrokes.
+export fn rankPaths(paths: []str, query: Query, options: Options): []Hit {
+    return rank(itemsFromPaths(paths), query, options);
+}

@@ -1,0 +1,11 @@
+name = "fuzzymatchtest"
+id = "fZzYtSt0"
+version = "0.1.0"
+description = "Differential and behavioural test suite for the fuzzymatch module"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[dependencies]
+fuzzymatch = { path = "../stdlib/fuzzymatch" }

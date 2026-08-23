@@ -1,0 +1,90 @@
+// A minimum test harness: count checks, remember the first handful of
+// failures with enough context to reproduce them, exit non-zero if any failed.
+//
+// Deliberately not clever. The value of this suite is in the corpus and the
+// oracle behind it, not in the runner.
+
+export ref struct Report {
+    passed: int = 0;
+    failed: int = 0;
+    failures: []str = [];
+    section: str = "";
+
+    mut fn begin(name: str) {
+        this.section = name;
+    }
+
+    mut fn check(ok: bool, detail: str) {
+        if ok {
+            this.passed += 1;
+            return;
+        }
+        this.failed += 1;
+        if this.failures.length < 25 {
+            this.failures.push(f"[{this.section}] {detail}");
+        }
+    }
+
+    mut fn checkInt(actual: int, expected: int, detail: str) {
+        this.check(actual == expected, f"{detail}: expected {expected}, got {actual}");
+    }
+
+    mut fn checkStr(actual: str, expected: str, detail: str) {
+        this.check(actual == expected, f"{detail}: expected \"{expected}\", got \"{actual}\"");
+    }
+
+    fn summarize(): int {
+        fmt.println("");
+        if this.failed == 0 {
+            fmt.println(f"OK  {this.passed} checks passed");
+            return 0;
+        }
+        fmt.println(f"FAILED  {this.failed} of {this.passed + this.failed} checks");
+        fmt.println("");
+        for failure in this.failures {
+            fmt.println(f"  {failure}");
+        }
+        if this.failed > this.failures.length {
+            let hidden = this.failed - this.failures.length;
+            fmt.println(f"  ... and {hidden} more");
+        }
+        return 1;
+    }
+}
+
+// Renders match offsets the way the generated corpus stores them, so a
+// mismatch prints as two comparable strings rather than two array dumps.
+export fn formatPositions(positions: []int): str {
+    let out = String();
+    for (let i = 0; i < positions.length; i++) {
+        if i > 0 { out.append(","); }
+        out.append(f"{positions[i]}");
+    }
+    return out.cloneString();
+}
+
+export fn formatSpans(spans: []fuzzymatch.Span): str {
+    let out = String();
+    for (let i = 0; i < spans.length; i++) {
+        if i > 0 { out.append(","); }
+        out.append(f"{spans[i].start}-{spans[i].end}");
+    }
+    return out.cloneString();
+}
+
+export fn formatInts(values: []int): str {
+    return formatPositions(values);
+}
+
+// "a|b|c" -> ["a", "b", "c"]; the empty string is no elements at all, which
+// `split` alone would report as one empty element.
+export fn splitPipe(text: str): []str {
+    let parts: []str = [];
+    if text.length == 0 {
+        return parts;
+    }
+    for part in text.split("|") {
+        parts.push(part);
+    }
+    return parts;
+}

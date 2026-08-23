@@ -1,0 +1,100 @@
+// The differential suite: replay every generated spec through the Haze port
+// and demand the same answer VS Code gave.
+//
+// These tests carry no opinion of their own. They exist so that any edit to
+// the module which changes an observable answer -- a bonus, a tie-break, the
+// order two equal candidates come back in -- shows up immediately, named by
+// the exact input that moved.
+
+import fuzzymatch
+
+export fn runScoreCases(report: mut Report) {
+    report.begin("scoreFuzzy");
+    for spec in scoreCases() {
+        let query = fuzzymatch.prepareQuery(spec.query);
+        let actual = fuzzymatch.scoreFuzzy(
+            spec.target, query.normalized, query.normalizedLowercase, spec.scattered);
+        let label = f"scoreFuzzy(\"{spec.target}\", \"{spec.query}\", scattered={spec.scattered})";
+        report.checkInt(actual.score, spec.score, f"{label} score");
+        report.checkStr(formatPositions(actual.positions), spec.positions, f"{label} positions");
+    }
+}
+
+export fn runQueryCases(report: mut Report) {
+    report.begin("prepareQuery");
+    for spec in queryCases() {
+        let actual = fuzzymatch.prepareQuery(spec.original);
+        let label = f"prepareQuery(\"{spec.original}\")";
+        report.checkStr(actual.pathNormalized, spec.pathNormalized, f"{label} pathNormalized");
+        report.checkStr(actual.normalized, spec.normalized, f"{label} normalized");
+        report.checkStr(actual.normalizedLowercase, spec.normalizedLowercase,
+            f"{label} normalizedLowercase");
+        report.check(actual.expectContiguousMatch == spec.expectContiguous,
+            f"{label} expectContiguousMatch: expected {spec.expectContiguous}");
+        report.check(actual.containsPathSeparator == spec.containsSeparator,
+            f"{label} containsPathSeparator: expected {spec.containsSeparator}");
+
+        let pieces = String();
+        for (let i = 0; i < actual.values.length; i++) {
+            if i > 0 { pieces.append("|"); }
+            pieces.append(actual.values[i].normalized);
+        }
+        report.checkStr(pieces.cloneString(), spec.values, f"{label} values");
+    }
+}
+
+export fn runItemCases(report: mut Report) {
+    report.begin("scoreItem");
+    for spec in itemCases() {
+        let item = fuzzymatch.item(spec.label, spec.description, spec.path);
+        let options = fuzzymatch.Options { allowNonContiguousMatches: spec.scattered };
+        let actual = fuzzymatch.scoreItem(item, fuzzymatch.prepareQuery(spec.query), options);
+        let label = f"scoreItem(\"{spec.path}\", \"{spec.query}\", scattered={spec.scattered})";
+        report.checkInt(actual.score, spec.score, f"{label} score");
+        report.checkStr(formatSpans(actual.labelSpans), spec.labelSpans, f"{label} labelSpans");
+        report.checkStr(formatSpans(actual.descriptionSpans), spec.descriptionSpans,
+            f"{label} descriptionSpans");
+    }
+}
+
+export fn runRankCases(report: mut Report) {
+    report.begin("rank");
+    let pools = rankPools();
+    for spec in rankCases() {
+        let paths = splitPipe(pools[spec.pool]);
+        let items = fuzzymatch.itemsFromPaths(paths);
+        let options = fuzzymatch.Options { allowNonContiguousMatches: spec.scattered };
+        let hits = fuzzymatch.rank(items, fuzzymatch.prepareQuery(spec.query), options);
+
+        let order = String();
+        for (let i = 0; i < hits.length; i++) {
+            if i > 0 { order.append(","); }
+            order.append(f"{hits[i].index}");
+        }
+        report.checkStr(order.cloneString(), spec.expected,
+            f"rank(pool {spec.pool}, \"{spec.query}\", scattered={spec.scattered})");
+
+        // A limited rank must return exactly the prefix an unlimited one
+        // would -- ties included. That is the contract of the bounded
+        // selection path, which does not sort and so could otherwise drift
+        // from the full sort without anything noticing.
+        let bounded = fuzzymatch.Options {
+            allowNonContiguousMatches: spec.scattered,
+            limit: 3,
+        };
+        let topHits = fuzzymatch.rank(items, fuzzymatch.prepareQuery(spec.query), bounded);
+        let topOrder = String();
+        for (let i = 0; i < topHits.length; i++) {
+            if i > 0 { topOrder.append(","); }
+            topOrder.append(f"{topHits[i].index}");
+        }
+        let wanted = hits.length < 3 ? hits.length : 3;
+        let expectedTop = String();
+        for (let i = 0; i < wanted; i++) {
+            if i > 0 { expectedTop.append(","); }
+            expectedTop.append(f"{hits[i].index}");
+        }
+        report.checkStr(topOrder.cloneString(), expectedTop.cloneString(),
+            f"rank(pool {spec.pool}, \"{spec.query}\", limit 3)");
+    }
+}
