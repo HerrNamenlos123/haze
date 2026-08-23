@@ -1,0 +1,416 @@
+// Behavioural tests: what the ranking is supposed to DO.
+//
+// The differential suite next door already proves the port agrees with VS Code
+// on tens of thousands of concrete inputs, but it proves it in numbers nobody
+// can read. These tests state the intent instead -- "a file name prefix beats
+// a match buried in a folder", "the pieces of a spaced query may arrive in any
+// order" -- so that a future change which quietly inverts a ranking rule is
+// caught by a test whose NAME says what broke.
+//
+// Most are ported from VS Code's own fuzzyScorer.test.ts, including the ones
+// whose names still carry the bug number that motivated them; the rest cover
+// this port's own surface (byte offsets, limits, stability, path splitting).
+
+import fuzzymatch
+
+fn scattered(): fuzzymatch.Options {
+    let options = fuzzymatch.Options { allowNonContiguousMatches: true };
+    return options;
+}
+
+fn contiguous(): fuzzymatch.Options {
+    let options = fuzzymatch.Options { allowNonContiguousMatches: false };
+    return options;
+}
+
+fn scoreOfPath(path: str, query: str): fuzzymatch.ItemScore {
+    return fuzzymatch.scoreItem(
+        fuzzymatch.itemFromPath(path), fuzzymatch.prepareQuery(query), scattered());
+}
+
+fn rawScore(target: str, query: str, allowScattered: bool): fuzzymatch.RawScore {
+    let prepared = fuzzymatch.prepareQuery(query);
+    return fuzzymatch.scoreFuzzy(
+        target, prepared.normalized, prepared.normalizedLowercase, allowScattered);
+}
+
+// Runs `query` over `paths` and returns the ranked paths, pipe-joined, so an
+// expectation reads as one legible line.
+fn rankedOrder(paths: []str, query: str, options: fuzzymatch.Options): str {
+    let items = fuzzymatch.itemsFromPaths(paths);
+    let hits = fuzzymatch.rank(items, fuzzymatch.prepareQuery(query), options);
+    let out = String();
+    for (let i = 0; i < hits.length; i++) {
+        if i > 0 { out.append("|"); }
+        out.append(items[hits[i].index].path);
+    }
+    return out.cloneString();
+}
+
+fn expectOrder(report: mut Report, paths: []str, query: str, expected: str) {
+    report.checkStr(rankedOrder(paths, query, scattered()), expected, f"rank(\"{query}\")");
+}
+
+// === The shape of a match =====================================
+
+fn testMatchShapes(report: mut Report) {
+    report.begin("match shapes");
+    let path = "/xyz/some/path/someFile123.txt";
+
+    // Typing the whole path is the strongest possible signal, and highlights
+    // everything.
+    let identity = scoreOfPath(path, path);
+    report.check(fuzzymatch.tierOf(identity.score) == fuzzymatch.Tier.PathIdentity,
+        "identity lands in the PathIdentity tier");
+    report.checkStr(formatSpans(identity.labelSpans), "0-15", "identity label spans");
+    report.checkStr(formatSpans(identity.descriptionSpans), "0-14", "identity description spans");
+
+    // A prefix of the file name: one highlight, from the very start.
+    let prefix = scoreOfPath(path, "som");
+    report.checkStr(formatSpans(prefix.labelSpans), "0-3", "basename prefix spans");
+    report.checkStr(formatSpans(prefix.descriptionSpans), "", "basename prefix leaves folder alone");
+
+    // Camel humps: "sF" finds someFile, highlighting exactly the two humps.
+    let camel = scoreOfPath(path, "sF");
+    report.checkStr(formatSpans(camel.labelSpans), "0-1,4-5", "camel hump spans");
+
+    // An interior match still lands inside the file name only.
+    let interior = scoreOfPath(path, "of");
+    report.checkStr(formatSpans(interior.labelSpans), "1-2,4-5", "interior spans");
+    report.checkStr(formatSpans(interior.descriptionSpans), "", "interior leaves folder alone");
+
+    // Once the query needs the folder, both fields light up.
+    let viaPath = scoreOfPath(path, "xyz123");
+    report.checkStr(formatSpans(viaPath.labelSpans), "8-11", "path-assisted label spans");
+    report.checkStr(formatSpans(viaPath.descriptionSpans), "1-4", "path-assisted description spans");
+
+    // An ellipsis is a query modifier, not a character to match.
+    let ellipsis = scoreOfPath(path, "…me/path/someFile123.txt");
+    report.check(ellipsis.score != 0, "ellipsis query still matches");
+
+    // No match at all, and no highlights to draw.
+    let missing = scoreOfPath(path, "987");
+    report.checkInt(missing.score, 0, "no match scores zero");
+    report.checkStr(formatSpans(missing.labelSpans), "", "no match has no label spans");
+
+    // Quoting turns fuzzy matching off, so the scattered "sF" stops matching.
+    let quoted = scoreOfPath(path, "\"sF\"");
+    report.checkInt(quoted.score, 0, "quoted query demands a literal substring");
+
+    // Every match must land in the tier that describes where it matched.
+    report.check(fuzzymatch.tierOf(prefix.score) == fuzzymatch.Tier.LabelPrefix,
+        "a file-name prefix lands in the LabelPrefix tier");
+    report.check(fuzzymatch.tierOf(interior.score) == fuzzymatch.Tier.Label,
+        "an interior file-name match lands in the Label tier");
+    report.check(fuzzymatch.tierOf(viaPath.score) == fuzzymatch.Tier.Path,
+        "a folder-assisted match lands in the Path tier");
+    report.check(fuzzymatch.tierOf(missing.score) == fuzzymatch.Tier.None,
+        "no match lands in the None tier");
+
+    // The four magnitudes must stay strictly ordered, or the thresholds that
+    // `compareScored` keys off stop meaning anything.
+    report.check(identity.score > prefix.score, "identity outranks basename prefix");
+    report.check(prefix.score > interior.score, "basename prefix outranks interior match");
+    report.check(interior.score > viaPath.score, "file-name match outranks folder-assisted match");
+    report.check(viaPath.score > missing.score, "folder-assisted match outranks no match");
+}
+
+// === Multi-piece queries ======================================
+
+fn testMultiplePieces(report: mut Report) {
+    report.begin("multi-piece queries");
+    let path = "/xyz/some/path/someFile123.txt";
+
+    let forwards = scoreOfPath(path, "xyz some");
+    let backwards = scoreOfPath(path, "some xyz");
+    report.check(forwards.score != 0, "spaced query matches");
+    // Order must not matter: the pieces are a set of requirements, not a
+    // sequence. This is what lets a user type what they remember first.
+    report.checkInt(backwards.score, forwards.score, "piece order does not change the score");
+    report.checkStr(formatSpans(backwards.labelSpans), formatSpans(forwards.labelSpans),
+        "piece order does not change the label spans");
+
+    // Every piece must match, and each one that does adds to the score.
+    let richer = scoreOfPath(path, "some xyz file file123");
+    report.check(richer.score > forwards.score, "more matching pieces score higher");
+    report.checkStr(formatSpans(richer.labelSpans), "0-11", "overlapping piece spans are merged");
+
+    // A piece that matches nothing disqualifies the candidate outright.
+    let impossible = scoreOfPath(path, "some zzzz");
+    report.checkInt(impossible.score, 0, "one unmatched piece rejects the candidate");
+
+    // Pieces that only hit the folder are allowed, and produce no label spans.
+    let folderOnly = scoreOfPath(path, "path z y");
+    report.check(folderOnly.score != 0, "folder-only pieces still match");
+    report.checkStr(formatSpans(folderOnly.labelSpans), "", "folder-only match has no label spans");
+    report.checkStr(formatSpans(folderOnly.descriptionSpans), "2-4,10-14",
+        "folder-only spans are sorted and merged");
+
+    // Quoting one piece constrains only that piece.
+    let mixedQuoting = scoreOfPath(path, "xyz \"sm\"");
+    report.checkInt(mixedQuoting.score, 0, "a quoted piece is matched literally");
+    report.check(scoreOfPath(path, "xyz sm").score != 0, "the same piece unquoted still matches");
+}
+
+// === Where the match should land ==============================
+
+fn testMatchPlacement(report: mut Report) {
+    report.begin("match placement");
+
+    // "xsp" occurs early in this path too, but the match that matters is the
+    // one next to the file name. Preferring the late match is the difference
+    // between a picker that feels aimed and one that feels random.
+    let optimized = scoreOfPath("/xyz/others/spath/some/xsp/file123.txt", "xspfile123");
+    report.checkStr(formatSpans(optimized.labelSpans), "0-7", "late label match");
+    report.checkStr(formatSpans(optimized.descriptionSpans), "23-26", "late folder match");
+
+    // VS Code bug #36119: the query's tail must stay together on the file name
+    // rather than being smeared across the whole path.
+    let unscattered = scoreOfPath("/projects/ui/cula/ats/target.mk", "tcltarget.mk");
+    report.checkStr(formatSpans(unscattered.labelSpans), "0-9", "target.mk stays contiguous");
+
+    // VS Code bug #103015: a query that is a path fragment should align with
+    // the real segment boundaries.
+    let fragment = scoreOfPath("/src/vs/editor/browser/viewParts/lineNumbers/flipped-cursor-2x.svg",
+        "editor/browser");
+    report.check(fragment.score != 0, "path fragment matches");
+}
+
+// === The raw scorer ===========================================
+
+fn testRawScorer(report: mut Report) {
+    report.begin("raw scorer");
+    let target = "HelLo-World";
+
+    // The bonuses must produce a sane preference order: an exact match beats a
+    // case-insensitive one, which beats a prefix, which beats an interior hit.
+    let exact = rawScore(target, "HelLo-World", true).score;
+    let mixed = rawScore(target, "hello-world", true).score;
+    let humps = rawScore(target, "HW", true).score;
+    let humpsLower = rawScore(target, "hw", true).score;
+    let firstChar = rawScore(target, "H", true).score;
+    let interior = rawScore(target, "l", true).score;
+    let absent = rawScore(target, "4", true).score;
+
+    report.check(exact > mixed, "same-case beats mixed-case");
+    report.check(mixed > humps, "full match beats two humps");
+    report.check(humps > humpsLower, "same-case humps beat lower-case humps");
+    report.check(humpsLower > firstChar, "two matched characters beat one");
+    report.check(firstChar > interior, "start of string beats mid-word");
+    report.check(interior > absent, "any match beats none");
+    report.checkInt(absent, 0, "a character not present scores zero");
+
+    // Contiguous mode: the query must appear as a literal run.
+    report.check(rawScore(target, "HelLo-World", false).score > 0, "whole string is contiguous");
+    report.check(rawScore(target, "ello", false).score > 0, "interior run is contiguous");
+    report.check(rawScore(target, "ld", false).score > 0, "trailing run is contiguous");
+    report.checkInt(rawScore(target, "HW", false).score, 0, "humps are not contiguous");
+    report.checkInt(rawScore(target, "eo", false).score, 0, "scattered pair is not contiguous");
+
+    // Positions are what a caller highlights, so they must cover the query.
+    let positions = rawScore(target, "HelLo-World", false).positions;
+    report.checkInt(positions.length, target.length, "a full match reports every position");
+
+    // A query longer than the candidate cannot match, and is rejected before
+    // the matrix is ever filled.
+    report.checkInt(rawScore("ab", "abc", true).score, 0, "query longer than target");
+}
+
+// === Query preparation ========================================
+
+fn testQueryPreparation(report: mut Report) {
+    report.begin("query preparation");
+
+    let simpleQuery = fuzzymatch.prepareQuery("Main");
+    report.checkStr(simpleQuery.normalized, "Main", "normalized keeps case");
+    report.checkStr(simpleQuery.normalizedLowercase, "main", "lowercase form is derived");
+    report.check(!simpleQuery.containsPathSeparator, "no separator typed");
+    report.checkInt(simpleQuery.values.length, 0, "a single-piece query has no pieces");
+
+    // Backslashes are folded towards the POSIX separator so a user who types
+    // a Windows-style path still finds the file.
+    let windowsQuery = fuzzymatch.prepareQuery("src\\main.hz");
+    report.checkStr(windowsQuery.pathNormalized, "src/main.hz", "backslashes are normalized");
+    report.check(windowsQuery.containsPathSeparator, "a normalized separator counts");
+
+    // Steering characters are removed rather than matched.
+    report.checkStr(fuzzymatch.prepareQuery("ma*in").normalized, "main", "wildcards are stripped");
+    report.checkStr(fuzzymatch.prepareQuery("ma…in").normalized, "main", "ellipsis is stripped");
+    report.checkStr(fuzzymatch.prepareQuery("  main  ").normalized, "main", "whitespace is stripped");
+    report.checkStr(fuzzymatch.prepareQuery("main#").normalized, "main", "a trailing hash is stripped");
+    report.checkStr(fuzzymatch.prepareQuery("#").normalized, "#", "a lone hash is kept");
+
+    // A quoted query keeps its content but switches matching mode.
+    let quoted = fuzzymatch.prepareQuery("\"main\"");
+    report.checkStr(quoted.normalized, "main", "quotes are stripped from the text");
+    report.check(quoted.expectContiguousMatch, "quotes demand a contiguous match");
+    report.check(!fuzzymatch.prepareQuery("main").expectContiguousMatch, "unquoted stays fuzzy");
+
+    // Spaces split, and a piece made only of steering characters is dropped
+    // rather than becoming an impossible empty requirement.
+    let spaced = fuzzymatch.prepareQuery("src main");
+    report.checkInt(spaced.values.length, 2, "two pieces");
+    report.checkStr(spaced.values[0].normalized, "src", "first piece");
+    report.checkStr(spaced.values[1].normalized, "main", "second piece");
+    report.checkStr(spaced.normalized, "srcmain", "the whole query loses its spaces");
+    report.checkInt(fuzzymatch.prepareQuery("src  main").values.length, 2,
+        "an empty piece between two spaces is dropped");
+}
+
+// === Ranking ==================================================
+
+fn testRanking(report: mut Report) {
+    report.begin("ranking");
+
+    // A file-name prefix must beat the same letters buried in a folder.
+    let prefixPool: []str = [];
+    prefixPool.push("/lib/model/util.ts");
+    prefixPool.push("/util.ts");
+    expectOrder(report, prefixPool, "util", "/util.ts|/lib/model/util.ts");
+
+    // Among prefix matches, the shorter name wins: typing "window" should give
+    // window.ts before windowActions.ts.
+    let shortestPool: []str = [];
+    shortestPool.push("/windowActions.ts");
+    shortestPool.push("/window.ts");
+    expectOrder(report, shortestPool, "window", "/window.ts|/windowActions.ts");
+
+    // Case is a signal when the user supplies it (VS Code bug #96122).
+    let casePool: []str = [];
+    casePool.push("/app/constants/color.js");
+    casePool.push("/app/components/model/input/Color.js");
+    expectOrder(report, casePool, "Color",
+        "/app/components/model/input/Color.js|/app/constants/color.js");
+
+    // Camel humps beat a scattered match of the same letters.
+    let camelPool: []str = [];
+    camelPool.push("/nope/parts/here.md");
+    camelPool.push("/NullPointerException.java");
+    expectOrder(report, camelPool, "NPE",
+        "/NullPointerException.java|/nope/parts/here.md");
+
+    // Typing a separator lets the folder compete instead of always losing:
+    // without one, "/src/main.hz" would win on its file name alone, but the
+    // scattered candidate would not match at all.
+    let pathPool: []str = [];
+    pathPool.push("/lib/srcs/mainline/other.hz");
+    pathPool.push("/src/main.hz");
+    expectOrder(report, pathPool, "src/main",
+        "/src/main.hz|/lib/srcs/mainline/other.hz");
+
+    // Exact path identity outranks everything, including a perfect file-name
+    // prefix on a shorter path.
+    let identityPool: []str = [];
+    identityPool.push("/deep/nested/a.ts.bak");
+    identityPool.push("/deep/nested/a.ts");
+    expectOrder(report, identityPool, "/deep/nested/a.ts",
+        "/deep/nested/a.ts|/deep/nested/a.ts.bak");
+
+    // Non-matching candidates are dropped, not ranked last.
+    let filterPool: []str = [];
+    filterPool.push("/alpha.ts");
+    filterPool.push("/zzz.md");
+    filterPool.push("/beta-alpha.ts");
+    expectOrder(report, filterPool, "alpha", "/alpha.ts|/beta-alpha.ts");
+
+    // An empty query matches nothing at all: a picker showing everything is
+    // the caller's decision to make, not the scorer's.
+    let emptyPool: []str = [];
+    emptyPool.push("/a.ts");
+    report.checkStr(rankedOrder(emptyPool, "", scattered()), "", "empty query ranks nothing");
+    report.checkStr(rankedOrder(emptyPool, "   ", scattered()), "",
+        "an all-whitespace query ranks nothing");
+}
+
+// === This port's own surface ==================================
+
+fn testPortSurface(report: mut Report) {
+    report.begin("port surface");
+
+    // Path splitting, including the shapes that have no folder at all.
+    let nested = fuzzymatch.itemFromPath("/src/vs/base/common/filters.ts");
+    report.checkStr(nested.label, "filters.ts", "label is the basename");
+    report.checkStr(nested.description, "/src/vs/base/common", "description is the dirname");
+    let bare = fuzzymatch.itemFromPath("README.md");
+    report.checkStr(bare.label, "README.md", "a bare name is all label");
+    report.checkStr(bare.description, "", "a bare name has no folder");
+    let windowsPath = fuzzymatch.itemFromPath("src\\main.hz");
+    report.checkStr(windowsPath.label, "main.hz", "backslashes split too");
+
+    // The limit bounds the result without disturbing the order of what is kept.
+    let pool: []str = [];
+    pool.push("/a1.ts");
+    pool.push("/a2.ts");
+    pool.push("/a3.ts");
+    let limited = fuzzymatch.Options { limit: 2 };
+    let full = rankedOrder(pool, "a", scattered());
+    let capped = rankedOrder(pool, "a", limited);
+    report.check(full.startsWith(capped), "the limited result is a prefix of the full one");
+    let hits = fuzzymatch.rank(
+        fuzzymatch.itemsFromPaths(pool), fuzzymatch.prepareQuery("a"), limited);
+    report.checkInt(hits.length, 2, "limit bounds the hit count");
+
+    // Candidates that differ only in their folder are NOT tied: the last
+    // tie-break orders them by name, deterministically and regardless of the
+    // order they were supplied in. Pinning this is worthwhile because the
+    // alternative -- results that reshuffle depending on how the file walk
+    // happened to enumerate the tree -- looks like a bug to a user.
+    let forwardPool: []str = [];
+    forwardPool.push("/x/same.ts");
+    forwardPool.push("/y/same.ts");
+    let reversePool: []str = [];
+    reversePool.push("/y/same.ts");
+    reversePool.push("/x/same.ts");
+    report.checkStr(rankedOrder(forwardPool, "same", scattered()),
+        "/x/same.ts|/y/same.ts", "equal scores order by name");
+    report.checkStr(rankedOrder(reversePool, "same", scattered()),
+        "/x/same.ts|/y/same.ts", "and do so independently of the input order");
+
+    // Candidates the comparator genuinely cannot separate keep the caller's
+    // order, so a caller who pre-sorted by recency or by "currently open"
+    // does not have that signal scrambled.
+    let identicalPool: []str = [];
+    identicalPool.push("/x/same.ts");
+    identicalPool.push("/x/same.ts");
+    identicalPool.push("/x/same.ts");
+    let tiedHits = fuzzymatch.rank(
+        fuzzymatch.itemsFromPaths(identicalPool), fuzzymatch.prepareQuery("same"), scattered());
+    let tiedOrder = String();
+    for (let i = 0; i < tiedHits.length; i++) {
+        if i > 0 { tiedOrder.append(","); }
+        tiedOrder.append(f"{tiedHits[i].index}");
+    }
+    report.checkStr(tiedOrder.cloneString(), "0,1,2", "indistinguishable candidates keep input order");
+
+    // Reusing a workspace across candidates must not leak state between them.
+    let workspace = fuzzymatch.Workspace {};
+    let query = fuzzymatch.prepareQuery("main");
+    let longFirst = fuzzymatch.scoreItemWith(
+        workspace, fuzzymatch.itemFromPath("/a/very/long/path/to/main.hz"), query, scattered());
+    let shortAfter = fuzzymatch.scoreItemWith(
+        workspace, fuzzymatch.itemFromPath("/main.hz"), query, scattered());
+    let shortAlone = fuzzymatch.scoreItem(
+        fuzzymatch.itemFromPath("/main.hz"), query, scattered());
+    report.checkInt(shortAfter.score, shortAlone.score, "a reused workspace leaks nothing");
+    report.check(longFirst.score != 0, "the first candidate still matched");
+
+    // Offsets are BYTES, which is the documented deviation from VS Code's
+    // UTF-16 code units. "Ä" is two bytes, so the following character's offset
+    // is 2, not 1 -- a caller slicing the string with these offsets gets the
+    // right substring, which is the property that actually matters.
+    let umlaut = rawScore("Äb", "b", true);
+    report.checkStr(formatPositions(umlaut.positions), "2", "offsets count bytes, not characters");
+    // Matching still works through a multi-byte character.
+    report.check(rawScore("späth.ts", "sp", true).score != 0, "ASCII prefix of a non-ASCII name");
+    report.check(rawScore("späth.ts", "th", true).score != 0, "ASCII tail of a non-ASCII name");
+}
+
+export fn runBehaviourTests(report: mut Report) {
+    testMatchShapes(report);
+    testMultiplePieces(report);
+    testMatchPlacement(report);
+    testRawScorer(report);
+    testQueryPreparation(report);
+    testRanking(report);
+    testPortSurface(report);
+}

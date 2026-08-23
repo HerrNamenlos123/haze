@@ -1,0 +1,7 @@
+name = "fuzzymatch"
+id = "fZzYmTc1"
+version = "1.0.0"
+description = "VS Code's file-picker fuzzy scoring and ranking, in pure Haze"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

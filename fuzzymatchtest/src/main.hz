@@ -1,0 +1,34 @@
+// Test suite for the `fuzzymatch` stdlib module.
+//
+// Two halves, with different jobs:
+//
+//   behaviour.hz     states what the ranking is supposed to do, in tests whose
+//                    names say what broke when they fail.
+//   differential.hz  replays a generated corpus and demands the exact numbers
+//                    VS Code produces for the same inputs. The corpus and its
+//                    expectations come from oracle/, which is VS Code's own
+//                    scorer, verified against VS Code's own test suite.
+//
+// Run with:
+//   bun run src/main.ts run --dir fuzzymatchtest
+//
+// Exits non-zero on any failure.
+
+fn main(): int {
+    // The benchmark is a separate mode rather than part of the suite: it
+    // measures, it does not assert, and a timing that drifts should not turn
+    // a correctness run red.
+    let benchmark = env.get("FUZZYMATCH_BENCH");
+    if benchmark {
+        runBenchmark();
+        return 0;
+    }
+
+    let report = Report {};
+    runBehaviourTests(report);
+    runQueryCases(report);
+    runScoreCases(report);
+    runItemCases(report);
+    runRankCases(report);
+    return report.summarize();
+}

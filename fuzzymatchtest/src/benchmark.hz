@@ -1,0 +1,117 @@
+// A benchmark, because "is it fast enough to run on every keystroke?" is the
+// question that decides whether a fuzzy finder can be in-process at all, and
+// it deserves a measured answer rather than an assumed one.
+//
+// Run with:  FUZZYMATCH_BENCH=1 ./__haze__/fuzzymatchtest/bin/fuzzymatchtest
+//
+// The corpus is synthetic but shaped like a real tree: nested directories,
+// repeated segment vocabulary, realistic name lengths and extensions. That
+// matters -- a corpus of random strings would be far easier to reject early
+// than real paths, which share long prefixes and defeat the cheap exits.
+
+import fuzzymatch
+
+fn syntheticPaths(count: int): []str {
+    let roots: []str = [];
+    roots.push("src"); roots.push("lib"); roots.push("test"); roots.push("docs");
+    roots.push("packages"); roots.push("vendor"); roots.push("tools"); roots.push("examples");
+
+    let middles: []str = [];
+    middles.push("common"); middles.push("browser"); middles.push("node");
+    middles.push("platform"); middles.push("workbench"); middles.push("editor");
+    middles.push("contrib"); middles.push("services"); middles.push("base");
+    middles.push("internal"); middles.push("widgets"); middles.push("model");
+
+    let names: []str = [];
+    names.push("index"); names.push("main"); names.push("utils"); names.push("helpers");
+    names.push("fuzzyScorer"); names.push("quickAccess"); names.push("listWidget");
+    names.push("textModel"); names.push("configuration"); names.push("lifecycle");
+    names.push("NullPointerException"); names.push("HTTPRequestHandler");
+    names.push("view"); names.push("controller"); names.push("state"); names.push("store");
+
+    let extensions: []str = [];
+    extensions.push("ts"); extensions.push("hz"); extensions.push("c");
+    extensions.push("h"); extensions.push("md"); extensions.push("json");
+
+    let paths: []str = [];
+    let i = 0;
+    while paths.length < count {
+        let root = roots[i % roots.length];
+        let a = middles[(i / 3) % middles.length];
+        let b = middles[(i / 7) % middles.length];
+        let name = names[(i / 5) % names.length];
+        let extension = extensions[(i / 11) % extensions.length];
+        paths.push(f"{root}/{a}/{b}/{name}{i}.{extension}");
+        i += 1;
+    }
+    return paths;
+}
+
+fn benchQuery(items: []fuzzymatch.Item, text: str, rounds: int) {
+    let query = fuzzymatch.prepareQuery(text);
+    let options = fuzzymatch.Options { limit: 100 };
+
+    let hits = 0;
+    let start = time.now();
+    for (let round = 0; round < rounds; round++) {
+        hits = fuzzymatch.rank(items, query, options).length;
+    }
+    let elapsed = (time.now() - start) / (rounds as real);
+
+    let millis = elapsed * 1000.0;
+    fmt.println(f"  {text}  ->  {hits} hits in {millis} ms");
+}
+
+// Splits the cost: how much of a keystroke is scoring every candidate, and
+// how much is ordering the ones that matched?
+fn benchSplit(items: []fuzzymatch.Item, text: str, rounds: int) {
+    let query = fuzzymatch.prepareQuery(text);
+    let options = fuzzymatch.Options {};
+
+    let matched = 0;
+    let start = time.now();
+    for (let round = 0; round < rounds; round++) {
+        let workspace = fuzzymatch.Workspace {};
+        matched = 0;
+        for (let i = 0; i < items.length; i++) {
+            if fuzzymatch.scoreItemWith(workspace, items[i], query, options).score != 0 {
+                matched += 1;
+            }
+        }
+    }
+    let scoring = (time.now() - start) / (rounds as real) * 1000.0;
+
+    start = time.now();
+    for (let round = 0; round < rounds; round++) {
+        fuzzymatch.rank(items, query, options);
+    }
+    let total = (time.now() - start) / (rounds as real) * 1000.0;
+
+    let ordering = total - scoring;
+    fmt.println(f"  {text}  ->  {matched} hits: score {scoring} ms + order {ordering} ms");
+}
+
+export fn runBenchmark() {
+    let count = 50000;
+    let paths = syntheticPaths(count);
+    let items = fuzzymatch.itemsFromPaths(paths);
+    fmt.println(f"fuzzymatch benchmark -- {count} candidates, ranked into a page of 100");
+    fmt.println("");
+
+    // A single character is the worst case: almost everything matches, so
+    // almost everything has to be scored AND sorted.
+    benchQuery(items, "s", 5);
+    benchQuery(items, "sc", 5);
+    benchQuery(items, "scor", 10);
+    benchQuery(items, "fuzzyscorer", 10);
+    benchQuery(items, "src/common/main", 10);
+    benchQuery(items, "NPE", 10);
+    benchQuery(items, "zzzzzz", 10);
+    benchQuery(items, "src main ts", 5);
+    fmt.println("");
+    benchSplit(items, "s", 5);
+    benchSplit(items, "scor", 5);
+    benchSplit(items, "zzzzzz", 5);
+    fmt.println("");
+    fmt.println("  (a keystroke is one of these; 16 ms is a 60 Hz frame)");
+}

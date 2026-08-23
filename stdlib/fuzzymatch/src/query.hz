@@ -1,0 +1,191 @@
+// Query preparation -- the port of VS Code's `prepareQuery`.
+//
+// A query is prepared ONCE per keystroke and then reused across every
+// candidate, which is the whole reason it is a separate step: normalising and
+// lower-casing the query inside the per-candidate loop would repeat the same
+// work fifty thousand times.
+//
+// Preparation does four things:
+//
+//   * normalises path separators, so a user who types a backslash on Linux
+//     still matches "/"-separated paths;
+//   * strips characters that exist to steer the search rather than to be
+//     matched -- whitespace, `*`, `"`, `…`, and a trailing `#`;
+//   * splits the query on spaces into PIECES, each of which must match
+//     somewhere for the candidate to be kept at all;
+//   * records whether the query was quoted, which turns fuzzy matching off
+//     and demands a contiguous substring.
+
+// One space-separated piece of a query. A query that has no space is
+// represented by the whole-query fields on `Query` itself and carries no
+// pieces at all.
+export struct QueryPiece {
+    // Exactly what the user typed for this piece.
+    original: str = "";
+    originalLowercase: str = "";
+    // `original` with path separators normalised to "/", but with nothing
+    // removed. This is what a full-path identity check compares against.
+    pathNormalized: str = "";
+    // `pathNormalized` with the steering characters removed. This is the
+    // string that is actually matched against candidates.
+    normalized: str = "";
+    normalizedLowercase: str = "";
+    // The piece was wrapped in double quotes: the user is asking for a
+    // literal substring, not a fuzzy match.
+    expectContiguousMatch: bool = false;
+}
+
+// A prepared query. Cheap to copy, safe to keep for as long as the text the
+// user typed is unchanged.
+export struct Query {
+    original: str = "";
+    originalLowercase: str = "";
+    pathNormalized: str = "";
+    normalized: str = "";
+    normalizedLowercase: str = "";
+    expectContiguousMatch: bool = false;
+    // The space-separated pieces, and only when there is more than one thing
+    // to look for. A single-piece query leaves this empty and is scored from
+    // the whole-query fields above -- the two are NOT interchangeable,
+    // because the whole-query fields keep the spaces the pieces dropped.
+    values: []QueryPiece = [];
+    // Whether the user typed a path separator. When they did, a candidate's
+    // full path competes with its file name instead of losing to it, which
+    // is how "src/main" finds a file the name alone would not.
+    containsPathSeparator: bool = false;
+}
+
+// Characters that are removed from a query before matching:
+//   - `"` because quotes select exact matching rather than being matched
+//   - `*` because wildcards are implied by fuzzy matching anyway
+//   - `…` because it is sometimes typed to stand for "any path segments"
+//   - whitespace because it separates pieces
+// The whitespace set is JavaScript's `\s`, reproduced exactly so that a
+// pasted non-breaking space behaves here the way it does in VS Code.
+fn isStrippedFromQuery(codepoint: int): bool {
+    if codepoint == 0x22 || codepoint == 0x2A || codepoint == 0x2026 {
+        return true;
+    }
+    if codepoint >= 0x09 && codepoint <= 0x0D {
+        return true;                       // tab, LF, VT, FF, CR
+    }
+    if codepoint == 0x20 || codepoint == 0xA0 || codepoint == 0x1680 {
+        return true;
+    }
+    if codepoint >= 0x2000 && codepoint <= 0x200A {
+        return true;
+    }
+    if codepoint == 0x2028 || codepoint == 0x2029 || codepoint == 0x202F {
+        return true;
+    }
+    if codepoint == 0x205F || codepoint == 0x3000 || codepoint == 0xFEFF {
+        return true;
+    }
+    return false;
+}
+
+// Backslash to forward slash. This module targets POSIX separators; on a
+// Windows host VS Code normalises the other way, and a caller that wants that
+// behaviour should convert its candidate paths instead, since the scorer's
+// `considerAsEqual` already treats the two separators as the same character.
+fn normalizeSeparators(text: str): str {
+    if !text.contains("\\") {
+        return text;                       // the overwhelmingly common case
+    }
+    let buffer = String(text);
+    for (let i = 0; i < buffer.length(); i++) {
+        if buffer.getAt(i) == b"\\" {
+            buffer.setAt(i, b"/");
+        }
+    }
+    return buffer.cloneString();
+}
+
+// Drops the steering characters, then a single trailing `#` -- which some
+// language servers use as a query modifier and which would otherwise be
+// matched literally. The `#` only goes if something precedes it, so a query
+// that IS just "#" still searches for a hash.
+fn stripQueryCharacters(text: str): str {
+    let out = String();
+    out.reserve(text.length);
+    let index = 0;
+    while index < text.length {
+        let decoded = decodeUtf8(text, index);
+        if !isStrippedFromQuery(decoded.codepoint) {
+            out.append(text.slice(index, index + decoded.size));
+        }
+        index += decoded.size;
+    }
+    let stripped = out.cloneString();
+    if stripped.length > 1 && stripped[stripped.length - 1] == b"#" {
+        return stripped.slice(0, stripped.length - 1);
+    }
+    return stripped;
+}
+
+// A query wrapped in double quotes asks for a literal substring. Note that a
+// lone `"` satisfies both ends of the test and so counts as quoted; that is
+// VS Code's behaviour and it is harmless, because the quote is stripped and
+// an empty normalized query never matches anything.
+fn expectsExactMatch(text: str): bool {
+    return text.startsWith("\"") && text.endsWith("\"");
+}
+
+fn preparePiece(original: str): QueryPiece {
+    let pathNormalized = normalizeSeparators(original);
+    let normalized = stripQueryCharacters(pathNormalized);
+    let piece = QueryPiece {
+        original: original,
+        originalLowercase: toLowerAscii(original),
+        pathNormalized: pathNormalized,
+        normalized: normalized,
+        normalizedLowercase: toLowerAscii(normalized),
+        expectContiguousMatch: expectsExactMatch(original),
+    };
+    return piece;
+}
+
+// Turns what the user typed into the form the scorer consumes. Call this once
+// per keystroke, never once per candidate.
+export fn prepareQuery(original: str): Query {
+    let whole = preparePiece(original);
+
+    let query = Query {
+        original: whole.original,
+        originalLowercase: whole.originalLowercase,
+        pathNormalized: whole.pathNormalized,
+        normalized: whole.normalized,
+        normalizedLowercase: whole.normalizedLowercase,
+        expectContiguousMatch: whole.expectContiguousMatch,
+        containsPathSeparator: whole.pathNormalized.contains("/"),
+    };
+
+    // Only a query that actually contains a space is split. Pieces whose
+    // content is entirely steering characters contribute nothing and are
+    // dropped rather than becoming an impossible-to-match empty piece.
+    let parts = original.split(" ");
+    if parts.length > 1 {
+        for part in parts {
+            let piece = preparePiece(part);
+            if piece.normalized.length > 0 {
+                query.values.push(piece);
+            }
+        }
+    }
+
+    return query;
+}
+
+// The whole-query fields of a `Query`, viewed as a piece. Used when a query
+// has fewer than two pieces and is therefore scored as a single unit.
+fn wholeQueryPiece(query: Query): QueryPiece {
+    let piece = QueryPiece {
+        original: query.original,
+        originalLowercase: query.originalLowercase,
+        pathNormalized: query.pathNormalized,
+        normalized: query.normalized,
+        normalizedLowercase: query.normalizedLowercase,
+        expectContiguousMatch: query.expectContiguousMatch,
+    };
+    return piece;
+}
