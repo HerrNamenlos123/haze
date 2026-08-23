@@ -154,6 +154,18 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarArgs>) => {
         ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
 
+        let onClick = () => {
+            // Toggle. The root's capture handler deliberately
+            // leaves presses on the bar alone precisely so this
+            // can close a menu that is already open -- see
+            // dismissMenusOnPress.
+            if rx.get(state.openMenu) == menuFile() {
+                state.openMenu := menuNone();
+            } else {
+                state.openMenu := menuFile();
+            }
+        };
+
         return (): void => {
             let props = instance.props();
 
@@ -175,17 +187,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                     label: "File",
                     selected: props.openMenu == menuFile(),
                     style: { paddingX: 8.0, paddingY: 4.0 },
-                    onClick: () => {
-                        // Toggle. The root's capture handler deliberately
-                        // leaves presses on the bar alone precisely so this
-                        // can close a menu that is already open -- see
-                        // dismissMenusOnPress.
-                        if rx.get(state.openMenu) == menuFile() {
-                            state.openMenu := menuNone();
-                        } else {
-                            state.openMenu := menuFile();
-                        }
-                    },
+                    onClick: onClick,
                 });
 
                 // Pushes the title to the middle of the remaining space.
