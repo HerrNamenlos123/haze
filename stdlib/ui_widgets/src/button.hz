@@ -99,6 +99,22 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
             return element ? element.active() : false;
         });
 
+        let pointerDown = (event: ui_components.PointerEvent) => {
+            // A press on a button is the button's business and
+            // nobody else's -- without this it would also reach
+            // whatever is underneath (in a menu, the scrim that
+            // exists to close it).
+            event.stopPropagation();
+            let p = instance.props();
+            if !p.enabled {
+                return;
+            }
+            let onClick = p.onClick;
+            if onClick {
+                onClick();
+            }
+        };
+
         return (): void => {
             let props = instance.props();
             let style = props.style;
@@ -129,21 +145,7 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                         bottom: style.paddingY,
                     },
                 },
-                onPointerDown: (event: ui_components.PointerEvent) => {
-                    // A press on a button is the button's business and
-                    // nobody else's -- without this it would also reach
-                    // whatever is underneath (in a menu, the scrim that
-                    // exists to close it).
-                    event.stopPropagation();
-                    let p = instance.props();
-                    if !p.enabled {
-                        return;
-                    }
-                    let onClick = p.onClick;
-                    if onClick {
-                        onClick();
-                    }
-                },
+                onPointerDown: pointerDown,
             }, (): void => {
                 let p = instance.props();
                 let renderContent = p.renderContent;

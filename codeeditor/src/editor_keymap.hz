@@ -119,7 +119,7 @@ fn keybindings(): mut Keybindings {
 // Registered from inside UI(), where the closures that do the work exist.
 // Re-registering an id replaces the previous handler, so this is safe to
 // call again on a remount.
-ref struct WorkbenchCommands {
+struct WorkbenchCommands {
     openFile: CommandFn;
     openFolder: CommandFn;
     closeFolder: CommandFn;
@@ -146,7 +146,7 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
 // re-registers these on becoming active, and thereby claims them. That is
 // the correct owner by definition: keyboard focus follows the active tab,
 // and every one of these bindings is gated on editorTextFocus anyway.
-ref struct EditorCommands {
+struct EditorCommands {
     toggleVim: CommandFn;
     vimNavigateBack: CommandFn;
     vimNavigateForward: CommandFn;
