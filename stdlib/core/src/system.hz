@@ -46,27 +46,27 @@ namespace sys {
     }
 }
 
-export fn assert(condition: bool, msg?: str | (() => str), location: SourceLocation = SourceLocation()) :: noreturn_if(!condition), final {
+export fn assert(condition: bool, location: SourceLocation = SourceLocation()) :: noreturn_if(!condition), final {
+    assert(condition, () => "Assertion failed", location);
+}
+
+export fn assert(condition: bool, msg: str, location: SourceLocation = SourceLocation()) :: noreturn_if(!condition), final {
+    assert(condition, () => msg, location);
+}
+
+export fn assert(condition: bool, msg: immediate () => str, location: SourceLocation = SourceLocation()) :: noreturn_if(!condition), final {
     if condition { return; }
 
     if location.filename() {
         // At least the filename must be present. Line and Column are optional after that.
-        let message = "assertion failed";
-        if msg {
-            if msg is str {
-                message = msg;
-            }
-            else {
-                message = msg();
-            }
-        }
-        sys.panic(f"{location}: {message}", 1);
-    }
-    else if msg {
-        sys.panic(msg is str ? msg : msg(), 1);
+        sys.panic(f"{location}: {msg()}", 1);
     }
     else {
-        sys.panic("Assertion failed", 1);
+        // `msg` is not optional in this overload -- the two overloads above are
+        // what handle "no message" and "a plain str", each by forwarding a
+        // closure here. So there is nothing to test for, and no fallback branch
+        // to reach.
+        sys.panic(msg(), 1);
     }
 }
 

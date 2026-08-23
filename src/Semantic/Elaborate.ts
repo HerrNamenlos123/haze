@@ -103,7 +103,10 @@ export class SemanticElaborator {
   // that happened to trip the check. If the callee isn't in this map at all, its elaboration hasn't
   // started anywhere yet -- an elaboration-order issue, not a cycle -- and the error can say so
   // instead of pointing at a nonexistent recursion.
-  functionElaborationInProgress: Map<Semantic.SymbolId, ElaborationPathFrame[]> = new Map();
+  functionElaborationInProgress: Map<
+    Semantic.SymbolId,
+    ElaborationPathFrame[]
+  > = new Map();
 
   inFunction: Semantic.SymbolId | null = null;
   inAttemptExpr: Semantic.ExprId | null = null;
@@ -178,7 +181,11 @@ export class SemanticElaborator {
     );
   }
 
-  recordParamUse(variableId: Semantic.SymbolId, exprId: Semantic.ExprId, loc: SourceLoc) {
+  recordParamUse(
+    variableId: Semantic.SymbolId,
+    exprId: Semantic.ExprId,
+    loc: SourceLoc
+  ) {
     let uses = this.paramUses.get(variableId);
     if (!uses) {
       uses = new Map();
@@ -190,7 +197,9 @@ export class SemanticElaborator {
   // The parameter SymbolValueExpr behind `exprId`, looking through the
   // wrappers a use may have picked up (narrowing casts of an optional
   // callable, union wrapping, dereference, parentheses).
-  private paramUseBehind(exprId: Semantic.ExprId): { variable: Semantic.SymbolId; chain: Semantic.ExprId[] } | null {
+  private paramUseBehind(
+    exprId: Semantic.ExprId
+  ): { variable: Semantic.SymbolId; chain: Semantic.ExprId[] } | null {
     let id = exprId;
     // The use was recorded on whatever expression the symbol lookup
     // produced -- possibly already a narrowing cast around the raw symbol
@@ -202,8 +211,11 @@ export class SemanticElaborator {
       switch (e.variant) {
         case Semantic.ENode.SymbolValueExpr: {
           const sym = this.sr.symbolNodes.get(e.symbol);
-          if (sym.variant === Semantic.ENode.VariableSymbol && this.paramUses.has(e.symbol)) {
-            return { variable: e.symbol, chain };
+          if (
+            sym.variant === Semantic.ENode.VariableSymbol &&
+            this.paramUses.has(e.symbol)
+          ) {
+            return { variable: e.symbol, chain: chain };
           }
           return null;
         }
@@ -275,12 +287,18 @@ export class SemanticElaborator {
     }
   }
 
-  calleeParamIsImmediate(callee: Semantic.FunctionSymbol, index: number): boolean {
+  calleeParamIsImmediate(
+    callee: Semantic.FunctionSymbol,
+    index: number
+  ): boolean {
     return callee.parameterImmediate?.[index] === true;
   }
 
   // Does parameter `index` of `callee` promise not to retain its argument?
-  calleeParamIsNonRetaining(callee: Semantic.FunctionSymbol, index: number): boolean {
+  calleeParamIsNonRetaining(
+    callee: Semantic.FunctionSymbol,
+    index: number
+  ): boolean {
     if (this.calleeParamIsImmediate(callee, index)) {
       return true;
     }
@@ -303,7 +321,10 @@ export class SemanticElaborator {
   // Called for every argument list handed to a known function: consumes the
   // uses that are forwarded to non-retaining parameters and marks lambda
   // literals in those positions as stack-env closures.
-  noteCallArguments(callee: Semantic.FunctionSymbol | undefined, args: Semantic.ExprId[]) {
+  noteCallArguments(
+    callee: Semantic.FunctionSymbol | undefined,
+    args: Semantic.ExprId[]
+  ) {
     if (!callee) {
       return;
     }
@@ -324,7 +345,10 @@ export class SemanticElaborator {
 
   // Runs once the function body is elaborated: fixes every callable
   // parameter's `nonEscaping`, and rejects an `immediate` one that escaped.
-  finalizeEscapeAnalysis(symbol: Semantic.FunctionSymbol, symbolId: Semantic.SymbolId) {
+  finalizeEscapeAnalysis(
+    symbol: Semantic.FunctionSymbol,
+    symbolId: Semantic.SymbolId
+  ) {
     const opaqueBody = this.functionsWithInlineC.has(symbolId);
     for (const pId of symbol.parameterSymbols) {
       const p = this.sr.symbolNodes.get(pId);
@@ -479,7 +503,10 @@ export class SemanticElaborator {
   // innermost/live frame (the one active when the error was thrown), so appending currentContext
   // and reversing yields innermost-first, matching "from the point of the error, down".
   buildElaborationPathFromCurrentContext(): ElaborationPathFrame[] {
-    const contextStack = [...this.prevContextStack, this.currentContext].reverse();
+    const contextStack = [
+      ...this.prevContextStack,
+      this.currentContext,
+    ].reverse();
     const path: ElaborationPathFrame[] = [];
 
     // A single function elaboration re-enters withContext() several times against its own
@@ -570,11 +597,14 @@ export class SemanticElaborator {
   //
   // Returns text to append after the call-site path in the error message, or null if
   // calleeSymbolId is unknown (so nothing can be said about it).
-  buildDeferredElaborationHint(calleeSymbolId: Semantic.SymbolId | null): string | null {
+  buildDeferredElaborationHint(
+    calleeSymbolId: Semantic.SymbolId | null
+  ): string | null {
     if (calleeSymbolId === null) {
       return null;
     }
-    const inProgressPath = this.functionElaborationInProgress.get(calleeSymbolId);
+    const inProgressPath =
+      this.functionElaborationInProgress.get(calleeSymbolId);
     if (!inProgressPath) {
       return (
         "\n\nThis is NOT a recursive cycle: the callee's own elaboration has not started " +
@@ -594,7 +624,9 @@ export class SemanticElaborator {
   // to a named function (plain call or bound method value) -- the two shapes callExpr() already
   // recognizes elsewhere. Returns null for anything else (e.g. a call through a plain local
   // variable holding a function value), where there's no single symbol to look up.
-  symbolIdOfCalledExpr(calledExpr: Semantic.Expression): Semantic.SymbolId | null {
+  symbolIdOfCalledExpr(
+    calledExpr: Semantic.Expression
+  ): Semantic.SymbolId | null {
     if (calledExpr.variant === Semantic.ENode.SymbolValueExpr) {
       return calledExpr.symbol;
     }
@@ -1620,7 +1652,10 @@ export class SemanticElaborator {
       const ambiguousOverload =
         e instanceof CompilerError &&
         e.code === HazeErrorCode.AmbiguousOverloadCandidates;
-      if (!(e instanceof GenericDeductionIncompleteError) && !ambiguousOverload) {
+      if (
+        !(e instanceof GenericDeductionIncompleteError) &&
+        !ambiguousOverload
+      ) {
         throw e;
       }
 
@@ -1810,7 +1845,9 @@ export class SemanticElaborator {
       if (ftype.variant === Semantic.ENode.DeferredFunctionDatatype) {
         throw new CompilerError(
           `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
-            (this.buildDeferredElaborationHint(this.symbolIdOfCalledExpr(calledExpr)) ?? ""),
+            (this.buildDeferredElaborationHint(
+              this.symbolIdOfCalledExpr(calledExpr)
+            ) ?? ""),
           callExpr.sourceloc,
           HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
           this.buildElaborationPathFromCurrentContext()
@@ -1849,7 +1886,9 @@ export class SemanticElaborator {
     if (calledExprType.variant === Semantic.ENode.DeferredFunctionDatatype) {
       throw new CompilerError(
         `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
-          (this.buildDeferredElaborationHint(this.symbolIdOfCalledExpr(calledExpr)) ?? ""),
+          (this.buildDeferredElaborationHint(
+            this.symbolIdOfCalledExpr(calledExpr)
+          ) ?? ""),
         callExpr.sourceloc,
         HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
         this.buildElaborationPathFromCurrentContext()
@@ -2929,18 +2968,14 @@ export class SemanticElaborator {
     // instance equals every other. Folding an empty conjunction would be
     // ill-formed, so this is answered directly.
     if (def.members.length === 0) {
-      return this.sr.b.literal(
-        operation === EBinaryOperation.Equal,
-        sourceloc
-      );
+      return this.sr.b.literal(operation === EBinaryOperation.Equal, sourceloc);
     }
 
     const parts: Semantic.ExprId[] = [];
     for (const memberId of def.members) {
       const member = this.sr.symbolNodes.get(memberId);
       assert(
-        member.variant === Semantic.ENode.VariableSymbol &&
-          member.type !== null
+        member.variant === Semantic.ENode.VariableSymbol && member.type !== null
       );
       const l = this.sr.b.memberAccessRaw(
         leftId,
@@ -2989,9 +3024,7 @@ export class SemanticElaborator {
     const left = this.sr.exprNodes.get(leftId);
     const _right2 = this.sr.exprNodes.get(rightId);
     // Try to find an overloaded operator on the left operand's type
-    const leftTypeUse = this.sr.typeUseNodes.get(
-      this.resolveAlias(left.type)
-    );
+    const leftTypeUse = this.sr.typeUseNodes.get(this.resolveAlias(left.type));
     const leftTypeDef = this.sr.typeDefNodes.get(leftTypeUse.type);
 
     if (leftTypeDef.variant === Semantic.ENode.StructDatatype) {
@@ -3004,26 +3037,24 @@ export class SemanticElaborator {
       assert(structScope.variant === Collect.ENode.StructLexicalScope);
 
       // Map binary operations to overloaded operators
-      const operatorMap: Record<
-        EBinaryOperation,
-        EOverloadedOperator | null
-      > = {
-        [EBinaryOperation.Equal]: EOverloadedOperator.Equal,
-        [EBinaryOperation.NotEqual]: EOverloadedOperator.NotEqual,
-        [EBinaryOperation.LessThan]: EOverloadedOperator.LessThan,
-        [EBinaryOperation.GreaterThan]: EOverloadedOperator.GreaterThan,
-        [EBinaryOperation.LessEqual]: EOverloadedOperator.LessThanOrEqual,
-        [EBinaryOperation.GreaterEqual]:
-          EOverloadedOperator.GreaterThanOrEqual,
-        [EBinaryOperation.Add]: EOverloadedOperator.Add,
-        [EBinaryOperation.Subtract]: EOverloadedOperator.Sub,
-        [EBinaryOperation.Multiply]: EOverloadedOperator.Mul,
-        [EBinaryOperation.Divide]: EOverloadedOperator.Div,
-        [EBinaryOperation.Modulo]: EOverloadedOperator.Mod,
-        [EBinaryOperation.BitwiseOr]: null,
-        [EBinaryOperation.BoolAnd]: null,
-        [EBinaryOperation.BoolOr]: null,
-      };
+      const operatorMap: Record<EBinaryOperation, EOverloadedOperator | null> =
+        {
+          [EBinaryOperation.Equal]: EOverloadedOperator.Equal,
+          [EBinaryOperation.NotEqual]: EOverloadedOperator.NotEqual,
+          [EBinaryOperation.LessThan]: EOverloadedOperator.LessThan,
+          [EBinaryOperation.GreaterThan]: EOverloadedOperator.GreaterThan,
+          [EBinaryOperation.LessEqual]: EOverloadedOperator.LessThanOrEqual,
+          [EBinaryOperation.GreaterEqual]:
+            EOverloadedOperator.GreaterThanOrEqual,
+          [EBinaryOperation.Add]: EOverloadedOperator.Add,
+          [EBinaryOperation.Subtract]: EOverloadedOperator.Sub,
+          [EBinaryOperation.Multiply]: EOverloadedOperator.Mul,
+          [EBinaryOperation.Divide]: EOverloadedOperator.Div,
+          [EBinaryOperation.Modulo]: EOverloadedOperator.Mod,
+          [EBinaryOperation.BitwiseOr]: null,
+          [EBinaryOperation.BoolAnd]: null,
+          [EBinaryOperation.BoolOr]: null,
+        };
 
       const overloadedOp = operatorMap[operation];
       if (overloadedOp !== null) {
@@ -3105,9 +3136,7 @@ export class SemanticElaborator {
             assert(elaboratedMethodId);
             const elaboratedMethod =
               this.sr.symbolNodes.get(elaboratedMethodId);
-            assert(
-              elaboratedMethod.variant === Semantic.ENode.FunctionSymbol
-            );
+            assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
 
             const operatorFunctype = this.sr.typeDefNodes.get(
               elaboratedMethod.type
@@ -3189,9 +3218,7 @@ export class SemanticElaborator {
 
     // Fall through to default comparison behavior
     const resolvedLeftTypeUseId = this.resolveAlias(left.type);
-    const resolvedLeftTypeUse = this.sr.typeUseNodes.get(
-      resolvedLeftTypeUseId
-    );
+    const resolvedLeftTypeUse = this.sr.typeUseNodes.get(resolvedLeftTypeUseId);
     const resolvedRightTypeUseId = this.resolveAlias(_right2.type);
     const resolvedRightTypeUse = this.sr.typeUseNodes.get(
       resolvedRightTypeUseId
@@ -3333,12 +3360,7 @@ export class SemanticElaborator {
       }
     }
 
-    return this.sr.b.binaryExpr(
-      leftId,
-      operation,
-      rightId,
-      sourceloc
-    );
+    return this.sr.b.binaryExpr(leftId, operation, rightId, sourceloc);
   }
 
   expr(
@@ -5498,8 +5520,45 @@ export class SemanticElaborator {
       return signature.originalFunction;
     }
 
-    // There cannot ever ever be more than 1 exact matches, if that is possible, it is a language design ambiguity
-    assert(exactMatchingSignatures.filter((s) => s.matches).length === 0);
+    // More than one EXACT match is normally a language-design ambiguity -- but
+    // it is also the expected shape of one specific, resolvable situation, so
+    // this reports rather than asserts.
+    //
+    // A lambda literal argument is deliberately not decisive during overload
+    // matching: its type is not known until the callee is, because whether its
+    // parameter is `immediate` decides whether its environment is built on the
+    // stack. So a deferred lambda disqualifies NO signature, and when it is the
+    // only argument that could tell two overloads apart, both of them match
+    // exactly. `assert(cond, () => "...", loc)` against the (bool, str, loc)
+    // and (bool, immediate () => str, loc) overloads is exactly that.
+    //
+    // Reporting AmbiguousOverloadCandidates hands the situation to callExpr,
+    // which promotes deferred closures to decisive and retries once -- and on
+    // that retry the lambda has a real callable type and picks out a single
+    // overload. Asserting here instead crashed the compiler on a call that is
+    // not ambiguous at all, it just could not be resolved yet.
+    const exactMatches = exactMatchingSignatures.filter((s) => s.matches);
+    if (exactMatches.length > 1) {
+      let str = `Call to overloaded function '${overloadGroup.name}' is ambiguous: multiple functions match exactly:\n`;
+      for (const candidate of exactMatches) {
+        const signature = this.sr.symbolNodes.get(candidate.signature);
+        assert(signature.variant === Semantic.ENode.FunctionSignature);
+        const originalFunction = this.sr.cc.symbolNodes.get(
+          signature.originalFunction
+        );
+        assert(originalFunction.variant === Collect.ENode.FunctionSymbol);
+        str += `Candidate at ${
+          originalFunction.sourceloc
+            ? formatSourceLoc(originalFunction.sourceloc)
+            : "?"
+        }: ${Semantic.serializeFullSymbolName(this.sr, candidate.signature)}\n`;
+      }
+      throw new CompilerError(
+        str,
+        usageSourceLocation,
+        HazeErrorCode.AmbiguousOverloadCandidates
+      );
+    }
 
     const nonExactMatchingSignatures = matchSignatures(false);
     if (nonExactMatchingSignatures.filter((s) => s.matches).length === 1) {
@@ -5638,7 +5697,7 @@ export class SemanticElaborator {
             );
             assert(packIndex !== -1);
             return {
-              m,
+              m: m,
               absorbed: Math.max(0, calledWithArgs.length - packIndex),
             };
           });
@@ -6481,841 +6540,856 @@ export class SemanticElaborator {
           inFunction: null,
         },
         () => {
-        // The way this works is that first we define all generic substitutions outside of the function in the context,
-        // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
-        // for all of them. All substitutions must be available. This means that the system works very well, because
-        // if we elaborate a generic function from itself recursively, we automatically get the correct substitution.
-        const genericArgs = func.generics.map((g) => {
-          const substitute = newContext.substitute.get(g);
-          assert(substitute);
-          return substitute;
-        });
+          // The way this works is that first we define all generic substitutions outside of the function in the context,
+          // and then we elaborate the function symbol here. For that, we get the raw generics and retrieve substitutions
+          // for all of them. All substitutions must be available. This means that the system works very well, because
+          // if we elaborate a generic function from itself recursively, we automatically get the correct substitution.
+          const genericArgs = func.generics.map((g) => {
+            const substitute = newContext.substitute.get(g);
+            assert(substitute);
+            return substitute;
+          });
 
-        const existing = args?.bypassCache
-          ? undefined
-          : getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
-              genericArgs: genericArgs,
-              paramPackTypes: paramPackTypes,
+          const existing = args?.bypassCache
+            ? undefined
+            : getFromFuncDefCache(this.sr, functionSignature.originalFunction, {
+                genericArgs: genericArgs,
+                paramPackTypes: paramPackTypes,
+                parentSymbolId: parentSymbolId,
+              });
+          if (existing) {
+            pathEntry.id = existing;
+            return existing;
+          }
+
+          let childOf = null as Semantic.TypeDefId | null;
+          if (parentSymbolId) {
+            const parentSym = this.sr.symbolNodes.get(parentSymbolId);
+            if (parentSym.variant === Semantic.ENode.TypeDefSymbol) {
+              childOf = parentSym.datatype;
+            }
+          }
+
+          // We need to define the symbol very early and then wrestle with setting attributes, because
+          // we must define the method BEFORE elaborating any parameters or return types, to support
+          // complex recursive usage patterns between structs and methods and types.
+          const [symbol, symbolId] =
+            this.sr.b.addSymbol<Semantic.FunctionSymbol>(this.sr, {
+              variant: Semantic.ENode.FunctionSymbol,
+              type: -1 as Semantic.TypeDefId, // Assigned later
+              annotatedReturnType: null,
+              export: func.export,
+              generics: genericArgs,
+              staticMethod: func.staticMethod,
+              parameterPack: false, // set later
+              parameterDefaultValues: [], // set later
+              methodOf: childOf,
+              methodType: func.methodType,
               parentSymbolId: parentSymbolId,
+              overloadedOperator: func.overloadedOperator,
+              noemit: func.noemit,
+              extern: func.extern,
+              parameterSymbols: new Set<Semantic.SymbolId>(),
+              envType: null,
+              parameterNames: func.parameters.map((p) => p.name),
+              parameterImmediate: func.parameters.map(
+                (p) => p.kind === "normal" && p.immediate
+              ),
+              methodRequiredMutability: func.methodRequiredMutability,
+              methodReceiverStorage: func.methodReceiverStorage,
+              returnedDatatypes: new Set(),
+              // A lambda literal is collected (and named) exactly once at its
+              // source location, but with bypassCache set it may be elaborated
+              // many times from that same Collect symbol -- e.g. once per
+              // iteration of a `for comptime` unrolled loop, each capturing a
+              // different outer variable. Two such closures would otherwise
+              // mangle to the identical C symbol name (their declared
+              // parameter list is the same; captures aren't part of the name),
+              // producing "redefinition"/"conflicting types" errors from the C
+              // compiler. Suffix with a fresh id per real elaboration so every
+              // instance gets its own name; named functions (which rely on the
+              // cache and never hit this branch) are unaffected.
+              name: args?.bypassCache
+                ? `${func.name}_${makeTempId()}`
+                : func.name,
+              sourceloc: func.sourceloc,
+              createsInstanceIds: new Set(),
+              returnStatements: new Set(),
+              returnsInstanceIds: new Set(),
+              isImpure: false,
+              instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
+              scope: null,
+              concrete: false, // assigned later
+              originalCollectedFunction: functionSignature.originalFunction,
             });
-        if (existing) {
-          pathEntry.id = existing;
-          return existing;
-        }
+          // Now that the real symbol exists, the elaboration path can report it (with its
+          // generics, once concrete is known) instead of falling back to the plain Collect name.
+          pathEntry.id = symbolId;
+          // Record the path as of right now, so that if some other, unrelated elaboration later
+          // observes this function's type still deferred, it can report *this* -- the actual chain
+          // holding its elaboration open -- rather than just its own (possibly innocent) call site.
+          startedFreshElaborationOf = symbolId;
+          this.functionElaborationInProgress.set(
+            symbolId,
+            this.buildElaborationPathFromCurrentContext()
+          );
 
-        let childOf = null as Semantic.TypeDefId | null;
-        if (parentSymbolId) {
-          const parentSym = this.sr.symbolNodes.get(parentSymbolId);
-          if (parentSym.variant === Semantic.ENode.TypeDefSymbol) {
-            childOf = parentSym.datatype;
+          if (childOf) {
+            const parent = this.sr.typeDefNodes.get(childOf);
+            assert(
+              parent.variant === Semantic.ENode.StructDatatype ||
+                parent.variant === Semantic.ENode.NamespaceDatatype
+            );
+            if (parent.variant === Semantic.ENode.StructDatatype) {
+              parent.methods.push(symbolId);
+            }
           }
-        }
 
-        // We need to define the symbol very early and then wrestle with setting attributes, because
-        // we must define the method BEFORE elaborating any parameters or return types, to support
-        // complex recursive usage patterns between structs and methods and types.
-        const [symbol, symbolId] = this.sr.b.addSymbol<Semantic.FunctionSymbol>(
-          this.sr,
-          {
-            variant: Semantic.ENode.FunctionSymbol,
-            type: -1 as Semantic.TypeDefId, // Assigned later
-            annotatedReturnType: null,
-            export: func.export,
-            generics: genericArgs,
-            staticMethod: func.staticMethod,
-            parameterPack: false, // set later
-            parameterDefaultValues: [], // set later
-            methodOf: childOf,
-            methodType: func.methodType,
+          // This insert must happen even when bypassCache is set: nested scopes
+          // elaborated below (the closure body) look their own parent function
+          // back up through this same cache via elaborateParentSymbolFromCache().
+          // bypassCache only suppresses the early-return *read* above, so a
+          // lambda always gets a fresh symbolId here -- it does not skip
+          // publishing that fresh symbolId for the nested lookup to find.
+          insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
+            genericArgs: genericArgs,
+            paramPackTypes: paramPackTypes,
             parentSymbolId: parentSymbolId,
-            overloadedOperator: func.overloadedOperator,
-            noemit: func.noemit,
-            extern: func.extern,
-            parameterSymbols: new Set<Semantic.SymbolId>(),
-            envType: null,
-            parameterNames: func.parameters.map((p) => p.name),
-            parameterImmediate: func.parameters.map(
-              (p) => p.kind === "normal" && p.immediate
-            ),
-            methodRequiredMutability: func.methodRequiredMutability,
-            methodReceiverStorage: func.methodReceiverStorage,
-            returnedDatatypes: new Set(),
-            // A lambda literal is collected (and named) exactly once at its
-            // source location, but with bypassCache set it may be elaborated
-            // many times from that same Collect symbol -- e.g. once per
-            // iteration of a `for comptime` unrolled loop, each capturing a
-            // different outer variable. Two such closures would otherwise
-            // mangle to the identical C symbol name (their declared
-            // parameter list is the same; captures aren't part of the name),
-            // producing "redefinition"/"conflicting types" errors from the C
-            // compiler. Suffix with a fresh id per real elaboration so every
-            // instance gets its own name; named functions (which rely on the
-            // cache and never hit this branch) are unaffected.
-            name: args?.bypassCache ? `${func.name}_${makeTempId()}` : func.name,
+            result: symbolId,
+            substitutionContext: newContext,
+          });
+          this.currentContext.elaboratedParameterPacks.set(
+            functionSignature.originalFunction,
+            paramPackTypes
+          );
+
+          symbol.annotatedReturnType =
+            (func.returnType && this.elaborateDatatype(func.returnType)) ||
+            functionSignature.returnType ||
+            null;
+
+          if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
+            throw new CompilerError(
+              `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
+              func.sourceloc,
+              HazeErrorCode.CStyleVarargParameterPackMayOnlyBe
+            );
+          }
+
+          const parameters = func.parameters
+            .map((p, i) => {
+              if (p.kind === "param-pack") {
+                if (i !== func.parameters.length - 1) {
+                  throw new CompilerError(
+                    "A Parameter Pack may only appear at the very end of the parameter list",
+                    func.sourceloc,
+                    HazeErrorCode.ParameterPackMayOnlyAppearVeryEndParameter
+                  );
+                }
+                if (func.extern !== EExternLanguage.None) {
+                  throw new CompilerError(
+                    "A Parameter Pack may not be used on an extern function",
+                    func.sourceloc,
+                    HazeErrorCode.ParameterPackMayNotBeUsedExternFunction
+                  );
+                }
+                symbol.parameterPack = true;
+
+                assert(func.functionScope);
+                const functionScope = this.sr.cc.scopeNodes.get(
+                  func.functionScope
+                );
+                assert(functionScope.variant === Collect.ENode.FunctionScope);
+                const packVariable = [...functionScope.symbols].find((s) => {
+                  const sym = this.sr.cc.symbolNodes.get(s);
+                  return (
+                    sym.variant === Collect.ENode.VariableSymbol &&
+                    sym.name === p.name
+                  );
+                });
+                assert(packVariable);
+
+                const [_, paramPackId] = this.sr.b.addType(this.sr, {
+                  variant: Semantic.ENode.ParameterPackDatatype,
+                  parameters: paramPackTypes.map((t, i) => {
+                    const [_, variableId] = this.sr.b.addSymbol(this.sr, {
+                      variant: Semantic.ENode.VariableSymbol,
+                      comptime: false,
+                      comptimeValue: null,
+                      concrete: true,
+                      name: `__param_pack_${i}`,
+                      export: false,
+                      extern: EExternLanguage.None,
+                      memberOfStruct: null,
+                      mutability: EVariableMutability.Default,
+                      parentSymbolId: symbolId,
+                      requiresHoisting: false,
+                      type: t,
+                      consumed: false,
+                      variableContext: EVariableContext.FunctionParameter,
+                      sourceloc: func.sourceloc,
+                    });
+                    this.packElementOrigin.set(variableId, {
+                      packName: p.name,
+                      index: i,
+                    });
+                    return variableId;
+                  }),
+                  concrete: paramPackTypes.every((t) =>
+                    isTypeConcrete(this.sr, t)
+                  ),
+                });
+                const paramPackVariableId = this.sr.b.addSymbol(this.sr, {
+                  variant: Semantic.ENode.VariableSymbol,
+                  comptime: false,
+                  comptimeValue: null,
+                  consumed: false,
+                  concrete: true,
+                  requiresHoisting: false,
+                  name: "__param_pack",
+                  export: false,
+                  extern: EExternLanguage.None,
+                  memberOfStruct: null,
+                  mutability: EVariableMutability.Default,
+                  parentSymbolId: symbolId,
+                  type: makeTypeUse(
+                    this.sr,
+                    paramPackId,
+                    EDatatypeMutability.Const,
+                    EStorageClass.Value,
+                    func.sourceloc
+                  )[1],
+                  variableContext: EVariableContext.FunctionParameter,
+                  sourceloc: func.sourceloc,
+                })[1];
+                newContext.elaboratedVariables.set(
+                  packVariable,
+                  paramPackVariableId
+                );
+                return {
+                  optional: false,
+                  type: makeTypeUse(
+                    this.sr,
+                    paramPackId,
+                    EDatatypeMutability.Const,
+                    EStorageClass.Value,
+                    func.sourceloc
+                  )[1],
+                };
+              }
+              if (p.type === null) {
+                // Closure parameter with no explicit annotation -- its type was
+                // already resolved from context and validated non-null by
+                // callableExpr(), which built `functionSignature` before this
+                // function was called.
+                const sigParam = functionSignature.parameters[i];
+                assert(sigParam.kind === "normal" && sigParam.type !== null);
+                return {
+                  optional: p.optional,
+                  type: sigParam.type,
+                };
+              }
+              return {
+                optional: p.optional,
+                type: this.elaborateDatatype(p.type),
+              };
+            })
+            .filter((p) => Boolean(p))
+            .map((p) => p!);
+
+          // Validate that non-default parameters don't follow default or optional parameters
+          let hasSeenDefaultOrOptional = false;
+          for (let i = 0; i < func.parameters.length; i++) {
+            const param = func.parameters[i];
+            if (param.kind === "normal") {
+              const hasDefault = param.defaultParameterValue !== null;
+              const isOptional = param.optional;
+
+              if (hasSeenDefaultOrOptional && !hasDefault && !isOptional) {
+                throw new CompilerError(
+                  `Non-default parameter '${param.name}' cannot follow a default or optional parameter`,
+                  param.sourceloc,
+                  HazeErrorCode.NonDefaultParameterCannotFollowDefaultOrOptional
+                );
+              }
+
+              if (hasDefault || isOptional) {
+                hasSeenDefaultOrOptional = true;
+              }
+            } else {
+              assert(i === func.parameters.length - 1);
+            }
+          }
+
+          if (func.methodType === EMethodType.Method && !func.staticMethod) {
+            assert(parentSymbolId);
+            // The receiver's storage class is the method's own business
+            // (`stackref fn` / `ref fn` / plain), whatever the caller's env said:
+            // callers only know the struct. Normalised here so every entry point
+            // (struct pre-elaboration, operators, member access, implicit this)
+            // agrees. (§12.3)
+            if (env?.type === "method") {
+              const thisUse = this.sr.typeUseNodes.get(env.thisExprType);
+              const wanted =
+                func.methodReceiverStorage === EStorageClass.Stackref
+                  ? EStorageClass.Stackref
+                  : EStorageClass.Ref;
+              if (thisUse.storage !== wanted) {
+                env = {
+                  type: "method",
+                  thisExprType: makeTypeUse(
+                    this.sr,
+                    thisUse.type,
+                    thisUse.mutability,
+                    wanted,
+                    func.sourceloc
+                  )[1],
+                };
+              }
+            }
+            symbol.envType = env;
+          }
+
+          symbol.type = makeDeferredFunctionDatatypeAvailable(this.sr, {
+            parameters: parameters,
+            vararg: func.vararg,
             sourceloc: func.sourceloc,
-            createsInstanceIds: new Set(),
-            returnStatements: new Set(),
-            returnsInstanceIds: new Set(),
-            isImpure: false,
-            instanceDepsSnapshot: this.sr.e.currentContext.instanceDeps,
-            scope: null,
-            concrete: false, // assigned later
-            originalCollectedFunction: functionSignature.originalFunction,
+          });
+          symbol.concrete = this.sr.typeDefNodes.get(symbol.type).concrete;
+
+          // Elaborate default parameter values
+          if (symbol.concrete) {
+            for (const param of func.parameters) {
+              // Skip parameter pack parameters - they don't have default values
+              if (param.kind === "param-pack") {
+                continue;
+              }
+              if (param.defaultParameterValue) {
+                const value = this.sr.cc.exprNodes.get(
+                  param.defaultParameterValue
+                );
+                let defaultExprId: Semantic.ExprId;
+                if (
+                  value.variant === Collect.ENode.SymbolValueExpr &&
+                  value.name === "default"
+                ) {
+                  if (value.genericArgs.length !== 0) {
+                    throw new CompilerError(
+                      `'default' initializer cannot take any generics`,
+                      param.sourceloc,
+                      HazeErrorCode.DefaultInitializerCannotTakeAnyGenerics3
+                    );
+                  }
+                  const paramType = parameters.find((_p, i) => {
+                    if (func.parameters[i].kind === "param-pack") {
+                      return false;
+                    }
+                    return func.parameters[i].name === param.name;
+                  })?.type;
+                  if (!paramType) {
+                    throw new CompilerError(
+                      `Cannot find type for parameter '${param.name}'`,
+                      param.sourceloc,
+                      HazeErrorCode.CannotFindTypeParameter
+                    );
+                  }
+                  defaultExprId = Conversion.MakeDefaultValue(
+                    this.sr,
+                    paramType,
+                    param.sourceloc
+                  );
+                } else {
+                  const paramType = parameters.find((_p, i) => {
+                    if (func.parameters[i].kind === "param-pack") {
+                      return false;
+                    }
+                    return func.parameters[i].name === param.name;
+                  })?.type;
+                  defaultExprId = this.expr(param.defaultParameterValue, {
+                    gonnaInstantiateStructWithType: paramType,
+                    unsafe: false,
+                  })[1];
+                }
+                const paramType = parameters.find((_p, i) => {
+                  if (func.parameters[i].kind === "param-pack") {
+                    return false;
+                  }
+                  return func.parameters[i].name === param.name;
+                })?.type;
+                if (paramType) {
+                  symbol.parameterDefaultValues.push({
+                    parameterName: param.name,
+                    value: Conversion.MakeConversionOrThrow(
+                      this.sr,
+                      defaultExprId,
+                      paramType,
+                      this.currentContext.constraints,
+                      param.sourceloc,
+                      Conversion.Mode.Implicit,
+                      false
+                    ),
+                  });
+                }
+              }
+            }
           }
-        );
-        // Now that the real symbol exists, the elaboration path can report it (with its
-        // generics, once concrete is known) instead of falling back to the plain Collect name.
-        pathEntry.id = symbolId;
-        // Record the path as of right now, so that if some other, unrelated elaboration later
-        // observes this function's type still deferred, it can report *this* -- the actual chain
-        // holding its elaboration open -- rather than just its own (possibly innocent) call site.
-        startedFreshElaborationOf = symbolId;
-        this.functionElaborationInProgress.set(
-          symbolId,
-          this.buildElaborationPathFromCurrentContext()
-        );
 
-        if (childOf) {
-          const parent = this.sr.typeDefNodes.get(childOf);
-          assert(
-            parent.variant === Semantic.ENode.StructDatatype ||
-              parent.variant === Semantic.ENode.NamespaceDatatype
-          );
-          if (parent.variant === Semantic.ENode.StructDatatype) {
-            parent.methods.push(symbolId);
-          }
-        }
+          let noreturnIf: {
+            expr: Collect.ExprId;
+            argIndex: number;
+            operation: "noreturn-if-truthy" | "noreturn-if-falsy";
+          } | null = null;
+          if (func.requires.noreturnIf) {
+            // We do not care about function-type identity since we don't set it, since the
+            // Deferred Function Type does not have requirements per definition anyways, therefore
+            // it is enough if we just set it once after the function has been elaborated.
+            let [e, eId] = [
+              this.sr.cc.exprNodes.get(func.requires.noreturnIf.expr),
+              func.requires.noreturnIf.expr,
+            ];
 
-        // This insert must happen even when bypassCache is set: nested scopes
-        // elaborated below (the closure body) look their own parent function
-        // back up through this same cache via elaborateParentSymbolFromCache().
-        // bypassCache only suppresses the early-return *read* above, so a
-        // lambda always gets a fresh symbolId here -- it does not skip
-        // publishing that fresh symbolId for the nested lookup to find.
-        insertIntoFuncDefCache(this.sr, functionSignature.originalFunction, {
-          genericArgs: genericArgs,
-          paramPackTypes: paramPackTypes,
-          parentSymbolId: parentSymbolId,
-          result: symbolId,
-          substitutionContext: newContext,
-        });
-        this.currentContext.elaboratedParameterPacks.set(
-          functionSignature.originalFunction,
-          paramPackTypes
-        );
+            let negateCondition = false;
+            const unwrapParenthesis = () => {
+              if (e.variant === Collect.ENode.ParenthesisExpr) {
+                eId = e.expr;
+                e = this.sr.cc.exprNodes.get(eId);
+              }
+            };
 
-        symbol.annotatedReturnType =
-          (func.returnType && this.elaborateDatatype(func.returnType)) ||
-          functionSignature.returnType ||
-          null;
+            unwrapParenthesis();
+            if (
+              e.variant === Collect.ENode.UnaryExpr &&
+              e.operation === EUnaryOperation.Negate
+            ) {
+              negateCondition = !negateCondition;
+              eId = e.expr;
+              e = this.sr.cc.exprNodes.get(eId);
+              unwrapParenthesis();
+            }
 
-        if (func.vararg && func.extern !== EExternLanguage.Extern_C) {
-          throw new CompilerError(
-            `A C-Style Vararg parameter pack may only be used on extern "C" functions`,
-            func.sourceloc,
-            HazeErrorCode.CStyleVarargParameterPackMayOnlyBe
-          );
-        }
-
-        const parameters = func.parameters
-          .map((p, i) => {
-            if (p.kind === "param-pack") {
-              if (i !== func.parameters.length - 1) {
+            if (
+              e.variant === Collect.ENode.SymbolValueExpr &&
+              e.genericArgs.length === 0
+            ) {
+              const name = e.name;
+              const paramIndex = symbol.parameterNames.findIndex(
+                (p) => p === name
+              );
+              if (paramIndex === -1) {
                 throw new CompilerError(
-                  "A Parameter Pack may only appear at the very end of the parameter list",
-                  func.sourceloc,
-                  HazeErrorCode.ParameterPackMayOnlyAppearVeryEndParameter
+                  `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
+                  e.sourceloc,
+                  HazeErrorCode.ConditionAccessesSymbolWhichNotParameterFunctionNow
                 );
               }
-              if (func.extern !== EExternLanguage.None) {
+
+              assert(paramIndex >= 0 && paramIndex < parameters.length);
+              const param = parameters[paramIndex];
+              const paramTypeUse = this.sr.typeUseNodes.get(param.type);
+              const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
+
+              if (
+                paramTypeDef.variant !== Semantic.ENode.PrimitiveDatatype ||
+                paramTypeDef.primitive !== EPrimitive.bool
+              ) {
                 throw new CompilerError(
-                  "A Parameter Pack may not be used on an extern function",
-                  func.sourceloc,
-                  HazeErrorCode.ParameterPackMayNotBeUsedExternFunction
+                  "Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet",
+                  e.sourceloc,
+                  HazeErrorCode.CurrentlyNoreturnIfConditionsAreOnlyAllowedAccess
                 );
               }
-              symbol.parameterPack = true;
 
-              assert(func.functionScope);
+              noreturnIf = {
+                expr: func.requires.noreturnIf.expr,
+                argIndex: paramIndex,
+                operation: negateCondition
+                  ? "noreturn-if-falsy"
+                  : "noreturn-if-truthy",
+              };
+            } else {
+              throw new CompilerError(
+                "Unsupported expression in noreturn_if() construct",
+                e.sourceloc,
+                HazeErrorCode.UnsupportedExpressionNoreturnIfConstruct
+              );
+            }
+          }
+
+          if (func.requires.final) {
+            const returnType =
+              symbol.annotatedReturnType || this.sr.b.voidType();
+            symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
+              parameters: parameters,
+              returnType: returnType,
+              vararg: func.vararg,
+              requires: {
+                final: func.requires.final,
+                noreturn: func.requires.noreturn,
+                pure: func.requires.pure,
+                noreturnIf: noreturnIf,
+              },
+              sourceloc: func.sourceloc,
+            });
+          }
+
+          if (!(func.functionScope || func.requires.final)) {
+            throw new CompilerError(
+              `Function '${func.name}' does not have a body, so nothing can be inferred by the compiler. Therefore it requires manual constraints as well as a ':: final' annotation to fix the constraints.`,
+              func.sourceloc,
+              HazeErrorCode.FunctionDoesNotHaveBodySoNothingCan
+            );
+          }
+
+          if (symbol.concrete) {
+            if (!func.requires.final) {
+              const funcType = this.sr.typeDefNodes.get(symbol.type);
+              assert(
+                funcType.variant === Semantic.ENode.DeferredFunctionDatatype
+              );
+              for (const paramId of funcType.parameters) {
+                const paramUse = this.sr.typeUseNodes.get(paramId.type);
+                const paramType = this.sr.typeDefNodes.get(paramUse.type);
+
+                if (
+                  (paramType.variant === Semantic.ENode.StructDatatype &&
+                    paramUse.storage !== EStorageClass.Value &&
+                    paramUse.mutability === EDatatypeMutability.Mut) ||
+                  (paramType.variant === Semantic.ENode.DynamicArrayDatatype &&
+                    paramUse.mutability === EDatatypeMutability.Mut) ||
+                  (paramType.variant === Semantic.ENode.UntaggedUnionDatatype &&
+                    paramType.members.some((m) => {
+                      const typeUse = this.sr.typeUseNodes.get(m);
+                      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                      return (
+                        (typeDef.variant === Semantic.ENode.StructDatatype ||
+                          typeDef.variant ===
+                            Semantic.ENode.DynamicArrayDatatype) &&
+                        typeUse.mutability === EDatatypeMutability.Mut
+                      );
+                    })) ||
+                  (paramType.variant === Semantic.ENode.TaggedUnionDatatype &&
+                    paramType.members.some((m) => {
+                      const typeUse = this.sr.typeUseNodes.get(m.type);
+                      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                      return (
+                        (typeDef.variant === Semantic.ENode.StructDatatype ||
+                          typeDef.variant ===
+                            Semantic.ENode.DynamicArrayDatatype) &&
+                        typeUse.mutability === EDatatypeMutability.Mut
+                      );
+                    }))
+                ) {
+                  symbol.isImpure = true;
+                }
+              }
+            }
+
+            if (func.functionScope) {
+              // With scope
               const functionScope = this.sr.cc.scopeNodes.get(
                 func.functionScope
               );
               assert(functionScope.variant === Collect.ENode.FunctionScope);
-              const packVariable = [...functionScope.symbols].find((s) => {
-                const sym = this.sr.cc.symbolNodes.get(s);
-                return (
-                  sym.variant === Collect.ENode.VariableSymbol &&
-                  sym.name === p.name
-                );
-              });
-              assert(packVariable);
 
-              const [_, paramPackId] = this.sr.b.addType(this.sr, {
-                variant: Semantic.ENode.ParameterPackDatatype,
-                parameters: paramPackTypes.map((t, i) => {
-                  const [_, variableId] = this.sr.b.addSymbol(this.sr, {
-                    variant: Semantic.ENode.VariableSymbol,
-                    comptime: false,
-                    comptimeValue: null,
-                    concrete: true,
-                    name: `__param_pack_${i}`,
-                    export: false,
-                    extern: EExternLanguage.None,
-                    memberOfStruct: null,
-                    mutability: EVariableMutability.Default,
-                    parentSymbolId: symbolId,
-                    requiresHoisting: false,
-                    type: t,
-                    consumed: false,
-                    variableContext: EVariableContext.FunctionParameter,
-                    sourceloc: func.sourceloc,
-                  });
-                  this.packElementOrigin.set(variableId, {
-                    packName: p.name,
-                    index: i,
-                  });
-                  return variableId;
-                }),
-                concrete: paramPackTypes.every((t) =>
-                  isTypeConcrete(this.sr, t)
-                ),
-              });
-              const paramPackVariableId = this.sr.b.addSymbol(this.sr, {
-                variant: Semantic.ENode.VariableSymbol,
-                comptime: false,
-                comptimeValue: null,
-                consumed: false,
-                concrete: true,
-                requiresHoisting: false,
-                name: "__param_pack",
-                export: false,
-                extern: EExternLanguage.None,
-                memberOfStruct: null,
-                mutability: EVariableMutability.Default,
-                parentSymbolId: symbolId,
-                type: makeTypeUse(
-                  this.sr,
-                  paramPackId,
-                  EDatatypeMutability.Const,
-                  EStorageClass.Value,
-                  func.sourceloc
-                )[1],
-                variableContext: EVariableContext.FunctionParameter,
-                sourceloc: func.sourceloc,
-              })[1];
-              newContext.elaboratedVariables.set(
-                packVariable,
-                paramPackVariableId
-              );
-              return {
-                optional: false,
-                type: makeTypeUse(
-                  this.sr,
-                  paramPackId,
-                  EDatatypeMutability.Const,
-                  EStorageClass.Value,
-                  func.sourceloc
-                )[1],
-              };
-            }
-            if (p.type === null) {
-              // Closure parameter with no explicit annotation -- its type was
-              // already resolved from context and validated non-null by
-              // callableExpr(), which built `functionSignature` before this
-              // function was called.
-              const sigParam = functionSignature.parameters[i];
-              assert(sigParam.kind === "normal" && sigParam.type !== null);
-              return {
-                optional: p.optional,
-                type: sigParam.type,
-              };
-            }
-            return {
-              optional: p.optional,
-              type: this.elaborateDatatype(p.type),
-            };
-          })
-          .filter((p) => Boolean(p))
-          .map((p) => p!);
-
-        // Validate that non-default parameters don't follow default or optional parameters
-        let hasSeenDefaultOrOptional = false;
-        for (let i = 0; i < func.parameters.length; i++) {
-          const param = func.parameters[i];
-          if (param.kind === "normal") {
-            const hasDefault = param.defaultParameterValue !== null;
-            const isOptional = param.optional;
-
-            if (hasSeenDefaultOrOptional && !hasDefault && !isOptional) {
-              throw new CompilerError(
-                `Non-default parameter '${param.name}' cannot follow a default or optional parameter`,
-                param.sourceloc,
-                HazeErrorCode.NonDefaultParameterCannotFollowDefaultOrOptional
-              );
-            }
-
-            if (hasDefault || isOptional) {
-              hasSeenDefaultOrOptional = true;
-            }
-          } else {
-            assert(i === func.parameters.length - 1);
-          }
-        }
-
-        if (func.methodType === EMethodType.Method && !func.staticMethod) {
-          assert(parentSymbolId);
-          // The receiver's storage class is the method's own business
-          // (`stackref fn` / `ref fn` / plain), whatever the caller's env said:
-          // callers only know the struct. Normalised here so every entry point
-          // (struct pre-elaboration, operators, member access, implicit this)
-          // agrees. (§12.3)
-          if (env?.type === "method") {
-            const thisUse = this.sr.typeUseNodes.get(env.thisExprType);
-            const wanted =
-              func.methodReceiverStorage === EStorageClass.Stackref
-                ? EStorageClass.Stackref
-                : EStorageClass.Ref;
-            if (thisUse.storage !== wanted) {
-              env = {
-                type: "method",
-                thisExprType: makeTypeUse(
-                  this.sr,
-                  thisUse.type,
-                  thisUse.mutability,
-                  wanted,
-                  func.sourceloc
-                )[1],
-              };
-            }
-          }
-          symbol.envType = env;
-        }
-
-        symbol.type = makeDeferredFunctionDatatypeAvailable(this.sr, {
-          parameters: parameters,
-          vararg: func.vararg,
-          sourceloc: func.sourceloc,
-        });
-        symbol.concrete = this.sr.typeDefNodes.get(symbol.type).concrete;
-
-        // Elaborate default parameter values
-        if (symbol.concrete) {
-          for (const param of func.parameters) {
-            // Skip parameter pack parameters - they don't have default values
-            if (param.kind === "param-pack") {
-              continue;
-            }
-            if (param.defaultParameterValue) {
-              const value = this.sr.cc.exprNodes.get(
-                param.defaultParameterValue
-              );
-              let defaultExprId: Semantic.ExprId;
-              if (
-                value.variant === Collect.ENode.SymbolValueExpr &&
-                value.name === "default"
-              ) {
-                if (value.genericArgs.length !== 0) {
-                  throw new CompilerError(
-                    `'default' initializer cannot take any generics`,
-                    param.sourceloc,
-                    HazeErrorCode.DefaultInitializerCannotTakeAnyGenerics3
-                  );
-                }
-                const paramType = parameters.find((_p, i) => {
-                  if (func.parameters[i].kind === "param-pack") {
-                    return false;
+              if (symbol.methodType === EMethodType.Method) {
+                const collectedThisRefId = [...functionScope.symbols].find(
+                  (sId) => {
+                    const sym = this.sr.cc.symbolNodes.get(sId);
+                    return (
+                      sym.variant === Collect.ENode.VariableSymbol &&
+                      sym.name === "this"
+                    );
                   }
-                  return func.parameters[i].name === param.name;
-                })?.type;
-                if (!paramType) {
-                  throw new CompilerError(
-                    `Cannot find type for parameter '${param.name}'`,
-                    param.sourceloc,
-                    HazeErrorCode.CannotFindTypeParameter
-                  );
-                }
-                defaultExprId = Conversion.MakeDefaultValue(
-                  this.sr,
-                  paramType,
-                  param.sourceloc
                 );
-              } else {
-                const paramType = parameters.find((_p, i) => {
-                  if (func.parameters[i].kind === "param-pack") {
-                    return false;
-                  }
-                  return func.parameters[i].name === param.name;
-                })?.type;
-                defaultExprId = this.expr(param.defaultParameterValue, {
-                  gonnaInstantiateStructWithType: paramType,
-                  unsafe: false,
+                assert(collectedThisRefId);
+                const collectedThisRef =
+                  this.sr.cc.symbolNodes.get(collectedThisRefId);
+                assert(
+                  collectedThisRef.variant === Collect.ENode.VariableSymbol
+                );
+
+                assert(symbol.methodOf);
+                // The hidden receiver: a pointer (`ref Foo`) for a plain or `ref`
+                // method, the checked reference for a `stackref fn`. (§12)
+                const thisRef = makeTypeUse(
+                  this.sr,
+                  symbol.methodOf,
+                  symbol.methodRequiredMutability ??
+                    EDatatypeMutability.Default,
+                  symbol.methodReceiverStorage === EStorageClass.Stackref
+                    ? EStorageClass.Stackref
+                    : EStorageClass.Ref,
+                  func.sourceloc
+                )[1];
+                const variableId = this.sr.b.addSymbol(this.sr, {
+                  variant: Semantic.ENode.VariableSymbol,
+                  memberOfStruct: symbol.methodOf,
+                  mutability: EVariableMutability.Default,
+                  name: collectedThisRef.name,
+                  type: thisRef,
+                  comptime: false,
+                  comptimeValue: null,
+                  requiresHoisting: false,
+                  concrete: isTypeConcrete(this.sr, thisRef),
+                  export: false,
+                  extern: EExternLanguage.None,
+                  parentSymbolId: symbol.parentSymbolId,
+                  sourceloc: symbol.sourceloc,
+                  variableContext: EVariableContext.FunctionParameter,
                 })[1];
+                newContext.elaboratedVariables.set(
+                  collectedThisRefId,
+                  variableId
+                );
+                symbol.parameterSymbols.add(variableId);
               }
-              const paramType = parameters.find((_p, i) => {
-                if (func.parameters[i].kind === "param-pack") {
-                  return false;
-                }
-                return func.parameters[i].name === param.name;
-              })?.type;
-              if (paramType) {
-                symbol.parameterDefaultValues.push({
-                  parameterName: param.name,
-                  value: Conversion.MakeConversionOrThrow(
-                    this.sr,
-                    defaultExprId,
-                    paramType,
-                    this.currentContext.constraints,
-                    param.sourceloc,
-                    Conversion.Mode.Implicit,
-                    false
-                  ),
-                });
-              }
-            }
-          }
-        }
 
-        let noreturnIf: {
-          expr: Collect.ExprId;
-          argIndex: number;
-          operation: "noreturn-if-truthy" | "noreturn-if-falsy";
-        } | null = null;
-        if (func.requires.noreturnIf) {
-          // We do not care about function-type identity since we don't set it, since the
-          // Deferred Function Type does not have requirements per definition anyways, therefore
-          // it is enough if we just set it once after the function has been elaborated.
-          let [e, eId] = [
-            this.sr.cc.exprNodes.get(func.requires.noreturnIf.expr),
-            func.requires.noreturnIf.expr,
-          ];
-
-          let negateCondition = false;
-          const unwrapParenthesis = () => {
-            if (e.variant === Collect.ENode.ParenthesisExpr) {
-              eId = e.expr;
-              e = this.sr.cc.exprNodes.get(eId);
-            }
-          };
-
-          unwrapParenthesis();
-          if (
-            e.variant === Collect.ENode.UnaryExpr &&
-            e.operation === EUnaryOperation.Negate
-          ) {
-            negateCondition = !negateCondition;
-            eId = e.expr;
-            e = this.sr.cc.exprNodes.get(eId);
-            unwrapParenthesis();
-          }
-
-          if (
-            e.variant === Collect.ENode.SymbolValueExpr &&
-            e.genericArgs.length === 0
-          ) {
-            const name = e.name;
-            const paramIndex = symbol.parameterNames.findIndex(
-              (p) => p === name
-            );
-            if (paramIndex === -1) {
-              throw new CompilerError(
-                `The condition accesses a symbol ('${name}') which is not a parameter of the function. For now, only parameters may be accessed in conditions.`,
-                e.sourceloc,
-                HazeErrorCode.ConditionAccessesSymbolWhichNotParameterFunctionNow
-              );
-            }
-
-            assert(paramIndex >= 0 && paramIndex < parameters.length);
-            const param = parameters[paramIndex];
-            const paramTypeUse = this.sr.typeUseNodes.get(param.type);
-            const paramTypeDef = this.sr.typeDefNodes.get(paramTypeUse.type);
-
-            if (
-              paramTypeDef.variant !== Semantic.ENode.PrimitiveDatatype ||
-              paramTypeDef.primitive !== EPrimitive.bool
-            ) {
-              throw new CompilerError(
-                "Currently, noreturn_if() conditions are only allowed to access bool parameters, other types are not implemented yet",
-                e.sourceloc,
-                HazeErrorCode.CurrentlyNoreturnIfConditionsAreOnlyAllowedAccess
-              );
-            }
-
-            noreturnIf = {
-              expr: func.requires.noreturnIf.expr,
-              argIndex: paramIndex,
-              operation: negateCondition
-                ? "noreturn-if-falsy"
-                : "noreturn-if-truthy",
-            };
-          } else {
-            throw new CompilerError(
-              "Unsupported expression in noreturn_if() construct",
-              e.sourceloc,
-              HazeErrorCode.UnsupportedExpressionNoreturnIfConstruct
-            );
-          }
-        }
-
-        if (func.requires.final) {
-          const returnType = symbol.annotatedReturnType || this.sr.b.voidType();
-          symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
-            parameters: parameters,
-            returnType: returnType,
-            vararg: func.vararg,
-            requires: {
-              final: func.requires.final,
-              noreturn: func.requires.noreturn,
-              pure: func.requires.pure,
-              noreturnIf: noreturnIf,
-            },
-            sourceloc: func.sourceloc,
-          });
-        }
-
-        if (!(func.functionScope || func.requires.final)) {
-          throw new CompilerError(
-            `Function '${func.name}' does not have a body, so nothing can be inferred by the compiler. Therefore it requires manual constraints as well as a ':: final' annotation to fix the constraints.`,
-            func.sourceloc,
-            HazeErrorCode.FunctionDoesNotHaveBodySoNothingCan
-          );
-        }
-
-        if (symbol.concrete) {
-          if (!func.requires.final) {
-            const funcType = this.sr.typeDefNodes.get(symbol.type);
-            assert(
-              funcType.variant === Semantic.ENode.DeferredFunctionDatatype
-            );
-            for (const paramId of funcType.parameters) {
-              const paramUse = this.sr.typeUseNodes.get(paramId.type);
-              const paramType = this.sr.typeDefNodes.get(paramUse.type);
-
-              if (
-                (paramType.variant === Semantic.ENode.StructDatatype &&
-                  (paramUse.storage !== EStorageClass.Value) &&
-                  paramUse.mutability === EDatatypeMutability.Mut) ||
-                (paramType.variant === Semantic.ENode.DynamicArrayDatatype &&
-                  paramUse.mutability === EDatatypeMutability.Mut) ||
-                (paramType.variant === Semantic.ENode.UntaggedUnionDatatype &&
-                  paramType.members.some((m) => {
-                    const typeUse = this.sr.typeUseNodes.get(m);
-                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                    return (
-                      (typeDef.variant === Semantic.ENode.StructDatatype ||
-                        typeDef.variant ===
-                          Semantic.ENode.DynamicArrayDatatype) &&
-                      typeUse.mutability === EDatatypeMutability.Mut
-                    );
-                  })) ||
-                (paramType.variant === Semantic.ENode.TaggedUnionDatatype &&
-                  paramType.members.some((m) => {
-                    const typeUse = this.sr.typeUseNodes.get(m.type);
-                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                    return (
-                      (typeDef.variant === Semantic.ENode.StructDatatype ||
-                        typeDef.variant ===
-                          Semantic.ENode.DynamicArrayDatatype) &&
-                      typeUse.mutability === EDatatypeMutability.Mut
-                    );
-                  }))
-              ) {
-                symbol.isImpure = true;
-              }
-            }
-          }
-
-          if (func.functionScope) {
-            // With scope
-            const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
-            assert(functionScope.variant === Collect.ENode.FunctionScope);
-
-            if (symbol.methodType === EMethodType.Method) {
-              const collectedThisRefId = [...functionScope.symbols].find(
-                (sId) => {
-                  const sym = this.sr.cc.symbolNodes.get(sId);
-                  return (
-                    sym.variant === Collect.ENode.VariableSymbol &&
-                    sym.name === "this"
-                  );
-                }
-              );
-              assert(collectedThisRefId);
-              const collectedThisRef =
-                this.sr.cc.symbolNodes.get(collectedThisRefId);
-              assert(collectedThisRef.variant === Collect.ENode.VariableSymbol);
-
-              assert(symbol.methodOf);
-              // The hidden receiver: a pointer (`ref Foo`) for a plain or `ref`
-              // method, the checked reference for a `stackref fn`. (§12)
-              const thisRef = makeTypeUse(
-                this.sr,
-                symbol.methodOf,
-                symbol.methodRequiredMutability ?? EDatatypeMutability.Default,
-                symbol.methodReceiverStorage === EStorageClass.Stackref
-                  ? EStorageClass.Stackref
-                  : EStorageClass.Ref,
-                func.sourceloc
-              )[1];
-              const variableId = this.sr.b.addSymbol(this.sr, {
-                variant: Semantic.ENode.VariableSymbol,
-                memberOfStruct: symbol.methodOf,
-                mutability: EVariableMutability.Default,
-                name: collectedThisRef.name,
-                type: thisRef,
-                comptime: false,
-                comptimeValue: null,
-                requiresHoisting: false,
-                concrete: isTypeConcrete(this.sr, thisRef),
-                export: false,
-                extern: EExternLanguage.None,
-                parentSymbolId: symbol.parentSymbolId,
-                sourceloc: symbol.sourceloc,
-                variableContext: EVariableContext.FunctionParameter,
-              })[1];
-              newContext.elaboratedVariables.set(
-                collectedThisRefId,
-                variableId
-              );
-              symbol.parameterSymbols.add(variableId);
-            }
-
-            for (const sId of functionScope.symbols) {
-              const varSymbol = this.sr.cc.symbolNodes.get(sId);
-              if (varSymbol.variant === Collect.ENode.VariableSymbol) {
-                this.withContext(
-                  {
-                    context: newContext,
-                    inFunction: symbolId,
-                    inAttemptExpr: null,
-                  },
-                  () => {
-                    const varSymId = this.elaborateVariableSymbolInScope(sId);
-                    if (varSymId) {
-                      symbol.parameterSymbols.add(varSymId);
-                      const collectedParam = func.parameters.find(
-                        (p) => p.kind === "normal" && p.name === varSymbol.name
-                      );
-                      if (collectedParam?.kind === "normal" && collectedParam.immediate) {
-                        const v = this.sr.symbolNodes.get(varSymId);
-                        assert(v.variant === Semantic.ENode.VariableSymbol);
-                        if (!v.type || !this.isCallableishType(v.type)) {
-                          throw new CompilerError(
-                            `'immediate' requires a callable (or optional callable) parameter, but '${v.name}' is '${v.type ? Semantic.serializeTypeUse(this.sr, v.type) : "?"}'`,
-                            collectedParam.sourceloc,
-                            HazeErrorCode.ImmediateOnNonCallable
-                          );
+              for (const sId of functionScope.symbols) {
+                const varSymbol = this.sr.cc.symbolNodes.get(sId);
+                if (varSymbol.variant === Collect.ENode.VariableSymbol) {
+                  this.withContext(
+                    {
+                      context: newContext,
+                      inFunction: symbolId,
+                      inAttemptExpr: null,
+                    },
+                    () => {
+                      const varSymId = this.elaborateVariableSymbolInScope(sId);
+                      if (varSymId) {
+                        symbol.parameterSymbols.add(varSymId);
+                        const collectedParam = func.parameters.find(
+                          (p) =>
+                            p.kind === "normal" && p.name === varSymbol.name
+                        );
+                        if (
+                          collectedParam?.kind === "normal" &&
+                          collectedParam.immediate
+                        ) {
+                          const v = this.sr.symbolNodes.get(varSymId);
+                          assert(v.variant === Semantic.ENode.VariableSymbol);
+                          if (!v.type || !this.isCallableishType(v.type)) {
+                            throw new CompilerError(
+                              `'immediate' requires a callable (or optional callable) parameter, but '${v.name}' is '${v.type ? Semantic.serializeTypeUse(this.sr, v.type) : "?"}'`,
+                              collectedParam.sourceloc,
+                              HazeErrorCode.ImmediateOnNonCallable
+                            );
+                          }
+                          v.immediate = true;
                         }
-                        v.immediate = true;
                       }
                     }
-                  }
-                );
-              }
-            }
-
-            const { scopeId, flow } = this.withContext(
-              {
-                context: newContext,
-                inFunction: symbolId,
-                functionReturnsInstanceIds: symbol.returnsInstanceIds,
-                inAttemptExpr: null,
-              },
-              () =>
-                this.makeAndElaborateBlockScope(functionScope.blockScope, {
-                  lastExprIsEmit: false,
-                })
-            );
-            symbol.scope = scopeId;
-            this.finalizeEscapeAnalysis(symbol, symbolId);
-
-            if (func.name === "main" && parentSymbolId) {
-              const modulePrefix = getModuleGlobalNamespaceName(
-                this.sr.cc.config.name,
-                this.sr.cc.config.version,
-                this.sr.cc.config.id
-              );
-              const parentDef = this.sr.symbolNodes.get(parentSymbolId);
-              assert(parentDef.variant === Semantic.ENode.TypeDefSymbol);
-              const parent = this.sr.typeDefNodes.get(parentDef.datatype);
-              if ("name" in parent && parent.name === modulePrefix) {
-                if (this.sr.globalMainFunction !== null) {
-                  const existing = this.sr.symbolNodes.get(
-                    this.sr.globalMainFunction
-                  );
-                  assert(existing.variant === Semantic.ENode.FunctionSymbol);
-                  if (existing.sourceloc) {
-                    throw new CompilerError(
-                      `Multiply defined main function: Previous definition at ${formatSourceLoc(
-                        existing.sourceloc
-                      )}`,
-                      func.sourceloc,
-                      HazeErrorCode.MultiplyDefinedMainFunctionPreviousDefinition
-                    );
-                  }
-                  throw new CompilerError(
-                    "Multiply defined main function",
-                    func.sourceloc,
-                    HazeErrorCode.MultiplyDefinedMainFunction
-                  );
-                }
-                this.sr.globalMainFunction = symbolId;
-              }
-            }
-
-            Semantic.getInstanceDepsGraph(
-              symbol.instanceDepsSnapshot,
-              symbol.returnsInstanceIds
-            ).forEach((d) => symbol.returnsInstanceIds.add(d));
-
-            // Add "none" as a returned value if nothing is returned. This is only for the return type.
-            if (
-              flow.has(Semantic.FlowType.Fallthrough) &&
-              !func.requires.noreturn &&
-              !func.requires.final
-            ) {
-              symbol.returnedDatatypes.add(this.sr.b.noneType());
-            }
-
-            if (!func.requires.final) {
-              let inferredReturnType: Semantic.TypeUseId | null =
-                symbol.annotatedReturnType;
-              if (!inferredReturnType) {
-                if (symbol.returnedDatatypes.size === 0) {
-                  inferredReturnType = this.sr.b.voidType();
-                } else if (symbol.returnedDatatypes.size === 1) {
-                  inferredReturnType = [...symbol.returnedDatatypes][0];
-                } else {
-                  inferredReturnType = this.sr.b.untaggedUnionTypeUse(
-                    [...symbol.returnedDatatypes],
-                    symbol.sourceloc
                   );
                 }
               }
 
-              // If anything is returned that is a reference, like an object or an array, then it must be considered impure,
-              // even if the return type is not mutable, because objects are required to have "identity" and multiple calls
-              // cannot be collapsed into a single one because otherwise two different objects would have the same identity.
-              const returnUse = this.sr.typeUseNodes.get(inferredReturnType);
-              const returnDef = this.sr.typeDefNodes.get(returnUse.type);
-              if (
-                returnDef.variant === Semantic.ENode.StructDatatype ||
-                returnDef.variant === Semantic.ENode.DynamicArrayDatatype ||
-                (returnDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
-                  returnDef.members.some((m) => {
-                    const typeUse = this.sr.typeUseNodes.get(m);
-                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                    return (
-                      typeDef.variant === Semantic.ENode.StructDatatype ||
-                      typeDef.variant === Semantic.ENode.DynamicArrayDatatype
-                    );
-                  })) ||
-                (returnDef.variant === Semantic.ENode.TaggedUnionDatatype &&
-                  returnDef.members.some((m) => {
-                    const typeUse = this.sr.typeUseNodes.get(m.type);
-                    const typeDef = this.sr.typeDefNodes.get(typeUse.type);
-                    return (
-                      typeDef.variant === Semantic.ENode.StructDatatype ||
-                      typeDef.variant === Semantic.ENode.DynamicArrayDatatype
-                    );
-                  }))
-              ) {
-                symbol.isImpure = true;
-              }
-
-              symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
-                parameters: parameters,
-                returnType: inferredReturnType,
-                vararg: func.vararg,
-                requires: {
-                  final: true,
-                  pure:
-                    func.requires.pure ||
-                    !(func.requires.final || symbol.isImpure),
-                  noreturn:
-                    func.requires.noreturn ||
-                    (flow.has(Semantic.FlowType.NoReturn) &&
-                      !flow.has(Semantic.FlowType.Fallthrough) &&
-                      !flow.has(Semantic.FlowType.Return)),
-                  noreturnIf: noreturnIf,
+              const { scopeId, flow } = this.withContext(
+                {
+                  context: newContext,
+                  inFunction: symbolId,
+                  functionReturnsInstanceIds: symbol.returnsInstanceIds,
+                  inAttemptExpr: null,
                 },
-                sourceloc: func.sourceloc,
-              });
-              const functype = this.sr.typeDefNodes.get(symbol.type);
-              assert(functype.variant === Semantic.ENode.FunctionDatatype);
+                () =>
+                  this.makeAndElaborateBlockScope(functionScope.blockScope, {
+                    lastExprIsEmit: false,
+                  })
+              );
+              symbol.scope = scopeId;
+              this.finalizeEscapeAnalysis(symbol, symbolId);
 
-              // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
+              if (func.name === "main" && parentSymbolId) {
+                const modulePrefix = getModuleGlobalNamespaceName(
+                  this.sr.cc.config.name,
+                  this.sr.cc.config.version,
+                  this.sr.cc.config.id
+                );
+                const parentDef = this.sr.symbolNodes.get(parentSymbolId);
+                assert(parentDef.variant === Semantic.ENode.TypeDefSymbol);
+                const parent = this.sr.typeDefNodes.get(parentDef.datatype);
+                if ("name" in parent && parent.name === modulePrefix) {
+                  if (this.sr.globalMainFunction !== null) {
+                    const existing = this.sr.symbolNodes.get(
+                      this.sr.globalMainFunction
+                    );
+                    assert(existing.variant === Semantic.ENode.FunctionSymbol);
+                    if (existing.sourceloc) {
+                      throw new CompilerError(
+                        `Multiply defined main function: Previous definition at ${formatSourceLoc(
+                          existing.sourceloc
+                        )}`,
+                        func.sourceloc,
+                        HazeErrorCode.MultiplyDefinedMainFunctionPreviousDefinition
+                      );
+                    }
+                    throw new CompilerError(
+                      "Multiply defined main function",
+                      func.sourceloc,
+                      HazeErrorCode.MultiplyDefinedMainFunction
+                    );
+                  }
+                  this.sr.globalMainFunction = symbolId;
+                }
+              }
+
+              Semantic.getInstanceDepsGraph(
+                symbol.instanceDepsSnapshot,
+                symbol.returnsInstanceIds
+              ).forEach((d) => symbol.returnsInstanceIds.add(d));
+
+              // Add "none" as a returned value if nothing is returned. This is only for the return type.
               if (
                 flow.has(Semantic.FlowType.Fallthrough) &&
-                !Conversion.isVoidById(this.sr, functype.returnType)
+                !func.requires.noreturn &&
+                !func.requires.final
               ) {
-                assert(symbol.scope);
-                const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
-                const statementId = this.sr.b.addStatement(this.sr, {
-                  variant: Semantic.ENode.ReturnStatement,
-                  expr: this.sr.b.noneExpr()[1],
-                  sourceloc: func.sourceloc,
-                })[1];
-                bodyScope.statements.push(statementId);
-                symbol.returnStatements.add(statementId);
+                symbol.returnedDatatypes.add(this.sr.b.noneType());
               }
 
-              // Now the return type has been fixed, so we have to go over all return statements now
-              // and insert implicit type conversions to the return type in order to convert between unions implicitly.
-              // Important if: 'Foo' and 'str' is returned, then the return type is 'Foo | str', so in each
-              // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
-              for (const sId of symbol.returnStatements) {
-                const statement = this.sr.statementNodes.get(sId);
-                if (statement.variant === Semantic.ENode.ReturnStatement) {
-                  if (statement.expr) {
-                    // Convert an existing value
-                    const returnedExpr = this.sr.exprNodes.get(statement.expr);
-                    if (returnedExpr.type !== inferredReturnType) {
-                      statement.expr = Conversion.MakeConversionOrThrow(
-                        this.sr,
-                        statement.expr,
-                        inferredReturnType,
-                        ConstraintSet.empty(),
-                        statement.sourceloc,
-                        Conversion.Mode.Implicit,
-                        false
-                      );
-                    }
+              if (!func.requires.final) {
+                let inferredReturnType: Semantic.TypeUseId | null =
+                  symbol.annotatedReturnType;
+                if (!inferredReturnType) {
+                  if (symbol.returnedDatatypes.size === 0) {
+                    inferredReturnType = this.sr.b.voidType();
+                  } else if (symbol.returnedDatatypes.size === 1) {
+                    inferredReturnType = [...symbol.returnedDatatypes][0];
                   } else {
-                    // Insert a "none" value if no value was returned at all
-                    if (Conversion.isNoneById(this.sr, inferredReturnType)) {
-                      statement.expr = this.sr.b.noneExpr()[1];
-                    } else if (
-                      Conversion.isVoidById(this.sr, inferredReturnType)
-                    ) {
-                      // The only valid place where a return statement can actually return nothing
-                    } else {
-                      if (statement.sourceloc) {
-                        console.log(formatSourceLoc(statement.sourceloc));
+                    inferredReturnType = this.sr.b.untaggedUnionTypeUse(
+                      [...symbol.returnedDatatypes],
+                      symbol.sourceloc
+                    );
+                  }
+                }
+
+                // If anything is returned that is a reference, like an object or an array, then it must be considered impure,
+                // even if the return type is not mutable, because objects are required to have "identity" and multiple calls
+                // cannot be collapsed into a single one because otherwise two different objects would have the same identity.
+                const returnUse = this.sr.typeUseNodes.get(inferredReturnType);
+                const returnDef = this.sr.typeDefNodes.get(returnUse.type);
+                if (
+                  returnDef.variant === Semantic.ENode.StructDatatype ||
+                  returnDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+                  (returnDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+                    returnDef.members.some((m) => {
+                      const typeUse = this.sr.typeUseNodes.get(m);
+                      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                      return (
+                        typeDef.variant === Semantic.ENode.StructDatatype ||
+                        typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                      );
+                    })) ||
+                  (returnDef.variant === Semantic.ENode.TaggedUnionDatatype &&
+                    returnDef.members.some((m) => {
+                      const typeUse = this.sr.typeUseNodes.get(m.type);
+                      const typeDef = this.sr.typeDefNodes.get(typeUse.type);
+                      return (
+                        typeDef.variant === Semantic.ENode.StructDatatype ||
+                        typeDef.variant === Semantic.ENode.DynamicArrayDatatype
+                      );
+                    }))
+                ) {
+                  symbol.isImpure = true;
+                }
+
+                symbol.type = makeRawFunctionDatatypeAvailable(this.sr, {
+                  parameters: parameters,
+                  returnType: inferredReturnType,
+                  vararg: func.vararg,
+                  requires: {
+                    final: true,
+                    pure:
+                      func.requires.pure ||
+                      !(func.requires.final || symbol.isImpure),
+                    noreturn:
+                      func.requires.noreturn ||
+                      (flow.has(Semantic.FlowType.NoReturn) &&
+                        !flow.has(Semantic.FlowType.Fallthrough) &&
+                        !flow.has(Semantic.FlowType.Return)),
+                    noreturnIf: noreturnIf,
+                  },
+                  sourceloc: func.sourceloc,
+                });
+                const functype = this.sr.typeDefNodes.get(symbol.type);
+                assert(functype.variant === Semantic.ENode.FunctionDatatype);
+
+                // Fix returning "none" if nothing is returned but the function returns "none", except it returns 'void'
+                if (
+                  flow.has(Semantic.FlowType.Fallthrough) &&
+                  !Conversion.isVoidById(this.sr, functype.returnType)
+                ) {
+                  assert(symbol.scope);
+                  const bodyScope = this.sr.blockScopeNodes.get(symbol.scope);
+                  const statementId = this.sr.b.addStatement(this.sr, {
+                    variant: Semantic.ENode.ReturnStatement,
+                    expr: this.sr.b.noneExpr()[1],
+                    sourceloc: func.sourceloc,
+                  })[1];
+                  bodyScope.statements.push(statementId);
+                  symbol.returnStatements.add(statementId);
+                }
+
+                // Now the return type has been fixed, so we have to go over all return statements now
+                // and insert implicit type conversions to the return type in order to convert between unions implicitly.
+                // Important if: 'Foo' and 'str' is returned, then the return type is 'Foo | str', so in each
+                // return statement, 'Foo' must be implicitly converted to 'Foo | str'.
+                for (const sId of symbol.returnStatements) {
+                  const statement = this.sr.statementNodes.get(sId);
+                  if (statement.variant === Semantic.ENode.ReturnStatement) {
+                    if (statement.expr) {
+                      // Convert an existing value
+                      const returnedExpr = this.sr.exprNodes.get(
+                        statement.expr
+                      );
+                      if (returnedExpr.type !== inferredReturnType) {
+                        statement.expr = Conversion.MakeConversionOrThrow(
+                          this.sr,
+                          statement.expr,
+                          inferredReturnType,
+                          ConstraintSet.empty(),
+                          statement.sourceloc,
+                          Conversion.Mode.Implicit,
+                          false
+                        );
                       }
-                      assert(false, "TODO: Fix return type checking properly");
+                    } else {
+                      // Insert a "none" value if no value was returned at all
+                      if (Conversion.isNoneById(this.sr, inferredReturnType)) {
+                        statement.expr = this.sr.b.noneExpr()[1];
+                      } else if (
+                        Conversion.isVoidById(this.sr, inferredReturnType)
+                      ) {
+                        // The only valid place where a return statement can actually return nothing
+                      } else {
+                        if (statement.sourceloc) {
+                          console.log(formatSourceLoc(statement.sourceloc));
+                        }
+                        assert(
+                          false,
+                          "TODO: Fix return type checking properly"
+                        );
+                      }
                     }
                   }
                 }
               }
+            } else {
+              // Function declaration without body
             }
-          } else {
-            // Function declaration without body
+
+            if (
+              symbol.export &&
+              symbol.generics.length === 0 &&
+              !funcSymHasParameterPack(
+                this.sr.cc,
+                symbol.originalCollectedFunction
+              )
+            ) {
+              this.sr.exportedSymbols.add(symbolId);
+            }
           }
 
-          if (
-            symbol.export &&
-            symbol.generics.length === 0 &&
-            !funcSymHasParameterPack(
-              this.sr.cc,
-              symbol.originalCollectedFunction
-            )
-          ) {
-            this.sr.exportedSymbols.add(symbolId);
-          }
+          return symbolId;
         }
-
-        return symbolId;
-      }
       );
     } finally {
       if (startedFreshElaborationOf !== null) {
@@ -7548,7 +7622,8 @@ export class SemanticElaborator {
             );
             if (
               resolvedTypeDef.variant !== Semantic.ENode.StructDatatype &&
-              resolvedTypeDef.variant !== Semantic.ENode.GenericParameterDatatype
+              resolvedTypeDef.variant !==
+                Semantic.ENode.GenericParameterDatatype
             ) {
               throw new CompilerError(
                 `'ref' can only be applied to struct types, but '${Semantic.serializeTypeUse(this.sr, typeUseId)}' is not a struct`,
@@ -7576,7 +7651,8 @@ export class SemanticElaborator {
             if (
               resolvedTypeDef.variant !== Semantic.ENode.StructDatatype &&
               resolvedTypeDef.variant !== Semantic.ENode.CallableDatatype &&
-              resolvedTypeDef.variant !== Semantic.ENode.GenericParameterDatatype
+              resolvedTypeDef.variant !==
+                Semantic.ENode.GenericParameterDatatype
             ) {
               throw new CompilerError(
                 `'stackref' can only be applied to struct or callable types, but '${Semantic.serializeTypeUse(this.sr, typeUseId)}' is neither`,
@@ -7722,8 +7798,9 @@ export class SemanticElaborator {
         // real one.
         if (
           lengthExpr.variant === Semantic.ENode.DatatypeAsValueExpr &&
-          this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(lengthExpr.type).type)
-            .variant === Semantic.ENode.GenericParameterDatatype
+          this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(lengthExpr.type).type
+          ).variant === Semantic.ENode.GenericParameterDatatype
         ) {
           return makeStackArrayDatatypeAvailable(
             this.sr,
@@ -8356,14 +8433,19 @@ export class SemanticElaborator {
    * Writes *through* a reference reached from the copy (`captured.refField.x`)
    * are fine -- they mutate the shared object, not the copy.
    */
-  assertNotWriteToByValueCapture(targetExprId: Semantic.ExprId, sourceloc: SourceLoc) {
+  assertNotWriteToByValueCapture(
+    targetExprId: Semantic.ExprId,
+    sourceloc: SourceLoc
+  ) {
     // Find the root symbol of the assignment target, stopping at any link
     // that goes through a reference.
     let cur = this.sr.exprNodes.get(targetExprId);
     while (true) {
       if (cur.variant === Semantic.ENode.MemberAccessExpr) {
         const objExpr = this.sr.exprNodes.get(cur.expr);
-        const objUse = this.sr.typeUseNodes.get(this.resolveAlias(objExpr.type));
+        const objUse = this.sr.typeUseNodes.get(
+          this.resolveAlias(objExpr.type)
+        );
         const objDef = this.sr.typeDefNodes.get(objUse.type);
         if (
           objDef.variant !== Semantic.ENode.StructDatatype ||
@@ -8404,7 +8486,8 @@ export class SemanticElaborator {
       lambdaScopeId === null
         ? undefined
         : this.currentContext.elaboratedLambdaExprs.get(lambdaScopeId);
-    const lambda = lambdaId === undefined ? null : this.sr.exprNodes.get(lambdaId);
+    const lambda =
+      lambdaId === undefined ? null : this.sr.exprNodes.get(lambdaId);
     const capture =
       lambda &&
       lambda.variant === Semantic.ENode.CallableExpr &&
@@ -8425,7 +8508,11 @@ export class SemanticElaborator {
         // (`acc = fold(() => ... acc ...)` is a normal pattern), and whether
         // it is still alive is not knowable locally.
         const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(rootSymbol.capturedByValueAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
-        printWarningMessage(msg, sourceloc, HazeErrorCode.WriteAfterByValueCapture);
+        printWarningMessage(
+          msg,
+          sourceloc,
+          HazeErrorCode.WriteAfterByValueCapture
+        );
         return;
       }
       return;
@@ -9607,7 +9694,8 @@ export class SemanticElaborator {
                   this.sr,
                   resolvedExprTypeUse.type,
                   EDatatypeMutability.Mut,
-                  collectedMethod.methodReceiverStorage === EStorageClass.Stackref
+                  collectedMethod.methodReceiverStorage ===
+                    EStorageClass.Stackref
                     ? EStorageClass.Stackref
                     : EStorageClass.Ref,
                   sourceloc
@@ -10051,7 +10139,8 @@ export class SemanticElaborator {
           resolvedTypeUse.storage === EStorageClass.Value,
           sourceloc
         );
-      }      if (name === "withoutConst") {
+      }
+      if (name === "withoutConst") {
         const newMutability =
           resolvedTypeUse.mutability === EDatatypeMutability.Const
             ? EDatatypeMutability.Default
@@ -13559,7 +13648,9 @@ export class SemanticElaborator {
             );
           }
           const srcExpr = this.sr.exprNodes.get(valueId);
-          const srcUse = this.sr.typeUseNodes.get(this.resolveAlias(srcExpr.type));
+          const srcUse = this.sr.typeUseNodes.get(
+            this.resolveAlias(srcExpr.type)
+          );
           const srcDef = this.sr.typeDefNodes.get(srcUse.type);
           if (srcDef.variant === Semantic.ENode.CallableDatatype) {
             if (srcUse.storage === EStorageClass.Stackref) {
@@ -13595,7 +13686,10 @@ export class SemanticElaborator {
             } else if (srcUse.storage === EStorageClass.Ref) {
               stackrefInit = "from-ref";
             } else {
-              if (!srcExpr.isTemporary && Conversion.isNocopyType(this.sr, srcUse.type)) {
+              if (
+                !srcExpr.isTemporary &&
+                Conversion.isNocopyType(this.sr, srcUse.type)
+              ) {
                 throw new CompilerError(
                   `'let stackref ${variableSymbol.name}' would copy '${Semantic.serializeTypeUse(this.sr, srcExpr.type)}', which is 'nocopy'. Only a temporary can initialise a stackref to a nocopy value (e.g. 'let stackref w = Writer()').`,
                   s.sourceloc,
@@ -14830,7 +14924,9 @@ export class SemanticElaborator {
       capturedVariable.capturedByValueAt = resultingExpr.sourceloc;
     }
     if (byValue) {
-      const capUse = this.sr.typeUseNodes.get(this.resolveAlias(capturedVariable.type));
+      const capUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(capturedVariable.type)
+      );
       const capDef = this.sr.typeDefNodes.get(capUse.type);
       if (
         capDef.variant === Semantic.ENode.StructDatatype &&
@@ -14880,7 +14976,11 @@ export class SemanticElaborator {
       // Capturing a callable parameter is an escape unless the lambda turns
       // out to be non-retained itself (consumeLambdaCaptures).
       if (this.isTrackedCallableParam(capturedVariableId)) {
-        this.recordParamUse(capturedVariableId, rawValueId, resultingExpr.sourceloc);
+        this.recordParamUse(
+          capturedVariableId,
+          rawValueId,
+          resultingExpr.sourceloc
+        );
         let list = this.lambdaCaptureUses.get(lambda);
         if (!list) {
           list = [];
@@ -15253,7 +15353,10 @@ export class SemanticElaborator {
             this.sr.typeUseNodes.get(elaboratedSymbol.type).type
           );
           if (varTypeDef.variant === Semantic.ENode.ParameterPackDatatype) {
-            this.packAccessCrossedLambda.set(resultingExprId, crossedLambdaScope);
+            this.packAccessCrossedLambda.set(
+              resultingExprId,
+              crossedLambdaScope
+            );
           } else {
             this.addCaptureToLambda(
               crossedLambdaScope,
@@ -16647,7 +16750,10 @@ export class SemanticElaborator {
       functionSignature.parentSymbolId,
       [],
       envType,
-      { bypassCache: true, immediateClosure: inference?.immediateCallable === true }
+      {
+        bypassCache: true,
+        immediateClosure: inference?.immediateCallable === true,
+      }
     );
     const elaboratedFunction = this.sr.symbolNodes.get(elaboratedFunctionId);
     assert(elaboratedFunction.variant === Semantic.ENode.FunctionSymbol);
