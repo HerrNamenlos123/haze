@@ -34,37 +34,37 @@ content: {
 click: (ui_components.PointerEvent,);
 
 @setup
-let buttonRef = elementRef<DivElement>();
+let buttonRef = elementRef<ui_elements.DivElement>();
 
 let isHovered = computed(() => buttonRef?.hover() ?? false);
 let isActive = computed(() => buttonRef?.active() ?? false);
 
-let clicked = (event: PointerEvent) => {
+let clicked = (event: ui_components.PointerEvent) => {
     event.stopPropagation();
-    if !enabled { return; }
+    if !props.enabled { return; }
     emits.click(event);
 };
 
 let backgroundColor = computed(() => {
-    if !enabled { return style.bg; } 
-    else if selected { return style.bgSelected; } 
-    else if isActive { return style.bgActive; } 
-    else if isHovered { return style.bgHover; }
-    return style.bg;
+    if !props.enabled { return props.style.bg; } 
+    else if props.selected { return props.style.bgSelected; } 
+    else if isActive { return props.style.bgActive; } 
+    else if isHovered { return props.style.bgHover; }
+    return props.style.bg;
 });
 
 @template [w-fit [props.grow]?w-grow h-fit] // whatever
 div [
-        row cross-align-center gap-0 px-[style.paddingX]px py-[style.paddingY]px bg-[backgroundColor]
-        rounded-[style.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
+        row cross-align-center gap-0 px-[props.style.paddingX]px py-[props.style.paddingY]px bg-[backgroundColor]
+        rounded-[props.style.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
     ]
     ref=buttonRef
     @pointerdown=clicked
 {
-    slot content label=label {
-        text if=[label.length > 0] [
-            text-color-[enabled ? style.textColor : style.textColorDisabled] text-nowrap
-            [style.fontSize]?font-size-[style.fontSize]
-        ] [label]
+    slot content label=[props.label] {
+        text if=[props.label.length > 0] [
+            text-color-[enabled ? props.style.textColor : props.style.textColorDisabled] text-nowrap
+            [props.style.fontSize]?font-size-[props.style.fontSize]
+        ] [props.label]
     }
 }
