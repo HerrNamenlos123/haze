@@ -1976,7 +1976,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         };
         applyVimMode(true);
 
-        let toggleVim = () => {
+        let toggleVim = (): void => {
             let next = !rx.get(vimOn);
             vimOn := next;
             applyVimMode(next);
@@ -2623,27 +2623,38 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             return true;
         });
 
+        // Built ONCE, here, not inside the computed below: every lambda in
+        // this struct captures something (vim, vimOn, goToDefinition), so
+        // building it inside ownEditorCommands heap-allocated a fresh closure
+        // env per handler every time the tab's `active` flipped. The handlers
+        // don't depend on anything that changes between activations -- only
+        // the act of registering does -- so the closures are created with the
+        // editor and the computed merely hands the same struct over again.
+        // toggleVim is passed as-is rather than wrapped in `() => { toggleVim(); }`,
+        // which was one more allocation that did nothing but forward a call.
+        let editorCommands = EditorCommands {
+            toggleVim: toggleVim,
+            // No longer a stub: this is the real jump list. The keymap
+            // routes ctrl+o here rather than letting it reach the
+            // engine as a key, so the binding and vim's own <C-o> are
+            // the same action rather than two that shadow each other.
+            vimNavigateBack: () => { vim.jumpBack(); },
+            vimNavigateForward: () => { vim.jumpForward(); },
+            goToDefinition: () => {
+                // Outside vim, or from F12, the jump origin still has
+                // to be recorded -- `gd` does this itself.
+                if rx.get(vimOn) {
+                    vim.pushJump();
+                }
+                goToDefinition();
+            },
+        };
+
         let ownEditorCommands = rx.computed(() => {
             if !instance.props().active {
                 return false;
             }
-            registerEditorCommands(keybindings(), EditorCommands {
-                toggleVim: () => { toggleVim(); },
-                // No longer a stub: this is the real jump list. The keymap
-                // routes ctrl+o here rather than letting it reach the
-                // engine as a key, so the binding and vim's own <C-o> are
-                // the same action rather than two that shadow each other.
-                vimNavigateBack: () => { vim.jumpBack(); },
-                vimNavigateForward: () => { vim.jumpForward(); },
-                goToDefinition: () => {
-                    // Outside vim, or from F12, the jump origin still has
-                    // to be recorded -- `gd` does this itself.
-                    if rx.get(vimOn) {
-                        vim.pushJump();
-                    }
-                    goToDefinition();
-                },
-            });
+            registerEditorCommands(keybindings(), editorCommands);
             return true;
         });
 
