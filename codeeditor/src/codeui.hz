@@ -4577,33 +4577,31 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     );
                 }
                 else {
-
-                tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
-                    id: 2,
-                    tabs: items,
-                    activeKey: current,
-                    onSelect: (key: int) => {
-                        activeKey := key;
-                        persist();
-                    },
-                    onClose: (key: int) => {
-                        closeTab(key);
-                    },
-                    // Called for EVERY tab each frame, not just the active
-                    // one -- that is the whole point (see stdlib/tabs).
-                    // Each editor is keyed by the tab's own key, so every
-                    // open file keeps one long-lived EditorView instance
-                    // holding its document, caret, scroll offset and undo
-                    // history for as long as the tab is open.
-                    renderTab: (key: int) => {
-                        EditorView(ui, EditorViewArgs {
-                            id: key,
-                            filePath: pathForKey(key),
-                            active: key == rx.get(activeKey),
-                        });
-                    },
-                });
-
+                    tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
+                        id: 2,
+                        tabs: items,
+                        activeKey: current,
+                        onSelect: (key: int) => {
+                            activeKey := key;
+                            persist();
+                        },
+                        onClose: (key: int) => {
+                            closeTab(key);
+                        },
+                        // Called for EVERY tab each frame, not just the active
+                        // one -- that is the whole point (see stdlib/tabs).
+                        // Each editor is keyed by the tab's own key, so every
+                        // open file keeps one long-lived EditorView instance
+                        // holding its document, caret, scroll offset and undo
+                        // history for as long as the tab is open.
+                        renderTab: (key: int) => {
+                            EditorView(ui, EditorViewArgs {
+                                id: key,
+                                filePath: pathForKey(key),
+                                active: key == rx.get(activeKey),
+                            });
+                        },
+                    });
                 }
 
                 // LAST, on purpose, and this is load bearing: the menu
