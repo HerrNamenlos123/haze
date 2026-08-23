@@ -2519,7 +2519,7 @@ class CodeGenerator {
             `({ ${this.mangleName(exprType.name)} __value = ${this.emitExpr(
               expr.expr
             ).out.get()}; ${expr.tags
-              .map((t) => `value.tag ${operator} ${t}`)
+              .map((t) => `__value.tag ${operator} ${t}`)
               .join(expr.invertCheck ? " && " : " || ")}; })`
           );
         }
