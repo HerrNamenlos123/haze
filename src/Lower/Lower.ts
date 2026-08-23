@@ -2031,11 +2031,20 @@ export function lowerExpr(
         // used to. Widening the check here catches that case too, so its
         // receiver still gets hoisted into a real temp var before
         // AddressOfExpr takes its address below.
-        const loweredThisNode = lr.exprNodes.get(loweredThisExpression);
+        // The same applies to a member (of a member ...) of such an unwrap:
+        // `narrowed.b.method()` is a member of an rvalue and is an rvalue
+        // itself, so walk down the member-access chain to its root.
+        let loweredThisRoot = lr.exprNodes.get(loweredThisExpression);
+        while (
+          loweredThisRoot.variant === Lowered.ENode.MemberAccessExpr &&
+          !loweredThisRoot.requiresDeref
+        ) {
+          loweredThisRoot = lr.exprNodes.get(loweredThisRoot.expr);
+        }
         const thisNeedsHoisting =
           thisExpr.isTemporary ||
-          (loweredThisNode.variant === Lowered.ENode.UnionToValueCastExpr &&
-            loweredThisNode.needsRefinementAssertion);
+          (loweredThisRoot.variant === Lowered.ENode.UnionToValueCastExpr &&
+            loweredThisRoot.needsRefinementAssertion);
         if (thisNeedsHoisting) {
           tempId = storeInTempVarAndGet(
             lr,

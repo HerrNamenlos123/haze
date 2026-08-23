@@ -634,6 +634,7 @@ export ref struct Lexer {
         if c == b"&" && c2 == b"?" { this.bumpN(2); this.push(TK.AmpersandQuestion, start, startLine, startCol); return; }
         if c == b"|" && c2 == b"|" { this.bumpN(2); this.push(TK.DoubleOr, start, startLine, startCol); return; }
         if c == b"?" && c2 == b"&" { this.bumpN(2); this.push(TK.QuestionAmpersand, start, startLine, startCol); return; }
+        if c == b"?" && c2 == b"?" { this.bumpN(2); this.push(TK.DoubleQuestion, start, startLine, startCol); return; }
         if c == b"?" && c2 == b"." { this.bumpN(2); this.push(TK.QuestionDot, start, startLine, startCol); return; }
         if c == b"?" && c2 == b"!" { this.bumpN(2); this.push(TK.QuestionExcl, start, startLine, startCol); return; }
         if c == b"<" && c2 == b"=" { this.bumpN(2); this.push(TK.Leq, start, startLine, startCol); return; }

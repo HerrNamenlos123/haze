@@ -149,6 +149,7 @@ import {
   type LambdaParamContext,
   type LambdaParamsContext,
   type LogicalContext,
+  type NullishContext,
   type MetaAnnotationContext,
   type MetaAnnotationItemContext,
   type ModuleNamespaceDefinitionContext,
@@ -544,6 +545,9 @@ class ASTBuilder extends HazeParserListener {
     }
     if (text === "|") {
       return EBinaryOperation.BitwiseOr;
+    }
+    if (text === "??") {
+      return EBinaryOperation.NullishCoalesce;
     }
 
     throw new InternalError("Binary operator is not known: " + text);
@@ -2522,6 +2526,30 @@ class ASTBuilder extends HazeParserListener {
         a: expr,
         b: produced[idx + 1],
         operation: this.binaryOpFromText(operators[idx]),
+        sourceloc: this.loc(ctx),
+      } satisfies ASTBinaryExpr;
+    }
+
+    this.stack.push(expr);
+  };
+
+  exitNullish = (ctx: NullishContext) => {
+    const start = this.getMark(ctx);
+    const produced = this.stack.splice(start) as ASTExpr[];
+
+    const operators = ctx.DOUBLEQUESTION();
+
+    if (produced.length !== operators.length + 1) {
+      throw new InternalError("Nullish stack mismatch");
+    }
+
+    let expr = produced[0];
+    for (let idx = 0; idx < operators.length; idx++) {
+      expr = {
+        variant: "BinaryExpr",
+        a: expr,
+        b: produced[idx + 1],
+        operation: EBinaryOperation.NullishCoalesce,
         sourceloc: this.loc(ctx),
       } satisfies ASTBinaryExpr;
     }

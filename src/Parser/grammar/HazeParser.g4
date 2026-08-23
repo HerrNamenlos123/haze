@@ -373,13 +373,17 @@ logical
     : equality ((DOUBLEAND|DOUBLEOR|SINGLEOR) equality)*
     ;
 
+nullish
+    : logical (DOUBLEQUESTION logical)*
+    ;
+
 attemptBody
     : ELSE id? rawScope
     | RECOVER id? rawScope
     ;
 
 ternary
-    : logical (QUESTIONMARK expr COLON ternary)?
+    : nullish (QUESTIONMARK expr COLON ternary)?
     | ATTEMPT rawScope attemptBody*
     ;
 

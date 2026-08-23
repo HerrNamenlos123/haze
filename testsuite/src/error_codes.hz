@@ -262,6 +262,8 @@ namespace errorcodes {
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,
         ThisMutModifierWillBeOverruledByConst = 9003,
+        PerformanceBottleneck = 9004,
+        NullishCoalesceLeftNeverNullish = 9005,
     }
 
     export fn toInt(c: Code): int {
