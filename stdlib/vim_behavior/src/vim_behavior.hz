@@ -1543,7 +1543,13 @@ export ref struct Vim {
         return r;
     }
 
-    mut fn runOperator(op: Operator, range: textedit_behavior.Range, wholeLineForm: bool = false, fromVisual: bool = false) {
+    // `levels` is how many INDENT levels `>`/`<` should apply, and it is
+    // meaningful for nothing else. It exists because a count means two
+    // different things to these two operators depending on the mode:
+    // `3>>` in normal mode indents three LINES by one level, while `3>` in
+    // visual mode indents the selection by three LEVELS. The line count is
+    // already carried by the range, so this carries the other one.
+    mut fn runOperator(op: Operator, range: textedit_behavior.Range, wholeLineForm: bool = false, fromVisual: bool = false, levels: int = 1) {
         let linewise = range.kind == textedit_behavior.RangeKind.Linewise;
 
         if op == Operator.Yank {
@@ -1703,7 +1709,8 @@ export ref struct Vim {
         if op == Operator.IndentRight || op == Operator.IndentLeft {
             let normalized = this.ctx.normalizeRange(range);
             this.indentLines(normalized.start.y, normalized.end.y,
-                             op == Operator.IndentRight, wholeLineForm, fromVisual);
+                             op == Operator.IndentRight, wholeLineForm, fromVisual,
+                             levels);
             return;
         }
     }
@@ -1747,6 +1754,13 @@ export ref struct Vim {
     // An operator typed in visual mode acts on the selection and returns
     // to normal mode.
     mut fn applyOperatorToSelection(op: Operator) {
+        // Captured BEFORE resetPending() below clears it. In visual mode a
+        // count belongs to `>`/`<` alone, where it is a number of indent
+        // levels (`V3>` indents three times); vim ignores it for every
+        // other operator, so it is only read for these two.
+        let levels = op == Operator.IndentRight || op == Operator.IndentLeft
+            ? this.effectiveCount()
+            : 1;
         let range = this.ctx.selectionAsRange();
         // Vim leaves the caret on the column belonging to the selection's
         // TOP corner, but the caret may currently sit at its moving end.
@@ -1786,7 +1800,7 @@ export ref struct Vim {
         // line the selection started on collapses to a valid one.
         this.ctx.moveTo(topCorner, true, false);
         this.resetPending();
-        this.runOperator(op, range, false, true);
+        this.runOperator(op, range, false, true, levels);
         this.clampCursorToMode();
     }
 
@@ -1851,8 +1865,17 @@ export ref struct Vim {
         return this.indentUnit.length > 0 ? this.indentUnit.length : 1;
     }
 
-    mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false) {
+    // `levels` indent levels at once, in ONE transaction -- `V3>` is a
+    // single undo step in vim, not three.
+    mut fn indentLines(startY: int, endY: int, addIndent: bool, keepScreenColumn: bool = false, fromVisualIndent: bool = false, levels: int = 1) {
         let screenColumnBefore = this.screenColumnOf(startY, this.ctx.cursor().x);
+        let repeat = levels > 0 ? levels : 1;
+        // Built once for the whole range rather than per line: the string is
+        // the same for every line, and the loop below runs over all of them.
+        let inserted = this.indentUnit;
+        for (let i = 1; i < repeat; i++) {
+            inserted = f"{inserted}{this.indentUnit}";
+        }
         this.ctx.beginTransaction();
         let changedAnything = false;
         for (let y = startY; y <= endY; y++) {
@@ -1863,22 +1886,40 @@ export ref struct Vim {
                     let at: Vec2i = { x: 0, y: y };
                     let r = textedit_behavior.Range { start: at, end: at,
                         kind: textedit_behavior.RangeKind.Characterwise };
-                    this.ctx.replaceRangeWith(r, String(this.indentUnit));
+                    this.ctx.replaceRangeWith(r, String(inserted));
                     changedAnything = true;
                 }
             } else {
-                // Remove one indent level: a leading tab, or up to the
-                // equivalent run of spaces. A leading TAB is always worth
-                // one whole level regardless of the setting -- the file may
-                // predate it, and half-eating a tab is not a thing.
+                // Remove `repeat` indent levels, one at a time. Each level
+                // is a leading tab, or up to the equivalent run of spaces.
+                // A leading TAB is always worth one whole level regardless
+                // of the setting -- the file may predate it, and
+                // half-eating a tab is not a thing.
+                //
+                // Level by level rather than "up to repeat*width spaces" so
+                // that a line indented with a mix (a tab then two spaces)
+                // gives up one whole unit per level the way vim does,
+                // instead of the tab being counted as a single column.
                 let line = this.ctx.line(y);
                 let width = this.indentColumns();
                 let remove = 0;
-                if len > 0 && line.getAt(0) == b"\t" {
-                    remove = 1;
-                } else {
-                    while remove < width && remove < len && line.getAt(remove) == b" " {
+                for (let level = 0; level < repeat; level++) {
+                    if remove >= len {
+                        break;
+                    }
+                    if line.getAt(remove) == b"\t" {
                         remove = remove + 1;
+                    } else {
+                        let taken = 0;
+                        while taken < width && remove < len && line.getAt(remove) == b" " {
+                            remove = remove + 1;
+                            taken = taken + 1;
+                        }
+                        if taken == 0 {
+                            // Nothing left to remove; further levels cannot
+                            // find anything either.
+                            break;
+                        }
                     }
                 }
                 if remove > 0 {
