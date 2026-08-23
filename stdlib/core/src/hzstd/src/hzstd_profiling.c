@@ -3555,7 +3555,26 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
       hzstd_int_t *frameIndices
           = raw.depth > 0 ? hzstd_arena_allocate(scratchArena, raw.depth * sizeof(hzstd_int_t)) : NULL;
       for (uint16_t d = 0; d < raw.depth; d++) {
-        frameIndices[d] = (hzstd_int_t)hzstd_profiling_intern_frame(&frameTable, &frameIndex, raw.pcs[d], d == 0);
+        // isLeaf is FALSE for every frame of an allocation capture, including
+        // the innermost -- unlike a CPU sample, where pcs[0] really is the
+        // interrupted instruction (see the sample loop above, which passes
+        // i == 0).
+        //
+        // An allocation stack has no leaf pc at all. It comes from the
+        // frame-pointer walk in hzstd_memory_instrumentation_capture_stack,
+        // whose only source of addresses is `((void **)fp)[1]` -- the RETURN
+        // address saved in each frame. So pcs[0] is already "the instruction
+        // after the call", exactly like pcs[1..], and needs the same -1
+        // adjustment before it is looked up.
+        //
+        // Passing d == 0 here resolved that first pc unadjusted, which put it
+        // one instruction past the call it came from. Usually that only shifted
+        // the reported LINE by one; where the call was the last instruction of
+        // its line range -- or of the whole function -- it resolved into
+        // whatever the line table describes next, naming a different function
+        // entirely and producing an allocation stack that looked completely
+        // plausible while pointing at code that allocates nothing.
+        frameIndices[d] = (hzstd_int_t)hzstd_profiling_intern_frame(&frameTable, &frameIndex, raw.pcs[d], false);
       }
       internedMemoryCaptures[memoryFramesProcessed].frameIndices = frameIndices;
       internedMemoryCaptures[memoryFramesProcessed].frameIndexCount = raw.depth;

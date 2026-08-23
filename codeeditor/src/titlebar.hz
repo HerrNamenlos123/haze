@@ -108,43 +108,6 @@ fn closeMenus(state: mut TitleBarState) {
     state.openMenu := menuNone();
 }
 
-// The File menu, rebuilt each frame from the current workspace. Cheap, and
-// it means the recents list and the enabled/disabled states are never a
-// frame stale.
-fn buildFileMenuItems(): []ui_widgets.DropdownItem {
-    let items: []ui_widgets.DropdownItem = [];
-    items.push(ui_widgets.DropdownItem { key: ITEM_OPEN_FILE, label: "Open File...", shortcut: "Ctrl+O" });
-    items.push(ui_widgets.DropdownItem { key: ITEM_OPEN_FOLDER, label: "Open Folder...", shortcut: "Ctrl+K Ctrl+O" });
-
-    let recents: []str = rx.get(workspace().recents);
-    if recents.length > 0 {
-        items.push(ui_widgets.DropdownItem { key: 0, separator: true });
-        items.push(ui_widgets.DropdownItem { key: 0, label: "Recent Workspaces", header: true });
-        let current: str = rx.get(workspace().path);
-        for (let i = 0; i < recents.length; i++) {
-            let path = recents[i];
-            items.push(ui_widgets.DropdownItem {
-                key: ITEM_RECENT_BASE + i,
-                // The folder NAME is what identifies a project to a
-                // reader; the path is shown after it for the case where
-                // two checkouts share a name, which is exactly when the
-                // name alone would be useless.
-                label: f"{folderNameOf(path)}",
-                shortcut: path,
-                checked: path == current,
-            });
-        }
-    }
-
-    items.push(ui_widgets.DropdownItem { key: 0, separator: true });
-    items.push(ui_widgets.DropdownItem {
-        key: ITEM_CLOSE_FOLDER,
-        label: "Close Folder",
-        enabled: hasWorkspace(),
-    });
-    return items;
-}
-
 fn runFileMenuItem(key: int) {
     if key == ITEM_OPEN_FILE {
         // Routed through the command registry rather than calling the
@@ -283,26 +246,35 @@ struct TitleBarMenusArgs {
     // Passed as props for the same reason TitleBarArgs.openMenu is: it is
     // what this component draws, so it is what its equality has to be
     // about. Empty whenever no menu is open.
-    items: []ui_widgets.DropdownItem = [];
+    items?: []ui_widgets.DropdownItem;
 
     fn operator!=(other: TitleBarMenusArgs) {
-        if this.id != other.id
-            || this.openMenu != other.openMenu
-            || this.items.length != other.items.length {
+        if this.items as bool != other.items as bool {
             return true;
         }
-        let i = 0;
-        while i < this.items.length {
-            if this.items[i].key != other.items[i].key
-                || this.items[i].label != other.items[i].label
-                || this.items[i].shortcut != other.items[i].shortcut
-                || this.items[i].enabled != other.items[i].enabled
-                || this.items[i].separator != other.items[i].separator
-                || this.items[i].header != other.items[i].header
-                || this.items[i].checked != other.items[i].checked {
+
+        if this.id != other.id || this.openMenu != other.openMenu {
+            return true;
+        }
+
+        if this.items && other.items {
+            if this.items.length != other.items.length {
                 return true;
             }
-            i = i + 1;
+
+            let i = 0;
+            while i < this.items.length {
+                if this.items[i].key != other.items[i].key
+                    || this.items[i].label != other.items[i].label
+                    || this.items[i].shortcut != other.items[i].shortcut
+                    || this.items[i].enabled != other.items[i].enabled
+                    || this.items[i].separator != other.items[i].separator
+                    || this.items[i].header != other.items[i].header
+                    || this.items[i].checked != other.items[i].checked {
+                    return true;
+                }
+                i = i + 1;
+            }
         }
         return false;
     }

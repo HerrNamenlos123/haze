@@ -108,7 +108,7 @@ export struct DropdownArgs {
     id: int;
     // See the note above: the owner holds this.
     open: bool = false;
-    items: []DropdownItem = [];
+    items?: []DropdownItem;
 
     // The panel's top-left, in the coordinate space of the nearest
     // POSITIONED ancestor (see the note above). For a menu bar these are
@@ -131,29 +131,37 @@ export struct DropdownArgs {
     renderFooter?: () => none;
 
     fn operator!=(other: DropdownArgs) {
+        if this.items as bool != other.items as bool {
+            return true;
+        }
+
         if this.id != other.id
             || this.open != other.open
             || this.offsetX != other.offsetX
             || this.offsetY != other.offsetY
-            || this.minWidth != other.minWidth
-            || this.items.length != other.items.length {
+            || this.minWidth != other.minWidth {
             return true;
         }
-        // Field-by-field rather than `this.items[i] != other.items[i]`:
-        // invoking a struct's own operator!= from inside another one makes
-        // the C code generator produce a for-loop init it cannot express.
-        let i = 0;
-        while i < this.items.length {
-            if this.items[i].key != other.items[i].key
-                || this.items[i].label != other.items[i].label
-                || this.items[i].shortcut != other.items[i].shortcut
-                || this.items[i].enabled != other.items[i].enabled
-                || this.items[i].separator != other.items[i].separator
-                || this.items[i].header != other.items[i].header
-                || this.items[i].checked != other.items[i].checked {
+        if this.items && other.items {
+            if this.items.length != other.items.length {
                 return true;
             }
-            i = i + 1;
+            // Field-by-field rather than `this.items[i] != other.items[i]`:
+            // invoking a struct's own operator!= from inside another one makes
+            // the C code generator produce a for-loop init it cannot express.
+            let i = 0;
+            while i < this.items.length {
+                if this.items[i].key != other.items[i].key
+                    || this.items[i].label != other.items[i].label
+                    || this.items[i].shortcut != other.items[i].shortcut
+                    || this.items[i].enabled != other.items[i].enabled
+                    || this.items[i].separator != other.items[i].separator
+                    || this.items[i].header != other.items[i].header
+                    || this.items[i].checked != other.items[i].checked {
+                    return true;
+                }
+                i = i + 1;
+            }
         }
         return false;
     }
@@ -229,7 +237,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                 }
 
                 let i = 0;
-                while i < p.items.length {
+                while p.items && i < p.items.length {
                     let item = p.items[i];
 
                     let index = i;
@@ -290,9 +298,17 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             // `item` captured above: this handler outlives
                             // the render pass that created it, and the item
                             // list may have been replaced since.
-                            if index >= current.items.length {
-                                return;
+                            if current.items {
+                                if index >= current.items.length {
+                                    return;
+                                }
                             }
+                            else {
+                                if index >= 0 {
+                                    return;
+                                }
+                            }
+                            assert(current.items);
                             if !current.items[index].enabled {
                                 return;
                             }

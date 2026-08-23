@@ -4515,6 +4515,41 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             promptForFile();
         }
 
+        let fileMenuItems = rx.computed(() => {
+            let items: []ui_widgets.DropdownItem = [];
+            items.push({ key: ITEM_OPEN_FILE, label: "Open File...", shortcut: "Ctrl+O" });
+            items.push({ key: ITEM_OPEN_FOLDER, label: "Open Folder...", shortcut: "Ctrl+K Ctrl+O" });
+
+            let recents: []str = workspace().recents;
+            if recents.length > 0 {
+                items.push({ key: 0, separator: true });
+                items.push({ key: 0, label: "Recent Workspaces", header: true });
+                let current: str = workspace().path;
+                for (let i = 0; i < recents.length; i++) {
+                    let path = recents[i];
+                    items.push(ui_widgets.DropdownItem {
+                        key: ITEM_RECENT_BASE + i,
+                        // The folder NAME is what identifies a project to a
+                        // reader; the path is shown after it for the case where
+                        // two checkouts share a name, which is exactly when the
+                        // name alone would be useless.
+                        label: f"{folderNameOf(path)}",
+                        shortcut: path,
+                        checked: path == current,
+                    });
+                }
+            }
+
+            items.push(ui_widgets.DropdownItem { key: 0, separator: true });
+            items.push(ui_widgets.DropdownItem {
+                key: ITEM_CLOSE_FOLDER,
+                label: "Close Folder",
+                enabled: hasWorkspace(),
+            });
+            return items;
+
+        });
+
         return () => {
             let items: []tabs_lib.TabItem = rx.get(tabs);
             let current = rx.get(activeKey);
@@ -4568,9 +4603,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 onPointerDownCapture: dismissMenusOnPressCapture,
             }, () => {
                 let openMenu = rx.get(titleBarState.openMenu);
-                let menuItems: []ui_widgets.DropdownItem = [];
+                let menuItems: []ui_widgets.DropdownItem | none = none;
                 if openMenu == menuFile() {
-                    menuItems = buildFileMenuItems();
+                    menuItems = rx.get(fileMenuItems);
                 }
 
                 TitleBar(ui, titleBarState, TitleBarArgs {
