@@ -92,6 +92,9 @@ class CodeGenerator {
     cDecls: new OutputWriter(),
     type_declarations: new OutputWriter(),
     type_definitions: new OutputWriter(),
+    // Closure env structs: after every type definition (their fields are
+    // by-value copies of arbitrary types), before any function.
+    closure_envs: new OutputWriter(),
     function_declarations: new OutputWriter(),
     refinement_helpers: new OutputWriter(),
     function_definitions: new OutputWriter(),
@@ -649,6 +652,10 @@ class CodeGenerator {
 
     writer.write("\n\n// Type definition section\n");
     writer.write(this.out.type_definitions);
+    writer.writeLine();
+
+    writer.write("\n\n// Closure env section\n");
+    writer.write(this.out.closure_envs);
     writer.writeLine();
 
     writer.write("\n\n// Function declaration section\n");
@@ -1249,7 +1256,13 @@ class CodeGenerator {
   // then the exits run, then the temp is returned -- so a returned expression
   // may still read through the scope's own stackrefs.
   // (R&D/Storage Classes and References.md §4.3, §5.2)
-  private stackrefScopeStack: string[] = [];
+  // Every entry is something that must be left on the way out: a
+  // participating stackref scope (exit call), or an attempt's recovery frame
+  // (pop) -- see Lowered.AttemptFrameStatement.
+  private stackrefScopeStack: (
+    | { kind: "stackref"; slot: string }
+    | { kind: "frame" }
+  )[] = [];
   private loopStackrefMarks: number[] = [];
   private labelStackrefMarks = new Map<string, number>();
   private stackrefSlotCounter = 0;
@@ -1268,16 +1281,22 @@ class CodeGenerator {
   /** Exit calls for every participating scope above `downTo` (innermost first). */
   private emitStackrefExits(writer: OutputWriter, downTo: number) {
     for (let i = this.stackrefScopeStack.length - 1; i >= downTo; i--) {
-      writer.writeLine("hzstd_stackref_scope_exit();");
+      if (this.stackrefScopeStack[i].kind === "frame") {
+        writer.writeLine("hzstd_pop_panic_recovery_frame();");
+      } else {
+        writer.writeLine("hzstd_stackref_scope_exit();");
+      }
     }
   }
 
   private currentStackrefSlot(): string {
-    assert(
-      this.stackrefScopeStack.length > 0,
-      "let stackref outside of a participating scope"
-    );
-    return this.stackrefScopeStack[this.stackrefScopeStack.length - 1];
+    for (let i = this.stackrefScopeStack.length - 1; i >= 0; i--) {
+      const entry = this.stackrefScopeStack[i];
+      if (entry.kind === "stackref") {
+        return entry.slot;
+      }
+    }
+    assert(false, "let stackref outside of a participating scope");
   }
 
   /**
@@ -1304,25 +1323,17 @@ class CodeGenerator {
       expr.envType?.type === "lambda" &&
       expr.envValue.captures.length > 0
     ) {
-      const n = expr.envValue.captures.length;
       const envVar = `__hz_env_${name}`;
-      outWriter.writeLine(`void* ${envVar}[${n}];`);
+      const envStruct = this.closureEnvStructNameFor(expr.function);
+      // The env struct itself lives on the stack here; by-value captures
+      // are copied into its fields, shared ones are the pointers.
+      outWriter.writeLine(`${envStruct} ${envVar};`);
       expr.envValue.captures.forEach((c, i) => {
         const e = this.emitExpr(c);
         tempWriter.write(e.temp);
-        const cap = expr.envType!.type === "lambda" ? expr.envType!.captures[i] : null;
-        assert(cap);
-        if (cap.byValue) {
-          const capVar = `__hz_cap_${name}_${i}`;
-          outWriter.writeLine(
-            `${this.mangleTypeUse(cap.type)} ${capVar} = ${e.out.get()};`
-          );
-          outWriter.writeLine(`${envVar}[${i}] = &${capVar};`);
-        } else {
-          outWriter.writeLine(`${envVar}[${i}] = ${e.out.get()};`);
-        }
+        outWriter.writeLine(`${envVar}.c${i} = ${e.out.get()};`);
       });
-      env = `HZSTD_STACKREF_MAKE(${envVar}, ${slot})`;
+      env = `HZSTD_STACKREF_MAKE(&${envVar}, ${slot})`;
     } else if (expr.envValue?.type === "method") {
       assert(false, "a bound method cannot be built in place by let stackref");
     }
@@ -1330,8 +1341,45 @@ class CodeGenerator {
     return { temp: tempWriter, out: outWriter, value: value };
   }
 
+  private emittedEnvStructs = new Set<Lowered.FunctionId>();
+
+  // A CallableExpr points at the trampoline; the env struct is named after
+  // the lambda's main function.
+  private closureEnvStructNameFor(funcId: Lowered.FunctionId): string {
+    const func = this.lr.functionNodes.get(funcId);
+    const main =
+      func.isClosureTrampolineFor !== null
+        ? this.lr.functionNodes.get(func.isClosureTrampolineFor)
+        : func;
+    return Lowered.closureEnvStructName(main.name);
+  }
+
+  // The env block of a lambda with captures: one struct, one field per
+  // capture (`c0`, `c1`, ...). By-value captures live inline in it, so a
+  // closure is exactly one allocation regardless of how many values it
+  // captures; shared captures are the pointers they already are.
+  private emitClosureEnvStruct(symbolId: Lowered.FunctionId) {
+    const symbol = this.lr.functionNodes.get(symbolId);
+    if (
+      symbol.isClosureTrampolineFor !== null ||
+      symbol.envType?.type !== "lambda" ||
+      symbol.envType.captures.length === 0 ||
+      this.emittedEnvStructs.has(symbolId)
+    ) {
+      return;
+    }
+    this.emittedEnvStructs.add(symbolId);
+    const name = Lowered.closureEnvStructName(symbol.name);
+    this.out.closure_envs.writeLine(`typedef struct ${name} {`).pushIndent();
+    symbol.envType.captures.forEach((c, i) => {
+      this.out.closure_envs.writeLine(`${this.mangleTypeUse(c.type)} c${i};`);
+    });
+    this.out.closure_envs.popIndent().writeLine(`} ${name};`);
+  }
+
   emitFunction(symbolId: Lowered.FunctionId) {
     const symbol = this.lr.functionNodes.get(symbolId);
+    this.emitClosureEnvStruct(symbolId);
     const { mangledName, returnType, params, vararg } =
       this.functionSignatureParts(symbol);
 
@@ -1533,7 +1581,7 @@ class CodeGenerator {
     if (participates) {
       const slot = `__hz_slot_${this.stackrefSlotCounter++}`;
       outWriter.writeLine(`size_t ${slot} = hzstd_stackref_scope_enter();`);
-      this.stackrefScopeStack.push(slot);
+      this.stackrefScopeStack.push({ kind: "stackref", slot });
     }
 
     let returned = false;
@@ -1568,7 +1616,8 @@ class CodeGenerator {
     }
 
     if (participates) {
-      this.stackrefScopeStack.pop();
+      const top = this.stackrefScopeStack.pop();
+      assert(top && top.kind === "stackref", "exit stack out of sync");
       if (!returned) {
         // Fall-through exit. (A return/break/continue/goto already emitted
         // the exit for this scope on its own path.)
@@ -1767,6 +1816,16 @@ class CodeGenerator {
           outWriter.writeLine(`${exprWriter.out.get()};`);
         } else {
           outWriter.writeLine(`(void)(${exprWriter.out.get()});`);
+        }
+        return { temp: tempWriter, out: outWriter };
+      }
+
+      case Lowered.ENode.AttemptFrameStatement: {
+        if (statement.action === "enter") {
+          this.stackrefScopeStack.push({ kind: "frame" });
+        } else {
+          const top = this.stackrefScopeStack.pop();
+          assert(top && top.kind === "frame", "exit stack out of sync");
         }
         return { temp: tempWriter, out: outWriter };
       }
@@ -2735,17 +2794,15 @@ class CodeGenerator {
           expr.envValue.captures.length > 0
         ) {
           assert(expr.envType?.type === "lambda");
-          const captureTypes = expr.envType.captures;
+          const envStruct = this.closureEnvStructNameFor(expr.function);
+          // One allocation for the whole env; by-value captures are copied
+          // straight into their field (no per-capture heap cell).
           const setters = expr.envValue.captures.map((c, i) => {
             const e = this.emitExpr(c);
             tempWriter.write(e.temp);
-            if (captureTypes[i].byValue) {
-              // Captured by value: the slot points at a copy made right now.
-              return `env[${i}] = HZSTD_HOIST(${this.mangleTypeUse(captureTypes[i].type)}, ${e.out.get()});`;
-            }
-            return `env[${i}] = ${e.out.get()};`;
+            return `env->c${i} = ${e.out.get()};`;
           });
-          env = `({ void** env = hzstd_heap_allocate(sizeof(void*) * ${expr.envValue.captures.length}, "Closure env"); ${setters.join(" ")} (void*)env; })`;
+          env = `({ ${envStruct}* env = hzstd_heap_allocate(sizeof(${envStruct}), "Closure env"); ${setters.join(" ")} (void*)env; })`;
         }
         const func = this.lr.functionNodes.get(expr.function);
         outWriter.write(

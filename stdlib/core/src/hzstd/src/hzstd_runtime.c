@@ -770,30 +770,10 @@ static void hzstd_panic_recovery_check_sane(hzstd_dynamic_array_t *da, size_t ex
   }
 }
 
-// TEMPORARY diagnostic (companion to hzstd_panic_recovery_check_sane): checks
-// `frame` itself, before touching any of its fields. GC_base(p) returns NULL
-// for any pointer that isn't inside a live GC-managed heap block at all (a
-// stack address, uninitialized garbage, a freed/unmapped region, ...) --
-// distinguishing "the frame pointer we were handed is outright bogus" (a
-// stack-corruption/lost-local-variable class of bug) from "the frame pointer
-// is a real heap object but its *contents* are wrong" (a rooting/premature-
-// collection class of bug, what panic_recovery_frames itself turned out to
-// be). Narrows down which of those two very different bugs this is.
 static void hzstd_panic_recovery_check_frame_sane(hzstd_panic_recovery_frame_t *frame, const char *what)
 {
   if (!frame) {
     fprintf(stderr, "[recovery-frame corruption] %s: frame is NULL\n", what);
-    fflush(stderr);
-    abort();
-  }
-  void *base = GC_base((void *)frame);
-  if (!base) {
-    fprintf(stderr,
-            "[recovery-frame corruption] %s: frame=%p is NOT a GC heap "
-            "pointer (GC_base returned NULL) -- this pointer is garbage, "
-            "not a premature-collection victim\n",
-            what,
-            (void *)frame);
     fflush(stderr);
     abort();
   }
@@ -803,7 +783,10 @@ static void hzstd_init_panic_recovery_frames(void)
 {
   if (!panic_recovery_frames_initialized) {
     panic_recovery_frames_initialized = true;
-    panic_recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 4, "hzstd_panic_recovery_frame_t*");
+    // Reserved generously up front and never shrunk: nesting this many
+    // attempts is rare, so in practice the stack of frame pointers is
+    // allocated exactly once per thread.
+    panic_recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 64, "hzstd_panic_recovery_frame_t*");
 
     // Root-registration fix, found via isolated reproduction: BDWGC does
     // NOT scan _Thread_local storage as a GC root on this platform/config
@@ -836,22 +819,26 @@ static void hzstd_init_panic_recovery_frames(void)
       panic_recovery_frames, sizeof(hzstd_panic_recovery_frame_t *), "panic_recovery_frames");
 }
 
-hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void)
+void hzstd_reserve_panic_recovery_frames(void)
+{
+  hzstd_init_panic_recovery_frames();
+}
+
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recovery_frame_t *frame)
 {
   hzstd_init_panic_recovery_frames();
 
-  hzstd_panic_recovery_frame_t frame = {
-    .cleanup_handlers
-    = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_cleanup_entry_t, 1, "hzstd_panic_recovery_cleanup_entry_t"),
-    ._hz_panic_stacktrace = { 0 },
-    .saved_stackref_depth = hzstd_gen_table.depth,
-  };
+  // `frame` is the HAZE_ATTEMPT block's own stack storage: nothing is
+  // allocated here. The compiler pops it on every way out of the block
+  // (fall-through, return, break, continue, goto, and the panic path), so
+  // the pointer never outlives the storage it points at.
+  frame->cleanup_count = 0;
+  frame->cleanup_overflow = NULL;
+  memset(&frame->_hz_panic_stacktrace, 0, sizeof(frame->_hz_panic_stacktrace));
+  frame->saved_stackref_depth = hzstd_gen_table.depth;
 
-  hzstd_panic_recovery_frame_t *framePtr
-      = HZSTD_ALLOC_STRUCT(hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t, frame, "hzstd_panic_recovery_frame_t");
-
-  HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, framePtr);
-  return framePtr;
+  HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, frame);
+  return frame;
 }
 
 hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(void)
@@ -888,31 +875,53 @@ void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env)
 {
   hzstd_panic_recovery_frame_t *frame = hzstd_get_current_panic_recovery_frame();
   hzstd_panic_recovery_check_frame_sane(frame, "frame (push_cleanup)");
-  hzstd_panic_recovery_check_sane(
-      frame->cleanup_handlers, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_handlers (push_cleanup)");
 
   hzstd_panic_recovery_cleanup_entry_t entry = { .fn = fn, .env = env };
-  HZSTD_DYNAMIC_ARRAY_PUSH(frame->cleanup_handlers, entry);
+  if (frame->cleanup_count < HZSTD_RECOVERY_INLINE_CLEANUPS) {
+    frame->inline_cleanups[frame->cleanup_count] = entry;
+  }
+  else {
+    if (!frame->cleanup_overflow) {
+      frame->cleanup_overflow = HZSTD_DYNAMIC_ARRAY_CREATE(
+          hzstd_make_heap_allocator(), hzstd_panic_recovery_cleanup_entry_t, 4, "hzstd_panic_recovery_cleanup_entry_t");
+    }
+    hzstd_panic_recovery_check_sane(
+        frame->cleanup_overflow, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_overflow (push_cleanup)");
+    HZSTD_DYNAMIC_ARRAY_PUSH(frame->cleanup_overflow, entry);
+  }
+  frame->cleanup_count++;
 }
 
 void hzstd_panic_recovery_frame_pop_cleanup(void)
 {
   hzstd_panic_recovery_frame_t *frame = hzstd_get_current_panic_recovery_frame();
   hzstd_panic_recovery_check_frame_sane(frame, "frame (pop_cleanup)");
-  hzstd_panic_recovery_check_sane(
-      frame->cleanup_handlers, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_handlers (pop_cleanup)");
-  hzstd_dynamic_array_pop(frame->cleanup_handlers, NULL);
+  if (frame->cleanup_count == 0) {
+    hzstd_trap_ccstr("popping panic recovery cleanup handler failed: none registered");
+  }
+  frame->cleanup_count--;
+  if (frame->cleanup_count >= HZSTD_RECOVERY_INLINE_CLEANUPS) {
+    hzstd_panic_recovery_check_sane(
+        frame->cleanup_overflow, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_overflow (pop_cleanup)");
+    hzstd_dynamic_array_pop(frame->cleanup_overflow, NULL);
+  }
 }
 
 void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
 {
   hzstd_panic_recovery_check_frame_sane(frame, "frame (run_cleanup)");
-  hzstd_panic_recovery_check_sane(
-      frame->cleanup_handlers, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_handlers (run_cleanup)");
-  size_t n = hzstd_dynamic_array_size(frame->cleanup_handlers);
+  size_t n = frame->cleanup_count;
   for (size_t i = 0; i < n; i++) {
-    hzstd_panic_recovery_cleanup_entry_t entry
-        = HZSTD_DYNAMIC_ARRAY_GET(frame->cleanup_handlers, hzstd_panic_recovery_cleanup_entry_t, i);
+    hzstd_panic_recovery_cleanup_entry_t entry;
+    if (i < HZSTD_RECOVERY_INLINE_CLEANUPS) {
+      entry = frame->inline_cleanups[i];
+    }
+    else {
+      hzstd_panic_recovery_check_sane(
+          frame->cleanup_overflow, sizeof(hzstd_panic_recovery_cleanup_entry_t), "frame->cleanup_overflow (run_cleanup)");
+      entry = HZSTD_DYNAMIC_ARRAY_GET(
+          frame->cleanup_overflow, hzstd_panic_recovery_cleanup_entry_t, i - HZSTD_RECOVERY_INLINE_CLEANUPS);
+    }
     entry.fn(entry.env);
   }
 }

@@ -437,8 +437,17 @@ typedef struct {
   void *env;
 } hzstd_panic_recovery_cleanup_entry_t;
 
+// A recovery frame lives on the C stack of the HAZE_ATTEMPT block that owns
+// it (it is only ever needed while that block is live: a panic longjmps back
+// into it), so pushing one allocates nothing. The first few cleanup handlers
+// are stored inline for the same reason; only a frame that registers more
+// than HZSTD_RECOVERY_INLINE_CLEANUPS of them spills to a heap array.
+#define HZSTD_RECOVERY_INLINE_CLEANUPS 4
+
 typedef struct {
-  hzstd_dynamic_array_t *cleanup_handlers; /* hzstd_panic_recovery_cleanup_entry_t[] */
+  hzstd_panic_recovery_cleanup_entry_t inline_cleanups[HZSTD_RECOVERY_INLINE_CLEANUPS];
+  size_t cleanup_count; /* total, inline + overflow */
+  hzstd_dynamic_array_t *cleanup_overflow; /* entries [HZSTD_RECOVERY_INLINE_CLEANUPS..); NULL until needed */
   HZSTD_JMP_BUF recovery_point;
   hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
   // Generational stack-reference table depth at the time this frame was pushed

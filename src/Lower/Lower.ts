@@ -116,6 +116,7 @@ export namespace Lowered {
     StackrefDerefExpr = 58,
     // Dummy
     Dummy = 60,
+    AttemptFrameStatement = 61,
 
     TypeAliasDatatype,
   }
@@ -461,6 +462,7 @@ export namespace Lowered {
 
   export type Statement =
     | InlineCStatement
+    | AttemptFrameStatement
     | ReturnStatement
     | BreakStatement
     | ContinueStatement
@@ -475,6 +477,17 @@ export namespace Lowered {
   export type InlineCStatement = {
     variant: ENode.InlineCStatement;
     value: string;
+    sourceloc: SourceLoc;
+  };
+
+  // Brackets an attempt body for the code generator's exit bookkeeping: the
+  // HAZE_ATTEMPT macro pushes a recovery frame, and every way out of the
+  // body (goto to the result label, return, break, continue) must pop it.
+  // "enter" makes the frame an entry on the same exit stack as stackref
+  // scopes; "leave" removes it again. Neither emits code by itself.
+  export type AttemptFrameStatement = {
+    variant: ENode.AttemptFrameStatement;
+    action: "enter" | "leave";
     sourceloc: SourceLoc;
   };
 
@@ -554,6 +567,12 @@ export namespace Lowered {
     sourceloc: SourceLoc;
   };
 
+  // C name of the env struct of a lambda's main function. Must match
+  // CodeGenerator.mangleName's rule for the function name itself.
+  export function closureEnvStructName(name: NameSet): string {
+    return (name.wasMangled ? "_H" + name.mangledName : name.mangledName) + "_env_t";
+  }
+
   export type EnvBlockType =
     | {
         type: "method";
@@ -561,10 +580,12 @@ export namespace Lowered {
       }
     | {
         type: "lambda";
-        // byValue: the env slot holds a pointer to a *copy* of the value made
-        // at closure creation (heap via HZSTD_HOIST, or a stack local when the
-        // closure is built in place by `let stackref`); the lambda reads it
-        // through that pointer. Otherwise the slot is the GC pointer itself.
+        // The env block is a C struct with one field `c<i>` per capture
+        // (named by closureEnvStructName). byValue: the field holds a *copy*
+        // of the value made at closure creation (inline in the heap block,
+        // or in a stack struct when the closure is built in place by `let
+        // stackref`) and the lambda reads it through a pointer to that
+        // field. Otherwise the field is the GC pointer itself.
         captures: { name: string; type: Lowered.TypeUseId; byValue: boolean }[];
       }
     | null;
@@ -2985,6 +3006,13 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             sourceloc: expr.sourceloc,
           })[1]
         );
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.AttemptFrameStatement,
+            action: "enter",
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
       }
 
       // ── Attempt scope ──────────────────────────────────────────────────────
@@ -3010,28 +3038,13 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             sourceloc: expr.sourceloc,
           })[1]
         );
-        // This `goto` leaves the HAZE_ATTEMPT macro's do{}while(0) from
-        // *inside* its body, so the trailing hzstd_pop_panic_recovery_frame()
-        // at the end of the macro is skipped entirely. Without popping here,
-        // every successful attempt-with-recover leaks one recovery frame for
-        // the life of the thread. That is not merely a slow leak: the panic
-        // machinery picks the *topmost* frame as its longjmp target, so a
-        // later, unrelated crash jumps into a leaked frame whose setjmp stack
-        // frame has long since returned -- resurrecting a dead stack frame and
-        // reading garbage locals out of it. Confirmed from a core dump: 13
-        // leaked frames from component rendering, and a segfault during
-        // profiler postprocessing longjmping into one of them (saved SP ~10 KB
-        // *above* the live SP), which is what produced the
-        // "[recovery-frame corruption] frame (run_cleanup)" abort.
-        if (hasRecover) {
-          enclosingBlockScope.statements.push(
-            Lowered.addStatement(lr, {
-              variant: Lowered.ENode.InlineCStatement,
-              value: `hzstd_pop_panic_recovery_frame();`,
-              sourceloc: expr.sourceloc,
-            })[1]
-          );
-        }
+        // This `goto` leaves the HAZE_ATTEMPT block from inside its body.
+        // The code generator pops the recovery frame on this jump (and on
+        // every other way out: return/break/continue), because the frame is
+        // an entry on its exit stack between the AttemptFrameStatement
+        // enter/leave pair -- a frame must never outlive its stack storage:
+        // the panic machinery longjmps into the *topmost* frame, so a leaked
+        // one would resurrect a dead stack frame.
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.LabelJumpStatement,
@@ -3059,6 +3072,13 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
       if (hasRecover) {
         // Close the HAZE_ATTEMPT macro — everything above ran inside the macro.
+        enclosingBlockScope.statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.AttemptFrameStatement,
+            action: "leave",
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.InlineCStatement,
@@ -4900,12 +4920,19 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             );
           } else if (envType?.type === "lambda") {
             const args: Lowered.ExprId[] = [];
+            // The env block is one struct with a field per capture (see
+            // Lowered.closureEnvStructName / CodeGenerator's emission of
+            // it): a by-value capture's field IS the copy, so the lambda
+            // gets its address; a shared capture's field is the pointer.
+            const envStruct = Lowered.closureEnvStructName(f.name);
             envType.captures.forEach((c, i) => {
               statements.push(
                 Lowered.addStatement(lr, {
                   variant: Lowered.ENode.InlineCStatement,
                   sourceloc: f.sourceloc,
-                  value: `void* ${c.name} = ((void**)__hz_env)[${i}];`,
+                  value: c.byValue
+                    ? `void* ${c.name} = &((${envStruct}*)__hz_env)->c${i};`
+                    : `void* ${c.name} = ((${envStruct}*)__hz_env)->c${i};`,
                 })[1]
               );
               args.push(

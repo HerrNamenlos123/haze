@@ -21,7 +21,10 @@ extern _Thread_local hzstd_panic_info_t _hz_panic_stacktrace;
 // ── Recovery frame API ───────────────────────────────────────────────────────
 
 int hzstd_panic_recovery_frame_count(void);
-hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(void);
+// `frame` is the caller's stack storage (see HAZE_ATTEMPT); nothing is allocated.
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recovery_frame_t *frame);
+// Pre-sizes this thread's frame stack (64 frames); called at startup for the main thread.
+void hzstd_reserve_panic_recovery_frames(void);
 hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(void);
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void);
 
@@ -105,9 +108,17 @@ _Noreturn void hzstd_panic_dead_stackref(void);
 //   before longjmping, so it is readable from the recover label even though
 //   the label is outside this macro's scope.
 
+// A plain block, deliberately NOT do{}while(0): a `break`/`continue` in the
+// body must bind to the enclosing Haze loop, not to the macro. The frame is
+// this block's own stack storage. The compiler pops it on every way out of
+// the body (it is an entry on the same exit stack as stackref scopes:
+// fall-through/goto, return, break, continue -- see CodeGenerator.ts), and
+// the panic path pops it here; so control never reaches the end of this
+// block, and a frame pointer never outlives its storage.
 #define HAZE_ATTEMPT(id, recovery_label, body)                                                                         \
-  do {                                                                                                                 \
-    hzstd_panic_recovery_frame_t *__hz_frame_##id = hzstd_push_panic_recovery_frame();                                 \
+  {                                                                                                                    \
+    hzstd_panic_recovery_frame_t __hz_frame_storage_##id;                                                              \
+    hzstd_panic_recovery_frame_t *__hz_frame_##id = hzstd_push_panic_recovery_frame(&__hz_frame_storage_##id);         \
     int __hz_jmp_##id = HZSTD_SETJMP(__hz_frame_##id->recovery_point);                                                 \
     if (__hz_jmp_##id == 0) {                                                                                          \
       body;                                                                                                            \
@@ -123,8 +134,8 @@ _Noreturn void hzstd_panic_dead_stackref(void);
     else {                                                                                                             \
       hzstd_panic_fmt("Unexpected longjmp result: %d", __hz_jmp_##id);                                                 \
     }                                                                                                                  \
-    hzstd_pop_panic_recovery_frame();                                                                                  \
-  } while (0)
+    hzstd_trap_ccstr("HAZE_ATTEMPT body fell through without leaving its recovery frame");                           \
+  }
 
 // ── Panic functions ──────────────────────────────────────────────────────────
 //

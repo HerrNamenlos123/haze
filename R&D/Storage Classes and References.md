@@ -955,10 +955,13 @@ implementation refined or extended the design; each is normative from here on.
 
 **Closures (§7)**
 - By-value captures (primitives, value structs, fixed arrays, unions, callables, stackrefs) are
-  copied at creation into a heap cell per capture (`HZSTD_HOIST`) for an ordinary closure, or into
-  a stack local next to the env block for a lambda built in place by `let stackref`. Refs, dynamic
-  arrays and reactive cells are shared. Variable hoisting (the old "captured variable lives on the
-  heap and is shared") is gone.
+  copied at creation **into the env block itself**: the env is one C struct with a field per
+  capture (`<lambda>_env_t { T0 c0; ... }`), heap-allocated once for an ordinary closure (exactly one
+  allocation per closure, however many values it captures) or living on the stack for a lambda
+  built in place by `let stackref`. The lambda reads a by-value capture through a pointer to its
+  field. Refs, dynamic arrays and reactive cells are shared (their field is the pointer). Variable
+  hoisting (the old "captured variable lives on the heap and is shared") is gone, and so is the
+  per-capture `HZSTD_HOIST` cell an earlier cut of this implementation used.
 - **Assigning to a by-value capture inside the closure is an error** (H7189): the write would
   only touch the copy. Share it through a stackref/ref instead. Assigning to a variable in the
   declaring scope *after* a closure captured it by value is a **warning** (H7190): the closure may
