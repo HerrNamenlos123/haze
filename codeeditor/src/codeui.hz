@@ -4354,6 +4354,32 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             persist();
         };
 
+        // Created HERE, in the setup body, not inside the template closure
+        // below -- and that is the whole difference between one allocation per
+        // component instance and one per rebuild.
+        //
+        // A lambda that captures anything needs an environment block, and that
+        // block has to outlive the frame that built it whenever the lambda is
+        // stored somewhere (here: into TabsArgs, which ui_components keeps in
+        // the element's runtime data and calls back at event-dispatch time,
+        // possibly many frames later, since the template is a cached computed
+        // that only re-runs when something it reads changes). So it cannot go
+        // on the stack, and escape analysis is right to heap-allocate it.
+        //
+        // What it does NOT have to be is rebuilt every time the template runs.
+        // Everything these two capture -- activeKey, persist, closeTab -- is
+        // setup-scope and never rebound, so the closure built once here is
+        // valid forever; the template just names it. Written inline in the
+        // TabsArgs literal instead (as they were), they were two fresh
+        // allocations on every single rebuild.
+        let onSelectTab = (key: int) => {
+            activeKey := key;
+            persist();
+        };
+        let onCloseTab = (key: int) => {
+            closeTab(key);
+        };
+
         // Restore the previous session, falling back to asking for a file
         // when there is nothing to restore.
         let restored = false;
@@ -4383,6 +4409,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // of the tree -- see titlebar.hz for why they cannot be one
         // component).
         let titleBarState = TitleBarState(ui);
+
+        // Hoisted for the same reason as onSelectTab/onCloseTab above: both are
+        // stored (one into the div's runtime data, one into TabsArgs) and read
+        // back at dispatch/render time, so their env has to be heap -- but
+        // everything they capture is setup-scope and never rebound, so that env
+        // only ever needs building once, not on every template rebuild.
+        let dismissMenusOnPressCapture = (event: ui_components.PointerEvent) => {
+            dismissMenusOnPress(titleBarState);
+        };
+        let renderTabContent = (key: int) => {
+            EditorView(ui, EditorViewArgs {
+                id: key,
+                filePath: pathForKey(key),
+                active: key == rx.get(activeKey),
+            });
+        };
 
         let promptForFile = () => {
             if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
@@ -4530,9 +4572,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // that sees every press regardless of what is underneath.
                 // It deliberately does NOT fire for presses on the bar or
                 // the menu itself -- see dismissMenusOnPress.
-                onPointerDownCapture: (event: ui_components.PointerEvent) => {
-                    dismissMenusOnPress(titleBarState);
-                },
+                onPointerDownCapture: dismissMenusOnPressCapture,
             }, () => {
                 let openMenu = rx.get(titleBarState.openMenu);
                 let menuItems: []ui_widgets.DropdownItem = [];
@@ -4581,26 +4621,15 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                         id: 2,
                         tabs: items,
                         activeKey: current,
-                        onSelect: (key: int) => {
-                            activeKey := key;
-                            persist();
-                        },
-                        onClose: (key: int) => {
-                            closeTab(key);
-                        },
+                        onSelect: onSelectTab,
+                        onClose: onCloseTab,
                         // Called for EVERY tab each frame, not just the active
                         // one -- that is the whole point (see stdlib/tabs).
                         // Each editor is keyed by the tab's own key, so every
                         // open file keeps one long-lived EditorView instance
                         // holding its document, caret, scroll offset and undo
                         // history for as long as the tab is open.
-                        renderTab: (key: int) => {
-                            EditorView(ui, EditorViewArgs {
-                                id: key,
-                                filePath: pathForKey(key),
-                                active: key == rx.get(activeKey),
-                            });
-                        },
+                        renderTab: renderTabContent,
                     });
                 }
 
