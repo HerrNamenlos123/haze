@@ -1899,6 +1899,15 @@ export class ModuleCompiler {
     includeDirs.addAll(`${this.moduleDir}/bin/include`);
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/include`);
     compilerFlags.addAll("-fno-omit-frame-pointer");
+    // The profiler's allocation stack traces are a frame-pointer walk that hides a
+    // STATICALLY COUNTED number of hzstd wrapper frames (hzstd_heap_allocate ->
+    // hzstd_heap_allocate_n -> the instrumentation hook, etc. -- see skip_n_frames in
+    // hzstd_memory.c). Frame pointers alone don't guarantee those wrappers exist at
+    // runtime: at any optimization level, a wrapper whose body is `return callee(...)`
+    // gets turned into a `jmp` and has no frame at all, which silently shifts every
+    // recorded stack by one frame. Keeping sibling calls real keeps the count honest
+    // regardless of optimization level.
+    compilerFlags.addAll("-fno-optimize-sibling-calls");
     if (HAZE_ENABLE_ASAN) {
       compilerFlags.addAll("-fsanitize=address");
       linkerFlags.addAll("-fsanitize=address");
