@@ -98,15 +98,21 @@ fn main(): int {
 
         // The SAME allocation shows up twice in a built trace (see profiling.buildTrace):
         // as a leaf sample in the CPU profile (its stack), and as a stackless
-        // PerformanceMark in the Timings track (its time/size). A viewer that is asked
-        // "what was on the stack when this marker fired" resolves that by timestamp
-        // against the reconstructed sample timeline (Profile.startTime + the integer
-        // timeDeltas). So the two halves have to agree EXACTLY on when the allocation
-        // happened: if the sample reconstructs even a fraction of a microsecond after
-        // the marker, the viewer answers with whatever CPU sample came BEFORE it -- a
-        // completely unrelated stack that still looks perfectly plausible.
+        // PerformanceMark in the Timings track (its time/size). DevTools answers "what
+        // was on the stack when this marker fired" by nesting the marker, by time, into
+        // the tree of sample-derived call entries -- so the marker has to land strictly
+        // INSIDE its own allocation sample's [start, end) interval, with margin on both
+        // sides: DevTools round-trips sample timestamps through milliseconds (float
+        // noise of an ulp either way), and an entry of zero width is popped before the
+        // marker is placed. Either way the marker then falls under whatever CPU sample
+        // came before the allocation -- a completely unrelated stack that still looks
+        // perfectly plausible, and a different one every time.
+        //
+        // Hence two invariants, both pinned here: every sample reconstructs to a strictly
+        // increasing INTEGER microsecond (so every sample is at least 1us wide), and the
+        // marker sits exactly half a microsecond after its sample's start.
         s.runExitCode(
-            "profiling: every allocation marker sits exactly on its own sample in the built trace",
+            "profiling: every allocation marker sits strictly inside its own >=1us-wide sample in the built trace",
             """
 fn allocateClosureEnv(x: int): () => int {
     let y = x + 1;
@@ -132,6 +138,8 @@ fn main(): int {
     let markerTimes: []real = [];
     let profileStart = 0.0;
     let reconstructed = 0.0;
+    let previousSampleTime = -1.0;
+    let totalSamples = 0;
     for event in trace.traceEvents {
         if event is ChromeTrace.TraceEventProfile {
             profileStart = event.args.data.startTime;
@@ -149,7 +157,12 @@ fn main(): int {
             let deltas = event.args.data.timeDeltas;
             assert(samples.length == deltas.length);
             for (let i = 0; i < samples.length; i++) {
+                assert(deltas[i] >= 1, f"timeDelta #{totalSamples} is {deltas[i]}: every sample must be at least 1us after the previous one");
                 reconstructed += deltas[i] as real;
+                assert(reconstructed == (reconstructed as int) as real, f"sample #{totalSamples} reconstructs to a non-integer microsecond {reconstructed}");
+                assert(reconstructed > previousSampleTime);
+                previousSampleTime = reconstructed;
+                totalSamples += 1;
                 if nodeNames[samples[i] - 1].startsWith("Heap alloc ") {
                     sampleTimes.push(reconstructed);
                 }
@@ -165,9 +178,10 @@ fn main(): int {
     assert(markerTimes.length == sampleTimes.length,
         f"every allocation must appear once as a sample and once as a marker: {sampleTimes.length} samples vs {markerTimes.length} markers");
     assert(markerTimes.length >= 50);
+    assert(profileStart == (profileStart as int) as real, f"Profile.startTime must be an integer microsecond, got {profileStart}");
     for (let i = 0; i < markerTimes.length; i++) {
-        assert(markerTimes[i] == sampleTimes[i],
-            f"allocation #{i}: marker at {markerTimes[i]} us but its sample reconstructs to {sampleTimes[i]} us");
+        assert(markerTimes[i] == sampleTimes[i] + 0.5,
+            f"allocation #{i}: marker at {markerTimes[i]} us but its sample reconstructs to {sampleTimes[i]} us (marker must be at sample + 0.5)");
     }
     return 0;
 }
