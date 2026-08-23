@@ -49,6 +49,10 @@ const CORE_KEYS = [
   // select (visual) + line select + block select
   "v", "V", "vl", "vw", "vj", "Vj", "vlo", "viw", "vaw",
   "Vk", "Vjd", "Vjy", "VjD", "Vj>", "Vj<", "VyjP", "Vp",
+  // A count before a visual-mode `>`/`<` is a number of INDENT LEVELS,
+  // not a number of lines the way `3>>` is in normal mode. It used to be
+  // dropped entirely, so `V3>` indented once.
+  "V2>", "V3>", "Vj2>", "vj3>", "V2<", "V3<", "Vj2<",
   "<C-v>", "<C-v>jl", "<C-v>jld", "<C-v>jly", "<C-v>jjl", "<C-v>l", "<C-v>jd",
   // operators over motions
   "dw", "dW", "de", "db", "d$", "d0", "dj", "dk", "diw", "daw", "di(", 'di"',
