@@ -19,7 +19,8 @@
 //   gap-0                -> gap(0)
 //   cross-align-center   -> crossAlignCenter()
 //   w-fit                -> wFit()
-//   px-[style.paddingX]  -> px(Px { value: style.paddingX })   (explicit, unscaled)
+//   bg-[color]           -> bg(color)                     (no unit: raw expression)
+//   px-[x]px             -> px(Px { value: x })            (unit: explicit, unscaled)
 //   w-[10]em             -> w(Em { value: 10 })     w-[2]rem -> w(Rem { value: 2 })
 //   enabled?cursor-pointer   -> enabled ? cursorPointer() : noop()
 //   [a > b]?w-grow           -> (a > b) ? wGrow() : noop()
@@ -84,11 +85,16 @@ export function splitClassTokens(text: string): string[] {
   return tokens;
 }
 
-// Bracketed values are EXPLICIT lengths (never scaled): default/px -> Px,
-// em -> Em, rem -> Rem. The preset's Length overload receives them.
+// Bracketed values: a UNIT suffix makes an explicit, unscaled length
+// (px -> Px, em -> Em, rem -> Rem) for the preset's Length overload. With no
+// unit the expression is passed through raw -- the preset decides what it
+// means (a Color for bg-[c], a reactive handle, a scale number for p-[n]).
+// Table-free on purpose: the plugin cannot know which tokens are lengths,
+// so, like Tailwind, explicit lengths carry their unit.
 function wrapUnit(expr: string, unit: string, raw: string): string {
   switch (unit) {
     case "":
+      return expr;
     case "px":
       return `ui_styling.Px { value: (${expr}) }`;
     case "em":

@@ -93,13 +93,16 @@ Whitespace-separated only — no commas, no quotes, no parens between tokens.
 - **Scale numbers:** `gap-0`, `p-4`, `w-2.5` — any integer or float; the preset applies the
   Tailwind spacing scale (`headwind.computeSize`, 4px per unit). Fractions (`w-1/2`) are
   rejected until `Size` gains a percent variant.
-- **Explicit values:** `[ ]` holds a real haze expression, spliced verbatim, and is **never
-  scaled**: `p-[8]` = 8px. Unit suffix sits **outside** the bracket (the bracket is an
-  expression, not a string): default/`px` → `ui_styling.Px`, `em` → `Em` (× the element's own
+- **Explicit values:** `[ ]` holds a real haze expression, spliced verbatim. With a **unit
+  suffix** (outside the bracket — the bracket is an expression, not a string) it is an explicit,
+  never-scaled length: `px` → `ui_styling.Px`, `em` → `Em` (× the element's own
   font size, or the root size if none is set — so put `font-size` tokens first), `rem` → `Rem`
   (× `ui_styling.rootFontSize` = 16, matching ui_layout). Presets take these via `Length`
   overloads (`p(real)` scale vs `p(Length)` explicit) — p/px/py/pt/pr/pb/pl, gap, w, h,
-  rounded, font-size. IMPLEMENTED 2026-08-24.
+  rounded, font-size. **No unit = raw expression**, passed through untouched — the preset
+  decides its meaning (`bg-[color]`, `p-[n]` = scale). Table-free like Tailwind: the plugin
+  cannot know which tokens are lengths, so explicit lengths carry their unit. IMPLEMENTED
+  2026-08-24.
 - **Conditionals:** `cond?token` — cond is a single bool identifier (bare `!` negation allowed)
   or `[expr]` (member access must be bracketed, per the strict value rule). Lowered to `cond ? op : noop()`. Combined with last-wins merge, no else-branch is
   needed: `w-fit grow?w-grow`.

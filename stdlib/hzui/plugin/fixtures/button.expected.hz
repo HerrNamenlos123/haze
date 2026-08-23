@@ -91,18 +91,20 @@ let backgroundColor = rx.computed(() => {
 }
 
         return (): void => {
+            let props = instance.props();
             #source "button.hzui:59:1" {
                 ui.div({ id: 1, elementRef: buttonRef, onPointerDown: clicked }, (): void => {
                     #source "button.hzui:68:1" {
-                        if instance.props().content {
-                            instance.props().content(ButtonSlotContent { label: instance.props().label });
+                        let slot_content = props.content;
+                        if slot_content {
+                            slot_content(ButtonSlotContent { label: props.label });
                         } else {
                             #source "button.hzui:69:1" {
-                                if instance.props().label.length > 0 {
-                                    ui.text({ id: 1, text: instance.props().label },
-                                        presets.textColor(ui_styling.Px { value: (instance.props().enabled ? instance.props().style.textColor : instance.props().style.textColorDisabled) }),
+                                if props.label.length > 0 {
+                                    ui.text({ id: 1, text: props.label },
+                                        presets.textColor(props.enabled ? props.style.textColor : props.style.textColorDisabled),
                                         presets.noWrap(),
-                                        (instance.props().style.fontSize) ? presets.fontSize(ui_styling.Px { value: (instance.props().style.fontSize) }) : presets.noop()
+                                        (props.style.fontSize) ? presets.fontSize(props.style.fontSize) : presets.noop()
                                     );
                                 }
                             }
@@ -112,15 +114,15 @@ let backgroundColor = rx.computed(() => {
                     presets.row(),
                     presets.crossAlignCenter(),
                     presets.gap(0),
-                    presets.px(ui_styling.Px { value: (instance.props().style.paddingX) }),
-                    presets.py(ui_styling.Px { value: (instance.props().style.paddingY) }),
-                    presets.bg(ui_styling.Px { value: (backgroundColor) }),
-                    presets.rounded(ui_styling.Px { value: (instance.props().style.rounded) }),
+                    presets.px(props.style.paddingX),
+                    presets.py(props.style.paddingY),
+                    presets.bg(backgroundColor),
+                    presets.rounded(props.style.rounded),
                     presets.hFit(),
                     presets.wFit(),
-                    (instance.props().grow) ? presets.wGrow() : presets.noop(),
+                    (props.grow) ? presets.wGrow() : presets.noop(),
                     presets.cursorDefault(),
-                    (instance.props().enabled) ? presets.cursorPointer() : presets.noop()
+                    (props.enabled) ? presets.cursorPointer() : presets.noop()
                 );
             }
         };

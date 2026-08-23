@@ -31,6 +31,7 @@ let two = 1 + 1;
 }
 
         return (): void => {
+            let props = instance.props();
             #source "widget.hzui:13:1" {
                 ui.div({ id: 1 }, (): void => {
                 },

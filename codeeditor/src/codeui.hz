@@ -3835,7 +3835,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // button's runtime data and called back at event-dispatch time, so
         // a literal in the template would be a fresh heap environment on
         // every rebuild.
-        let onToggleIndent = () => {
+        let onToggleIndent = (event: ui_components.PointerEvent) => {
             toggleIndentWidth();
         };
 

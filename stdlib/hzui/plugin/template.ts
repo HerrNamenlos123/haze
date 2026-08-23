@@ -572,16 +572,20 @@ function lowerSlotRender(
     throw new TemplateError(`unknown slot '${node.name}'`, node.line);
   }
   const payloadStruct = ctx.slots.get(node.name)!;
-  const access = `instance.props().${node.name}`;
-  em.emit(`if ${access} {`);
+  // Bind the optional callback to a local first: narrowing does not carry
+  // across two separate `instance.props()` calls, so `if p().x { p().x() }`
+  // is "not callable" to the compiler.
+  const local = `slot_${node.name}`;
+  em.emit(`let ${local} = props.${node.name};`);
+  em.emit(`if ${local} {`);
   em.indented(() => {
     if (payloadStruct) {
       const fields = node.payload
         .map((p) => `${p.name}: ${ctx.rewriteExpr(p.value)}`)
         .join(", ");
-      em.emit(`${access}(${payloadStruct} { ${fields} });`);
+      em.emit(`${local}(${payloadStruct} { ${fields} });`);
     } else {
-      em.emit(`${access}();`);
+      em.emit(`${local}();`);
     }
   });
   if (node.fallback && node.fallback.length > 0) {

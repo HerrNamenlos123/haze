@@ -63,7 +63,7 @@ div [
 {
     slot content label=[props.label] {
         text if=[props.label.length > 0] [
-            text-color-[enabled ? props.style.textColor : props.style.textColorDisabled] text-nowrap
+            text-color-[props.enabled ? props.style.textColor : props.style.textColorDisabled] text-nowrap
             [props.style.fontSize]?font-size-[props.style.fontSize]
         ] [props.label]
     }

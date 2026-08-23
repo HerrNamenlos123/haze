@@ -214,7 +214,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             id: ID_BTN_OVERWRITE,
                             label: "Overwrite",
                             style: primaryButtonStyle(),
-                            onClick: () => {
+                            onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onOverwrite;
                                 action();
                             },
@@ -223,7 +223,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             id: ID_BTN_DISCARD,
                             label: "Discard Changes",
                             style: secondaryButtonStyle(),
-                            onClick: () => {
+                            onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onDiscard;
                                 action();
                             },
@@ -232,7 +232,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             id: ID_BTN_CANCEL,
                             label: "Cancel",
                             style: secondaryButtonStyle(),
-                            onClick: () => {
+                            onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onCancel;
                                 action();
                             },

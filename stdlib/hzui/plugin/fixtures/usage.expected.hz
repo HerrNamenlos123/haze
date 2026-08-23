@@ -30,6 +30,7 @@ let save = () => {};
 }
 
         return (): void => {
+            let props = instance.props();
             #source "usage.hzui:12:1" {
                 ui.div({ id: 1 }, (): void => {
                     #source "usage.hzui:13:1" {
@@ -47,7 +48,7 @@ let save = () => {};
                         });
                     }
                     #source "usage.hzui:18:1" {
-                        ui.text({ id: 2, text: instance.props().title });
+                        ui.text({ id: 2, text: props.title });
                     }
                 },
                     presets.col(),

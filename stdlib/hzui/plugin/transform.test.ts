@@ -93,7 +93,10 @@ describe("class tokens", () => {
   });
 
   test("bracket holds an expression, unit outside, px default", () => {
-    expect(parseClassToken("px-[props.style.paddingX]").args).toEqual([
+    expect(parseClassToken("bg-[backgroundColor]").args).toEqual([
+      "backgroundColor",
+    ]);
+    expect(parseClassToken("px-[props.style.paddingX]px").args).toEqual([
       "ui_styling.Px { value: (props.style.paddingX) }",
     ]);
     expect(parseClassToken("w-[10]em").args).toEqual([

@@ -33,6 +33,20 @@ export class ComposeError extends Error {
 // `props.x`/`slots.x` are rewritten textually; `emits` is a real generated
 // local, so it needs no rewrite. TODO(user): final naming.
 // ---------------------------------------------------------------------------
+// Template expressions: the render closure binds `let props = instance.props();`
+// once per render (a per-frame snapshot is exactly right in immediate mode),
+// so `props.x` stays a field path on a local -- which the compiler can
+// narrow (`[props.style.fontSize]?font-size-[props.style.fontSize]`), unlike
+// two separate `instance.props()` calls.
+export function rewriteTemplateExpr(code: string): string {
+  return code
+    .replace(/\bslots\./g, "props.")
+    .replace(/(?<![.\w])computed\s*\(/g, "rx.computed(")
+    .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef");
+}
+
+// Setup code: every read must be LIVE (closures capture `instance`, not a
+// snapshot), so `props.x` becomes `instance.props().x` at the use site.
 export function rewriteDialectAccessors(code: string): string {
   return (
     code
@@ -329,13 +343,14 @@ export function compose(filepath: string, source: string): string {
   }
   push("");
   push(`        return (): void => {`);
+  push(`            let props = instance.props();`);
   if (templateSec) {
     const ctx: TemplateContext = {
       componentName: comp,
       sourceFile: src,
       presetNamespace: "presets",
       slots: new Map(slots.map((s) => [s.name, slotStructName(s)])),
-      rewriteExpr: rewriteDialectAccessors,
+      rewriteExpr: rewriteTemplateExpr,
     };
     try {
       push(lowerTemplate(templateSec.body, templateSec.bodyStartLine, ctx, 3));

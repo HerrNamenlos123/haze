@@ -154,7 +154,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarArgs>) => {
         ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
 
-        let onClick = () => {
+        let onClick = (event: ui_components.PointerEvent) => {
             // Toggle. The root's capture handler deliberately
             // leaves presses on the bar alone precisely so this
             // can close a menu that is already open -- see
@@ -182,7 +182,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                     },
                 },
             }, (): void => {
-                ui_widgets.Button(ui, ui_widgets.ButtonArgs {
+                ui_widgets.Button(ui, {
                     id: 1,
                     label: "File",
                     selected: props.openMenu == menuFile(),
