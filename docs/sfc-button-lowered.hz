@@ -87,7 +87,11 @@ struct ButtonEmit {
     }
 }
 
-export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
+//@plugin: the function is suffixed; the bare name `Button` is reserved for
+// this component's @expose struct, which is the type a parent writes by hand
+// (`ui.componentRef<Button>()`). This one has no @expose, so `Button` names
+// nothing here.
+export fn ButtonComponent(ui: ui_components.UIContext, args: ButtonArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
         let emits = ButtonEmit { instance: instance };
 

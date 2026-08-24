@@ -19,7 +19,7 @@
   ],
   "repository": {
     "section-marker": {
-      "comment": "@props / @emit / @slot / @setup markers (open-only, line-anchored)",
+      "comment": "@props / @emit / @slot / @expose / @setup markers (open-only, line-anchored)",
       "match": "^(@setup)\\s*$",
       "captures": {
         "1": {
@@ -35,7 +35,7 @@
           "name": "keyword.control.section.hzui"
         }
       },
-      "end": "^(?=@(?:props|emit|slot|setup|template)\\b)",
+      "end": "^(?=@(?:props|emit|slot|expose|setup|template)\\b)",
       "name": "meta.template.hzui",
       "patterns": [
         {
@@ -363,14 +363,14 @@
       ]
     },
     "decl-section": {
-      "comment": "@props / @slot / @emit bodies are struct-body syntax",
-      "begin": "^(@(?:props|slot|emit))\\s*$",
+      "comment": "@props / @slot / @emit / @expose bodies are struct-body syntax",
+      "begin": "^(@(?:props|slot|emit|expose))\\s*$",
       "beginCaptures": {
         "1": {
           "name": "keyword.control.section.hzui"
         }
       },
-      "end": "^(?=@(?:props|emit|slot|setup|template)\\b)",
+      "end": "^(?=@(?:props|emit|slot|expose|setup|template)\\b)",
       "name": "meta.declarations.hzui",
       "patterns": [
         {

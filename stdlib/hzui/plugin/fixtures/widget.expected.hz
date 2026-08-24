@@ -39,7 +39,7 @@ struct WidgetEmits {
     }
 }
 
-export fn Widget(ui: ui_components.UIContext, args: WidgetArgs) {
+export fn WidgetComponent(ui: ui_components.UIContext, args: WidgetArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<WidgetArgs>) => {
         let emits = WidgetEmits { instance: instance };
 

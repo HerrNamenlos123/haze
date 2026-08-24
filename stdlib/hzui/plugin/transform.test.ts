@@ -179,7 +179,7 @@ describe("events", () => {
 
   test("a component's class list is reserved: required, and empty", () => {
     expect(gen("import ui_components\n@template\nBtn []")).toContain(
-      "Btn(ui, { id: 1 });"
+      "BtnComponent(ui, { id: 1 });"
     );
     expect(() => gen("import ui_components\n@template\nBtn label=x")).toThrow(
       /needs its \(reserved, currently empty\) class list/
@@ -231,6 +231,49 @@ describe("slots", () => {
       'import ui_components\n@slot\nbody: {};\n@template\nslot body {\n  text [] ["fallback"]\n}'
     );
     expect(out).toContain("slot_body(XSlotBody {  });");
+  });
+});
+
+describe("expose", () => {
+  const child = (expose: string, setup: string) =>
+    gen(`import ui_components\n@expose\n${expose}\n@setup\n${setup}\n@template\n`);
+
+  test("the exposed struct takes the component's bare name", () => {
+    // ...and the component function is suffixed instead, so the good name
+    // belongs to the type a parent writes by hand.
+    const out = child("focus: () => none;", "let focus = () => {};");
+    expect(out).toContain("export ref struct X {");
+    expect(out).toContain("export fn XComponent(ui: ui_components.UIContext");
+  });
+
+  test("the API is published once, at the end of setup, and cleared on unmount", () => {
+    const out = child(
+      "focus: () => none;\nreset: () => none;",
+      "let focus = () => {};\nlet reset = () => {};"
+    );
+    expect(out).toContain("exposeRef?: ui_components.ComponentRef<X>;");
+    expect(out).toContain("__expose := X { focus: focus, reset: reset };");
+    expect(out).toContain("ui.onUnmount(() => { __expose := null; });");
+    // Written once during setup, so it must not affect template memoization.
+    expect(out).not.toContain("|| this.exposeRef");
+  });
+
+  test("a component with no @expose gets neither the struct nor the prop", () => {
+    const out = gen("import ui_components\n@template\n");
+    expect(out).not.toContain("exposeRef");
+    expect(out).not.toContain("export ref struct X {");
+  });
+
+  test("'ref=' on a component binds its exposed API, not an element", () => {
+    const out = gen("import ui_components\n@template\nDialog [] ref=d");
+    expect(out).toContain("DialogComponent(ui, { id: 1, exposeRef: d });");
+    expect(out).not.toContain("elementRef: d");
+  });
+
+  test("'ref=' on a builtin element still binds the element", () => {
+    expect(gen("import ui_components\n@template\ndiv [] ref=r")).toContain(
+      "elementRef: r"
+    );
   });
 });
 

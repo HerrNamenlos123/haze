@@ -4073,10 +4073,16 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                     // have. Clicking flips between the two widths for the
                     // whole application (see settings.hz), which is why it
                     // is a plain toggle rather than a menu.
-                    ui_widgets.Button(ui, {
+                    ui_widgets.ButtonComponent(ui, {
                         id: 6,
                         label: indentLabel(),
-                        style: statusBarButtonStyle(),
+                        bg: "#00000000",
+                        bgHover: "#2A2D2E",
+                        bgActive: "#37373D",
+                        textColor: "#CCCCCC",
+                        paddingX: 6.0,
+                        paddingY: 0.0,
+                        rounded: 3.0,
                         onClick: onToggleIndent,
                     });
 
@@ -4830,7 +4836,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 presets.gap(2)
             );
 
-            ui_widgets.FloatingPanelWrapper(ui, {
+            ui_widgets.FloatingPanelWrapperComponent(ui, {
                 id: 1,
             });
 

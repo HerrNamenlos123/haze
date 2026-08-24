@@ -23,7 +23,7 @@ title: str = "";
     }
 }
 
-export fn Usage(ui: ui_components.UIContext, args: UsageArgs) {
+export fn UsageComponent(ui: ui_components.UIContext, args: UsageArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<UsageArgs>) => {
 
 #source "usage.hzui:10" {
@@ -33,7 +33,7 @@ let save = () => {};
         return (): ui_components.DivProps => {
             let props = instance.props();
             #source "usage.hzui:17:1" {
-                Button(ui, {
+                ButtonComponent(ui, {
                     id: 1,
                     label: "Save",
                     onClick: save,

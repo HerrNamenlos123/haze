@@ -2707,6 +2707,11 @@ export opaque ref struct UIContext {
         return rx.shallowReactive<ElementWrapper<T> | null>(null);
     }
 
+    // See ComponentRef. T is the child's exposed-API struct, not the child.
+    fn componentRef<T>(): ComponentRef<T> {
+        return rx.shallowReactive<T | null>(null);
+    }
+
     // A hollow position-anchor handle -- see ui_styling.AnchorTarget. Create
     // once, hand to a target element's `anchor:` prop, and pass to any
     // number of other elements' headwind.presets.anchorTo() in either order.
@@ -2772,3 +2777,22 @@ export ref struct ElementWrapper<T> {
 }
 
 export type ElementRef<T> = rx.ShallowReactive<ElementWrapper<T> | null>;
+
+// A handle a CHILD COMPONENT publishes for its parent -- the component
+// counterpart of ElementRef above, and deliberately not the same thing.
+//
+// ElementRef<T> wraps a real element: its T only types `raw`, and everything
+// ElementWrapper does (hover/focus/position/size) works off the element
+// underneath. A component has no element to put there, and no instance type to
+// name either -- a component IS a function here, and ComponentInstance is the
+// framework's own bookkeeping with type-erased props, nothing a parent could
+// usefully call.
+//
+// So T is not "the component". T is the API the component chose to publish:
+// the struct its @expose section declares, which is the only thing a parent
+// has any business calling. (Vue arrives at the same place from the other
+// direction -- defineExpose narrows its instance-typed ref down to exactly
+// what was published.) Null until the child's setup has run, which is during
+// the parent's first template pass: read it from onMounted or an event
+// handler, never from the parent's own setup body.
+export type ComponentRef<T> = rx.ShallowReactive<T | null>;

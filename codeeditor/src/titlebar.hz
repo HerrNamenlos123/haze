@@ -180,11 +180,12 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                     },
                 },
             }, (): void => {
-                ui_widgets.Button(ui, {
+                ui_widgets.ButtonComponent(ui, {
                     id: 1,
                     label: "File",
                     selected: props.openMenu == menuFile(),
-                    style: { paddingX: 8.0, paddingY: 4.0 },
+                    paddingX: 8.0, 
+                    paddingY: 4.0,
                     onClick: onClick,
                 });
 

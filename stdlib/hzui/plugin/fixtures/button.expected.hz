@@ -62,7 +62,7 @@ struct ButtonEmits {
     }
 }
 
-export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
+export fn ButtonComponent(ui: ui_components.UIContext, args: ButtonArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
         let emits = ButtonEmits { instance: instance };
 

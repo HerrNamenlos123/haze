@@ -50,6 +50,11 @@ let bottom = computed(() => {
     bottom?items-end
 ]
 
-div [bg-["#F00A"] w-fit h-fit items-center ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px] {
+// The panel box itself: shrink-wraps whatever the slot puts in it and carries
+// the margins that hold it off the edges it is aligned to. It paints NOTHING
+// of its own -- a positioning container that had a background would show
+// through the corners of any rounded content placed in it, since it hugs that
+// content exactly.
+div [w-fit h-fit ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px] {
     slot body {}
 }

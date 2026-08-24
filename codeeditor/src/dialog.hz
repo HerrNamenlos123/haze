@@ -81,44 +81,6 @@ const comptime ID_BTN_OVERWRITE = 6;
 const comptime ID_BTN_DISCARD = 7;
 const comptime ID_BTN_CANCEL = 8;
 
-fn primaryButtonStyle(): ui_widgets.ButtonStyle {
-    return {
-        bg: "#0078D4",
-        bgHover: "#026EC1",
-        bgActive: "#005FB8",
-        textColor: "#FFFFFF",
-        paddingX: 14.0,
-        paddingY: 6.0,
-        rounded: 2.0,
-    };
-}
-
-// Status-bar controls: no chrome until pointed at, so the bar reads as a
-// line of text rather than a row of buttons -- which is what it mostly is.
-fn statusBarButtonStyle(): ui_widgets.ButtonStyle {
-    return {
-        bg: "#00000000",
-        bgHover: "#2A2D2E",
-        bgActive: "#37373D",
-        textColor: "#CCCCCC",
-        paddingX: 6.0,
-        paddingY: 0.0,
-        rounded: 3.0,
-    };
-}
-
-fn secondaryButtonStyle(): ui_widgets.ButtonStyle {
-    return {
-        bg: "#313131",
-        bgHover: "#3C3C3C",
-        bgActive: "#484848",
-        textColor: "#CCCCCC",
-        paddingX: 14.0,
-        paddingY: 6.0,
-        rounded: 2.0,
-    };
-}
-
 export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ConflictDialogArgs>) => {
         return (): ui_components.DivProps => {
@@ -217,28 +179,46 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                         // Order matches VS Code's: the affirmative answer
                         // first, the destructive-to-the-buffer one next,
                         // and the way out last.
-                        ui_widgets.Button(ui, {
+                        ui_widgets.ButtonComponent(ui, {
                             id: ID_BTN_OVERWRITE,
                             label: "Overwrite",
-                            style: primaryButtonStyle(),
+                            bg: "#0078D4",
+                            bgHover: "#026EC1",
+                            bgActive: "#005FB8",
+                            textColor: "#FFFFFF",
+                            paddingX: 14.0,
+                            paddingY: 6.0,
+                            rounded: 2.0,
                             onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onOverwrite;
                                 action();
                             },
                         });
-                        ui_widgets.Button(ui, {
+                        ui_widgets.ButtonComponent(ui, {
                             id: ID_BTN_DISCARD,
                             label: "Discard Changes",
-                            style: secondaryButtonStyle(),
+                            bg: "#313131",
+                            bgHover: "#3C3C3C",
+                            bgActive: "#484848",
+                            textColor: "#CCCCCC",
+                            paddingX: 14.0,
+                            paddingY: 6.0,
+                            rounded: 2.0,
                             onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onDiscard;
                                 action();
                             },
                         });
-                        ui_widgets.Button(ui, {
+                        ui_widgets.ButtonComponent(ui, {
                             id: ID_BTN_CANCEL,
                             label: "Cancel",
-                            style: secondaryButtonStyle(),
+                            bg: "#313131",
+                            bgHover: "#3C3C3C",
+                            bgActive: "#484848",
+                            textColor: "#CCCCCC",
+                            paddingX: 14.0,
+                            paddingY: 6.0,
+                            rounded: 2.0,
                             onClick: (event: ui_components.PointerEvent) => {
                                 let action = instance.props().onCancel;
                                 action();

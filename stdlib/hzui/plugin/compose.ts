@@ -135,6 +135,28 @@ function parseEmits(section: Section): EmitDecl[] {
   return out;
 }
 
+// @expose entries: `name: Type;` -- one line per published member. Only the
+// NAMES are needed here (to bind each one to the setup local of the same
+// name); the body itself is spliced verbatim into the generated struct.
+function parseExposeNames(section: Section): string[] {
+  const names: string[] = [];
+  section.body.split("\n").forEach((line, i) => {
+    const t = line.trim();
+    if (t === "" || t.startsWith("//")) {
+      return;
+    }
+    const m = /^([A-Za-z_][\w]*)\s*[:?]/.exec(t);
+    if (!m) {
+      throw new ComposeError(
+        `cannot parse @expose line: '${t}' (expected 'name: Type;')`,
+        section.bodyStartLine + i
+      );
+    }
+    names.push(m[1]!);
+  });
+  return names;
+}
+
 // @slot entries: `name: { fields };` or `name: ();` (no fields).
 //
 // EVERY slot gets a payload struct, even an empty one, so every slot closure
@@ -191,16 +213,25 @@ export function compose(filepath: string, source: string): string {
   const propsSec = get("props");
   const emitSec = get("emit");
   const slotSec = get("slot");
+  const exposeSec = get("expose");
   const setupSec = get("setup");
   const templateSec = get("template");
 
   const propNames = propsSec ? parsePropNames(propsSec) : [];
   const emits = emitSec ? parseEmits(emitSec) : [];
   const slots = slotSec ? parseSlots(slotSec) : [];
+  const exposeNames = exposeSec ? parseExposeNames(exposeSec) : [];
 
   const argsName = `${comp}Args`;
   const emitsName = `${comp}Emits`;
   const slotStructName = (s: SlotDecl) => `${comp}Slot${pascal(s.name)}`;
+  // The EXPOSED struct gets the component's bare name, and the component
+  // function is suffixed instead. The type is the one a parent writes by hand
+  // (`ui.componentRef<Dialog>()`); the function is only ever written by the
+  // transformer, or by a hand-written parent mounting the component. The good
+  // name goes to the thing humans type.
+  const exposeName = comp;
+  const fnName = `${comp}Component`;
 
   const out: string[] = [];
   const push = (s: string) => out.push(s);
@@ -227,9 +258,29 @@ export function compose(filepath: string, source: string): string {
     push("");
   }
 
+  // Exposed API struct -- what a parent gets from a `ref=` on this component.
+  if (exposeSec) {
+    push(`// This component's public API: what a parent reaches through`);
+    push(`// 'ui.componentRef<${exposeName}>()' + 'ref=' on the tag. A ref struct`);
+    push(`// because a ComponentRef holds it as '${exposeName} | null'.`);
+    push(`export ref struct ${exposeName} {`);
+    push(`#source "${src}:${exposeSec.bodyStartLine}" {`);
+    push(exposeSec.body.trimEnd());
+    push(`}`);
+    push(`}`);
+    push("");
+  }
+
   // Args struct
   push(`export struct ${argsName} {`);
   push(`    id: int;`);
+  if (exposeSec) {
+    push("");
+    push(`    // generated: where this component publishes its API. Excluded`);
+    push(`    // from operator!= below -- it is written once, during setup,`);
+    push(`    // and never participates in whether the template re-runs.`);
+    push(`    exposeRef?: ui_components.ComponentRef<${exposeName}>;`);
+  }
   if (propsSec) {
     push("");
     push(`#source "${src}:${propsSec.bodyStartLine}" {`);
@@ -297,7 +348,7 @@ export function compose(filepath: string, source: string): string {
   }
 
   // Component function
-  push(`export fn ${comp}(ui: ui_components.UIContext, args: ${argsName}) {`);
+  push(`export fn ${fnName}(ui: ui_components.UIContext, args: ${argsName}) {`);
   push(
     `    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<${argsName}>) => {`
   );
@@ -308,6 +359,34 @@ export function compose(filepath: string, source: string): string {
     push("");
     push(`#source "${src}:${setupSec.bodyStartLine}" {`);
     push(rewriteDialectAccessors(setupSec.body.trimEnd()));
+    push(`}`);
+  }
+  if (exposeSec) {
+    // Published ONCE, here at the end of setup: setup runs once per instance
+    // and the members it built are stable for the instance's whole life, so
+    // there is nothing to refresh on later renders. Each field binds to the
+    // setup local of the same name -- a missing or wrongly-typed one is an
+    // ordinary type error, pointed back at the @expose line.
+    //
+    // Bound to an explicitly-typed local first: the narrowing from `is not
+    // none` does not travel into the onUnmount closure below, and a closure
+    // assigned into an optional field is exactly the case that needs a
+    // pre-bound local anyway.
+    push("");
+    push(`#source "${src}:${exposeSec.bodyStartLine}:1" {`);
+    push(`            let __exposeOpt = instance.props().exposeRef;`);
+    push(`            if __exposeOpt is not none {`);
+    push(
+      `                let __expose: ui_components.ComponentRef<${exposeName}> = __exposeOpt;`
+    );
+    push(
+      `                __expose := ${exposeName} { ${exposeNames
+        .map((n) => `${n}: ${n}`)
+        .join(", ")} };`
+    );
+    push(`                // A destroyed component's API must not stay callable.`);
+    push(`                ui.onUnmount(() => { __expose := null; });`);
+    push(`            }`);
     push(`}`);
   }
   const ctx: TemplateContext = {

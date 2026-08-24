@@ -45,6 +45,7 @@ marker ends it. No closing markers, no brace counting — splitting is a single 
 @props        struct-body syntax: fields with defaults
 @slot         name: { payload fields }   (payload struct; `name: ();` = no fields)
 @emit         name: (ArgTypes,)
+@expose       name: Type                 (this component's public API — §3.6)
 @setup        plain haze, verbatim (Vue's <script setup>)
 @template     template syntax (§3.2) — the only section with its own (token-level) grammar
 ```
@@ -153,6 +154,52 @@ Whitespace-separated only — no commas, no quotes, no parens between tokens.
   The long-term direction is a public style contract per component — advertised flags, each
   landing where the component says — which, with variants and theme tokens, is intended to
   replace per-component style structs (`ButtonStyle`-like structs remain possible).
+
+### 3.6 `@expose` — calling into a child
+
+Vue's `defineExpose` + template refs, with one structural difference forced by this system: **there
+is no component instance type to name.** A component is a plain function, and `ComponentInstance`
+is framework bookkeeping over type-erased props — nothing a parent could usefully call. So the ref
+is typed by the API the child publishes, not by the child:
+
+```
+@expose                            # child
+focus: () => none;
+reset: (hard: bool) => none;
+isOpen: rx.Computed<bool>;         # not restricted to functions
+```
+
+```
+@setup                             # parent
+let dialog = ui.componentRef<Dialog>();
+ui.onMounted(() => { rx.get(dialog)?.focus(); });
+
+@template
+Dialog [] ref=dialog
+```
+
+- **The exposed struct takes the component's bare name; the generated function is suffixed.**
+  `Dialog.hzui` produces `export ref struct Dialog` and `export fn DialogComponent(...)`. The bare
+  name goes to the type, because that is the one a human writes by hand — the call is emitted by
+  the transformer. A hand-written parent mounting an SFC component calls `DialogComponent(...)`.
+- **`ref=` means different things by tag case.** On a builtin element it binds `elementRef` (an
+  `ElementWrapper`, with hover/focus/position); on a component it binds `exposeRef`. A component
+  has no element for a parent to hold, and its root belongs to its own template.
+- **Published once, at the end of setup**, since setup runs once and the members it built are
+  stable for the instance's life. Each field binds to the setup local of the same name; a missing
+  or mistyped one is an ordinary type error at the `@expose` line. Cleared on unmount, so a
+  destroyed component's API does not stay callable.
+- **Null until the child's setup has run**, which is during the parent's *first template pass* —
+  read it from `onMounted` or an event handler, never from the parent's own setup body. Same rule
+  as Vue, and the ordering holds: `defineComponentImpl` runs the template (creating children,
+  running their setups) before firing the parent's `onMounted`.
+- `exposeRef` is excluded from the generated `operator!=`: it is written once and never decides
+  whether the template re-runs.
+- A component with no `@expose` has no struct and no `exposeRef` prop, so `ref=` on it is a
+  compile error rather than a silent null.
+
+Deliberately NOT done by dialect rewriting: `ui.componentRef<Dialog>()` is written in full, and
+`Dialog` really is a type. Nothing here resolves a name the compiler could not.
 
 ### 3.4 IDs
 
@@ -417,6 +464,8 @@ linting.
 | Section order | `@props`/`@emit`/`@slot` any order, then `@setup`, then `@template` | matches how drafts were actually written |
 | Editor support | separate grammar-only VS Code extension `stdlib/hzui/vscode` (language `hzui`, embeds `source.hz`) | base haze extension never accumulates project-specific rules |
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
+| Component ref | `ref=` binds the child's `@expose` struct, not the child | components are functions here; there is no instance type, and the exposed API is what a parent wants anyway |
+| Exposed struct naming | struct gets the bare name, function becomes `<Name>Component` | the type is hand-written, the call is generated — the good name goes to what humans type |
 | Slot arity | always one payload param, explicitly typed by convention | a use site can't see a slot's arity or payload type across files, and closures into optional fields get no inference |
 | Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
 | Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |
@@ -432,7 +481,7 @@ linting.
 
 ## 9. v0 implementation subset (locked)
 
-In: sections/markers, class tokens + `[expr]` values + `?` conditions, attrs/events, `if=` /
+In: sections/markers (incl. `@expose`), class tokens + `[expr]` values + `?` conditions, attrs/events, `if=` /
 `else-if=` / `for=` + mandatory `key=` on all direct loop children, slots (both sides, scoped
 payloads), auto ids, generated Props/`!=`/emit/slot structs, `#source`-mapped diagnostics.
 Explicit dialect-prefixed access (`props.x`-style, final names TBD) — bare-name unwrapping ships

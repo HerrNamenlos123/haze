@@ -869,7 +869,18 @@ function lowerElementInner(
     }
     const args: string[] = [`id: ${idExpr}`];
     for (const a of node.attrs) {
-      args.push(`${a.name}: ${rw(a.value)}`);
+      if (a.name === "ref") {
+        // On a component, `ref=` binds its EXPOSED API, not an element: a
+        // component has no element for a parent to hold, and its root belongs
+        // to its own template. The target is `ui.componentRef<Tag>()`, whose
+        // T is the struct the component's @expose section declares -- which
+        // is why the exposed struct gets the component's bare name and the
+        // generated function is suffixed instead. A component with no @expose
+        // has no such prop, and the compiler says so.
+        args.push(`exposeRef: ${rw(a.value)}`);
+      } else {
+        args.push(`${a.name}: ${rw(a.value)}`);
+      }
     }
     for (const e of node.events) {
       args.push(`${emitProp(e.name)}: ${rw(e.value)}`);
@@ -887,10 +898,14 @@ function lowerElementInner(
         node.line
       );
     }
+    // `Dialog` in a template is the component; the haze function it lowers to
+    // is `DialogComponent`, because the bare name belongs to the exposed-API
+    // struct a parent writes by hand (see the `ref=` case above).
+    const fn = `${node.tag}Component`;
     if (closures.length === 0) {
-      em.emit(`${node.tag}(ui, { ${args.join(", ")} });`);
+      em.emit(`${fn}(ui, { ${args.join(", ")} });`);
     } else {
-      em.emit(`${node.tag}(ui, {`);
+      em.emit(`${fn}(ui, {`);
       em.indented(() => {
         for (const a of args) {
           em.emit(`${a},`);

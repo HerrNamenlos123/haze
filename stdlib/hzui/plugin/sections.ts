@@ -8,6 +8,7 @@ export const SECTION_NAMES = [
   "props",
   "emit",
   "slot",
+  "expose",
   "setup",
   "template",
 ] as const;
@@ -15,7 +16,7 @@ export type SectionName = (typeof SECTION_NAMES)[number];
 
 // `@props` alone on a line (trailing head content allowed only for @template,
 // e.g. `@template [w-fit ...]`).
-const MARKER_RE = /^@(props|emit|slot|setup|template)\b(.*)$/;
+const MARKER_RE = /^@(props|emit|slot|expose|setup|template)\b(.*)$/;
 
 export type Section = {
   name: SectionName;
@@ -51,12 +52,14 @@ export class SectionError extends Error {
   }
 }
 
-// Ordering: the declaration sections (@props/@emit/@slot) may appear in any
-// order among themselves; @setup must follow them and @template must be last.
+// Ordering: the declaration sections (@props/@emit/@slot/@expose) may appear
+// in any order among themselves; @setup must follow them and @template must be
+// last.
 const SECTION_RANK: Record<SectionName, number> = {
   props: 0,
   emit: 0,
   slot: 0,
+  expose: 0,
   setup: 1,
   template: 2,
 };
@@ -178,7 +181,7 @@ export function splitSections(source: string): SplitResult {
       }
       if (thisRank < prevRank) {
         throw new SectionError(
-          `section @${name} must come before @${current!.name} (order: @props/@emit/@slot in any order, then @setup, then @template)`,
+          `section @${name} must come before @${current!.name} (order: @props/@emit/@slot/@expose in any order, then @setup, then @template)`,
           markerIdx + 1
         );
       }
