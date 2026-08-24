@@ -4830,9 +4830,8 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 presets.gap(2)
             );
 
-            ui_widgets.FloatingPanel(ui, {
+            ui_widgets.FloatingPanelWrapper(ui, {
                 id: 1,
-                position: ui_widgets.PanelPosition.TopLeft,
             });
 
             return { id: 0 };

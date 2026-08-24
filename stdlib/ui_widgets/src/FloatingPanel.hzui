@@ -13,8 +13,13 @@ export enum PanelPosition {
 
 @props
 position: PanelPosition = PanelPosition.Center;
-marginX: real = 0;
-marginY: real = 0;
+marginLeft: real = 0;
+marginRight: real = 0;
+marginTop: real = 0;
+marginBottom: real = 0;
+
+@slot
+body: {};
 
 @setup
 let left = computed(() => {
@@ -45,6 +50,6 @@ let bottom = computed(() => {
     bottom?items-end
 ]
 
-div [bg-["#F00A"] w-fit h-fit items-center] {
-    text [] ["Hello world"]
+div [bg-["#F00A"] w-fit h-fit items-center ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px] {
+    slot body {}
 }

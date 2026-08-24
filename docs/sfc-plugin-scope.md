@@ -126,8 +126,8 @@ Whitespace-separated only — no commas, no quotes, no parens between tokens.
   never-scaled length: `px` → `ui_styling.Px`, `em` → `Em` (× the element's own
   font size, or the root size if none is set — so put `font-size` tokens first), `rem` → `Rem`
   (× `ui_styling.rootFontSize` = 16, matching ui_layout). Presets take these via `Length`
-  overloads (`p(real)` scale vs `p(Length)` explicit) — p/px/py/pt/pr/pb/pl, gap, w, h,
-  rounded, font-size. **No unit = raw expression**, passed through untouched — the preset
+  overloads (`p(real)` scale vs `p(Length)` explicit) — p/px/py/pt/pr/pb/pl,
+  m/mx/my/mt/mr/mb/ml, gap, w, h, rounded, font-size. **No unit = raw expression**, passed through untouched — the preset
   decides its meaning (`bg-[color]`, `p-[n]` = scale). Table-free like Tailwind: the plugin
   cannot know which tokens are lengths, so explicit lengths carry their unit. IMPLEMENTED
   2026-08-24.
@@ -237,6 +237,12 @@ for completions; not needed for diagnostics.
 4. **Hover/active variants:** auto elementRef per styled element + conditional ops (no new
    runtime primitives; lowering only).
 5. **`key=` id hashing helper** (small runtime function).
+6. ~~Margins~~ DONE: `MarginOp`/`StyleMargin`/`Margin` mirror padding through
+   `ui_styling`, `m-*` presets in headwind, and a **margin box** in `ui_layout` (Clay has no
+   margin, so one is realised as a transparent padding-box wrapper — the same trick
+   `Packing.SpaceBetween` uses spacer elements for). Out-of-flow elements fold the margin into
+   their floating offset instead. No margin collapsing (flex model); negative margins are
+   unsupported in flow.
 
 Each is day-scale.
 

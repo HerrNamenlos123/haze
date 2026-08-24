@@ -90,6 +90,58 @@ namespace presets {
     export fn pl(value: real): ui_styling.PaddingOp { return ui_styling.PaddingOp { left: pxLen(value) }; }
     export fn pl(value: ui_styling.Length): ui_styling.PaddingOp { return ui_styling.PaddingOp { left: value }; }
 
+    // Margin. Same three input forms and the same last-wins composition as
+    // padding above: `real` = Tailwind spacing scale (m-4 = 16px), Length =
+    // explicit (m-[8]px, m-[1.5]em), StyleMarginFull = per side.
+    //
+    // Margins do NOT collapse -- this is a flex-style model, so a margin
+    // between two siblings adds to the parent's `gap` rather than merging
+    // with the neighbour's margin.
+    //
+    // NEGATIVE margins are not supported on an in-flow element: the margin box
+    // that realises them (ui_layout.defineMarginBox) is a padding box, and the
+    // layout engine has no negative padding. They do work on an out-of-flow
+    // (absolute/fixed/anchored) element, where the margin is folded into the
+    // floating offset instead -- but do not rely on that asymmetry.
+    export fn m(value: real): ui_styling.MarginOp {
+        let l = pxLen(value);
+        return ui_styling.MarginOp { top: l, right: l, bottom: l, left: l };
+    }
+    export fn m(value: ui_styling.Length): ui_styling.MarginOp {
+        return ui_styling.MarginOp { top: value, right: value, bottom: value, left: value };
+    }
+    export fn m(value: ui_styling.StyleMarginFull): ui_styling.MarginOp {
+        return ui_styling.MarginOp {
+            top: optPx(value.top),
+            right: optPx(value.right),
+            bottom: optPx(value.bottom),
+            left: optPx(value.left),
+        };
+    }
+
+    export fn mx(value: real): ui_styling.MarginOp {
+        let l = pxLen(value);
+        return ui_styling.MarginOp { left: l, right: l };
+    }
+    export fn mx(value: ui_styling.Length): ui_styling.MarginOp {
+        return ui_styling.MarginOp { left: value, right: value };
+    }
+    export fn my(value: real): ui_styling.MarginOp {
+        let l = pxLen(value);
+        return ui_styling.MarginOp { top: l, bottom: l };
+    }
+    export fn my(value: ui_styling.Length): ui_styling.MarginOp {
+        return ui_styling.MarginOp { top: value, bottom: value };
+    }
+    export fn mt(value: real): ui_styling.MarginOp { return ui_styling.MarginOp { top: pxLen(value) }; }
+    export fn mt(value: ui_styling.Length): ui_styling.MarginOp { return ui_styling.MarginOp { top: value }; }
+    export fn mr(value: real): ui_styling.MarginOp { return ui_styling.MarginOp { right: pxLen(value) }; }
+    export fn mr(value: ui_styling.Length): ui_styling.MarginOp { return ui_styling.MarginOp { right: value }; }
+    export fn mb(value: real): ui_styling.MarginOp { return ui_styling.MarginOp { bottom: pxLen(value) }; }
+    export fn mb(value: ui_styling.Length): ui_styling.MarginOp { return ui_styling.MarginOp { bottom: value }; }
+    export fn ml(value: real): ui_styling.MarginOp { return ui_styling.MarginOp { left: pxLen(value) }; }
+    export fn ml(value: ui_styling.Length): ui_styling.MarginOp { return ui_styling.MarginOp { left: value }; }
+
     export fn gap(value: real): ui_styling.GapOp {
         return ui_styling.GapOp { value: ui_styling.Px { value: computeSize(value) } };
     }

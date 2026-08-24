@@ -1,0 +1,13 @@
+
+@slot
+
+@setup
+
+@template [relative w-100 h-100 bg-["#333"]]
+FloatingPanel [] position=[PanelPosition.Top] {
+    #body {
+        div [bg-["#F00"] p-2] {
+            text [] ["Hello World"]
+        }
+    }
+}

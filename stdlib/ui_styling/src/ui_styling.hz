@@ -9,6 +9,17 @@ export struct Padding {
     bottom: real = 0.0;
 }
 
+// The space OUTSIDE an element's border box, between it and its siblings.
+// Same four reals as Padding, and deliberately a separate type: the two are
+// never interchangeable, and a function taking the wrong one is a bug the
+// compiler should catch.
+export struct Margin {
+    left: real = 0.0;
+    right: real = 0.0;
+    top: real = 0.0;
+    bottom: real = 0.0;
+}
+
 export struct CornerRadius {
     topLeft: real = 0.0;
     topRight: real = 0.0;
@@ -291,6 +302,19 @@ export struct StylePaddingFull {
 
 export type StylePadding = StylePaddingSimple | StylePaddingFull | none;
 
+export struct StyleMarginSimple {
+    value?: real;
+}
+
+export struct StyleMarginFull {
+    left?: real;
+    right?: real;
+    top?: real;
+    bottom?: real;
+}
+
+export type StyleMargin = StyleMarginSimple | StyleMarginFull | none;
+
 export struct StyleCornerRadiusSimple {
     value?: real;
 }
@@ -315,6 +339,22 @@ export struct BorderWidthValues {
     right?: real;
     bottom?: real;
     left?: real;
+}
+
+fn resolveMargin(margin: StyleMargin): Margin {
+    if margin is StyleMarginSimple {
+        let v = margin.value ? margin.value : 0.0;
+        return Margin { left: v, right: v, top: v, bottom: v };
+    }
+    else if margin is StyleMarginFull {
+        return Margin {
+            left: margin.left ? margin.left : 0.0,
+            right: margin.right ? margin.right : 0.0,
+            top: margin.top ? margin.top : 0.0,
+            bottom: margin.bottom ? margin.bottom : 0.0,
+        };
+    }
+    return Margin {};
 }
 
 fn resolvePadding(padding: StylePadding): Padding {
@@ -368,6 +408,12 @@ export struct DivStyle {
     width: Size = SizeMode._Unset;
     height: Size = SizeMode._Unset;
     padding: StylePadding = none;
+    // Space outside the border box. Unlike padding it is not part of this
+    // element's own box at all -- see ui_layout.defineMarginBox for how it is
+    // realised, and note there is no margin COLLAPSING here: this is a
+    // flex-style model, where adjacent margins add rather than merge.
+    // Negative values are not supported in flow (see headwind's `m`).
+    margin: StyleMargin = none;
     direction?: Direction;
     packing?: Packing;
     crossAlign?: CrossAlign;
@@ -413,6 +459,7 @@ export struct DivStyle {
         this.width = other.width;
         this.height = other.height;
         this.padding = other.padding;
+        this.margin = other.margin;
         this.direction = other.direction;
         this.packing = other.packing;
         this.crossAlign = other.crossAlign;
@@ -512,6 +559,7 @@ export struct ComputedDivStyle {
     width: Size = SizeMode.Fit;
     height: Size = SizeMode.Fit;
     padding: Padding = {};
+    margin: Margin = {};
     direction: Direction = Direction.Row;
     packing: Packing = Packing.Start;
     crossAlign: CrossAlign = CrossAlign.Start;
@@ -557,6 +605,7 @@ export struct ComputedDivStyle {
         this.width = other.width;
         this.height = other.height;
         this.padding = other.padding;
+        this.margin = other.margin;
         this.direction = other.direction;
         this.packing = other.packing;
         this.crossAlign = other.crossAlign;
@@ -634,6 +683,14 @@ fn lengthOr(l: Length | none, fontSize: real, fallback: real | none): real | non
     return resolveLength(l, fontSize);
 }
 
+fn toFullMargin(m: StyleMargin): StyleMarginFull {
+    if m is StyleMarginSimple {
+        return StyleMarginFull { left: m.value, right: m.value, top: m.value, bottom: m.value };
+    }
+    else if m is StyleMarginFull { return m; }
+    return StyleMarginFull {};
+}
+
 fn toFullPadding(p: StylePadding): StylePaddingFull {
     if p is StylePaddingSimple {
         return StylePaddingFull { left: p.value, right: p.value, top: p.value, bottom: p.value };
@@ -647,6 +704,14 @@ export struct TextColorOp { color: Color; }
 // Per-side and optional, so shorthands compose by field with last-wins:
 // `p-4 px-2 pb-1` = top 4, left/right 2, bottom 1; `px-2 p-4` = all 4.
 export struct PaddingOp {
+    top: Length | none = none;
+    right: Length | none = none;
+    bottom: Length | none = none;
+    left: Length | none = none;
+}
+// Per-side and optional, exactly like PaddingOp: `m-4 mx-2 mb-1` composes by
+// field with last-wins.
+export struct MarginOp {
     top: Length | none = none;
     right: Length | none = none;
     bottom: Length | none = none;
@@ -718,7 +783,7 @@ export type TextStyleOp =
 // expected too: union membership doesn't see through a nested union, so
 // `TextStyleOp | ...` here wouldn't actually include its variants.
 export type DivStyleOp =
-    BackgroundColorOp | TextColorOp | PaddingOp | GapOp | CrossAlignOp | PackingOp
+    BackgroundColorOp | TextColorOp | PaddingOp | MarginOp | GapOp | CrossAlignOp | PackingOp
     | DisplayOp
     | OverflowOp | OverflowXOp | OverflowYOp
     | DirectionOp | CornerRadiusOp | RoundedOp | WidthOp | HeightOp | WidthLengthOp | HeightLengthOp
@@ -742,6 +807,16 @@ export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
         let fs = working.fontSize ? working.fontSize : rootFontSize;
         let cur = toFullPadding(working.padding);
         working.padding = StylePaddingFull {
+            top: lengthOr(op.top, fs, cur.top),
+            right: lengthOr(op.right, fs, cur.right),
+            bottom: lengthOr(op.bottom, fs, cur.bottom),
+            left: lengthOr(op.left, fs, cur.left),
+        };
+    }
+    else if op is MarginOp {
+        let fs = working.fontSize ? working.fontSize : rootFontSize;
+        let cur = toFullMargin(working.margin);
+        working.margin = StyleMarginFull {
             top: lengthOr(op.top, fs, cur.top),
             right: lengthOr(op.right, fs, cur.right),
             bottom: lengthOr(op.bottom, fs, cur.bottom),
@@ -821,6 +896,7 @@ export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
 export fn finishDivStyle(working: DivStyle): ComputedDivStyle {
     let result = ComputedDivStyle {
         padding: resolvePadding(working.padding),
+        margin: resolveMargin(working.margin),
         cornerRadius: resolveCornerRadius(working.cornerRadius),
         positionValues: working.positionValues,
         translate: working.translate,
@@ -864,6 +940,7 @@ export fn overlayExplicitDiv(working: mut stackref DivStyle, raw: DivStyle) {
     // trips "union comparison on a non-union" in the compiler; the negated
     // positive check resolves the alias fine.
     if !(raw.padding is none) { working.padding = raw.padding; }
+    if !(raw.margin is none) { working.margin = raw.margin; }
     if !(raw.cornerRadius is none) { working.cornerRadius = raw.cornerRadius; }
     if raw.positionValues.top { working.positionValues.top = raw.positionValues.top; }
     if raw.positionValues.right { working.positionValues.right = raw.positionValues.right; }

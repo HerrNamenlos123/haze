@@ -335,20 +335,53 @@ fn resolveAttachPoint(values: ui_styling.PositionValues): ffi.hzui_attach_point_
 // The single offset vector Clay applies after aligning attachPoint corners --
 // a `right`/`bottom` value pushes inward (negative), matching CSS: `right: 8`
 // means "8px in from the right edge", not "8px further right".
-fn resolveOffset(values: ui_styling.PositionValues, attachPoint: ffi.hzui_attach_point_t): Vec2 :: final {
+//
+// Margin is folded in here rather than realised as a margin box (see
+// defineMarginBox): a floating element is out of flow, so there is no flow for
+// a wrapper to hold its place in -- a wrapper would occupy space while the
+// element itself floated out of it. CSS says the same thing for an
+// absolutely-positioned box: its margin offsets it further in from whichever
+// edge it is anchored to, so `right: 8` with `mr-1` (4px) sits 12px in.
+fn resolveOffset(values: ui_styling.PositionValues, margin: ui_styling.Margin, attachPoint: ffi.hzui_attach_point_t): Vec2 :: final {
     let x = 0.0;
     let y = 0.0;
     if attachPoint == ffi.hzui_attach_point_t.hzui_attach_top_right || attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_right {
         if values.right { x = -values.right; }
+        x -= margin.right;
     } else {
         if values.left { x = values.left; }
+        x += margin.left;
     }
     if attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_left || attachPoint == ffi.hzui_attach_point_t.hzui_attach_bottom_right {
         if values.bottom { y = -values.bottom; }
+        y -= margin.bottom;
     } else {
         if values.top { y = values.top; }
+        y += margin.top;
     }
     return Vec2(x, y);
+}
+
+// Whether this element leaves normal flow entirely, i.e. whether
+// resolveFloating below will produce a real floating config for it. Its own
+// function because the margin path has to ask the same question BEFORE
+// building anything (an out-of-flow element gets no margin box -- see
+// resolveOffset), and two copies of this condition would be a drift waiting to
+// happen.
+fn takesElementOutOfFlow(style: ui_styling.ComputedDivStyle): bool :: final {
+    if style.position == ui_styling.Position.Absolute || style.position == ui_styling.Position.Fixed {
+        return true;
+    }
+    if style.anchorTarget is not none {
+        // Only an anchor that actually RESOLVES floats the element --
+        // matching resolveFloating, which falls through to noFloating() when
+        // the target has not been published yet.
+        let resolved = rx.get(style.anchorTarget);
+        if resolved is TypeErasedBox {
+            return true;
+        }
+    }
+    return false;
 }
 
 // The CSS containing-block algorithm: an explicit anchorTo() always wins;
@@ -358,6 +391,10 @@ fn resolveOffset(values: ui_styling.PositionValues, attachPoint: ffi.hzui_attach
 // below) and falls back to this viewport if there isn't one. Static/Relative
 // with no explicit anchor stay in normal flow entirely (CLAY_ATTACH_TO_NONE).
 fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle): ffi.hzui_floating_config_t :: final {
+    if !takesElementOutOfFlow(style) {
+        return noFloating();
+    }
+
     let explicitAnchor: str | none = none;
     if style.anchorTarget is not none {
         let resolved = rx.get(style.anchorTarget);
@@ -367,15 +404,8 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
         }
     }
 
-    let isFloating = style.position == ui_styling.Position.Absolute
-        || style.position == ui_styling.Position.Fixed
-        || explicitAnchor is not none;
-    if !isFloating {
-        return noFloating();
-    }
-
     let attachPoint = resolveAttachPoint(style.positionValues);
-    let offset = resolveOffset(style.positionValues, attachPoint);
+    let offset = resolveOffset(style.positionValues, style.margin, attachPoint);
     // Passed through untouched -- it's a multiplier of a size this side
     // doesn't know yet, resolved into pixels by ui.c once Clay has one.
     let translate = Vec2(style.translate.x, style.translate.y);
@@ -420,6 +450,34 @@ fn resolveFloating(positioningContext: []str, style: ui_styling.ComputedDivStyle
         zIndex: style.zIndex,
         parentId: "",
     };
+}
+
+// A margin box takes the element's own sizing on an axis when that is Grow,
+// so Grow still reaches through it, and Fit otherwise. A Fit or fixed-size
+// element must be HUGGED by its margin box rather than stretched by it, so
+// that the box measures exactly element + margins -- which is what makes the
+// pair behave as one CSS margin box in the parent's flow, alignment and gap
+// while the element inside keeps the size it asked for.
+fn marginBoxSizing(size: ui_styling.Size): ffi.hzui_sizing_axis_t :: final {
+    if size is ui_styling.SizeMode {
+        if size == ui_styling.SizeMode.Grow {
+            return { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
+        }
+    }
+    return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
+}
+
+// Whether this element gets a margin box at all -- see defineMarginBox.
+fn needsMarginBox(style: ui_styling.ComputedDivStyle): bool :: final {
+    let m = style.margin;
+    if m.left == 0.0 && m.right == 0.0 && m.top == 0.0 && m.bottom == 0.0 {
+        return false;
+    }
+    // An out-of-flow element gets its margin folded into its floating offset
+    // instead: there is no flow position for a box to hold open, and a box
+    // that stayed in flow would occupy space the element itself has left.
+    // See resolveOffset.
+    return !takesElementOutOfFlow(style);
 }
 
 // Packing.SpaceBetween has no Clay equivalent, so it's emulated the way
@@ -701,6 +759,9 @@ export opaque ref struct Context {
     // crossAxisForcesWidthGrow/crossAxisForcesHeightGrow) when its own
     // crossAlign is Stretch, so this element knows whether *it* should
     // stretch to fill the parent's cross-extent -- see effectiveSize().
+    //
+    // Everything that decides WHETHER and IN WHAT an element is declared lives
+    // here; processTreeElementInFlow below declares the element itself.
     fn processTreeElement(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool = false, forceGrowHeight: bool = false): void :: final {
         // CSS `display: none`: the element and its whole subtree are not
         // declared to Clay at all. Returning here (rather than declaring a
@@ -721,6 +782,90 @@ export opaque ref struct Context {
         if ui_elements.isDisplayNone(element) {
             return;
         }
+
+        // A margin is realised as a real element wrapped around this one --
+        // see defineMarginBox. Only Div and Canvas have a box model, and so
+        // only they can have a margin; a text element's box is the div that
+        // wraps it.
+        if element is ui_elements.DivElement {
+            if needsMarginBox(element.style) {
+                this.defineMarginBox(ctx, element, element.globalId, element.style, forceGrowWidth, forceGrowHeight);
+                return;
+            }
+        }
+        else if element is ui_elements.CanvasElement {
+            if needsMarginBox(element.style) {
+                this.defineMarginBox(ctx, element, element.globalId, element.style, forceGrowWidth, forceGrowHeight);
+                return;
+            }
+        }
+
+        this.processTreeElementInFlow(ctx, element, forceGrowWidth, forceGrowHeight);
+    }
+
+    // Clay has no margin, so one is realised the way Packing.SpaceBetween is
+    // (see defineSpacer): with an element Clay does have. The MARGIN BOX is a
+    // transparent, non-painting div whose padding IS the margin and whose only
+    // child is the element itself, so the two travel through the parent's
+    // flow, alignment and gap as a single unit -- exactly what a CSS margin box
+    // is. Margins therefore do not collapse, they add, which is the flex-model
+    // answer and the one this layout already gives everywhere else.
+    //
+    // The box is invisible to everything downstream: no background, no border
+    // and no elementPtr, so Clay emits no render command for it, it receives no
+    // bounding-box feedback and it is never hit-tested. Clipping
+    // (collectClipsRecursive) and hit-testing (ui_components' hit path) both
+    // walk the HAZE element tree, which this box is not part of at all, so
+    // neither can even see it. Its id is the element's own with a suffix, so it
+    // cannot collide with a real element's.
+    fn defineMarginBox(
+        ctx: TreeTraverseContext,
+        element: ui_elements.Element,
+        elementId: str,
+        style: ui_styling.ComputedDivStyle,
+        forceGrowWidth: bool,
+        forceGrowHeight: bool
+    ): void :: final {
+        let margin = style.margin;
+
+        // `let stackref` for the same reason as renderChildren below: Clay
+        // calls this back synchronously from inside the define call, so the
+        // env can live on this frame instead of costing an allocation per
+        // margined element per frame.
+        let stackref renderChild = () => {
+            this.processTreeElementInFlow(ctx, element, forceGrowWidth, forceGrowHeight);
+        };
+        let func = none as cptr;
+        let env = none as cptr;
+        __c__("func = (void*)renderChild.fn;");
+        __c__("env = (void*)renderChild.env.ptr;");
+
+        ffi.hzui_clay_define_div_element(func, env, {
+            id: elementId + "/__margin",
+            backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
+            padding: { left: margin.left, right: margin.right, top: margin.top, bottom: margin.bottom },
+            cornerRadius: { topLeft: 0.0, topRight: 0.0, bottomLeft: 0.0, bottomRight: 0.0 },
+            downInsteadOfRight: false,
+            gap: 0.0,
+            // The forceGrow flags are consumed HERE and passed on unchanged:
+            // a Stretch parent stretches the margin box, and the element
+            // inside then stretches to fill the box's content area, so the
+            // margin survives the stretch instead of being eaten by it.
+            width: marginBoxSizing(effectiveSize(style.width, forceGrowWidth)),
+            height: marginBoxSizing(effectiveSize(style.height, forceGrowHeight)),
+            mainAxisAlign: ffi.hzui_align_t.hzui_align_start,
+            crossAxisAlign: ffi.hzui_align_t.hzui_align_start,
+            floating: noFloating(),
+            borderColor: Color(0.0, 0.0, 0.0, 0.0),
+            borderWidth: noBorder(),
+            elementPtr: none as cptr,
+        });
+    }
+
+    // Declares one element to Clay, in normal flow. Never called directly --
+    // go through processTreeElement above, which is what decides whether this
+    // element is declared at all and whether it needs a margin box first.
+    fn processTreeElementInFlow(ctx: TreeTraverseContext, element: ui_elements.Element, forceGrowWidth: bool, forceGrowHeight: bool): void :: final {
         if element is ui_elements.DivElement {
             this.pushCascadingStack(ctx, element);
             // The raw pointer to this already-heap-allocated element --

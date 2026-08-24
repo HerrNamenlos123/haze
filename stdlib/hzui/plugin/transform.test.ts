@@ -232,6 +232,18 @@ describe("class tokens", () => {
     expect(lowered[1]).toBe("grow ? presets.wGrow() : presets.noop()");
   });
 
+  test("margin tokens lower like padding, by the same mechanical rule", () => {
+    expect(parseClassToken("m-4")).toMatchObject({ fn: "m", args: ["4"] });
+    expect(parseClassToken("mx-2")).toMatchObject({ fn: "mx", args: ["2"] });
+    expect(parseClassToken("mt-[8]px").args).toEqual([
+      "ui_styling.Px { value: (8) }",
+    ]);
+    expect(lowerClassList("m-4 mb-1", "presets")).toEqual([
+      "presets.m(4)",
+      "presets.mb(1)",
+    ]);
+  });
+
   test("explicit values are unscaled Px/Em/Rem; scale numbers stay plain", () => {
     expect(parseClassToken("p-[8]").args).toEqual([
       "ui_styling.Px { value: (8) }",
