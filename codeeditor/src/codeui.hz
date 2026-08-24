@@ -4014,7 +4014,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             dismissHover();
         };
 
-        return () => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 0,
             }, () => {
@@ -4829,6 +4829,12 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 presets.textColor("#FFF"),
                 presets.gap(2)
             );
+
+            ui_widgets.FloatingPanel(ui, {
+                id: 1,
+            });
+
+            return { id: 0 };
         };
     });
 }
@@ -5257,7 +5263,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
         });
 
-        return () => {
+        return (): ui_components.DivProps => {
             let items: []tabs_lib.TabItem = rx.get(tabs);
             // The same list with each tab's unsaved-changes dot filled in.
             let strip: []tabs_lib.TabItem = rx.get(tabItems);
@@ -5427,6 +5433,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // previously fell back to the viewport moves.
                 presets.relative()
             );
+
+            return { id: 0 };
         };
     });
 }

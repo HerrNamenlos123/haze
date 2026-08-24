@@ -1,0 +1,8 @@
+
+@setup
+
+@template [absolute bg-["#0F0A"] p-4 items-center]
+
+div [bg-["#F00A"] w-fit h-fit items-center] {
+    text [] ["Hello world"]
+}

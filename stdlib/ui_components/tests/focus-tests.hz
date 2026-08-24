@@ -64,7 +64,7 @@ fn main(): int {
                     }
                 });
 
-                return () => {
+                return (): ui_components.DivProps => {
                     ctx.div({
                         id: 1,
                         elementRef: editorRef,
@@ -83,6 +83,8 @@ fn main(): int {
                         onFocus: () => { state.events = f"{state.events}other-focus;"; },
                         onBlur: () => { state.events = f"{state.events}other-blur;"; },
                     }, () => {});
+
+                    return { id: 0 };
                 };
             });
         },

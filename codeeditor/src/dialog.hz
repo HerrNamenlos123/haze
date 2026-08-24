@@ -121,15 +121,22 @@ fn secondaryButtonStyle(): ui_widgets.ButtonStyle {
 
 export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ConflictDialogArgs>) => {
-        // The component's own wrapper must shrink-wrap, or it would take a
-        // share of the root's column even while no dialog is open -- the
-        // scrim inside is floating and sizes itself.
-        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
-
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
+
+            // This component's own root element must shrink-wrap, or it would
+            // take a share of the editor's column even while no dialog is
+            // open -- the scrim inside is floating and sizes itself.
+            let root: ui_components.DivProps = {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Fit,
+                    height: ui_styling.SizeMode.Fit,
+                },
+            };
+
             if !props.open {
-                return;
+                return root;
             }
 
             ui.div({
@@ -271,6 +278,8 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                 presets.bg("#000000A0"),
                 presets.cursorDefault()
             );
+
+            return root;
         };
     });
 }

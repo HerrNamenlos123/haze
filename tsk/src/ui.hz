@@ -55,7 +55,7 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
             return "#555";
         });
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
                 elementRef: divRef,
@@ -76,6 +76,8 @@ fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 presets.p(1),
                 presets.rounded(4)
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -100,7 +102,7 @@ fn Textbox(ui: ui_components.UIContext, args: TextboxArgs) {
             return element.hover();
         });
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
                 elementRef: divRef,
@@ -116,6 +118,8 @@ fn Textbox(ui: ui_components.UIContext, args: TextboxArgs) {
                 presets.p(1),
                 presets.rounded(4)
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -161,7 +165,7 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
         let dragging: ref Box<bool> = { value: false };
         let canvasAreaRef = ui.elementRef<ui_elements.DivElement>();
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
             }, (): void => {
@@ -268,6 +272,8 @@ fn InfoBox(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, args: Inf
                 presets.hGrow(),
                 presets.col()
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -280,7 +286,7 @@ ref struct RootArgs {
 
 export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
     ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 100000,
                 style: {
@@ -299,6 +305,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 presets.p(8),
                 presets.gap(4)
             );
+
+            return { id: 0 };
         };
     });
 }

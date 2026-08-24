@@ -152,8 +152,6 @@ struct TitleBarArgs {
 // The row. Declare this FIRST in the application root.
 export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: TitleBarArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarArgs>) => {
-        ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
-
         let onClick = (event: ui_components.PointerEvent) => {
             // Toggle. The root's capture handler deliberately
             // leaves presses on the bar alone precisely so this
@@ -166,7 +164,7 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
             }
         };
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
 
             ui.div({
@@ -237,6 +235,16 @@ export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: 
                 // off it down to 30 pixels tall.
                 headwind.presets.cursorDefault()
             );
+
+            // A full-width rail that shrink-wraps to the bar's own height,
+            // so the editor below it gets the rest of the window.
+            return {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Grow,
+                    height: ui_styling.SizeMode.Fit,
+                },
+            };
         };
     });
 }
@@ -286,8 +294,6 @@ struct TitleBarMenusArgs {
 // header comment for why that is a requirement and not a preference.
 export fn TitleBarMenus(ui: ui_components.UIContext, state: mut TitleBarState, args: TitleBarMenusArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarMenusArgs>) => {
-        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
-
         let onSelect = (key: int) => {
             // Close FIRST. Several of these commands open a modal
             // native dialog that blocks this thread; leaving the
@@ -297,7 +303,7 @@ export fn TitleBarMenus(ui: ui_components.UIContext, state: mut TitleBarState, a
             runFileMenuItem(key);
         };
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
             let isFileOpen = props.openMenu == menuFile();
 
@@ -317,6 +323,16 @@ export fn TitleBarMenus(ui: ui_components.UIContext, state: mut TitleBarState, a
                 offsetY: titleBarHeight(),
                 onSelect: onSelect,
             });
+
+            // Takes no space of its own: everything it declares is floating,
+            // so a Grow root would push the real content around.
+            return {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Fit,
+                    height: ui_styling.SizeMode.Fit,
+                },
+            };
         };
     });
 }

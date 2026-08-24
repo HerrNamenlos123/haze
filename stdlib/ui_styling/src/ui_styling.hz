@@ -907,6 +907,26 @@ export fn computeDivStyle(raw: DivStyle, ops: []DivStyleOp | none): ComputedDivS
     return finishDivStyle(working);
 }
 
+// computeDivStyle stopping one step short of finishDivStyle: the ops are
+// merged into a raw DivStyle instead of being resolved into a finished one.
+// For places where the merged result has to travel further before it reaches
+// an element, which a parameter pack cannot do -- it only exists at the call
+// site. The case that needs it today: a component template's root DivProps
+// (ui_components.defineComponent), which is a plain value returned from the
+// template closure and cannot carry the pack of preset ops with it.
+//
+// Merging into a DivStyle instead of a ComputedDivStyle is what lets the
+// result be layered again later (overlayExplicitDiv), which a finished style
+// can no longer be: it has no "unset" left to distinguish.
+export fn mergeDivStyle(raw: DivStyle, ops: ...): DivStyle {
+    let stackref working = DivStyle {};
+    for comptime op in ops {
+        applyDivOp(working, op);
+    }
+    overlayExplicitDiv(working, raw);
+    return working;
+}
+
 // The allocation-free form: the ops are a parameter pack, so a call site
 // like `ui.div(props, children, presets.wFit(), presets.p(1))` never builds
 // an array -- the loop is unrolled at compile time and each op is applied

@@ -6,9 +6,16 @@
 //   [props]     struct Button.Props + generated operator!=, slot payload struct
 //   [emit]      struct Button.Emit with one fn per @emit entry
 //   [setup]     copied verbatim, bare prop reads rewritten to instance.props().X
-//   [template]  elements lowered to ui.div/ui.text, class tokens to presets
+//   [template]  the head becomes the component's ROOT element (its DivProps
+//               is what the closure returns); the body's elements lower to
+//               ui.div/ui.text, class tokens to presets
 //
 // Markers of the form `//@plugin:` explain a lowering decision.
+//
+// The transformer exists now, so the authoritative output is the golden file
+// (stdlib/hzui/plugin/fixtures/button.expected.hz). This stays as the
+// annotated explanation of WHY the output looks the way it does; a few of its
+// notes predate the runtime catching up (op merge order, per-side padding).
 // ============================================================================
 
 // ---- [prelude] -------------------------------------------------------------
@@ -84,15 +91,6 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
         let emits = ButtonEmit { instance: instance };
 
-        // ---- @template [w-fit grow?w-grow h-fit] --------------------------
-        //@plugin: component-box tokens lower to componentSize(). Tailwind
-        // semantics are LAST-WINS, so `w-fit grow?w-grow` == grow ? Grow : Fit.
-        if instance.props().grow {
-            ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
-        } else {
-            ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
-        }
-
         // ---- @setup (verbatim; `enabled` -> instance.props().enabled etc.) --
         let buttonRef = ui.elementRef<ui_elements.DivElement>();
 
@@ -115,15 +113,19 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
         });
 
         // ---- @template ------------------------------------------------------
-        return (): void => {
+        //@plugin: the template head IS the component's root element -- see
+        // ui_components.defineComponentImpl. The closure declares the
+        // children and RETURNS that element's DivProps: style, ref, events,
+        // focus, everything a div takes (`id` is the exception, the root's is
+        // the component instance's own). Nothing from the use site is added to
+        // it: a caller reaches this component through its declared props,
+        // slots and emits only, and a component's own class list is reserved
+        // and must be written empty (`Button []`).
+        return (): ui_components.DivProps => {
             let props = instance.props();
             let style = props.style;
 
-            ui.div({
-                    id: 1,                       //@plugin: auto, 1st element in this block
-                    elementRef: buttonRef,       // ref=buttonRef
-                    onPointerDown: clicked,      // @pointerdown=clicked
-                }, (): void => {
+            {
                     // slot content label=label { ...fallback... }
                     let p = instance.props();
                     if p.content {
@@ -147,31 +149,39 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                             );
                         }
                     }
-                },
-                // class list, reversed (see above):
+            }
+
+            //@plugin: the root element's props. The class list cannot travel
+            // with them as a parameter pack (a pack only exists at its call
+            // site), so it is merged into the raw DivStyle they carry --
+            // mergeDivStyle, i.e. computeDivStyle stopping short of resolving
+            // the style. Tokens are emitted in source order; the runtime
+            // merges LAST-WINS per field, which is what makes `w-fit
+            // grow?w-grow` mean "Fit unless grow".
+            return {
+                elementRef: buttonRef,           // ref=buttonRef
+                onPointerDown: clicked,          // @pointerdown=clicked
+                //@plugin: ignored on a root -- see ui_components.DivProps.id.
+                id: 0,
                 //   row cross-align-center gap-0 px-[style.paddingX]px py-[style.paddingY]px
                 //   bg-[backgroundColor] rounded-[style.rounded]px h-fit
                 //   enabled?cursor-pointer w-fit grow?w-grow
                 //@plugin: `hover:some-stuff` omitted -- element-state variants need
                 // an auto elementRef + `ref.hover() ? op : noop`; not lowered here.
-                props.grow ? presets.wGrow() : presets.noop(),       // grow?w-grow
-                presets.wFit(),                                      // w-fit
-                props.enabled ? presets.cursorPointer() : presets.noop(), // enabled?cursor-pointer
-                presets.hFit(),                                      // h-fit
-                presets.rounded(style.rounded),                      // rounded-[style.rounded]px
-                presets.bg(backgroundColor),                         // bg-[backgroundColor]
-                //@plugin: px-/py- do not exist -- PaddingOp is monolithic. Needs
-                // per-side ops (or px()/py() that only fill their sides) so a
-                // parent's `p-4` can merge with a child's `px-2 py-1`. Lowered to
-                // the existing p({...}) for now.
-                presets.p({
-                    left: style.paddingX, right: style.paddingX,     // px-[style.paddingX]px
-                    top: style.paddingY, bottom: style.paddingY,     // py-[style.paddingY]px
-                }),
-                presets.gap(0),                                      // gap-0
-                presets.crossAlign(ui_styling.CrossAlign.Center),    // cross-align-center
-                presets.row()                                        // row
-            );
+                style: ui_styling.mergeDivStyle({},
+                    presets.row(),                                       // row
+                    presets.crossAlign(ui_styling.CrossAlign.Center),    // cross-align-center
+                    presets.gap(0),                                      // gap-0
+                    presets.px(ui_styling.Px { value: style.paddingX }), // px-[style.paddingX]px
+                    presets.py(ui_styling.Px { value: style.paddingY }), // py-[style.paddingY]px
+                    presets.bg(backgroundColor),                         // bg-[backgroundColor]
+                    presets.rounded(ui_styling.Px { value: style.rounded }), // rounded-[...]px
+                    presets.hFit(),                                      // h-fit
+                    props.enabled ? presets.cursorPointer() : presets.noop(), // enabled?cursor-pointer
+                    presets.wFit(),                                      // w-fit
+                    props.grow ? presets.wGrow() : presets.noop()        // grow?w-grow
+                ),
+            };
         };
     });
 }

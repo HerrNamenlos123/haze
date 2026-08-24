@@ -1,0 +1,22 @@
+import ui_components
+import ui_styling
+import headwind
+type presets = headwind.presets;
+
+@props
+title: str = "";
+
+@setup
+let save = () => {};
+
+@template [col gap-2]
+
+// A component's class list is reserved and must be written empty -- styling
+// one from outside needs a contract it does not have yet. @click binds
+// Button's declared emit, never its root element.
+Button [] label="Save" @click=save {
+    #content s {
+        text [w-4] [s.label]
+    }
+}
+text [] [props.title]

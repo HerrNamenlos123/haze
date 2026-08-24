@@ -10,7 +10,11 @@
 //   does not look like a head continuation (`name=`, `@event=`, `[`).
 //   DESIGN(v0): content expressions must therefore sit on the head's last
 //   line. TODO(user): confirm this termination rule.
-// - Capitalized tag = component, lowercase = builtin element.
+// - Capitalized tag = component, lowercase = builtin element. `@event=` on a
+//   builtin sets the matching DivProps callback; on a component it binds that
+//   component's declared @emit, and never its root element (see emitProp).
+// - The `@template` marker line is an element head too -- the component's own
+//   root element, minus the tag. See parseRootHead/lowerRootProps.
 // - Plain haze `if`/`for` statements in templates are NOT supported in v0 --
 //   use `if=` / `for=` (keeps templates declarative; revisit later).
 //
@@ -129,7 +133,7 @@ function lex(body: string, startLine: number): Tok[] {
 
 type ControlKind = "if" | "else-if" | "else" | null;
 
-type ElementNode = {
+export type ElementNode = {
   kind: "element";
   tag: string; // lowercase builtin or Capitalized component
   line: number;
@@ -245,7 +249,7 @@ class Parser {
     return node;
   }
 
-  private parseElement(): ElementNode {
+  parseElement(): ElementNode {
     const tagTok = this.next();
     if (!/^[A-Za-z_][\w]*$/.test(tagTok.text)) {
       throw new TemplateError(
@@ -448,21 +452,82 @@ export type TemplateContext = {
   rewriteExpr: (expr: string) => string;
 };
 
-// TODO(user): the event-name map is UI-plugin policy, extend as needed.
-const EVENT_MAP: Record<string, string> = {
-  pointerdown: "onPointerDown",
-  pointerup: "onPointerUp",
-  pointermove: "onPointerMove",
-  click: "onClick",
-  wheel: "onWheel",
-};
+// Every callback ui_components.DivProps accepts, in its own order. This is
+// UI-plugin policy, not compiler knowledge: it is the one place that has to
+// track DivProps, and it covers all of it, so `@click` and friends work on any
+// builtin element -- the component's root template element included -- with
+// nothing to opt into.
+const DIV_EVENT_PROPS = [
+  "onPointerDown",
+  "onPointerUp",
+  "onPointerMove",
+  "onClick",
+  "onWheel",
+  "onPointerDownCapture",
+  "onPointerUpCapture",
+  "onPointerMoveCapture",
+  "onClickCapture",
+  "onWheelCapture",
+  "onHoverEnter",
+  "onHoverLeave",
+  "onHitEnter",
+  "onHitLeave",
+  "onFocus",
+  "onBlur",
+  "onKeyDown",
+  "onKeyUp",
+  "onTextInput",
+  "onKeyDownCapture",
+  "onKeyUpCapture",
+  "onTextInputCapture",
+];
 
+// Keyed by the event name with separators and case thrown away, so
+// `@pointer-down`, `@pointerdown` and `@pointerDown` are all the same event.
+const EVENT_MAP: Record<string, string> = {};
+for (const prop of DIV_EVENT_PROPS) {
+  EVENT_MAP[prop.slice(2).toLowerCase()] = prop;
+}
+
+/** `pointer-down` / `pointerdown` / `pointerDown` -> `pointerdown`. */
+function eventKey(name: string): string {
+  return name.replace(/-/g, "").toLowerCase();
+}
+
+/** kebab or camel -> PascalCase: `value-changed` / `valueChanged` -> `ValueChanged`. */
+function pascalEvent(name: string): string {
+  return name
+    .split("-")
+    .filter((s) => s !== "")
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join("");
+}
+
+/** The DivProps field a `@event=` on a BUILTIN element sets. */
 function eventProp(name: string, line: number): string {
-  const mapped = EVENT_MAP[name.toLowerCase()];
+  const mapped = EVENT_MAP[eventKey(name)];
   if (!mapped) {
-    throw new TemplateError(`unknown event '@${name}'`, line);
+    throw new TemplateError(
+      `unknown event '@${name}' -- builtin elements accept exactly the ui_components.DivProps callbacks (${DIV_EVENT_PROPS.map(
+        (p) => p.slice(2).toLowerCase()
+      ).join(", ")})`,
+      line
+    );
   }
   return mapped;
+}
+
+// A `@event=` on a COMPONENT is never a DOM-ish event: it always binds the
+// component's own declared @emit of that name, and never reaches the
+// component's root element. That is the deliberate difference from Vue: a
+// button that wants to be clickable declares `@emit click`, puts `@click` on
+// its own template root, and emits from there -- so the outside `@click` is
+// the component's contract, not a hole punched through to an element the
+// caller cannot see. Unknown names are caught by the compiler as a missing
+// prop on the generated args struct (bet-and-verify), which is exactly the
+// "this component emits no such thing" error.
+function emitProp(name: string): string {
+  return `on${pascalEvent(name)}`;
 }
 
 class Emitter {
@@ -480,6 +545,114 @@ class Emitter {
 
 export function parseTemplate(body: string, startLine: number): unknown {
   return new Parser(lex(body, startLine)).parseNodes(false);
+}
+
+// ---------------------------------------------------------------------------
+// The component's own root element
+//
+// `@template [classes] ref=x @click=y ...` is an element head with the tag
+// left out -- the tag is always the component's root div. It is lowered into
+// the DivProps the template closure returns, which the component system
+// applies to the root element exactly as div() applies props to any other
+// element (ui_components.defineComponentImpl).
+// ---------------------------------------------------------------------------
+
+/** Parses the text after the `@template` marker as an element head. */
+export function parseRootHead(head: string, line: number): ElementNode {
+  const toks = lex(head, line);
+  const brace = toks.find((t) => t.text === "{" || t.text === "}");
+  if (brace) {
+    throw new TemplateError(
+      `the @template head takes no block -- the component's children are the section body below it`,
+      brace.line
+    );
+  }
+  // A synthetic tag so the head parses like any other element's.
+  const p = new Parser([{ text: "div", line: line, endLine: line }, ...toks]);
+  const node = p.parseElement();
+  if (node.control !== null || node.forExpr !== null || node.keyExpr !== null) {
+    throw new TemplateError(
+      `a component's root element cannot be conditional or repeated -- if=/else=/for=/key= belong on elements inside the template`,
+      node.line
+    );
+  }
+  if (node.content !== null) {
+    throw new TemplateError(
+      `unexpected content '${node.content}' on the @template head -- the root element's children are the section body below it`,
+      node.line
+    );
+  }
+  return node;
+}
+
+/**
+ * `return { id: 0, ... };` -- the component's root DivProps, the last
+ * statement of the template closure. `id` is the one DivProps field that does
+ * not apply to a root (the element's id is the component instance's, fixed
+ * when it was created), so it is written as a placeholder; see
+ * ui_components.DivProps.id.
+ */
+export function lowerRootProps(
+  node: ElementNode | null,
+  markerLine: number,
+  ctx: TemplateContext,
+  baseIndent: number
+): string {
+  const em = new Emitter(baseIndent);
+  // Pin-mode #source at the @template marker, like every lowered statement.
+  em.emit(`#source "${ctx.sourceFile}:${markerLine}:1" {`);
+  em.indentLevel++;
+  lowerRootPropsInto(node, ctx, em);
+  em.indentLevel--;
+  em.emit(`}`);
+  return em.lines.join("\n");
+}
+
+function lowerRootPropsInto(
+  node: ElementNode | null,
+  ctx: TemplateContext,
+  em: Emitter
+) {
+  if (node === null) {
+    em.emit(`return { id: 0 };`);
+    return;
+  }
+  const rw = ctx.rewriteExpr;
+  const fields: string[] = [`id: 0`];
+  let styleExpr = "{}";
+  for (const a of node.attrs) {
+    if (a.name === "ref") {
+      fields.push(`elementRef: ${rw(a.value)}`);
+    } else if (a.name === "style") {
+      styleExpr = rw(a.value);
+    } else {
+      fields.push(`${a.name}: ${rw(a.value)}`);
+    }
+  }
+  for (const e of node.events) {
+    fields.push(`${eventProp(e.name, node.line)}: ${rw(e.value)}`);
+  }
+  // The class tokens cannot travel with the props as a parameter pack (a pack
+  // only exists at its call site), so they are merged into the raw DivStyle
+  // the props carry -- see ui_styling.mergeDivStyle. Still unresolved, because
+  // the component system layers the root's Grow/Grow default under it.
+  const ops = node.classList
+    ? lowerClassList(node.classList, ctx.presetNamespace).map(rw)
+    : [];
+  em.emit(`return {`);
+  em.indented(() => {
+    fields.forEach((f) => em.emit(`${f},`));
+    if (ops.length > 0) {
+      em.emit(`style: ui_styling.mergeDivStyle(${styleExpr},`);
+      em.indented(() =>
+        ops.forEach((o, i) => em.emit(o + (i < ops.length - 1 ? "," : "")))
+      );
+      em.emit(`),`);
+    } else if (styleExpr !== "{}") {
+      em.emit(`style: ${styleExpr},`);
+    }
+  });
+  em.emit(`};`);
 }
 
 export function lowerTemplate(
@@ -635,11 +808,31 @@ function lowerElementInner(
   const isComponent = /^[A-Z]/.test(node.tag);
 
   if (isComponent) {
-    // DESIGN(v0): class lists on components need `class` passthrough -- out
-    // of the v0 subset.
-    if (node.classList !== null) {
+    // A component's class list is RESERVED and must be written empty.
+    //
+    // Styling a component from outside is not a matter of forwarding tokens
+    // to its root element: most tokens would break the component. `flex-col`
+    // on a component whose internals assume a row does not restyle it, it
+    // wrecks it -- the caller is reaching past the component's contract into
+    // an element it cannot see. The planned answer is a public style contract:
+    // a component advertises which style flags it supports, and decides for
+    // itself which of its own elements each one lands on, so `bg-red` (the
+    // natural thing to write) does the obvious thing and nothing else is
+    // silently accepted.
+    //
+    // Until that exists, styling goes through ordinary props. The empty `[]`
+    // is required rather than optional so that turning it on later cannot
+    // change the meaning of code written today: every component use already
+    // has the slot, visibly reserved and visibly empty.
+    if (node.classList === null) {
       throw new TemplateError(
-        `class lists on components are not supported yet (needs 'class' passthrough)`,
+        `a component needs its (reserved, currently empty) class list: '${node.tag} [] ...'`,
+        node.line
+      );
+    }
+    if (node.classList.trim() !== "") {
+      throw new TemplateError(
+        `styling a component from outside is not supported yet -- '${node.tag} [${node.classList.trim()}]' must be '${node.tag} []'. Use ordinary props for now; a component will later advertise which style flags it accepts and where they land.`,
         node.line
       );
     }
@@ -648,7 +841,7 @@ function lowerElementInner(
       args.push(`${a.name}: ${rw(a.value)}`);
     }
     for (const e of node.events) {
-      args.push(`${eventProp(e.name, node.line)}: ${rw(e.value)}`);
+      args.push(`${emitProp(e.name)}: ${rw(e.value)}`);
     }
     const closures: string[] = [];
     for (const sp of node.slotProvides) {

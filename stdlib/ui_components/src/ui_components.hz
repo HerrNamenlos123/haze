@@ -194,6 +194,12 @@ export ref struct KeyboardCallbacks {
 }
 
 export struct DivProps {
+    // Identifies this element among its siblings, for the whole lifetime of
+    // the tree -- see getOrCreateDiv. Ignored in exactly one place: the
+    // DivProps a component's template RETURNS describes the component's own
+    // root element, whose id is the component instance's id and was fixed
+    // when the instance was created (see ComponentInstance.createChild).
+    // Everything else on that DivProps applies normally.
     id: int;
     style?: ui_styling.DivStyle;
     elementRef?: ElementRef<ui_elements.DivElement>;
@@ -738,7 +744,10 @@ export ref struct ComponentInstance {
 
     templateComputed?: rx.Computed<none>;
     setupDone: bool = false;
-    currentTemplate: (() => void) | null = null;
+    // A template returns the props of the component's own root element -- the
+    // template IS an element declaration, exactly like every div inside it.
+    // See defineComponentImpl for what happens to the result.
+    currentTemplate: (() => DivProps) | null = null;
     propsVersion: rx.Reactive<int>;
     prevProps?: TypeErasedBox;
     instanceDataForCapturing?: TypeErasedBox;
@@ -775,13 +784,14 @@ export ref struct ComponentInstance {
     // branch -- used to resolve this component's own wrapper root's
     // permanent global id (see childGlobalId()) the one time it's created.
     fn createChild(id: int, parentElement: ui_elements.DivElement): ComponentInstance {
-        // This wrapper is pure internal plumbing -- never touched by
-        // div()/computeDivStyle(), so it never picks up a user style.
-        // Explicit Grow keeps it a transparent pass-through (fill
-        // whatever space the parent gives) rather than defaulting to
-        // ComputedDivStyle's own default (Fit), which would make every
-        // component boundary silently shrink-wrap and block Grow from
-        // propagating from an ancestor down to a descendant that wants it.
+        // This element is the component's ROOT: the template declares it and
+        // returns its props, so from the first render on its style comes from
+        // there (see defineComponentImpl). The Grow/Grow here is only what it
+        // looks like before that first render -- and it is also the base layer
+        // defineComponentImpl resolves against, for the reason spelled out
+        // there: a component boundary must be a transparent pass-through by
+        // default, not a Fit box that blocks an ancestor's Grow from reaching
+        // a descendant that wants it.
         let rootElement = ui_elements.DivElement({
             id: id,
             globalId: childGlobalId(parentElement, id),
@@ -2114,7 +2124,7 @@ export opaque ref struct UIContext {
             instance = child;
         } else {
             if !this.rootComponent {
-                // Same reasoning as createChild()'s wrapper above: explicit
+                // Same reasoning as createChild()'s root above: explicit
                 // Grow so the very top of the tree fills the window instead
                 // of shrink-wrapping to ComputedDivStyle's default (Fit).
                 let rootElement = ui_elements.DivElement({
@@ -2174,7 +2184,7 @@ export opaque ref struct UIContext {
     fn defineComponentImpl(
         id: int,
         propsChanged: bool,
-        setupFn: stackref (() => (() => void))
+        setupFn: stackref (() => (() => DivProps))
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
@@ -2235,7 +2245,11 @@ export opaque ref struct UIContext {
                 });
 
                 assert(instance.currentTemplate);
-                attempt {
+                // The template declares the component's own root element and
+                // returns its props -- style, events, refs, focus, anchor, all
+                // of it, exactly as a div would (its `id` is the only field
+                // that does not apply; see DivProps.id).
+                let rootProps = attempt {
                     instance.currentTemplate();
                 } recover e {
                     instance.crashed = true;
@@ -2251,6 +2265,28 @@ export opaque ref struct UIContext {
                     this.setSingleChild(instance.rootElement, errEl);
                     return none;
                 };
+
+                this.applyDivProps(instance.rootElement, rootProps);
+
+                // The root's style, resolved over one base layer: Grow/Grow,
+                // rather than a plain div's Fit. A component boundary has to
+                // be a transparent pass-through by default, or every one of
+                // them would silently shrink-wrap and block an ancestor's Grow
+                // from reaching a descendant that wants it (see createChild).
+                // A template that wants Fit says so, like any other element.
+                //
+                // Nothing outside the component contributes to this. A parent
+                // reaches a component through its declared props, slots and
+                // emits only -- there is no implicit passthrough to an element
+                // the caller cannot see.
+                let stackref resolved = ui_styling.DivStyle {
+                    width: ui_styling.SizeMode.Grow,
+                    height: ui_styling.SizeMode.Grow,
+                };
+                if rootProps.style is not none {
+                    ui_styling.overlayExplicitDiv(resolved, rootProps.style);
+                }
+                instance.rootElement.style := ui_styling.finishDivStyle(resolved);
 
                 // Swap the two lists: what was registered this pass becomes
                 // the current list, and last pass's list is kept around as
@@ -2285,6 +2321,10 @@ export opaque ref struct UIContext {
                 this.popRenderContext();
                 this.truncateChildrenToCursor(instance.rootElement, childCount);
 
+                // Same ordering as div(): the ref is only published once the
+                // element is fully declared.
+                this.bindElementRef(rootProps, instance.rootElement);
+
                 return none;
             });
         }
@@ -2307,7 +2347,7 @@ export opaque ref struct UIContext {
     fn defineComponent<TProps>(
         id: int,
         props: TProps,
-        setupFn: immediate (instance: InstanceData<TProps>) => (() => void)
+        setupFn: immediate (instance: InstanceData<TProps>) => (() => DivProps)
     ) {
         let instance = this.makeCurrentComponentAvailable(id);
 
@@ -2376,33 +2416,13 @@ export opaque ref struct UIContext {
 
             // Only ever called once (setupDone), but it is *built* on every
             // render of the parent -- in place on the stack, so that costs
-            // nothing.
+            // nothing. Note what it returns: the TEMPLATE closure, so this is
+            // `() => (() => DivProps)` -- one arrow more than it looks.
             let stackref setup = () => {
                 return setupFn(instanceData);
             };
             return this.defineComponentImpl(id, propsChanged, setup);
         };
-    }
-
-    // Sizing for THIS component's own wrapper root -- the invisible div the
-    // component system puts around every component (see createChild).
-    //
-    // That wrapper defaults to Grow/Grow so it is a transparent pass-through
-    // and an ancestor's Grow still reaches a descendant that wants it. But
-    // Grow is not transparent when the component should shrink-wrap: a
-    // component whose content is Fit still had a Grow wrapper around it, so
-    // several of them side by side each took an equal share of the parent
-    // instead of only the width they needed. A tab strip is the obvious
-    // case -- three tabs, each a third of the window wide, labels marooned
-    // in the middle -- and no preset on the component's own inner div could
-    // fix it, because the wrapper is outside that div.
-    //
-    // Call this from setup, e.g.:
-    //     ui.componentSize(SizeMode.Fit, SizeMode.Grow);
-    fn componentSize(width: ui_styling.Size, height: ui_styling.Size) {
-        let component = this.getCurrentComponent();
-        component.rootElement.style.width = width;
-        component.rootElement.style.height = height;
     }
 
     fn onMounted(callback: () => none) {
@@ -2467,12 +2487,14 @@ export opaque ref struct UIContext {
         return this.divImpl(props, ui_styling.computeDivStyle(rawStyle, ...presets), childrenFn);
     }
 
-    fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: immediate () => void) {
-        let parent = this.getCurrentParent();
-        let lookup = getOrCreateDiv(parent, props.id, this.getCurrentIdPath());
-        let element = lookup.element;
-        let idPath = lookup.path;
-
+    // Everything a DivProps says about an element other than its children and
+    // its resolved style: anchor publication, every event callback, and the
+    // focus flags. Split out of divImpl because a component's root element is
+    // a real div too -- built from the DivProps its template returns rather
+    // than from a div() call -- and has to honour the exact same props, with
+    // no second implementation to drift from this one. See
+    // defineComponentImpl.
+    fn applyDivProps(element: mut ui_elements.DivElement, props: DivProps) {
         if props.anchor is not none {
             // NOTE: publishing an anchor target works, but CONSUMING one via
             // presets.anchorTo() currently panics inside ui_layout's
@@ -2487,8 +2509,6 @@ export opaque ref struct UIContext {
             // the editor's hover popup and ui_widgets' Dropdown.
             props.anchor := TypeErasedBox<ui_elements.DivElement>(element);
         }
-
-        element.style := style;
 
         // Store event callbacks into runtime data so the event system can read them.
         let data = runtimeDataOf(element);
@@ -2526,6 +2546,28 @@ export opaque ref struct UIContext {
         data.onKeyDownCapture = props.onKeyDownCapture;
         data.onKeyUpCapture = props.onKeyUpCapture;
         data.onTextInputCapture = props.onTextInputCapture;
+    }
+
+    // The other half of divImpl that a component root needs verbatim: publish
+    // the element into `props.elementRef`, if the caller asked for one. Runs
+    // after the children are built, so that a ref is only ever handed out for
+    // a fully declared element.
+    fn bindElementRef(props: DivProps, element: ui_elements.DivElement) {
+        if props.elementRef is not none {
+            if props.elementRef is null || props.elementRef.raw.id != element.id {
+                props.elementRef := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
+            }
+        }
+    }
+
+    fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: immediate () => void) {
+        let parent = this.getCurrentParent();
+        let lookup = getOrCreateDiv(parent, props.id, this.getCurrentIdPath());
+        let element = lookup.element;
+        let idPath = lookup.path;
+
+        element.style := style;
+        this.applyDivProps(element, props);
 
         // attach into current parent
         this.attachChild(element);
@@ -2545,11 +2587,7 @@ export opaque ref struct UIContext {
         this.popRenderContext();
         this.truncateChildrenToCursor(element, childCount);
 
-        if props.elementRef is not none {
-            if props.elementRef is null || props.elementRef.raw.id != element.id {
-                props.elementRef := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
-            }
-        }
+        this.bindElementRef(props, element);
 
         return element;
     }

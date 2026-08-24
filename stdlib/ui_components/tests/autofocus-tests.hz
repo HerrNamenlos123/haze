@@ -35,7 +35,7 @@ fn main(): int {
     let ui = ui_components.UIContext({
         ui: (ctx: ui_components.UIContext) => {
             ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
-                return () => {
+                return (): ui_components.DivProps => {
                     // autofocus, declared -- no elementRef, no onMounted needed.
                     ctx.div({
                         id: 1, elementRef: aRef, focusable: true, autofocus: true,
@@ -45,6 +45,8 @@ fn main(): int {
                     }, () => {});
                     // Not focusable: autofocus must be ignored entirely.
                     ctx.div({ id: 2, elementRef: bRef, autofocus: true }, () => {});
+
+                    return { id: 0 };
                 };
             });
         },

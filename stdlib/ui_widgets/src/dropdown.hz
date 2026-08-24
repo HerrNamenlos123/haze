@@ -177,12 +177,6 @@ const comptime ID_ITEM_BASE = 1000;
 
 export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<DropdownArgs>) => {
-        // The component's wrapper must take no space of its own: the panel
-        // inside it is floating, so a Grow/Grow wrapper (the default) would
-        // still claim a share of whatever row or column the caller declared
-        // this in, pushing its siblings around even while the menu is shut.
-        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Fit);
-
         // One ref per item row, grown on demand. Hover is polled from the
         // element (see Button for why), and a row cannot use Button itself
         // because it needs the shortcut column and the checked column laid
@@ -199,14 +193,28 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
             event.stopPropagation();
         };
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
+
+            // This component's own root element. It must take no space of its
+            // own: the panel inside it is floating, so a Grow/Grow root (the
+            // default) would still claim a share of whatever row or column
+            // the caller declared this in, pushing its siblings around even
+            // while the menu is shut.
+            let root: ui_components.DivProps = {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Fit,
+                    height: ui_styling.SizeMode.Fit,
+                },
+            };
+
             // v-if, not v-show: a closed menu should not exist at all. It
             // holds no state worth preserving, and an element that is
             // merely hidden keeps its last bounding box, which is exactly
             // the sort of thing that goes on answering hit tests.
             if !props.open {
-                return;
+                return root;
             }
 
             let style = props.style;
@@ -414,6 +422,8 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                 // underneath.
                 presets.cursorDefault()
             );
+
+            return root;
         };
     });
 }

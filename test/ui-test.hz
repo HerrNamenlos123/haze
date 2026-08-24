@@ -16,7 +16,7 @@ ref struct HeaderArgs {
 }
 fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<HeaderArgs>) => {
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
                 style: {
@@ -28,6 +28,8 @@ fn Header(ui: ui_components.UIContext, args: HeaderArgs) {
                 presets.bg(Color(0.9, 0.2, 0.2, 1)),
                 presets.p(4)
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -54,7 +56,7 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
             return element.hover();
         });
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
                 elementRef: divRef,
@@ -66,6 +68,8 @@ fn NavItem(ui: ui_components.UIContext, args: NavItemArgs) {
             }, (): void => {
                 ui.text({ id: 2, text: instance.props().label });
             });
+
+            return { id: 0 };
         };
     });
 }
@@ -81,7 +85,7 @@ ref struct SidebarArgs {
 fn Sidebar(ui: ui_components.UIContext, args: SidebarArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<SidebarArgs>) => {
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 1,
                 style: {
@@ -97,6 +101,8 @@ fn Sidebar(ui: ui_components.UIContext, args: SidebarArgs) {
                 NavItem(ui, { id: 20, label: "Settings" });
                 NavItem(ui, { id: 30, label: "About" });
             });
+
+            return { id: 0 };
         };
     });
 }
@@ -128,7 +134,7 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
         let waterEffectSource = embed.watchText("test/resources/postfx_water.wgsl");
         let coolEffectSource = embed.watchText("test/resources/postfx_cool.wgsl");
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 100,
                 elementRef: divRef,
@@ -323,6 +329,8 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                 presets.bg("#33CC66FF"),
                 presets.gap(4)
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -340,7 +348,7 @@ fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
 
         let text = rx.reactive<str>("This is some actual text to read");
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 10000,
             }, (): void => {
@@ -350,6 +358,8 @@ fn Footer(ui: ui_components.UIContext, args: FooterArgs) {
                 presets.textColor("#F00"),
                 presets.p(15)
             );
+
+            return { id: 0 };
         };
     });
 }
@@ -367,7 +377,7 @@ export fn UI(ui: ui_components.UIContext) {
             return f"This text is running since {ui.now() as int} seconds.";
         });
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             ui.div({
                 id: 100000,
                 style: {
@@ -401,6 +411,8 @@ export fn UI(ui: ui_components.UIContext) {
                 presets.wGrow(),
                 presets.hGrow()
             );
+
+            return { id: 0 };
         };
     });
 }

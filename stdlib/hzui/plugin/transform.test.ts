@@ -14,6 +14,11 @@ import plugin from "./index";
 import { splitSections } from "./sections";
 import { lowerClassList, parseClassToken } from "./classlist";
 
+/** Transforms a whole SFC and returns the generated haze. */
+function gen(source: string): string {
+  return plugin.transform("x.hzui", source)!.code;
+}
+
 const FIXTURES = join(import.meta.dir, "fixtures");
 
 function golden(name: string) {
@@ -78,6 +83,110 @@ describe("sections", () => {
 
   test("rejects duplicates", () => {
     expect(() => splitSections("@props\n@props\n")).toThrow(/duplicate/);
+  });
+});
+
+describe("the template root element", () => {
+  const withHead = (head: string, body = "") =>
+    gen(`import ui_components\n@template ${head}\n${body}`);
+
+  test("a bare @template still returns root props", () => {
+    expect(gen("import ui_components\n@template\n")).toContain(
+      "return { id: 0 };"
+    );
+  });
+
+  test("class tokens become the root's own style", () => {
+    const out = withHead("[row gap-2]");
+    expect(out).toContain("style: ui_styling.mergeDivStyle({},");
+    expect(out).toContain("presets.row()");
+    expect(out).toContain("presets.gap(2)");
+  });
+
+  test("refs, attrs and events all reach the root DivProps", () => {
+    const out = withHead("[row] ref=r focusable=true @click=onTap");
+    expect(out).toContain("elementRef: r,");
+    expect(out).toContain("focusable: true,");
+    expect(out).toContain("onClick: onTap,");
+  });
+
+  test("the head may wrap across lines like any element head", () => {
+    const out = gen(
+      [
+        "import ui_components",
+        "@template [",
+        "        row",
+        "        gap-2",
+        "    ]",
+        "    ref=r",
+        "",
+        "text [] [props.title]",
+      ].join("\n")
+    );
+    expect(out).toContain("elementRef: r,");
+    expect(out).toContain("presets.gap(2)");
+    // The blank line ended the head: the text is a child, not head junk.
+    expect(out).toContain("ui.text({ id: 1, text: props.title });");
+  });
+
+  test("the head takes no control flow, content or block", () => {
+    expect(() => withHead("[row] if=enabled")).toThrow(/cannot be conditional/);
+    expect(() => withHead("[row] { }")).toThrow(/takes no block/);
+    expect(() => withHead('[row] "hello"')).toThrow(/unexpected content/);
+  });
+
+  test("nothing from outside reaches the root", () => {
+    // No class prop, no passthrough of any kind: the root element belongs to
+    // the template that declares it.
+    const out = withHead("[row]");
+    expect(out).not.toContain("class");
+  });
+});
+
+describe("events", () => {
+  test("every DivProps callback is reachable on a builtin element", () => {
+    const out = gen(
+      "import ui_components\n@template\ndiv [] @hover-enter=a @text-input-capture=b @wheel=c"
+    );
+    expect(out).toContain("onHoverEnter: a");
+    expect(out).toContain("onTextInputCapture: b");
+    expect(out).toContain("onWheel: c");
+  });
+
+  test("separators and case in an event name do not matter", () => {
+    const out = gen(
+      "import ui_components\n@template\ndiv [] @pointerdown=a @pointer-up=b @pointerMove=c"
+    );
+    expect(out).toContain("onPointerDown: a");
+    expect(out).toContain("onPointerUp: b");
+    expect(out).toContain("onPointerMove: c");
+  });
+
+  test("an unknown event on a builtin element is an error", () => {
+    expect(() =>
+      gen("import ui_components\n@template\ndiv [] @submit=a")
+    ).toThrow(/unknown event/);
+  });
+
+  test("on a component, @event binds that component's emit, not an element", () => {
+    // No EVENT_MAP lookup at all: the name is the emit's, whatever it is.
+    const out = gen(
+      "import ui_components\n@template\nBtn [] @click=a @value-changed=b"
+    );
+    expect(out).toContain("onClick: a");
+    expect(out).toContain("onValueChanged: b");
+  });
+
+  test("a component's class list is reserved: required, and empty", () => {
+    expect(gen("import ui_components\n@template\nBtn []")).toContain(
+      "Btn(ui, { id: 1 });"
+    );
+    expect(() => gen("import ui_components\n@template\nBtn label=x")).toThrow(
+      /needs its \(reserved, currently empty\) class list/
+    );
+    expect(() => gen("import ui_components\n@template\nBtn [w-grow]")).toThrow(
+      /styling a component from outside is not supported yet/
+    );
   });
 });
 

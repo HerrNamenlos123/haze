@@ -19,7 +19,10 @@ const MARKER_RE = /^@(props|emit|slot|setup|template)\b(.*)$/;
 
 export type Section = {
   name: SectionName;
-  /** Text after the marker on the marker line itself (only @template uses it). */
+  /**
+   * Text after the marker (only @template uses it: the root element's head).
+   * May span several lines -- see readMarkerArg.
+   */
   markerArg: string;
   /** 1-based line number of the marker line in the original file. */
   markerLine: number;
@@ -58,6 +61,79 @@ const SECTION_RANK: Record<SectionName, number> = {
   template: 2,
 };
 
+/**
+ * A @template head is an element head like any other -- the component's own
+ * root element, minus the tag -- so it can be as long as one: class list, ref,
+ * events, attrs. It is read with the same two rules the template lexer and
+ * parser use inside the body:
+ *
+ *   - a `[ ]` group may span lines, so keep taking lines while one is open;
+ *   - a following line continues the head only if it starts like an attr, an
+ *     event or a class list (ATTRISH_RE in template.ts).
+ *
+ * The first line that is neither is where the body -- the root element's
+ * children -- begins. A blank line therefore ends the head, which is the
+ * natural way to write it.
+ *
+ * Returns the joined head text and the index of the first body line.
+ */
+const HEAD_CONTINUATION_RE = /^(@?[A-Za-z_][\w-]*=|\[)/;
+
+function readMarkerArg(
+  lines: string[],
+  markerLine: number,
+  first: string
+): { arg: string; nextLine: number } {
+  const depth = (text: string) => {
+    let d = 0;
+    let inStr = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i]!;
+      if (inStr) {
+        if (c === "\\") {
+          i++;
+        } else if (c === '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (c === '"') {
+        inStr = true;
+      } else if (c === "/" && text[i + 1] === "/") {
+        break; // line comment: the rest of this line is not head text
+      } else if (c === "[") {
+        d++;
+      } else if (c === "]") {
+        d--;
+      }
+    }
+    return d;
+  };
+
+  let arg = first;
+  let open = depth(first);
+  let i = markerLine + 1;
+  for (;;) {
+    if (open > 0) {
+      if (i >= lines.length) {
+        throw new SectionError(
+          `unterminated '[' in the @template head`,
+          markerLine + 1
+        );
+      }
+    } else if (
+      i >= lines.length ||
+      !HEAD_CONTINUATION_RE.test(lines[i]!.trim())
+    ) {
+      break;
+    }
+    arg += "\n" + lines[i]!;
+    open += depth(lines[i]!);
+    i++;
+  }
+  return { arg: arg, nextLine: i };
+}
+
 export function splitSections(source: string): SplitResult {
   const lines = source.split("\n");
   const sections: Section[] = [];
@@ -77,33 +153,40 @@ export function splitSections(source: string): SplitResult {
     const m = MARKER_RE.exec(lines[i]!);
     if (m) {
       const name = m[1] as SectionName;
-      const markerArg = (m[2] ?? "").trim();
-      if (markerArg !== "" && name !== "template") {
+      const markerIdx = i; // `i` moves below when a @template head wraps
+      let markerArg = (m[2] ?? "").trim();
+      let bodyStart = markerIdx + 2;
+      if (name === "template" && markerArg !== "") {
+        const read = readMarkerArg(lines, markerIdx, markerArg);
+        markerArg = read.arg;
+        bodyStart = read.nextLine + 1;
+        i = read.nextLine - 1; // the for-loop's i++ lands on the first body line
+      } else if (markerArg !== "") {
         throw new SectionError(
           `@${name} takes no arguments on the marker line`,
-          i + 1
+          markerIdx + 1
         );
       }
       finish();
       if (current === null) {
-        preludeEnd = i;
+        preludeEnd = markerIdx;
       }
       const prevRank = current ? SECTION_RANK[current.name] : -1;
       const thisRank = SECTION_RANK[name];
       if (sections.some((s) => s.name === name)) {
-        throw new SectionError(`duplicate section @${name}`, i + 1);
+        throw new SectionError(`duplicate section @${name}`, markerIdx + 1);
       }
       if (thisRank < prevRank) {
         throw new SectionError(
           `section @${name} must come before @${current!.name} (order: @props/@emit/@slot in any order, then @setup, then @template)`,
-          i + 1
+          markerIdx + 1
         );
       }
       current = {
         name: name,
         markerArg: markerArg,
-        markerLine: i + 1,
-        bodyStartLine: i + 2,
+        markerLine: markerIdx + 1,
+        bodyStartLine: bodyStart,
         body: "",
       };
     } else if (current) {

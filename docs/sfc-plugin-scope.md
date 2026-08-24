@@ -49,8 +49,33 @@ marker ends it. No closing markers, no brace counting — splitting is a single 
 @template     template syntax (§3.2) — the only section with its own (token-level) grammar
 ```
 
-`@template` takes an optional component-box class list: `@template [w-fit grow?w-grow h-fit]`
-(lowers to `componentSize()`; replaces manual sizing calls).
+`@template` takes an element head — the component's own **root element**, minus the tag:
+`@template [w-fit grow?w-grow h-fit] ref=rootRef @pointerdown=onDown focusable=true`. It wraps
+across lines by the same rules as any element head (an open `[ ]` continues; so does a following
+line that starts like an attr, an event or a class list — so a blank line ends it). The template
+closure returns that element's `DivProps`, which the component system applies to the root exactly
+as `div()` applies props to any other element: style, events, refs, focus, anchor, all of it. The
+one field that does not apply is `id` — a root's id is the component instance's own.
+
+The root defaults to `Grow`/`Grow` rather than a plain div's `Fit`, so that a component boundary
+stays a transparent pass-through; a template that wants `Fit` says so, like any other element.
+
+**Nothing reaches the root element from outside.** A caller reaches a component through its
+declared props, slots and emits only. In particular `@click` on a component use site binds that
+component's declared `@emit click` — never the root element's own `onClick` (the deliberate
+difference from Vue: a button's `@click` is its contract, not a hole punched through to an
+element the caller cannot see).
+
+Styling one from outside is the same problem and gets the same answer. A component's class list
+is **reserved and must be written empty** — `Button [] label="Save"` — and any token in it is a
+transformer error. Forwarding tokens to a root element does not restyle a component, it breaks
+it: `flex-col` on a component whose internals assume a row wrecks its layout, which is exactly
+what happens in Vue today. The planned replacement is a **public style contract**: a component
+advertises which style flags it supports, and decides for itself which of its own elements each
+one lands on, so writing `bg-red` (the natural thing) does the obvious thing and nothing outside
+the contract is silently accepted. Until that exists, styling goes through ordinary props. The
+empty `[]` is required rather than optional so that turning the feature on later cannot change
+the meaning of code written today — the slot is already there, visibly reserved.
 
 ### 3.2 Template syntax
 
@@ -76,7 +101,10 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
 - **Control flow:** `if=` / `else-if=` / `else` / `for=[item in items] key=expr` as attributes
   (v-if/v-for). Plain haze `if`/`for` statements also pass through (immediate-mode escape hatch),
   but see the no-logic lints below.
-- **Events:** `@pointerdown=clicked` → `onPointerDown: clicked`.
+- **Events:** on a builtin element, `@pointerdown=clicked` → `onPointerDown: clicked`; every
+  `ui_components.DivProps` callback is reachable, and separators/case in the name do not matter
+  (`@pointer-down` / `@pointerdown` / `@pointerDown`). On a **component**, `@name=` always binds
+  that component's declared `@emit name` (→ `onName:`) and never an element event.
 - **Components:** capitalized head = component, lowercase = builtin element (bet-and-verify, §6.2).
 - **Slots:** child side renders with fallback: `slot content label=label { ...fallback... }`.
   Parent side provides: `#content label { ... }` (payload destructure; may be omitted). A bare
@@ -114,10 +142,10 @@ Whitespace-separated only — no commas, no quotes, no parens between tokens.
   (ops apply onto an empty style, explicit fields are overlaid afterwards). Padding is a single
   `PaddingOp` with optional per-side `Length` fields, so `p-4 px-2 pb-1` composes by side and
   `px-2 p-4` is overridden by `p-4`. Tokens are emitted in source order (no reversal).
-- **`class` passthrough:** every component implicitly accepts a `class` prop (`[]Op`, plain
-  stack data, compared by generated `!=`); the child splices it with a literal `class` token at
-  the position of its choice. This + variants + theme tokens is intended to replace per-component
-  style structs entirely (long-term direction; `ButtonStyle`-like structs remain possible).
+- **Component class lists are reserved:** a component use writes `[]` and nothing else (§3.1).
+  The long-term direction is a public style contract per component — advertised flags, each
+  landing where the component says — which, with variants and theme tokens, is intended to
+  replace per-component style structs (`ButtonStyle`-like structs remain possible).
 
 ### 3.4 IDs
 
@@ -204,7 +232,8 @@ for completions; not needed for diagnostics.
    `Length = Px | Em | Rem` with `resolveLength`; `WidthLengthOp`/`HeightLengthOp`/`RoundedOp`/
    `FontSizeLengthOp` for explicit sizes; headwind aliases for the mechanical naming rule
    (`textNowrap`, `crossAlignCenter`, `itemsCenter`, …).
-3. **`class` passthrough prop:** `[]DivStyleOp`-typed prop + splice token support.
+3. **Public style contract for components** (advertised flags + where each lands). Reserved and
+   rejected for now, see §3.1.
 4. **Hover/active variants:** auto elementRef per styled element + conditional ops (no new
    runtime primitives; lowering only).
 5. **`key=` id hashing helper** (small runtime function).
@@ -375,13 +404,17 @@ linting.
 | Section order | `@props`/`@emit`/`@slot` any order, then `@setup`, then `@template` | matches how drafts were actually written |
 | Editor support | separate grammar-only VS Code extension `stdlib/hzui/vscode` (language `hzui`, embeds `source.hz`) | base haze extension never accumulates project-specific rules |
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
+| Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
+| Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |
+| Component class list | reserved, must be written `[]`, tokens rejected | forwarding tokens breaks internals (Vue's `flex-col` problem); reserving the slot now keeps today's code meaning the same when the contract lands |
+| `@event` on a component | always the declared emit, never the root's event | the component's contract, not a hole through to a hidden element |
 | Prop access | bare identifiers in setup **and** template | copy-paste between sections; explicit `props.x` remains |
 | IDs | auto (source order) + mandatory `key=` in loops | biggest ergonomic gotcha removed |
 | Plugin write access | text only (transform output / fix-it edits) | prevents a second compiler; proc-macro lesson |
 | Plugin read access | handle-based queries, post-elaboration + downward at transform time | typescript-eslint/libclang precedent; no staleness for deps |
 | Semantic hooks in plugins | **never** | each need becomes a core annotation or comptime pattern instead |
 | Plugin language | haze (Phase 1), TS reference first | prove interface + ship feature before FFI; TS pass becomes the golden test |
-| Style structs (`ButtonStyle`) | long-term replaced by `class` passthrough + variants + theme tokens | components stop inventing per-component knob vocabularies |
+| Style structs (`ButtonStyle`) | long-term replaced by an advertised style contract + variants + theme tokens | components stop inventing per-component knob vocabularies |
 
 ## 9. v0 implementation subset (locked)
 
@@ -391,8 +424,9 @@ payloads), auto ids, generated Props/`!=`/emit/slot structs, `#source`-mapped di
 Explicit dialect-prefixed access (`props.x`-style, final names TBD) — bare-name unwrapping ships
 later with the core annotation, as a pure relaxation.
 
-Out (pure lowering additions later, no design debt): `hover:`/`active:` variants, `class`
-passthrough, theme tokens, bare prop identifiers, `analyze`/`format`, FFI/haze port.
+Out (pure lowering additions later, no design debt): `hover:`/`active:` variants, the public
+style contract for components (reserved as an empty `[]` today), theme tokens, bare prop
+identifiers, `analyze`/`format`, FFI/haze port.
 
 Owner: user implements the transformer and writes the generation spec; the compiler side is the
 generic plugin interface only (registration, routing, invocation, plugin errors, cache keys,

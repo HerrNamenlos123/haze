@@ -148,14 +148,7 @@ const comptime ID_PANEL_BASE = 2000000;
 // the tree, say.
 export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TabsArgs>) => {
-        // The strip is a fixed-height rail across the full width. Its
-        // wrapper must shrink-wrap vertically or it would split the column
-        // with the panels below it -- half the window of empty tab strip
-        // above a half-height editor, which is exactly what a Grow wrapper
-        // (the default) produces here.
-        ui.componentSize(ui_styling.SizeMode.Grow, ui_styling.SizeMode.Fit);
-
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
             let style = props.style;
 
@@ -189,6 +182,19 @@ export fn TabBar(ui: ui_components.UIContext, args: TabsArgs) {
                 // to push the editor out of the window.
                 presets.overflowHidden()
             );
+
+            // The strip is a fixed-height rail across the full width. Its own
+            // root element must shrink-wrap vertically or it would split the
+            // column with the panels below it -- half the window of empty tab
+            // strip above a half-height editor, which is what the Grow/Grow a
+            // component root defaults to produces here.
+            return {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Grow,
+                    height: ui_styling.SizeMode.Fit,
+                },
+            };
         };
     });
 }
@@ -217,13 +223,6 @@ struct TabButtonArgs {
 // rather than the strip having to track "which tab is the mouse over".
 fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TabButtonArgs>) => {
-        // A tab is as wide as its label and as tall as the strip. This has
-        // to be said about the COMPONENT, not just about the div below:
-        // every component sits inside a wrapper that defaults to Grow on
-        // both axes, and a Grow wrapper would hand each tab an equal share
-        // of the strip's full width no matter what its contents asked for.
-        ui.componentSize(ui_styling.SizeMode.Fit, ui_styling.SizeMode.Grow);
-
         let tabRef = ui.elementRef<ui_elements.DivElement>();
         let closeRef = ui.elementRef<ui_elements.DivElement>();
 
@@ -270,7 +269,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
             if onClose { onClose(p.tab.key); }
         };
 
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
             let style = props.style;
             let active = props.active;
@@ -369,6 +368,19 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
                 presets.borderColor(style.border),
                 presets.cursorPointer()
             );
+
+            // A tab is as wide as its label and as tall as the strip. This
+            // has to be said about the COMPONENT's own root element, not just
+            // about the div below it: a component root defaults to Grow on
+            // both axes, and Grow would hand each tab an equal share of the
+            // strip's full width no matter what its contents asked for.
+            return {
+                id: 0,
+                style: {
+                    width: ui_styling.SizeMode.Fit,
+                    height: ui_styling.SizeMode.Grow,
+                },
+            };
         };
     });
 }
@@ -380,7 +392,7 @@ fn TabButton(ui: ui_components.UIContext, args: TabButtonArgs) {
 // in different places in the tree.
 export fn TabPanels(ui: ui_components.UIContext, args: TabsArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TabsArgs>) => {
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
 
             ui.div({
@@ -419,6 +431,10 @@ export fn TabPanels(ui: ui_components.UIContext, args: TabsArgs) {
                 presets.wGrow(),
                 presets.hGrow()
             );
+
+            // Grow/Grow, which is what a component root defaults to: the
+            // panel stack fills whatever the host gave it.
+            return { id: 0 };
         };
     });
 }
@@ -426,7 +442,7 @@ export fn TabPanels(ui: ui_components.UIContext, args: TabsArgs) {
 // Strip + panels, the whole control. This is what a host normally wants.
 export fn Tabs(ui: ui_components.UIContext, args: TabsArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TabsArgs>) => {
-        return (): void => {
+        return (): ui_components.DivProps => {
             let props = instance.props();
 
             ui.div({
@@ -456,6 +472,8 @@ export fn Tabs(ui: ui_components.UIContext, args: TabsArgs) {
                 presets.wGrow(),
                 presets.hGrow()
             );
+
+            return { id: 0 };
         };
     });
 }

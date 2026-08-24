@@ -14,9 +14,15 @@
 // the transform result is parsed under the original filepath.
 // ============================================================================
 
-import { splitClassTokens, parseClassToken } from "./classlist";
 import { splitSections, type Section } from "./sections";
-import { lowerTemplate, TemplateError, type TemplateContext } from "./template";
+import {
+  lowerRootProps,
+  lowerTemplate,
+  parseRootHead,
+  TemplateError,
+  type ElementNode,
+  type TemplateContext,
+} from "./template";
 
 export class ComposeError extends Error {
   constructor(
@@ -166,53 +172,6 @@ function parseSlots(section: Section): SlotDecl[] {
 }
 
 // ---------------------------------------------------------------------------
-// @template [w-fit grow?w-grow h-fit] -- component box sizing. Last-wins
-// per axis; only sizing tokens are legal on the marker line.
-// ---------------------------------------------------------------------------
-function lowerComponentBox(markerArg: string, markerLine: number): string[] {
-  const arg = markerArg.replace(/\/\/.*$/, "").trim();
-  if (arg === "") {
-    return [];
-  }
-  if (!arg.startsWith("[") || !arg.endsWith("]")) {
-    throw new ComposeError(
-      `@template argument must be a [class list]`,
-      markerLine
-    );
-  }
-  const MODES: Record<string, string> = {
-    wFit: "Fit",
-    wGrow: "Grow",
-    hFit: "Fit",
-    hGrow: "Grow",
-  };
-  let width = "ui_styling.SizeMode.Fit";
-  let height = "ui_styling.SizeMode.Fit";
-  for (const raw of splitClassTokens(arg.slice(1, -1))) {
-    const tok = parseClassToken(raw);
-    const mode = MODES[tok.fn];
-    if (!mode || tok.args.length > 0) {
-      throw new ComposeError(
-        `only sizing tokens (w-fit/w-grow/h-fit/h-grow) are allowed on @template (got '${raw}')`,
-        markerLine
-      );
-    }
-    const expr = `ui_styling.SizeMode.${mode}`;
-    const axisIsWidth = tok.fn.startsWith("w");
-    const prev = axisIsWidth ? width : height;
-    const next = tok.condition ? `${tok.condition} ? ${expr} : ${prev}` : expr;
-    if (axisIsWidth) {
-      width = next;
-    } else {
-      height = next;
-    }
-  }
-  return [
-    `ui.componentSize(${rewriteDialectAccessors(width)}, ${rewriteDialectAccessors(height)});`,
-  ];
-}
-
-// ---------------------------------------------------------------------------
 // Main composition
 // ---------------------------------------------------------------------------
 
@@ -319,6 +278,22 @@ export function compose(filepath: string, source: string): string {
     push("");
   }
 
+  // The component's own root element, declared on the @template marker line.
+  let rootHead: ElementNode | null = null;
+  if (templateSec && templateSec.markerArg.trim() !== "") {
+    try {
+      rootHead = parseRootHead(templateSec.markerArg, templateSec.markerLine);
+    } catch (e) {
+      if (e instanceof TemplateError) {
+        throw new ComposeError(
+          e.message,
+          e.line >= 0 ? e.line : templateSec.markerLine
+        );
+      }
+      throw e;
+    }
+  }
+
   // Component function
   push(`export fn ${comp}(ui: ui_components.UIContext, args: ${argsName}) {`);
   push(
@@ -327,31 +302,26 @@ export function compose(filepath: string, source: string): string {
   if (emits.length > 0) {
     push(`        let emits = ${emitsName} { instance: instance };`);
   }
-  if (templateSec) {
-    for (const l of lowerComponentBox(
-      templateSec.markerArg,
-      templateSec.markerLine
-    )) {
-      push(`        ${l}`);
-    }
-  }
   if (setupSec) {
     push("");
     push(`#source "${src}:${setupSec.bodyStartLine}" {`);
     push(rewriteDialectAccessors(setupSec.body.trimEnd()));
     push(`}`);
   }
+  const ctx: TemplateContext = {
+    componentName: comp,
+    sourceFile: src,
+    presetNamespace: "presets",
+    slots: new Map(slots.map((s) => [s.name, slotStructName(s)])),
+    rewriteExpr: rewriteTemplateExpr,
+  };
+
   push("");
-  push(`        return (): void => {`);
+  // The template closure returns the root element's props -- see
+  // ui_components.ComponentInstance.currentTemplate.
+  push(`        return (): ui_components.DivProps => {`);
   push(`            let props = instance.props();`);
   if (templateSec) {
-    const ctx: TemplateContext = {
-      componentName: comp,
-      sourceFile: src,
-      presetNamespace: "presets",
-      slots: new Map(slots.map((s) => [s.name, slotStructName(s)])),
-      rewriteExpr: rewriteTemplateExpr,
-    };
     try {
       push(lowerTemplate(templateSec.body, templateSec.bodyStartLine, ctx, 3));
     } catch (e) {
@@ -364,6 +334,7 @@ export function compose(filepath: string, source: string): string {
       throw e;
     }
   }
+  push(lowerRootProps(rootHead, templateSec ? templateSec.markerLine : 1, ctx, 3));
   push(`        };`);
   push(`    });`);
   push(`}`);

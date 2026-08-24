@@ -1,0 +1,33 @@
+import ui_elements
+import ui_styling
+import ui_components
+import headwind
+type presets = headwind.presets;
+
+@props
+label: str = "";
+
+@emit
+click: (ui_components.PointerEvent,);
+dismissed: ();
+
+@setup
+let panelRef = elementRef<ui_elements.DivElement>();
+
+let onDown = (event: ui_components.PointerEvent) => {
+    emits.click(event);
+};
+
+let onEscape = (event: ui_components.KeyboardEvent) => {
+    emits.dismissed();
+};
+
+// The root element carries a ref, a focus flag, a bubble-phase event and a
+// capture-phase one -- everything a plain div can carry.
+@template [row bg-["#222"]]
+    ref=panelRef
+    focusable=true
+    @pointerdown=onDown
+    @key-down-capture=onEscape
+
+text [] [props.label]
