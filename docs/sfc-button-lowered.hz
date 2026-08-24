@@ -163,14 +163,14 @@ export fn Button(ui: ui_components.UIContext, args: ButtonArgs) {
                 onPointerDown: clicked,          // @pointerdown=clicked
                 //@plugin: ignored on a root -- see ui_components.DivProps.id.
                 id: 0,
-                //   row cross-align-center gap-0 px-[style.paddingX]px py-[style.paddingY]px
+                //   row items-center gap-0 px-[style.paddingX]px py-[style.paddingY]px
                 //   bg-[backgroundColor] rounded-[style.rounded]px h-fit
                 //   enabled?cursor-pointer w-fit grow?w-grow
                 //@plugin: `hover:some-stuff` omitted -- element-state variants need
                 // an auto elementRef + `ref.hover() ? op : noop`; not lowered here.
                 style: ui_styling.mergeDivStyle({},
                     presets.row(),                                       // row
-                    presets.crossAlign(ui_styling.CrossAlign.Center),    // cross-align-center
+                    presets.itemsCenter(),                               // items-center
                     presets.gap(0),                                      // gap-0
                     presets.px(ui_styling.Px { value: style.paddingX }), // px-[style.paddingX]px
                     presets.py(ui_styling.Px { value: style.paddingY }), // py-[style.paddingY]px

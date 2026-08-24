@@ -60,7 +60,7 @@ let backgroundColor = computed(() => {
 // so this element stays the button's own. Sizing is a prop (`grow`) for the
 // same reason.
 @template [
-        row cross-align-center gap-0 px-[props.style.paddingX]px py-[props.style.paddingY]px bg-[backgroundColor]
+        row items-center gap-0 px-[props.style.paddingX]px py-[props.style.paddingY]px bg-[backgroundColor]
         rounded-[props.style.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
     ]
     ref=buttonRef

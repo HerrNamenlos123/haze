@@ -291,7 +291,7 @@
           "name": "keyword.operator.ternary.hzui"
         },
         {
-          "comment": "a class token: row, gap-0, cross-align-center, w-fit",
+          "comment": "a class token: row, gap-0, items-center, w-fit",
           "match": "[A-Za-z][\\w]*(?:-[\\w]+)*",
           "name": "entity.other.attribute-name.class.css.hzui"
         }
@@ -486,7 +486,7 @@
           "name": "keyword.operator.ternary.hzui"
         },
         {
-          "comment": "a class token: row, gap-0, cross-align-center, w-fit",
+          "comment": "a class token: row, gap-0, items-center, w-fit",
           "match": "[A-Za-z][\\w]*(?:-[\\w]+)*",
           "name": "entity.other.attribute-name.class.css.hzui"
         }

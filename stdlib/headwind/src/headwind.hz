@@ -194,19 +194,25 @@ namespace presets {
         return ui_styling.HeightOp { value: ui_styling.SizeMode.Grow };
     }
 
-    // Cross-axis alignment (perpendicular to direction -- see CrossAlign's
-    // own doc comment for exactly which physical axis that is).
+    // ---- Alignment ---------------------------------------------------------
+    //
+    // Two axes, both RELATIVE to `direction` -- neither one is "horizontal".
+    // In a row the main axis is horizontal; in a column it is vertical.
+    //
+    //   main axis  (same axis as direction)   packing(Packing)        justify-*
+    //   cross axis (perpendicular to it)      crossAlign(CrossAlign)  items-*
+    //
+    // The general forms below take the enum and are named after it. The token
+    // shorthands are named after Tailwind (justify-center / items-center),
+    // because two different WORDS for two different axes is what keeps a class
+    // list unambiguous -- see the alias block near the bottom of this file.
+    // (`Packing` is deliberately not called "justify-content": the enum name
+    // has to say which axis it means, a paired token vocabulary does not.)
+
     export fn crossAlign(value: ui_styling.CrossAlign): ui_styling.CrossAlignOp {
         return ui_styling.CrossAlignOp { value: value };
     }
 
-    // items-stretch shorthand: opt-in cross-axis fill for children still at
-    // their default size.
-    export fn stretch(): ui_styling.CrossAlignOp {
-        return ui_styling.CrossAlignOp { value: ui_styling.CrossAlign.Stretch };
-    }
-
-    // Main-axis packing (the same axis as direction).
     export fn packing(value: ui_styling.Packing): ui_styling.PackingOp {
         return ui_styling.PackingOp { value: value };
     }
@@ -360,17 +366,31 @@ namespace presets {
     }
 
     // ---- Aliases matching the SFC class-token naming rule (kebab -> camel):
-    // text-nowrap, cross-align-center, ... The rule is mechanical; the names
-    // it produces are provided here rather than special-cased in the plugin.
+    // text-nowrap, items-center, ... The rule is mechanical; the names it
+    // produces are provided here rather than special-cased in the plugin.
     export fn textNowrap(): ui_styling.TextWrapOp { return noWrap(); }
-    export fn crossAlignStart(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Start); }
-    export fn crossAlignCenter(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Center); }
-    export fn crossAlignEnd(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.End); }
-    export fn crossAlignStretch(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Stretch); }
-    export fn itemsStart(): ui_styling.CrossAlignOp { return crossAlignStart(); }
-    export fn itemsCenter(): ui_styling.CrossAlignOp { return crossAlignCenter(); }
-    export fn itemsEnd(): ui_styling.CrossAlignOp { return crossAlignEnd(); }
-    export fn itemsStretch(): ui_styling.CrossAlignOp { return crossAlignStretch(); }
+
+    // Alignment shorthands -- ONE spelling per axis, see the Alignment block
+    // above. justify-* is the main axis, items-* is the cross axis; there is
+    // no cross-align-* set anymore, because having two names for the cross
+    // axis while the main axis had none is exactly what made this confusing.
+    export fn justifyStart(): ui_styling.PackingOp { return packing(ui_styling.Packing.Start); }
+    export fn justifyCenter(): ui_styling.PackingOp { return packing(ui_styling.Packing.Center); }
+    export fn justifyEnd(): ui_styling.PackingOp { return packing(ui_styling.Packing.End); }
+    // Tailwind spells SpaceBetween `justify-between`.
+    export fn justifyBetween(): ui_styling.PackingOp { return packing(ui_styling.Packing.SpaceBetween); }
+    // NOTE: Packing has no SpaceAround/SpaceEvenly, so justify-around and
+    // justify-evenly do not exist -- adding them means a new enum variant plus
+    // a mapping in ui_layout.crossAlignToClayAlign's packing counterpart.
+
+    export fn itemsStart(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Start); }
+    export fn itemsCenter(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Center); }
+    export fn itemsEnd(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.End); }
+    // Opt-in cross-axis fill for children still at their default size.
+    export fn itemsStretch(): ui_styling.CrossAlignOp { return crossAlign(ui_styling.CrossAlign.Stretch); }
+    // There is no items-* / justify-* equivalent of CSS `align-self`: both
+    // enums are set on the CONTAINER, so a single child cannot override the
+    // alignment its parent chose.
 
     export fn fontFamily(value: str): ui_styling.FontFamilyOp {
         return ui_styling.FontFamilyOp { value: value };

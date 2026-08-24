@@ -1,7 +1,49 @@
 
-@setup
+export enum PanelPosition {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
 
-@template [absolute bg-["#0F0A"] p-4 items-center]
+@props
+position: PanelPosition = PanelPosition.Center;
+marginX: real = 0;
+marginY: real = 0;
+
+@setup
+let left = computed(() => {
+    return props.position == PanelPosition.TopLeft || props.position == PanelPosition.Left || props.position == PanelPosition.BottomLeft;
+});
+let centerx = computed(() => {
+    return props.position == PanelPosition.Top || props.position == PanelPosition.Center || props.position == PanelPosition.Bottom;
+});
+let right = computed(() => {
+    return props.position == PanelPosition.TopRight || props.position == PanelPosition.Right || props.position == PanelPosition.BottomRight;
+});
+let top = computed(() => {
+    return props.position == PanelPosition.TopLeft || props.position == PanelPosition.Top || props.position == PanelPosition.TopRight;
+});
+let centery = computed(() => {
+    return props.position == PanelPosition.Left || props.position == PanelPosition.Center || props.position == PanelPosition.Right;
+});
+let bottom = computed(() => {
+    return props.position == PanelPosition.BottomLeft || props.position == PanelPosition.Bottom || props.position == PanelPosition.BottomRight;
+});
+
+@template [absolute 
+    left?justify-start
+    centerx?justify-center
+    right?justify-end
+    top?items-start
+    centery?items-center
+    bottom?items-end
+]
 
 div [bg-["#F00A"] w-fit h-fit items-center] {
     text [] ["Hello world"]

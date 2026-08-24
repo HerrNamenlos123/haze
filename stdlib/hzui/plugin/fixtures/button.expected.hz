@@ -119,7 +119,7 @@ let backgroundColor = rx.computed(() => {
                     onPointerDown: clicked,
                     style: ui_styling.mergeDivStyle({},
                         presets.row(),
-                        presets.crossAlignCenter(),
+                        presets.itemsCenter(),
                         presets.gap(0),
                         presets.px(ui_styling.Px { value: (props.style.paddingX) }),
                         presets.py(ui_styling.Px { value: (props.style.paddingY) }),

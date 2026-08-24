@@ -17,7 +17,7 @@
 //
 //   row                  -> row()
 //   gap-0                -> gap(0)
-//   cross-align-center   -> crossAlignCenter()
+//   justify-between      -> justifyBetween()
 //   w-fit                -> wFit()
 //   bg-[color]           -> bg(color)                     (no unit: raw expression)
 //   px-[x]px             -> px(Px { value: x })            (unit: explicit, unscaled)

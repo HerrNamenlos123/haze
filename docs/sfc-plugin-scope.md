@@ -115,7 +115,7 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
 
 Whitespace-separated only — no commas, no quotes, no parens between tokens.
 
-- `row`, `gap-0`, `cross-align-center` — static token → preset call (`presets.row()` …).
+- `row`, `gap-0`, `items-center` — static token → preset call (`presets.row()` …).
   Lowering is a **naming rule** (`px-2` → `px(2)`, `w-fit` → `wFit()`), not a table: the real
   compiler resolves the call, and any `export fn` in a preset namespace is automatically a token.
 - **Scale numbers:** `gap-0`, `p-4`, `w-2.5` — any integer or float; the preset applies the
@@ -231,7 +231,7 @@ for completions; not needed for diagnostics.
 2. ~~Granular padding~~ DONE 2026-08-24: `PaddingOp` has optional per-side `Length` fields;
    `Length = Px | Em | Rem` with `resolveLength`; `WidthLengthOp`/`HeightLengthOp`/`RoundedOp`/
    `FontSizeLengthOp` for explicit sizes; headwind aliases for the mechanical naming rule
-   (`textNowrap`, `crossAlignCenter`, `itemsCenter`, …).
+   (`textNowrap`, `itemsCenter`, `justifyBetween`, …).
 3. **Public style contract for components** (advertised flags + where each lands). Reserved and
    rejected for now, see §3.1.
 4. **Hover/active variants:** auto elementRef per styled element + conditional ops (no new

@@ -4832,6 +4832,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
 
             ui_widgets.FloatingPanel(ui, {
                 id: 1,
+                position: ui_widgets.PanelPosition.TopLeft,
             });
 
             return { id: 0 };

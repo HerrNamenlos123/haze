@@ -192,7 +192,7 @@ describe("events", () => {
 
 describe("class tokens", () => {
   test("static tokens camelCase mechanically", () => {
-    expect(parseClassToken("cross-align-center").fn).toBe("crossAlignCenter");
+    expect(parseClassToken("justify-between").fn).toBe("justifyBetween");
     expect(parseClassToken("row").fn).toBe("row");
   });
 
