@@ -1,5 +1,56 @@
 # Development Guide
 
+## Installing the compiler
+
+`bun run install` deploys a self-contained compiler so `haze` works in any
+directory, with no checkout and no environment variables:
+
+```
+bun run install                 # -> ~/.haze, linked as ~/.local/bin/haze
+bun run install --prefix /opt/haze
+bun run install --no-verify     # skip the hello-world smoke test
+bun run install --regen-antlr   # also regenerate src/Parser/grammar/autogen
+```
+
+It builds the native Haze parser, compiles the TypeScript compiler into a
+standalone binary, stages the whole payload, and swaps it in only once
+everything succeeded:
+
+```
+<prefix>/bin/haze              the compiler
+<prefix>/libexec/haze-parser   the native parser (the fast parse path)
+<prefix>/stdlib/...            standard library sources
+<prefix>/tools/...             build-time tools (regex-compiler)
+<prefix>/resources/...         bundled fonts and images
+<prefix>/install-manifest.json version, commit, timestamp, source checkout
+```
+
+The other entries under `~/.haze` (`global/`, `cache/`, `tmp/` -- the downloaded
+C toolchain and build caches) are never touched by an install.
+
+**How the binary finds its payload:** `src/shared/InstallPaths.ts`, and nothing
+else. It resolves `process.execPath`, follows symlinks, and looks for a
+`stdlib/core/haze.toml` next to (or one level above) the binary. There is no
+`NODE_ENV` check and no PATH lookup, so an install works when invoked through a
+symlink, by absolute path, or from a cron job. `HAZE_HOME` overrides the
+detection outright; `HAZE_STDLIB_DIR` / `HAZE_TOOLS_DIR` override one directory
+each. Running from a checkout (`bun run src/main.ts ...`) is unaffected: the Bun
+binary has no `stdlib/` beside it, so detection falls through to the sources.
+
+**Dependencies on shipped modules.** A dependency is resolved next to the
+declaring `haze.toml` first, then by name in the standard library, so a project
+anywhere on the machine can write either of these:
+
+```toml
+[dependencies]
+base64 = {}                             # resolved from the installed stdlib
+sdl = { path = "stdlib/sdl" }           # checkout-relative, stdlib as fallback
+```
+
+Note that `install` is also an npm/bun lifecycle hook. `scripts/install.ts`
+detects that (`npm_command !== "run-script"`) and does nothing, so a plain
+`bun install` does not trigger a compiler deploy.
+
 ## Critical Patterns & Common Pitfalls
 
 ### Export System Issues

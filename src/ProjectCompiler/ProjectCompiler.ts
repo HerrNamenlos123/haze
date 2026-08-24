@@ -31,6 +31,7 @@ import {
   HAZE_C_COMPILER,
   HAZE_CACHE,
   HAZE_CMAKE_TOOLCHAIN,
+  HAZE_CONFIG_FILE,
   HAZE_CXX_COMPILER,
   HAZE_GLOBAL_DIR,
   HAZE_MUSL_SYSROOT,
@@ -259,9 +260,22 @@ export class ProjectCompiler {
               const depBaseDir = cfg.configFilePath
                 ? dirname(cfg.configFilePath)
                 : stdlibDir;
-              const resolvedDepPath = join(depBaseDir, dep.path);
+              // A dependency is looked for next to the declaring haze.toml
+              // first, then in the standard library. The second lookup is what
+              // lets a project anywhere on the machine depend on a shipped
+              // module (`sdl = { path = "stdlib/sdl" }`, or `sdl = {}`) without
+              // knowing where the compiler was installed.
+              const candidates = dep.path
+                ? [join(depBaseDir, dep.path), join(stdlibDir, dep.name)]
+                : [join(stdlibDir, dep.name)];
+              const resolvedDepPath = candidates.find((c) =>
+                existsSync(join(c, HAZE_CONFIG_FILE))
+              );
               let depConfig: Awaited<ReturnType<typeof parseConfig>>;
               try {
+                if (!resolvedDepPath) {
+                  throw new Error("not found");
+                }
                 depConfig = await parseConfig(
                   undefined,
                   resolvedDepPath,
@@ -270,9 +284,13 @@ export class ProjectCompiler {
               } catch {
                 throw new GeneralError(
                   `Failed to load dependency '${dep.name}' of module '${cfg.name}':\n` +
-                    `  Declared path: ${dep.path}\n` +
-                    `  Resolved path: ${resolvedDepPath}\n` +
-                    `  No 'haze.toml' found at that location.`
+                    (dep.path
+                      ? `  Declared path: ${dep.path}\n`
+                      : "  Declared without a path (resolved from the standard library)\n") +
+                    candidates
+                      .map((c) => `  Looked in: ${c}\n`)
+                      .join("") +
+                    `  No 'haze.toml' found at any of those locations.`
                 );
               }
               if (!depConfig) {

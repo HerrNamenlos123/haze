@@ -19,6 +19,7 @@ import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import { CompilerError } from "../shared/Errors";
+import { getInstalledParserBinary } from "../shared/InstallPaths";
 import { requestSync, warmupBridge } from "./SyncBridge";
 
 const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
@@ -258,12 +259,26 @@ export function buildNativeParser(repoRoot: string): boolean {
     return false;
   }
 
-  fs.mkdirSync(path.dirname(stampPath(repoRoot)), { recursive: true });
-  fs.writeFileSync(stampPath(repoRoot), parserSourceHash(repoRoot), "utf8");
+  stampNativeParser(repoRoot);
   return true;
 }
 
+/**
+ * Record the parser sources the current binary was built from, so later runs
+ * (and `bun run install`) can tell whether it is still current. Exported for
+ * the installer, which builds the parser itself.
+ */
+export function stampNativeParser(repoRoot: string): void {
+  fs.mkdirSync(path.dirname(stampPath(repoRoot)), { recursive: true });
+  fs.writeFileSync(stampPath(repoRoot), parserSourceHash(repoRoot), "utf8");
+}
+
 export function ensureNativeParser(repoRoot: string): boolean {
+  // The deployed parser was built from the same commit as the compiler, so it
+  // is current by construction and there is nothing to rebuild it from.
+  if (getInstalledParserBinary()) {
+    return true;
+  }
   if (isParserUpToDate(repoRoot)) {
     return true;
   }
@@ -297,7 +312,7 @@ export class NativeParserServer {
       return;
     }
     this.proc = child_process.spawn(
-      path.join(this.repoRoot, PARSER_BINARY),
+      parserBinaryPath(this.repoRoot),
       ["--server"],
       { cwd: this.repoRoot, stdio: ["pipe", "pipe", "pipe"] }
     );
@@ -457,7 +472,7 @@ export function parseFileNativeSync(
   filepath: string
 ): ASTRoot {
   const result = child_process.spawnSync(
-    path.join(repoRoot, PARSER_BINARY),
+    parserBinaryPath(repoRoot),
     [filepath],
     { cwd: repoRoot, encoding: "utf8", maxBuffer: 512 * 1024 * 1024 }
   );
@@ -475,7 +490,9 @@ export function parseFileNativeSync(
 const PARSER_BRIDGE = "parser";
 
 export function parserBinaryPath(repoRoot: string): string {
-  return path.join(repoRoot, PARSER_BINARY);
+  // An installed compiler ships the parser beside itself; there is no checkout
+  // under the user's cwd to look in, and none to rebuild from either.
+  return getInstalledParserBinary() ?? path.join(repoRoot, PARSER_BINARY);
 }
 
 /**
@@ -548,7 +565,7 @@ function parseTextNativeSpawn(
   const header = Buffer.from(`TEXT ${payload.length} ${filename}\n`, "utf8");
 
   const result = child_process.spawnSync(
-    path.join(repoRoot, PARSER_BINARY),
+    parserBinaryPath(repoRoot),
     ["--server"],
     {
       cwd: repoRoot,

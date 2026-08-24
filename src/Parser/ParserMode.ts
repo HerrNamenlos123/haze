@@ -12,6 +12,7 @@
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
+import { getInstalledParserBinary } from "../shared/InstallPaths";
 import { diffAST, formatDifferences } from "./ASTDiff";
 import {
   NativeParserServer,
@@ -82,6 +83,11 @@ export function resetNativeParserAvailability(): void {
  */
 export function prepareNativeParser(): boolean {
   if (!usesNativeParser()) {
+    return true;
+  }
+  // An installed compiler carries its own parser: the cwd is the user's
+  // project, which has no compiler checkout to build one from.
+  if (getInstalledParserBinary()) {
     return true;
   }
   if (!existsSync(path.join(repoRoot, "compiler", "haze-parser"))) {

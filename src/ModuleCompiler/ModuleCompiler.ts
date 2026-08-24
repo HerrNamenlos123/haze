@@ -31,6 +31,11 @@ import type { ASTRoot } from "../shared/AST";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
 import {
+  isInstalledBuild,
+  resolveStdlibDirectory,
+  resolveToolsDirectory,
+} from "../shared/InstallPaths";
+import {
   Collect,
   CollectFile,
   CollectImmediate,
@@ -165,7 +170,7 @@ export const HAZE_CXX_COMPILER =
   (PLATFORM === Platform.Linux ? "/bin/clang++" : "/bin/clang++.exe");
 const ARCHIVE_TOOL =
   PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
-const HAZE_CONFIG_FILE = "haze.toml";
+export const HAZE_CONFIG_FILE = "haze.toml";
 const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 // Applies -fsanitize=address to every module's C compile+link (all platforms
@@ -238,34 +243,28 @@ export async function parseConfig(
 }
 
 export async function getStdlibDirectory() {
-  if (process.env["HAZE_STDLIB_DIR"]) {
-    return process.env["HAZE_STDLIB_DIR"];
-  }
-  if (process.env["NODE_ENV"] === "production") {
-    let whichHz = null as string | null;
-    try {
-      whichHz = await which("haze");
-    } catch {
-      throw new GeneralError("Compiler not found in path");
-    }
-    const realHz = realpathSync(whichHz);
-    return join(dirname(realHz), "stdlib/");
-  }
-  return join(dirname(fileURLToPath(import.meta.url)), "../../stdlib");
+  return requireDirectory(resolveStdlibDirectory(), "standard library");
 }
 
 export async function getToolsDirectory() {
-  if (process.env["NODE_ENV"] === "production") {
-    let whichHz = null as string | null;
-    try {
-      whichHz = await which("haze");
-    } catch {
-      throw new GeneralError("Compiler not found in path");
-    }
-    const realHz = realpathSync(whichHz);
-    return join(dirname(realHz), "tools/");
+  return requireDirectory(resolveToolsDirectory(), "compiler tools");
+}
+
+/**
+ * A missing payload directory means a broken installation, not a broken
+ * project, so it is worth saying so plainly rather than failing later with a
+ * file-not-found on some stdlib source.
+ */
+function requireDirectory(dir: string, what: string) {
+  if (!existsSync(dir)) {
+    throw new GeneralError(
+      `Cannot find the Haze ${what} at '${dir}'.\n` +
+        (isInstalledBuild()
+          ? "  This installation looks incomplete -- re-run 'bun run install' from a Haze checkout."
+          : "  Set HAZE_HOME to a Haze installation, or run the compiler from a checkout.")
+    );
   }
-  return join(dirname(fileURLToPath(import.meta.url)), "../../tools");
+  return dir;
 }
 
 export async function catchErrors(fn: () => Promise<void>) {
@@ -1449,7 +1448,9 @@ export class ModuleCompiler {
   }
 
   private computeCompilerFingerprint(): string | undefined {
-    if (process.env["NODE_ENV"] === "production") {
+    // An installed build has no `src/` to hash, and never changes underneath a
+    // project the way a checkout does, so there is nothing to invalidate on.
+    if (isInstalledBuild() || process.env["NODE_ENV"] === "production") {
       return;
     }
 
