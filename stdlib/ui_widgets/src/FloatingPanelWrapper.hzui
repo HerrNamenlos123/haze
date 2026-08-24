@@ -5,16 +5,26 @@
 
 @setup
 let isOpen = rx.reactive<bool>(false);
-let open = (event: ui_components.PointerEvent) => {
+let open = (event: PointerEvent) => {
     isOpen := true;
 };
+let close = () => {
+    isOpen := false;
+}
 
-@template [relative w-100 h-100 bg-["#333"]]
+let button = (event: PointerEvent) => {
+    fmt.println("Button clicked");
+}
+
+@template [relative w-100 h-100 bg-["#111"]]
 div [w-grow h-grow col] {
-    FloatingPanel if=isOpen [] position=[PanelPosition.Top] marginTop=[16] {
+    FloatingPanel if=isOpen [] position=[PanelPosition.Top] marginTop=[16] @close=close {
         #body {
-            div [bg-["#F00"] p-2 rounded-4] {
-                text [] ["Hello World"]
+            div [w-50 h-50 items-center gap-4 col] {
+                div [bg-["#F00"] p-2 rounded-4] {
+                    text [] ["Hello World"]
+                }
+                Button [] label=["Panel button"] @click=button
             }
         }
     }

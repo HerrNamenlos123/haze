@@ -20,6 +20,9 @@ marginBottom: real = 0;
 backgroundColor?: Color;
 radius: real = 12;
 
+@emit
+close: ();
+
 @slot
 body: {};
 
@@ -50,6 +53,10 @@ let background = computed<Color>(() => {
     return "#333";
 });
 
+let close = (event: PointerEvent) => {
+    emits.close();
+}
+
 @template [absolute 
     left?justify-start
     centerx?justify-center
@@ -58,6 +65,11 @@ let background = computed<Color>(() => {
     centery?items-center
     bottom?items-end
 ]
-div [w-fit h-fit ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px rounded-[props.radius] bg-[background]] {
+div [w-fit h-fit 
+        ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px 
+        rounded-[props.radius] bg-[background]
+    ] 
+    @pointerdownoutside=close
+{
     slot body {}
 }
