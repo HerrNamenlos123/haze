@@ -1,6 +1,12 @@
 
 #include "../include/hzstd_utils.h"
 
+#include <ctype.h>
+#include <errno.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
 static int hex_digit(char c) {
   if (c >= '0' && c <= '9')
     return c - '0';
@@ -145,4 +151,60 @@ hzstd_str_t hzstd_color_to_hex(hzstd_color_t color,
     buf[6] = hex_chars[b >> 4]; buf[7] = hex_chars[b & 0xf];
   }
   return HZSTD_STRING(buf, skip_alpha ? 6 : 8);
+}
+
+hzstd_parse_double_result_t hzstd_parse_double(hzstd_str_t s) {
+  hzstd_parse_double_result_t result = {
+    .status = HZSTD_PARSE_EMPTY,
+    .value = 0.0,
+  };
+
+  if (s.length <= 0) {
+    return result;
+  }
+
+  // strtod needs a NUL terminator and a str is a slice into a larger buffer,
+  // so the digits have to be copied. Numbers are short in practice; the heap
+  // path exists only so a pathological input cannot overflow the stack buffer.
+  char stack_buffer[128];
+  char *buffer = stack_buffer;
+  if ((size_t)s.length + 1 > sizeof(stack_buffer)) {
+    buffer = (char *)malloc((size_t)s.length + 1);
+    if (!buffer) {
+      result.status = HZSTD_PARSE_OUT_OF_RANGE;
+      return result;
+    }
+  }
+  memcpy(buffer, s.data, (size_t)s.length);
+  buffer[s.length] = '\0';
+
+  // strtod skips leading whitespace. The Haze-side parsers do not accept it
+  // anywhere, so " 1.5" must fail rather than quietly parse.
+  if (isspace((unsigned char)buffer[0])) {
+    result.status = HZSTD_PARSE_INVALID_CHARACTER;
+  }
+  else {
+    errno = 0;
+    char *end = NULL;
+    double value = strtod(buffer, &end);
+
+    if (end != buffer + s.length) {
+      // Either nothing parsed at all, or trailing characters were left over.
+      result.status = HZSTD_PARSE_INVALID_CHARACTER;
+    }
+    else if (errno == ERANGE && (value >= HUGE_VAL || value <= -HUGE_VAL)) {
+      // ERANGE also covers underflow, where strtod returns a subnormal or
+      // zero. That is a representable answer, so only overflow is an error.
+      result.status = HZSTD_PARSE_OUT_OF_RANGE;
+    }
+    else {
+      result.status = HZSTD_PARSE_OK;
+      result.value = value;
+    }
+  }
+
+  if (buffer != stack_buffer) {
+    free(buffer);
+  }
+  return result;
 }

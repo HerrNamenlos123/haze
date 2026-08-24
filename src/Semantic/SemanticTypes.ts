@@ -1496,6 +1496,55 @@ export namespace Semantic {
     );
   }
 
+  /**
+   * Like findBuiltinSymbolByName, but yields null instead of throwing when the
+   * path does not exist. Used for standard library hooks the compiler asks for
+   * but can do without -- e.g. the primitive constructor overload sets, which a
+   * `std = "none"` build has no stdlib to provide.
+   */
+  export function tryFindBuiltinSymbolByName(
+    sr: Semantic.Context,
+    symbolPath: string,
+    sourceloc: SourceLoc
+  ): Collect.SymbolId | null {
+    const names = symbolPath.split(".");
+
+    let scope = sr.cc.moduleScopeId;
+    let symbolId: Collect.SymbolId | undefined;
+
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      const isLast = i === names.length - 1;
+
+      const symbolResult = tryLookupSymbol(sr, name, {
+        startLookupInScope: scope,
+        sourceloc: sourceloc,
+      });
+
+      if (!symbolResult || symbolResult.type === "semantic") {
+        return null;
+      }
+      symbolId = symbolResult.id;
+
+      if (!isLast) {
+        const symbol = sr.cc.symbolNodes.get(symbolId);
+        if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
+          return null;
+        }
+        const symbolDef = sr.cc.typeDefNodes.get(symbol.typeDef);
+        if (symbolDef.variant === Collect.ENode.StructTypeDef) {
+          scope = symbolDef.lexicalScope;
+        } else if (symbolDef.variant === Collect.ENode.NamespaceTypeDef) {
+          scope = symbolDef.namespaceScope;
+        } else {
+          return null;
+        }
+      }
+    }
+
+    return symbolId ?? null;
+  }
+
   export function findBuiltinSymbolByName(
     sr: Semantic.Context,
     symbolPath: string,

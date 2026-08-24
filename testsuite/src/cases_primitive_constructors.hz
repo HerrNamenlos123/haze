@@ -1,0 +1,147 @@
+// REGRESSION TEST -- the primitive constructors: int("42"), u8("7"), real("1.5").
+//
+// The point of these cases is that the compiler contains none of this. A call
+// whose callee is a primitive type name is dispatched to the `prim` overload
+// set in stdlib/core/src/parse.hz (Elaborate.ts, callExpr), so what is being
+// tested here is both the parsing itself and the dispatch that reaches it:
+//
+//   * every integer width parses, including the values that only just fit
+//     (T.min, T.max) and the ones one step past them,
+//   * a failure is a Result, never a panic and never a silently truncated
+//     value -- the accumulation is bounded per digit so a long run of digits
+//     reports OutOfRange rather than tripping the runtime overflow check,
+//   * parsing is strict: no leading whitespace, no trailing text, no partial
+//     prefix, which is what separates it from a bare strtod/atoi,
+//   * the value-taking overload returns the value unwrapped, because it has no
+//     failure mode -- that is what makes this an overload SET and not a single
+//     hardcoded signature,
+//   * an argument matching no overload produces the normal overload error,
+//     naming the candidates in the standard library.
+
+namespace cases_primitive_constructors {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "primitive constructors: parse every numeric type from a string",
+            """
+fn show<T>(r: Result<T, parse.Error>): str {
+    attempt {
+        let v = r?!;
+        return f"ok {v}";
+    }
+    else e {
+        return f"err {e}";
+    }
+}
+
+fn main(): int {
+    // Every integer width, including the edges that only fit exactly.
+    fmt.println(f"int  42            {show<int>(int("42"))}");
+    fmt.println(f"int  +42           {show<int>(int("+42"))}");
+    fmt.println(f"int  -42           {show<int>(int("-42"))}");
+    fmt.println(f"int  min           {show<int>(int("-9223372036854775808"))}");
+    fmt.println(f"int  max           {show<int>(int("9223372036854775807"))}");
+    fmt.println(f"int  max+1         {show<int>(int("9223372036854775808"))}");
+    fmt.println(f"i8   -128          {show<i8>(i8("-128"))}");
+    fmt.println(f"i8   127           {show<i8>(i8("127"))}");
+    fmt.println(f"i8   128           {show<i8>(i8("128"))}");
+    fmt.println(f"i16  -32768        {show<i16>(i16("-32768"))}");
+    fmt.println(f"i32  2147483647    {show<i32>(i32("2147483647"))}");
+    fmt.println(f"i64  -1            {show<i64>(i64("-1"))}");
+    fmt.println(f"u8   255           {show<u8>(u8("255"))}");
+    fmt.println(f"u8   256           {show<u8>(u8("256"))}");
+    fmt.println(f"u8   -1            {show<u8>(u8("-1"))}");
+    fmt.println(f"u16  65535         {show<u16>(u16("65535"))}");
+    fmt.println(f"u32  4294967295    {show<u32>(u32("4294967295"))}");
+    fmt.println(f"u64  max           {show<u64>(u64("18446744073709551615"))}");
+    fmt.println(f"u64  max+1         {show<u64>(u64("18446744073709551616"))}");
+    fmt.println(f"usize 12           {show<usize>(usize("12"))}");
+
+    // Malformed input is rejected rather than partially parsed.
+    fmt.println(f"int  ''            {show<int>(int(""))}");
+    fmt.println(f"int  '-'           {show<int>(int("-"))}");
+    fmt.println(f"int  '12x'         {show<int>(int("12x"))}");
+    fmt.println(f"int  ' 12'         {show<int>(int(" 12"))}");
+    fmt.println(f"int  '1 2'         {show<int>(int("1 2"))}");
+    fmt.println(f"int  '0012'        {show<int>(int("0012"))}");
+
+    // Floats go through strtod, but must consume the whole string.
+    fmt.println(f"real 3.5           {show<real>(real("3.5"))}");
+    fmt.println(f"real -0.25         {show<real>(real("-0.25"))}");
+    fmt.println(f"real 7             {show<real>(real("7"))}");
+    fmt.println(f"real '1.5x'        {show<real>(real("1.5x"))}");
+    fmt.println(f"real ' 1.5'        {show<real>(real(" 1.5"))}");
+    fmt.println(f"real ''            {show<real>(real(""))}");
+    fmt.println(f"f64  -2            {show<f64>(f64("-2"))}");
+    fmt.println(f"f32  1.25          {show<f32>(f32("1.25"))}");
+
+    // The value-taking overload cannot fail, so it is not wrapped.
+    let i = int(7);
+    let r = real(2.5);
+    let b: u8 = u8(3 as u8);
+    fmt.println(f"identity           {i} {r} {b}");
+    return 0;
+}
+""",
+            """
+int  42            ok 42
+int  +42           ok 42
+int  -42           ok -42
+int  min           ok -9223372036854775808
+int  max           ok 9223372036854775807
+int  max+1         err value out of range for the target type
+i8   -128          ok -128
+i8   127           ok 127
+i8   128           err value out of range for the target type
+i16  -32768        ok -32768
+i32  2147483647    ok 2147483647
+i64  -1            ok -1
+u8   255           ok 255
+u8   256           err value out of range for the target type
+u8   -1            err invalid character
+u16  65535         ok 65535
+u32  4294967295    ok 4294967295
+u64  max           ok 18446744073709551615
+u64  max+1         err value out of range for the target type
+usize 12           ok 12
+int  ''            err no digits to parse
+int  '-'           err no digits to parse
+int  '12x'         err invalid character
+int  ' 12'         err invalid character
+int  '1 2'         err invalid character
+int  '0012'        ok 12
+real 3.5           ok 3.5
+real -0.25         ok -0.25
+real 7             ok 7
+real '1.5x'        err invalid character
+real ' 1.5'        err invalid character
+real ''            err no digits to parse
+f64  -2            ok -2
+f32  1.25          ok 1.25
+identity           7 2.5 3
+""");
+
+        // Nothing in the compiler knows what int() accepts, so a bad argument
+        // has to come back as an ordinary overload resolution failure.
+        s.compileFails(
+            "primitive constructors: no overload takes a float",
+            """
+fn main(): int {
+    let x = int(3.5);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.AmbiguousOverloadCandidates)]);
+
+        s.compileFails(
+            "primitive constructors: no overload takes two arguments",
+            """
+fn main(): int {
+    let x = int("1", "2");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.AmbiguousOverloadCandidates)]);
+    }
+}

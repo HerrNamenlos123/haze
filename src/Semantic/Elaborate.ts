@@ -1381,12 +1381,110 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * The compiler's own fallback for a primitive used as a constructor, for
+   * builds where the standard library provides no `prim.<name>` overload set
+   * (`std = "none"`, or a primitive it does not cover). Everything else goes
+   * through the stdlib -- see the call site in callExpr.
+   */
+  builtinPrimitiveConstructor(
+    primitive: EPrimitive,
+    callExpr: Collect.ExprCallExpr
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
+    assert(collectedExpr.variant === Collect.ENode.SymbolValueExpr);
+    const callingArguments = callExpr.arguments.map(
+      (a) => this.expr(a, undefined)[1]
+    );
+    if (primitive === EPrimitive.str) {
+      assertCompilerError(
+        callingArguments.length >= 1 && callingArguments.length <= 2,
+        "'str' constructor must take one or two parameters",
+        collectedExpr.sourceloc,
+        HazeErrorCode.StrConstructorMustTakeOneOrTwoParameters
+      );
+      const first = this.sr.exprNodes.get(callingArguments[0]);
+      const firstType = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(first.type).type
+      );
+      const second =
+        callingArguments.length > 1
+          ? this.sr.exprNodes.get(callingArguments[1])
+          : null;
+      const _secondType =
+        callingArguments.length > 1 && second
+          ? this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(second.type).type)
+          : null;
+      if (
+        firstType.variant === Semantic.ENode.PrimitiveDatatype &&
+        firstType.primitive === EPrimitive.str &&
+        callingArguments.length === 1
+      ) {
+        return [first, callingArguments[0]];
+      }
+      // if (
+      //   callingArguments.length === 2 &&
+      //   second &&
+      //   secondType &&
+      //   firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
+      //   sr.typeUseNodes.get(firstType.referee).type ===
+      //     makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
+      //   secondType.variant === Semantic.ENode.PrimitiveDatatype &&
+      //   Conversion.isInteger(secondType.primitive)
+      // ) {
+      //   return Semantic.addExpr(sr, {
+      //     variant: Semantic.ENode.StringConstructExpr,
+      //     type: makePrimitiveAvailable(
+      //       sr,
+      //       EPrimitive.str,
+      //       EDatatypeMutability.Const,
+      //       expr.sourceloc
+      //     ),
+      //     value: {
+      //       variant: "data-length",
+      //       data: callingArguments[0],
+      //       length: callingArguments[1],
+      //     },
+      //     isTemporary: true,
+      //     sourceloc: expr.sourceloc,
+      //   });
+      // }
+      throw new CompilerError(
+        `Primitive ${primitiveToString(
+          primitive
+        )} constructor does not provide an overload that can take following types: (${callingArguments
+          .map((a) =>
+            Semantic.serializeTypeUse(this.sr, this.sr.exprNodes.get(a).type)
+          )
+          .join(", ")})`,
+        callExpr.sourceloc,
+        HazeErrorCode.PrimitiveConstructorDoesNotProvideOverloadThatCan
+      );
+    }
+    throw new CompilerError(
+      `Primitive ${primitiveToString(primitive)} is not constructible`,
+      callExpr.sourceloc,
+      HazeErrorCode.PrimitiveNotConstructible
+    );
+  }
+
   callExpr(
     callExpr: Collect.ExprCallExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
     callExpr = this.expandSpreadArguments(callExpr);
     const collectedExpr = this.sr.cc.exprNodes.get(callExpr.calledExpr);
+
+    // Detect if the callee is a non-generic struct type called with generic args.
+    // In that case the generic args belong to the constructor, not the type itself.
+    // e.g. TypeErasedBox<T>(value) where TypeErasedBox has 0 type params but constructor<T>
+    // Primitive constructors (`int("42")`) reuse the same override: they are a
+    // call to a standard library overload set, chosen the same way.
+    let constructorCalleeGenericArgs: Collect.ExprId[] = [];
+    let constructorCalleeSymbol: {
+      symbolId: Collect.SymbolId;
+      crossedLambdaScope: Collect.ScopeId | null;
+    } | null = null;
     if (collectedExpr.variant === Collect.ENode.MemberAccessExpr) {
       const reflectionResult = this.tryResolveTypeReflectionCall(
         collectedExpr,
@@ -1473,101 +1571,34 @@ export class SemanticElaborator {
 
       const primitive = stringToPrimitive(collectedExpr.name);
       if (primitive !== undefined) {
-        const callingArguments = callExpr.arguments.map(
-          (a) => this.expr(a, undefined)[1]
-        );
         assertCompilerError(
           collectedExpr.genericArgs.length === 0,
           "Primitive constructors cannot take any type parameters",
           collectedExpr.sourceloc,
           HazeErrorCode.PrimitiveConstructorsCannotTakeAnyTypeParameters
         );
-        if (primitive === EPrimitive.str) {
-          assertCompilerError(
-            callingArguments.length >= 1 && callingArguments.length <= 2,
-            "'str' constructor must take one or two parameters",
-            collectedExpr.sourceloc,
-            HazeErrorCode.StrConstructorMustTakeOneOrTwoParameters
-          );
-          const first = this.sr.exprNodes.get(callingArguments[0]);
-          const firstType = this.sr.typeDefNodes.get(
-            this.sr.typeUseNodes.get(first.type).type
-          );
-          const second =
-            callingArguments.length > 1
-              ? this.sr.exprNodes.get(callingArguments[1])
-              : null;
-          const _secondType =
-            callingArguments.length > 1 && second
-              ? this.sr.typeDefNodes.get(
-                  this.sr.typeUseNodes.get(second.type).type
-                )
-              : null;
-          if (
-            firstType.variant === Semantic.ENode.PrimitiveDatatype &&
-            firstType.primitive === EPrimitive.str &&
-            callingArguments.length === 1
-          ) {
-            return [first, callingArguments[0]];
-          }
-          // if (
-          //   callingArguments.length === 2 &&
-          //   second &&
-          //   secondType &&
-          //   firstType.variant === Semantic.ENode.NullableReferenceDatatype &&
-          //   sr.typeUseNodes.get(firstType.referee).type ===
-          //     makeRawPrimitiveAvailable(sr, EPrimitive.u8) &&
-          //   secondType.variant === Semantic.ENode.PrimitiveDatatype &&
-          //   Conversion.isInteger(secondType.primitive)
-          // ) {
-          //   return Semantic.addExpr(sr, {
-          //     variant: Semantic.ENode.StringConstructExpr,
-          //     type: makePrimitiveAvailable(
-          //       sr,
-          //       EPrimitive.str,
-          //       EDatatypeMutability.Const,
-          //       expr.sourceloc
-          //     ),
-          //     value: {
-          //       variant: "data-length",
-          //       data: callingArguments[0],
-          //       length: callingArguments[1],
-          //     },
-          //     isTemporary: true,
-          //     sourceloc: expr.sourceloc,
-          //   });
-          // }
-          throw new CompilerError(
-            `Primitive ${primitiveToString(
-              primitive
-            )} constructor does not provide an overload that can take following types: (${callingArguments
-              .map((a) =>
-                Semantic.serializeTypeUse(
-                  this.sr,
-                  this.sr.exprNodes.get(a).type
-                )
-              )
-              .join(", ")})`,
-            callExpr.sourceloc,
-            HazeErrorCode.PrimitiveConstructorDoesNotProvideOverloadThatCan
-          );
-        }
-        throw new CompilerError(
-          `Primitive ${primitiveToString(primitive)} is not constructible`,
-          callExpr.sourceloc,
-          HazeErrorCode.PrimitiveNotConstructible
+
+        // What `int("42")` or `u8(x)` means is defined by the standard library,
+        // not here: `prim.<name>` is an ordinary overload set (see
+        // stdlib/core/src/parse.hz), and pointing the callee at it hands the
+        // call to the normal machinery -- overload resolution, argument
+        // conversion, nodiscard, error messages. Adding a conversion is adding
+        // a function to that namespace; the compiler needs no knowledge of it.
+        const primitiveCtorGroupId = Semantic.tryFindBuiltinSymbolByName(
+          this.sr,
+          `prim.${primitiveToString(primitive)}`,
+          collectedExpr.sourceloc
         );
+        if (primitiveCtorGroupId === null) {
+          return this.builtinPrimitiveConstructor(primitive, callExpr);
+        }
+        constructorCalleeSymbol = {
+          symbolId: primitiveCtorGroupId,
+          crossedLambdaScope: null,
+        };
       }
     }
 
-    // Detect if the callee is a non-generic struct type called with generic args.
-    // In that case the generic args belong to the constructor, not the type itself.
-    // e.g. TypeErasedBox<T>(value) where TypeErasedBox has 0 type params but constructor<T>
-    let constructorCalleeGenericArgs: Collect.ExprId[] = [];
-    let constructorCalleeSymbol: {
-      symbolId: Collect.SymbolId;
-      crossedLambdaScope: Collect.ScopeId | null;
-    } | null = null;
     if (
       collectedExpr.variant === Collect.ENode.SymbolValueExpr &&
       collectedExpr.genericArgs.length > 0

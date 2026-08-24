@@ -1,0 +1,275 @@
+// String -> number conversion: the implementation behind the primitive
+// constructors `int("42")`, `u8("7")`, `real("1.5")` and friends.
+//
+// The compiler does not know how any of these work. A call whose callee is a
+// primitive type name is resolved to the overload set of the same name in the
+// `prim` namespace below (Elaborate.ts, callExpr), and everything after that --
+// overload resolution, argument conversion, the error message when nothing
+// matches -- is the ordinary function call machinery. Teaching a primitive a
+// new conversion means adding a function here, not touching the compiler.
+//
+// Two overloads exist for every numeric primitive:
+//
+//   T(s: str) -> Result<T, parse.Error>   parses, and can fail
+//   T(v: T)   -> T                        the value itself, which cannot fail
+//
+// Widening and narrowing between numeric types stays with `as`, which is
+// checked at compile time and has no failure mode to report.
+
+namespace ffi {
+    extern C noemit struct hzstd_parse_double_result_t {
+        status: i32;
+        value: real;
+    };
+
+    extern C fn hzstd_parse_double(s: str): hzstd_parse_double_result_t :: final;
+}
+
+export namespace parse {
+    export enum Error {
+        None = 0,
+
+        // Nothing to parse: an empty string, or nothing but a sign.
+        Empty,
+        // A character that cannot appear there, including trailing text and
+        // leading whitespace.
+        InvalidCharacter,
+        // A well-formed number that the target type cannot represent.
+        OutOfRange,
+    }
+
+    // One decimal integer parser for every integer type.
+    //
+    // The magnitude accumulates in u64 -- the widest any target needs -- and is
+    // bounded by the target's own limit on every step, so a long run of digits
+    // reports OutOfRange instead of tripping the runtime's overflow panic.
+    // |T.min| is T.max + 1 in two's complement, which is why the negative limit
+    // is computed from the positive one rather than negated.
+    export fn integer<T>(s: str): Result<T, Error> {
+        if s.length == 0 {
+            return Result<T, Error>.Err(Error.Empty);
+        }
+
+        let start = 0;
+        let negative = false;
+        let first = s[0];
+        if first == b"+" || first == b"-" {
+            negative = first == b"-";
+            start = 1;
+        }
+
+        if start >= s.length {
+            return Result<T, Error>.Err(Error.Empty);
+        }
+
+        let isSigned = T.min < 0;
+        if negative && !isSigned {
+            return Result<T, Error>.Err(Error.InvalidCharacter);
+        }
+
+        let limit = T.max as u64;
+        if negative {
+            limit = limit + (1 as u64);
+        }
+
+        let acc: u64 = 0;
+        for (let i = start; i < s.length; i++) {
+            let c = s[i];
+            if c < b"0" || c > b"9" {
+                return Result<T, Error>.Err(Error.InvalidCharacter);
+            }
+            let digit = (c - b"0") as u64;
+            if acc > (limit - digit) / (10 as u64) {
+                return Result<T, Error>.Err(Error.OutOfRange);
+            }
+            acc = acc * (10 as u64) + digit;
+        }
+
+        if negative {
+            // The most negative value has no positive counterpart, so it is
+            // returned as T.min rather than negated. `limit` is exactly |T.min|
+            // here, and comparing against it (instead of writing T.max + 1)
+            // also keeps the comparison inside u64's range.
+            if acc == limit {
+                return Result<T, Error>.Ok(T.min);
+            }
+            // The bound is already guaranteed by the loop above; the check is
+            // what lets the compiler prove the narrowing cast is safe.
+            if acc <= T.max as u64 {
+                return Result<T, Error>.Ok(-(acc as T));
+            }
+            return Result<T, Error>.Err(Error.OutOfRange);
+        }
+
+        if acc <= T.max as u64 {
+            return Result<T, Error>.Ok(acc as T);
+        }
+        return Result<T, Error>.Err(Error.OutOfRange);
+    }
+
+    // One floating point parser for every float type.
+    //
+    // The digits are turned into a double by the C runtime (strtod), which is
+    // correctly rounded -- reimplementing that in Haze would be slower and less
+    // accurate. hzstd_parse_double adds what strtod lacks: it requires the whole
+    // string to be consumed and rejects leading whitespace.
+    export fn floating<T>(s: str): Result<T, Error> {
+        let parsed = ffi.hzstd_parse_double(s);
+        if parsed.status == 1 {
+            return Result<T, Error>.Err(Error.Empty);
+        }
+        if parsed.status == 2 {
+            return Result<T, Error>.Err(Error.InvalidCharacter);
+        }
+        if parsed.status == 3 {
+            return Result<T, Error>.Err(Error.OutOfRange);
+        }
+
+        if comptime T is f32 {
+            // A finite double that does not fit a float turns into an infinity
+            // when narrowed, which would make "1e300" silently parse as inf.
+            // Narrowing and widening back is what detects that without naming
+            // f32's limit (which cannot even be written as a literal: Haze has
+            // no exponent form for floats). x - x is zero only for a finite x,
+            // so an input that was already inf or nan stays a value rather than
+            // becoming an overflow.
+            let value = parsed.value;
+            let widened = (value as f32) as real;
+            let wasFinite = (value - value) == 0.0;
+            let stillFinite = (widened - widened) == 0.0;
+            if wasFinite && !stillFinite {
+                return Result<T, Error>.Err(Error.OutOfRange);
+            }
+        }
+
+        return Result<T, Error>.Ok(parsed.value as T);
+    }
+
+    // Human readable form of a failure, also used by the fmt overload below so
+    // that f"{err}" prints something meaningful.
+    export fn message(error: Error): str {
+        if error == Error.Empty {
+            return "no digits to parse";
+        }
+        if error == Error.InvalidCharacter {
+            return "invalid character";
+        }
+        if error == Error.OutOfRange {
+            return "value out of range for the target type";
+        }
+        return "no error";
+    }
+}
+
+namespace fmt {
+    export fn format_to(writer: mut stackref StringWriter, value: parse.Error, args: FormatArgs) {
+        writer.write(parse.message(value));
+    }
+}
+
+// The primitive constructor overload sets. `int(x)` resolves to `prim.int(x)`.
+export namespace prim {
+    export fn int(s: str): Result<int, parse.Error> {
+        return parse.integer<int>(s);
+    }
+
+    export fn int(value: int): int {
+        return value;
+    }
+
+    export fn i8(s: str): Result<i8, parse.Error> {
+        return parse.integer<i8>(s);
+    }
+
+    export fn i8(value: i8): i8 {
+        return value;
+    }
+
+    export fn i16(s: str): Result<i16, parse.Error> {
+        return parse.integer<i16>(s);
+    }
+
+    export fn i16(value: i16): i16 {
+        return value;
+    }
+
+    export fn i32(s: str): Result<i32, parse.Error> {
+        return parse.integer<i32>(s);
+    }
+
+    export fn i32(value: i32): i32 {
+        return value;
+    }
+
+    export fn i64(s: str): Result<i64, parse.Error> {
+        return parse.integer<i64>(s);
+    }
+
+    export fn i64(value: i64): i64 {
+        return value;
+    }
+
+    export fn usize(s: str): Result<usize, parse.Error> {
+        return parse.integer<usize>(s);
+    }
+
+    export fn usize(value: usize): usize {
+        return value;
+    }
+
+    export fn u8(s: str): Result<u8, parse.Error> {
+        return parse.integer<u8>(s);
+    }
+
+    export fn u8(value: u8): u8 {
+        return value;
+    }
+
+    export fn u16(s: str): Result<u16, parse.Error> {
+        return parse.integer<u16>(s);
+    }
+
+    export fn u16(value: u16): u16 {
+        return value;
+    }
+
+    export fn u32(s: str): Result<u32, parse.Error> {
+        return parse.integer<u32>(s);
+    }
+
+    export fn u32(value: u32): u32 {
+        return value;
+    }
+
+    export fn u64(s: str): Result<u64, parse.Error> {
+        return parse.integer<u64>(s);
+    }
+
+    export fn u64(value: u64): u64 {
+        return value;
+    }
+
+    export fn real(s: str): Result<real, parse.Error> {
+        return parse.floating<real>(s);
+    }
+
+    export fn real(value: real): real {
+        return value;
+    }
+
+    export fn f32(s: str): Result<f32, parse.Error> {
+        return parse.floating<f32>(s);
+    }
+
+    export fn f32(value: f32): f32 {
+        return value;
+    }
+
+    export fn f64(s: str): Result<f64, parse.Error> {
+        return parse.floating<f64>(s);
+    }
+
+    export fn f64(value: f64): f64 {
+        return value;
+    }
+}

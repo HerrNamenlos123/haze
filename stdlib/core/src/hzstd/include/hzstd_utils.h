@@ -37,4 +37,17 @@ hzstd_color_from_hex_result_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_bool_t
  */
 hzstd_str_t hzstd_color_to_hex(hzstd_color_t color, hzstd_bool_t omit_alpha_if_opaque, hzstd_bool_t argb_mode);
 
+/*
+ * Parse a full floating point number out of `s`.
+ *
+ * The whole slice must be consumed: trailing characters, leading whitespace and
+ * an empty slice are all rejected rather than silently ignored, which is what
+ * separates this from a bare strtod call. What strtod does accept is accepted
+ * here too, including "inf", "nan" and C99 hex floats.
+ *
+ * Overflow (a value too large for a double) reports HZSTD_PARSE_OUT_OF_RANGE;
+ * underflow is not an error and yields zero or a subnormal, as strtod does.
+ */
+hzstd_parse_double_result_t hzstd_parse_double(hzstd_str_t s);
+
 #endif // HZSTD_UTILS_H

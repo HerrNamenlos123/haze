@@ -799,6 +799,21 @@ typedef struct {
   hzstd_str_t error;
 } hzstd_color_from_hex_result_t;
 
+// Outcome of hzstd_parse_double. `status` mirrors the standard library's
+// parse.Error enum (stdlib/core/src/parse.hz) one to one, so the Haze side is a
+// plain mapping rather than a translation.
+enum {
+  HZSTD_PARSE_OK = 0,
+  HZSTD_PARSE_EMPTY = 1,
+  HZSTD_PARSE_INVALID_CHARACTER = 2,
+  HZSTD_PARSE_OUT_OF_RANGE = 3,
+};
+
+typedef struct {
+  hzstd_i32_t status;
+  hzstd_real_t value;
+} hzstd_parse_double_result_t;
+
 typedef struct {
   hzstd_f32_t r;
   hzstd_f32_t g;

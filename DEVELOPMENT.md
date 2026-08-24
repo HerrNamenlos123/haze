@@ -100,6 +100,47 @@ If a feature works locally but not across modules:
 3. Verify the exported symbol includes all necessary data
 4. If data is missing → update `src/SymbolCollection/Export.ts`
 
+## Primitive constructors live in the standard library
+
+`int("42")`, `u8(x)`, `real("1.5")` are not compiler features. When a call's
+callee is a primitive type name, `callExpr` in `src/Semantic/Elaborate.ts` looks
+up the overload set `prim.<name>` and points the callee at it; everything after
+that is the ordinary call path -- overload resolution, argument conversion,
+nodiscard, and the "no candidate matches" error that names the candidates by
+their location in the stdlib source.
+
+So the conversion surface is `stdlib/core/src/parse.hz`, and adding one is
+adding a function:
+
+```haze
+export namespace prim {
+    export fn int(s: str): Result<int, parse.Error> { return parse.integer<int>(s); }
+    export fn int(value: int): int { return value; }
+}
+```
+
+Two overloads exist per numeric primitive: `T(str)` returns `Result<T,
+parse.Error>` (parsing can fail), `T(T)` returns the value unwrapped (it
+cannot). Numeric-to-numeric conversion stays with `as`.
+
+If no `prim.<name>` exists -- a `std = "none"` build, or a primitive the stdlib
+does not cover -- the compiler falls back to its old built-in behaviour (the
+`str(str)` identity, otherwise "Primitive X is not constructible"). That
+fallback is the reason the lookup is `tryFindBuiltinSymbolByName` rather than
+the throwing variant.
+
+Two language limitations shaped the implementation, and will shape anything
+similar written in Haze:
+
+- **Integer arithmetic panics on overflow at runtime** (`hzstd_arithmetic.h`),
+  so an accumulator has to be bounds-checked *before* each step, not after.
+- **Float literals have no exponent form** (`HazeLexer.g4`: `DIGIT+ '.' DIGIT*`),
+  so `3.4e38` does not lex. `parse.floating` detects an f32 overflow by
+  narrowing and widening back instead of comparing against a literal limit.
+- A local variable named `signed`, `unsigned`, `register`, ... becomes a C
+  keyword in the generated code and fails to compile there. Local names are not
+  mangled against C keywords.
+
 ## Module System Architecture
 
 The compiler has a two-phase import/export system:
