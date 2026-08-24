@@ -1,21 +1,308 @@
 import textedit_behavior
+import unicode
+
+// === TextInput ================================================
+//
+// A single-line text box, driven entirely by textedit_behavior: this file
+// owns no cursor, no selection and no undo history of its own. It supplies
+// the engine with a document (one line, the `text` prop), turns key and
+// pointer events into engine calls, and draws what the engine says.
+//
+// ── Controlled through a reactive handle ──────────────────────
+//
+// `text` is a `Reactive<str>`, not a plain str with a change callback. The
+// owner holds the handle, this box writes through it, and both sides see the
+// same value with no round trip -- which is what lets a caller mutate the
+// text from elsewhere (a Clear button, a form reset) and have the box simply
+// show it. `change` is still emitted for owners that want to react rather
+// than poll.
+//
+// ── One line, on purpose ──────────────────────────────────────
+//
+// getLineCount() is 1 and always will be. Return does not insert a newline,
+// it emits `submit`; a paste that contains one is truncated at the first,
+// rather than quietly stashing text where the box can never show it.
 
 @props
 text: Reactive<str>;
-backgroundColor?: Color;
+placeholder: str = "";
+enabled: bool = true;
+
+fontSize: real = 14.0;
+fontFamily: str = "default";
+backgroundColor: str = "#1F1F1F";
+borderColor: str = "#3C3C3C";
+textColor: str = "#CCCCCC";
+textColorDisabled: str = "#6A6A6A";
+placeholderColor: str = "#6A6A6A";
+selectionColor: str = "#264F78";
+caretColor: str = "#FFFFFF";
+paddingX: real = 8.0;
+paddingY: real = 4.0;
+rounded: real = 3.0;
+// See button.hzui -- drawn only on :focus-visible, so clicking into the box
+// does not ring it but tabbing to it does.
+focusRing: real = 2.0;
+focusRingColor: str = "#0078D4";
+focusRingOffset: real = 1.0;
+
+@emit
+// The whole value, after any edit.
+change: (str,);
+// Return was pressed. A single-line box has no use for a newline.
+submit: (str,);
+
+@expose
+// Focus the box from the outside, e.g. when a dialog opens.
+focus: () => none;
+selectAll: () => none;
 
 @setup
-let textedit = textedit_behavior.Context();
+let rootRef = elementRef<DivElement>();
+let textRef = elementRef<TextElement>();
 
-let background = computed(() => {
-    let bg = props.backgroundColor;
-    return bg ? bg : Color("#555");
+// A textbox is one line, so a paste carrying newlines is truncated at the
+// first one. Silently dropping the rest is better than storing text the box
+// can never display or scroll to.
+let firstLineOf = (text: String): str => {
+    let i = 0;
+    while i < text.length() {
+        if text.getAt(i) == b"\n" {
+            return text.cloneSlice(0, i);
+        }
+        i = i + 1;
+    }
+    return text.cloneSlice(0);
+};
+
+// The engine's one mutation primitive. Everything it does -- typing,
+// backspace, word-delete, paste, undo -- arrives here as "replace the bytes
+// between these two columns with this text", so this is the only place in the
+// component that writes the value.
+let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String) => {
+    let handle = props.text;
+    let current = String(rx.get(handle));
+    let head = current.cloneSlice(0, start.x);
+    let tail = current.cloneSlice(end.x);
+    let next = head + firstLineOf(replacement) + tail;
+    // Written through the handle the owner gave us, so both sides see it at
+    // once. The engine reads the document back immediately after this returns
+    // (see ContextArgs.replaceRange), which a reactive write satisfies.
+    handle := next;
+    emits.change(next);
+};
+
+let textedit = textedit_behavior.Context({
+    // One line, forever -- see the note at the top of this file.
+    getLineCount: () => 1,
+    getLine: (lineIndex: int) => String(rx.get(props.text)),
+    getLineLength: (lineIndex: int) => rx.get(props.text).length,
+    getTimeInSeconds: () => ui.now(),
+    replaceRange: applyReplaceRange,
 });
 
-@template
-div [
-        px-2 py-1 bg-[background]
-    ] 
-{
-    text [] [props.text]
-}
+// --- geometry -------------------------------------------------
+//
+// Every x below is measured with the same font this box draws with, passed
+// explicitly rather than left to cascade: these run inside computeds, not at
+// a point in the element tree, so there is no ambient font to inherit.
+let widthUpTo = (column: int): real => {
+    let value = String(rx.get(props.text));
+    let head = value.cloneSlice(0, column);
+    return ui.measureText(head, props.fontFamily, props.fontSize).x;
+};
+
+let caretX = computed(() => widthUpTo(rx.get(textedit.cursorPosition).x));
+let selectionLeft = computed(() => widthUpTo(rx.get(textedit.selectionStart).x));
+let selectionRight = computed(() => widthUpTo(rx.get(textedit.selectionEnd).x));
+let showPlaceholder = computed(() => rx.get(props.text).length == 0 && props.placeholder.length > 0);
+
+// Which column a click at `localX` (pixels from the text's left edge) lands
+// on. Stepped by GRAPHEME CLUSTER, never by byte: a column that fell inside a
+// multi-byte character would slice the string mid-character, and every
+// measurement after it would be measuring garbage.
+//
+// Linear rather than a binary search because a textbox holds a line, not a
+// document, and each step is one measureText of a short prefix.
+// math's helpers are not exported from core (see its own file), so this is
+// the one place that needs one.
+let distance = (a: real, b: real): real => {
+    return a > b ? a - b : b - a;
+};
+
+let columnAtX = (localX: real): int => {
+    let value = rx.get(props.text);
+    let best = 0;
+    let bestDistance = distance(0.0, localX);
+    let column = 0;
+    while column < value.length {
+        let next = unicode.nextClusterOffset(value, column);
+        if next <= column {
+            break;
+        }
+        let d = distance(widthUpTo(next), localX);
+        if d < bestDistance {
+            bestDistance = d;
+            best = next;
+        }
+        column = next;
+    }
+    return best;
+};
+
+// Where the text actually starts on screen: the box's own left edge plus its
+// padding. Clicks arrive in window coordinates (see PointerEvent.pos), so
+// this is what makes them local.
+let textOriginX = (): real => {
+    let root = rx.get(rootRef);
+    if !root { return 0.0; }
+    let pos = root.position();
+    if pos is none { return 0.0; }
+    return pos.x + props.paddingX;
+};
+
+// --- input ----------------------------------------------------
+
+// Committed text (layout- and IME-aware), never raw key events -- see
+// ui_components.TextInputEvent for why reconstructing typed text from keys is
+// the wrong move.
+let typed = (event: TextInputEvent) => {
+    if !props.enabled { return; }
+    textedit.handleTextInput(String(event.text));
+};
+
+let keyPressed = (event: KeyboardEvent) => {
+    if !props.enabled { return; }
+    let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+
+    if event.key == Key.Left {
+        if ctrl { textedit.moveCursorWordLeft(shift); }
+        else { textedit.moveCursorLeft(shift); }
+    }
+    else if event.key == Key.Right {
+        if ctrl { textedit.moveCursorWordRight(shift); }
+        else { textedit.moveCursorRight(shift); }
+    }
+    else if event.key == Key.Home {
+        textedit.moveCursorHome(shift);
+    }
+    else if event.key == Key.End {
+        textedit.moveCursorEnd(shift);
+    }
+    else if event.key == Key.Backspace {
+        textedit.deleteBackward(ctrl);
+    }
+    else if event.key == Key.Delete {
+        textedit.deleteForward(ctrl);
+    }
+    else if event.key == Key.Return {
+        // One line: Return is the box's commit gesture, not a newline.
+        emits.submit(rx.get(props.text));
+    }
+    else if ctrl && event.key == Key.A {
+        textedit.selectAll();
+    }
+    else if ctrl && event.key == Key.C {
+        textedit.copy();
+    }
+    else if ctrl && event.key == Key.X {
+        textedit.cut();
+    }
+    else if ctrl && event.key == Key.V {
+        textedit.paste();
+    }
+    else if ctrl && event.key == Key.Z {
+        if shift { textedit.redo(); } else { textedit.undo(); }
+    }
+    else {
+        // Anything not handled here keeps its default action -- notably Tab,
+        // which must still move focus out of the box. Everything above is
+        // claimed, so it does not also navigate away or scroll an ancestor.
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+// Click places the caret; dragging with the button held extends the
+// selection, which is the same gesture a click-then-shift-click makes.
+let pressed = (event: PointerEvent) => {
+    if !props.enabled { return; }
+    let column = columnAtX(event.pos.x - textOriginX());
+    let target: Vec2i = { x: column, y: 0 };
+    textedit.clearSelection();
+    textedit.moveTo(target, true, false);
+    // The press must not travel further: a textbox inside a dismissable panel
+    // is emphatically not an interaction "outside" it.
+    event.stopPropagation();
+};
+
+let dragged = (event: PointerEvent) => {
+    if !props.enabled { return; }
+    if event.buttons == PointerButtons.None { return; }
+    let column = columnAtX(event.pos.x - textOriginX());
+    let target: Vec2i = { x: column, y: 0 };
+    // extend: true is what makes this a selection rather than a caret move --
+    // the anchor stays wherever the press put it.
+    textedit.moveTo(target, true, true);
+};
+
+// --- exposed API ----------------------------------------------
+let focus = () => {
+    let root = rx.get(rootRef);
+    if root { root.focus(); }
+};
+let selectAll = () => {
+    textedit.selectAll();
+};
+
+// --- style ----------------------------------------------------
+let ringVisible = computed(() => (rootRef?.focusVisible() ?? false) && props.focusRing > 0.0);
+let caretVisible = computed(() => (rootRef?.focused() ?? false) && rx.get(textedit.cursorVisible));
+let contentColor = computed(() => {
+    if !props.enabled { return props.textColorDisabled; }
+    return props.textColor;
+});
+
+@template [
+        relative row items-center w-grow h-fit
+        px-[props.paddingX]px py-[props.paddingY]px
+        bg-[props.backgroundColor] rounded-[props.rounded]px
+        border-1 border-color-[props.borderColor]
+        [props.enabled]?cursor-text
+        [ringVisible]?outline-[props.focusRing]
+        [ringVisible]?outline-color-[props.focusRingColor]
+        [ringVisible]?outline-offset-[props.focusRingOffset]
+    ]
+    ref=rootRef
+    focusable=[props.enabled]
+    @pointerdown=pressed
+    @pointermove=dragged
+    @keydown=keyPressed
+    @textinput=typed
+
+// Selection first, so it sits behind the glyphs it highlights.
+div if=[rx.get(textedit.hasSelection)] [
+        absolute bg-[props.selectionColor]
+        top-[props.paddingY] left-[rx.get(selectionLeft) + props.paddingX]
+        w-[rx.get(selectionRight) - rx.get(selectionLeft)]px h-[props.fontSize * 1.4]px
+    ]
+
+text if=[rx.get(showPlaceholder)] [
+        text-color-[props.placeholderColor] text-nowrap
+        font-size-[props.fontSize] font-family-[props.fontFamily]
+    ] [props.placeholder]
+
+text else [
+        text-color-[contentColor] text-nowrap
+        font-size-[props.fontSize] font-family-[props.fontFamily]
+    ] [rx.get(props.text)]
+    ref=textRef
+
+// Caret last, above both.
+div if=[rx.get(caretVisible)] [
+        absolute bg-[props.caretColor]
+        top-[props.paddingY] left-[rx.get(caretX) + props.paddingX]
+        w-[1]px h-[props.fontSize * 1.4]px
+    ]

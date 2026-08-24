@@ -296,6 +296,24 @@ describe("generated operator!=", () => {
     expect(out).not.toContain("__a_nonsense");
   });
 
+  test("a reactive handle prop is not compared at all", () => {
+    // The handle is stable and its contents are tracked reactively, so
+    // comparing it decides nothing -- and `!=` on an opaque builtin handle
+    // does not compile.
+    for (const decl of [
+      "value: Reactive<str>;",
+      "value: rx.Reactive<str>;",
+      "value: ShallowReactive<[]int>;",
+      "value: Computed<bool>;",
+    ]) {
+      expect(args(decl)).not.toContain("this.value != other.value");
+    }
+    // ...but a plain prop whose name merely mentions one still is.
+    expect(args("reactiveLabel: str = \"\";")).toContain(
+      "if this.reactiveLabel != other.reactiveLabel { return true; }"
+    );
+  });
+
   test("each comparison carries its own @props line", () => {
     // Generated code with no #source reports at a line number that does not
     // exist in the .hzui at all -- which is exactly how an uncomparable prop

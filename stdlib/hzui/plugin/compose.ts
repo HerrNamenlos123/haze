@@ -175,7 +175,13 @@ export function componentNameFromFile(filepath: string): string {
 // Line-based: `name: type = default;` / `name?: type;`.
 // DESIGN(v0): multi-line defaults are not supported yet.
 // ---------------------------------------------------------------------------
-type PropDecl = { name: string; line: number; optional: boolean };
+type PropDecl = {
+  name: string;
+  line: number;
+  optional: boolean;
+  /** A reactive handle: stable for the prop's life, so never worth comparing. */
+  stable: boolean;
+};
 
 function parsePropNames(section: Section): PropDecl[] {
   const props: PropDecl[] = [];
@@ -198,10 +204,19 @@ function parsePropNames(section: Section): PropDecl[] {
     const typeText = m[3]!.split("=")[0]!;
     const optional =
       m[2] === "?" || /(^|\|)\s*none\s*(\||$)/.test(typeText.trim());
+    // A Reactive/ShallowReactive/Computed prop is a HANDLE. The handle is
+    // stable for as long as the parent passes the same one, and the value
+    // inside it is tracked by the reactive system itself -- a template that
+    // reads it re-runs on its own. So comparing it decides nothing, and `!=`
+    // on an opaque builtin handle very likely does not compile anyway.
+    const stable = /(^|[^\w.])(rx\.)?(Shallow)?(Reactive|Computed)\s*</.test(
+      typeText
+    );
     props.push({
       name: m[1]!,
       line: section.bodyStartLine + i,
       optional: optional,
+      stable: stable,
     });
   });
   return props;
@@ -423,6 +438,12 @@ export function compose(filepath: string, source: string): string {
   push(`        if this.id != other.id { return true; }`);
   push(`}`);
   for (const p of propNames) {
+    if (p.stable) {
+      push(`        // ${p.name}: a reactive handle -- see PropDecl.stable. The`);
+      push(`        // handle does not change, and what is inside it is tracked`);
+      push(`        // by the reactive system, so there is nothing here to compare.`);
+      continue;
+    }
     push(`#source "${src}:${p.line}:1" {`);
     if (p.optional) {
       // `!=` on an `T | none` has no conversion to the bare T, so an optional

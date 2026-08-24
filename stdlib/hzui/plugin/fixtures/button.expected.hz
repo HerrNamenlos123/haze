@@ -6,6 +6,13 @@
 
 // generated: dialect type aliases -- see DIALECT_ALIASES. These names
 // are reserved inside an .hzui file.
+type Reactive<T> = rx.Reactive<T>;
+type ShallowReactive<T> = rx.ShallowReactive<T>;
+type Computed<T> = rx.Computed<T>;
+type UnwrapReactive<T> = rx.UnwrapReactive<T>;
+type ElementRef<T> = ui_components.ElementRef<T>;
+type ComponentRef<T> = ui_components.ComponentRef<T>;
+type ElementWrapper<T> = ui_components.ElementWrapper<T>;
 type PointerEvent = ui_components.PointerEvent;
 type WheelEvent = ui_components.WheelEvent;
 type KeyboardEvent = ui_components.KeyboardEvent;
