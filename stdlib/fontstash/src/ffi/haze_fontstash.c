@@ -2,6 +2,7 @@
 #include "hzstd/include/hzstd_array.h"
 #include "hzstd/include/hzstd_string.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,6 +215,32 @@ void haze_fontstash_layout_text_scaled(void* ctx,
 
     float gx0 = boxX0 + ((boxX1 - boxX0) - lw) * 0.5f + (lw - gw) * 0.5f;
     float gy0 = pquad.y0 / scale;
+
+    /* Snap the glyph origin onto the physical pixel grid.
+
+       The whole point of baking at `size * scale` is that one atlas texel
+       lands on exactly one physical pixel -- but that only holds if the quad
+       *starts* on a physical pixel boundary. Neither coordinate does on its
+       own: gx0 is built from two halved differences, and gy0 comes from a
+       baseline that includes `metrics.ascender` (font->ascender * isize/10),
+       which is fractional by construction. The renderer's ortho projection is
+       over the logical size while the viewport is the framebuffer size, so
+       those fractions survive into physical space and the sampler ends up
+       bilinearly resampling every glyph across two texel columns and rows.
+       A 2px stem comes out as a 3px grey band: reads as defocus, not aliasing.
+
+       Round in *physical* space and divide back, so the value stays in the
+       logical coordinate system the rest of this function works in. gw/gh are
+       already exact texel counts (integer physical extents / scale), so once
+       the origin is in phase the whole quad is.
+
+       This quantizes the pen to whole physical pixels, which costs up to a
+       pixel of inter-letter spacing fidelity. On a monospace grid that is
+       invisible. For proportional text the eventual answer is subpixel
+       positioning -- keep the fraction, but cache N glyph variants at
+       quantized offsets and pick the nearest -- not un-snapping this. */
+    gx0 = roundf(gx0 * scale) / scale;
+    gy0 = roundf(pquad.y0) / scale;
 
     haze_fontstash_glyph_t glyph = {
       .x0 = gx0,
