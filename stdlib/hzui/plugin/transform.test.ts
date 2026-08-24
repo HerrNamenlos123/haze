@@ -234,6 +234,57 @@ describe("slots", () => {
   });
 });
 
+describe("dialect types", () => {
+  const setup = (body: string) =>
+    gen(`import ui_components\n@setup\n${body}\n@template\n`);
+
+  test("bare type names are qualified", () => {
+    expect(setup("let f = (e: PointerEvent) => {};")).toContain(
+      "(e: ui_components.PointerEvent)"
+    );
+    expect(setup("let r = elementRef<DivElement>();")).toContain(
+      "ui.elementRef<ui_elements.DivElement>()"
+    );
+    expect(setup("let w = SizeMode.Grow;")).toContain("ui_styling.SizeMode.Grow");
+  });
+
+  test("an exported @props field is qualified too", () => {
+    // This is the position an alias could never serve: the args struct is
+    // exported, so a file-local name would escape into the module's import.hz.
+    expect(
+      gen("import ui_components\n@props\nvalue: Reactive<str>;\n@template\n")
+    ).toContain("value: rx.Reactive<str>;");
+  });
+
+  test("@emit argument types are qualified", () => {
+    expect(
+      gen("import ui_components\n@emit\ntap: (PointerEvent,);\n@template\n")
+    ).toContain("onTap?: (e0: ui_components.PointerEvent) => none;");
+  });
+
+  test("an already-qualified name is left alone", () => {
+    expect(setup("let f = (e: ui_components.PointerEvent) => {};")).toContain(
+      "(e: ui_components.PointerEvent)"
+    );
+    expect(setup("let f = (e: ui_components.PointerEvent) => {};")).not.toContain(
+      "ui_components.ui_components"
+    );
+  });
+
+  test("strings and comments are not rewritten", () => {
+    const out = setup('let s = "a Key and an Element";\n// a Key in a comment');
+    expect(out).toContain('"a Key and an Element"');
+    expect(out).toContain("// a Key in a comment");
+  });
+
+  test("a longer identifier that merely contains a type name is left alone", () => {
+    const out = setup("let KeyMap = 1;\nlet myKey = 2;\nlet ElementList = 3;");
+    expect(out).toContain("let KeyMap = 1;");
+    expect(out).toContain("let myKey = 2;");
+    expect(out).toContain("let ElementList = 3;");
+  });
+});
+
 describe("dialect rewrites", () => {
   const setup = (body: string) =>
     gen(`import ui_components\n@setup\n${body}\n@template\n`);
@@ -252,8 +303,10 @@ describe("dialect rewrites", () => {
     expect(setup("let a = computed<Color>(() => x);")).toContain(
       "rx.computed<Color>(() => x)"
     );
+    // ...and the type argument is qualified on the way through -- see
+    // qualifyDialectTypes.
     expect(setup("let r = elementRef<DivElement>();")).toContain(
-      "ui.elementRef<DivElement>()"
+      "ui.elementRef<ui_elements.DivElement>()"
     );
   });
 

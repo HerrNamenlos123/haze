@@ -79,7 +79,9 @@ let firstLineOf = (text: String): str => {
 // backspace, word-delete, paste, undo -- arrives here as "replace the bytes
 // between these two columns with this text", so this is the only place in the
 // component that writes the value.
-let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String) => {
+// `: void` is not decoration -- ContextArgs.replaceRange is declared `=> void`
+// and an unannotated lambda infers `=> none`, which is a different type here.
+let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String): void => {
     let handle = props.text;
     let current = String(rx.get(handle));
     let head = current.cloneSlice(0, start.x);
@@ -249,11 +251,11 @@ let dragged = (event: PointerEvent) => {
 };
 
 // --- exposed API ----------------------------------------------
-let focus = () => {
+let focus = (): none => {
     let root = rx.get(rootRef);
     if root { root.focus(); }
 };
-let selectAll = () => {
+let selectAll = (): none => {
     textedit.selectAll();
 };
 
@@ -304,5 +306,5 @@ text else [
 div if=[rx.get(caretVisible)] [
         absolute bg-[props.caretColor]
         top-[props.paddingY] left-[rx.get(caretX) + props.paddingX]
-        w-[1]px h-[props.fontSize * 1.4]px
+        w-[1]px h-[props.fontSize]px
     ]

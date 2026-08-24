@@ -16,6 +16,8 @@ let button = () => {
     fmt.println("Button clicked");
 }
 
+let text = reactive<str>("");
+
 @template [relative w-100 h-100 bg-["#111"]]
 div [w-grow h-grow col] {
     FloatingPanel if=isOpen [] position=[PanelPosition.Top] marginTop=[16] @close=close {
@@ -25,6 +27,8 @@ div [w-grow h-grow col] {
                     text [] ["Hello World"]
                 }
                 Button [] label=["Panel button"] @click=button
+                TextInput [] text=text
+                text [] [text]
             }
         }
     }

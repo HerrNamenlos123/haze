@@ -45,7 +45,7 @@ export class ComposeError extends Error {
 // narrow (`[props.style.fontSize]?font-size-[props.style.fontSize]`), unlike
 // two separate `instance.props()` calls.
 export function rewriteTemplateExpr(code: string): string {
-  return code
+  return qualifyDialectTypes(code)
     .replace(/\bslots\./g, "props.")
     .replace(/(?<![.\w])shallowReactive\s*(?=[<(])/g, "rx.shallowReactive")
     .replace(/(?<![.\w])reactive\s*(?=[<(])/g, "rx.reactive")
@@ -57,7 +57,7 @@ export function rewriteTemplateExpr(code: string): string {
 // snapshot), so `props.x` becomes `instance.props().x` at the use site.
 export function rewriteDialectAccessors(code: string): string {
   return (
-    code
+    qualifyDialectTypes(code)
       .replace(/\bprops\./g, "instance.props().")
       .replace(/\bslots\./g, "instance.props().")
       // Forwarded dialect functions. Textual on purpose: haze has no generic
@@ -76,41 +76,37 @@ export function rewriteDialectAccessors(code: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Dialect type aliases.
+// Dialect types.
 //
-// The types a component names constantly, aliased into every generated file so
-// an .hzui never has to spell a namespace: `(e: PointerEvent)`,
-// `elementRef<DivElement>()`, `style: { width: SizeMode.Grow }`.
+// The types a component names constantly, so an .hzui never has to spell a
+// namespace: `(e: PointerEvent)`, `elementRef<DivElement>()`,
+// `text: Reactive<str>`, `width: SizeMode.Grow`.
 //
-// Emitted per file, which is safe because a top-level `type` lands in that
-// file's own FileScope (two files in one module can both declare `type presets
-// = headwind.presets;` today, and do). The flip side is that these names are
-// RESERVED inside an .hzui file: declaring your own type with one of them is a
-// redeclaration error. Same deal as the rest of the dialect vocabulary.
+// QUALIFIED TEXTUALLY, not aliased. `type PointerEvent =
+// ui_components.PointerEvent;` per file was the obvious approach and it fails
+// in the two positions that matter most, because an alias is a distinct named
+// type rather than a transparent one:
 //
-// The consuming module must therefore depend on ui_components, ui_elements and
-// ui_styling -- which every module using this plugin already does, since the
-// generated component signature and the class tokens need the first and last
-// of those regardless.
+//   1. As a GENERIC ARGUMENT, `elementRef<DivElement>()` yields an
+//      ElementRef<ui_widgets.DivElement>, a different instantiation from
+//      ElementRef<ui_elements.DivElement>, and the two do not convert.
+//   2. In an EXPORTED declaration, `@props` becomes an exported struct, so
+//      `text: Reactive<str>` mirrors into the module's import.hz as
+//      `ui_widgets.Reactive<str>` -- a file-local name escaping into a public
+//      API, which no consumer can resolve.
+//
+// Writing the qualified name into the source has neither problem: what the
+// compiler sees is exactly what a hand-written .hz file would say. The cost is
+// that this is a textual pass, so it skips string literals and comments
+// explicitly (see qualifyDialectTypes) rather than pretending identifiers only
+// ever appear in code.
+//
+// These names are RESERVED inside an .hzui file: a local or type of your own
+// called `Key` or `Element` would be rewritten out from under you.
 // ---------------------------------------------------------------------------
-// An entry is either a plain name or `Name<T>` -- generic aliases are written
-// out with their parameters, exactly as `type ShallowReactive<T> =
-// builtin.__hz_shallow_reactive_t<T>;` is in core.
-const DIALECT_ALIASES: Record<string, string[]> = {
-  // The reactive vocabulary. Note the case: `reactive` is the FUNCTION,
-  // `Reactive` is the TYPE, and putting the function in type position is an
-  // easy and badly-reported mistake -- aliasing the types is what makes the
-  // right one the short one.
-  rx: [
-    "Reactive<T>",
-    "ShallowReactive<T>",
-    "Computed<T>",
-    "UnwrapReactive<T>",
-  ],
+const DIALECT_TYPE_NAMESPACES: Record<string, string[]> = {
+  rx: ["Reactive", "ShallowReactive", "Computed", "UnwrapReactive"],
   ui_components: [
-    "ElementRef<T>",
-    "ComponentRef<T>",
-    "ElementWrapper<T>",
     "PointerEvent",
     "WheelEvent",
     "KeyboardEvent",
@@ -124,6 +120,9 @@ const DIALECT_ALIASES: Record<string, string[]> = {
     "PointerEventKind",
     "KeyEdgeKind",
     "FocusEventKind",
+    "ElementRef",
+    "ComponentRef",
+    "ElementWrapper",
     "DivProps",
     "TextProps",
     "CanvasProps",
@@ -148,6 +147,85 @@ const DIALECT_ALIASES: Record<string, string[]> = {
     "Rem",
   ],
 };
+
+const DIALECT_TYPES: Record<string, string> = {};
+for (const ns of Object.keys(DIALECT_TYPE_NAMESPACES)) {
+  for (const name of DIALECT_TYPE_NAMESPACES[ns]!) {
+    DIALECT_TYPES[name] = `${ns}.${name}`;
+  }
+}
+
+/**
+ * Rewrites every bare dialect type name to its qualified form.
+ *
+ * A scan rather than a regex sweep, because the two places an identifier must
+ * NOT be touched -- inside a string literal, inside a comment -- are exactly
+ * the two a regex cannot see. An already-qualified name is left alone (the
+ * character before it is a `.`), and so is any longer identifier that merely
+ * starts or ends with one of these words.
+ *
+ * f-string interpolations are treated as string content and left untouched;
+ * naming a type inside one is not something a component does.
+ */
+export function qualifyDialectTypes(code: string): string {
+  let out = "";
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i]!;
+    if (c === '"') {
+      out += c;
+      i++;
+      while (i < n) {
+        if (code[i] === "\\") {
+          out += code[i]! + (code[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += code[i]!;
+        const closing = code[i] === '"';
+        i++;
+        if (closing) {
+          break;
+        }
+      }
+      continue;
+    }
+    if (c === "/" && code[i + 1] === "/") {
+      while (i < n && code[i] !== "\n") {
+        out += code[i]!;
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && code[i + 1] === "*") {
+      out += "/*";
+      i += 2;
+      while (i < n && !(code[i] === "*" && code[i + 1] === "/")) {
+        out += code[i]!;
+        i++;
+      }
+      out += "*/";
+      i += 2;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < n && /[A-Za-z0-9_]/.test(code[j]!)) {
+        j++;
+      }
+      const word = code.slice(i, j);
+      const qualified = DIALECT_TYPES[word];
+      const alreadyQualified = i > 0 && code[i - 1] === ".";
+      out += qualified && !alreadyQualified ? qualified : word;
+      i = j;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
 
 function sourceBasename(filepath: string): string {
   return filepath.replace(/\\/g, "/").split("/").pop()!;
@@ -358,15 +436,6 @@ export function compose(filepath: string, source: string): string {
   push("");
   push(`// ==== generated by hzui SFC transformer from ${filepath} ====`);
   push("");
-  push(`// generated: dialect type aliases -- see DIALECT_ALIASES. These names`);
-  push(`// are reserved inside an .hzui file.`);
-  for (const ns of Object.keys(DIALECT_ALIASES)) {
-    for (const entry of DIALECT_ALIASES[ns]!) {
-      // `Name<T>` aliases through with its parameters; a plain name does not.
-      push(`type ${entry} = ${ns}.${entry};`);
-    }
-  }
-  push("");
 
   // Slot payload structs -- one per slot, empty if the slot declares no
   // fields. See SlotDecl for why there is no payload-less shape.
@@ -374,7 +443,7 @@ export function compose(filepath: string, source: string): string {
     push(`export struct ${slotStructName(s)} {`);
     for (const line of s.payloadBody.split("\n")) {
       if (line.trim() !== "") {
-        push(`    ${line.trim()}`);
+        push(`    ${qualifyDialectTypes(line.trim())}`);
       }
     }
     push(`}`);
@@ -388,7 +457,7 @@ export function compose(filepath: string, source: string): string {
     push(`// because a ComponentRef holds it as '${exposeName} | null'.`);
     push(`export ref struct ${exposeName} {`);
     push(`#source "${src}:${exposeSec.bodyStartLine}" {`);
-    push(exposeSec.body.trimEnd());
+    push(qualifyDialectTypes(exposeSec.body.trimEnd()));
     push(`}`);
     push(`}`);
     push("");
@@ -407,13 +476,15 @@ export function compose(filepath: string, source: string): string {
   if (propsSec) {
     push("");
     push(`#source "${src}:${propsSec.bodyStartLine}" {`);
-    push(propsSec.body.trimEnd());
+    push(qualifyDialectTypes(propsSec.body.trimEnd()));
     push(`}`);
   }
   if (emits.length > 0) {
     push("");
     for (const e of emits) {
-      const params = e.argTypes.map((t, i) => `e${i}: ${t}`).join(", ");
+      const params = e.argTypes
+        .map((t, i) => `e${i}: ${qualifyDialectTypes(t)}`)
+        .join(", ");
       push(`    on${pascal(e.name)}?: (${params}) => none;`);
     }
   }
@@ -475,7 +546,9 @@ export function compose(filepath: string, source: string): string {
     push(`struct ${emitsName} {`);
     push(`    instance: ui_components.InstanceData<${argsName}>;`);
     for (const e of emits) {
-      const params = e.argTypes.map((t, i) => `e${i}: ${t}`).join(", ");
+      const params = e.argTypes
+        .map((t, i) => `e${i}: ${qualifyDialectTypes(t)}`)
+        .join(", ");
       const fwd = e.argTypes.map((_, i) => `e${i}`).join(", ");
       push(`    fn ${e.name}(${params}) {`);
       push(`        let p = this.instance.props();`);

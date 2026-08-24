@@ -253,12 +253,15 @@ of scope for now.
   (`computed(` → `rx.computed(`, `elementRef` → `ui.elementRef`): haze has no generic function
   values (`let computed = rx.computed;` fails with "expects 1 type parameters"), so forwarding by
   variable assignment is not possible. Users cannot shadow these names in SFC files.
-- **Dialect type aliases.** Every generated file opens with `type PointerEvent =
-  ui_components.PointerEvent;` and friends, so an SFC never spells a namespace for the types it
-  names constantly — events, element types, and the styling enums. Emitted per file, which is safe
-  because a top-level `type` lands in that file's own `FileScope`. The names are therefore
-  **reserved** inside an `.hzui`: declaring your own type with one of them is a redeclaration
-  error. The consuming module must depend on `ui_components`, `ui_elements` and `ui_styling`.
+- **Dialect types.** The types a component names constantly are written bare — `(e: PointerEvent)`,
+  `elementRef<DivElement>()`, `text: Reactive<str>`, `SizeMode.Grow` — and the transformer
+  qualifies them. **Qualified textually, not aliased**: `type PointerEvent =
+  ui_components.PointerEvent;` per file fails as a *generic argument* (a distinct instantiation
+  that will not convert) and in an *exported declaration* (`@props` is an exported struct, so a
+  file-local name escapes into the module's `import.hz`). Writing the qualified name into the
+  source has neither problem — the compiler sees exactly what hand-written `.hz` would say. The
+  pass skips string literals and comments explicitly. These names are **reserved** inside an
+  `.hzui`.
 
 ---
 
