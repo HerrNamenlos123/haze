@@ -444,6 +444,27 @@ namespace presets {
     // enums are set on the CONTAINER, so a single child cannot override the
     // alignment its parent chose.
 
+    // Outline -- the ring a focus indicator is made of. Raw pixels, not the
+    // spacing scale: `outline-2` is a 2px ring, matching Tailwind, and ring
+    // widths live in the 1-3px range where a x4 scale would be useless.
+    //
+    // Unlike a border, an outline takes no space and moves nothing -- see
+    // ui_styling.DivStyle.outlineWidth. That is what lets a ring appear on
+    // focus without the button jumping.
+    export fn outline(width: real): ui_styling.OutlineWidthOp {
+        return ui_styling.OutlineWidthOp { value: width };
+    }
+    export fn outlineNone(): ui_styling.OutlineWidthOp {
+        return ui_styling.OutlineWidthOp { value: 0.0 };
+    }
+    export fn outlineColor(color: Color): ui_styling.OutlineColorOp {
+        return ui_styling.OutlineColorOp { color: color };
+    }
+    // CSS outline-offset: how far outside the border edge the ring sits.
+    export fn outlineOffset(value: real): ui_styling.OutlineOffsetOp {
+        return ui_styling.OutlineOffsetOp { value: value };
+    }
+
     export fn fontFamily(value: str): ui_styling.FontFamilyOp {
         return ui_styling.FontFamilyOp { value: value };
     }

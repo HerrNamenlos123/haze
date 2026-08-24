@@ -1,29 +1,25 @@
-import ui_elements
-import ui_styling
-import ui_components
-import headwind
-type presets = headwind.presets;
-
-// To show it works, this would not be how we do things, all style vars should be separate props
-export struct ButtonStyle {
-    bg: str = "#00000000";
-    bgHover: str = "#2A2D2E";
-    bgActive: str = "#37373D";
-    bgSelected: str = "#37373D";
-    textColor: str = "#CCCCCC";
-    textColorDisabled: str = "#6A6A6A";
-    paddingX: real = 8.0;
-    paddingY: real = 4.0;
-    rounded: real = 3.0;
-    fontSize: real | none = none;
-}
 
 @props
 label: str = "";
 enabled: bool = true;
 selected: bool = false;
 grow: bool = false;
-style: ButtonStyle = {};
+bg: str = "#00000000";
+bgHover: str = "#2A2D2E";
+bgActive: str = "#37373D";
+bgSelected: str = "#37373D";
+textColor: str = "#CCCCCC";
+textColorDisabled: str = "#6A6A6A";
+paddingX: real = 8.0;
+paddingY: real = 4.0;
+rounded: real = 3.0;
+fontSize: real | none = none;
+// Focus ring. Drawn only when the button is focused WITHOUT a click -- see
+// ui_components.ui_focusVisible -- which is what makes tabbing to a button
+// visible without ringing every button anyone presses. Width 0 turns it off.
+focusRing: real = 2.0;
+focusRingColor: str = "#0078D4";
+focusRingOffset: real = 2.0;
 
 @slot
 content: {
@@ -38,6 +34,8 @@ let buttonRef = elementRef<ui_elements.DivElement>();
 
 let isHovered = computed(() => buttonRef?.hover() ?? false);
 let isActive = computed(() => buttonRef?.active() ?? false);
+// :focus-visible, not :focus -- a clicked button must not keep a ring.
+let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && props.focusRing > 0.0);
 
 let clicked = (event: ui_components.PointerEvent) => {
     event.stopPropagation();
@@ -46,29 +44,34 @@ let clicked = (event: ui_components.PointerEvent) => {
 };
 
 let backgroundColor = computed(() => {
-    if !props.enabled { return props.style.bg; } 
-    else if props.selected { return props.style.bgSelected; } 
-    else if isActive { return props.style.bgActive; } 
-    else if isHovered { return props.style.bgHover; }
-    return props.style.bg;
+    if !props.enabled { return props.bg; } 
+    else if props.selected { return props.bgSelected; } 
+    else if isActive { return props.bgActive; } 
+    else if isHovered { return props.bgHover; }
+    return props.bg;
 });
 
 // The template IS the button's root element: it is styled, it holds the ref
-// the hover/active computeds read, and it is what @pointerdown is bound to.
+// the hover/active/focus computeds read, and it is what @pointerdown is bound
+// to. `focusable` is what puts it in the keyboard's reach at all.
 // None of that is reachable from a use site -- a caller's @click goes to the
 // declared emit above, and a caller's class list must be empty (`Button []`),
 // so this element stays the button's own. Sizing is a prop (`grow`) for the
 // same reason.
 @template [
-        row items-center gap-0 px-[props.style.paddingX]px py-[props.style.paddingY]px bg-[backgroundColor]
-        rounded-[props.style.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
+        row items-center gap-0 px-[props.paddingX]px py-[props.paddingY]px bg-[backgroundColor]
+        rounded-[props.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
+        [ringVisible]?outline-[props.focusRing]
+        [ringVisible]?outline-color-[props.focusRingColor]
+        [ringVisible]?outline-offset-[props.focusRingOffset]
     ]
     ref=buttonRef
+    focusable=[props.enabled]
     @pointerdown=clicked
 
 slot content label=[props.label] {
     text if=[props.label.length > 0] [
-        text-color-[props.enabled ? props.style.textColor : props.style.textColorDisabled] text-nowrap
-        [props.style.fontSize]?font-size-[props.style.fontSize]
+        text-color-[props.enabled ? props.textColor : props.textColorDisabled] text-nowrap
+        [props.fontSize]?font-size-[props.fontSize]
     ] [props.label]
 }

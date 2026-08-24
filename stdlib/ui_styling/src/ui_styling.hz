@@ -448,6 +448,20 @@ export struct DivStyle {
     borderWidth: BorderWidthValues = {};
     borderColor?: Color;
 
+    // CSS `outline`: a ring drawn OUTSIDE the border box that takes no space.
+    // That is the whole difference from a border -- a border is part of the
+    // box and pushes content around when it appears, an outline is painted
+    // over whatever is next to the element and changes no layout at all, which
+    // is exactly why it is what a focus ring is made of.
+    //
+    // Width 0 means no outline (CSS's `outline-style: none`); there is no
+    // separate style axis, since dashed/dotted rings are not something this
+    // renderer draws. `outlineOffset` pushes the ring further out from the
+    // border edge, CSS's `outline-offset`.
+    outlineWidth?: real;
+    outlineColor?: Color;
+    outlineOffset?: real;
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -477,6 +491,9 @@ export struct DivStyle {
         this.cursor = other.cursor;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
+        this.outlineWidth = other.outlineWidth;
+        this.outlineColor = other.outlineColor;
+        this.outlineOffset = other.outlineOffset;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -594,6 +611,12 @@ export struct ComputedDivStyle {
     borderWidth: BorderWidth = {};
     borderColor: Color = {};
 
+    // See DivStyle.outlineWidth. Resolved to concrete numbers, and a width of
+    // 0 (the default) means the element has no outline at all.
+    outlineWidth: real = 0.0;
+    outlineColor: Color = {};
+    outlineOffset: real = 0.0;
+
     fontFamily?: str;
     fontSize?: real;
     fontWeight?: real;
@@ -623,6 +646,9 @@ export struct ComputedDivStyle {
         this.cursor = other.cursor;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
+        this.outlineWidth = other.outlineWidth;
+        this.outlineColor = other.outlineColor;
+        this.outlineOffset = other.outlineOffset;
         this.fontFamily = other.fontFamily;
         this.fontSize = other.fontSize;
         this.fontWeight = other.fontWeight;
@@ -759,6 +785,12 @@ export struct BorderRightWidthOp { value: real; }
 export struct BorderBottomWidthOp { value: real; }
 export struct BorderLeftWidthOp { value: real; }
 export struct BorderColorOp { color: Color; }
+// Outline -- see DivStyle.outlineWidth. Three independent ops rather than one
+// combined value, for the same reason the border-width ops are split: a width
+// token and a colour token have to compose within one class list.
+export struct OutlineWidthOp { value: real; }
+export struct OutlineColorOp { color: Color; }
+export struct OutlineOffsetOp { value: real; }
 export struct FontFamilyOp { value: str; }
 export struct FontSizeOp { value: real; }
 export struct FontWeightOp { value: real; }
@@ -791,7 +823,7 @@ export type DivStyleOp =
     | TranslateOp | TranslateXOp | TranslateYOp
     | ZIndexOp | AnchorToOp | CursorOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
-    | BorderColorOp | TextWrapOp
+    | BorderColorOp | OutlineWidthOp | OutlineColorOp | OutlineOffsetOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontSizeLengthOp | FontWeightOp | LineHeightOp | LetterSpacingOp
     | NoOp;
 
@@ -885,6 +917,9 @@ export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
     else if op is BorderBottomWidthOp { working.borderWidth.bottom = op.value; }
     else if op is BorderLeftWidthOp { working.borderWidth.left = op.value; }
     else if op is BorderColorOp { working.borderColor = op.color; }
+    else if op is OutlineWidthOp { working.outlineWidth = op.value; }
+    else if op is OutlineColorOp { working.outlineColor = op.color; }
+    else if op is OutlineOffsetOp { working.outlineOffset = op.value; }
     else if op is FontFamilyOp { working.fontFamily = op.value; }
     else if op is FontSizeOp { working.fontSize = op.value; }
     else if op is FontWeightOp { working.fontWeight = op.value; }
@@ -923,6 +958,9 @@ export fn finishDivStyle(working: DivStyle): ComputedDivStyle {
     if working.position { result.position = working.position; }
     if working.zIndex { result.zIndex = working.zIndex; }
     if working.borderColor { result.borderColor = working.borderColor; }
+    if working.outlineWidth { result.outlineWidth = working.outlineWidth; }
+    if working.outlineColor { result.outlineColor = working.outlineColor; }
+    if working.outlineOffset { result.outlineOffset = working.outlineOffset; }
     return result;
 }
 
@@ -965,6 +1003,9 @@ export fn overlayExplicitDiv(working: mut stackref DivStyle, raw: DivStyle) {
     if raw.anchorTarget { working.anchorTarget = raw.anchorTarget; }
     if raw.cursor { working.cursor = raw.cursor; }
     if raw.borderColor { working.borderColor = raw.borderColor; }
+    if raw.outlineWidth { working.outlineWidth = raw.outlineWidth; }
+    if raw.outlineColor { working.outlineColor = raw.outlineColor; }
+    if raw.outlineOffset { working.outlineOffset = raw.outlineOffset; }
     if raw.fontFamily { working.fontFamily = raw.fontFamily; }
     if raw.fontSize { working.fontSize = raw.fontSize; }
     if raw.fontWeight { working.fontWeight = raw.fontWeight; }

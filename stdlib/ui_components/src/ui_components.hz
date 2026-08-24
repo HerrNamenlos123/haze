@@ -553,6 +553,15 @@ export ref struct ComponentElementRuntimeData {
     // Deliberately not reactive: nothing renders off "a focus was requested",
     // only off `focused` above, which applyFocusChange already bumps.
     focusRequested: FocusRequest = FocusRequest.None;
+    // CSS :focus-visible. True while this element is focused AND the focus did
+    // not arrive from a pointer press -- keyboard navigation, or a
+    // programmatic focus(). It is what a focus RING should be drawn from:
+    // showing one on every click is the thing everyone turns off, and showing
+    // none on tab makes the UI unusable from the keyboard.
+    //
+    // Reported through the same focusVersion reactive as `focused`, so a style
+    // that reads it re-evaluates on exactly the same events.
+    focusVisible: bool = false;
 
     // Whether DivProps.autofocus has already had its one and only chance to
     // fire for this element. Set on the first build regardless of whether
@@ -817,6 +826,14 @@ export fn ui_focused(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.focusVersion);
     return data.focused;
+}
+
+// CSS :focus-visible -- see ComponentElementRuntimeData.focusVisible. Focused,
+// and focused by something other than a pointer press.
+export fn ui_focusVisible(element: ui_elements.Element): bool {
+    let data = runtimeDataOf(element);
+    rx.get(data.focusVersion);
+    return data.focused && data.focusVisible;
 }
 
 // Programmatic counterpart to clicking a focusable element -- the equivalent
@@ -1524,13 +1541,16 @@ export opaque ref struct UIContext {
         }
     }
 
-    // `notifyOutsideLayers`: whether this focus change should also be reported
-    // to dismissable layers it happened outside of (see
-    // DivProps.onFocusOutside). False for a change driven by a pointer press,
-    // which onPointerDownOutside already covers, and false when an element
-    // merely gave up focus because it was hidden -- neither is a user
-    // deliberately going somewhere else.
-    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void), notifyOutsideLayers: bool): void :: final {
+    // `pointerDriven`: did this focus change come from a press? It decides two
+    // things that turn on the same distinction.
+    //
+    //   - Whether the new element counts as :focus-visible, i.e. whether it
+    //     should show a focus ring. Clicking a button must not ring it;
+    //     tabbing to it must.
+    //   - Whether dismissable layers are told about it (onFocusOutside). A
+    //     press is already reported by onPointerDownOutside, and reporting it
+    //     twice would queue the dismissal ahead of the trigger's own handler.
+    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void), pointerDriven: bool): void :: final {
         if newTarget is not none {
             if runtimeDataOf(newTarget).focused {
                 return;
@@ -1555,6 +1575,7 @@ export opaque ref struct UIContext {
         if oldTarget is not none {
             let oldData = runtimeDataOf(oldTarget);
             oldData.focused = false;
+            oldData.focusVisible = false;
             oldData.focusVersion := !oldData.focusVersion;
         }
         let newPath = this._newFocusPath;
@@ -1562,6 +1583,7 @@ export opaque ref struct UIContext {
         if newTarget is not none {
             let newData = runtimeDataOf(newTarget);
             newData.focused = true;
+            newData.focusVisible = !pointerDriven;
             newData.focusVersion := !newData.focusVersion;
             this.buildFocusPathInto(newPath, tree);
         }
@@ -1593,7 +1615,7 @@ export opaque ref struct UIContext {
 
             // Last, so a layer's dismissal is queued behind every handler that
             // legitimately reacted to the focus arriving somewhere.
-            if notifyOutsideLayers {
+            if !pointerDriven {
                 this.dispatchFocusOutside(newTarget, eventQueue);
             }
         }
@@ -1693,7 +1715,7 @@ export opaque ref struct UIContext {
             // Programmatic focus -- tabbing, or any focus() call. This is the
             // one route that means "the user deliberately went elsewhere", so
             // it is the one that tells layers about it.
-            this.applyFocusChange(tree, found.element, eventQueue, true);
+            this.applyFocusChange(tree, found.element, eventQueue, false);
         }
         else if found.kind == FocusRequest.Blur {
             // Only a blur of the *currently* focused element means anything;
@@ -2240,7 +2262,7 @@ export opaque ref struct UIContext {
                             break;
                         }
                     }
-                    this.applyFocusChange(tree, newFocusTarget, eventQueue, false);
+                    this.applyFocusChange(tree, newFocusTarget, eventQueue, true);
 
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
@@ -3105,6 +3127,12 @@ export ref struct ElementWrapper<T> {
     // Mirrors CSS :focus -- see DivProps.focusable.
     fn focused(): bool {
         return ui_focused(this._element);
+    }
+
+    // Mirrors CSS :focus-visible -- focused, but not by a click. This is the
+    // one to draw a focus ring from; see ui_focusVisible.
+    fn focusVisible(): bool {
+        return ui_focusVisible(this._element);
     }
 
     // Focus this element programmatically, like the DOM's element.focus() --

@@ -256,6 +256,28 @@ fn main(): int {
     state.check("blur() on an unfocused element left the real focus alone",
         editorEl.focused(), true);
 
+    // --- :focus-visible ---------------------------------------------------
+    //
+    // Focus that did not come from a pointer press is focus-visible, which is
+    // what a focus ring is drawn from. Everything in this file focuses
+    // programmatically (hit-testing needs bounding boxes, which a headless
+    // run never produces), so this covers the keyboard/programmatic half; the
+    // click half is the one line in process() that passes pointerDriven: true.
+    editorEl.focus();
+    ui.process();
+    state.check("programmatic focus is focus-visible", editorEl.focusVisible(), true);
+    state.check("...and is of course also plain focused", editorEl.focused(), true);
+
+    otherEl.focus();
+    ui.process();
+    state.check("focus-visible moves with focus", otherEl.focusVisible(), true);
+    state.check("the element that lost focus is no longer focus-visible",
+        editorEl.focusVisible(), false);
+
+    otherEl.blur();
+    ui.process();
+    state.check("blurring clears focus-visible too", otherEl.focusVisible(), false);
+
     // --- Dismissal: focus landing outside the layer's subtree -------------
     //
     // The container is a dismissable layer. Focus moving BETWEEN its own two

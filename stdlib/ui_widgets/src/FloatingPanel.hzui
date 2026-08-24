@@ -53,7 +53,10 @@ let background = computed<Color>(() => {
     return "#333";
 });
 
-let close = (event: PointerEvent) => {
+let pointerOut = (event: PointerEvent) => {
+    emits.close();
+}
+let focusOut = (event: FocusEvent) => {
     emits.close();
 }
 
@@ -69,7 +72,8 @@ div [w-fit h-fit
         ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px 
         rounded-[props.radius] bg-[background]
     ] 
-    @pointerdownoutside=close
+    @pointerdownoutside=pointerOut
+    @focusoutside=focusOut
 {
     slot body {}
 }

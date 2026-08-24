@@ -391,6 +391,25 @@ describe("class tokens", () => {
     expect(lowered[1]).toBe("grow ? presets.wGrow() : presets.noop()");
   });
 
+  test("outline tokens lower by the same mechanical rule", () => {
+    expect(parseClassToken("outline-2")).toMatchObject({
+      fn: "outline",
+      args: ["2"],
+    });
+    expect(parseClassToken("outline-none")).toMatchObject({
+      fn: "outlineNone",
+      args: [],
+    });
+    expect(parseClassToken("outline-color-[c]")).toMatchObject({
+      fn: "outlineColor",
+      args: ["c"],
+    });
+    expect(parseClassToken("outline-offset-2")).toMatchObject({
+      fn: "outlineOffset",
+      args: ["2"],
+    });
+  });
+
   test("margin tokens lower like padding, by the same mechanical rule", () => {
     expect(parseClassToken("m-4")).toMatchObject({ fn: "m", args: ["4"] });
     expect(parseClassToken("mx-2")).toMatchObject({ fn: "mx", args: ["2"] });

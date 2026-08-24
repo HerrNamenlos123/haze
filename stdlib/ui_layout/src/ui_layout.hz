@@ -1144,6 +1144,11 @@ export opaque ref struct Context {
         // querying Clay directly by ID instead of depending on which
         // elements happened to emit a visible render command.
         applyBoundingBoxesRecursive(element, callbacks.onBoundingBox);
+
+        // Outlines last, once every box is known and everything else is
+        // already drawn -- see renderOutlinesRecursive for why a focus ring
+        // deliberately paints above all in-flow content.
+        renderOutlinesRecursive(element, callbacks, clipEntries);
     }
 }
 
@@ -1208,6 +1213,92 @@ fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingB
             applyBoundingBoxesRecursive(child, callback);
         }
     }
+}
+
+// CSS outlines, drawn after everything else.
+//
+// An outline is a ring OUTSIDE the border box that occupies no space, so Clay
+// never hears about it: it changes no layout, and Clay has no concept for it
+// either. It is drawn here instead, from the box Clay already computed.
+//
+// Reuses renderBorder verbatim -- a ring is exactly a bordered rounded rect
+// with a transparent fill, just bigger. The drawn box is the element's own
+// expanded by (offset + width) on every side, so the band the border shader
+// lays INSIDE that box lands exactly between (border edge + offset) and
+// (border edge + offset + width). The radius grows by the same amount, which
+// is what keeps a ring concentric with a rounded button instead of cutting its
+// corners.
+//
+// DELIBERATE DEVIATION from CSS painting order: outlines paint above ALL
+// in-flow content, not merely above their own element. In CSS a later sibling
+// can cover an outline; here a focus ring is never occluded by anything. A
+// ring that a neighbouring panel can hide is a ring that intermittently is not
+// there, which is worse than the ordering being exact.
+//
+// Boxes come from Clay by id, the same route applyBoundingBoxesRecursive uses,
+// because this module cannot see ui_components' render feedback (it does not
+// depend on it) -- and because a content-less div still has a real Clay box
+// even though it emitted no render command, so an outline works on one.
+fn renderOutlinesRecursive(
+    element: ui_elements.Element,
+    callbacks: RenderCallbacks,
+    clips: []ClipEntry
+): void :: final {
+    if ui_elements.isDisplayNone(element) {
+        return;
+    }
+    if element is ui_elements.DivElement {
+        drawOutline(element.globalId, element.style, pointerOf(element), callbacks, clips);
+        for child in element.children {
+            renderOutlinesRecursive(child, callbacks, clips);
+        }
+    }
+    else if element is ui_elements.CanvasElement {
+        drawOutline(element.globalId, element.style, pointerOf(element), callbacks, clips);
+    }
+}
+
+fn drawOutline(
+    elementId: str,
+    style: ui_styling.ComputedDivStyle,
+    elementPtr: cptr,
+    callbacks: RenderCallbacks,
+    clips: []ClipEntry
+): void :: final {
+    // Width 0 is CSS's `outline-style: none`, and a fully transparent ring is
+    // the same thing said differently. Both are the overwhelmingly common
+    // case, so this is the gate that keeps the walk free for everyone else.
+    if style.outlineWidth <= 0.0 || style.outlineColor.a <= 0.0 {
+        return;
+    }
+    let result = ffi.hzui_clay_get_element_bounding_box(elementId);
+    if !result.found {
+        return;
+    }
+    let grow = style.outlineOffset + style.outlineWidth;
+    let pos = Vec2(result.bounding_box.position.x - grow, result.bounding_box.position.y - grow);
+    let size = Vec2(result.bounding_box.size.x + grow * 2.0, result.bounding_box.size.y + grow * 2.0);
+
+    // Clipped by whatever clips the element itself: a ring on something inside
+    // an overflow:hidden container must not escape it.
+    callbacks.setClip(lookupClip(clips, elementPtr));
+    callbacks.renderBorder(
+        pos,
+        size,
+        style.outlineColor,
+        {
+            topLeft: style.cornerRadius.topLeft + grow,
+            topRight: style.cornerRadius.topRight + grow,
+            bottomLeft: style.cornerRadius.bottomLeft + grow,
+            bottomRight: style.cornerRadius.bottomRight + grow,
+        },
+        {
+            top: style.outlineWidth,
+            right: style.outlineWidth,
+            bottom: style.outlineWidth,
+            left: style.outlineWidth,
+        }
+    );
 }
 
 export struct RenderCallbacks {

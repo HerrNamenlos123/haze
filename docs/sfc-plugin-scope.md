@@ -108,6 +108,11 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
   `@focus`/`@blur` (no bubbling, capture only) and `@focusin`/`@focusout` (bubbling), plus a
   `-capture` variant of each. On a **component**, `@name=` always binds that component's declared
   `@emit name` (→ `onName:`) and never an element event.
+- **Focus rings:** `outline-2 outline-color-[c] outline-offset-2` — a CSS outline, drawn outside
+  the border box and taking no space, so a ring appearing on focus moves nothing. Gate it on
+  `ElementWrapper.focusVisible()` (CSS `:focus-visible`), not `focused()`: that is focus which did
+  *not* arrive from a click, which is what makes tab-navigation visible without ringing every
+  button anyone presses. `Button` does exactly this.
 - **Dismissal:** `@pointer-down-outside=` / `@focus-outside=` make the element a *dismissable
   layer* — the framework reports interactions the element can never see itself (a press
   elsewhere, focus landing somewhere it does not contain). Being declared IS the registration:
