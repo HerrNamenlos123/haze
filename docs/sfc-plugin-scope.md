@@ -108,6 +108,11 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
   `@focus`/`@blur` (no bubbling, capture only) and `@focusin`/`@focusout` (bubbling), plus a
   `-capture` variant of each. On a **component**, `@name=` always binds that component's declared
   `@emit name` (→ `onName:`) and never an element event.
+- **Dismissal:** `@pointer-down-outside=` / `@focus-outside=` make the element a *dismissable
+  layer* — the framework reports interactions the element can never see itself (a press
+  elsewhere, focus landing somewhere it does not contain). Being declared IS the registration:
+  stop declaring it and it stops being a layer. See `ui_components.DivProps.onPointerDownOutside`
+  for why the ordering matters and how a trigger opts out.
 - **Components:** capitalized head = component, lowercase = builtin element (bet-and-verify, §6.2).
 - **Slots:** child side renders with fallback: `slot content label=label { ...fallback... }`.
   Parent side provides: `#content label { ... }` (payload destructure; may be omitted). A bare
@@ -238,11 +243,17 @@ of scope for now.
   excluded by construction. Field-wise equality for plain prop structs is generated in-language
   via `for comptime field in T.fields` (pattern already used in
   [reactive.hz:53](../stdlib/core/src/reactive.hz#L53)) — no core feature needed.
-- **Dialect vocabulary** (`computed`, `elementRef`, `props.`, `slots.`, `emits`) is reserved by
-  the SFC dialect and forwarded by fixed **textual rewrite** (`computed(` → `rx.computed(`,
-  `elementRef` → `ui.elementRef`): haze has no generic function values (`let computed =
-  rx.computed;` fails with "expects 1 type parameters"), so forwarding by variable assignment is
-  not possible. Users cannot shadow these names in SFC files.
+- **Dialect vocabulary** (`computed`, `reactive`, `shallowReactive`, `elementRef`, `props.`,
+  `slots.`, `emits`) is reserved by the SFC dialect and forwarded by fixed **textual rewrite**
+  (`computed(` → `rx.computed(`, `elementRef` → `ui.elementRef`): haze has no generic function
+  values (`let computed = rx.computed;` fails with "expects 1 type parameters"), so forwarding by
+  variable assignment is not possible. Users cannot shadow these names in SFC files.
+- **Dialect type aliases.** Every generated file opens with `type PointerEvent =
+  ui_components.PointerEvent;` and friends, so an SFC never spells a namespace for the types it
+  names constantly — events, element types, and the styling enums. Emitted per file, which is safe
+  because a top-level `type` lands in that file's own `FileScope`. The names are therefore
+  **reserved** inside an `.hzui`: declaring your own type with one of them is a redeclaration
+  error. The consuming module must depend on `ui_components`, `ui_elements` and `ui_styling`.
 
 ---
 
@@ -468,6 +479,8 @@ linting.
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
 | Component ref | `ref=` binds the child's `@expose` struct, not the child | components are functions here; there is no instance type, and the exposed API is what a parent wants anyway |
 | Exposed struct naming | struct gets the bare name, function becomes `<Name>Component` | the type is hand-written, the call is generated — the good name goes to what humans type |
+| Dismissal | outside-interaction callbacks on the element itself; presence in the tree is the registration | popups need something dispatch can't give (an event that never reaches them), but the global part belongs in the framework, once |
+| Dismissal ordering | queued after the bubble phase; `stopPropagation()` suppresses it | otherwise a trigger's toggle is undone and re-run — the reopen flicker |
 | Slot arity | always one payload param, explicitly typed by convention | a use site can't see a slot's arity or payload type across files, and closures into optional fields get no inference |
 | Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
 | Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |

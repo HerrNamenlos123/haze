@@ -486,6 +486,9 @@ const DIV_EVENT_PROPS = [
   "onKeyDownCapture",
   "onKeyUpCapture",
   "onTextInputCapture",
+  // Dismissal -- see DivProps.onPointerDownOutside.
+  "onPointerDownOutside",
+  "onFocusOutside",
 ];
 
 // Keyed by the event name with separators and case thrown away, so

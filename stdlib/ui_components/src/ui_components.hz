@@ -317,6 +317,50 @@ export struct DivProps {
     onFocusInCapture?: (e: FocusEvent) => none;
     onFocusOutCapture?: (e: FocusEvent) => none;
 
+    // ---- Dismissal: interactions that happen OUTSIDE this element ---------
+    //
+    // The one thing ordinary dispatch cannot tell an element, because dispatch
+    // only ever reaches what is on the path: a press that landed somewhere
+    // else never puts this element on any path at all. Setting either of these
+    // makes this element a DISMISSABLE LAYER -- a popup, dropdown, command
+    // palette, menu -- and the framework reports outside interactions to it.
+    //
+    // Being in the tree IS the registration. There is nothing to subscribe or
+    // unsubscribe: stop declaring the element (or hide it) and it stops being
+    // a layer on the very next frame, so nothing can leak and no two
+    // components have to agree about anything.
+    //
+    // "Outside" means outside this element's SUBTREE, which is honest here in
+    // a way it is not in a browser: floating elements are still declared as
+    // children of wherever they appear (ui_layout.resolveFloating tells Clay
+    // where to *place* them, not where they live), so no portal can put a
+    // visually-inside thing structurally elsewhere. A component rendered
+    // inside a popup is genuinely inside it.
+    //
+    // Nesting needs no layer stack: a dropdown inside a dialog is inside the
+    // dialog's subtree, so a press in the dropdown dismisses neither, and a
+    // press in the dialog but outside the dropdown dismisses only the
+    // dropdown. That falls out of containment for free.
+    //
+    // Fired AFTER the normal bubble phase, so the press that toggles a popup's
+    // own trigger wins: the other way round, the trigger would read "closed"
+    // and immediately reopen -- the flicker that makes popups feel broken. For
+    // the same reason a handler on the normal path can call stopPropagation()
+    // to suppress dismissal outright, which is how a trigger opts out of being
+    // "outside".
+    onPointerDownOutside?: (e: PointerEvent) => none;
+
+    // Focus moved to an element outside this subtree -- tabbing away, or any
+    // programmatic focus() elsewhere. `relatedTarget` is the element that took
+    // focus. Unlike onFocusOut (the HTML event) this does NOT require focus to
+    // have been inside first, which is what makes it right for a popup that
+    // never took focus at all.
+    //
+    // Deliberately not fired for a focus change caused by a pointer press:
+    // onPointerDownOutside already reports that, and reporting it twice would
+    // put the dismissal ahead of the trigger's own handler.
+    onFocusOutside?: (e: FocusEvent) => none;
+
     // Keyboard/text input is delivered only to the currently focused
     // element's ancestor chain (capture root->target, then bubble
     // target->root) -- there's no cursor position to hit-test against, so
@@ -525,6 +569,8 @@ export ref struct ComponentElementRuntimeData {
     onBlurCapture?: (e: FocusEvent) => none;
     onFocusInCapture?: (e: FocusEvent) => none;
     onFocusOutCapture?: (e: FocusEvent) => none;
+    onPointerDownOutside?: (e: PointerEvent) => none;
+    onFocusOutside?: (e: FocusEvent) => none;
 
     onKeyDown?: (e: KeyboardEvent) => none;
     onKeyUp?: (e: KeyboardEvent) => none;
@@ -1049,6 +1095,9 @@ export opaque ref struct UIContext {
     // into applyFocusChange, and applyFocusChange itself needs the old and new
     // paths at the same time.
     _newFocusPath: []ui_elements.Element = [];
+    // Every dismissable layer currently in the tree -- see
+    // collectDismissLayers, refreshed once per frame.
+    _dismissLayers: []ui_elements.Element = [];
     _clickEligible: []bool = [];
     _noEdges: []PointerEdge = [];
 
@@ -1374,7 +1423,7 @@ export opaque ref struct UIContext {
             // Blur by the same route a click uses (`none` target = "focus
             // nothing"), so blur/focusout fire and the focusVersion bump wakes
             // anything watching -- no separate teardown path to drift.
-            this.applyFocusChange(tree, none, eventQueue);
+            this.applyFocusChange(tree, none, eventQueue, false);
         }
     }
 
@@ -1385,7 +1434,103 @@ export opaque ref struct UIContext {
     // is already the focused element. Schedules all four HTML focus events onto
     // `eventQueue` same as every other callback in this module -- see FIRE
     // PHASE in process().
-    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void)): void :: final {
+    // One walk per frame, gathering every element that asked to hear about
+    // interactions outside itself -- see DivProps.onPointerDownOutside.
+    //
+    // A walk rather than a registry, because an element's presence in the tree
+    // IS its registration: there is nothing to subscribe or unsubscribe, a
+    // popup that stops being declared stops being a layer immediately, and
+    // nothing can leak. Not folded into updateHoverState's walk, even though
+    // that one already visits every element: it is skipped entirely until the
+    // pointer's position is known (see process()), and a focus-driven
+    // dismissal has to work before the mouse has ever moved.
+    //
+    // Hidden subtrees are skipped whole. A display:none popup is not on
+    // screen, so nothing can be "outside" it in any sense a user would
+    // recognise -- and no descendant of a hidden element can be a layer
+    // either, which is why this returns rather than recursing.
+    fn collectDismissLayers(element: ui_elements.Element, out: []ui_elements.Element, hidden: bool = false): void :: final {
+        if hidden || ui_elements.isDisplayNone(element) {
+            return;
+        }
+        let data = runtimeDataOf(element);
+        if data.onPointerDownOutside is not none || data.onFocusOutside is not none {
+            out.push(element);
+        }
+        if element is ui_elements.DivElement {
+            let i = 0;
+            while i < element.children.length {
+                this.collectDismissLayers(element.children[i], out, false);
+                i = i + 1;
+            }
+        }
+    }
+
+    // Reports a press that landed outside a layer to that layer. Queued AFTER
+    // the press's own capture and bubble phases -- see
+    // DivProps.onPointerDownOutside for why the order is load-bearing.
+    //
+    // An empty hit path (the press landed on nothing at all) leaves every
+    // layer uncontained, which dismisses all of them. That is the right answer
+    // and it needs no special case: ui_contains reports `none` as never
+    // contained.
+    fn dispatchPointerDownOutside(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+        let target = none as ui_elements.Element | none;
+        if hitPath.length > 0 {
+            target = hitPath[hitPath.length - 1];
+        }
+        let layers = this._dismissLayers;
+        let i = 0;
+        while i < layers.length {
+            let layer = layers[i];
+            if !ui_contains(layer, target) {
+                let cb = runtimeDataOf(layer).onPointerDownOutside;
+                if cb {
+                    // Narrowed copy for the closure: an enclosing narrowing does not
+                    // reach into a closure that runs later (the FIRE phase).
+                    let fire = cb;
+                    eventQueue.push((): void => {
+                        if event._stopped { return; }
+                        fire(event);
+                    });
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Focus counterpart of the above -- see DivProps.onFocusOutside. Each
+    // layer gets its OWN event, so one layer stopping propagation cannot
+    // silence another.
+    fn dispatchFocusOutside(newTarget: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        let layers = this._dismissLayers;
+        let i = 0;
+        while i < layers.length {
+            let layer = layers[i];
+            if !ui_contains(layer, newTarget) {
+                let cb = runtimeDataOf(layer).onFocusOutside;
+                if cb {
+                    let event = FocusEvent { relatedTarget: newTarget };
+                    // Narrowed copy for the closure: an enclosing narrowing does not
+                    // reach into a closure that runs later (the FIRE phase).
+                    let fire = cb;
+                    eventQueue.push((): void => {
+                        if event._stopped { return; }
+                        fire(event);
+                    });
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // `notifyOutsideLayers`: whether this focus change should also be reported
+    // to dismissable layers it happened outside of (see
+    // DivProps.onFocusOutside). False for a change driven by a pointer press,
+    // which onPointerDownOutside already covers, and false when an element
+    // merely gave up focus because it was hidden -- neither is a user
+    // deliberately going somewhere else.
+    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void), notifyOutsideLayers: bool): void :: final {
         if newTarget is not none {
             if runtimeDataOf(newTarget).focused {
                 return;
@@ -1445,6 +1590,12 @@ export opaque ref struct UIContext {
             let focusInEvent = FocusEvent { relatedTarget: oldTarget };
             this.dispatchFocusCapturing(newPath, focusInEvent, FocusEventKind.FocusIn, eventQueue);
             this.dispatchFocusBubbling(newPath, focusInEvent, FocusEventKind.FocusIn, true, eventQueue);
+
+            // Last, so a layer's dismissal is queued behind every handler that
+            // legitimately reacted to the focus arriving somewhere.
+            if notifyOutsideLayers {
+                this.dispatchFocusOutside(newTarget, eventQueue);
+            }
         }
     }
 
@@ -1539,7 +1690,10 @@ export opaque ref struct UIContext {
         this.takeFocusRequest(tree, found);
 
         if found.kind == FocusRequest.Focus {
-            this.applyFocusChange(tree, found.element, eventQueue);
+            // Programmatic focus -- tabbing, or any focus() call. This is the
+            // one route that means "the user deliberately went elsewhere", so
+            // it is the one that tells layers about it.
+            this.applyFocusChange(tree, found.element, eventQueue, true);
         }
         else if found.kind == FocusRequest.Blur {
             // Only a blur of the *currently* focused element means anything;
@@ -1548,7 +1702,7 @@ export opaque ref struct UIContext {
             let el = found.element;
             if el is not none {
                 if runtimeDataOf(el).focused {
-                    this.applyFocusChange(tree, none, eventQueue);
+                    this.applyFocusChange(tree, none, eventQueue, false);
                 }
             }
         }
@@ -1979,6 +2133,12 @@ export opaque ref struct UIContext {
             // nor receives the keystrokes that follow.
             this.releaseHiddenInputState(tree, eventQueue);
 
+            // Which elements are dismissable layers this frame. Refreshed
+            // before any dispatch, and read by both dismissal routes below.
+            let dismissLayers = this._dismissLayers;
+            dismissLayers.clear();
+            this.collectDismissLayers(tree, dismissLayers);
+
             // Hover state + enter/leave events (no bubbling) reflect where
             // the pointer physically is *right now* -- always this frame's
             // current position, regardless of where any of pendingEvents
@@ -2080,10 +2240,14 @@ export opaque ref struct UIContext {
                             break;
                         }
                     }
-                    this.applyFocusChange(tree, newFocusTarget, eventQueue);
+                    this.applyFocusChange(tree, newFocusTarget, eventQueue, false);
 
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
+                    // Strictly last: a trigger's own handler must have already
+                    // run (and had its chance to stopPropagation) before any
+                    // layer is told this press was outside it.
+                    this.dispatchPointerDownOutside(hitPath, event, eventQueue);
                 }
                 else if pe.kind == PointerEventKind.Up {
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Up, eventQueue);
@@ -2727,6 +2891,8 @@ export opaque ref struct UIContext {
         data.onBlurCapture = props.onBlurCapture;
         data.onFocusInCapture = props.onFocusInCapture;
         data.onFocusOutCapture = props.onFocusOutCapture;
+        data.onPointerDownOutside = props.onPointerDownOutside;
+        data.onFocusOutside = props.onFocusOutside;
         data.onKeyDown = props.onKeyDown;
         data.onKeyUp = props.onKeyUp;
         data.onTextInput = props.onTextInput;

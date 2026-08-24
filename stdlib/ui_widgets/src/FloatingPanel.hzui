@@ -17,6 +17,8 @@ marginLeft: real = 0;
 marginRight: real = 0;
 marginTop: real = 0;
 marginBottom: real = 0;
+backgroundColor: Color = "#333";
+radius: real = 12;
 
 @slot
 body: {};
@@ -40,6 +42,13 @@ let centery = computed(() => {
 let bottom = computed(() => {
     return props.position == PanelPosition.BottomLeft || props.position == PanelPosition.Bottom || props.position == PanelPosition.BottomRight;
 });
+let background = computed<Color>(() => {
+    let bg = props.backgroundColor;
+    if (bg) {
+        return bg;
+    }
+    return Color("#333");
+});
 
 @template [absolute 
     left?justify-start
@@ -49,12 +58,6 @@ let bottom = computed(() => {
     centery?items-center
     bottom?items-end
 ]
-
-// The panel box itself: shrink-wraps whatever the slot puts in it and carries
-// the margins that hold it off the edges it is aligned to. It paints NOTHING
-// of its own -- a positioning container that had a background would show
-// through the corners of any rounded content placed in it, since it hugs that
-// content exactly.
-div [w-fit h-fit ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px] {
+div [w-fit h-fit ml-[props.marginLeft]px mr-[props.marginRight]px mt-[props.marginTop]px mb-[props.marginBottom]px rounded-[props.radius] bg-[background]] {
     slot body {}
 }

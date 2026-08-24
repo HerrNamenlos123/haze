@@ -29,6 +29,9 @@ ref struct State {
     // What the container's focusout handler concluded from relatedTarget:
     // did focus actually leave this subtree, or just move within it?
     lastOutLeft: bool = false;
+    // How many times the container, as a dismissable layer, was told focus
+    // went somewhere outside it -- see DivProps.onFocusOutside.
+    dismissals: int = 0;
 
     failures: int = 0;
     checks: int = 0;
@@ -61,6 +64,10 @@ fn main(): int {
     // it exists purely to observe focus moving among its descendants, which is
     // what focusin/focusout and the capture phase are for.
     let containerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    // A focusable element OUTSIDE the container, so focus can be moved out of
+    // the container's subtree entirely -- what a popup treats as "dismiss me".
+    let outsideRef: ui_components.ElementRef<ui_elements.DivElement> =
         rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
     // Queued keyboard input, drained every frame the same way a real backend
@@ -105,6 +112,13 @@ fn main(): int {
                             }
                         },
                         onFocusIn: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}bubIn;"; },
+                        // Dismissable layer. Unlike onFocusOut above this does
+                        // not need focus to have been inside first, and it
+                        // fires only when focus lands somewhere this subtree
+                        // does not contain.
+                        onFocusOutside: (e: ui_components.FocusEvent) => {
+                            state.dismissals = state.dismissals + 1;
+                        },
                     }, () => {
                     ctx.div({
                         id: 1,
@@ -125,6 +139,12 @@ fn main(): int {
                         onBlur: (e: ui_components.FocusEvent) => { state.events = f"{state.events}other-blur;"; },
                     }, () => {});
                     });
+
+                    ctx.div({
+                        id: 4,
+                        elementRef: outsideRef,
+                        focusable: true,
+                    }, () => {});
 
                     return { id: 0 };
                 };
@@ -154,6 +174,8 @@ fn main(): int {
     assert(editorEl, "editor ref was not populated after the first frame");
     let otherEl = rx.get(otherRef);
     assert(otherEl, "other ref was not populated after the first frame");
+    let outsideEl = rx.get(outsideRef);
+    assert(outsideEl, "outside ref was not populated after the first frame");
 
     // Frame 2: the pending request is applied before input dispatch, so text
     // typed during this same frame must land in the editor.
@@ -233,6 +255,35 @@ fn main(): int {
     ui.process();
     state.check("blur() on an unfocused element left the real focus alone",
         editorEl.focused(), true);
+
+    // --- Dismissal: focus landing outside the layer's subtree -------------
+    //
+    // The container is a dismissable layer. Focus moving BETWEEN its own two
+    // children must not dismiss it -- that is the single most important
+    // property of a popup, and the one that a naive "did anything get focused"
+    // check gets wrong.
+    editorEl.focus();
+    ui.process();
+    state.dismissals = 0;
+    otherEl.focus();
+    ui.process();
+    state.check("focus moving within the layer did not dismiss it",
+        state.dismissals == 0, true);
+
+    // ...and focus landing outside it dismisses exactly once.
+    outsideEl.focus();
+    ui.process();
+    state.check("focus landing outside the layer dismissed it once",
+        state.dismissals == 1, true);
+    state.check("the element outside really did take focus", outsideEl.focused(), true);
+
+    // Focus coming back in must not dismiss either -- a layer is only ever
+    // dismissed by focus going somewhere it does not contain.
+    state.dismissals = 0;
+    editorEl.focus();
+    ui.process();
+    state.check("focus returning into the layer did not dismiss it",
+        state.dismissals == 0, true);
 
     // --- Focus survives across frames without being re-requested ----------
     ui.process();

@@ -49,20 +49,23 @@ type PointerHandler = (e: ui_components.PointerEvent) => none;
 //    against a relative ancestor is the mechanism the editor's own hover
 //    popup already uses.
 //
-// ── Dismissal is the owner's job, on purpose ──────────────────
+// ── Dismissal ─────────────────────────────────────────────────
 //
-// There is no scrim and no click-outside handling in here, because "what
-// counts as outside" is a question only the owner can answer: a menu bar
-// wants a click on ANOTHER menu button to switch menus rather than merely
-// close this one. The recipe, which is what codeeditor's title bar does:
+// Set `onDismiss` and the panel dismisses itself: a press anywhere outside
+// it, or focus landing on anything it does not contain, calls it. That is
+// DivProps.onPointerDownOutside/onFocusOutside doing the work -- the panel
+// asks the framework to tell it about interactions it can never see itself,
+// and stops asking the moment it stops being declared. Nothing global, no
+// refs, no cooperation with whoever owns `open`.
 //
-//   - keep a ref on the trigger row and pass `panelRef` for this panel
-//   - put onPointerDownCapture on the application root
-//   - in it, close the menu UNLESS row.hover() or panel.hover() is true
+// A TRIGGER that must not count as "outside" -- a menu button whose job is to
+// toggle this very panel, or to switch to a sibling menu -- calls
+// event.stopPropagation() in its own onPointerDown. Dismissal is queued after
+// the normal bubble phase precisely so that works, and so that a trigger's
+// toggle always wins rather than being undone and re-run.
 //
-// Hover state is resolved from the current frame's hit path before any
-// event is dispatched, so both answers are already correct when the
-// capture handler runs.
+// `onDismiss` is optional. Leave it unset and this panel is inert, exactly as
+// before, and the owner keeps whatever dismissal policy it already had.
 //
 // ── Slots ─────────────────────────────────────────────────────
 //
@@ -124,6 +127,10 @@ export struct DropdownArgs {
     panelRef?: ui_components.ElementRef<ui_elements.DivElement>;
 
     onSelect?: (key: int) => none;
+
+    // Something happened that should close this menu -- see the dismissal note
+    // above. The owner still holds `open`; this only tells it when to clear it.
+    onDismiss?: () => none;
 
     // SLOTS -- see the note above.
     renderItem?: (key: int) => none;
@@ -193,6 +200,19 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
             event.stopPropagation();
         };
 
+        // Bound once here rather than inline in the template: an inline
+        // closure that reads captured state does not convert into an optional
+        // function-typed field, and both of these have to be re-read from
+        // props at fire time anyway (the owner may swap the callback).
+        let dismiss: PointerHandler = (event: ui_components.PointerEvent) => {
+            let cb = instance.props().onDismiss;
+            if cb { cb(); }
+        };
+        let dismissByFocus: (e: ui_components.FocusEvent) => none = (event: ui_components.FocusEvent) => {
+            let cb = instance.props().onDismiss;
+            if cb { cb(); }
+        };
+
         return (): ui_components.DivProps => {
             let props = instance.props();
 
@@ -232,6 +252,11 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                 // rows, are still the menu's -- without this they would
                 // fall through to whatever is behind it.
                 onPointerDown: swallowPress,
+                // Self-dismissal -- see the note at the top of this file.
+                // Harmless when the owner set no onDismiss: both of these
+                // then do nothing.
+                onPointerDownOutside: dismiss,
+                onFocusOutside: dismissByFocus,
             }, (): void => {
                 let p = instance.props();
 
