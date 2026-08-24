@@ -39,6 +39,7 @@ selectionColor: str = "#264F78";
 caretColor: str = "#FFFFFF";
 paddingX: real = 8.0;
 paddingY: real = 4.0;
+borderWidth: real = 1.0;
 rounded: real = 3.0;
 // See button.hzui -- drawn only on :focus-visible, so clicking into the box
 // does not ring it but tabbing to it does.
@@ -59,7 +60,6 @@ selectAll: () => none;
 
 @setup
 let rootRef = elementRef<DivElement>();
-let textRef = elementRef<TextElement>();
 
 // A textbox is one line, so a paste carrying newlines is truncated at the
 // first one. Silently dropping the rest is better than storing text the box
@@ -98,7 +98,7 @@ let textedit = textedit_behavior.Context({
     // One line, forever -- see the note at the top of this file.
     getLineCount: () => 1,
     getLine: (lineIndex: int) => String(rx.get(props.text)),
-    getLineLength: (lineIndex: int) => rx.get(props.text).length,
+    getLineLength: (lineIndex: int) => props.text.length,
     getTimeInSeconds: () => ui.now(),
     replaceRange: applyReplaceRange,
 });
@@ -114,10 +114,41 @@ let widthUpTo = (column: int): real => {
     return ui.measureText(head, props.fontFamily, props.fontSize).x;
 };
 
-let caretX = computed(() => widthUpTo(rx.get(textedit.cursorPosition).x));
-let selectionLeft = computed(() => widthUpTo(rx.get(textedit.selectionStart).x));
-let selectionRight = computed(() => widthUpTo(rx.get(textedit.selectionEnd).x));
-let showPlaceholder = computed(() => rx.get(props.text).length == 0 && props.placeholder.length > 0);
+let caretX = computed(() => widthUpTo(textedit.cursorPosition.x));
+let showPlaceholder = computed(() => props.text.length == 0 && props.placeholder.length > 0);
+
+// The line cut into the three runs the template draws: before the selection,
+// inside it, after it. The highlight is the middle run's BACKGROUND rather
+// than a rectangle laid over the text, because an absolutely positioned
+// element here always paints ABOVE its in-flow siblings -- it becomes its own
+// Clay render root, ordered after the document root (see
+// ui_layout.resolveFloating) -- so an overlay hides exactly the characters it
+// is meant to highlight. Nor is a negative z-index a way out: that sorts the
+// rect ahead of the document root, i.e. behind this box's own background.
+// Only the caret, which belongs on top, is still drawn as an overlay.
+//
+// Cutting the line costs no accuracy: every cut lands on a prefix width
+// widthUpTo already measures, which is what the caret and columnAtX assume.
+// With no selection head and middle are empty and the tail is the whole line,
+// so the common case is still a single uninterrupted run.
+let headText = computed((): str => {
+    if !textedit.hasSelection { return ""; }
+    return String(rx.get(props.text)).cloneSlice(0, textedit.selectionStart.x);
+});
+let selectedText = computed((): str => {
+    if !textedit.hasSelection { return ""; }
+    return String(rx.get(props.text)).cloneSlice(textedit.selectionStart.x, textedit.selectionEnd.x);
+});
+let tailText = computed((): str => {
+    if !textedit.hasSelection { return rx.get(props.text); }
+    return String(rx.get(props.text)).cloneSlice(textedit.selectionEnd.x);
+});
+// The caret must be exactly as tall as a line of this text, so measure one
+// rather than guessing a multiple of the font size. "M" is only a probe --
+// measureText's height does not depend on which glyph it is given. (The
+// selection needs no such measurement: it is a run's background, and a run is
+// already exactly one line tall.)
+let lineHeight = computed(() => ui.measureText("M", props.fontFamily, props.fontSize).y);
 
 // Which column a click at `localX` (pixels from the text's left edge) lands
 // on. Stepped by GRAPHEME CLUSTER, never by byte: a column that fell inside a
@@ -152,15 +183,25 @@ let columnAtX = (localX: real): int => {
     return best;
 };
 
-// Where the text actually starts on screen: the box's own left edge plus its
-// padding. Clicks arrive in window coordinates (see PointerEvent.pos), so
-// this is what makes them local.
+// How far the text is inset from the box's own left edge -- the padding, and
+// only the padding. A border here is drawn INSIDE the element's box and never
+// displaces its children (Clay's border config produces a render command and
+// nothing else), so content starts at the padding whatever borderWidth is.
+// The caret is placed against that same box -- a floating child attaches to
+// its ancestor's box, see ui_layout.resolveOffset -- and hit-testing subtracts
+// the same amount, which is why there is one definition.
+let contentInsetX = (): real => {
+    return props.paddingX;
+};
+
+// Where the text starts on screen. Clicks arrive in window coordinates (see
+// PointerEvent.pos), so this is what makes them local.
 let textOriginX = (): real => {
     let root = rx.get(rootRef);
     if !root { return 0.0; }
     let pos = root.position();
     if pos is none { return 0.0; }
-    return pos.x + props.paddingX;
+    return pos.x + contentInsetX();
 };
 
 // --- input ----------------------------------------------------
@@ -261,7 +302,7 @@ let selectAll = (): none => {
 
 // --- style ----------------------------------------------------
 let ringVisible = computed(() => (rootRef?.focusVisible() ?? false) && props.focusRing > 0.0);
-let caretVisible = computed(() => (rootRef?.focused() ?? false) && rx.get(textedit.cursorVisible));
+let caretVisible = computed(() => (rootRef?.focused() ?? false) && textedit.cursorVisible);
 let contentColor = computed(() => {
     if !props.enabled { return props.textColorDisabled; }
     return props.textColor;
@@ -271,7 +312,7 @@ let contentColor = computed(() => {
         relative row items-center w-grow h-fit
         px-[props.paddingX]px py-[props.paddingY]px
         bg-[props.backgroundColor] rounded-[props.rounded]px
-        border-1 border-color-[props.borderColor]
+        border-[props.borderWidth] border-color-[props.borderColor]
         [props.enabled]?cursor-text
         [ringVisible]?outline-[props.focusRing]
         [ringVisible]?outline-color-[props.focusRingColor]
@@ -284,27 +325,39 @@ let contentColor = computed(() => {
     @keydown=keyPressed
     @textinput=typed
 
-// Selection first, so it sits behind the glyphs it highlights.
-div if=[rx.get(textedit.hasSelection)] [
-        absolute bg-[props.selectionColor]
-        top-[props.paddingY] left-[rx.get(selectionLeft) + props.paddingX]
-        w-[rx.get(selectionRight) - rx.get(selectionLeft)]px h-[props.fontSize * 1.4]px
-    ]
-
-text if=[rx.get(showPlaceholder)] [
+text if=[showPlaceholder] [
         text-color-[props.placeholderColor] text-nowrap
         font-size-[props.fontSize] font-family-[props.fontFamily]
     ] [props.placeholder]
 
-text else [
-        text-color-[contentColor] text-nowrap
+// The line, in three runs -- see headText for why the highlight is a run's
+// background and not an overlay. Font and colour sit on this row and cascade
+// into all three runs (ui_layout.pushCascadingStack), so they cannot drift
+// apart. The tail is drawn unconditionally, empty or not: an empty box with
+// no placeholder still has to stand one line tall.
+div else [
+        row items-center gap-0 w-fit h-fit
+        text-color-[contentColor]
         font-size-[props.fontSize] font-family-[props.fontFamily]
-    ] [rx.get(props.text)]
-    ref=textRef
+    ] {
+    text if=[headText.length > 0] [text-nowrap] [headText]
 
-// Caret last, above both.
-div if=[rx.get(caretVisible)] [
+    div if=[selectedText.length > 0] [
+            row items-center gap-0 w-fit h-fit bg-[props.selectionColor]
+        ] {
+        text [text-nowrap] [selectedText]
+    }
+
+    text [text-nowrap] [tailText]
+}
+
+// Caret last, and floating -- which is exactly what makes it paint above the
+// runs. A caret is the one thing in this box that genuinely belongs on top
+// of the text and its highlight, so the paint order that broke the
+// selection is the one this needs.
+div if=[caretVisible] [
         absolute bg-[props.caretColor]
-        top-[props.paddingY] left-[rx.get(caretX) + props.paddingX]
-        w-[1]px h-[props.fontSize]px
+        top-[props.paddingY]
+        left-[caretX + contentInsetX()]
+        w-[1]px h-[lineHeight]px
     ]
