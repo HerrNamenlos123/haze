@@ -530,13 +530,39 @@ function emitProp(name: string): string {
   return `on${pascalEvent(name)}`;
 }
 
-// A slot closure always takes exactly one payload parameter -- every slot has
-// a payload struct, even an empty one (see compose.SlotDecl). Naming it is
-// optional (`#body { ... }` vs `#body s { ... }`), so when the provider does
-// not, one is supplied here: the arity has to be right regardless, and the use
-// site cannot see it, since the component lives in another file.
-function slotParams(params: string[]): string {
-  return params.length > 0 ? params.join(", ") : "__slot";
+/**
+ * The parameter list of one slot closure: always exactly one payload
+ * parameter, always explicitly typed.
+ *
+ * Every slot has a payload struct, even an empty one (see compose.SlotDecl),
+ * so the arity is fixed. Naming the parameter is optional (`#body { ... }` vs
+ * `#body s { ... }`); when the provider does not, one is supplied here.
+ *
+ * The TYPE cannot be inferred -- a closure passed into an optional
+ * function-typed field gets no parameter types from it (H7170) -- and this is
+ * a use site, so the component's own file is not in view. It is written out by
+ * CONVENTION instead: the payload struct of slot `body` on component `Foo` is
+ * `FooSlotBody`, exactly what compose.ts generates and exports. Bet and
+ * verify: if the bet is wrong, the compiler says that type does not exist,
+ * pointing straight at this element. In-template components are always
+ * same-module (a tag cannot be namespaced), so the bare name resolves.
+ */
+function slotParamBinding(
+  tag: string,
+  slotName: string,
+  params: string[],
+  line: number
+): string {
+  if (params.length > 1) {
+    throw new TemplateError(
+      `'#${slotName}' binds the whole payload as ONE name (got ${params.length}: ${params.join(
+        " "
+      )}) -- write '#${slotName} ${params[0]}' and read fields off it, or '#${slotName}' to ignore it`,
+      line
+    );
+  }
+  const name = params.length === 1 ? params[0]! : "__slot";
+  return `${name}: ${tag}Slot${pascalEvent(slotName)}`;
 }
 
 class Emitter {
@@ -850,9 +876,9 @@ function lowerElementInner(
     }
     const closures: string[] = [];
     for (const sp of node.slotProvides) {
-      // Closure params are intentionally untyped -- bound by inference from
-      // the component's slot prop signature ("bet and verify").
-      closures.push(`${sp.name}: (${slotParams(sp.params)}) => {`);
+      closures.push(
+        `${sp.name}: (${slotParamBinding(node.tag, sp.name, sp.params, node.line)}) => {`
+      );
     }
     if (node.children && node.children.length > 0 && closures.length === 0) {
       // TODO(user): default-slot convention for bare component children.
@@ -870,7 +896,9 @@ function lowerElementInner(
           em.emit(`${a},`);
         }
         for (const sp of node.slotProvides) {
-          em.emit(`${sp.name}: (${slotParams(sp.params)}) => {`);
+          em.emit(
+            `${sp.name}: (${slotParamBinding(node.tag, sp.name, sp.params, node.line)}) => {`
+          );
           em.indented(() =>
             lowerNodes(sp.children, em, ctx, { counter: 0, inLoop: false })
           );

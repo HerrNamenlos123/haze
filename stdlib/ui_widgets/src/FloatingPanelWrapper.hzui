@@ -6,7 +6,7 @@
 @template [relative w-100 h-100 bg-["#333"]]
 FloatingPanel [] position=[PanelPosition.Top] {
     #body {
-        div [bg-["#F00"] p-2] {
+        div [bg-["#F00"] p-2 rounded-14] {
             text [] ["Hello World"]
         }
     }

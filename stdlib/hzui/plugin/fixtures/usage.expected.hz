@@ -37,7 +37,7 @@ let save = () => {};
                     id: 1,
                     label: "Save",
                     onClick: save,
-                    content: (s) => {
+                    content: (s: ButtonSlotContent) => {
                         #source "usage.hzui:19:1" {
                             ui.text({ id: 1, text: s.label },
                                 presets.w(4)

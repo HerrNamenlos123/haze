@@ -109,10 +109,13 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
 - **Slots:** child side renders with fallback: `slot content label=label { ...fallback... }`.
   Parent side provides: `#content label { ... }` (payload destructure; may be omitted). A bare
   child block on a component is the default slot. **Every slot closure takes exactly one payload
-  parameter**, so every slot gets a payload struct — `name: ();` means "no fields", not "no
-  payload". Arity is the one thing about a slot a use site cannot see (the component is in
-  another file), so a provider that omits the payload name gets one supplied for it rather than
-  a shape that has to be guessed.
+  parameter, explicitly typed**, so every slot gets a payload struct — `name: ();` means "no
+  fields", not "no payload". Neither the arity nor the payload type is visible at a use site (the
+  component is in another file, and a closure passed into an optional function-typed field gets
+  no parameter inference — H7170), so both are written out: the arity is always one, and the type
+  is `<Component>Slot<Name>` by the same naming rule that generates the struct. Omitting the
+  payload name is therefore a true shorthand for "I don't need it", not a different shape — and
+  adding a field to a slot payload later is not a breaking change at any use site.
 - **Text:** content is the trailing token: `text [tokens] label`.
 
 ### 3.3 Class tokens
@@ -414,7 +417,7 @@ linting.
 | Section order | `@props`/`@emit`/`@slot` any order, then `@setup`, then `@template` | matches how drafts were actually written |
 | Editor support | separate grammar-only VS Code extension `stdlib/hzui/vscode` (language `hzui`, embeds `source.hz`) | base haze extension never accumulates project-specific rules |
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
-| Slot arity | always one payload param; every slot has a payload struct | a use site can't see a slot's arity across files, so there must be nothing to guess |
+| Slot arity | always one payload param, explicitly typed by convention | a use site can't see a slot's arity or payload type across files, and closures into optional fields get no inference |
 | Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
 | Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |
 | Component class list | reserved, must be written `[]`, tokens rejected | forwarding tokens breaks internals (Vue's `flex-col` problem); reserving the slot now keeps today's code meaning the same when the contract lands |

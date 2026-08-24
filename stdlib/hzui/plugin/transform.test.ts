@@ -206,11 +206,24 @@ describe("slots", () => {
     );
   });
 
-  test("a provider that omits the payload name still gets the arity right", () => {
-    // The use site cannot see the slot's arity -- the component is in another
-    // file -- so omitting the name must not change the shape of the closure.
-    expect(declare("body: {};", "#body")).toContain("body: (__slot) => {");
-    expect(declare("body: {};", "#body s")).toContain("body: (s) => {");
+  test("a slot closure's payload param is named by convention and typed", () => {
+    // The use site can see neither the slot's arity nor its payload type --
+    // the component is in another file -- and a closure passed into an
+    // optional function-typed field gets no inference (H7170). So both are
+    // written out: arity is always one, and the type is BtnSlotBody by the
+    // same naming rule compose.ts generates the struct with.
+    expect(declare("body: {};", "#body")).toContain(
+      "body: (__slot: BtnSlotBody) => {"
+    );
+    expect(declare("body: {};", "#body s")).toContain(
+      "body: (s: BtnSlotBody) => {"
+    );
+  });
+
+  test("a provider binds the whole payload as one name", () => {
+    expect(() => declare("body: {};", "#body a b")).toThrow(
+      /binds the whole payload as ONE name/
+    );
   });
 
   test("rendering a slot always passes its payload struct", () => {
