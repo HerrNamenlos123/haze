@@ -28,7 +28,9 @@ if (process.platform === "win32") {
   throw new Error("Platform not supported yet: " + process.platform);
 }
 
-export type ModuleDependency = { name: string; path: string };
+// `path` is null when the dependency is declared without one, which means
+// "resolve it from the standard library by name" (see ProjectCompiler).
+export type ModuleDependency = { name: string; path: string | null };
 
 const MODULE_ID_ALPHABET =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -610,7 +612,7 @@ export class ConfigParser {
   }
 
   getDependencies(toml: any) {
-    const deps = [] as { name: string; path: string }[];
+    const deps = [] as ModuleDependency[];
     if (toml["dependencies"]) {
       for (const [name, props] of Object.entries(toml["dependencies"])) {
         if (typeof props !== "object" || props === null) {
@@ -618,19 +620,14 @@ export class ConfigParser {
             `Dependency props for dependency '${name}' in file ${this.configPath} must be an object`
           );
         }
-        if (!("path" in props)) {
-          throw new GeneralError(
-            `Dependency '${name}' in file ${this.configPath} requires a path attribute`
-          );
-        }
-        if (typeof props["path"] !== "string") {
+        if ("path" in props && typeof props["path"] !== "string") {
           throw new GeneralError(
             `Dependency path '${props["path"]}' in file ${this.configPath} must be of type string`
           );
         }
         deps.push({
           name: name,
-          path: props["path"],
+          path: "path" in props ? (props["path"] as string) : null,
         });
       }
     }
