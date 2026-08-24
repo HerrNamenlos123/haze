@@ -49,7 +49,7 @@ export function rewriteTemplateExpr(code: string): string {
     .replace(/\bslots\./g, "props.")
     .replace(/(?<![.\w])shallowReactive\s*(?=[<(])/g, "rx.shallowReactive")
     .replace(/(?<![.\w])reactive\s*(?=[<(])/g, "rx.reactive")
-    .replace(/(?<![.\w])computed\s*\(/g, "rx.computed(")
+    .replace(/(?<![.\w])computed\s*(?=[<(])/g, "rx.computed")
     .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef");
 }
 
@@ -63,12 +63,14 @@ export function rewriteDialectAccessors(code: string): string {
       // Forwarded dialect functions. Textual on purpose: haze has no generic
       // function values (`let computed = rx.computed;` is rejected), so these
       // cannot be forwarded by assigning them to variables.
-      // `reactive` before nothing in particular -- the lookbehind already
-      // stops `shallowReactive(` from matching the `reactive(` rule, since the
-      // character in front of it is a word character.
+      // Every one of these matches on `<` as well as `(`: they are generic
+      // functions, so `computed<Color>(...)` and `elementRef<DivElement>()`
+      // are just as ordinary as the bare call and must rewrite the same way.
+      // The lookbehind is what stops `shallowReactive(` from matching the
+      // `reactive` rule -- the character in front of it is a word character.
       .replace(/(?<![.\w])shallowReactive\s*(?=[<(])/g, "rx.shallowReactive")
       .replace(/(?<![.\w])reactive\s*(?=[<(])/g, "rx.reactive")
-      .replace(/(?<![.\w])computed\s*\(/g, "rx.computed(")
+      .replace(/(?<![.\w])computed\s*(?=[<(])/g, "rx.computed")
       .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef")
   );
 }

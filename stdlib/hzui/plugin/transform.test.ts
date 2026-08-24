@@ -234,6 +234,36 @@ describe("slots", () => {
   });
 });
 
+describe("dialect rewrites", () => {
+  const setup = (body: string) =>
+    gen(`import ui_components\n@setup\n${body}\n@template\n`);
+
+  test("rx functions are reachable unqualified", () => {
+    expect(setup("let a = computed(() => 1);")).toContain("rx.computed(");
+    expect(setup("let b = reactive<int>(0);")).toContain("rx.reactive<int>(0)");
+    expect(setup("let c = shallowReactive<[]int>([]);")).toContain(
+      "rx.shallowReactive<[]int>([])"
+    );
+  });
+
+  test("an explicit type argument rewrites too", () => {
+    // These are generic functions; `computed<Color>(...)` is as ordinary as
+    // the bare call and must not be left unqualified.
+    expect(setup("let a = computed<Color>(() => x);")).toContain(
+      "rx.computed<Color>(() => x)"
+    );
+    expect(setup("let r = elementRef<DivElement>();")).toContain(
+      "ui.elementRef<DivElement>()"
+    );
+  });
+
+  test("a longer name that merely ends in a dialect name is left alone", () => {
+    expect(setup("let s = shallowReactive<int>(0);")).not.toContain(
+      "shallowrx.reactive"
+    );
+  });
+});
+
 describe("generated operator!=", () => {
   const args = (props: string) =>
     gen(`import ui_components\n@props\n${props}\n@template\n`);
