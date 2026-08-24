@@ -174,6 +174,31 @@ export ref struct TextInputEvent {
     }
 }
 
+// HTML's FocusEvent, carried by all four focus events (see DivProps.onFocus).
+//
+// `relatedTarget` is the OTHER element in the transfer, exactly as in the DOM:
+// the element GAINING focus for blur/focusout, the element LOSING it for
+// focus/focusin. `none` when focus came from, or went to, nothing at all --
+// a click outside every focusable element, or the first focus of the frame.
+//
+// It is what makes focusout usable: HTML fires focusout on every ancestor of
+// the old element even when focus merely moved to a sibling INSIDE that
+// ancestor, so "did focus actually leave me?" is answered by asking whether
+// relatedTarget is still inside you -- see ui_contains/ElementWrapper.contains.
+export ref struct FocusEvent {
+    relatedTarget: ui_elements.Element | none = none;
+    _stopped: bool = false;
+
+    fn stopPropagation() {
+        this._stopped = true;
+    }
+}
+
+// Which of HTML's four focus events is being dispatched. They come in two
+// pairs that fire at the same two moments; the difference is propagation:
+// focus/blur do NOT bubble, focusin/focusout do. See dispatchFocusBubbling.
+export enum FocusEventKind { Blur, FocusOut, Focus, FocusIn }
+
 // One key press or release, in the exact order the platform layer delivered
 // it -- same reasoning as PointerEdge: a single level/latch can only
 // describe one transition per frame, and typing (or key auto-repeat) easily
@@ -262,8 +287,35 @@ export struct DivProps {
     // use a `elementRef:` and call .focus()/.blur() on it (see ElementWrapper).
     autofocus?: bool;
 
-    onFocus?: () => none;
-    onBlur?: () => none;
+    // HTML's four focus events, in the order they fire when focus moves from
+    // one element to another:
+    //
+    //     blur (old) -> focusout (old) -> focus (new) -> focusin (new)
+    //
+    // focus/blur do NOT bubble -- they reach the element itself and no
+    // ancestor. They DO have a capture phase, which is precisely what the
+    // DOM's addEventListener(..., true) exists for: an ancestor that wants to
+    // observe focus moving among its descendants registers there.
+    //
+    // focusin/focusout fire at the same two moments and DO bubble. This is
+    // what a container uses to learn that focus entered or left its subtree --
+    // but note it fires even when focus moves WITHIN that subtree, exactly as
+    // in HTML. Compare `e.relatedTarget` (see FocusEvent) to tell the two
+    // apart; a panel that closes when focus leaves wants
+    // `if !ui_contains(self, e.relatedTarget) { close(); }`, not a bare
+    // focusout handler.
+    //
+    // Each of the four is a separate event object, so stopPropagation() on one
+    // does not suppress the others -- again matching the DOM.
+    onFocus?: (e: FocusEvent) => none;
+    onBlur?: (e: FocusEvent) => none;
+    onFocusIn?: (e: FocusEvent) => none;
+    onFocusOut?: (e: FocusEvent) => none;
+
+    onFocusCapture?: (e: FocusEvent) => none;
+    onBlurCapture?: (e: FocusEvent) => none;
+    onFocusInCapture?: (e: FocusEvent) => none;
+    onFocusOutCapture?: (e: FocusEvent) => none;
 
     // Keyboard/text input is delivered only to the currently focused
     // element's ancestor chain (capture root->target, then bubble
@@ -394,7 +446,10 @@ export enum FocusRequest { None, Focus, Blur }
 // recursive walk without allocating on every level.
 export struct FocusRequestTarget {
     kind: FocusRequest = FocusRequest.None;
-    data: ComponentElementRuntimeData | null = null;
+    // The ELEMENT, not its runtime data: applyFocusChange needs the node
+    // itself, both to walk its ancestor path and to hand it to the other side
+    // of the transfer as FocusEvent.relatedTarget.
+    element: ui_elements.Element | none = none;
 }
 
 export ref struct ComponentElementRuntimeData {
@@ -462,8 +517,14 @@ export ref struct ComponentElementRuntimeData {
     // matching the DOM, where the attribute only matters at insertion time.
     autofocusApplied: bool = false;
 
-    onFocus?: () => none;
-    onBlur?: () => none;
+    onFocus?: (e: FocusEvent) => none;
+    onBlur?: (e: FocusEvent) => none;
+    onFocusIn?: (e: FocusEvent) => none;
+    onFocusOut?: (e: FocusEvent) => none;
+    onFocusCapture?: (e: FocusEvent) => none;
+    onBlurCapture?: (e: FocusEvent) => none;
+    onFocusInCapture?: (e: FocusEvent) => none;
+    onFocusOutCapture?: (e: FocusEvent) => none;
 
     onKeyDown?: (e: KeyboardEvent) => none;
     onKeyUp?: (e: KeyboardEvent) => none;
@@ -674,6 +735,38 @@ export fn ui_active(element: ui_elements.Element): bool {
 
 // Mirrors CSS :focus -- true for the one element (if any) currently focused.
 // See DivProps.focusable/onFocus/onBlur for how an element becomes focused.
+// Every element's own tree-wide identity string -- see DivElement.globalId.
+fn globalIdOf(element: ui_elements.Element): str {
+    if element is ui_elements.DivElement { return element.globalId; }
+    else if element is ui_elements.TextElement { return element.globalId; }
+    else if element is ui_elements.CanvasElement { return element.globalId; }
+    return "";
+}
+
+// The DOM's Node.contains(): true if `other` IS `element` or sits anywhere
+// beneath it. Lives here rather than in ui_elements because the reason it
+// exists is FocusEvent.relatedTarget -- HTML's focusout fires on an ancestor
+// even when focus only moved between its own descendants, so "did focus really
+// leave this subtree?" is `!ui_contains(self, e.relatedTarget)` and nothing
+// else. A `none` other is never contained, which gives that check the right
+// answer for free when focus went nowhere at all.
+//
+// A prefix test rather than a subtree walk, because globalId already IS the
+// path: it is built as parent.globalId + "/" + localId (see childGlobalId), so
+// a descendant's id is the ancestor's id followed by a separator. Testing for
+// that separator is what keeps "1/2" from claiming to contain "1/23".
+export fn ui_contains(element: ui_elements.Element, other: ui_elements.Element | none): bool {
+    if other is none {
+        return false;
+    }
+    let self = globalIdOf(element);
+    let target = globalIdOf(other);
+    if self == target {
+        return true;
+    }
+    return target.startsWith(self + "/");
+}
+
 export fn ui_focused(element: ui_elements.Element): bool {
     let data = runtimeDataOf(element);
     rx.get(data.focusVersion);
@@ -950,6 +1043,12 @@ export opaque ref struct UIContext {
     _eventHitPath: []ui_elements.Element = [];
     _focusPath: []ui_elements.Element = [];
     _oldFocusPath: []ui_elements.Element = [];
+    // The path to the element GAINING focus, built after the flags have been
+    // moved -- see applyFocusChange. A third buffer rather than reusing one of
+    // the two above: releaseHiddenInputState holds _focusPath across its call
+    // into applyFocusChange, and applyFocusChange itself needs the old and new
+    // paths at the same time.
+    _newFocusPath: []ui_elements.Element = [];
     _clickEligible: []bool = [];
     _noEdges: []PointerEdge = [];
 
@@ -1272,10 +1371,10 @@ export opaque ref struct UIContext {
         let focusPath = this._focusPath;
         this.buildFocusPathInto(focusPath, tree);
         if focusPath.length > 0 && this.pathIsHidden(focusPath) {
-            // Blur by the same route a click uses (null target = "focus
-            // nothing"), so onBlur fires and the focusVersion bump wakes
+            // Blur by the same route a click uses (`none` target = "focus
+            // nothing"), so blur/focusout fire and the focusVersion bump wakes
             // anything watching -- no separate teardown path to drift.
-            this.applyFocusChange(tree, null, eventQueue);
+            this.applyFocusChange(tree, none, eventQueue);
         }
     }
 
@@ -1283,41 +1382,124 @@ export opaque ref struct UIContext {
     // the nearest focusable ancestor -- see process()'s Down handling), or
     // just blurs whatever's currently focused if `newTarget` is null (the
     // click landed outside every focusable element). No-op if `newTarget`
-    // is already the focused element. Schedules onBlur/onFocus onto
+    // is already the focused element. Schedules all four HTML focus events onto
     // `eventQueue` same as every other callback in this module -- see FIRE
     // PHASE in process().
-    fn applyFocusChange(tree: ui_elements.Element, newTarget: ComponentElementRuntimeData | null, eventQueue: [](() => void)): void :: final {
-        if newTarget is not null {
-            if newTarget.focused {
+    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void)): void :: final {
+        if newTarget is not none {
+            if runtimeDataOf(newTarget).focused {
                 return;
             }
         }
 
+        // Both paths are needed at once, and both must be read BEFORE the
+        // callbacks run -- they are scratch buffers, so nothing queued below
+        // may capture them. The dispatch helpers walk them here and queue
+        // closures over the callbacks themselves, never over the path.
         let oldPath = this._oldFocusPath;
         this.buildFocusPathInto(oldPath, tree);
+        let oldTarget = none as ui_elements.Element | none;
         if oldPath.length > 0 {
-            let oldData = runtimeDataOf(oldPath[oldPath.length - 1]);
-            oldData.focused = false;
-            oldData.focusVersion := !oldData.focusVersion;
-            let cb = oldData.onBlur;
-            if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push((): void => { fire(); });
-            }
+            oldTarget = oldPath[oldPath.length - 1];
         }
 
-        if newTarget is not null {
-            newTarget.focused = true;
-            newTarget.focusVersion := !newTarget.focusVersion;
-            let cb = newTarget.onFocus;
+        // Move the flags first, so collectFocusPath below finds the NEW
+        // element and only it. Both bumps happen before any callback runs,
+        // which is what lets a handler read ui_focused() and see the state
+        // after the transfer, exactly as the DOM does.
+        if oldTarget is not none {
+            let oldData = runtimeDataOf(oldTarget);
+            oldData.focused = false;
+            oldData.focusVersion := !oldData.focusVersion;
+        }
+        let newPath = this._newFocusPath;
+        newPath.clear();
+        if newTarget is not none {
+            let newData = runtimeDataOf(newTarget);
+            newData.focused = true;
+            newData.focusVersion := !newData.focusVersion;
+            this.buildFocusPathInto(newPath, tree);
+        }
+
+        // HTML's focus update steps, in order:
+        //     blur (old) -> focusout (old) -> focus (new) -> focusin (new)
+        // Four distinct event objects, so stopPropagation() on one leaves the
+        // rest alone. Queue order IS fire order -- see FIRE PHASE in process().
+        if oldTarget is not none {
+            // relatedTarget of a blur/focusout is the element GAINING focus.
+            let blurEvent = FocusEvent { relatedTarget: newTarget };
+            this.dispatchFocusCapturing(oldPath, blurEvent, FocusEventKind.Blur, eventQueue);
+            this.dispatchFocusBubbling(oldPath, blurEvent, FocusEventKind.Blur, false, eventQueue);
+
+            let focusOutEvent = FocusEvent { relatedTarget: newTarget };
+            this.dispatchFocusCapturing(oldPath, focusOutEvent, FocusEventKind.FocusOut, eventQueue);
+            this.dispatchFocusBubbling(oldPath, focusOutEvent, FocusEventKind.FocusOut, true, eventQueue);
+        }
+
+        if newTarget is not none {
+            // ...and of a focus/focusin, the element that LOST it.
+            let focusEvent = FocusEvent { relatedTarget: oldTarget };
+            this.dispatchFocusCapturing(newPath, focusEvent, FocusEventKind.Focus, eventQueue);
+            this.dispatchFocusBubbling(newPath, focusEvent, FocusEventKind.Focus, false, eventQueue);
+
+            let focusInEvent = FocusEvent { relatedTarget: oldTarget };
+            this.dispatchFocusCapturing(newPath, focusInEvent, FocusEventKind.FocusIn, eventQueue);
+            this.dispatchFocusBubbling(newPath, focusInEvent, FocusEventKind.FocusIn, true, eventQueue);
+        }
+    }
+
+    // Capture phase, root -> target inclusive. Runs for all four focus events:
+    // in the DOM a non-bubbling event still has a full capture phase (that is
+    // exactly what addEventListener(..., true) buys you for `focus`), and a
+    // capture listener on the target itself fires too.
+    fn dispatchFocusCapturing(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, eventQueue: [](() => void)): void :: final {
+        let i = 0;
+        while i < path.length {
+            let data = runtimeDataOf(path[i]);
+            let cb = none as ((e: FocusEvent) => none) | none;
+            if kind == FocusEventKind.Blur { cb = data.onBlurCapture; }
+            else if kind == FocusEventKind.FocusOut { cb = data.onFocusOutCapture; }
+            else if kind == FocusEventKind.Focus { cb = data.onFocusCapture; }
+            else { cb = data.onFocusInCapture; }
             if cb {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => { fire(); });
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    fire(event);
+                });
             }
+            i = i + 1;
+        }
+    }
+
+    // Target -> root. `bubbles` is what separates the two pairs: focusin and
+    // focusout walk the whole way up, focus and blur stop at the target and
+    // reach no ancestor at all. That single flag is the entire difference
+    // between the pairs in HTML.
+    fn dispatchFocusBubbling(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, bubbles: bool, eventQueue: [](() => void)): void :: final {
+        let i = path.length - 1;
+        while i >= 0 {
+            let data = runtimeDataOf(path[i]);
+            let cb = none as ((e: FocusEvent) => none) | none;
+            if kind == FocusEventKind.Blur { cb = data.onBlur; }
+            else if kind == FocusEventKind.FocusOut { cb = data.onFocusOut; }
+            else if kind == FocusEventKind.Focus { cb = data.onFocus; }
+            else { cb = data.onFocusIn; }
+            if cb {
+                // Narrowed copy for the closure: an enclosing narrowing does not
+                // reach into a closure that runs later (the FIRE phase).
+                let fire = cb;
+                eventQueue.push((): void => {
+                    if event._stopped { return; }
+                    fire(event);
+                });
+            }
+            if !bubbles {
+                return;
+            }
+            i = i - 1;
         }
     }
 
@@ -1335,7 +1517,7 @@ export opaque ref struct UIContext {
         if data.focusRequested != FocusRequest.None {
             if found.kind == FocusRequest.None {
                 found.kind = data.focusRequested;
-                found.data = data;
+                found.element = element;
             }
             data.focusRequested = FocusRequest.None;
         }
@@ -1357,16 +1539,16 @@ export opaque ref struct UIContext {
         this.takeFocusRequest(tree, found);
 
         if found.kind == FocusRequest.Focus {
-            this.applyFocusChange(tree, found.data, eventQueue);
+            this.applyFocusChange(tree, found.element, eventQueue);
         }
         else if found.kind == FocusRequest.Blur {
             // Only a blur of the *currently* focused element means anything;
             // blurring something that isn't focused must not clear whatever
             // else happens to be focused right now.
-            let d = found.data;
-            if d is not null {
-                if d.focused {
-                    this.applyFocusChange(tree, null, eventQueue);
+            let el = found.element;
+            if el is not none {
+                if runtimeDataOf(el).focused {
+                    this.applyFocusChange(tree, none, eventQueue);
                 }
             }
         }
@@ -1891,11 +2073,10 @@ export opaque ref struct UIContext {
                     // in this Down's hitPath (innermost wins), or blur
                     // whatever's focused if there isn't one -- see
                     // DivProps.focusable and applyFocusChange.
-                    let newFocusTarget: ComponentElementRuntimeData | null = null;
+                    let newFocusTarget = none as ui_elements.Element | none;
                     for (let fi = hitPath.length - 1; fi >= 0; fi--) {
-                        let fd = runtimeDataOf(hitPath[fi]);
-                        if fd.focusable {
-                            newFocusTarget = fd;
+                        if runtimeDataOf(hitPath[fi]).focusable {
+                            newFocusTarget = hitPath[fi];
                             break;
                         }
                     }
@@ -2540,6 +2721,12 @@ export opaque ref struct UIContext {
         }
         data.onFocus = props.onFocus;
         data.onBlur = props.onBlur;
+        data.onFocusIn = props.onFocusIn;
+        data.onFocusOut = props.onFocusOut;
+        data.onFocusCapture = props.onFocusCapture;
+        data.onBlurCapture = props.onBlurCapture;
+        data.onFocusInCapture = props.onFocusInCapture;
+        data.onFocusOutCapture = props.onFocusOutCapture;
         data.onKeyDown = props.onKeyDown;
         data.onKeyUp = props.onKeyUp;
         data.onTextInput = props.onTextInput;
@@ -2765,6 +2952,14 @@ export ref struct ElementWrapper<T> {
     // Give up focus, like the DOM's element.blur(). See ui_blur().
     fn blur(): void {
         ui_blur(this._element);
+    }
+
+    // Node.contains() -- see ui_contains. The reason this is on the wrapper at
+    // all: a focusout handler holds a ref to its own element and a
+    // relatedTarget from the event, and needs to ask whether the second is
+    // inside the first.
+    fn contains(other: ui_elements.Element | none): bool {
+        return ui_contains(this._element, other);
     }
 
     fn position(): Vec2 | none {

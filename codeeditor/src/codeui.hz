@@ -3912,11 +3912,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
             dismissHover();
         };
 
-        let onFocus = () => {
+        let onFocus = (e: ui_components.FocusEvent) => {
             keybindings().context.setBool(ctxEditorTextFocus(), true);
         };
 
-        let onBlur = () => {
+        let onBlur = (e: ui_components.FocusEvent) => {
             keybindings().context.setBool(ctxEditorTextFocus(), false);
             // Autosave. Focus leaving a text editor is the moment its
             // contents stop being something the user is still in the

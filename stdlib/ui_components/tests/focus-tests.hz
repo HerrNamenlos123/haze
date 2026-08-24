@@ -20,7 +20,15 @@ ref struct TestArgs {}
 // own component state is grouped rather than held in loose locals).
 ref struct State {
     typed: str = "";
+    // Target-only events (focus/blur) recorded by the two leaf divs.
     events: str = "";
+    // Everything the CONTAINER sees, in fire order: its capture handlers for
+    // all four events plus its bubble handlers for focusin/focusout. Kept
+    // separate from `events` so the leaf assertions above stay readable.
+    bubbled: str = "";
+    // What the container's focusout handler concluded from relatedTarget:
+    // did focus actually leave this subtree, or just move within it?
+    lastOutLeft: bool = false;
 
     failures: int = 0;
     checks: int = 0;
@@ -49,6 +57,11 @@ fn main(): int {
         rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
     let otherRef: ui_components.ElementRef<ui_elements.DivElement> =
         rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    // The two focusable divs live inside this one, which is NOT focusable --
+    // it exists purely to observe focus moving among its descendants, which is
+    // what focusin/focusout and the capture phase are for.
+    let containerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
 
     // Queued keyboard input, drained every frame the same way a real backend
     // drains its SDL event queue.
@@ -66,11 +79,39 @@ fn main(): int {
 
                 return (): ui_components.DivProps => {
                     ctx.div({
+                        id: 3,
+                        elementRef: containerRef,
+                        // Capture fires for all four events, including the two
+                        // that do not bubble -- that is exactly what the DOM's
+                        // addEventListener(..., true) is for.
+                        onBlurCapture: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}capBlur;"; },
+                        onFocusOutCapture: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}capOut;"; },
+                        onFocusCapture: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}capFocus;"; },
+                        onFocusInCapture: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}capIn;"; },
+                        // These two must NEVER fire on an ancestor: focus and
+                        // blur do not bubble.
+                        onBlur: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}bubBlur;"; },
+                        onFocus: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}bubFocus;"; },
+                        // These two do.
+                        onFocusOut: (e: ui_components.FocusEvent) => {
+                            state.bubbled = f"{state.bubbled}bubOut;";
+                            // HTML fires focusout here even when focus merely
+                            // moved between this container's own children;
+                            // relatedTarget is the only thing that tells them
+                            // apart.
+                            let self = rx.get(containerRef);
+                            if self {
+                                state.lastOutLeft = !self.contains(e.relatedTarget);
+                            }
+                        },
+                        onFocusIn: (e: ui_components.FocusEvent) => { state.bubbled = f"{state.bubbled}bubIn;"; },
+                    }, () => {
+                    ctx.div({
                         id: 1,
                         elementRef: editorRef,
                         focusable: true,
-                        onFocus: () => { state.events = f"{state.events}editor-focus;"; },
-                        onBlur: () => { state.events = f"{state.events}editor-blur;"; },
+                        onFocus: (e: ui_components.FocusEvent) => { state.events = f"{state.events}editor-focus;"; },
+                        onBlur: (e: ui_components.FocusEvent) => { state.events = f"{state.events}editor-blur;"; },
                         onTextInput: (e: ui_components.TextInputEvent) => {
                             state.typed = f"{state.typed}{e.text}";
                         },
@@ -80,9 +121,10 @@ fn main(): int {
                         id: 2,
                         elementRef: otherRef,
                         focusable: true,
-                        onFocus: () => { state.events = f"{state.events}other-focus;"; },
-                        onBlur: () => { state.events = f"{state.events}other-blur;"; },
+                        onFocus: (e: ui_components.FocusEvent) => { state.events = f"{state.events}other-focus;"; },
+                        onBlur: (e: ui_components.FocusEvent) => { state.events = f"{state.events}other-blur;"; },
                     }, () => {});
+                    });
 
                     return { id: 0 };
                 };
@@ -131,6 +173,7 @@ fn main(): int {
 
     // --- Moving focus programmatically blurs the previous element ---------
     state.events = "";
+    state.bubbled = "";
     otherEl.focus();
     ui.process();
 
@@ -138,6 +181,26 @@ fn main(): int {
     state.check("other element gained focus", otherEl.focused(), true);
     state.checkStr("blur fired before focus, exactly like a click would",
         state.events, "editor-blur;other-focus;");
+
+    // --- HTML focus event order, propagation and relatedTarget -------------
+    //
+    // Focus just moved editor -> other, both inside the container. HTML's
+    // focus update steps are blur -> focusout -> focus -> focusin, each its
+    // own event, each with a capture phase, and only the focusin/focusout
+    // pair bubbling. The container therefore sees four capture calls and two
+    // bubble calls, in exactly this order:
+    state.checkStr("capture phase runs for all four events; only focusin/out bubble",
+        state.bubbled, "capBlur;capOut;bubOut;capFocus;capIn;bubIn;");
+    // The two absences above are the point of the pair existing at all.
+    state.check("blur did not bubble to the container",
+        state.bubbled.contains("bubBlur;"), false);
+    state.check("focus did not bubble to the container",
+        state.bubbled.contains("bubFocus;"), false);
+    // ...and focus did NOT leave the container, even though it fired focusout:
+    // relatedTarget is the sibling, which the container still contains. This
+    // is the check every real "close when focus leaves" handler has to make.
+    state.check("focusout with relatedTarget still inside means focus stayed",
+        state.lastOutLeft, false);
 
     // Text now goes to the newly focused element, which has no onTextInput,
     // so the editor's buffer must stay untouched.
@@ -148,10 +211,18 @@ fn main(): int {
 
     // --- blur() clears focus entirely --------------------------------------
     state.events = "";
+    state.bubbled = "";
     otherEl.blur();
     ui.process();
     state.check("other element is no longer focused after blur()", otherEl.focused(), false);
     state.checkStr("onBlur fired for the blurred element", state.events, "other-blur;");
+    // Focus went nowhere, so relatedTarget is none -- which ui_contains
+    // reports as "not contained", giving the leave check the right answer for
+    // free. Nothing gained focus, so no focus/focusin half this time.
+    state.checkStr("no focus/focusin when nothing gained focus",
+        state.bubbled, "capBlur;capOut;bubOut;");
+    state.check("focusout with no relatedTarget means focus really left",
+        state.lastOutLeft, true);
 
     // --- A stale blur() on an unfocused element must not steal focus ------
     editorEl.focus();

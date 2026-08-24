@@ -104,8 +104,10 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
   but see the no-logic lints below.
 - **Events:** on a builtin element, `@pointerdown=clicked` → `onPointerDown: clicked`; every
   `ui_components.DivProps` callback is reachable, and separators/case in the name do not matter
-  (`@pointer-down` / `@pointerdown` / `@pointerDown`). On a **component**, `@name=` always binds
-  that component's declared `@emit name` (→ `onName:`) and never an element event.
+  (`@pointer-down` / `@pointerdown` / `@pointerDown`). That includes the four focus events —
+  `@focus`/`@blur` (no bubbling, capture only) and `@focusin`/`@focusout` (bubbling), plus a
+  `-capture` variant of each. On a **component**, `@name=` always binds that component's declared
+  `@emit name` (→ `onName:`) and never an element event.
 - **Components:** capitalized head = component, lowercase = builtin element (bet-and-verify, §6.2).
 - **Slots:** child side renders with fallback: `slot content label=label { ...fallback... }`.
   Parent side provides: `#content label { ... }` (payload destructure; may be omitted). A bare
