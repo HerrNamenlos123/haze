@@ -446,8 +446,8 @@ export type TemplateContext = {
   sourceFile: string;
   /** e.g. "presets" -- namespace the class tokens lower into. */
   presetNamespace: string;
-  /** name -> payload struct name, or null for payload-less slots. */
-  slots: Map<string, string | null>;
+  /** name -> payload struct name (every slot has one; see compose.SlotDecl). */
+  slots: Map<string, string>;
   /** Rewrites dialect accessors in an expression (props./slots./emits.). */
   rewriteExpr: (expr: string) => string;
 };
@@ -528,6 +528,15 @@ function eventProp(name: string, line: number): string {
 // "this component emits no such thing" error.
 function emitProp(name: string): string {
   return `on${pascalEvent(name)}`;
+}
+
+// A slot closure always takes exactly one payload parameter -- every slot has
+// a payload struct, even an empty one (see compose.SlotDecl). Naming it is
+// optional (`#body { ... }` vs `#body s { ... }`), so when the provider does
+// not, one is supplied here: the arity has to be right regardless, and the use
+// site cannot see it, since the component lives in another file.
+function slotParams(params: string[]): string {
+  return params.length > 0 ? params.join(", ") : "__slot";
 }
 
 class Emitter {
@@ -752,14 +761,10 @@ function lowerSlotRender(
   em.emit(`let ${local} = props.${node.name};`);
   em.emit(`if ${local} {`);
   em.indented(() => {
-    if (payloadStruct) {
-      const fields = node.payload
-        .map((p) => `${p.name}: ${ctx.rewriteExpr(p.value)}`)
-        .join(", ");
-      em.emit(`${local}(${payloadStruct} { ${fields} });`);
-    } else {
-      em.emit(`${local}();`);
-    }
+    const fields = node.payload
+      .map((p) => `${p.name}: ${ctx.rewriteExpr(p.value)}`)
+      .join(", ");
+    em.emit(`${local}(${payloadStruct} { ${fields} });`);
   });
   if (node.fallback && node.fallback.length > 0) {
     em.emit(`} else {`);
@@ -847,7 +852,7 @@ function lowerElementInner(
     for (const sp of node.slotProvides) {
       // Closure params are intentionally untyped -- bound by inference from
       // the component's slot prop signature ("bet and verify").
-      closures.push(`${sp.name}: (${sp.params.join(", ")}) => {`);
+      closures.push(`${sp.name}: (${slotParams(sp.params)}) => {`);
     }
     if (node.children && node.children.length > 0 && closures.length === 0) {
       // TODO(user): default-slot convention for bare component children.
@@ -865,7 +870,7 @@ function lowerElementInner(
           em.emit(`${a},`);
         }
         for (const sp of node.slotProvides) {
-          em.emit(`${sp.name}: (${sp.params.join(", ")}) => {`);
+          em.emit(`${sp.name}: (${slotParams(sp.params)}) => {`);
           em.indented(() =>
             lowerNodes(sp.children, em, ctx, { counter: 0, inLoop: false })
           );

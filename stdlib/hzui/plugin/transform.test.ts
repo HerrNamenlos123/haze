@@ -190,6 +190,37 @@ describe("events", () => {
   });
 });
 
+describe("slots", () => {
+  const declare = (decl: string, provide: string) =>
+    gen(
+      `import ui_components\n@slot\n${decl}\n@template\nBtn [] {\n  ${provide} {\n    text [] ["x"]\n  }\n}`
+    );
+
+  test("every slot gets a payload struct, even a field-less one", () => {
+    expect(declare("body: {};", "#body s")).toContain(
+      "export struct XSlotBody {"
+    );
+    // `name: ();` is a payload struct with no fields, not the absence of one.
+    expect(declare("body: ();", "#body s")).toContain(
+      "body?: (s: XSlotBody) => none;"
+    );
+  });
+
+  test("a provider that omits the payload name still gets the arity right", () => {
+    // The use site cannot see the slot's arity -- the component is in another
+    // file -- so omitting the name must not change the shape of the closure.
+    expect(declare("body: {};", "#body")).toContain("body: (__slot) => {");
+    expect(declare("body: {};", "#body s")).toContain("body: (s) => {");
+  });
+
+  test("rendering a slot always passes its payload struct", () => {
+    const out = gen(
+      'import ui_components\n@slot\nbody: {};\n@template\nslot body {\n  text [] ["fallback"]\n}'
+    );
+    expect(out).toContain("slot_body(XSlotBody {  });");
+  });
+});
+
 describe("class tokens", () => {
   test("static tokens camelCase mechanically", () => {
     expect(parseClassToken("justify-between").fn).toBe("justifyBetween");

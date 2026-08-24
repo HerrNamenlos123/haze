@@ -43,7 +43,7 @@ marker ends it. No closing markers, no brace counting — splitting is a single 
 ```
 <prelude>     plain haze, verbatim: imports, exported types (Vue's plain <script>)
 @props        struct-body syntax: fields with defaults
-@slot         name: { payload fields }   (scoped-slot payload type)
+@slot         name: { payload fields }   (payload struct; `name: ();` = no fields)
 @emit         name: (ArgTypes,)
 @setup        plain haze, verbatim (Vue's <script setup>)
 @template     template syntax (§3.2) — the only section with its own (token-level) grammar
@@ -108,7 +108,11 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
 - **Components:** capitalized head = component, lowercase = builtin element (bet-and-verify, §6.2).
 - **Slots:** child side renders with fallback: `slot content label=label { ...fallback... }`.
   Parent side provides: `#content label { ... }` (payload destructure; may be omitted). A bare
-  child block on a component is the default slot.
+  child block on a component is the default slot. **Every slot closure takes exactly one payload
+  parameter**, so every slot gets a payload struct — `name: ();` means "no fields", not "no
+  payload". Arity is the one thing about a slot a use site cannot see (the component is in
+  another file), so a provider that omits the payload name gets one supplied for it rather than
+  a shape that has to be guessed.
 - **Text:** content is the trailing token: `text [tokens] label`.
 
 ### 3.3 Class tokens
@@ -410,6 +414,7 @@ linting.
 | Section order | `@props`/`@emit`/`@slot` any order, then `@setup`, then `@template` | matches how drafts were actually written |
 | Editor support | separate grammar-only VS Code extension `stdlib/hzui/vscode` (language `hzui`, embeds `source.hz`) | base haze extension never accumulates project-specific rules |
 | Slot fallback | `slot name { fallback }` (Vue semantics) | dissolves `if slots.x { slots.x() }` |
+| Slot arity | always one payload param; every slot has a payload struct | a use site can't see a slot's arity across files, so there must be nothing to guess |
 | Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
 | Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |
 | Component class list | reserved, must be written `[]`, tokens rejected | forwarding tokens breaks internals (Vue's `flex-col` problem); reserving the slot now keeps today's code meaning the same when the contract lands |
