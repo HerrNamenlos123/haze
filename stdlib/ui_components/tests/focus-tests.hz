@@ -73,6 +73,7 @@ fn main(): int {
     // Queued keyboard input, drained every frame the same way a real backend
     // drains its SDL event queue.
     let pendingText: []str = [];
+    let pendingKeys: []ui_components.KeyEdge = [];
 
     let ui = ui_components.UIContext({
         ui: (ctx: ui_components.UIContext) => {
@@ -152,7 +153,12 @@ fn main(): int {
         },
         mousePos: (): Vec2 => { return Vec2(0.0, 0.0); },
         keyboard: {
-            keyEdgesThisFrame: (): []ui_components.KeyEdge => { return []; },
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => {
+                let out: []ui_components.KeyEdge = [];
+                for k in pendingKeys { out.push(k); }
+                pendingKeys.clear();
+                return out;
+            },
             // Drains the queue in place (.clear(), not a fresh `[]`) -- the
             // closure captured this exact array, so rebinding the local would
             // leave it holding every chunk ever queued.
@@ -255,6 +261,49 @@ fn main(): int {
     ui.process();
     state.check("blur() on an unfocused element left the real focus alone",
         editorEl.focused(), true);
+
+    // --- Tab navigation ---------------------------------------------------
+    //
+    // Tree order, wrapping at both ends, and arriving :focus-visible so a
+    // focus ring shows. There are three focusable elements here: editor (1)
+    // and other (2) inside the container, then outside (4).
+    let pressTab = (shift: bool) => {
+        let mods = ui_components.KeyModifiers.None;
+        if shift { mods = ui_components.KeyModifiers.Shift; }
+        pendingKeys.push({
+            key: ui_components.Key.Tab,
+            kind: ui_components.KeyEdgeKind.Pressed,
+            repeat: false,
+            modifiers: mods,
+        });
+        // One frame to dispatch the key and request the move, one to apply it
+        // -- the same one-frame path every programmatic focus() takes.
+        ui.process();
+        ui.process();
+    };
+
+    editorEl.focus();
+    ui.process();
+
+    pressTab(false);
+    state.check("Tab moved to the next focusable in tree order", otherEl.focused(), true);
+    state.check("...and it arrived focus-visible, so a ring shows",
+        otherEl.focusVisible(), true);
+
+    pressTab(false);
+    state.check("Tab left the container to the next element after it",
+        outsideEl.focused(), true);
+
+    pressTab(false);
+    state.check("Tab wrapped around from the last element to the first",
+        editorEl.focused(), true);
+
+    pressTab(true);
+    state.check("Shift+Tab wrapped backwards to the last element",
+        outsideEl.focused(), true);
+
+    pressTab(true);
+    state.check("Shift+Tab steps backwards", otherEl.focused(), true);
 
     // --- :focus-visible ---------------------------------------------------
     //

@@ -27,7 +27,7 @@ content: {
 };
 
 @emit
-click: (ui_components.PointerEvent,);
+click: ();
 
 @setup
 let buttonRef = elementRef<ui_elements.DivElement>();
@@ -37,11 +37,18 @@ let isActive = computed(() => buttonRef?.active() ?? false);
 // :focus-visible, not :focus -- a clicked button must not keep a ring.
 let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && props.focusRing > 0.0);
 
-let clicked = (event: ui_components.PointerEvent) => {
-    event.stopPropagation();
+let clicked = (event: PointerEvent) => {
     if !props.enabled { return; }
-    emits.click(event);
+    event.stopPropagation();
+    emits.click();
 };
+
+let keydown = (event: KeyboardEvent) => {
+    if !props.enabled { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    emits.click();
+}
 
 let backgroundColor = computed(() => {
     if !props.enabled { return props.bg; } 
@@ -68,6 +75,7 @@ let backgroundColor = computed(() => {
     ref=buttonRef
     focusable=[props.enabled]
     @pointerdown=clicked
+    @keydown=keydown
 
 slot content label=[props.label] {
     text if=[props.label.length > 0] [

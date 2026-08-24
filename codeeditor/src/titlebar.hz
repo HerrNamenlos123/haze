@@ -152,7 +152,7 @@ struct TitleBarArgs {
 // The row. Declare this FIRST in the application root.
 export fn TitleBar(ui: ui_components.UIContext, state: mut TitleBarState, args: TitleBarArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<TitleBarArgs>) => {
-        let onClick = (event: ui_components.PointerEvent) => {
+        let onClick = () => {
             // Toggle. The root's capture handler deliberately
             // leaves presses on the bar alone precisely so this
             // can close a menu that is already open -- see

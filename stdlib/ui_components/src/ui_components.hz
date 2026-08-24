@@ -152,9 +152,24 @@ export ref struct KeyboardEvent {
     repeat: bool;
     modifiers: KeyModifiers;
     _stopped: bool = false;
+    _defaultPrevented: bool = false;
 
     fn stopPropagation() {
         this._stopped = true;
+    }
+
+    // The DOM's preventDefault(), and a genuinely different thing from
+    // stopPropagation(): that one stops OTHER ELEMENTS from seeing the key,
+    // this one stops the FRAMEWORK from acting on it afterwards. Today that
+    // means exactly one thing -- Tab moving focus (see moveFocusByTab) -- and
+    // a text editor that inserts an indent on Tab must call this, or the key
+    // would both indent and navigate away.
+    fn preventDefault() {
+        this._defaultPrevented = true;
+    }
+
+    fn defaultPrevented(): bool {
+        return this._defaultPrevented;
     }
 }
 
@@ -1115,6 +1130,9 @@ export opaque ref struct UIContext {
     // Every dismissable layer currently in the tree -- see
     // collectDismissLayers, refreshed once per frame.
     _dismissLayers: []ui_elements.Element = [];
+    // Scratch for moveFocusByTab's tree-order walk. Only touched on an actual
+    // Tab press, but kept here so that press costs no allocation either.
+    _tabbableScratch: []ui_elements.Element = [];
     _clickEligible: []bool = [];
     _noEdges: []PointerEdge = [];
 
@@ -1451,6 +1469,73 @@ export opaque ref struct UIContext {
     // is already the focused element. Schedules all four HTML focus events onto
     // `eventQueue` same as every other callback in this module -- see FIRE
     // PHASE in process().
+    // Every element Tab can reach, in tree order -- which is the order Tab
+    // moves through them, exactly as the DOM walks document order.
+    //
+    // `focusable` is the whole membership test, so it is this system's
+    // tabindex="0" and there is currently no way to express tabindex="-1"
+    // (focusable by click or focus(), but skipped by Tab). Hidden subtrees are
+    // skipped whole: an element nobody can see must not silently swallow a
+    // Tab press.
+    fn collectTabbable(element: ui_elements.Element, out: []ui_elements.Element, hidden: bool = false): void :: final {
+        if hidden || ui_elements.isDisplayNone(element) {
+            return;
+        }
+        if runtimeDataOf(element).focusable {
+            out.push(element);
+        }
+        if element is ui_elements.DivElement {
+            let i = 0;
+            while i < element.children.length {
+                this.collectTabbable(element.children[i], out, false);
+                i = i + 1;
+            }
+        }
+    }
+
+    // Tab / Shift+Tab: the DEFAULT ACTION of the key event, run only if no
+    // handler called preventDefault() -- see KeyboardEvent.preventDefault.
+    //
+    // Requests the move rather than applying it, so this is safe to call from
+    // inside the FIRE phase (applyFocusChange queues callbacks, and the queue
+    // is being iterated at that point). It lands at the start of the next
+    // frame through applyPendingFocus, the same one-frame path every
+    // programmatic focus() already takes -- and because that path is not
+    // pointer-driven, the element arrives :focus-visible and shows its ring.
+    //
+    // Wraps at both ends. A browser would step out into its own chrome here;
+    // an application window has nowhere else to go, so cycling is the only
+    // behaviour that does not strand the keyboard user at the last element.
+    fn moveFocusByTab(tree: ui_elements.Element, backwards: bool): void :: final {
+        let tabbable = this._tabbableScratch;
+        tabbable.clear();
+        this.collectTabbable(tree, tabbable);
+        if tabbable.length == 0 {
+            return;
+        }
+
+        // Where focus is now. -1 means nothing is focused, in which case Tab
+        // enters at the first element and Shift+Tab at the last -- matching a
+        // browser entering a document from either end.
+        let current = -1;
+        let i = 0;
+        while i < tabbable.length {
+            if runtimeDataOf(tabbable[i]).focused {
+                current = i;
+                break;
+            }
+            i = i + 1;
+        }
+
+        let next = 0;
+        if backwards {
+            next = current <= 0 ? tabbable.length - 1 : current - 1;
+        } else {
+            next = current >= tabbable.length - 1 ? 0 : current + 1;
+        }
+        ui_focus(tabbable[next]);
+    }
+
     // One walk per frame, gathering every element that asked to hear about
     // interactions outside itself -- see DivProps.onPointerDownOutside.
     //
@@ -2351,16 +2436,39 @@ export opaque ref struct UIContext {
                 // fires onBlur and stops ui_focused() from lying); this is
                 // the belt-and-braces check for the one frame where a
                 // handler hides an element after that pass has already run.
-                if focusPath.length > 0 && !this.pathIsHidden(focusPath) {
-                    for ke in keyEdges {
-                        let keyEvent = KeyboardEvent {
-                            key: ke.key,
-                            repeat: ke.repeat,
-                            modifiers: ke.modifiers,
-                        };
+                // Whether anything can receive this frame's keys at all.
+                // Tab is handled either way: with nothing focused it is what
+                // ENTERS the UI from the keyboard, so gating it on there
+                // already being a focused element would make the keyboard
+                // unreachable from a cold start.
+                let focusUsable = focusPath.length > 0 && !this.pathIsHidden(focusPath);
+
+                for ke in keyEdges {
+                    let keyEvent = KeyboardEvent {
+                        key: ke.key,
+                        repeat: ke.repeat,
+                        modifiers: ke.modifiers,
+                    };
+                    if focusUsable {
                         this.dispatchKeyCapturing(focusPath, keyEvent, ke.kind, eventQueue);
                         this.dispatchKeyBubbling(focusPath, keyEvent, ke.kind, eventQueue);
                     }
+
+                    // Focus navigation is this key's DEFAULT ACTION, so it is
+                    // queued behind every handler and skipped if one of them
+                    // called preventDefault() -- which is how a text editor
+                    // keeps Tab for indentation. Exactly the browser's own
+                    // arrangement, and the reason preventDefault exists
+                    // separately from stopPropagation.
+                    if ke.kind == KeyEdgeKind.Pressed && ke.key == Key.Tab {
+                        let backwards = hasModifier(ke.modifiers, KeyModifiers.Shift);
+                        eventQueue.push((): void => {
+                            if keyEvent._defaultPrevented { return; }
+                            this.moveFocusByTab(tree, backwards);
+                        });
+                    }
+                }
+                if focusUsable {
                     for chunk in textChunks {
                         let textEvent = TextInputEvent { text: chunk };
                         this.dispatchTextInputCapturing(focusPath, textEvent, eventQueue);

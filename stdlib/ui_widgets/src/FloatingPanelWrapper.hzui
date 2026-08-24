@@ -5,14 +5,14 @@
 
 @setup
 let isOpen = rx.reactive<bool>(false);
-let open = (event: PointerEvent) => {
+let open = () => {
     isOpen := true;
 };
 let close = () => {
     isOpen := false;
 }
 
-let button = (event: PointerEvent) => {
+let button = () => {
     fmt.println("Button clicked");
 }
 

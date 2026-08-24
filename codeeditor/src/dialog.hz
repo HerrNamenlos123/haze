@@ -189,7 +189,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             paddingX: 14.0,
                             paddingY: 6.0,
                             rounded: 2.0,
-                            onClick: (event: ui_components.PointerEvent) => {
+                            onClick: () => {
                                 let action = instance.props().onOverwrite;
                                 action();
                             },
@@ -204,7 +204,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             paddingX: 14.0,
                             paddingY: 6.0,
                             rounded: 2.0,
-                            onClick: (event: ui_components.PointerEvent) => {
+                            onClick: () => {
                                 let action = instance.props().onDiscard;
                                 action();
                             },
@@ -219,7 +219,7 @@ export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) 
                             paddingX: 14.0,
                             paddingY: 6.0,
                             rounded: 2.0,
-                            onClick: (event: ui_components.PointerEvent) => {
+                            onClick: () => {
                                 let action = instance.props().onCancel;
                                 action();
                             },

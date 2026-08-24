@@ -3835,7 +3835,7 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
         // button's runtime data and called back at event-dispatch time, so
         // a literal in the template would be a fresh heap environment on
         // every rebuild.
-        let onToggleIndent = (event: ui_components.PointerEvent) => {
+        let onToggleIndent = () => {
             toggleIndentWidth();
         };
 
@@ -3996,6 +3996,11 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 // two editing models cannot indent a file differently.
                 // Without this, Tab did nothing at all outside vim.
                 texteditBehavior.insertText(indentString());
+                // Tab's default action is to move focus to the next focusable
+                // element. A text editor is the canonical case for claiming
+                // the key instead -- without this the same press would indent
+                // AND tab away from the editor.
+                event.preventDefault();
             }
             else if ctrl && event.key == ui_components.Key.A {
                 texteditBehavior.selectAll();
