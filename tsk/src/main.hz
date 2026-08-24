@@ -89,6 +89,13 @@ fn main(): int {
                 keyEdgesThisFrame: () => toUIKeyEdges(a),
                 textInputThisFrame: () => a.textInput(),
             },
+            // The platform clipboard, for widgets that cut/copy/paste (see
+            // ui_components.ClipboardCallbacks). Omit it and ui.hasClipboard()
+            // reports false, which widgets read as "use your own register".
+            clipboard: ui_components.ClipboardCallbacks {
+                getText: (): str => { return app.getClipboardText(); },
+                setText: (text: str): bool => { return app.setClipboardText(text); },
+            },
             ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
         });
 

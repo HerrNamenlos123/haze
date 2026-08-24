@@ -1079,6 +1079,12 @@ export fn finishTextStyle(working: TextStyle): ComputedTextStyle {
         lineHeight: working.lineHeight,
         letterSpacing: working.letterSpacing,
         textColor: working.textColor,
+        // Every field of ComputedTextStyle must be listed here. Leaving one
+        // out is silent: applyTextOp sets it on `working`, this drops it, and
+        // the style simply never arrives -- which is exactly what happened to
+        // textWrap, so `text-nowrap` did nothing at all until a run finally
+        // grew wider than its container and started wrapping.
+        textWrap: working.textWrap,
     };
 }
 

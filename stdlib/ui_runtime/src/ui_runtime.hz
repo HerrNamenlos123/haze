@@ -17,6 +17,10 @@ export struct RuntimeArgs {
     inputExtras?: ui_components.InputExtrasCallbacks;
     keyboard?: ui_components.KeyboardCallbacks;
     setCursor?: ui_components.CursorCallback;
+    // The platform clipboard, for widgets that cut/copy/paste. Optional like
+    // the rest: omit it and ui.hasClipboard() reports false, which widgets
+    // read as "fall back to whatever register you keep yourself".
+    clipboard?: ui_components.ClipboardCallbacks;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -66,6 +70,7 @@ export opaque ref struct Runtime {
             inputExtras: args.inputExtras,
             keyboard: args.keyboard,
             setCursor: args.setCursor,
+            clipboard: args.clipboard,
             measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
                 return layout.measureText(fontFamily, fontSize, text);
             },

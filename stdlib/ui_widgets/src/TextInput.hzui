@@ -20,8 +20,11 @@ import unicode
 // ── One line, on purpose ──────────────────────────────────────
 //
 // getLineCount() is 1 and always will be. Return does not insert a newline,
-// it emits `submit`; a paste that contains one is truncated at the first,
-// rather than quietly stashing text where the box can never show it.
+// it emits `submit`. Line breaks reaching the box from ANYWHERE -- a paste, or
+// the owner writing multi-line text straight into the handle -- are STRIPPED
+// and everything else kept, so multi-line text arrives joined into one line
+// rather than losing all but its first. See `line` below for why that is a
+// correctness requirement and not a formatting preference.
 
 @props
 text: Reactive<str>;
@@ -60,20 +63,73 @@ selectAll: () => none;
 
 @setup
 let rootRef = elementRef<DivElement>();
+// The clipping viewport: the window the line is seen through, and the thing
+// the runs are positioned and hit-tested against. See the @template.
+let viewRef = elementRef<DivElement>();
 
-// A textbox is one line, so a paste carrying newlines is truncated at the
-// first one. Silently dropping the rest is better than storing text the box
-// can never display or scroll to.
-let firstLineOf = (text: String): str => {
+// How far the line is scrolled left, in pixels. Sticky state, not a
+// derivation: a view only moves when the caret would otherwise leave it, so
+// where it sits depends on where it already was. revealCaret() below is the
+// only writer.
+let scrollX = rx.reactive<real>(0.0);
+
+// Whether a press is still down and dragging out a selection. A reactive cell
+// rather than a plain `let` because closures here capture by copy -- two
+// lambdas sharing a bare bool would each get their own.
+let dragging = rx.reactive<bool>(false);
+
+// A textbox is one line, so any line break in text arriving from outside is
+// removed and everything around it kept -- a three-line paste lands as one
+// joined line. Keeping only the first line instead would silently discard
+// most of what the user pasted, which is a worse answer than joining: they
+// can see and edit a joined line, they cannot get the dropped text back.
+//
+// "\r" goes with it, so a CRLF clipboard does not leave stray carriage
+// returns sitting in the value as unrenderable glyphs.
+//
+// This runs on EVERY edit, keystrokes included (see applyReplaceRange), so
+// the no-break case must not build anything: it walks the one or two bytes it
+// was given and falls straight through to the single-slice return.
+let withoutLineBreaks = (text: String): str => {
+    let result = "";
+    let segmentStart = 0;
     let i = 0;
     while i < text.length() {
-        if text.getAt(i) == b"\n" {
-            return text.cloneSlice(0, i);
+        let byte = text.getAt(i);
+        if byte == b"\n" || byte == b"\r" {
+            result = result + text.cloneSlice(segmentStart, i);
+            segmentStart = i + 1;
         }
         i = i + 1;
     }
-    return text.cloneSlice(0);
+    if segmentStart == 0 {
+        return text.cloneSlice(0);
+    }
+    return result + text.cloneSlice(segmentStart);
 };
+
+// THE value, as far as everything below is concerned: the prop with its line
+// breaks stripped out.
+//
+// Stripping on the way in (applyReplaceRange, getClipboard) is not enough,
+// because `text` is a handle the OWNER holds and writes directly -- that is
+// the whole point of it being a Reactive<str>, see the note at the top of this
+// file -- and those writes never pass through this component at all. One
+// `text := "a\nb"` from a caller is all it takes.
+//
+// And a line break is not a cosmetic problem here. The renderer breaks on
+// "\n" whatever the wrap mode says: text-nowrap turns off WIDTH wrapping (a
+// long line correctly overflows the box on one line) but Clay's wrap loop
+// never consults wrapMode for newlines, so the run becomes two visual lines,
+// the box doubles in height, and every caret/selection/hit-test x below --
+// all of it prefix widths measured along ONE line -- is silently measuring
+// the wrong thing.
+//
+// So the box reads its own value through here and nowhere else. It does not
+// write the normalization back on its own: that would emit a `change` the
+// owner never asked for. The first real edit persists it, since the head and
+// tail spliced below come from this same normalized string.
+let line = computed((): str => withoutLineBreaks(String(rx.get(props.text))));
 
 // The engine's one mutation primitive. Everything it does -- typing,
 // backspace, word-delete, paste, undo -- arrives here as "replace the bytes
@@ -83,10 +139,10 @@ let firstLineOf = (text: String): str => {
 // and an unannotated lambda infers `=> none`, which is a different type here.
 let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String): void => {
     let handle = props.text;
-    let current = String(rx.get(handle));
+    let current = String(rx.get(line));
     let head = current.cloneSlice(0, start.x);
     let tail = current.cloneSlice(end.x);
-    let next = head + firstLineOf(replacement) + tail;
+    let next = head + withoutLineBreaks(replacement) + tail;
     // Written through the handle the owner gave us, so both sides see it at
     // once. The engine reads the document back immediately after this returns
     // (see ContextArgs.replaceRange), which a reactive write satisfies.
@@ -97,11 +153,41 @@ let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String): void =>
 let textedit = textedit_behavior.Context({
     // One line, forever -- see the note at the top of this file.
     getLineCount: () => 1,
-    getLine: (lineIndex: int) => String(rx.get(props.text)),
-    getLineLength: (lineIndex: int) => props.text.length,
+    getLine: (lineIndex: int) => String(rx.get(line)),
+    getLineLength: (lineIndex: int) => line.length,
     getTimeInSeconds: () => ui.now(),
     replaceRange: applyReplaceRange,
+
+    // Route the engine's register through the OS clipboard, so ctrl+c here
+    // pastes into other applications and ctrl+v brings theirs in. A widget
+    // cannot reach the windowing layer itself -- ui_widgets depends on none
+    // of app/sdl, by design -- so the host hands its clipboard down through
+    // UIContext (see ui_components.ClipboardCallbacks). This only WIRES the
+    // bridge; useSystemClipboard below is what turns it on.
+    //
+    // Stripped HERE, at the box's own edge, and not left to applyReplaceRange
+    // alone: insertText() works out where to leave the caret from the string
+    // it was HANDED, not from what the document ended up storing. Hand it
+    // "a\nb" while the document stores "ab" and it targets line 1, which does
+    // not exist, and the caret is clamped back to somewhere arbitrary on line
+    // 0. Clipboard text carries a line break constantly -- every line copied
+    // from a terminal or an editor ends in one -- so this is the common path,
+    // not a corner case. Strip before the engine sees it and the two agree.
+    getClipboard: () => {
+        let text: String = String(withoutLineBreaks(String(ui.getClipboardText())));
+        return text;
+    },
+    setClipboard: (text: String): void => {
+        ui.setClipboardText(text.cloneString());
+    },
 });
+
+// ...and only when there is actually a clipboard behind it. A host that
+// wired none (a headless context, an embedder that just didn't pass one)
+// leaves the engine on its own internal register, so ctrl+c/ctrl+v still
+// work within the box -- rather than reading an always-empty system
+// clipboard over the top of a register that had the text all along.
+textedit.useSystemClipboard = ui.hasClipboard();
 
 // --- geometry -------------------------------------------------
 //
@@ -109,13 +195,13 @@ let textedit = textedit_behavior.Context({
 // explicitly rather than left to cascade: these run inside computeds, not at
 // a point in the element tree, so there is no ambient font to inherit.
 let widthUpTo = (column: int): real => {
-    let value = String(rx.get(props.text));
+    let value = String(rx.get(line));
     let head = value.cloneSlice(0, column);
     return ui.measureText(head, props.fontFamily, props.fontSize).x;
 };
 
 let caretX = computed(() => widthUpTo(textedit.cursorPosition.x));
-let showPlaceholder = computed(() => props.text.length == 0 && props.placeholder.length > 0);
+let showPlaceholder = computed(() => line.length == 0 && props.placeholder.length > 0);
 
 // The line cut into the three runs the template draws: before the selection,
 // inside it, after it. The highlight is the middle run's BACKGROUND rather
@@ -133,16 +219,34 @@ let showPlaceholder = computed(() => props.text.length == 0 && props.placeholder
 // so the common case is still a single uninterrupted run.
 let headText = computed((): str => {
     if !textedit.hasSelection { return ""; }
-    return String(rx.get(props.text)).cloneSlice(0, textedit.selectionStart.x);
+    return String(rx.get(line)).cloneSlice(0, textedit.selectionStart.x);
 });
 let selectedText = computed((): str => {
     if !textedit.hasSelection { return ""; }
-    return String(rx.get(props.text)).cloneSlice(textedit.selectionStart.x, textedit.selectionEnd.x);
+    return String(rx.get(line)).cloneSlice(textedit.selectionStart.x, textedit.selectionEnd.x);
 });
 let tailText = computed((): str => {
-    if !textedit.hasSelection { return rx.get(props.text); }
-    return String(rx.get(props.text)).cloneSlice(textedit.selectionEnd.x);
+    if !textedit.hasSelection { return rx.get(line); }
+    return String(rx.get(line)).cloneSlice(textedit.selectionEnd.x);
 });
+// How wide the highlight box has to be told it is, rather than left to hug
+// its own text.
+//
+// Clay shrinks fit-sized children to absorb a row's overflow, and this row
+// overflows the moment the value is wider than the box. The text runs are
+// immune -- a nowrap text element is excluded from Clay's resizable set --
+// but a plain div is not, so the highlight would collapse (measured: 32px ->
+// 16px) while the nowrap text inside it kept its full width, and every run
+// after it slid left straight over the selection. A FIXED width is excluded
+// from that set as well, which pins the row rigid.
+//
+// Measured with the very call Clay will measure that text element with, so
+// the box hugs its glyphs. The one seam: Clay measures a run word by word
+// while this measures it whole, and fontstash kerns across the join, so a
+// selection containing a space can disagree by a kern pair -- under a pixel,
+// at the highlight's right edge only.
+let selectionWidth = computed(() => ui.measureText(selectedText, props.fontFamily, props.fontSize).x);
+
 // The caret must be exactly as tall as a line of this text, so measure one
 // rather than guessing a multiple of the font size. "M" is only a probe --
 // measureText's height does not depend on which glyph it is given. (The
@@ -164,7 +268,7 @@ let distance = (a: real, b: real): real => {
 };
 
 let columnAtX = (localX: real): int => {
-    let value = rx.get(props.text);
+    let value = rx.get(line);
     let best = 0;
     let bestDistance = distance(0.0, localX);
     let column = 0;
@@ -183,25 +287,93 @@ let columnAtX = (localX: real): int => {
     return best;
 };
 
-// How far the text is inset from the box's own left edge -- the padding, and
-// only the padding. A border here is drawn INSIDE the element's box and never
-// displaces its children (Clay's border config produces a render command and
-// nothing else), so content starts at the padding whatever borderWidth is.
-// The caret is placed against that same box -- a floating child attaches to
-// its ancestor's box, see ui_layout.resolveOffset -- and hit-testing subtracts
-// the same amount, which is why there is one definition.
-let contentInsetX = (): real => {
-    return props.paddingX;
+// The width of the window the line is seen through. 0 before the first
+// layout, which every caller treats as "cannot scroll yet".
+let viewportWidth = (): real => {
+    let view = rx.get(viewRef);
+    if !view { return 0.0; }
+    let size = view.size();
+    if size is none { return 0.0; }
+    return size.x;
 };
 
-// Where the text starts on screen. Clicks arrive in window coordinates (see
-// PointerEvent.pos), so this is what makes them local.
+// How far the line can scroll before its end reaches the viewport's right
+// edge. The extra pixel is the caret's own width: the caret sits AFTER the
+// last character, so a line scrolled flush with its last glyph would clip it.
+let maxScrollX = (): real => {
+    let viewport = viewportWidth();
+    if viewport <= 0.0 { return 0.0; }
+    let contentWidth = ui.measureText(line, props.fontFamily, props.fontSize).x;
+    let slack = contentWidth + 1.0 - viewport;
+    return slack > 0.0 ? slack : 0.0;
+};
+
+// scrollX clamped to what the current text actually allows -- and THIS is
+// what gets drawn and hit-tested, never scrollX itself.
+//
+// The two are separate because the owner can replace the value through the
+// handle at any time (a Clear button, a form reset -- see the note at the top
+// of this file) without any handler here running. That would leave the sticky
+// offset scrolled past text that no longer exists, and nothing would pull it
+// back until the user next touched the box. Clamping on the way out means the
+// view is sane the very frame the text changes, while scrollX keeps the
+// position the user actually scrolled to.
+let scrollOffset = computed((): real => {
+    let current = rx.get(scrollX);
+    let limit = maxScrollX();
+    if current > limit { return limit; }
+    if current < 0.0 { return 0.0; }
+    return current;
+});
+
+// Where column 0 sits on screen right now: the viewport's left edge, pushed
+// left by however far the line is scrolled. Everything that converts between
+// a column and an x -- the caret, the runs, hit-testing -- is measured from
+// here, and the viewport is what the overlays are positioned against too, so
+// there is no padding or border term anywhere in this: the viewport is
+// already inside both.
+//
+// Clicks arrive in window coordinates (see PointerEvent.pos), so this is what
+// makes them local.
 let textOriginX = (): real => {
-    let root = rx.get(rootRef);
-    if !root { return 0.0; }
-    let pos = root.position();
+    let view = rx.get(viewRef);
+    if !view { return 0.0; }
+    let pos = view.position();
     if pos is none { return 0.0; }
-    return pos.x + contentInsetX();
+    return pos.x - rx.get(scrollOffset);
+};
+
+// Keep the caret inside the viewport, moving as little as possible -- the
+// DOM's scrollIntoView({inline: "nearest"}), and what every text field does.
+//
+// Called from the handlers rather than recomputed per frame, because those
+// are exactly the moments the caret can move. It reads the viewport width
+// measured during the LAST layout, which is right: the box's width does not
+// change between a keystroke and the frame that draws it.
+let revealCaret = (): none => {
+    let viewport = viewportWidth();
+    if viewport <= 0.0 { return; }
+
+    // The caret is drawn one pixel wide at caretX, so the last offset that
+    // still shows all of it is viewport - 1, not viewport. Without that the
+    // caret at end-of-line sits exactly on the clip edge and vanishes.
+    let caretWidth = 1.0;
+    let caret = caretX;
+    // Started from what is actually on screen, not from the raw scrollX --
+    // otherwise a reveal just after the owner replaced the text would move
+    // relative to an offset the user never saw.
+    let next = rx.get(scrollOffset);
+    if caret < next {
+        next = caret;
+    }
+    else if caret > next + viewport - caretWidth {
+        next = caret - viewport + caretWidth;
+    }
+
+    let limit = maxScrollX();
+    if next > limit { next = limit; }
+    if next < 0.0 { next = 0.0; }
+    scrollX := next;
 };
 
 // --- input ----------------------------------------------------
@@ -212,6 +384,7 @@ let textOriginX = (): real => {
 let typed = (event: TextInputEvent) => {
     if !props.enabled { return; }
     textedit.handleTextInput(String(event.text));
+    revealCaret();
 };
 
 let keyPressed = (event: KeyboardEvent) => {
@@ -241,7 +414,7 @@ let keyPressed = (event: KeyboardEvent) => {
     }
     else if event.key == Key.Return {
         // One line: Return is the box's commit gesture, not a newline.
-        emits.submit(rx.get(props.text));
+        emits.submit(rx.get(line));
     }
     else if ctrl && event.key == Key.A {
         textedit.selectAll();
@@ -264,6 +437,7 @@ let keyPressed = (event: KeyboardEvent) => {
         // claimed, so it does not also navigate away or scroll an ancestor.
         return;
     }
+    revealCaret();
     event.preventDefault();
     event.stopPropagation();
 };
@@ -276,20 +450,54 @@ let pressed = (event: PointerEvent) => {
     let target: Vec2i = { x: column, y: 0 };
     textedit.clearSelection();
     textedit.moveTo(target, true, false);
+    revealCaret();
+    dragging := true;
     // The press must not travel further: a textbox inside a dismissable panel
     // is emphatically not an interaction "outside" it.
     event.stopPropagation();
 };
 
-let dragged = (event: PointerEvent) => {
+// Move the selection's moving end to whatever column is under `windowX`.
+// Takes a window coordinate rather than an event, because the pointer is read
+// from two places -- an event while it is over the box, ui.mousePos while it
+// is not -- and both must land in the same place.
+let extendSelectionTo = (windowX: real): none => {
     if !props.enabled { return; }
-    if event.buttons == PointerButtons.None { return; }
-    let column = columnAtX(event.pos.x - textOriginX());
+    let column = columnAtX(windowX - textOriginX());
     let target: Vec2i = { x: column, y: 0 };
     // extend: true is what makes this a selection rather than a caret move --
     // the anchor stays wherever the press put it.
     textedit.moveTo(target, true, true);
+    revealCaret();
 };
+
+// Pointer capture, and with it the auto-scroll.
+//
+// A @pointermove handler cannot do this. Move is dispatched along the CURRENT
+// hit path (see ui_components.process), so the instant the pointer leaves this
+// box the events stop and the selection freezes wherever it was -- which is
+// why dragging out of the box used to need the pointer kept within a few
+// pixels of the edge. Polling the pointer per frame is what the framework
+// offers instead; ui.leftMouseHeld() exists for exactly this case.
+//
+// The auto-scroll is not written here -- it falls out. The column is resolved
+// from the pointer's position in CONTENT space, and content space shifts every
+// time the view scrolls. Hold the pointer 5px past the left edge: this frame
+// resolves a column 5px left of the view, revealCaret scrolls 5px to show it,
+// and next frame the same pointer position is 5px further left again. So it
+// scrolls continuously, faster the further out the pointer is held, which is
+// what a browser does -- and it stops dead when the pointer comes back inside,
+// because then the column is already visible and there is nothing to reveal.
+ui.onFrame(() => {
+    if !rx.get(dragging) { return; }
+    if !ui.leftMouseHeld() {
+        // Released -- possibly outside the window entirely, where no
+        // pointerup for this element is ever going to arrive.
+        dragging := false;
+        return;
+    }
+    extendSelectionTo(ui.mousePos.x);
+});
 
 // --- exposed API ----------------------------------------------
 let focus = (): none => {
@@ -298,6 +506,7 @@ let focus = (): none => {
 };
 let selectAll = (): none => {
     textedit.selectAll();
+    revealCaret();
 };
 
 // --- style ----------------------------------------------------
@@ -321,43 +530,70 @@ let contentColor = computed(() => {
     ref=rootRef
     focusable=[props.enabled]
     @pointerdown=pressed
-    @pointermove=dragged
     @keydown=keyPressed
     @textinput=typed
 
-text if=[showPlaceholder] [
-        text-color-[props.placeholderColor] text-nowrap
-        font-size-[props.fontSize] font-family-[props.fontFamily]
-    ] [props.placeholder]
+// The viewport: the window the line is seen through, and the only thing here
+// that clips. It deliberately is NOT the root, because an element's resolved
+// clip includes its OWN box (see ui_layout.collectClipsRecursive) and
+// drawOutline clips the focus ring with it -- overflow-hidden on the root
+// would cut the ring off, since a ring is drawn OUTSIDE the border box.
+//
+// Being `relative` also makes it the anchor for everything below: their
+// offsets are viewport-local, so no padding or border term appears in any of
+// them. And an explicit height is what keeps the box one line tall while its
+// content floats out of flow -- this is the root's only in-flow child, so
+// h-fit above still resolves to one line plus its padding.
+div [
+        relative w-grow h-[lineHeight]px
+        overflow-hidden
+    ]
+    ref=viewRef
+{
+    // In flow, unlike everything else here: a placeholder never scrolls, and
+    // `absolute` is a div style that ui.text has no field for anyway.
+    text if=[showPlaceholder] [
+            text-color-[props.placeholderColor] text-nowrap
+            font-size-[props.fontSize] font-family-[props.fontFamily]
+        ] [props.placeholder]
 
-// The line, in three runs -- see headText for why the highlight is a run's
-// background and not an overlay. Font and colour sit on this row and cascade
-// into all three runs (ui_layout.pushCascadingStack), so they cannot drift
-// apart. The tail is drawn unconditionally, empty or not: an empty box with
-// no placeholder still has to stand one line tall.
-div else [
-        row items-center gap-0 w-fit h-fit
-        text-color-[contentColor]
-        font-size-[props.fontSize] font-family-[props.fontFamily]
-    ] {
-    text if=[headText.length > 0] [text-nowrap] [headText]
-
-    div if=[selectedText.length > 0] [
-            row items-center gap-0 w-fit h-fit bg-[props.selectionColor]
+    // The line, in three runs -- see headText for why the highlight is a
+    // run's background and not an overlay. Font and colour sit on this row
+    // and cascade into all three runs (ui_layout.pushCascadingStack), so they
+    // cannot drift apart. The tail is drawn unconditionally, empty or not, so
+    // the row is never childless.
+    //
+    // Floated out of flow purely to be SHIFTABLE: `left` is the only way to
+    // move a box by pixels in this engine (position:relative stays in flow
+    // and translate-* is a fraction of the element's own size), and it only
+    // applies to something out of flow. The viewport's fixed height is what
+    // pays for the height this no longer contributes.
+    div else [
+            absolute left-[0.0 - scrollOffset]
+            row items-center gap-0 w-fit h-fit
+            text-color-[contentColor]
+            font-size-[props.fontSize] font-family-[props.fontFamily]
         ] {
-        text [text-nowrap] [selectedText]
+        text if=[headText.length > 0] [text-nowrap] [headText]
+
+        div if=[selectedText.length > 0] [
+                row items-center gap-0 h-fit w-[selectionWidth]px
+                bg-[props.selectionColor]
+            ] {
+            text [text-nowrap] [selectedText]
+        }
+
+        text [text-nowrap] [tailText]
     }
 
-    text [text-nowrap] [tailText]
+    // Caret last, and floating -- which is exactly what makes it paint above
+    // the runs. A caret is the one thing in this box that genuinely belongs
+    // on top of the text and its highlight, so the paint order that broke the
+    // selection is the one this needs. Scrolled by the same offset as the
+    // runs, so it stays on the character it marks.
+    div if=[caretVisible] [
+            absolute bg-[props.caretColor]
+            left-[caretX - scrollOffset]
+            w-[1]px h-[lineHeight]px
+        ]
 }
-
-// Caret last, and floating -- which is exactly what makes it paint above the
-// runs. A caret is the one thing in this box that genuinely belongs on top
-// of the text and its highlight, so the paint order that broke the
-// selection is the one this needs.
-div if=[caretVisible] [
-        absolute bg-[props.caretColor]
-        top-[props.paddingY]
-        left-[caretX + contentInsetX()]
-        w-[1]px h-[lineHeight]px
-    ]

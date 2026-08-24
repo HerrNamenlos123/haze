@@ -935,6 +935,8 @@ export ref struct ComponentInstance {
 
     onMounted?: () => none;
     onUnmount?: () => none;
+    // See UIContext.onFrame.
+    onFrame?: () => none;
 
     mounted: bool = false;
     crashed: bool = false;
@@ -1049,6 +1051,23 @@ export ref struct InputExtrasCallbacks {
     modifiers: () => KeyModifiers;
 }
 
+// Optional OS clipboard bridge, bundled for the same reason as
+// PointerHeldCallbacks above.
+//
+// It has to come from the host for the same reason setCursor does: this
+// module knows nothing about any windowing layer, and neither may the
+// widgets built on it -- ui_widgets depends on none of app/sdl, so a text
+// box cannot call app.getClipboardText() itself. The host, which is the one
+// piece that does know, hands its clipboard down here.
+//
+// getText() returns "" when the clipboard is empty or holds something that
+// is not text (an image, say), matching app.getClipboardText(). setText()
+// reports whether the platform took it.
+export ref struct ClipboardCallbacks {
+    getText: () => str;
+    setText: (text: str) => bool;
+}
+
 // How the resolved mouse cursor reaches the platform. Unlike the callbacks
 // above this is an OUTPUT: the UI decides a shape each frame and hands it
 // down, rather than polling the host for state.
@@ -1095,6 +1114,10 @@ export opaque ref struct UIContext {
     _inputExtras?: InputExtrasCallbacks;
     _keyboard?: KeyboardCallbacks;
     _setCursor?: CursorCallback;
+    // Optional: a headless/test context, or a host that simply never wired
+    // one, has no clipboard at all. See hasClipboard() for why that is worth
+    // telling apart from an empty one.
+    _clipboard?: ClipboardCallbacks;
     // Optional so a headless/test UIContext (no layout engine wired up) can
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
@@ -1162,6 +1185,7 @@ export opaque ref struct UIContext {
         inputExtras?: InputExtrasCallbacks;
         keyboard?: KeyboardCallbacks;
         setCursor?: CursorCallback;
+        clipboard?: ClipboardCallbacks;
         measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
     }
 
@@ -1178,6 +1202,7 @@ export opaque ref struct UIContext {
             _inputExtras: args.inputExtras,
             _keyboard: args.keyboard,
             _setCursor: args.setCursor,
+            _clipboard: args.clipboard,
             _measureText: args.measureText,
         };
 
@@ -1269,6 +1294,34 @@ export opaque ref struct UIContext {
         let size = fontSize ? fontSize : this.currentFontSize();
         assert(this._measureText, "measureText was not provided to this UIContext (see UIContextArgs.measureText)");
         return this._measureText(family, size, text);
+    }
+
+    // Whether a host actually wired an OS clipboard up (see
+    // UIContextArgs.clipboard). Worth asking BEFORE reading: "no clipboard"
+    // and "an empty clipboard" both read as "", but they call for opposite
+    // behavior -- a widget with its own internal register (textedit_behavior
+    // has one) should keep using it rather than paste "" over the top of it.
+    fn hasClipboard(): bool {
+        return this._clipboard is not none;
+    }
+
+    // The OS clipboard's text: "" when it is empty, when it holds something
+    // that is not text, or when no host wired one up.
+    fn getClipboardText(): str {
+        if this._clipboard {
+            return this._clipboard.getText();
+        }
+        return "";
+    }
+
+    // Puts `text` on the OS clipboard. Reports whether it got there, which is
+    // false when no host wired a clipboard up as well as when the platform
+    // refused it -- callers that care about the difference ask hasClipboard().
+    fn setClipboardText(text: str): bool {
+        if this._clipboard {
+            return this._clipboard.setText(text);
+        }
+        return false;
     }
 
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.
@@ -2804,6 +2857,14 @@ export opaque ref struct UIContext {
             });
         }
 
+        // Per-frame hook, run BEFORE this frame's template is built so that
+        // whatever it changes is reflected in the same frame rather than the
+        // next. Nothing on the first frame: setup has not run yet, so nothing
+        // has been registered.
+        if instance.onFrame {
+            instance.onFrame();
+        }
+
         rx.get(instance.templateComputed);
 
         if !instance.mounted {
@@ -2908,6 +2969,30 @@ export opaque ref struct UIContext {
     fn onUnmount(callback: () => none) {
         let component = this.getCurrentComponent();
         component.onUnmount = callback;
+    }
+
+    // Runs once per frame, for as long as this component is being rendered.
+    //
+    // For polling that genuinely cannot be expressed as an event: the classic
+    // one is pointer capture, where a drag has to keep tracking the pointer
+    // after it has left the element. Move events are dispatched along the
+    // CURRENT hit path (see process()), so they simply stop arriving -- which
+    // is what leftMouseHeld()/mousePos are for, and they have to be READ from
+    // somewhere every frame.
+    //
+    // An ordinary component can just write that code in its render body. One
+    // written as a .hzui single-file component cannot: its template is
+    // declarative and holds no statements, so this is the hook it uses.
+    //
+    // Registration needs no undoing. A component that is no longer rendered
+    // is never walked, so its callback simply stops being called -- unlike a
+    // watcher parked on a context-wide list, which would outlive it.
+    //
+    // Prefer reactive state and events; reach for this only when neither can
+    // see what you need.
+    fn onFrame(callback: () => none) {
+        let component = this.getCurrentComponent();
+        component.onFrame = callback;
     }
 
     ref struct WatchOptions {
