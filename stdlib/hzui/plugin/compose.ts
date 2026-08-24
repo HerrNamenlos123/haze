@@ -93,8 +93,24 @@ export function rewriteDialectAccessors(code: string): string {
 // generated component signature and the class tokens need the first and last
 // of those regardless.
 // ---------------------------------------------------------------------------
+// An entry is either a plain name or `Name<T>` -- generic aliases are written
+// out with their parameters, exactly as `type ShallowReactive<T> =
+// builtin.__hz_shallow_reactive_t<T>;` is in core.
 const DIALECT_ALIASES: Record<string, string[]> = {
+  // The reactive vocabulary. Note the case: `reactive` is the FUNCTION,
+  // `Reactive` is the TYPE, and putting the function in type position is an
+  // easy and badly-reported mistake -- aliasing the types is what makes the
+  // right one the short one.
+  rx: [
+    "Reactive<T>",
+    "ShallowReactive<T>",
+    "Computed<T>",
+    "UnwrapReactive<T>",
+  ],
   ui_components: [
+    "ElementRef<T>",
+    "ComponentRef<T>",
+    "ElementWrapper<T>",
     "PointerEvent",
     "WheelEvent",
     "KeyboardEvent",
@@ -330,8 +346,9 @@ export function compose(filepath: string, source: string): string {
   push(`// generated: dialect type aliases -- see DIALECT_ALIASES. These names`);
   push(`// are reserved inside an .hzui file.`);
   for (const ns of Object.keys(DIALECT_ALIASES)) {
-    for (const name of DIALECT_ALIASES[ns]!) {
-      push(`type ${name} = ${ns}.${name};`);
+    for (const entry of DIALECT_ALIASES[ns]!) {
+      // `Name<T>` aliases through with its parameters; a plain name does not.
+      push(`type ${entry} = ${ns}.${entry};`);
     }
   }
   push("");

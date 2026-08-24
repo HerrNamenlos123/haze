@@ -1,0 +1,21 @@
+import textedit_behavior
+
+@props
+text: Reactive<str>;
+backgroundColor?: Color;
+
+@setup
+let textedit = textedit_behavior.Context();
+
+let background = computed(() => {
+    let bg = props.backgroundColor;
+    return bg ? bg : Color("#555");
+});
+
+@template
+div [
+        px-2 py-1 bg-[background]
+    ] 
+{
+    text [] [props.text]
+}
