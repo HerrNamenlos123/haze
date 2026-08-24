@@ -166,11 +166,11 @@ void haze_fontstash_layout_text_scaled(void* ctx,
   fonsTextIterInit(fs, &liter, x, y, text.data, text.data + text.length);
 
   while (fonsTextIterNext(fs, &liter, &lquad)) {
-    /* Advance box this glyph occupies in logical space: fonsTextIterNext
-       leaves `x` at the pen position for this glyph and `nextx` at the pen
-       position for the following one. */
+    /* Pen position for this glyph in logical space. fonsTextIterNext leaves
+       `x` at this glyph's pen and `nextx` at the following one's, so the
+       advance is implicit in the next iteration's boxX0 -- the glyph's own
+       extent comes from its side bearing and bitmap width instead. */
     float boxX0 = liter.x;
-    float boxX1 = liter.nextx;
 
     /* Same untouched-quad guard as the unscaled path below -- see its comment
        for why a zeroed quad has to be skipped rather than drawn. */
@@ -205,42 +205,44 @@ void haze_fontstash_layout_text_scaled(void* ctx,
       continue;
     }
 
-    /* Physical quad -> logical space, then re-centered on the logical advance
-       box. Centering (rather than pinning to boxX0) keeps the glyph optically
-       where the logical pass put it even though the physical bitmap's
-       side bearings rounded slightly differently. */
+    /* Physical quad -> logical space, positioned at the pen plus the glyph's
+       own side bearing, both on the physical pixel grid.
+
+       Two things have to be true at once. (a) One atlas texel must land on
+       exactly one physical pixel -- that is the whole point of baking at
+       `size * scale`, and it only holds if the quad *starts* on a physical
+       pixel boundary. The renderer's ortho projection is over the logical
+       size while the viewport is the framebuffer size, so a fractional
+       logical coordinate stays fractional in physical space and the sampler
+       bilinearly resamples the bitmap across two texel columns and rows: a
+       2px stem comes out as a 3px grey band, which reads as defocus rather
+       than aliasing. (b) The glyph must sit at its *designed* offset from the
+       pen. The left side bearing is what separates `P` from the `a` after it;
+       it is per-glyph and it is not recoverable from the advance width.
+
+       Both fall out of fontstash's own quantization. fons__getQuad computes
+       `rx = (float)(int)(*x + xoff)`, so the physical pass -- a one-glyph
+       iterator started at x = 0 -- returns pquad.x0 as exactly the integer
+       physical left side bearing, and (pquad.x1 - pquad.x0) as an exact texel
+       count. Round only the pen, add the bearing, and the result is on the
+       grid by construction with the bearing intact.
+
+       Rounding the pen per glyph rather than accumulating a physical pen
+       keeps the error bounded at half a physical pixel instead of letting it
+       drift along the line; the pen itself still comes from the logical pass,
+       which is the space the layout engine measured in.
+
+       The previous version centered the physical bitmap inside the logical
+       advance box, which reduces to `boxX0 + ((advance) - gw) * 0.5f`
+       (the two `lw` terms cancel). That discards the side bearings and
+       replaces them with "centered": harmless on a monospace grid where every
+       advance box is identical, visibly wrong for proportional text, where it
+       leaves narrow glyphs floating in the middle of their advance. */
     float gw = (pquad.x1 - pquad.x0) / scale;
     float gh = (pquad.y1 - pquad.y0) / scale;
-    float lw = lquad.x1 - lquad.x0;
 
-    float gx0 = boxX0 + ((boxX1 - boxX0) - lw) * 0.5f + (lw - gw) * 0.5f;
-    float gy0 = pquad.y0 / scale;
-
-    /* Snap the glyph origin onto the physical pixel grid.
-
-       The whole point of baking at `size * scale` is that one atlas texel
-       lands on exactly one physical pixel -- but that only holds if the quad
-       *starts* on a physical pixel boundary. Neither coordinate does on its
-       own: gx0 is built from two halved differences, and gy0 comes from a
-       baseline that includes `metrics.ascender` (font->ascender * isize/10),
-       which is fractional by construction. The renderer's ortho projection is
-       over the logical size while the viewport is the framebuffer size, so
-       those fractions survive into physical space and the sampler ends up
-       bilinearly resampling every glyph across two texel columns and rows.
-       A 2px stem comes out as a 3px grey band: reads as defocus, not aliasing.
-
-       Round in *physical* space and divide back, so the value stays in the
-       logical coordinate system the rest of this function works in. gw/gh are
-       already exact texel counts (integer physical extents / scale), so once
-       the origin is in phase the whole quad is.
-
-       This quantizes the pen to whole physical pixels, which costs up to a
-       pixel of inter-letter spacing fidelity. On a monospace grid that is
-       invisible. For proportional text the eventual answer is subpixel
-       positioning -- keep the fraction, but cache N glyph variants at
-       quantized offsets and pick the nearest -- not un-snapping this. */
-    gx0 = roundf(gx0 * scale) / scale;
-    gy0 = roundf(pquad.y0) / scale;
+    float gx0 = (roundf(boxX0 * scale) + pquad.x0) / scale;
+    float gy0 = roundf(pquad.y0) / scale;
 
     haze_fontstash_glyph_t glyph = {
       .x0 = gx0,
