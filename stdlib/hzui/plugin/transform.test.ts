@@ -234,6 +234,48 @@ describe("slots", () => {
   });
 });
 
+describe("generated operator!=", () => {
+  const args = (props: string) =>
+    gen(`import ui_components\n@props\n${props}\n@template\n`);
+
+  test("a required field is compared directly", () => {
+    expect(args("label: str = \"\";")).toContain(
+      "if this.label != other.label { return true; }"
+    );
+  });
+
+  test("an optional field compares presence first, then value", () => {
+    // `!=` on a `T | none` has no conversion to the bare T, so comparing an
+    // optional field directly does not compile at all.
+    const out = args("color?: Color;");
+    expect(out).toContain("let __a_color = this.color;");
+    expect(out).toContain(
+      "if (__a_color is none) != (__b_color is none) { return true; }"
+    );
+    expect(out).not.toContain("if this.color != other.color");
+  });
+
+  test("`T | none` counts as optional too, `?:` is not the only spelling", () => {
+    expect(args("size: real | none = none;")).toContain("let __a_size = this.size;");
+  });
+
+  test("a non-optional field is never treated as optional", () => {
+    // The dangerous direction: `x is none` on a non-union is itself an error.
+    const out = args("nonsense: NoneSuch = {};");
+    expect(out).toContain("if this.nonsense != other.nonsense { return true; }");
+    expect(out).not.toContain("__a_nonsense");
+  });
+
+  test("each comparison carries its own @props line", () => {
+    // Generated code with no #source reports at a line number that does not
+    // exist in the .hzui at all -- which is exactly how an uncomparable prop
+    // used to surface.
+    const out = args("a: int = 0;\nb: int = 0;");
+    expect(out).toContain('#source "x.hzui:3:1" {');
+    expect(out).toContain('#source "x.hzui:4:1" {');
+  });
+});
+
 describe("expose", () => {
   const child = (expose: string, setup: string) =>
     gen(`import ui_components\n@expose\n${expose}\n@setup\n${setup}\n@template\n`);

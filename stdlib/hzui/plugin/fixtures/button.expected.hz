@@ -82,14 +82,32 @@ style: ButtonStyle = {};
 
     // generated: compares exactly the @props fields. Emits and
     // slots (closures) are excluded by construction.
+    //
+    // Statements rather than one boolean chain so that each field can
+    // carry its own #source: a field whose type turns out not to be
+    // comparable then reports at ITS line in the @props section,
+    // instead of at a line number in generated code that does not
+    // exist in the .hzui file at all.
     fn operator!=(other: ButtonArgs) {
-        return this.id != other.id
-            || this.label != other.label
-            || this.enabled != other.enabled
-            || this.selected != other.selected
-            || this.grow != other.grow
-            || this.style != other.style
-            ;
+#source "button.hzui:21:1" {
+        if this.id != other.id { return true; }
+}
+#source "button.hzui:22:1" {
+        if this.label != other.label { return true; }
+}
+#source "button.hzui:23:1" {
+        if this.enabled != other.enabled { return true; }
+}
+#source "button.hzui:24:1" {
+        if this.selected != other.selected { return true; }
+}
+#source "button.hzui:25:1" {
+        if this.grow != other.grow { return true; }
+}
+#source "button.hzui:26:1" {
+        if this.style != other.style { return true; }
+}
+        return false;
     }
 }
 

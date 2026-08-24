@@ -150,27 +150,43 @@ export function componentNameFromFile(filepath: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// @props parsing: field names only (for operator!=); the body itself is
-// spliced verbatim. Line-based: `name: type = default;` / `name: type;`.
+// @props parsing. The body itself is spliced verbatim; what is extracted here
+// is what the generated operator!= needs: each field's name, its own line (so
+// a comparison that fails to compile points at the prop that caused it), and
+// whether it is OPTIONAL -- which changes how it can be compared at all.
+// Line-based: `name: type = default;` / `name?: type;`.
 // DESIGN(v0): multi-line defaults are not supported yet.
 // ---------------------------------------------------------------------------
-function parsePropNames(section: Section): string[] {
-  const names: string[] = [];
+type PropDecl = { name: string; line: number; optional: boolean };
+
+function parsePropNames(section: Section): PropDecl[] {
+  const props: PropDecl[] = [];
   section.body.split("\n").forEach((line, i) => {
     const t = line.trim();
     if (t === "" || t.startsWith("//")) {
       return;
     }
-    const m = /^([A-Za-z_][\w]*)\s*[:?]/.exec(t);
+    const m = /^([A-Za-z_][\w]*)\s*(\??)\s*:(.*)$/.exec(t);
     if (!m) {
       throw new ComposeError(
         `cannot parse @props line: '${t}'`,
         section.bodyStartLine + i
       );
     }
-    names.push(m[1]!);
+    // Optional either way it can be written: `x?: T` or `x: T | none`. The
+    // second form is checked only for a top-level `none` member, because
+    // treating a NON-optional field as optional is the dangerous direction --
+    // `x is none` on a non-union is itself a compile error.
+    const typeText = m[3]!.split("=")[0]!;
+    const optional =
+      m[2] === "?" || /(^|\|)\s*none\s*(\||$)/.test(typeText.trim());
+    props.push({
+      name: m[1]!,
+      line: section.bodyStartLine + i,
+      optional: optional,
+    });
   });
-  return names;
+  return props;
 }
 
 // @emit entries: `name: (Type, Type,);`
@@ -376,12 +392,40 @@ export function compose(filepath: string, source: string): string {
   push("");
   push(`    // generated: compares exactly the @props fields. Emits and`);
   push(`    // slots (closures) are excluded by construction.`);
+  push(`    //`);
+  push(`    // Statements rather than one boolean chain so that each field can`);
+  push(`    // carry its own #source: a field whose type turns out not to be`);
+  push(`    // comparable then reports at ITS line in the @props section,`);
+  push(`    // instead of at a line number in generated code that does not`);
+  push(`    // exist in the .hzui file at all.`);
   push(`    fn operator!=(other: ${argsName}) {`);
-  push(`        return this.id != other.id`);
+  const propsAnchor = propsSec ? propsSec.markerLine : 1;
+  push(`#source "${src}:${propsAnchor}:1" {`);
+  push(`        if this.id != other.id { return true; }`);
+  push(`}`);
   for (const p of propNames) {
-    push(`            || this.${p} != other.${p}`);
+    push(`#source "${src}:${p.line}:1" {`);
+    if (p.optional) {
+      // `!=` on an `T | none` has no conversion to the bare T, so an optional
+      // field is compared in two steps: presence, then value only when both
+      // sides actually have one. Bound to locals first because the narrowing
+      // from `is not none` does not travel across two separate field reads.
+      const a = `__a_${p.name}`;
+      const b = `__b_${p.name}`;
+      push(`        let ${a} = this.${p.name};`);
+      push(`        let ${b} = other.${p.name};`);
+      push(`        if (${a} is none) != (${b} is none) { return true; }`);
+      push(`        if ${a} is not none {`);
+      push(`            if ${b} is not none {`);
+      push(`                if ${a} != ${b} { return true; }`);
+      push(`            }`);
+      push(`        }`);
+    } else {
+      push(`        if this.${p.name} != other.${p.name} { return true; }`);
+    }
+    push(`}`);
   }
-  push(`            ;`);
+  push(`        return false;`);
   push(`    }`);
   push(`}`);
   push("");

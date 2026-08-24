@@ -17,7 +17,7 @@ marginLeft: real = 0;
 marginRight: real = 0;
 marginTop: real = 0;
 marginBottom: real = 0;
-backgroundColor: Color = "#333";
+backgroundColor?: Color;
 radius: real = 12;
 
 @slot
