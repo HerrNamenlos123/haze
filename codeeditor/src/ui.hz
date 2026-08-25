@@ -539,19 +539,22 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     );
                 }
                 else {
-                    ui_widgets.Tabs(ui, {
+                    ui_widgets.TabsComponent(ui, {
                         id: 2,
-                        tabs: tabItems,
-                        activeKey: activeKey,
-                        onSelect: onSelectTab,
-                        onClose: onCloseTab,
+                        items: tabItems,
+
+                        // TODO: Update
+                        // activeKey: activeKey,
+                        // onSelect: onSelectTab,
+                        // onClose: onCloseTab,
+
                         // Called for EVERY tab each frame, not just the active
                         // one -- that is the whole point (see stdlib/tabs).
                         // Each editor is keyed by the tab's own key, so every
                         // open file keeps one long-lived EditorView instance
                         // holding its document, caret, scroll offset and undo
                         // history for as long as the tab is open.
-                        renderTab: renderTabContent,
+                        // renderTab: renderTabContent,
                     });
                 }
 

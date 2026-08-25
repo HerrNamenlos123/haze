@@ -1,7 +1,9 @@
 
 export struct TabItem {
-    label?: str;
+    key: int;
+    title?: str;
     icon?: str;
+    modified?: bool; // TODO: Remove
 }
 
 @props
@@ -10,12 +12,12 @@ items?: []TabItem;
 
 @template [w-grow h-fit]
 
-div for=[item,i in items] key=[i] [] {
-    text [] [i]
-}
+// div for=[item,i in items] key=[i] [] {
+//     text [] [i]
+// }
 
-for item in items {
-    div key=[i] [] {
-        text [] [i]
-    }
-}
+// for item in items {
+//     div key=[i] [] {
+//         text [] [i]
+//     }
+// }
