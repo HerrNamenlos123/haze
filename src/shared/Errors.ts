@@ -59,6 +59,14 @@ export function setDiagnosticSink(sink: DiagnosticSink | null) {
   diagnosticSink = sink;
 }
 
+// `file:line:col[-endcol[.endline]]`, 1-based columns. Read left to right:
+// `12:5-9` is columns 5..9 of line 12, and `12:5-14.9` runs from line 12
+// column 5 to line 14 column 9 -- the end LINE comes first once a span crosses
+// lines, so it reads the way a range is spoken.
+//
+// This doubles as the machine format: Export.ts writes it into `#source`
+// directives and both parsers read it back (Parser.ts computeSourceLoc,
+// parser.hz finishSourceSpec), so the two must stay in step.
 export function formatSourceLoc(loc: SourceLocNotNull) {
   if (loc.end) {
     if (loc.end.line === loc.start.line) {

@@ -3864,15 +3864,19 @@ class ASTBuilder extends HazeParserListener {
       this.loc(ctx)
     );
 
-    // "path:line:col[-endcol][.endline]"  -> pin mode (historical)
+    // "path:line:col[-endcol[.endline]]"  -> pin mode (historical)
     // "path:line"                          -> offset (line-map) mode
+    //
+    // The two numbers after `-` are (endLine, endCol) in that order -- the
+    // same order formatSourceLoc prints, since it is what writes these specs.
+    // A lone `-endcol` means the span ends on the start line.
     const match = fullPath.match(
       /^(.+?):(\d+)(?::(\d+)(?:-(\d+))?(?:\.(\d+))?)?$/
     );
 
     if (!match) {
       throw new CompilerError(
-        `Invalid source location format: expected "path/to/file.hz:line[:col[-endcol]]", got "${fullPath}"`,
+        `Invalid source location format: expected "path/to/file.hz:line[:col[-endcol[.endline]]]", got "${fullPath}"`,
         this.loc(ctx),
         HazeErrorCode.InvalidSourceLocationFormatExpectedPathFileHz
       );
@@ -3895,9 +3899,21 @@ class ASTBuilder extends HazeParserListener {
       };
     }
 
-    const startCol = Number.parseInt(match[3], 10);
-    const endCol = match[4] ? Number.parseInt(match[4], 10) : undefined;
-    const endLine = match[5] ? Number.parseInt(match[5], 10) : undefined;
+    // Columns in a spec are 1-based (that is what formatSourceLoc prints and
+    // what the hzui plugin emits), while a SourceLoc column is 0-based, so
+    // every column read out of a spec is converted here. Mirrors specColumn()
+    // in the native parser.
+    const specColumn = (raw: string) => Math.max(0, Number.parseInt(raw, 10) - 1);
+
+    const startCol = specColumn(match[3]);
+    // `-a.b` is (endLine, endCol); a lone `-a` is an end column on the start
+    // line. Group 4 is therefore only a column when group 5 is absent.
+    const endLine = match[5] ? Number.parseInt(match[4], 10) : undefined;
+    const endCol = match[5]
+      ? specColumn(match[5])
+      : match[4]
+        ? specColumn(match[4])
+        : undefined;
 
     const result: SourceLoc = {
       filename: filename,
@@ -3945,12 +3961,13 @@ class ASTBuilder extends HazeParserListener {
       this.sourcelocOverride.pop();
     }
 
+    // Push the inner contents back individually, exactly as if the directive
+    // block were not there. They are re-pushed in whatever shape the
+    // structContent alternatives produce -- StructMethod and
+    // NestedStructDefinition wrap their node in a one-element array, while
+    // StructMember pushes the node bare -- because exitStructDefinition's
+    // processContent already recurses through those wrappers.
     for (const v of produced) {
-      if (Array.isArray(v)) {
-        throw new InternalError(
-          `${ctx.constructor.name} received nested array on stack`
-        );
-      }
       this.stack.push(v);
     }
   };

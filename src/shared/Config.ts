@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parse } from "@ltd/j-toml";
 import { getCurrentPlatform } from "../ModuleCompiler/ModuleCompiler";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
@@ -467,7 +467,12 @@ export class ConfigParser {
         `No '${hazeConfigFile}' file found in any parent directory. Are you in the correct directory?`
       );
     }
-    this.configPath = configPath;
+    // Absolute from here on. Everything downstream is derived from this path --
+    // `source.dirpath`, the search roots for `[dependencies]` paths, and hence
+    // every filename handed to the parser and stamped into `sourceloc` -- so a
+    // relative `--dir` (or a relative dep path) would otherwise make source
+    // locations relative to whatever directory the compiler happened to run in.
+    this.configPath = resolve(configPath);
   }
 
   findUpwards(filename: string, startDir?: string): string | undefined {

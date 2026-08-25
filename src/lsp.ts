@@ -66,9 +66,11 @@ async function analyzeModule(
 
     // Module-based analysis
     const project = new ProjectCompiler(false, false, false);
+    // `moduleRoot` is absolute (findModuleRoot resolves it), so the config --
+    // and every source path derived from it -- comes back absolute too.
     const previousCwd = process.cwd();
     process.chdir(moduleRoot);
-    const config = await project.getConfig(undefined, true);
+    const config = await project.getConfig(undefined, moduleRoot, true);
     process.chdir(previousCwd);
 
     if (!config) {

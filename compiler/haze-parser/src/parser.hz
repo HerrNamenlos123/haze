@@ -2694,9 +2694,18 @@ ref struct Parser {
         this.expect(TK.RCurly);
     }
 
-    // Parse `"/path/to/file.hz:line:col[-endcol][.endline]"`. The path itself may
+    // Parse `"/path/to/file.hz:line:col[-endcol[.endline]]"`. The path itself may
     // contain colons on some platforms, so the numeric suffix is found by
     // scanning back from the end rather than splitting on the first colon.
+    //
+    // The two numbers after `-` are (endLine, endCol) in that order -- the same
+    // order formatSourceLoc prints, since it is what writes these specs. A lone
+    // `-endcol` means the span ends on the start line.
+    //
+    // Columns in the spec are 1-based (that is what formatSourceLoc prints and
+    // what the hzui plugin emits), while a Token's `col` -- and therefore the
+    // sourceloc this override replaces -- is 0-based, so every column read out
+    // of a spec is converted on the way in.
     mut fn applySourceSpec(spec: str, anchorLine: int) {
         // Find the two colons that introduce line and column. A spec with a
         // single trailing ":line" (no column) selects offset mode instead.
@@ -2724,20 +2733,23 @@ ref struct Parser {
         this.overrideStartLine = parseIntPrefix(spec.slice(prevColon + 1, lastColon));
 
         let tail = spec.slice(lastColon + 1);
-        this.overrideStartCol = parseIntPrefix(tail);
+        this.overrideStartCol = specColumn(tail);
         this.overrideHasEnd = false;
         this.overrideEndLine = this.overrideStartLine;
         this.overrideEndCol = this.overrideStartCol;
 
-        // Optional `-endcol` and `.endline`.
+        // Optional `-endcol` or `-endline.endcol`.
         let dash = indexOf(tail, "-");
         if dash >= 0 {
             let rest = tail.slice(dash + 1);
-            this.overrideEndCol = parseIntPrefix(rest);
             this.overrideHasEnd = true;
             let dot = indexOf(rest, ".");
             if dot >= 0 {
-                this.overrideEndLine = parseIntPrefix(rest.slice(dot + 1));
+                this.overrideEndLine = parseIntPrefix(rest);
+                this.overrideEndCol = specColumn(rest.slice(dot + 1));
+            }
+            else {
+                this.overrideEndCol = specColumn(rest);
             }
         }
 
@@ -3340,6 +3352,14 @@ fn operatorMethodName(k: TK): str {
     if k == TK.OpLte { return "__operator_lte"; }
     if k == TK.OpGte { return "__operator_gte"; }
     return "";
+}
+
+// A 1-based column from a `#source` spec, as the 0-based column a sourceloc
+// carries. A malformed `:0` clamps to 0 rather than wrapping negative.
+fn specColumn(s: str): int {
+    let v = parseIntPrefix(s);
+    if v <= 0 { return 0; }
+    return v - 1;
 }
 
 // Leading decimal digits of `s` as an int (0 when there are none).

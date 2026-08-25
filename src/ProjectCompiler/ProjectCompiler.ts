@@ -1,7 +1,7 @@
 import * as child_process from "node:child_process";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   generateModuleId,
   type ModuleConfig,
@@ -138,8 +138,10 @@ export class ProjectCompiler {
           win32: [],
         },
         source: {
+          // Absolute, for the same reason ConfigParser resolves its config
+          // path: this is the filename the parser stamps into every sourceloc.
           type: "single-file",
-          filepath: singleFilename,
+          filepath: resolve(singleFilename),
         },
         authors: undefined,
         description: undefined,
