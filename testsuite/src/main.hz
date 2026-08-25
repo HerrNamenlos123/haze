@@ -52,6 +52,7 @@ fn main(): int {
     cases_parameter_packs.register(suite);
     cases_immediate.register(suite);
     cases_primitive_constructors.register(suite);
+    cases_array_methods.register(suite);
     cases_profiling.register(suite);
     cases_profiling_stacks.register(suite);
     cases_value_equality.register(suite);

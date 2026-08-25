@@ -3,6 +3,15 @@ extern C noemit fn sizeof(...): usize :: final;
 
 export type Result<T, E> = nodiscard union { Ok: T, Err: E, };
 
+// A parameter declared `NoInfer<T>` still converts like a `T`, but takes no
+// part in deducing T -- the compiler skips it when it works out what the
+// generic parameters are (Elaborate.ts, deduceGenericArgs). Use it for the
+// parameter that should FOLLOW another one rather than compete with it:
+// `array.push(items: []T, element: NoInfer<T>)` has to take T from the array,
+// or pushing a value that merely converts to the element type would deduce the
+// argument's own type and then fail to match the array.
+export type NoInfer<T> = T;
+
 // A value struct holding one value: a heap integer is `ref Box<int>`, a
 // stack-referable one is `let stackref b = Box(5)`.
 export struct Box<T> {

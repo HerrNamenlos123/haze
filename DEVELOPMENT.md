@@ -141,6 +141,111 @@ similar written in Haze:
   keyword in the generated code and fails to compile there. Local names are not
   mangled against C keywords.
 
+## Array methods live in the standard library too
+
+`items.map(f)` is not a compiler feature. When a method call on an array names
+something the compiler does not implement itself, `callExpr` rewrites it to a
+call of the function of that name in the stdlib `array` namespace, with the
+receiver as the first argument (`tryResolveArrayExtensionCall` in
+`src/Semantic/Elaborate.ts`):
+
+```
+items.map(fn)   ==>   array.map(items, fn)
+```
+
+Everything after the rewrite is the ordinary call path -- generic deduction over
+the element type, overload resolution, argument conversion, normal errors. The
+surface is `stdlib/core/src/array.hz`; adding an array method means adding a
+function there.
+
+`ARRAY_BUILTIN_METHODS` in Elaborate.ts lists what the compiler still owns and
+gets first refusal on: `length`, `insert`, `remove`, `pop`, `clear`. **`push`
+and `reserve` have been moved out** -- they are now Haze functions in `array`,
+each one line of inline C, using `T.mangledName` to name the element type that
+the compiler used to bake into a synthetic per-type function. Moving another one
+out is the same two steps: write the function in `array`, delete the name from
+that set. The compiler's implementations stay in place as a fallback for a build
+with no standard library (the rewrite only happens when the function exists).
+
+A method call on a non-array receiver is unaffected: the rewrite bails out
+unless the receiver elaborates to a dynamic array, so `String.push` and the
+reactive-array methods resolve exactly as before.
+
+Two things worth knowing before writing one:
+
+- **Overloads resolve by argument type, not by closure arity.** A `(value: T) =>
+  U` and a `(value: T, index: int) => U` overload of the same name are ambiguous
+  at every call site (H7060), so an index-taking variant needs its own name.
+- **`NoInfer<T>` (stdlib/core/src/util.hz) exists for parameters that must
+  follow another one.** Deduction takes the most direct binding it can find, so
+  `push<T>(items: []T, element: T)` binds T to the *argument* -- and then
+  `events.push(metadataValue)` fails, because `[]TraceEvent` does not convert to
+  `[]Metadata`. Declaring the element `NoInfer<T>` makes it convert like a T
+  while contributing nothing to deducing T (`isNoInferType`, skipped in
+  `deduceGenericArgs`).
+
+Deduction also no longer lets a literal argument outrank a real type deduced
+elsewhere in the same call: `push(items, 1)` binds T from the array rather than
+to the literal type `const 1`. Every case that changes was previously either a
+conflict error or a failed conversion, so nothing that compiled before compiles
+differently.
+
+## Array methods live in the standard library too
+
+Same idea as the primitive constructors, one level up. When a method call on an
+array names something not in `ARRAY_BUILTIN_METHODS` (`src/Semantic/Elaborate.ts`),
+`tryResolveArrayExtensionCall` rewrites it to a call of the function of that
+name in the stdlib `array` namespace, with the receiver as the first argument:
+
+```
+items.map(f)      is      array.map(items, f)
+```
+
+The rewrite builds two Collect nodes and re-enters `callExpr`, so generic
+deduction, overload resolution, conversions and error messages are all the
+normal machinery -- nothing about `map`/`filter` is special-cased. The receiver
+is only elaborated once a stdlib function of that name is known to exist, and
+the rewrite backs out (returns null) for any receiver that is not a dynamic
+array, so a struct with its own `push`/`map` keeps it.
+
+`push`, `reserve` and `clear` have been MOVED OUT of the compiler this way and
+now live in `stdlib/core/src/array.hz`; the compiler's synthetic versions remain
+only as the fallback for a build with no standard library. Moving another one
+out is two steps: write the function in `array`, delete the name from
+`ARRAY_BUILTIN_METHODS`.
+
+What stops `pop`, `remove` and `insert` from following: they hand back an
+element, and inline C in a Haze function writes into a local, which for a
+generic `T` cannot be declared without an initialiser. A `T`-valued
+uninitialised local (or a `__c__` form that can be an expression) is what those
+need.
+
+Two things the move needed, both useful on their own:
+
+- **`NoInfer<T>`** (`stdlib/core/src/util.hz`). `push<T>(items: []T, element: T)`
+  does not work: deduction takes the most direct binding it can find, so
+  `events.push(someMetadata)` binds T to the argument's type and then fails to
+  match `[]TraceEvent`. A parameter declared `NoInfer<T>` converts like a `T`
+  but takes no part in deducing it (`isNoInferType`, checked before the alias is
+  resolved away).
+- **Literal arguments no longer outrank real types in deduction.** `push(items, 1)`
+  used to bind T to `const 1`. Literal candidates are now only used when nothing
+  else deduced that parameter; every case this changes was previously an error,
+  so no call that compiled before changes meaning.
+
+The element type's C name comes from `T.mangledName`, which is what lets one
+generic Haze function replace the per-element-type function the compiler used to
+synthesize:
+
+```haze
+export fn push<T>(items: []T, element: NoInfer<T>) {
+    __c__(f"HZSTD_ARRAY_PUSH(items, {T.mangledName}, element);");
+}
+```
+
+Measured on 5M pushes, this is the same speed as the built-in it replaced (the
+macro was never a full inline: it calls into `hzstd_array.c` either way).
+
 ## Module System Architecture
 
 The compiler has a two-phase import/export system:

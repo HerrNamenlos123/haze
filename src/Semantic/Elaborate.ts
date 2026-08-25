@@ -80,6 +80,20 @@ function isPowerOfTwo(x: bigint): boolean {
 // closure argument to provide a missing candidate; see callExpr()'s promote-and-retry logic.
 class GenericDeductionIncompleteError extends CompilerError {}
 
+// Array methods the compiler implements itself, as synthetic functions with
+// inline C bodies (see the DynamicArrayDatatype branch of resolveMemberAccess).
+// Any other name on an array is looked for in the standard library's `array`
+// namespace instead -- that is what makes map/filter, and anything added later,
+// ordinary Haze code rather than compiler internals.
+//
+// `push`, `reserve` and `clear` are deliberately NOT in this set even though
+// the compiler can still build them: the standard library defines them
+// (stdlib/core/src/array.hz) and gets first refusal, so the built-in versions
+// now only serve a build that has no standard library at all. Moving another
+// one out is the same two steps -- write the function in `array`, delete the
+// name from here.
+const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
+
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
@@ -1492,6 +1506,14 @@ export class SemanticElaborator {
       );
       if (reflectionResult) {
         return reflectionResult;
+      }
+      const extensionResult = this.tryResolveArrayExtensionCall(
+        collectedExpr,
+        callExpr,
+        inference
+      );
+      if (extensionResult) {
+        return extensionResult;
       }
     }
     if (collectedExpr.variant === Collect.ENode.SymbolValueExpr) {
@@ -3455,7 +3477,7 @@ export class SemanticElaborator {
       case Collect.ENode.ExplicitSymbolValueExpr: {
         return this.explicitSymbolValue(
           expr.symbol,
-          [],
+          expr.genericArgs ?? [],
           inference,
           null,
           expr.sourceloc
@@ -6551,6 +6573,17 @@ export class SemanticElaborator {
   // Represents a single deduction of a generic parameter from one position in the call site.
   // depth=0 means T appeared directly as the parameter type; higher values mean T is inside
   // a wrapper (reactive<T>, T[], callable<T>, etc.). Lower depth takes priority.
+  /** Is this declared parameter type the standard library's NoInfer<T>? */
+  private isNoInferType(typeUseId: Semantic.TypeUseId): boolean {
+    const typeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(typeUseId).type
+    );
+    return (
+      typeDef.variant === Semantic.ENode.TypeAliasDatatype &&
+      typeDef.name === "NoInfer"
+    );
+  }
+
   private collectGenericDeductions(
     patternTypeDefId: Semantic.TypeDefId,
     argTypeUseId: Semantic.TypeUseId,
@@ -6856,6 +6889,14 @@ export class SemanticElaborator {
         continue;
       }
 
+      // `NoInfer<T>` (stdlib/core/src/util.hz) marks a parameter that follows
+      // another one instead of competing with it: it converts like a T but
+      // contributes nothing to working out what T is. Checked before the alias
+      // is resolved away, because resolving it is exactly what erases the mark.
+      if (param.type !== null && this.isNoInferType(param.type)) {
+        continue;
+      }
+
       if (actualArg.exprId === null) {
         // The argument is deferred (not yet elaborated), so its overall type
         // isn't known -- but if it's a closure with some of its own parameters
@@ -6904,8 +6945,26 @@ export class SemanticElaborator {
     const inferredTypes = new Map<Collect.SymbolId, Semantic.TypeUseId>();
 
     for (const [genericId, candidates] of allDeductions) {
-      const minDepth = Math.min(...candidates.map((c) => c.depth));
-      const primaryCandidates = candidates.filter((c) => c.depth === minDepth);
+      // A literal argument deduces its own comptime literal type (`1` binds T
+      // to `const 1`, not to `int`), which is a worse answer than a real type
+      // deduced from any other position in the same call: `push(items, 1)`
+      // must take T from the array. Literal candidates are therefore only used
+      // when nothing else deduced that parameter -- and every case this
+      // discards was previously either a conflict error or a failed conversion,
+      // so no call that used to compile changes meaning.
+      const nonLiteralCandidates = candidates.filter(
+        (c) =>
+          this.sr.typeDefNodes.get(
+            this.sr.typeUseNodes.get(this.sr.e.resolveAlias(c.typeUseId)).type
+          ).variant !== Semantic.ENode.LiteralDatatype
+      );
+      const usableCandidates =
+        nonLiteralCandidates.length > 0 ? nonLiteralCandidates : candidates;
+
+      const minDepth = Math.min(...usableCandidates.map((c) => c.depth));
+      const primaryCandidates = usableCandidates.filter(
+        (c) => c.depth === minDepth
+      );
 
       const firstResolved = this.sr.e.resolveAlias(
         primaryCandidates[0].typeUseId
@@ -12355,6 +12414,63 @@ export class SemanticElaborator {
   // on the type itself (its struct/alias definition) rather than on a callable member.
   // Returns null when the base expression is not a type value, so normal call resolution can proceed
   // (e.g. if a real struct happens to define an instance method with one of these names).
+  /**
+   * `items.map(f)` for any method the compiler does not implement itself.
+   *
+   * The call is rewritten to `array.map(items, f)` -- a plain call to a plain
+   * standard library function (stdlib/core/src/array.hz) with the receiver as
+   * its first argument -- and handed back to callExpr. Everything after the
+   * rewrite is the normal path: generic deduction over the element type,
+   * overload resolution, argument conversion, and the usual errors.
+   *
+   * Returns null whenever this is not an array extension call, so ordinary
+   * member resolution (a struct field, a builtin, a real method) is untouched.
+   * The receiver is only elaborated once a standard library function of that
+   * name is known to exist, which keeps the speculative work to calls that are
+   * about to be rewritten anyway.
+   */
+  tryResolveArrayExtensionCall(
+    collectedExpr: Collect.MemberAccessExpr,
+    callExpr: Collect.ExprCallExpr,
+    inference: Semantic.Inference
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const name = collectedExpr.memberName;
+    if (ARRAY_BUILTIN_METHODS.has(name)) {
+      return null;
+    }
+
+    const extensionId = Semantic.tryFindBuiltinSymbolByName(
+      this.sr,
+      `array.${name}`,
+      collectedExpr.sourceloc
+    );
+    if (extensionId === null) {
+      return null;
+    }
+
+    const [object] = this.expr(collectedExpr.expr, undefined);
+    const objectTypeDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(object.type)).type
+    );
+    if (objectTypeDef.variant !== Semantic.ENode.DynamicArrayDatatype) {
+      return null;
+    }
+
+    const calleeId = Collect.makeExpr(this.sr.cc, {
+      variant: Collect.ENode.ExplicitSymbolValueExpr,
+      symbol: extensionId,
+      genericArgs: collectedExpr.genericArgs,
+      sourceloc: collectedExpr.sourceloc,
+    })[1];
+    const [rewritten] = Collect.makeExpr(this.sr.cc, {
+      variant: Collect.ENode.ExprCallExpr,
+      calledExpr: calleeId,
+      arguments: [collectedExpr.expr, ...callExpr.arguments],
+      sourceloc: callExpr.sourceloc,
+    });
+    return this.callExpr(rewritten, inference);
+  }
+
   tryResolveTypeReflectionCall(
     collectedExpr: Collect.MemberAccessExpr,
     callExpr: Collect.ExprCallExpr
@@ -12482,6 +12598,11 @@ export class SemanticElaborator {
     sourceloc: SourceLoc,
     _inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] {
+    // Through the alias, not around it: an array literal is just as valid
+    // against `type Row = []int` (or against a NoInfer<[]T> parameter) as it is
+    // against the array type spelled out, and without this the alias reaches
+    // the assert below and takes the compiler down.
+    arrayTypeUseId = this.resolveAlias(arrayTypeUseId);
     const arrayUse = this.sr.typeUseNodes.get(arrayTypeUseId);
     const array = this.sr.typeDefNodes.get(arrayUse.type);
     assert(

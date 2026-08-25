@@ -676,6 +676,9 @@ export namespace Collect {
   export type ExplicitSymbolValueExpr = BaseExpr & {
     variant: ENode.ExplicitSymbolValueExpr;
     symbol: Collect.SymbolId;
+    // Only set when the call site wrote them explicitly (`items.map<str>(f)`);
+    // deduction covers the normal case.
+    genericArgs?: Collect.ExprId[];
   };
 
   export type ExplicitCastExpr = BaseExpr & {
