@@ -263,9 +263,15 @@ type PropDecl = {
 
 function parsePropNames(section: Section): PropDecl[] {
   const props: PropDecl[] = [];
+
+  let nextUntracked = false;
   section.body.split("\n").forEach((line, i) => {
     const t = line.trim();
     if (t === "" || t.startsWith("//")) {
+      return;
+    }
+    if (t === "[[hzui.untracked]]") {
+      nextUntracked = true;
       return;
     }
     const m = /^([A-Za-z_][\w]*)\s*(\??)\s*:(.*)$/.exec(t);
@@ -294,8 +300,9 @@ function parsePropNames(section: Section): PropDecl[] {
       name: m[1]!,
       line: section.bodyStartLine + i,
       optional: optional,
-      stable: stable,
+      stable: stable || nextUntracked,
     });
+    nextUntracked = false;
   });
   return props;
 }
@@ -453,7 +460,9 @@ export function compose(filepath: string, source: string): string {
   // Exposed API struct -- what a parent gets from a `ref=` on this component.
   if (exposeSec) {
     push(`// This component's public API: what a parent reaches through`);
-    push(`// 'ui.componentRef<${exposeName}>()' + 'ref=' on the tag. A ref struct`);
+    push(
+      `// 'ui.componentRef<${exposeName}>()' + 'ref=' on the tag. A ref struct`
+    );
     push(`// because a ComponentRef holds it as '${exposeName} | null'.`);
     push(`export ref struct ${exposeName} {`);
     push(`#source "${src}:${exposeSec.bodyStartLine}" {`);
@@ -498,7 +507,9 @@ export function compose(filepath: string, source: string): string {
   push(`    // generated: compares exactly the @props fields. Emits and`);
   push(`    // slots (closures) are excluded by construction.`);
   push(`    //`);
-  push(`    // Statements rather than one boolean chain so that each field can`);
+  push(
+    `    // Statements rather than one boolean chain so that each field can`
+  );
   push(`    // carry its own #source: a field whose type turns out not to be`);
   push(`    // comparable then reports at ITS line in the @props section,`);
   push(`    // instead of at a line number in generated code that does not`);
@@ -510,9 +521,15 @@ export function compose(filepath: string, source: string): string {
   push(`}`);
   for (const p of propNames) {
     if (p.stable) {
-      push(`        // ${p.name}: a reactive handle -- see PropDecl.stable. The`);
-      push(`        // handle does not change, and what is inside it is tracked`);
-      push(`        // by the reactive system, so there is nothing here to compare.`);
+      push(
+        `        // ${p.name}: a reactive handle -- see PropDecl.stable. The`
+      );
+      push(
+        `        // handle does not change, and what is inside it is tracked`
+      );
+      push(
+        `        // by the reactive system, so there is nothing here to compare.`
+      );
       continue;
     }
     push(`#source "${src}:${p.line}:1" {`);
@@ -614,7 +631,9 @@ export function compose(filepath: string, source: string): string {
         .map((n) => `${n}: ${n}`)
         .join(", ")} };`
     );
-    push(`                // A destroyed component's API must not stay callable.`);
+    push(
+      `                // A destroyed component's API must not stay callable.`
+    );
     push(`                ui.onUnmount(() => { __expose := null; });`);
     push(`            }`);
     push(`}`);
@@ -645,7 +664,9 @@ export function compose(filepath: string, source: string): string {
       throw e;
     }
   }
-  push(lowerRootProps(rootHead, templateSec ? templateSec.markerLine : 1, ctx, 3));
+  push(
+    lowerRootProps(rootHead, templateSec ? templateSec.markerLine : 1, ctx, 3)
+  );
   push(`        };`);
   push(`    });`);
   push(`}`);

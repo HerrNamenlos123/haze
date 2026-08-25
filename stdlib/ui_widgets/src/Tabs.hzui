@@ -1,0 +1,21 @@
+
+export struct TabItem {
+    label?: str;
+    icon?: str;
+}
+
+@props
+[[hzui.untracked]]
+items?: []TabItem;
+
+@template [w-grow h-fit]
+
+div for=[item,i in items] key=[i] [] {
+    text [] [i]
+}
+
+for item in items {
+    div key=[i] [] {
+        text [] [i]
+    }
+}

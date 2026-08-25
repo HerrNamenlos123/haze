@@ -1,0 +1,24 @@
+// @props
+// tabs: []TabItem;
+// activeKey: int;
+// style: TabsStyle = {};
+// closable: bool = true;
+
+// @emit
+// select: (int,);
+// close: (int,);
+
+// @slot
+// tab: {
+//     key: int;
+// };
+
+// @template
+// div [w-grow h-grow col] {
+//     TabBar [] tabs=[props.tabs] activeKey=[props.activeKey] closable=[props.closable] @select=select @close=close {}
+//     TabPanels [] tabs=[props.tabs] activeKey=[props.activeKey] closable=[props.closable] {
+//         #tab {
+//             slot tab {}
+//         }
+//     }
+// }
