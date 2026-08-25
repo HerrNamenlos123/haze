@@ -335,6 +335,7 @@ export namespace Parser {
     const mode = getParserMode();
 
     if (mode === "antlr" || !nativeParserAvailable()) {
+      console.warn("Native parser not available, falling back to ANTLR parser");
       return parseWithANTLR(config, text, filename);
     }
 
