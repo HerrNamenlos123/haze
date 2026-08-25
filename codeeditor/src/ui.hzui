@@ -467,35 +467,35 @@ fn fileNameOf(path: str): str {
 TitleBar []
     documentName=[activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : ""]
     workspaceName=[workspace().name]
-    openMenu=[titleBarState.openMenu]
+    // openMenu=[titleBarState.openMenu]
 {}
 
 div if=[tabs.length == 0] focusable=true autofocus=true [w-grow h-grow col items-center justify-center] {
     text [text-color-["#7A7A7A"]] ["No file open  --  Ctrl+O to open one"]
 }
-Tabs else [] items=tabItems {}
+// Tabs else [] items=tabItems {}
 
-TitleBarMenus [] items=menuItems openMenu=[titleBarState.openMenu]
+// TitleBarMenus [] items=menuItems openMenu=[titleBarState.openMenu]
 
-ConflictDialog [] open=[conflictEntry ? true : false]
-    fileName=[do {
-        let e = rx.get(conflictEntry);
-        e ? fileNameOf(e.path) : "";
-    }]
-    viewport=[do {
-        let r = rx.get(rootSize);
-        r ? r as Vec2 : Vec2(0.0, 0.0);
-    }]
-    onOverwrite=[do {
-        let c = rx.get(conflictEntry);
-        c ? c.resolveOverwrite : noAnswer;
-    }]
-    onDiscard=[do {
-        let c = rx.get(conflictEntry);
-        c ? c.resolveDiscard : noAnswer;
-    }]
-    onCancel=[do {
-        let c = rx.get(conflictEntry);
-        c ? c.resolveCancel : noAnswer;
-    }]
-{}
+// ConflictDialog [] open=[conflictEntry ? true : false]
+//     fileName=[do {
+//         let e = rx.get(conflictEntry);
+//         e ? fileNameOf(e.path) : "";
+//     }]
+//     viewport=[do {
+//         let r = rx.get(rootSize);
+//         r ? r as Vec2 : Vec2(0.0, 0.0);
+//     }]
+//     onOverwrite=[do {
+//         let c = rx.get(conflictEntry);
+//         c ? c.resolveOverwrite : noAnswer;
+//     }]
+//     onDiscard=[do {
+//         let c = rx.get(conflictEntry);
+//         c ? c.resolveDiscard : noAnswer;
+//     }]
+//     onCancel=[do {
+//         let c = rx.get(conflictEntry);
+//         c ? c.resolveCancel : noAnswer;
+//     }]
+// {}

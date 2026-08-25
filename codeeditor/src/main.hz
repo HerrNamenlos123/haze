@@ -129,7 +129,7 @@ fn main(): int {
                 getText: (): str => { return app.getClipboardText(); },
                 setText: (text: str): bool => { return app.setClipboardText(text); },
             },
-            ui: (ui: ui_components.UIContext) => { UiComponent(ui, a.gfx); },
+            ui: (ui: ui_components.UIContext) => { UiComponent(ui, { id: 0 }); },
         });
 
         // Which files to open is the UI shell's decision now, not this

@@ -1,4 +1,52 @@
 
+
+fn titleBarHeight(): real {
+    return 30.0;
+}
+
+// Horizontal padding of the row. The dropdown's left offset is this same
+// value, so the menu lines up with the button it drops from.
+fn titleBarPaddingX(): real {
+    return 6.0;
+}
+
+fn menuNone(): int { return -1; }
+fn menuFile(): int { return 0; }
+
+// Dropdown item keys. Recents are offset into their own range so a recent
+// at index 0 cannot collide with a fixed command.
+const comptime ITEM_OPEN_FILE = 1;
+const comptime ITEM_OPEN_FOLDER = 2;
+const comptime ITEM_CLOSE_FOLDER = 3;
+const comptime ITEM_RECENT_BASE = 100;
+
+
+fn runFileMenuItem(key: int) {
+    if key == ITEM_OPEN_FILE {
+        // Routed through the command registry rather than calling the
+        // shell's closure directly, so a menu entry and its keyboard
+        // shortcut are provably the same action -- there is one definition
+        // of "open a file" and both reach it. See keybindings.hz.
+        keybindings().commands.run("workbench.action.files.openFile");
+        return;
+    }
+    if key == ITEM_OPEN_FOLDER {
+        keybindings().commands.run("workbench.action.files.openFolder");
+        return;
+    }
+    if key == ITEM_CLOSE_FOLDER {
+        keybindings().commands.run("workbench.action.closeFolder");
+        return;
+    }
+    if key >= ITEM_RECENT_BASE {
+        let index = key - ITEM_RECENT_BASE;
+        let recents: []str = rx.get(workspace().recents);
+        if index >= 0 && index < recents.length {
+            openWorkspace(recents[index]);
+        }
+    }
+}
+
 @props
 openMenu: int = -1;
 [[hzui.untracked]]
@@ -10,10 +58,10 @@ let select = (key: int) => {
     // native dialog that blocks this thread; leaving the
     // menu up behind it looks like the click was ignored,
     // and it would still be up when the dialog returns.
-    closeMenus(state);
-    runFileMenuItem(key);
+    // closeMenus(state);
+    // runFileMenuItem(key);
 };
 
 @template [w-fit h-fit]
-Dropdown [] open=[props.openMenu == menuFile()] items=[props.items] panelRef=[state.panelRef]
-    offsetX=[titleBarPaddingX()] offsetY=[titleBarHeight()] @select=select {}
+// Dropdown [] open=[props.openMenu == menuFile()] items=[props.items] panelRef=[state.panelRef]
+//     offsetX=[titleBarPaddingX()] offsetY=[titleBarHeight()] @select=select {}
