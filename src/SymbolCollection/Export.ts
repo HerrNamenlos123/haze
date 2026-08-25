@@ -6,7 +6,10 @@ import {
   EOverloadedOperator,
   EStorageClass,
 } from "../shared/AST";
-import { getModuleGlobalNamespaceName, type ModuleConfig } from "../shared/Config";
+import {
+  getModuleGlobalNamespaceName,
+  type ModuleConfig,
+} from "../shared/Config";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, formatSourceLoc } from "../shared/Errors";
@@ -154,6 +157,13 @@ export function ExportTypeDef(
   const typedef = sr.typeDefNodes.get(typedefId);
   switch (typedef.variant) {
     case Semantic.ENode.StructDatatype: {
+      if (typedef.sourceloc) {
+        file
+          .writeLine(
+            `#source ${JSON.stringify(formatSourceLoc(typedef.sourceloc))} {`
+          )
+          .pushIndent();
+      }
       const namespaces = Semantic.getNamespaceChainFromDatatype(sr, typedefId);
       if (!nested) {
         for (const ns of namespaces.slice(0, -1)) {
@@ -208,6 +218,15 @@ export function ExportTypeDef(
       for (const methodId of typedef.methods) {
         const method = sr.symbolNodes.get(methodId);
         assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        if (method.sourceloc) {
+          file
+            .writeLine(
+              `#source ${JSON.stringify(formatSourceLoc(method.sourceloc))} {`
+            )
+            .pushIndent();
+        }
+
         if (
           method.generics.length === 0 &&
           !funcSymHasParameterPack(sr.cc, method.originalCollectedFunction)
@@ -315,6 +334,9 @@ export function ExportTypeDef(
         // entry in typedef.methods, which would otherwise re-emit the same raw
         // source once per instantiation. The loop below emits the template
         // exactly once instead.
+        if (method.sourceloc) {
+          file.popIndent().writeLine(`}`);
+        }
       }
 
       // Emit generic and parameter-pack methods. Those are NOT elaborated yet, so we have to workaround through the collected symbol.
@@ -334,7 +356,17 @@ export function ExportTypeDef(
               (overload.generics.length > 0 ||
                 funcSymHasParameterPack(sr.cc, overloadId))
             ) {
+              if (overload.sourceloc) {
+                file
+                  .writeLine(
+                    `#source ${JSON.stringify(formatSourceLoc(overload.sourceloc))} {`
+                  )
+                  .pushIndent();
+              }
               file.writeLine(overload.originalSourcecode);
+              if (overload.sourceloc) {
+                file.popIndent().writeLine(`}`);
+              }
             }
           }
         }
@@ -348,6 +380,9 @@ export function ExportTypeDef(
         for (const ns of namespaces.slice(0, -1)) {
           file.popIndent().writeLine("}");
         }
+      }
+      if (typedef.sourceloc) {
+        file.popIndent().writeLine(`}`);
       }
       break;
     }
@@ -619,7 +654,10 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
   // the original file does (`ui_styling.DivStyle`). Transitive dependencies
   // are always collected by the importer (ModuleCompiler.collectImports), so
   // the target namespace is guaranteed to be present.
-  if (sr.cc.config.name !== "haze-stdlib" && sr.cc.config.dependencies.length > 0) {
+  if (
+    sr.cc.config.name !== "haze-stdlib" &&
+    sr.cc.config.dependencies.length > 0
+  ) {
     const aliases: string[] = [];
     for (const dep of sr.cc.config.dependencies) {
       const metadataPath = join(
@@ -633,7 +671,9 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
       if (!existsSync(metadataPath)) {
         continue;
       }
-      const metadata: ModuleConfig = JSON.parse(readFileSync(metadataPath, "utf8"));
+      const metadata: ModuleConfig = JSON.parse(
+        readFileSync(metadataPath, "utf8")
+      );
       aliases.push(
         `type ${dep.name} = ${getModuleGlobalNamespaceName(
           metadata.name,
