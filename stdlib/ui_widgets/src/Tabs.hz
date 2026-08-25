@@ -1,8 +1,3 @@
-import ui_elements
-import ui_styling
-import ui_components
-import headwind
-type presets = headwind.presets;
 
 // === Tabs =====================================================
 //

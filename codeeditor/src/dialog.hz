@@ -3,6 +3,7 @@ import ui_styling
 import ui_components
 import ui_widgets
 import headwind
+type presets = headwind.presets;
 
 // ═══ The file-conflict dialog ════════════════════════════════════════════
 //

@@ -12,11 +12,8 @@ import ui_components
 import ui_widgets
 import unicode
 import filedialog
-import tabs
-type presets = headwind.presets;
 // Aliased because this file also has local things called "tabs" (the open
 // tab list in UI()), and the module name would shadow confusingly.
-type tabs_lib = tabs;
 
 // Vim editing model on/off. The textedit engine is the same either way;
 // this only decides whether a vim_behavior.Vim is installed on top of it

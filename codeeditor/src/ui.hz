@@ -34,7 +34,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // open/close would be both wasteful and beside the point, since
         // what actually matters (the editors) is keyed by tab id and
         // untouched by any of this.
-        let tabs = rx.shallowReactive<[]tabs_lib.TabItem>([]);
+        let tabs = rx.shallowReactive<[]ui_widgets.TabItem>([]);
         let activeKey = rx.reactive<int>(-1);
         // Tab keys must be unique for the life of the tab and must never
         // be reused, because a key IS a component identity: hand a new tab
@@ -56,7 +56,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         let paths: []str = [];
 
         let pathForKey = (key: int): str => {
-            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let items: []ui_widgets.TabItem = rx.get(tabs);
             for (let i = 0; i < items.length && i < paths.length; i++) {
                 if items[i].key == key {
                     return paths[i];
@@ -66,7 +66,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         };
 
         let isOpen = (path: str): int => {
-            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let items: []ui_widgets.TabItem = rx.get(tabs);
             for (let i = 0; i < items.length && i < paths.length; i++) {
                 if paths[i] == path {
                     return items[i].key;
@@ -101,8 +101,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
             let key = rx.get(nextKey);
             nextKey := key + 1;
-            let items: []tabs_lib.TabItem = rx.get(tabs);
-            items.push(tabs_lib.TabItem {
+            let items: []ui_widgets.TabItem = rx.get(tabs);
+            items.push(ui_widgets.TabItem {
                 key: key,
                 title: fileNameOf(path),
             });
@@ -113,7 +113,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         };
 
         let closeTab = (key: int) => {
-            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let items: []ui_widgets.TabItem = rx.get(tabs);
             let index = -1;
             for (let i = 0; i < items.length; i++) {
                 if items[i].key == key {
@@ -249,10 +249,10 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // or some tab's dirty flag actually flips.
         let tabItems = rx.computed(() => {
             rx.get(documents().generation);
-            let source: []tabs_lib.TabItem = rx.get(tabs);
-            let out: []tabs_lib.TabItem = [];
+            let source: []ui_widgets.TabItem = rx.get(tabs);
+            let out: []ui_widgets.TabItem = [];
             for item in source {
-                out.push(tabs_lib.TabItem {
+                out.push(ui_widgets.TabItem {
                     key: item.key,
                     title: item.title,
                     modified: documents().isDirty(item.key),
@@ -287,7 +287,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // be named as a command instead. +1 is the next tab, -1 the
         // previous; both wrap.
         let cycleEditor = (delta: int) => {
-            let all: []tabs_lib.TabItem = rx.get(tabs);
+            let all: []ui_widgets.TabItem = rx.get(tabs);
             if all.length <= 1 {
                 return;
             }
@@ -316,7 +316,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
         // `:qa` and friends. Walks the list from the END, because closing a
         // tab removes it from the very array being walked.
         let closeAllEditors = () => {
-            let all: []tabs_lib.TabItem = rx.get(tabs);
+            let all: []ui_widgets.TabItem = rx.get(tabs);
             let i = all.length - 1;
             while i >= 0 {
                 closeTab(all[i].key);
@@ -539,7 +539,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                     );
                 }
                 else {
-                    tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
+                    ui_widgets.Tabs(ui, {
                         id: 2,
                         tabs: tabItems,
                         activeKey: activeKey,
