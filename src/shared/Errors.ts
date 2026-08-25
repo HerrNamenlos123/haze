@@ -1,5 +1,5 @@
 import { printLine, printLineWarning } from "../ModuleCompiler/CLIPrinter";
-import { HazeErrorCode } from "./ErrorCodes";
+import type { HazeErrorCode } from "./ErrorCodes";
 
 export enum ErrorType {
   Error = 0,
@@ -197,7 +197,9 @@ export type ElaborationPathFrame = {
 export function formatElaborationPath(path: ElaborationPathFrame[]): string {
   return path
     .map((frame) => {
-      const locText = frame.loc ? formatSourceLoc(frame.loc) : "<unknown location>";
+      const locText = frame.loc
+        ? formatSourceLoc(frame.loc)
+        : "<unknown location>";
       return `  in ${frame.signature}\n    at ${locText}`;
     })
     .join("\n");
