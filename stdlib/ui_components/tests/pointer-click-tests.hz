@@ -1,0 +1,262 @@
+import ui_components
+import ui_elements
+
+// Drives the component system headlessly to verify the pointer event model's
+// button and click-count handling:
+//
+//   * PointerEvent.detail -- the click counter, and the two thresholds that
+//     decide whether a press continues the previous sequence or starts a new
+//     one (time and distance, both Chromium's);
+//   * the DOM's split of a completed press+release into click (primary only),
+//     auxclick (everything else) and dblclick (an extra event after the
+//     second click, never a replacement for it);
+//   * contextmenu, which rides on the right button going DOWN.
+//
+// Unlike focus-tests.hz next door this DOES need hit-testing, so the two divs
+// are given bounding boxes by hand (applyRenderFeedback) -- no layout engine
+// is wired up, and without a box every hit test misses and no pointer event
+// reaches anything.
+
+ref struct TestArgs {}
+
+// All mutable test state in one ref struct so the UI closures can capture a
+// single handle and still see later writes -- closures capture by copy, so
+// loose locals would each get their own.
+ref struct State {
+    // Every event that fired, in fire order, as "<who>-<what>(<detail>);".
+    log: str = "";
+
+    // The polled pointer state the UIContext reads back every frame.
+    mouseX: real = 0.0;
+    mouseY: real = 0.0;
+    leftHeld: bool = false;
+    middleHeld: bool = false;
+    rightHeld: bool = false;
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+
+    mut fn record(what: str) {
+        this.log = f"{this.log}{what};";
+    }
+}
+
+fn main(): int {
+    let state = State {};
+
+    let outerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let innerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+    // Queued press/release edges, drained every frame exactly the way a real
+    // backend drains its SDL queue. Mutated in place (.clear(), never
+    // rebound) because the callback below captured this exact array.
+    let edges: []ui_components.PointerEdge = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    ctx.div({
+                        id: 1,
+                        elementRef: outerRef,
+                        onClick: (e: ui_components.PointerEvent) => { state.record(f"outer-click({e.detail})"); },
+                        onDoubleClick: (e: ui_components.PointerEvent) => { state.record(f"outer-dblclick({e.detail})"); },
+                        onAuxClick: (e: ui_components.PointerEvent) => { state.record(f"outer-auxclick({e.detail})"); },
+                        onContextMenu: (e: ui_components.PointerEvent) => { state.record(f"outer-contextmenu({e.detail})"); },
+                    }, () => {
+                        ctx.div({
+                            id: 2,
+                            elementRef: innerRef,
+                            // Capture on the child too, so the ordering
+                            // assertions below cover both phases of the
+                            // synthesized events, not just the bubble one.
+                            onDoubleClickCapture: (e: ui_components.PointerEvent) => { state.record(f"inner-capdbl({e.detail})"); },
+                            onClick: (e: ui_components.PointerEvent) => { state.record(f"inner-click({e.detail})"); },
+                            onDoubleClick: (e: ui_components.PointerEvent) => { state.record(f"inner-dblclick({e.detail})"); },
+                            onAuxClick: (e: ui_components.PointerEvent) => { state.record(f"inner-auxclick({e.detail})"); },
+                            onContextMenu: (e: ui_components.PointerEvent) => { state.record(f"inner-contextmenu({e.detail})"); },
+                            onPointerDown: (e: ui_components.PointerEvent) => { state.record(f"inner-down({e.detail})"); },
+                            onPointerUp: (e: ui_components.PointerEvent) => { state.record(f"inner-up({e.detail})"); },
+                        }, () => {});
+                    });
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return state.middleHeld; },
+            rightHeld: (): bool => { return state.rightHeld; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in edges { out.push(e); }
+                edges.clear();
+                return out;
+            },
+        },
+    });
+
+    // Frame 1 builds the tree. Nothing has a bounding box yet, so no pointer
+    // event could reach anything even if one were queued.
+    ui.process();
+
+    let outer = rx.get(outerRef);
+    let inner = rx.get(innerRef);
+    assert(outer);
+    assert(inner);
+
+    // Stand in for the layout engine: outer covers the window, inner sits
+    // inside it. A press at (50,50) therefore hits inner (and outer, as its
+    // ancestor); a press at (180,90) hits outer only.
+    ui_components.applyRenderFeedback(outer._element, Vec2(0.0, 0.0), Vec2(200.0, 100.0));
+    ui_components.applyRenderFeedback(inner._element, Vec2(10.0, 10.0), Vec2(100.0, 60.0));
+
+    let press = (button: ui_components.PointerButton, x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        if button == ui_components.PointerButton.Left { state.leftHeld = true; }
+        else if button == ui_components.PointerButton.Middle { state.middleHeld = true; }
+        else if button == ui_components.PointerButton.Right { state.rightHeld = true; }
+        edges.push({ button: button, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(x, y) });
+    };
+    let release = (button: ui_components.PointerButton, x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        if button == ui_components.PointerButton.Left { state.leftHeld = false; }
+        else if button == ui_components.PointerButton.Middle { state.middleHeld = false; }
+        else if button == ui_components.PointerButton.Right { state.rightHeld = false; }
+        edges.push({ button: button, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(x, y) });
+    };
+    // One complete press+release, delivered as its own frame -- which is the
+    // realistic case (a real click spans frames) and also the strictest, since
+    // a per-frame drain has to carry the click count across frames rather than
+    // reading it out of one queue.
+    let click = (button: ui_components.PointerButton, x: real, y: real): none => {
+        press(button, x, y);
+        ui.process();
+        release(button, x, y);
+        ui.process();
+    };
+
+    // --- A single click: click, and nothing else -------------------------
+    state.log = "";
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    // Bubble order is target -> root, so inner before outer; the down/up pair
+    // brackets the synthesized click, and detail is 1 throughout.
+    state.checkStr("single left click",
+        state.log,
+        "inner-down(1);inner-up(1);inner-click(1);outer-click(1);");
+
+    // --- A second click in the same place: detail 2, and a dblclick ------
+    //
+    // The first click is NOT withheld waiting for the second -- a double
+    // click is click, click, dblclick, exactly as in a browser.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    state.checkStr("second left click is a double click",
+        state.log,
+        "inner-down(2);inner-up(2);inner-click(2);outer-click(2);inner-capdbl(2);inner-dblclick(2);outer-dblclick(2);");
+
+    // --- A third click: detail 3, and NO second dblclick -----------------
+    state.log = "";
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    state.checkStr("third left click is a triple click and fires no dblclick",
+        state.log,
+        "inner-down(3);inner-up(3);inner-click(3);outer-click(3);");
+
+    // --- A fourth click stays at 3 ---------------------------------------
+    //
+    // Chromium's cap (MouseEvent::GetRepeatCount clamps to 3): there is
+    // nothing coarser than "the whole line" to escalate to.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    state.checkStr("fourth rapid click is capped at 3",
+        state.log,
+        "inner-down(3);inner-up(3);inner-click(3);outer-click(3);");
+
+    // --- Moving far enough breaks the sequence ---------------------------
+    //
+    // 2 logical pixels per axis, Chromium's kDoubleClickWidth/2. Well within
+    // the same element, so this is purely the distance rule and not a change
+    // of target.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 90.0, 50.0);
+    state.checkStr("a click 40px away starts a new sequence",
+        state.log,
+        "inner-down(1);inner-up(1);inner-click(1);outer-click(1);");
+
+    // ...while a click a single pixel away does not.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 91.0, 50.0);
+    state.checkStr("a click 1px away continues the sequence",
+        state.log,
+        "inner-down(2);inner-up(2);inner-click(2);outer-click(2);inner-capdbl(2);inner-dblclick(2);outer-dblclick(2);");
+
+    // --- Waiting too long breaks the sequence ----------------------------
+    time.sleep(0.6);
+    state.log = "";
+    click(ui_components.PointerButton.Left, 91.0, 50.0);
+    state.checkStr("a click after the double-click timeout starts over",
+        state.log,
+        "inner-down(1);inner-up(1);inner-click(1);outer-click(1);");
+
+    // --- Right button: contextmenu on the press, auxclick on the release --
+    //
+    // `click` never fires for a non-primary button, which is the whole point
+    // of auxclick existing: a handler written for "the user clicked this"
+    // does not have to defend itself against a right-click.
+    state.log = "";
+    click(ui_components.PointerButton.Right, 50.0, 50.0);
+    state.checkStr("right click fires contextmenu on press and auxclick on release",
+        state.log,
+        "inner-down(1);inner-contextmenu(1);outer-contextmenu(1);inner-up(1);inner-auxclick(1);outer-auxclick(1);");
+
+    // --- Middle button: auxclick, and no contextmenu ---------------------
+    state.log = "";
+    click(ui_components.PointerButton.Middle, 50.0, 50.0);
+    state.checkStr("middle click fires auxclick only",
+        state.log,
+        "inner-down(1);inner-up(1);inner-auxclick(1);outer-auxclick(1);");
+
+    // --- Switching buttons restarts the count ----------------------------
+    //
+    // Chromium keeps exactly one previous press, not one per button, so an
+    // interleaved right click does not leave the left sequence intact.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    click(ui_components.PointerButton.Right, 50.0, 50.0);
+    click(ui_components.PointerButton.Left, 50.0, 50.0);
+    state.checkStr("a different button in between resets the count",
+        state.log,
+        "inner-down(1);inner-up(1);inner-click(1);outer-click(1);"
+        + "inner-down(1);inner-contextmenu(1);outer-contextmenu(1);inner-up(1);inner-auxclick(1);outer-auxclick(1);"
+        + "inner-down(1);inner-up(1);inner-click(1);outer-click(1);");
+
+    // --- A press that lands outside the inner div ------------------------
+    //
+    // Sanity check that the hit path really is being recomputed per press and
+    // the assertions above are not passing for the wrong reason.
+    state.log = "";
+    click(ui_components.PointerButton.Left, 180.0, 90.0);
+    state.checkStr("a press outside the inner div reaches only the outer one",
+        state.log,
+        "outer-click(1);");
+
+    if state.failures > 0 {
+        fmt.println(f"\n{state.failures} FAILURES out of {state.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {state.checks} POINTER CLICK CHECKS PASS");
+    return 0;
+}

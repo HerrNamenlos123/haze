@@ -326,6 +326,13 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                         },
                         onPointerDown: (event: ui_components.PointerEvent) => {
                             event.stopPropagation();
+                            // Menu items activate on the primary button
+                            // only, as in every native menu -- a right
+                            // press inside an open menu must not pick
+                            // whatever row it happened to land on.
+                            if event.button != ui_components.PointerButton.Left {
+                                return;
+                            }
                             let current = instance.props();
                             // Re-read from props rather than trusting the
                             // `item` captured above: this handler outlives

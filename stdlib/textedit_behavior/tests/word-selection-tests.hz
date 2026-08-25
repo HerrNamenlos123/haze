@@ -1,0 +1,303 @@
+import unicode
+import textedit_behavior
+
+// Drives the editing engine headlessly over the POINTER selection API
+// (beginSelection / extendSelectionTo / wordRangeAt / lineRangeAt), which is
+// what a double-click-and-drag ends up calling.
+//
+// The behaviour under test is Chrome's, and the one rule worth restating: the
+// granularity is fixed by the PRESS that starts the gesture and then governs
+// the whole drag. A double press selects a word and drags word by word; a
+// single press drags character by character. It is not decided by how far or
+// how fast the pointer moves.
+//
+// Same harness shape as unicode-navigation-tests.hz next door.
+
+ref struct Doc {
+    lines: []String = [];
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn setText(text: str) {
+        let parts = text.split("\n");
+        let fresh: []String = [];
+        for p, i in parts {
+            fresh.push(String(p));
+        }
+        this.lines = fresh;
+    }
+
+    mut fn replace(start: Vec2i, end: Vec2i, text: String) {
+        let startLine = this.lines[start.y].cloneString();
+        let endLine = this.lines[end.y].cloneString();
+        let before = startLine.slice(0, clampI(start.x, 0, startLine.length));
+        let after = endLine.slice(clampI(end.x, 0, endLine.length), endLine.length);
+        let merged = f"{before}{text.cloneString()}{after}";
+
+        let rebuilt: []String = [];
+        for (let i = 0; i < start.y; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        let mergedParts = merged.split("\n");
+        for p, i in mergedParts {
+            rebuilt.push(String(p));
+        }
+        for (let i = end.y + 1; i < this.lines.length; i++) {
+            rebuilt.push(this.lines[i]);
+        }
+        this.lines = rebuilt;
+    }
+
+    mut fn check(name: str, got: int, want: int) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got {got}, want {want}");
+            this.failures = this.failures + 1;
+        }
+    }
+
+    mut fn checkText(name: str, got: str, want: str) {
+        this.checks = this.checks + 1;
+        if got != want {
+            fmt.println(f"FAIL {name}: got \"{got}\", want \"{want}\"");
+            this.failures = this.failures + 1;
+        }
+    }
+}
+
+fn clampI(v: int, lo: int, hi: int): int {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+fn makeContext(doc: mut Doc): mut textedit_behavior.Context {
+    return textedit_behavior.Context({
+        getLineLength: (lineIndex: int) => { return doc.lines[lineIndex].length(); },
+        getLine: (lineIndex: int) => { return doc.lines[lineIndex]; },
+        getLineCount: () => { return doc.lines.length; },
+        getTimeInSeconds: () => { return 0.0; },
+        replaceRange: (start: Vec2i, end: Vec2i, text: String) => { doc.replace(start, end, text); },
+    });
+}
+
+fn at(x: int, y: int): Vec2i {
+    let p: Vec2i = { x: x, y: y };
+    return p;
+}
+
+// What is actually selected right now, rendered as text, which is the only
+// assertion that cannot pass for the wrong reason: it goes through the same
+// selectionStart/selectionEnd a host draws from.
+fn selectedText(ctx: mut textedit_behavior.Context): str {
+    if !ctx.hasSelection {
+        return "";
+    }
+    return ctx.textInRange(ctx.selectionAsRange()).cloneString();
+}
+
+fn main(): int {
+    let doc = Doc {};
+
+    // === wordRangeAt: what a double click grabs =======================
+    //
+    // A chunk is a maximal run of one character CLASS, so punctuation is its
+    // own chunk and a word never swallows the space after it (Blink appends
+    // trailing whitespace for TOUCH selection only, never for the mouse).
+    doc.setText("foo.bar  baz");
+    let w = makeContext(doc);
+
+    doc.check("word start at 'foo'", w.wordRangeAt(at(1, 0)).start.x, 0);
+    doc.check("word end at 'foo' stops before the dot", w.wordRangeAt(at(1, 0)).end.x, 3);
+    doc.check("the dot is its own chunk (start)", w.wordRangeAt(at(3, 0)).start.x, 3);
+    doc.check("the dot is its own chunk (end)", w.wordRangeAt(at(3, 0)).end.x, 4);
+    doc.check("'bar' starts after the dot", w.wordRangeAt(at(5, 0)).start.x, 4);
+    doc.check("'bar' ends before the spaces", w.wordRangeAt(at(5, 0)).end.x, 7);
+    // A run of whitespace selects as one chunk, exactly as in a browser.
+    doc.check("whitespace run start", w.wordRangeAt(at(8, 0)).start.x, 7);
+    doc.check("whitespace run end", w.wordRangeAt(at(8, 0)).end.x, 9);
+    // Clicking past the end of the line grabs the LAST chunk on it rather
+    // than collapsing to nothing.
+    doc.check("past end of line grabs the last word (start)", w.wordRangeAt(at(999, 0)).start.x, 9);
+    doc.check("past end of line grabs the last word (end)", w.wordRangeAt(at(999, 0)).end.x, 12);
+
+    // === A double press selects the word under it ======================
+    doc.setText("alpha beta gamma delta");
+    let ctx = makeContext(doc);
+
+    ctx.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Word);
+    doc.checkText("double press selects the word", selectedText(ctx), "beta");
+
+    // === ...and the drag that follows moves word by word ===============
+    //
+    // The pointer sits INSIDE "gamma", not at its edge, and the selection
+    // still covers the whole of it -- that is the snapping.
+    ctx.extendSelectionTo(at(13, 0));
+    doc.checkText("dragging into the next word takes all of it",
+        selectedText(ctx), "beta gamma");
+
+    // One more word along.
+    ctx.extendSelectionTo(at(18, 0));
+    doc.checkText("dragging further takes the next whole word",
+        selectedText(ctx), "beta gamma delta");
+
+    // Dragging back into the gap between words drops the trailing word but
+    // keeps the whitespace chunk the pointer is now in.
+    ctx.extendSelectionTo(at(16, 0));
+    doc.checkText("dragging back into the gap releases the trailing word",
+        selectedText(ctx), "beta gamma ");
+
+    // === Dragging BACKWARDS past the anchor keeps the anchor word whole ==
+    //
+    // This is the property a naive implementation gets wrong: it lets the
+    // moving end eat into the word the double click selected.
+    ctx.extendSelectionTo(at(2, 0));
+    doc.checkText("dragging back past the anchor keeps the anchor word whole",
+        selectedText(ctx), "alpha beta");
+
+    // Back inside the anchor word: exactly the anchor word again.
+    ctx.extendSelectionTo(at(7, 0));
+    doc.checkText("back inside the anchor word selects just it",
+        selectedText(ctx), "beta");
+
+    // === A single press drags character by character ====================
+    doc.setText("alpha beta gamma");
+    let c = makeContext(doc);
+    c.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Character);
+    doc.checkText("a single press selects nothing", selectedText(c), "");
+    c.extendSelectionTo(at(13, 0));
+    doc.checkText("a character drag stops exactly where the pointer is",
+        selectedText(c), "ta ga");
+    c.extendSelectionTo(at(2, 0));
+    doc.checkText("a backwards character drag likewise",
+        selectedText(c), "pha be");
+
+    // === Granularity survives the release (shift+click) =================
+    //
+    // Blink reads FrameSelection's current granularity back when extending,
+    // so double click then shift-click still extends by whole words.
+    doc.setText("alpha beta gamma delta");
+    let s = makeContext(doc);
+    s.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Word);
+    // ...gesture over, button released; nothing else happens in between.
+    s.extendSelectionTo(at(13, 0));
+    doc.checkText("shift+click after a double click extends by words",
+        selectedText(s), "beta gamma");
+
+    // === ...but any ordinary caret move resets it =======================
+    doc.setText("alpha beta gamma delta");
+    let r = makeContext(doc);
+    r.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Word);
+    // A plain click somewhere -- character granularity, and it re-anchors.
+    r.beginSelection(at(6, 0), textedit_behavior.SelectionGranularity.Character);
+    r.extendSelectionTo(at(13, 0));
+    doc.checkText("a plain click resets the granularity to characters",
+        selectedText(r), "beta ga");
+
+    // An arrow key does the same, without going through beginSelection: the
+    // caret ends up one past the double-clicked word's end (column 11, the
+    // "g" of "gamma") and the following drag runs from there, character by
+    // character, rather than snapping "gamma" whole.
+    doc.setText("alpha beta gamma delta");
+    let k = makeContext(doc);
+    k.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Word);
+    k.moveCursorRight();
+    k.extendSelectionTo(at(13, 0));
+    doc.checkText("an arrow key resets the granularity to characters",
+        selectedText(k), "ga");
+
+    // === Triple press: the whole line, and line-by-line dragging ========
+    doc.setText("first line\nsecond line\nthird line");
+    let l = makeContext(doc);
+    l.beginSelection(at(4, 0), textedit_behavior.SelectionGranularity.Line);
+    doc.checkText("triple press selects the line", selectedText(l), "first line");
+    l.extendSelectionTo(at(3, 1));
+    doc.checkText("dragging down takes the whole next line",
+        selectedText(l), "first line\nsecond line");
+    // Anchored on line 1, dragging up to line 0 keeps line 1 whole.
+    let l2 = makeContext(doc);
+    l2.beginSelection(at(3, 1), textedit_behavior.SelectionGranularity.Line);
+    l2.extendSelectionTo(at(2, 0));
+    doc.checkText("dragging up keeps the anchor line whole",
+        selectedText(l2), "first line\nsecond line");
+
+    // === Word selection across lines ====================================
+    doc.setText("alpha beta\ngamma delta");
+    let m = makeContext(doc);
+    m.beginSelection(at(7, 0), textedit_behavior.SelectionGranularity.Word);
+    doc.checkText("word on the first line", selectedText(m), "beta");
+    m.extendSelectionTo(at(2, 1));
+    doc.checkText("dragging onto the next line takes its first word whole",
+        selectedText(m), "beta\ngamma");
+
+    // === Multi-byte text: chunks are whole clusters =====================
+    //
+    // "naive" here is spelled with a combining acute, and the CJK run is one
+    // word -- neither may be split mid-character by the expansion.
+    doc.setText("héllo 日本語 x");
+    let u = makeContext(doc);
+    // "héllo" is 6 bytes (the é is two).
+    doc.check("accented word start", u.wordRangeAt(at(3, 0)).start.x, 0);
+    doc.check("accented word end", u.wordRangeAt(at(3, 0)).end.x, 6);
+    // The CJK run: 9 bytes starting at 7.
+    doc.check("CJK run start", u.wordRangeAt(at(10, 0)).start.x, 7);
+    doc.check("CJK run end", u.wordRangeAt(at(10, 0)).end.x, 16);
+    u.beginSelection(at(10, 0), textedit_behavior.SelectionGranularity.Word);
+    doc.checkText("double press takes the whole CJK run", selectedText(u), "日本語");
+    u.extendSelectionTo(at(2, 0));
+    doc.checkText("dragging back takes the whole accented word too",
+        selectedText(u), "héllo 日本語");
+
+    // === An empty line has nothing to select ============================
+    doc.setText("abc\n\ndef");
+    let e = makeContext(doc);
+    e.beginSelection(at(0, 1), textedit_behavior.SelectionGranularity.Word);
+    doc.checkText("double press on an empty line selects nothing", selectedText(e), "");
+
+    // === A visual-mode caret move keeps the gesture's fixed end ==========
+    //
+    // Visual mode keeps its anchor through an unextended move, so the
+    // granularity anchor must not follow the caret -- otherwise `v`, a few
+    // motions, then a shift+click would extend from the caret instead of
+    // from where visual mode started.
+    doc.setText("alpha beta gamma delta");
+    let vm = makeContext(doc);
+    vm.setMode(textedit_behavior.Mode.Visual);
+    vm.moveTo(at(6, 0), true, false);
+    vm.setSelectionAnchor(at(6, 0));
+    vm.moveCursorRight();
+    vm.moveCursorRight();
+    doc.checkText("visual mode motions build a selection from the anchor",
+        selectedText(vm), "bet");
+    // Anchor 6 through the clicked column 13, inclusive of the character
+    // under the caret -- visual mode's own selection model, unchanged.
+    vm.extendSelectionTo(at(13, 0));
+    doc.checkText("a shift+click still extends from the visual anchor",
+        selectedText(vm), "beta gam");
+
+    // === Vim visual mode puts the caret ON the last selected character ===
+    //
+    // The engine's two selection models disagree about what the caret means,
+    // and the word range is computed in only one of them -- so this checks
+    // that a double click in vim selects the word and not a character more.
+    doc.setText("alpha beta gamma");
+    let v = makeContext(doc);
+    v.setMode(textedit_behavior.Mode.Visual);
+    v.beginSelection(at(8, 0), textedit_behavior.SelectionGranularity.Word);
+    doc.checkText("visual mode double press selects exactly the word",
+        selectedText(v), "beta");
+    doc.check("visual caret sits on the word's last character", v.cursor().x, 9);
+    v.extendSelectionTo(at(13, 0));
+    doc.checkText("visual mode word drag takes whole words",
+        selectedText(v), "beta gamma");
+    v.extendSelectionTo(at(2, 0));
+    doc.checkText("visual mode backwards drag keeps the anchor word whole",
+        selectedText(v), "alpha beta");
+
+    if doc.failures > 0 {
+        fmt.println(f"\n{doc.failures} FAILURES out of {doc.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {doc.checks} WORD SELECTION CHECKS PASS");
+    return 0;
+}

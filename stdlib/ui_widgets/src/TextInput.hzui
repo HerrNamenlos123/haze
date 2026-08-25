@@ -444,30 +444,51 @@ let keyPressed = (event: KeyboardEvent) => {
 
 // Click places the caret; dragging with the button held extends the
 // selection, which is the same gesture a click-then-shift-click makes.
+//
+// The click COUNT decides what the gesture snaps to (see
+// textedit_behavior.SelectionGranularity): a plain press drags character by
+// character, a double press selects the word under it and then drags word by
+// word, a triple press takes the whole line -- which, in a one-line box, is
+// everything. Shift+click extends the existing selection instead of starting
+// a new one, keeping whatever granularity is in force, so double-click then
+// shift-click still extends by whole words.
+//
+// Only the primary button does any of this. A right or middle press leaves
+// the caret and the selection exactly where they are, as a browser does --
+// right-clicking inside a selection must not destroy the thing the user is
+// about to act on.
 let pressed = (event: PointerEvent) => {
     if !props.enabled { return; }
+    // Before the button check, and for EVERY button: a press inside this box
+    // is never an interaction "outside" the dismissable panel it may live in,
+    // whichever button it was. Only what the press DOES is primary-only.
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
     let column = columnAtX(event.pos.x - textOriginX());
     let target: Vec2i = { x: column, y: 0 };
-    textedit.clearSelection();
-    textedit.moveTo(target, true, false);
+
+    if hasModifier(event.modifiers, KeyModifiers.Shift) {
+        textedit.extendSelectionTo(target);
+    } else {
+        textedit.beginSelection(target, textedit_behavior.granularityForClickCount(event.detail));
+    }
     revealCaret();
     dragging := true;
-    // The press must not travel further: a textbox inside a dismissable panel
-    // is emphatically not an interaction "outside" it.
-    event.stopPropagation();
 };
 
 // Move the selection's moving end to whatever column is under `windowX`.
 // Takes a window coordinate rather than an event, because the pointer is read
 // from two places -- an event while it is over the box, ui.mousePos while it
 // is not -- and both must land in the same place.
-let extendSelectionTo = (windowX: real): none => {
+let dragSelectionTo = (windowX: real): none => {
     if !props.enabled { return; }
     let column = columnAtX(windowX - textOriginX());
     let target: Vec2i = { x: column, y: 0 };
-    // extend: true is what makes this a selection rather than a caret move --
-    // the anchor stays wherever the press put it.
-    textedit.moveTo(target, true, true);
+    // The engine keeps the anchor AND the granularity the press established,
+    // so this one call is a character drag after a single click and a
+    // word-by-word drag after a double click -- see
+    // textedit_behavior.extendSelectionTo.
+    textedit.extendSelectionTo(target);
     revealCaret();
 };
 
@@ -496,7 +517,7 @@ ui.onFrame(() => {
         dragging := false;
         return;
     }
-    extendSelectionTo(ui.mousePos.x);
+    dragSelectionTo(ui.mousePos.x);
 });
 
 // --- exposed API ----------------------------------------------
