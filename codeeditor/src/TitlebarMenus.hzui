@@ -1,0 +1,19 @@
+
+@props
+openMenu: int = -1;
+[[hzui.untracked]]
+items?: []ui_widgets.DropdownItem;
+
+@setup
+let select = (key: int) => {
+    // Close FIRST. Several of these commands open a modal
+    // native dialog that blocks this thread; leaving the
+    // menu up behind it looks like the click was ignored,
+    // and it would still be up when the dialog returns.
+    closeMenus(state);
+    runFileMenuItem(key);
+};
+
+@template [w-fit h-fit]
+Dropdown [] open=[props.openMenu == menuFile()] items=[props.items] panelRef=[state.panelRef]
+    offsetX=[titleBarPaddingX()] offsetY=[titleBarHeight()] @select=select {}

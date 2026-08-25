@@ -1,0 +1,129 @@
+import ui_elements
+import ui_styling
+import ui_components
+import ui_widgets
+import headwind
+
+fn titleBarHeight(): real {
+    return 30.0;
+}
+
+// Horizontal padding of the row. The dropdown's left offset is this same
+// value, so the menu lines up with the button it drops from.
+fn titleBarPaddingX(): real {
+    return 6.0;
+}
+
+fn menuNone(): int { return -1; }
+fn menuFile(): int { return 0; }
+
+// Dropdown item keys. Recents are offset into their own range so a recent
+// at index 0 cannot collide with a fixed command.
+const comptime ITEM_OPEN_FILE = 1;
+const comptime ITEM_OPEN_FOLDER = 2;
+const comptime ITEM_CLOSE_FOLDER = 3;
+const comptime ITEM_RECENT_BASE = 100;
+
+
+fn runFileMenuItem(key: int) {
+    if key == ITEM_OPEN_FILE {
+        // Routed through the command registry rather than calling the
+        // shell's closure directly, so a menu entry and its keyboard
+        // shortcut are provably the same action -- there is one definition
+        // of "open a file" and both reach it. See keybindings.hz.
+        keybindings().commands.run("workbench.action.files.openFile");
+        return;
+    }
+    if key == ITEM_OPEN_FOLDER {
+        keybindings().commands.run("workbench.action.files.openFolder");
+        return;
+    }
+    if key == ITEM_CLOSE_FOLDER {
+        keybindings().commands.run("workbench.action.closeFolder");
+        return;
+    }
+    if key >= ITEM_RECENT_BASE {
+        let index = key - ITEM_RECENT_BASE;
+        let recents: []str = rx.get(workspace().recents);
+        if index >= 0 && index < recents.length {
+            openWorkspace(recents[index]);
+        }
+    }
+}
+
+@props
+// What is being edited, for the middle of the bar. Empty when nothing
+// is open.
+documentName: str = "";
+// The open folder's name, "" for none.
+workspaceName: str = "";
+// Which menu the shell currently has open. Passed IN rather than read
+// from the shared state inside the template, so that props equality
+// actually describes what this component draws -- a component that
+// renders from reactives its props say nothing about is a component
+// whose props comparison is a lie.
+openMenu?: Reactive<int>;
+
+@setup
+
+let barRef = elementRef<ui_elements.DivElement>();
+let panelRef = elementRef<ui_elements.DivElement>();
+
+// The row. Declare this FIRST in the application root.
+let onClick = () => {
+    // Toggle. The root's capture handler deliberately
+    // leaves presses on the bar alone precisely so this
+    // can close a menu that is already open -- see
+    // dismissMenusOnPress.
+    // if props.openMenu == menuFile() {
+    //     props.openMenu := menuNone();
+    // } else {
+    //     props.openMenu := menuFile();
+    // }
+};
+
+let dismissMenusOnPress = () => {
+    // if props.openMenu == menuNone() {
+    //     return;
+    // }
+    // if barRef && barRef.hover() {
+    //     return;
+    // }
+    // if panelRef && panelRef.hover() {
+    //     return;
+    // }
+    // props.openMenu := menuNone();
+}
+
+let closeMenus = () => {
+    // props.openMenu := menuNone();
+}
+
+let title = computed(() => {
+    if props.workspaceName.length > 0 {
+        return props.documentName.length > 0
+            ? f"{props.documentName} — {props.workspaceName}"
+            : props.workspaceName;
+    }
+    if props.documentName.length == 0 {
+        return "Haze CodeEditor";
+    }
+    return props.documentName;
+});
+
+@template [w-grow h-fit]
+div ref=barRef [px-[titleBarPaddingX()] h-[titleBarHeight()] w-grow row items-center bg-["#3C3C3C"] border-b-1 
+        border-color-["#2B2B2B"] cursor-default
+    ]
+{
+    Button [] label=["File"] selected=[props.openMenu == menuFile()] paddingX=[8] paddingY=[4] @click=onClick
+
+    // Pushes the title to the middle of the remaining space.
+    div [w-grow h-fit row] {}
+
+    text [no-wrap text-color-["#CCCCCC"]] [title]
+
+    // Mirrors the spacer above so the title stays centred
+    // rather than drifting left by half the File button.
+    div [w-grow h-fit row] {}
+}
