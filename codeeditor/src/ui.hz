@@ -437,9 +437,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             }
         };
 
-        ui.watch(() => {
-            ui.now();
-        }, () => {
+        ui.watch(() => ui.now(), (now, previous) => {
             fmt.println("CHANGE");
         });
 

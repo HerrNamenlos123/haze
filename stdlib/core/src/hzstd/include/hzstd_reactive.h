@@ -28,6 +28,26 @@ hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env);
 void* hzstd_computed_read(hzstd_computed_node_t* c);
 void* hzstd_computed_get(hzstd_computed_node_t* comp);
 
+// Turns a computed into an effect. The graph itself stays pull-based: a
+// write still only marks dependents dirty. What a scheduler adds is a
+// notification of exactly that transition, so something (rx.watch) can
+// decide to pull the node later. It is invoked once per clean -> dirty
+// transition, never while a write is still propagating (the write batches
+// every notification it caused and delivers them after its own marking is
+// complete, so a scheduler is free to re-run the node -- which rewrites the
+// very dependency lists the marking walks -- or to write other cells).
+void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_fn_t scheduler, void* env);
+int hzstd_computed_is_dirty(hzstd_computed_node_t* c);
+// Unsubscribes the node from everything it depends on and freezes it: it is
+// never re-run, never re-registers, and its scheduler is never called again.
+void hzstd_computed_stop(hzstd_computed_node_t* c);
+
+// Suspends dependency tracking for the calling code: reads in between
+// register with no computed at all. Returns the tracking context to hand
+// back to hzstd_reactive_resume_tracking.
+hzstd_computed_node_t* hzstd_reactive_pause_tracking(void);
+void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev);
+
 void* hzstd_slot_alloc(size_t size);
 // The slot a computed's wrapper should write its result into: the node's
 // existing cached slot when it is being re-run (same size every time), a

@@ -209,5 +209,55 @@ fn main(): int {
 """,
             [testsuite.mustHave(errorcodes.Code.SyntaxError)]
         );
+
+        // Promote-and-retry must leave a closure with untyped parameters
+        // alone. Here T is only ever deducible from the getter closure, so
+        // the first resolution attempt fails and callExpr() promotes the
+        // deferred closures -- previously ALL of them, including the
+        // callback, which was then elaborated with no expected type and
+        // died with "cannot infer the type of closure parameter 'v'". Only
+        // the getter can stand alone; once it is promoted T is known, and
+        // the callback is elaborated against the substituted signature
+        // like any other deferred closure. This is rx.watch's shape.
+        s.run(
+            "promotion skips closures whose parameters need the callee's signature",
+            """
+fn take<T>(getter: () => T, cb: (v: rx.UnwrapReactive<T>, old: rx.UnwrapReactive<T> | none) => none) {
+    let value = rx.get(getter());
+    cb(value, none);
+    cb(value, value);
+}
+
+fn main(): int {
+    let n = rx.reactive<int>(5);
+    take(() => n, (v, old) => {
+        if old is none {
+            fmt.println(f"first {v}");
+        } else {
+            fmt.println(f"again {v} {old}");
+        }
+    });
+    take(() => "s", (v, old) => {
+        fmt.println(f"str {v}");
+    });
+    // One annotated parameter still seeds deduction of the OTHER generic
+    // while the untyped one is filled in afterwards.
+    take(() => n, (v: int, old) => {
+        if old is not none {
+            fmt.println(f"mixed {v} {old}");
+        }
+    });
+    return 0;
+}
+""",
+            """
+first 5
+again 5 5
+str s
+str s
+mixed 5 5
+"""
+        );
+
     }
 }

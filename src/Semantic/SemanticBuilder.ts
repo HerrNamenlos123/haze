@@ -1845,9 +1845,8 @@ export class SemanticBuilder {
   }
 
   untaggedUnionTypeUse(members: Semantic.TypeUseId[], sourceloc: SourceLoc) {
-    const canonicalMemberSet = new Set<Semantic.TypeUseId>();
-    // Which members have already been taken, compared with type aliases
-    // resolved away.
+    // Members with type aliases resolved away, each mapped to the spelling
+    // it was seen under FIRST.
     //
     // An untagged union carries no tag, so two members that name the SAME
     // type are not just redundant, they are indistinguishable: nothing at
@@ -1858,7 +1857,20 @@ export class SemanticBuilder {
     // the alias's TARGET type. A ternary between a narrowed value and a
     // plainly-typed one therefore produced a bogus two-member union
     // `(Target | Alias)`, which then failed to convert back to `Alias`.
-    const takenResolvedMembers = new Set<Semantic.TypeUseId>();
+    //
+    // The same identity has to hold ACROSS unions, not just within one:
+    // `Alias | none` and `Target | none` are one type, so everything that
+    // canonicalises the union below (member order, the cache key) works on
+    // the resolved ids. Only the spelling kept in `members` is the first one
+    // seen, so a union written in terms of an alias still reports itself
+    // that way. Keying on the spelled ids instead handed
+    // `rx.UnwrapReactive<int> | none` and `int | none` two different
+    // typedefs, and a closure annotated with the one could not be passed
+    // where the other was expected.
+    const spellingByResolvedMember = new Map<
+      Semantic.TypeUseId,
+      Semantic.TypeUseId
+    >();
 
     const processMember = (mId: Semantic.TypeUseId) => {
       const mUse = this.sr.typeUseNodes.get(mId);
@@ -1870,14 +1882,10 @@ export class SemanticBuilder {
         }
       } else {
         const resolved = this.sr.e.resolveAlias(mId);
-        if (takenResolvedMembers.has(resolved)) {
-          // Keep the spelling seen FIRST rather than the resolved one, so
-          // a union written in terms of an alias still reports itself that
-          // way; the two are the same type either way.
+        if (spellingByResolvedMember.has(resolved)) {
           return;
         }
-        takenResolvedMembers.add(resolved);
-        canonicalMemberSet.add(mId);
+        spellingByResolvedMember.set(resolved, mId);
       }
     };
 
@@ -1885,8 +1893,8 @@ export class SemanticBuilder {
       processMember(mId);
     }
 
-    const canonicalMembers = [...canonicalMemberSet];
-    canonicalMembers.sort((a, b) => {
+    const resolvedMembers = [...spellingByResolvedMember.keys()];
+    resolvedMembers.sort((a, b) => {
       const aUse = this.sr.typeUseNodes.get(a);
       const bUse = this.sr.typeUseNodes.get(b);
       const aDef = this.sr.typeDefNodes.get(aUse.type);
@@ -1954,7 +1962,7 @@ export class SemanticBuilder {
       return a - b;
     });
 
-    canonicalMembers.forEach((m) => {
+    resolvedMembers.forEach((m) => {
       const def = this.sr.typeDefNodes.get(this.sr.typeUseNodes.get(m).type);
       if (
         def.variant === Semantic.ENode.PrimitiveDatatype &&
@@ -1964,13 +1972,20 @@ export class SemanticBuilder {
       }
     });
 
+    const canonicalMembers = resolvedMembers.map((r) => {
+      const spelling = spellingByResolvedMember.get(r);
+      assert(spelling !== undefined);
+      return spelling;
+    });
+
     if (canonicalMembers.length === 1) {
       return canonicalMembers[0];
     }
 
-    // Canonicalization: Create a stable key from the sorted members
-    // This ensures that unions with the same members always have the same TypeDefId
-    const canonicalKey = canonicalMembers.map((id) => id.toString()).join(",");
+    // Canonicalization: a stable key from the sorted, alias-resolved members,
+    // so unions with the same members always share one TypeDefId however
+    // they were spelled.
+    const canonicalKey = resolvedMembers.map((id) => id.toString()).join(",");
 
     const existingUnionId = this.sr.elaboratedUntaggedUnions.get(canonicalKey);
     if (existingUnionId !== undefined) {

@@ -992,6 +992,71 @@ export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec
     }
 }
 
+// When a watcher's callback runs relative to the frame's template pass
+// (Vue's `flush` option). See UIContext.flushJobs.
+export enum WatchFlush {
+    // Before the template pass: what the callback writes is rendered in the
+    // same frame. The default.
+    Pre,
+    // After the template pass, once this frame's element refs are bound.
+    Post,
+    // Synchronously, inside the very write that triggered it.
+    Sync,
+}
+
+// Vue's job queue (scheduler.ts) for watcher jobs. Sorted by watcher id --
+// creation order, so a parent's watchers run before its children's -- and
+// a job is never queued twice. A job queued while the queue is flushing
+// lands behind the cursor and runs in the same flush; a job that keeps
+// re-queueing itself is cut off after Vue's 100 runs and skipped, which
+// breaks the cycle.
+export ref struct WatchJobQueue {
+    jobs: []rx.WatchJob = [];
+    flushing: bool = false;
+    cursor: int = 0;
+    generation: int = 0;
+
+    fn queue(job: rx.WatchJob) {
+        let i = 0;
+        if this.flushing {
+            i = this.cursor + 1;
+        }
+        while i < this.jobs.length {
+            let queued = this.jobs[i];
+            if queued.id == job.id {
+                return;
+            }
+            if queued.id > job.id {
+                break;
+            }
+            i = i + 1;
+        }
+        this.jobs.insert(i, job);
+    }
+
+    fn flush() {
+        this.flushing = true;
+        this.generation = this.generation + 1;
+        this.cursor = 0;
+        while this.cursor < this.jobs.length {
+            let job = this.jobs[this.cursor];
+            if job.flushGeneration != this.generation {
+                job.flushGeneration = this.generation;
+                job.runs = 0;
+            }
+            if job.runs >= 100 {
+                fmt.println("[ui] Maximum recursive updates exceeded. A watcher keeps writing state that triggers it again.");
+            } else {
+                job.runs = job.runs + 1;
+                job.run();
+            }
+            this.cursor = this.cursor + 1;
+        }
+        this.jobs.clear();
+        this.flushing = false;
+    }
+}
+
 export ref struct ComponentInstance {
     id: int;
 
@@ -1019,6 +1084,9 @@ export ref struct ComponentInstance {
     onUnmount?: () => none;
     // See UIContext.onFrame.
     onFrame?: () => none;
+    // Every watcher this component's setup created (UIContext.watch); all
+    // stopped when the component is destroyed, like Vue's effect scope.
+    watchers: []rx.WatchHandle = [];
 
     mounted: bool = false;
     crashed: bool = false;
@@ -1269,7 +1337,12 @@ export opaque ref struct UIContext {
     _noEdges: []PointerEdge = [];
 
     renderStack: []RenderContext = [];
-    effectQueue: [](() => void) = [];
+    // Watcher jobs waiting for this frame's flush -- see flushJobs. A job
+    // lands here the moment a write triggers its watcher (UIContext.watch's
+    // scheduler), whether that write came from a handler, a hook, or the
+    // host between frames.
+    _preJobs: WatchJobQueue;
+    _postJobs: WatchJobQueue;
     rootComponent: ComponentInstance | null = null;
     rootTemplate: rx.Computed<none>;
     _framecount: rx.Reactive<int>;
@@ -1301,6 +1374,8 @@ export opaque ref struct UIContext {
     fn constructor(args: UIContextArgs) {
         let ctx = UIContext {
             rootTemplate: rx.computed<none>(() => {}),
+            _preJobs: WatchJobQueue {},
+            _postJobs: WatchJobQueue {},
             _framecount: rx.reactive<int>(0),
             _deltaTime: rx.reactive<real>(0),
             _timeNow: rx.reactive<real>(0),
@@ -2782,10 +2857,10 @@ export opaque ref struct UIContext {
         // (and whatever they captured) alive until next frame's clear().
         eventQueue.clear();
 
-        // FLUSH PHASE
-        this.flushEffects();
-
-        rx.get(this.rootTemplate);
+        // FLUSH PHASE -- Vue's flushJobs: every watcher triggered since the
+        // last flush runs around this frame's template pass, and the
+        // template pass itself happens in here.
+        this.flushJobs();
 
         if !this.rootComponent {
             return none;
@@ -2793,8 +2868,36 @@ export opaque ref struct UIContext {
         return this.rootComponent.rootElement;
     }
 
-    fn scheduleEffect(effect: () => void) {
-        this.effectQueue.push(effect);
+    // Vue's flushJobs(), with the frame as the tick. `pre` watchers run
+    // before the template pass so what they write is rendered this frame;
+    // `post` watchers run after it. Whatever a watcher writes is picked up
+    // in the SAME frame: the template re-runs if it went dirty, and a
+    // watcher triggered by the template pass (an onMounted hook, a ref being
+    // bound) or by another watcher goes round again -- until nothing is
+    // left to run, exactly like Vue keeps flushing until its queue is empty.
+    // Vue's recursion limit applies twice over: a job that keeps
+    // re-queueing itself within one flush is cut off in WatchJobQueue, and
+    // a watcher/template ping-pong across rounds is cut off here, with a
+    // message rather than a hung frame either way.
+    fn flushJobs() {
+        let rounds = 0;
+        while true {
+            this._preJobs.flush();
+            rx.get(this.rootTemplate);
+            if this._preJobs.jobs.length == 0 {
+                this._postJobs.flush();
+            }
+            if this._preJobs.jobs.length == 0 && this._postJobs.jobs.length == 0 {
+                return;
+            }
+            rounds++;
+            if rounds > 100 {
+                fmt.println("[ui] Maximum recursive updates exceeded. A watcher keeps writing state that triggers it (or the template) again.");
+                this._preJobs.jobs.clear();
+                this._postJobs.jobs.clear();
+                return;
+            }
+        }
     }
 
     fn pushRenderContext(ctx: RenderContext) {
@@ -2942,6 +3045,13 @@ export opaque ref struct UIContext {
                 child.component
             );
         }
+
+        // Before the unmount hook, like Vue stops a component's effect scope
+        // before onUnmounted: nothing the hook does can trigger them again.
+        for watcher in component.watchers {
+            watcher.stop();
+        }
+        component.watchers.clear();
 
         if component.onUnmount {
             component.onUnmount();
@@ -3240,39 +3350,56 @@ export opaque ref struct UIContext {
     ref struct WatchOptions {
         immediate?: bool;
         deep?: bool;
+        once?: bool;
+        // When the callback runs relative to the frame's template pass --
+        // see WatchFlush. Default: Pre.
+        flush?: WatchFlush;
     }
 
+    // Vue's watch(), scheduled on the frame. `callback(value, oldValue)`
+    // runs when the value `getter` returns changes; see rx.watch for the
+    // full semantics (immediate, deep, once, onWatcherCleanup, the handle's
+    // stop/pause/resume) -- this adds only the flush timing and the
+    // component binding.
+    //
+    // Call it from a component's setup: the watcher is then stopped with
+    // the component. Called anywhere else it lives until stopped through
+    // the returned handle.
     fn watch<T>(
         getter: () => T,
-        callback: () => none,
+        callback: (value: rx.UnwrapReactive<T>, oldValue: rx.UnwrapReactive<T> | none) => none,
         options: WatchOptions = {}
-    ) {
-        const react = rx.computed(() => {
-            getter();
-            callback();
-            return none;
-        });
-        this.scheduleEffect((): void => {
-            rx.get(react);
-        });
-
-        if options.immediate {
-            callback();
+    ): rx.WatchHandle {
+        let flush = WatchFlush.Pre;
+        let requestedFlush = options.flush;
+        if requestedFlush is not none {
+            flush = requestedFlush;
         }
-    }
 
-
-    // Runs every queued effect in order, including any an effect schedules
-    // while this runs (the loop re-reads the length), then clears the queue
-    // in place -- no per-pop copy of the remaining queue.
-    fn flushEffects() {
-        let i = 0;
-        while i < this.effectQueue.length {
-            let effect = this.effectQueue[i];
-            effect();
-            i = i + 1;
+        let scheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
+            this._preJobs.queue(job);
+        };
+        if flush == WatchFlush.Post {
+            scheduler = (job: rx.WatchJob): none => {
+                this._postJobs.queue(job);
+            };
+        } else if flush == WatchFlush.Sync {
+            scheduler = (job: rx.WatchJob): none => {
+                job.run();
+            };
         }
-        this.effectQueue.clear();
+
+        let handle = rx.watch(getter, callback, {
+            immediate: options.immediate,
+            deep: options.deep,
+            once: options.once,
+            scheduler: scheduler,
+        });
+
+        if this.renderStack.length > 0 {
+            this.getCurrentComponent().watchers.push(handle);
+        }
+        return handle;
     }
 
     // Presets are a parameter pack -- `ui.div(props, children, presets.wFit(),

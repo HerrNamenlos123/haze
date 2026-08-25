@@ -58,6 +58,7 @@ fn main(): int {
     cases_value_equality.register(suite);
     cases_optional_chaining.register(suite);
     cases_overload_aggregate_literal.register(suite);
+    cases_watch.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -18715,6 +18715,14 @@ export function IsExprDecisiveForOverloadResolution(
 // deferred but have no body-inference fallback and must never be promoted). Used by
 // callExpr()'s promote-and-retry logic after a failed generic deduction or an ambiguous
 // overload set.
+//
+// A lambda with a parameter left for inference is excluded: it can only ever be
+// elaborated once the callee's signature supplies that parameter's type, so promoting
+// it cannot succeed -- it would just fail with "cannot infer" instead of letting the
+// OTHER deferred closures (the ones that can stand alone) be promoted and deduce the
+// generics it needs. E.g. `watch(() => n, (v, old) => ...)`: the getter is promoted,
+// T is deduced from it, and the callback is elaborated afterwards against the
+// substituted signature exactly like any other deferred closure.
 function isDeferredClosureArgument(
   sr: Semantic.Context,
   exprId: Collect.ExprId
@@ -18723,5 +18731,14 @@ function isDeferredClosureArgument(
   if (expr.variant === Collect.ENode.ParenthesisExpr) {
     return isDeferredClosureArgument(sr, expr.expr);
   }
-  return expr.variant === Collect.ENode.CallableExpr;
+  if (expr.variant !== Collect.ENode.CallableExpr) {
+    return false;
+  }
+  const funcSym = sr.cc.symbolNodes.get(expr.functionSymbol);
+  if (funcSym.variant !== Collect.ENode.FunctionSymbol) {
+    return false;
+  }
+  return !funcSym.parameters.some(
+    (p) => p.kind === "normal" && p.type === null
+  );
 }

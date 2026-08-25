@@ -1,3 +1,14 @@
+// The watcher whose callback is currently running -- see onWatcherCleanup.
+// File-level rather than a member of the namespace (a variable declared
+// inside `namespace rx` cannot be referenced from outside it with the
+// current compiler), and only ever touched through rx.activeWatcher /
+// rx.setActiveWatcher: those are non-generic, so their bodies compile here
+// in the package, whereas a generic like rx.watch<T> is re-elaborated in
+// the importing module, where this variable does not exist.
+let __rx_activeWatcher: rx.WatchHandle | null = null;
+// Source of WatchHandle.id -- see rx.allocateWatcherId.
+let __rx_nextWatcherId: int = 1;
+
 
 namespace rx {
     export type Deep<T> = builtin.__hz_deep_t<T>;
@@ -122,5 +133,324 @@ namespace rx {
             return value as rx.UnwrapReactive<T>;
         }
         sys.unreachable();
+    }
+
+    // ── watch ────────────────────────────────────────────────────────────
+    //
+    // Vue 3's `watch(source, callback, options)` over this pull-based graph.
+    // A watcher is a computed node (the "effect") that evaluates `getter`
+    // and so subscribes to everything it read, plus a scheduler hooked into
+    // the C core (hzstd_computed_set_scheduler) that is told the moment a
+    // write turns that node dirty. What the scheduler does with the job is
+    // the one thing that differs by host, so it is REQUIRED: core has no
+    // frame loop to default to, and defaulting to "run it inside the write"
+    // would hand every caller Vue's `flush: 'sync'` -- the one mode Vue
+    // makes you ask for -- firing callbacks against half-updated state
+    // under a name that promises the opposite. Say it out loud instead:
+    // `{ scheduler: (job) => job.run() }` is sync, and ui_components hands
+    // in one that queues the job for the frame's flush (Vue's
+    // `pre`/`post`). Everything else -- the dirty check that
+    // coalesces any number of writes into one callback, the old/new value
+    // comparison, `immediate`, `deep`, `once`, cleanups, stop/pause/resume
+    // -- is host-independent and lives here.
+
+    export ref struct WatchOptions {
+        // Run the callback right away, with `oldValue` none. Otherwise the
+        // source is only evaluated to subscribe and remember its value.
+        immediate?: bool;
+        // Also read every reactive nested inside the value the getter
+        // returns (see traverse), so a write anywhere inside it triggers,
+        // and fire on every trigger without comparing values.
+        deep?: bool;
+        // Stop after the callback has fired once.
+        once?: bool;
+        // How a triggered watcher's job gets run. Required -- there is no
+        // default that is not a trap (see above). `(job) => job.run()` is
+        // Vue's `flush: 'sync'`.
+        scheduler: (job: WatchJob) => none;
+    }
+
+    // What a scheduler is handed (Vue's SchedulerJob): the job to run, and
+    // the id of the watcher it belongs to -- creation order, so a queue
+    // sorted by it runs a parent's watchers before a child's, and a job can
+    // be recognised as already queued.
+    export ref struct WatchJob {
+        id: int;
+        run: () => none;
+        // Scheduler bookkeeping (Vue keeps the same on job.flags / its
+        // `seen` map): how often this job ran in the flush identified by
+        // `flushGeneration`, for the recursion limit.
+        runs: int = 0;
+        flushGeneration: int = 0;
+    }
+
+    // What watch() returns. `stop()` is final; pause()/resume() are the
+    // reversible form -- a write while paused is remembered and fires one
+    // job on resume, never lost.
+    export ref struct WatchHandle {
+        // Creation order, unique per process. See WatchJob.id.
+        id: int;
+        _node: cptr;
+        _active: bool = true;
+        _paused: bool = false;
+        // Registered through onWatcherCleanup from inside the callback; run
+        // before the callback fires next, and on stop.
+        _cleanups: [](() => none) = [];
+        _schedule: () => none;
+
+        fn stop() {
+            if !this._active {
+                return;
+            }
+            this._active = false;
+            this.runCleanups();
+            let node = this._node;
+            do unsafe {
+                __c__("hzstd_computed_stop((hzstd_computed_node_t*)node);");
+            };
+        }
+
+        fn pause() {
+            this._paused = true;
+        }
+
+        fn resume() {
+            if !this._paused {
+                return;
+            }
+            this._paused = false;
+            if !this._active {
+                return;
+            }
+            // A write that arrived while paused left the node dirty and its
+            // scheduler call swallowed (see the trigger in watch()); deliver
+            // it now. Vue: pausedQueueEffects.
+            let node = this._node;
+            let dirty = false;
+            do unsafe {
+                __c__("dirty = hzstd_computed_is_dirty((hzstd_computed_node_t*)node) != 0;");
+            };
+            if dirty {
+                this._schedule();
+            }
+        }
+
+        fn runCleanups() {
+            if this._cleanups.length == 0 {
+                return;
+            }
+            let cleanups = this._cleanups;
+            this._cleanups = [];
+            for cleanup in cleanups {
+                cleanup();
+            }
+        }
+    }
+
+    // The watcher whose callback is currently running, if any. See the
+    // note on __rx_activeWatcher for why these two are functions.
+    export fn activeWatcher(): WatchHandle | null {
+        return __rx_activeWatcher;
+    }
+
+    export fn setActiveWatcher(watcher: WatchHandle | null) {
+        __rx_activeWatcher = watcher;
+    }
+
+    // Non-generic for the same reason as activeWatcher(): the counter lives
+    // in this package only.
+    export fn allocateWatcherId(): int {
+        let id = __rx_nextWatcherId;
+        __rx_nextWatcherId = id + 1;
+        return id;
+    }
+
+    // Vue's onWatcherCleanup(): from inside a watcher callback, registers a
+    // function to run right before that callback fires next, and when the
+    // watcher is stopped. Cancel a request, clear a timer, undo a side
+    // effect of the previous run.
+    export fn onWatcherCleanup(cleanup: () => none) {
+        let watcher = activeWatcher();
+        if !watcher {
+            fmt.println("[rx] onWatcherCleanup() was called when there was no active watcher to associate with.");
+            return;
+        }
+        watcher._cleanups.push(cleanup);
+    }
+
+    // Vue's hasChanged() (Object.is). A primitive or enum compares by
+    // value; anything else -- a struct, array, union -- counts as changed on
+    // every run, the way a freshly built object never `is` the previous one.
+    export fn hasChanged<V>(value: V, oldValue: V | none): bool :: final {
+        if oldValue is none {
+            return true;
+        }
+        if comptime V.baseType.category == meta.TypeCategory.Primitive || V.baseType.category == meta.TypeCategory.Enum {
+            return value != oldValue;
+        } else {
+            return true;
+        }
+    }
+
+    // Vue's traverse(): reads every reactive reachable inside `value`, so
+    // the computed this runs in subscribes to all of them. Reactive layers
+    // are read through, struct (and Deep struct) fields and array elements
+    // are walked, union variants are narrowed and walked; primitives, enums
+    // and callables are leaves. A reactive array is iterated directly
+    // rather than read as a whole, which is how its elements' own cells get
+    // read (see the for-each unwrapping in Elaborate.ts).
+    export fn traverse<T>(value: T): none :: final {
+        if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive || T.category == meta.TypeCategory.Computed {
+            if comptime rx.UnwrapReactive<T>.category == meta.TypeCategory.DynamicArray {
+                for element in value {
+                    traverse(element);
+                }
+            } else {
+                traverse(rx.get(value));
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.Deep || T.category == meta.TypeCategory.Struct {
+            for comptime field in T.fields {
+                traverse(value.[field.name]);
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray || T.category == meta.TypeCategory.Array {
+            for element in value {
+                traverse(element);
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.Union {
+            for comptime Variant in T.variants {
+                if value is Variant {
+                    traverse(value as Variant);
+                }
+            }
+        }
+        else {
+            // Leaf.
+        }
+        return none;
+    }
+
+    // Per-watcher state that needs the value type; the handle itself is
+    // type-erased so hosts can keep watchers in a plain list.
+    export ref struct WatchState<V> {
+        oldValue: V | none = none;
+    }
+
+    // Runs `callback(value, oldValue)` whenever the value `getter` returns
+    // changes -- see the section comment above for the mechanics, and
+    // ui_components.UIContext.watch for the frame-scheduled version.
+    //
+    // `getter` runs tracked, inside the watcher's own node. `callback` runs
+    // untracked: nothing it reads becomes a dependency of anything.
+    export fn watch<T>(
+        getter: () => T,
+        callback: (value: rx.UnwrapReactive<T>, oldValue: rx.UnwrapReactive<T> | none) => none,
+        options: WatchOptions
+    ): WatchHandle {
+        let deep = false;
+        if options.deep {
+            deep = true;
+        }
+        let once = false;
+        if options.once {
+            once = true;
+        }
+
+        let node = rx.computed(() => {
+            let value = getter();
+            if deep {
+                traverse(value);
+            }
+            return value;
+        });
+        let nodePtr: cptr = none as cptr;
+        do unsafe {
+            __c__("nodePtr = (void*)node;");
+        };
+
+        let state = WatchState<rx.UnwrapReactive<T>> { oldValue: none };
+        // `_schedule` is filled in below once the trigger exists; the trigger
+        // has to capture the handle, so the handle comes first.
+        let handle = WatchHandle { id: allocateWatcherId(), _node: nodePtr, _schedule: (): none => {} };
+
+        // Vue: effect.run(). The source is evaluated with the watcher's node
+        // as the only tracking context, never the caller's: watch() is
+        // routinely called from inside a component's setup, which runs
+        // under the parent's template computed, and the watcher must not
+        // become a dependency of that.
+        let run = () => {
+            let prev: cptr = none as cptr;
+            do unsafe {
+                __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+            };
+            let value = rx.get(node);
+            do unsafe {
+                __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+            };
+            return value;
+        };
+
+        // Vue: job(immediateFirstRun).
+        let job = (immediateFirstRun: bool): none => {
+            if !handle._active {
+                return;
+            }
+            // Copied out of the capture: raw C can only name plain locals.
+            let ptr = nodePtr;
+            let dirty = false;
+            do unsafe {
+                __c__("dirty = hzstd_computed_is_dirty((hzstd_computed_node_t*)ptr) != 0;");
+            };
+            // Any number of writes between two runs mark the node dirty
+            // once and so schedule once; a job that finds it clean has
+            // nothing to do (Vue: `!effect.dirty && !immediateFirstRun`).
+            if !dirty && !immediateFirstRun {
+                return;
+            }
+            let newValue = run();
+            if deep || hasChanged(newValue, state.oldValue) {
+                handle.runCleanups();
+                let prevActive = activeWatcher();
+                setActiveWatcher(handle);
+                callback(newValue, state.oldValue);
+                setActiveWatcher(prevActive);
+                state.oldValue = newValue;
+                if once {
+                    handle.stop();
+                }
+            }
+        };
+        let runJob = (): none => {
+            job(false);
+        };
+        let watchJob = WatchJob { id: handle.id, run: runJob };
+
+        // Vue: effect.scheduler / effect.trigger(). Called by the C core once
+        // per clean -> dirty transition of the node.
+        let trigger = (): none => {
+            if handle._paused {
+                // The node stays dirty; resume() delivers it.
+                return;
+            }
+            options.scheduler(watchJob);
+        };
+        handle._schedule = trigger;
+
+        let schedulerWrapper = (): cptr => {
+            trigger();
+            return none as cptr;
+        };
+        do unsafe {
+            __c__("hzstd_computed_set_scheduler(node, schedulerWrapper.fn, schedulerWrapper.env);");
+        };
+
+        if options.immediate {
+            job(true);
+        } else {
+            state.oldValue = run();
+        }
+        return handle;
     }
 }

@@ -1,0 +1,278 @@
+
+// Regression coverage for rx.watch() -- Vue 3's watch() over the pull-based
+// reactive graph (stdlib/core/src/reactive.hz, hzstd_reactive.c).
+//
+// Context: the component system's watch() used to build a computed that
+// ran the callback and push ONE closure reading it onto a one-shot effect
+// queue, so the callback fired exactly once at the end of the first frame,
+// regardless of any change, and never again -- the core had no way to tell
+// anyone that a node went dirty. Now a computed can carry a scheduler
+// (hzstd_computed_set_scheduler) that the core calls once per clean ->
+// dirty transition, after the write that caused it has finished marking;
+// rx.watch builds on that. These cases pin the Vue semantics down with a
+// hand-driven scheduler (a job queue flushed by the test), which is what
+// ui_components.UIContext.watch does per frame.
+//
+// Everything is one compile + run, per the note in framework.hz.
+
+namespace cases_watch {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "rx.watch: coalescing, old/new values, immediate, once, sync, deep, computed source, untracked callback, cleanup, pause/resume, stop",
+            """ref struct Inner {
+    a: int;
+}
+
+ref struct Outer {
+    inner: Inner;
+    items: []int;
+}
+
+ref struct Queue {
+    jobs: []rx.WatchJob = [];
+
+    mut fn flush() {
+        let i = 0;
+        while i < this.jobs.length {
+            let job = this.jobs[i];
+            job.run();
+            i = i + 1;
+        }
+        this.jobs.clear();
+    }
+}
+
+fn main(): int {
+    let queue = Queue {};
+    let scheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
+        queue.jobs.push(job);
+    };
+
+    // ── basic: coalescing, old/new values, hasChanged, stop ─────────────
+    let n = rx.reactive<int>(1);
+    let calls: ref Box<int> = { value: 0 };
+    let lastNew: ref Box<int> = { value: -1 };
+    let lastOld: ref Box<int> = { value: -1 };
+    let h = rx.watch(() => n, (v, old) => {
+        calls.value++;
+        lastNew.value = v;
+        if old is none {
+            lastOld.value = -99;
+        } else {
+            lastOld.value = old;
+        }
+    }, { scheduler: scheduler });
+    assert(calls.value == 0, "not immediate by default");
+    assert(queue.jobs.length == 0, "nothing scheduled on creation");
+    n := 2;
+    n := 3;
+    assert(queue.jobs.length == 1, "two writes schedule one job");
+    assert(calls.value == 0, "nothing fires before the flush");
+    queue.flush();
+    assert(calls.value == 1, "one callback for the flush");
+    assert(lastNew.value == 3 && lastOld.value == 1, "callback sees (3, 1)");
+    n := 3;
+    assert(queue.jobs.length == 1, "a same-value write still dirties and schedules");
+    queue.flush();
+    assert(calls.value == 1, "but an unchanged value does not fire the callback");
+    n := 4;
+    queue.flush();
+    assert(calls.value == 2 && lastNew.value == 4 && lastOld.value == 3, "next change sees (4, 3)");
+    h.stop();
+    n := 5;
+    assert(queue.jobs.length == 0, "a stopped watcher never schedules");
+    queue.flush();
+    assert(calls.value == 2, "a stopped watcher never fires");
+
+    // ── immediate ───────────────────────────────────────────────────────
+    let immCalls: ref Box<int> = { value: 0 };
+    let immFirstOldWasNone: ref Box<bool> = { value: false };
+    let hImm = rx.watch(() => n, (v, old) => {
+        immCalls.value++;
+        if immCalls.value == 1 {
+            immFirstOldWasNone.value = old is none;
+            assert(v == 5, "immediate call sees the current value");
+        }
+    }, { immediate: true, scheduler: scheduler });
+    assert(immCalls.value == 1, "immediate fires synchronously on creation");
+    assert(immFirstOldWasNone.value, "immediate first call has no old value");
+    n := 6;
+    queue.flush();
+    assert(immCalls.value == 2, "and keeps watching afterwards");
+    hImm.stop();
+
+    // ── once ────────────────────────────────────────────────────────────
+    let onceCalls: ref Box<int> = { value: 0 };
+    rx.watch(() => n, (v, old) => {
+        onceCalls.value++;
+    }, { once: true, scheduler: scheduler });
+    n := 7;
+    queue.flush();
+    assert(onceCalls.value == 1, "once fires the first change");
+    n := 8;
+    assert(queue.jobs.length == 0, "once: stopped after the first callback");
+    queue.flush();
+    assert(onceCalls.value == 1, "once never fires again");
+
+    // ── sync: a scheduler that runs the job at once ─────────────────────
+    // Vue's `flush: 'sync'`, which core makes you ask for -- `scheduler` is
+    // required precisely so this is never what a caller gets by accident.
+    let syncCalls: ref Box<int> = { value: 0 };
+    let syncScheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
+        job.run();
+    };
+    let hSync = rx.watch(() => n, (v, old) => {
+        syncCalls.value++;
+        assert(v == 9, "sync sees the written value");
+    }, { scheduler: syncScheduler });
+    n := 9;
+    assert(syncCalls.value == 1, "a job.run() scheduler runs the callback inside the write");
+    hSync.stop();
+
+    // ── deep ────────────────────────────────────────────────────────────
+    let o = rx.reactive<Outer>(Outer { inner: Inner { a: 1 }, items: [1] });
+    let shallowCalls: ref Box<int> = { value: 0 };
+    let deepCalls: ref Box<int> = { value: 0 };
+    rx.watch(() => o, (v, old) => {
+        shallowCalls.value++;
+    }, { scheduler: scheduler });
+    rx.watch(() => o, (v, old) => {
+        deepCalls.value++;
+    }, { deep: true, scheduler: scheduler });
+    o.inner.a := 2;
+    queue.flush();
+    assert(shallowCalls.value == 0, "a nested write does not trigger a shallow watcher");
+    assert(deepCalls.value == 1, "a nested write triggers a deep watcher");
+    o.items.push(2);
+    queue.flush();
+    assert(shallowCalls.value == 0, "a nested array push does not trigger a shallow watcher");
+    assert(deepCalls.value == 2, "a nested array push triggers a deep watcher");
+    // A struct value has no identity to compare: like Vue's Object.is on a
+    // fresh object, every trigger counts as a change.
+    let so = rx.shallowReactive<Outer>(Outer { inner: Inner { a: 1 }, items: [] });
+    let replaceCalls: ref Box<int> = { value: 0 };
+    rx.watch(() => so, (v, old) => {
+        replaceCalls.value++;
+    }, { scheduler: scheduler });
+    so := Outer { inner: Inner { a: 3 }, items: [] };
+    queue.flush();
+    assert(replaceCalls.value == 1, "replacing a struct value fires");
+
+    // ── computed source ─────────────────────────────────────────────────
+    let doubled = rx.computed(() => n * 2);
+    let compCalls: ref Box<int> = { value: 0 };
+    let compLast: ref Box<int> = { value: 0 };
+    rx.watch(() => doubled, (v, old) => {
+        compCalls.value++;
+        compLast.value = v;
+    }, { scheduler: scheduler });
+    n := 10;
+    queue.flush();
+    assert(compCalls.value == 1 && compLast.value == 20, "a computed source is watched through");
+
+    // ── the callback runs untracked ─────────────────────────────────────
+    let other = rx.reactive<int>(0);
+    let side = rx.reactive<int>(0);
+    let untrackedCalls: ref Box<int> = { value: 0 };
+    rx.watch(() => n, (v, old) => {
+        untrackedCalls.value++;
+        let peek = other + 0;
+        side := side + 1;
+    }, { scheduler: scheduler });
+    n := 11;
+    queue.flush();
+    assert(untrackedCalls.value == 1, "fires on its source");
+    other := 1;
+    assert(queue.jobs.length == 0, "a reactive read inside the callback is not a dependency");
+    assert(side == 1, "writes inside the callback happen");
+    queue.flush();
+    assert(untrackedCalls.value == 1, "no re-trigger from the callback's own reads or writes");
+
+    // ── cleanup ─────────────────────────────────────────────────────────
+    let cleanups: ref Box<int> = { value: 0 };
+    let cleanupCalls: ref Box<int> = { value: 0 };
+    let cleanupFn: () => none = (): none => {
+        cleanups.value++;
+    };
+    let hClean = rx.watch(() => n, (v, old) => {
+        cleanupCalls.value++;
+        assert(cleanups.value == cleanupCalls.value - 1, "the previous run's cleanup ran before this callback");
+        rx.onWatcherCleanup(cleanupFn);
+    }, { scheduler: scheduler });
+    n := 12;
+    queue.flush();
+    assert(cleanupCalls.value == 1 && cleanups.value == 0, "first run: nothing to clean up yet");
+    n := 13;
+    queue.flush();
+    assert(cleanupCalls.value == 2 && cleanups.value == 1, "second run: first run's cleanup ran");
+    hClean.stop();
+    assert(cleanups.value == 2, "stop runs the pending cleanup");
+    hClean.stop();
+    assert(cleanups.value == 2, "stopping twice is a no-op");
+
+    // ── pause / resume ──────────────────────────────────────────────────
+    // Its own source: earlier watchers on `n` are still live and would
+    // queue jobs of their own.
+    let p = rx.reactive<int>(0);
+    let pauseCalls: ref Box<int> = { value: 0 };
+    let hPause = rx.watch(() => p, (v, old) => {
+        pauseCalls.value++;
+    }, { scheduler: scheduler });
+    hPause.pause();
+    p := 14;
+    p := 15;
+    assert(queue.jobs.length == 0, "a paused watcher does not schedule");
+    hPause.resume();
+    assert(queue.jobs.length == 1, "resume schedules the change that arrived while paused");
+    queue.flush();
+    assert(pauseCalls.value == 1, "and it fires once");
+    hPause.resume();
+    hPause.pause();
+    hPause.resume();
+    assert(queue.jobs.length == 0, "resume with nothing pending schedules nothing");
+    hPause.stop();
+
+    // ── created inside a computed: no dependency leaks into it ──────────
+    let outerRuns: ref Box<int> = { value: 0 };
+    let innerCalls: ref Box<int> = { value: 0 };
+    let outer = rx.computed(() => {
+        outerRuns.value++;
+        rx.watch(() => n, (v, old) => {
+            innerCalls.value++;
+        }, { scheduler: scheduler });
+        return 0;
+    });
+    rx.get(outer);
+    assert(outerRuns.value == 1, "outer computed ran once");
+    n := 16;
+    queue.flush();
+    assert(innerCalls.value == 1, "the inner watcher works");
+    rx.get(outer);
+    assert(outerRuns.value == 1, "the outer computed did not depend on the watcher's source");
+
+    // ── string source ───────────────────────────────────────────────────
+    let s = rx.reactive<str>("a");
+    let strCalls: ref Box<int> = { value: 0 };
+    rx.watch(() => s, (v: str, old) => {
+        strCalls.value++;
+        if old is not none {
+            assert(old == "a" && v == "b", "string old/new values");
+        }
+    }, { scheduler: scheduler });
+    s := "a";
+    queue.flush();
+    assert(strCalls.value == 0, "an equal string does not fire");
+    s := "b";
+    queue.flush();
+    assert(strCalls.value == 1, "a different string fires");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok"
+        );
+    }
+}

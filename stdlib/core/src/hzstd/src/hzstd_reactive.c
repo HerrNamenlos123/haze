@@ -7,6 +7,19 @@
 
 static hzstd_computed_node_t* g_current_computed = NULL;
 
+// Effects whose scheduler is owed a call, collected while a write is
+// marking the graph dirty and delivered once it is done -- see
+// hzstd_computed_set_scheduler in the header for why they are not called
+// from inside the marking walk.
+static hzstd_computed_node_t** g_pending_effects = NULL;
+static size_t g_pending_effects_len = 0;
+static size_t g_pending_effects_cap = 0;
+// > 0 while a write is marking. Nested writes (a scheduler writing a cell)
+// only ever happen with the depth back at 0, so they deliver their own
+// notifications right away, in order, like any other write.
+static int g_write_depth = 0;
+static int g_delivering_effects = 0;
+
 // TODO: The dirty marking system is deeply recursive.
 // On very large reactive graphs, marking dirty may lead to a stack overflow
 // This should be fixed in the future by doing it linearly but that is complex
@@ -61,6 +74,9 @@ hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env)
   c->cached_size = 0;
   c->fn = fn;
   c->env = env;
+  c->scheduler = NULL;
+  c->scheduler_env = NULL;
+  c->stopped = 0;
   c->deps = NULL;
   c->free_deps = NULL;
   c->free_edges = NULL;
@@ -121,7 +137,7 @@ void* hzstd_computed_read(hzstd_computed_node_t* c)
 
 void* hzstd_computed_get(hzstd_computed_node_t* comp)
 {
-  if (!comp->dirty) {
+  if (!comp->dirty || comp->stopped) {
     return comp->cached;
   }
 
@@ -148,6 +164,38 @@ hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial)
   return cell;
 }
 
+static void queue_effect(hzstd_computed_node_t* comp)
+{
+  if (g_pending_effects_len == g_pending_effects_cap) {
+    size_t cap = g_pending_effects_cap ? g_pending_effects_cap * 2 : 16;
+    g_pending_effects = hzstd_heap_realloc(g_pending_effects, cap * sizeof(*g_pending_effects), "hzstd_pending_effects");
+    g_pending_effects_cap = cap;
+  }
+  g_pending_effects[g_pending_effects_len++] = comp;
+}
+
+// Delivers every queued scheduler call in the order the nodes went dirty.
+// A scheduler may write cells, and those writes queue and deliver their
+// own notifications while this loop is still running -- the guard keeps
+// the nested delivery from draining the list out from under the outer
+// one; the outer loop reaches the appended entries itself.
+static void deliver_effects(void)
+{
+  if (g_delivering_effects) {
+    return;
+  }
+  g_delivering_effects = 1;
+  for (size_t i = 0; i < g_pending_effects_len; i++) {
+    hzstd_computed_node_t* comp = g_pending_effects[i];
+    g_pending_effects[i] = NULL;
+    if (comp->scheduler && !comp->stopped) {
+      comp->scheduler(comp->scheduler_env);
+    }
+  }
+  g_pending_effects_len = 0;
+  g_delivering_effects = 0;
+}
+
 static void mark_dirty(hzstd_node_t* node)
 {
   hzstd_dep_edge_t* edge = node->dependents;
@@ -157,6 +205,9 @@ static void mark_dirty(hzstd_node_t* node)
 
     if (!comp->dirty) {
       comp->dirty = 1;
+      if (comp->scheduler) {
+        queue_effect(comp);
+      }
       mark_dirty(&comp->base);
     }
 
@@ -175,8 +226,38 @@ void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell)
 void hzstd_reactive_cell_write(hzstd_reactive_cell_t* cell, void* value)
 {
   cell->value = value;
+  g_write_depth++;
   mark_dirty(&cell->base);
+  g_write_depth--;
+  if (g_write_depth == 0) {
+    deliver_effects();
+  }
 }
+
+void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_fn_t scheduler, void* env)
+{
+  c->scheduler = scheduler;
+  c->scheduler_env = env;
+}
+
+int hzstd_computed_is_dirty(hzstd_computed_node_t* c) { return c->dirty; }
+
+void hzstd_computed_stop(hzstd_computed_node_t* c)
+{
+  clear_dependencies(c);
+  c->stopped = 1;
+  c->scheduler = NULL;
+  c->scheduler_env = NULL;
+}
+
+hzstd_computed_node_t* hzstd_reactive_pause_tracking(void)
+{
+  hzstd_computed_node_t* prev = g_current_computed;
+  g_current_computed = NULL;
+  return prev;
+}
+
+void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev) { g_current_computed = prev; }
 
 void* hzstd_slot_alloc(size_t size) { return hzstd_heap_allocate(size, NULL); }
 

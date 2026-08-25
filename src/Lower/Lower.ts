@@ -1340,13 +1340,16 @@ export function lowerExpr(
       const typeId = lowerTypeUse(lr, expr.type);
       const type = lr.typeUseNodes.get(typeId);
 
+      // Through any alias: an operand narrowed out of an alias-spelled
+      // union (`rx.UnwrapReactive<str> | none`) is typed by the alias, and
+      // is every bit as much a str as one spelled plainly.
       const leftExpr = lr.sr.exprNodes.get(expr.left);
       const leftType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(leftExpr.type).type
+        lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(leftExpr.type)).type
       );
       const rightExpr = lr.sr.exprNodes.get(expr.right);
       const rightType = lr.sr.typeDefNodes.get(
-        lr.sr.typeUseNodes.get(rightExpr.type).type
+        lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(rightExpr.type)).type
       );
 
       if (

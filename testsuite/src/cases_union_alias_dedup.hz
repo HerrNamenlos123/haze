@@ -159,5 +159,67 @@ variation_f: Other branch, union kept two members
 variation_g: 3 -1
 """
         );
+
+        // The identity has to hold ACROSS unions too, not only within one.
+        // `rx.UnwrapReactive<int> | none` and `int | none` name the same
+        // type, but untaggedUnionTypeUse keyed its cache on the members'
+        // SPELLED ids, so the two spellings produced two typedefs -- and a
+        // closure annotated with one could not be passed where the other
+        // was expected ("the parameters #1 are not compatible"), which is
+        // exactly what happens when a generic signature spells a parameter
+        // through an alias (`(v: rx.UnwrapReactive<T>, old:
+        // rx.UnwrapReactive<T> | none)`) and the caller writes it plainly.
+        s.run(
+            "a union is one type however its members are spelled (alias vs target)",
+            """
+fn plainAlias(cb: (v: rx.UnwrapReactive<int> | none) => none) {
+    cb(1);
+    cb(none);
+}
+
+fn genericAlias<T>(getter: () => T, cb: (v: rx.UnwrapReactive<T>, old: rx.UnwrapReactive<T> | none) => none) {
+    let value = rx.get(getter());
+    cb(value, none);
+    cb(value, value);
+}
+
+fn main(): int {
+    plainAlias((v: int | none) => {
+        if v is none {
+            fmt.println("plain: none");
+        } else {
+            fmt.println(f"plain: {v}");
+        }
+    });
+
+    let n = rx.reactive<int>(3);
+    genericAlias(() => n, (v: int, old: int | none) => {
+        if old is none {
+            fmt.println(f"generic: {v} first");
+        } else {
+            fmt.println(f"generic: {v} same={v == old}");
+        }
+    });
+
+    // And the reverse direction: an alias-spelled annotation passed where
+    // the plain spelling is expected.
+    let take = (cb: (v: int | none) => none): none => { cb(7); };
+    take((v: rx.UnwrapReactive<int> | none) => {
+        if v is not none {
+            fmt.println(f"reverse: {v}");
+        }
+    });
+    return 0;
+}
+""",
+            """
+plain: 1
+plain: none
+generic: 3 first
+generic: 3 same=true
+reverse: 7
+"""
+        );
+
     }
 }

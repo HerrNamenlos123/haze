@@ -733,6 +733,14 @@ struct hzstd_computed_node_t {
   hzstd_computed_fn_t fn;
   void *env;
 
+  // An effect (see hzstd_computed_set_scheduler): called once when the node
+  // goes clean -> dirty, after the write that dirtied it has finished
+  // propagating. NULL for a plain computed, which is only ever pulled.
+  hzstd_computed_fn_t scheduler;
+  void *scheduler_env;
+  // Set by hzstd_computed_stop: the node never runs or subscribes again.
+  int stopped;
+
   hzstd_cell_dep_t *deps;
   // Edge/dep records unlinked by the last clear_dependencies(), kept for
   // reuse: a computed almost always re-registers the very same
