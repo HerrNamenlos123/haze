@@ -1,0 +1,615 @@
+
+// Last path segment, for the tab label. A tab strip has room for a name,
+// not for a path, and the name is what identifies the file to a reader.
+fn fileNameOf(path: str): str {
+    let start = 0;
+    for (let i = 0; i < path.length; i++) {
+        if path[i] == b"/" || path[i] == b"\\" {
+            start = i + 1;
+        }
+    }
+    if start >= path.length {
+        return path;
+    }
+    return path.slice(start, path.length);
+}
+
+// The application shell: the set of open files, which one is showing, and
+// the commands that change either. It owns no editing state of its own --
+// that all lives inside the per-file EditorView instances, which is what
+// lets this stay small and lets a tab keep its place when you leave it.
+export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
+    ui.defineComponent(0, {} as RootArgs, (instance: ui_components.InstanceData<RootArgs>) => {
+
+        // The ONE cache for the process -- see appcache.hz. This used to
+        // build a second CacheFile over the same path as main.hz's, which
+        // meant every tab-list write went to an instance nobody ever
+        // flushed while the flushed instance was never written.
+        let cache = appCache();
+
+        // The open tabs, and which one is showing.
+        //
+        // `tabs` is shallow-reactive and mutated in place: the array is a
+        // list of small descriptors, and rebuilding it wholesale on every
+        // open/close would be both wasteful and beside the point, since
+        // what actually matters (the editors) is keyed by tab id and
+        // untouched by any of this.
+        let tabs = rx.shallowReactive<[]tabs_lib.TabItem>([]);
+        let activeKey = rx.reactive<int>(-1);
+        // Tab keys must be unique for the life of the tab and must never
+        // be reused, because a key IS a component identity: hand a new tab
+        // the key of a closed one and the component system would recognise
+        // it as the same component and hand back the dead tab's editor,
+        // document and all. A counter that only ever goes up cannot do
+        // that. An index would be exactly the wrong choice -- closing a
+        // tab renumbers every tab after it.
+        let nextKey = rx.reactive<int>(0);
+        // Paths, parallel to `tabs` by position. Kept out of TabItem
+        // because that is the generic component's own type, which has no
+        // business knowing this application stores files.
+        //
+        // A plain array rather than a reactive one: it is only ever read
+        // from inside code that has already depended on `tabs` (they are
+        // mutated together, in the same functions), so `tabs` is the single
+        // reactive trigger for both and a second one would add nothing but
+        // a wrapper around every element.
+        let paths: []str = [];
+
+        let pathForKey = (key: int): str => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            for (let i = 0; i < items.length && i < paths.length; i++) {
+                if items[i].key == key {
+                    return paths[i];
+                }
+            }
+            return "";
+        };
+
+        let isOpen = (path: str): int => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            for (let i = 0; i < items.length && i < paths.length; i++) {
+                if paths[i] == path {
+                    return items[i].key;
+                }
+            }
+            return -1;
+        };
+
+        // Remember the open set across restarts, so the editor comes back
+        // up where it was left rather than empty.
+        let persist = () => {
+            let saved = "";
+            for p in paths {
+                saved = saved.length > 0 ? saved + "\n" + p : p;
+            }
+            cache.data.openFiles := saved;
+            cache.data.activeFile := pathForKey(rx.get(activeKey));
+        };
+
+        let openFile = (path: str) => {
+            if path.length == 0 {
+                return;
+            }
+            // Focusing an already-open file rather than opening a second
+            // copy of it: two tabs on one path would be two editors on one
+            // highlighter document, fighting over the same uri.
+            let existing = isOpen(path);
+            if existing >= 0 {
+                activeKey := existing;
+                persist();
+                return;
+            }
+            let key = rx.get(nextKey);
+            nextKey := key + 1;
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            items.push(tabs_lib.TabItem {
+                key: key,
+                title: fileNameOf(path),
+            });
+            tabs := items;
+            paths.push(path);
+            activeKey := key;
+            persist();
+        };
+
+        let closeTab = (key: int) => {
+            let items: []tabs_lib.TabItem = rx.get(tabs);
+            let index = -1;
+            for (let i = 0; i < items.length; i++) {
+                if items[i].key == key {
+                    index = i;
+                    break;
+                }
+            }
+            if index < 0 {
+                return;
+            }
+            // Autosave before the editor goes away. Closing is a way of
+            // leaving a buffer like any other, but it is the one way that
+            // never produces a blur -- see DocumentRegistry.requestClose.
+            //
+            // It can also say no: a file that changed underneath an edited
+            // buffer cannot be written without an answer, and closing
+            // anyway would throw that buffer away. The dialog is now up and
+            // this tab stays until it is answered. `:q!` and `:qa!` get
+            // past this by abandoning their changes first, which clears the
+            // flags requestClose reads.
+            if !documents().requestClose(key) {
+                return;
+            }
+
+            items.remove(index);
+            if index < paths.length {
+                paths.remove(index);
+            }
+            tabs := items;
+            // The editor for this tab is about to be unmounted, and there
+            // is no unmount hook -- so its entry has to be dropped from
+            // here, or the registry would keep handing out closures over a
+            // document nothing can see any more (and "save everything
+            // dirty" would try to write it).
+            documents().unregister(key);
+
+            // Closing the tab you were looking at moves you to its
+            // neighbour -- the one to the left, or the first one if it was
+            // already leftmost -- which is what every editor does. Closing
+            // any other tab must not move you at all.
+            if rx.get(activeKey) == key {
+                if items.length == 0 {
+                    activeKey := -1;
+                } else {
+                    let next = index - 1;
+                    if next < 0 { next = 0; }
+                    if next >= items.length { next = items.length - 1; }
+                    activeKey := items[next].key;
+                }
+            }
+            persist();
+        };
+
+        // Created HERE, in the setup body, not inside the template closure
+        // below -- and that is the whole difference between one allocation per
+        // component instance and one per rebuild.
+        //
+        // A lambda that captures anything needs an environment block, and that
+        // block has to outlive the frame that built it whenever the lambda is
+        // stored somewhere (here: into TabsArgs, which ui_components keeps in
+        // the element's runtime data and calls back at event-dispatch time,
+        // possibly many frames later, since the template is a cached computed
+        // that only re-runs when something it reads changes). So it cannot go
+        // on the stack, and escape analysis is right to heap-allocate it.
+        //
+        // What it does NOT have to be is rebuilt every time the template runs.
+        // Everything these two capture -- activeKey, persist, closeTab -- is
+        // setup-scope and never rebound, so the closure built once here is
+        // valid forever; the template just names it. Written inline in the
+        // TabsArgs literal instead (as they were), they were two fresh
+        // allocations on every single rebuild.
+        let onSelectTab = (key: int) => {
+            activeKey := key;
+            persist();
+        };
+        let onCloseTab = (key: int) => {
+            closeTab(key);
+        };
+
+        // Restore the previous session, falling back to asking for a file
+        // when there is nothing to restore.
+        let restored = false;
+        let savedFiles = cache.data.openFiles as str;
+        if savedFiles.length > 0 {
+            for path in savedFiles.split("\n") {
+                if path.length > 0 {
+                    openFile(path);
+                    restored = true;
+                }
+            }
+        }
+        if cache.data.activeFile {
+            let key = isOpen(cache.data.activeFile as str);
+            if key >= 0 {
+                activeKey := key;
+            }
+        }
+        // Migration path for a cache written by the single-file version,
+        // which stored one `file` and knew nothing about a tab list.
+        if !restored && cache.data.file {
+            openFile(cache.data.file as str);
+        }
+
+        // Menu-bar state, shared by the two halves of the title bar (the
+        // row, and the floating menu that must be declared at the very end
+        // of the tree -- see titlebar.hz for why they cannot be one
+        // component).
+        let titleBarState = TitleBarState(ui);
+
+        // Handle on the application root, purely so the conflict dialog can
+        // be told how big the window is: its scrim has to cover the whole
+        // of it, and a floating element is positioned against its
+        // containing block rather than stretched to fill it. See dialog.hz.
+        let rootRef: ui_components.ElementRef<ui_elements.DivElement> =
+            rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+        // What the conflict dialog's three answers are while no conflict is
+        // open. Built ONCE here rather than as a literal in the args below,
+        // which the template rebuilds on every render -- see the note on
+        // onSelectTab for why a stored closure must not be re-allocated per
+        // frame.
+        let noAnswer: DocAction = () => {};
+
+        // The tab list as the strip draws it: the shell's own list plus the
+        // unsaved-changes dot, which belongs to the editor and is reached
+        // through the registry (see documents.hz).
+        //
+        // A derived copy rather than mutating the stored TabItems, because
+        // `tabs` is the shell's model and `modified` is not part of it --
+        // the shell has no idea whether a file has unsaved changes and
+        // should not start keeping a second, staler copy of the answer.
+        // Recomputed only when a tab opens or closes, an editor registers,
+        // or some tab's dirty flag actually flips.
+        let tabItems = rx.computed(() => {
+            rx.get(documents().generation);
+            let source: []tabs_lib.TabItem = rx.get(tabs);
+            let out: []tabs_lib.TabItem = [];
+            for item in source {
+                out.push(tabs_lib.TabItem {
+                    key: item.key,
+                    title: item.title,
+                    modified: documents().isDirty(item.key),
+                });
+            }
+            return out;
+        });
+
+        // Hoisted for the same reason as onSelectTab/onCloseTab above: both are
+        // stored (one into the div's runtime data, one into TabsArgs) and read
+        // back at dispatch/render time, so their env has to be heap -- but
+        // everything they capture is setup-scope and never rebound, so that env
+        // only ever needs building once, not on every template rebuild.
+        let dismissMenusOnPressCapture = (event: ui_components.PointerEvent) => {
+            dismissMenusOnPress(titleBarState);
+        };
+        let renderTabContent = (key: int) => {
+            CodeTabsComponent(ui, {
+                id: key,
+                filePath: pathForKey(key),
+                active: key == rx.get(activeKey),
+            });
+        };
+
+        let promptForFile = () => {
+            if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
+                openFile(picked.path);
+            }
+        };
+
+        // Tab cycling, lifted out of the old key handler so it can
+        // be named as a command instead. +1 is the next tab, -1 the
+        // previous; both wrap.
+        let cycleEditor = (delta: int) => {
+            let all: []tabs_lib.TabItem = rx.get(tabs);
+            if all.length <= 1 {
+                return;
+            }
+            let key = rx.get(activeKey);
+            let index = 0;
+            for (let i = 0; i < all.length; i++) {
+                if all[i].key == key {
+                    index = i;
+                    break;
+                }
+            }
+            let next = index + delta;
+            if next < 0 { next = all.length - 1; }
+            if next >= all.length { next = 0; }
+            activeKey := all[next].key;
+            persist();
+        };
+
+        let closeActiveEditor = () => {
+            let key = rx.get(activeKey);
+            if key >= 0 {
+                closeTab(key);
+            }
+        };
+
+        // `:qa` and friends. Walks the list from the END, because closing a
+        // tab removes it from the very array being walked.
+        let closeAllEditors = () => {
+            let all: []tabs_lib.TabItem = rx.get(tabs);
+            let i = all.length - 1;
+            while i >= 0 {
+                closeTab(all[i].key);
+                i = i - 1;
+            }
+        };
+
+        // Hand the shell's own actions to the command registry under their
+        // VS Code ids. Which KEYS reach them is not decided here -- that is
+        // the rule table in editor_keymap.hz, and neither half knows the
+        // other's contents.
+        registerWorkbenchCommands(keybindings(), WorkbenchCommands {
+            openFile: () => { promptForFile(); },
+            openFolder: () => { promptForWorkspace(); },
+            closeFolder: () => { closeWorkspace(); },
+            // No command palette to list recents in yet, so this opens the
+            // File menu, which is where they are.
+            openRecent: () => { titleBarState.openMenu := menuFile(); },
+            closeActiveEditor: () => { closeActiveEditor(); },
+            closeAllEditors: () => { closeAllEditors(); },
+            nextEditor: () => { cycleEditor(1); },
+            previousEditor: () => { cycleEditor(-1); },
+            // Every dirty tab, not just the visible one -- which is why
+            // this is a shell command while plain Save is an editor one.
+            saveAll: () => { documents().saveAllDirty(); },
+        });
+
+        // ── Go-to-definition landing in another file ─────────────────
+        //
+        // The shell's half of a navigation request: make sure the target
+        // file has a tab and is the visible one. Putting the caret in the
+        // right place is the destination editor's half -- see
+        // applyPendingReveal in EditorView, and navigation.hz for why the
+        // two are split.
+        let navigationSerialSeen = rx.reactive<int>(0);
+        let followNavigation = rx.computed(() => {
+            let nav = navigation();
+            let serial = rx.get(nav.serial);
+            if serial == rx.get(navigationSerialSeen) {
+                return serial;
+            }
+            navigationSerialSeen := serial;
+            let path: str = rx.get(nav.path);
+            if path.length > 0 {
+                // Focuses the existing tab when there is one, and opens a
+                // new one otherwise. A tab loads its document synchronously
+                // on mount, so the editor can act on the same request in
+                // this very frame.
+                openFile(path);
+            }
+            return serial;
+        });
+
+        // Pump the shared language server once per frame, here rather than
+        // in each editor: the connection is one, and a reply is consumed by
+        // whoever reads it first, so N tabs pumping it would race for each
+        // other's answers. Reading ui.now() is what makes this re-run every
+        // frame -- see runLspLoop in EditorView, which is driven the same way.
+        let runSharedLspLoop = rx.computed(() => {
+            ui.now();
+            let bridge = getState().lspBridge;
+            if bridge {
+                bridge.loop();
+            }
+            return none;
+        });
+
+        if rx.get(tabs).length == 0 {
+            promptForFile();
+        }
+
+        let fileMenuItems = rx.computed(() => {
+            let items: []ui_widgets.DropdownItem = [];
+            items.push({ key: ITEM_OPEN_FILE, label: "Open File...", shortcut: "Ctrl+O" });
+            items.push({ key: ITEM_OPEN_FOLDER, label: "Open Folder...", shortcut: "Ctrl+K Ctrl+O" });
+
+            let recents: []str = workspace().recents;
+            if recents.length > 0 {
+                items.push({ key: 0, separator: true });
+                items.push({ key: 0, label: "Recent Workspaces", header: true });
+                let current: str = workspace().path;
+                for (let i = 0; i < recents.length; i++) {
+                    let path = recents[i];
+                    items.push(ui_widgets.DropdownItem {
+                        key: ITEM_RECENT_BASE + i,
+                        // The folder NAME is what identifies a project to a
+                        // reader; the path is shown after it for the case where
+                        // two checkouts share a name, which is exactly when the
+                        // name alone would be useless.
+                        label: f"{folderNameOf(path)}",
+                        shortcut: path,
+                        checked: path == current,
+                    });
+                }
+            }
+
+            items.push(ui_widgets.DropdownItem { key: 0, separator: true });
+            items.push(ui_widgets.DropdownItem {
+                key: ITEM_CLOSE_FOLDER,
+                label: "Close Folder",
+                enabled: hasWorkspace(),
+            });
+            return items;
+        });
+
+        let keyDownCapture = (event: ui_components.KeyboardEvent) => {
+            // What makes the conflict dialog MODAL rather than
+            // merely on top: while it is up no binding resolves at
+            // all, so ctrl+s cannot save the very file whose fate
+            // is being asked about and ctrl+w cannot close the tab
+            // out from under the question. The dialog has focus, so
+            // the keys it wants reach it as ordinary key events.
+            if modalIsOpen() {
+                return;
+            }
+            if keybindings().dispatch(event).handled() {
+                event.stopPropagation();
+            }
+        };
+
+        ui.watch(() => {
+            ui.now();
+        }, () => {
+            fmt.println("CHANGE");
+        });
+
+        let updateFrame = () => {
+            rx.get(runSharedLspLoop);
+            rx.get(followNavigation);
+            keybindings().context.setBool("hasOpenTabs", tabs.length > 0);
+            if tabs.length == 0 {
+                // Closing the focused tab UNMOUNTS its editor, and an
+                // unmounted element never gets an onBlur (the component
+                // system drops focus by simply not finding the element
+                // again, see collectFocusPath). So the flag has to be
+                // cleared from here, or it would stay stuck true with no
+                // editor left to be true about -- and ctrl+o would keep
+                // resolving to the vim override.
+                keybindings().context.setBool(ctxEditorTextFocus(), false);
+            }
+        };
+
+        let menuItems = rx.computed(() => {
+            let menuItems: []ui_widgets.DropdownItem | none = none;
+            if titleBarState.openMenu == menuFile() {
+                menuItems = rx.get(fileMenuItems);
+            }
+            return menuItems;
+        });
+
+        let conflictEntry = rx.computed(() => documents().firstConflict());
+        let rootSize = rx.computed(() => {
+            let r = rx.get(rootRef);
+            return r ? r.size() : none;
+        });
+
+        return (): ui_components.DivProps => {
+            updateFrame();
+            ui.div({
+                id: 0,
+                elementRef: rootRef,
+                focusable: true,
+                // THE dispatch point for the whole window.
+                //
+                // Capture phase, on the root, so every bound key is
+                // resolved BEFORE the focused element sees it. That
+                // ordering is the entire reason this is one handler here
+                // instead of a handler per component: a rule can only take
+                // a key away from the document (ctrl+o inside a vim
+                // editor) if it gets asked first. A bubble-phase handler,
+                // which is what this replaced, only ever sees the keys the
+                // document did not want.
+                //
+                // Anything the keymap does not claim is left completely
+                // untouched and continues down to the editor as before --
+                // vim's own <C-d>/<C-u>/<C-r>, every printable character,
+                // the arrow keys.
+                onKeyDownCapture: keyDownCapture,
+                // Click-outside for the menus. Capture phase for the same
+                // reason the keyboard uses it: this is the only handler
+                // that sees every press regardless of what is underneath.
+                // It deliberately does NOT fire for presses on the bar or
+                // the menu itself -- see dismissMenusOnPress.
+                onPointerDownCapture: dismissMenusOnPressCapture,
+            }, () => {
+                TitleBar(ui, titleBarState, TitleBarArgs {
+                    id: 100,
+                    documentName: activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : "",
+                    workspaceName: rx.get(workspace().name),
+                    openMenu: titleBarState.openMenu,
+                });
+
+                if tabs.length == 0 {
+                    // Nothing open. Say so, rather than showing an empty
+                    // grey rectangle that looks like a failure to start.
+                    ui.div({
+                        id: 1,
+                        // Key events are only delivered along the FOCUSED
+                        // element's ancestor chain, so closing the last tab
+                        // used to leave the window with nothing focused and
+                        // therefore no keyboard at all -- including the
+                        // ctrl+o this very screen tells you to press. This
+                        // branch only exists while there are no tabs, so
+                        // claiming focus here cannot fight with an editor.
+                        focusable: true,
+                        autofocus: true,
+                    }, () => {
+                        ui.text({
+                            id: 0,
+                            text: "No file open  --  Ctrl+O to open one",
+                        },
+                            presets.textColor("#7A7A7A")
+                        );
+                    },
+                        presets.col(),
+                        presets.wGrow(),
+                        presets.hGrow(),
+                        presets.packing(ui_styling.Packing.Center),
+                        presets.crossAlign(ui_styling.CrossAlign.Center)
+                    );
+                }
+                else {
+                    tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
+                        id: 2,
+                        tabs: tabItems,
+                        activeKey: activeKey,
+                        onSelect: onSelectTab,
+                        onClose: onCloseTab,
+                        // Called for EVERY tab each frame, not just the active
+                        // one -- that is the whole point (see stdlib/tabs).
+                        // Each editor is keyed by the tab's own key, so every
+                        // open file keeps one long-lived EditorView instance
+                        // holding its document, caret, scroll offset and undo
+                        // history for as long as the tab is open.
+                        renderTab: renderTabContent,
+                    });
+                }
+
+                // LAST, on purpose, and this is load bearing: the menu
+                // floats over the editor, and hit-testing is decided by
+                // declaration order (last sibling wins), not by z-index.
+                // Declared any earlier, the menu would be drawn correctly
+                // and then have every one of its clicks stolen by the
+                // editor underneath it. See titlebar.hz.
+                TitleBarMenus(ui, titleBarState, TitleBarMenusArgs {
+                    id: 101,
+                    openMenu: titleBarState.openMenu,
+                    items: menuItems,
+                });
+
+                // LAST of all, after even the menu, and for the same
+                // reason: hit-testing is decided by declaration order, and
+                // a modal whose clicks something else swallows is worse
+                // than no modal. See dialog.hz.
+                ConflictDialog(ui, ConflictDialogArgs {
+                    id: 102,
+                    open: conflictEntry ? true : false,
+                    fileName: do {
+                        let e = rx.get(conflictEntry);
+                        e ? fileNameOf(e.path) : "";
+                    },
+                    viewport: do {
+                        let r = rx.get(rootSize);
+                        r ? r as Vec2 : Vec2(0.0, 0.0);
+                    },
+                    onOverwrite: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveOverwrite : noAnswer;
+                    },
+                    onDiscard: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveDiscard : noAnswer;
+                    },
+                    onCancel: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveCancel : noAnswer;
+                    },
+                });
+            },
+                presets.col(),
+                presets.wGrow(),
+                presets.hGrow(),
+                presets.bg("#181818"),
+                presets.textColor("#FFF"),
+                // Makes this the containing block for the title bar's
+                // menu, which is absolutely positioned and declared at
+                // the very end of this subtree -- see titlebar.hz. The
+                // root already fills the viewport, so nothing that
+                // previously fell back to the viewport moves.
+                presets.relative()
+            );
+
+            return { id: 0 };
+        };
+    });
+}
