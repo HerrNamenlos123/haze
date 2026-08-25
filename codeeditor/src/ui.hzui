@@ -1,3 +1,4 @@
+from ui_widgets import ButtonComponent
 
 // Last path segment, for the tab label. A tab strip has room for a name,
 // not for a path, and the name is what identifies the file to a reader.

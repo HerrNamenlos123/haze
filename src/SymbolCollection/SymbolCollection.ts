@@ -30,7 +30,7 @@ import {
   EUnaryOperation,
   EVariableMutability,
   UnaryOperationToString,
-  EStorageClass,
+  type EStorageClass,
 } from "../shared/AST";
 import {
   ECollectionMode,
@@ -2098,13 +2098,6 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "ModuleImport": {
-      // return makeSymbol(cc, {
-      //   variant: Collect.ENode.ModuleImport,
-      //   alias: item.alias,
-      //   mode: item.mode,
-      //   name: item.name,
-      //   sourceloc: item.sourceloc,
-      // })[1];
       const dependency = cc.config.dependencies.find(
         (d) => d.name === item.name
       );
@@ -2177,13 +2170,71 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     // case "SymbolImport": {
-    //   return Collect.makeSymbol(cc, {
-    //     variant: Collect.ENode.SymbolImport,
-    //     symbols: item.symbols,
-    //     mode: item.mode,
+    //   const dependency = cc.config.dependencies.find(
+    //     (d) => d.name === item.name
+    //   );
+    //   if (!dependency) {
+    //     throw new CompilerError(
+    //       `Cannot find import '${item.name}': No such module`,
+    //       item.sourceloc,
+    //       HazeErrorCode.CannotFindImportNoSuchModule
+    //     );
+    //   }
+    //   const globalBuildDir = join(process.cwd(), "__haze__");
+    //   const metadataPath = join(
+    //     globalBuildDir,
+    //     cc.config.name,
+    //     "__deps",
+    //     dependency.name,
+    //     "metadata.json"
+    //   );
+    //   const filecontent = readFileSync(metadataPath, "utf8");
+    //   const metadata: ModuleConfig = JSON.parse(filecontent);
+    //   const importedNamespace = getModuleGlobalNamespaceName(
+    //     metadata.name,
+    //     metadata.version,
+    //     metadata.id
+    //   );
+    //   const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
+    //     variant: Collect.ENode.TypeAliasDef,
+    //     inScope: args.currentParentScope,
+    //     target: collectExpr(
+    //       cc,
+    //       {
+    //         variant: "SymbolValueExpr",
+    //         name: importedNamespace,
+    //         generics: [],
+    //         sourceloc: null,
+    //       },
+    //       args
+    //     ),
+    //     generics: [],
+    //     genericScope: -1 as Collect.ScopeId,
+    //     name: item.name,
+    //     annotations: [],
+    //     sourceloc: item.sourceloc,
+    //   });
+    //   const symbolId = Collect.makeSymbol(cc, {
+    //     variant: Collect.ENode.TypeDefSymbol,
+    //     inScope: args.currentParentScope,
+    //     typeDef: aliasId,
+    //     export: false,
     //     name: item.name,
     //     sourceloc: item.sourceloc,
     //   })[1];
+    //   const scope = cc.scopeNodes.get(args.currentParentScope);
+    //   scope.symbols.add(symbolId);
+
+    //   const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
+    //     variant: Collect.ENode.TypeDefScope,
+    //     owningSymbol: symbolId,
+    //     parentScope: args.currentParentScope,
+    //     sourceloc: item.sourceloc,
+    //     symbols: new Set(),
+    //   })[1];
+    //   alias.genericScope = structScopeId;
+
+    //   return symbolId;
     // }
 
     default:
@@ -3598,7 +3649,11 @@ export function CollectFile(
           variant: "NamespaceDefinition",
           declarations: namespacedDeclarations,
           export: true,
-          name: getModuleGlobalNamespaceName(moduleName, moduleVersion, moduleId),
+          name: getModuleGlobalNamespaceName(
+            moduleName,
+            moduleVersion,
+            moduleId
+          ),
           sourceloc: null,
         },
         {
