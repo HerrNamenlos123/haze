@@ -3903,7 +3903,8 @@ class ASTBuilder extends HazeParserListener {
     // what the hzui plugin emits), while a SourceLoc column is 0-based, so
     // every column read out of a spec is converted here. Mirrors specColumn()
     // in the native parser.
-    const specColumn = (raw: string) => Math.max(0, Number.parseInt(raw, 10) - 1);
+    const specColumn = (raw: string) =>
+      Math.max(0, Number.parseInt(raw, 10) - 1);
 
     const startCol = specColumn(match[3]);
     // `-a.b` is (endLine, endCol); a lone `-a` is an end column on the start
