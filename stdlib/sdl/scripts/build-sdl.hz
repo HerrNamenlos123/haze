@@ -11,9 +11,7 @@ fn main(): int {
 
         let repoPath = f"{binaryDir}/SDL";
 
-        fmt.println(repoPath);
         if !fs.exists(repoPath)?! {
-            fmt.println("Installing");
             process.run("git", { "clone", "https://github.com/libsdl-org/SDL.git", repoPath }, {
                 inherit_stdio: true,
             })?!;
