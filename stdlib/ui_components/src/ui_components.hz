@@ -3010,7 +3010,9 @@ export opaque ref struct UIContext {
             callback();
             return none;
         });
-        this.scheduleEffect(() => rx.get(react));
+        this.scheduleEffect((): void => {
+            rx.get(react);
+        });
 
         if options.immediate {
             callback();

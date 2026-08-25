@@ -5271,14 +5271,31 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 enabled: hasWorkspace(),
             });
             return items;
+        });
 
+        let keyDownCapture = (event: ui_components.KeyboardEvent) => {
+            // What makes the conflict dialog MODAL rather than
+            // merely on top: while it is up no binding resolves at
+            // all, so ctrl+s cannot save the very file whose fate
+            // is being asked about and ctrl+w cannot close the tab
+            // out from under the question. The dialog has focus, so
+            // the keys it wants reach it as ordinary key events.
+            if modalIsOpen() {
+                return;
+            }
+            if keybindings().dispatch(event).handled() {
+                event.stopPropagation();
+            }
+        };
+
+        ui.watch(() => {
+            ui.now();
+        }, () => {
+            fmt.println("CHANGE");
         });
 
         return (): ui_components.DivProps => {
-            let items: []tabs_lib.TabItem = rx.get(tabs);
             // The same list with each tab's unsaved-changes dot filled in.
-            let strip: []tabs_lib.TabItem = rx.get(tabItems);
-            let current = rx.get(activeKey);
             rx.get(runSharedLspLoop);
             rx.get(followNavigation);
 
@@ -5295,8 +5312,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             // tab commands are gated on it, so ctrl+w with nothing open is
             // not a bound key at all rather than a bound key that does
             // nothing.
-            keybindings().context.setBool(ctxHasOpenTabs(), items.length > 0);
-            if items.length == 0 {
+            keybindings().context.setBool("hasOpenTabs", tabs.length > 0);
+            if tabs.length == 0 {
                 // Closing the focused tab UNMOUNTS its editor, and an
                 // unmounted element never gets an onBlur (the component
                 // system drops focus by simply not finding the element
@@ -5326,20 +5343,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // untouched and continues down to the editor as before --
                 // vim's own <C-d>/<C-u>/<C-r>, every printable character,
                 // the arrow keys.
-                onKeyDownCapture: (event: ui_components.KeyboardEvent) => {
-                    // What makes the conflict dialog MODAL rather than
-                    // merely on top: while it is up no binding resolves at
-                    // all, so ctrl+s cannot save the very file whose fate
-                    // is being asked about and ctrl+w cannot close the tab
-                    // out from under the question. The dialog has focus, so
-                    // the keys it wants reach it as ordinary key events.
-                    if modalIsOpen() {
-                        return;
-                    }
-                    if keybindings().dispatch(event).handled() {
-                        event.stopPropagation();
-                    }
-                },
+                onKeyDownCapture: keyDownCapture,
                 // Click-outside for the menus. Capture phase for the same
                 // reason the keyboard uses it: this is the only handler
                 // that sees every press regardless of what is underneath.
@@ -5355,12 +5359,12 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
 
                 TitleBar(ui, titleBarState, TitleBarArgs {
                     id: 100,
-                    documentName: current >= 0 ? fileNameOf(pathForKey(current)) : "",
+                    documentName: activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : "",
                     workspaceName: rx.get(workspace().name),
                     openMenu: openMenu,
                 });
 
-                if items.length == 0 {
+                if tabs.length == 0 {
                     // Nothing open. Say so, rather than showing an empty
                     // grey rectangle that looks like a failure to start.
                     ui.div({
@@ -5392,8 +5396,8 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 else {
                     tabs_lib.Tabs(ui, tabs_lib.TabsArgs {
                         id: 2,
-                        tabs: strip,
-                        activeKey: current,
+                        tabs: tabItems,
+                        activeKey: activeKey,
                         onSelect: onSelectTab,
                         onClose: onCloseTab,
                         // Called for EVERY tab each frame, not just the active

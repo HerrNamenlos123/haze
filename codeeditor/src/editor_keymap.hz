@@ -40,10 +40,6 @@ fn ctxVimMode(): str { return "vimMode"; }
 // The focused editor has a non-empty selection.
 fn ctxEditorHasSelection(): str { return "editorHasSelection"; }
 
-// At least one file is open. Guards the tab commands, which are
-// meaningless with nothing open.
-fn ctxHasOpenTabs(): str { return "hasOpenTabs"; }
-
 // ── The rule table ───────────────────────────────────────────────────────
 
 fn installDefaultKeymap(keys: mut Keybindings): void {
