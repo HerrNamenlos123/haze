@@ -2,6 +2,16 @@ import ui_elements;
 import ui_styling;
 import renderer;
 
+// Set by anything that changes state the reactive graph cannot see, and
+// consumed by UIContext.needsUpdate() -- the one escape hatch out of "no
+// invalidation, no frame". File-level rather than a UIContext field because
+// the things that need to set it are free functions holding an element and
+// nothing else (ui_focus/ui_blur), and only ever touched through the two
+// non-generic functions below, for the same reason rx.activeWatcher is a
+// function: a generic method of UIContext is re-elaborated in the importing
+// module, where this variable does not exist.
+let __ui_updateRequested: bool = false;
+
 // Which single button triggered a given event. None for events not tied to
 // one specific button (move, hover/hit enter+leave).
 export enum PointerButton {
@@ -933,6 +943,37 @@ export fn ui_focusVisible(element: ui_elements.Element): bool {
     return data.focused && data.focusVisible;
 }
 
+// Forces the next frame to actually run, even when nothing reactive changed
+// -- see UIContext.needsUpdate for the gate this opens.
+//
+// Needed by everything that changes what the frame would produce WITHOUT
+// going through a reactive cell: a programmatic focus request (below), a
+// layout-size change (ui_runtime.Runtime.resize), or a host that mutated
+// plain state behind the UI's back. Reactive writes need none of this --
+// they invalidate the template or trip a watcher's scheduler on their own,
+// which is what opens the gate for them.
+//
+// One flag, not a count: it means "run one more frame", and one frame is
+// enough no matter how many requests piled up before it.
+export fn ui_requestUpdate(): none {
+    __ui_updateRequested = true;
+}
+
+// Reads and clears the flag. Called once per frame that actually runs, at
+// the point that frame has committed to doing the work -- so a request made
+// *during* that frame (a handler calling ui_focus, say) sets it again and
+// is honoured by the next one rather than being swallowed.
+fn ui_takeUpdateRequest(): bool {
+    let requested = __ui_updateRequested;
+    __ui_updateRequested = false;
+    return requested;
+}
+
+// Whether a frame has been requested, without consuming the request.
+fn ui_updateRequested(): bool {
+    return __ui_updateRequested;
+}
+
 // Programmatic counterpart to clicking a focusable element -- the equivalent
 // of the DOM's HTMLElement.focus(). Takes effect on the next process(), not
 // here (see ComponentElementRuntimeData.focusRequested for why), so
@@ -950,6 +991,11 @@ export fn ui_focus(element: ui_elements.Element): void {
         return;
     }
     data.focusRequested = FocusRequest.Focus;
+    // focusRequested is a plain field, invisible to the reactive graph, and
+    // it is applied by the NEXT process() (see applyPendingFocus) -- so that
+    // frame has to be made to happen, or a focus() from a click handler
+    // would sit unapplied until something else invalidated the tree.
+    ui_requestUpdate();
 }
 
 // Programmatic blur -- the DOM's HTMLElement.blur(). Only blurs if this
@@ -958,6 +1004,7 @@ export fn ui_focus(element: ui_elements.Element): void {
 export fn ui_blur(element: ui_elements.Element): void {
     let data = runtimeDataOf(element);
     data.focusRequested = FocusRequest.Blur;
+    ui_requestUpdate();
 }
 
 // Sets pointerDownHere and bumps inputFeedbackVersion, but only when the
@@ -1335,6 +1382,11 @@ export opaque ref struct UIContext {
     _tabbableScratch: []ui_elements.Element = [];
     _clickEligible: []bool = [];
     _noEdges: []PointerEdge = [];
+    // Stand-ins for a host that wired up no keyboard/wheel callbacks, so
+    // process() can hold this frame's input in plain locals without an
+    // allocation or an optional on every read. Never written to.
+    _noKeyEdges: []KeyEdge = [];
+    _noTextChunks: []str = [];
 
     renderStack: []RenderContext = [];
     // Watcher jobs waiting for this frame's flush -- see flushJobs. A job
@@ -1343,6 +1395,13 @@ export opaque ref struct UIContext {
     // host between frames.
     _preJobs: WatchJobQueue;
     _postJobs: WatchJobQueue;
+    // Every live component that registered an onFrame hook, in creation
+    // order (so a parent's hook runs before its children's). Held here
+    // rather than only on the instance because these have to run on EVERY
+    // frame, and a component's own defineComponentImpl only runs when its
+    // parent's template does -- which, in a pull-based tree, is exactly the
+    // frames where something already changed. See UIContext.onFrame.
+    _frameHooks: []ComponentInstance = [];
     rootComponent: ComponentInstance | null = null;
     rootTemplate: rx.Computed<none>;
     _framecount: rx.Reactive<int>;
@@ -2478,10 +2537,19 @@ export opaque ref struct UIContext {
         let elapsed = now - this._prevTime;
         this._prevTime = now;
 
+        // Written unconditionally, and that is what makes the clock
+        // self-gating rather than a special case in needsUpdate(): a write
+        // to a cell nobody reads marks nothing dirty and costs nothing, so
+        // a UI that never asks the time idles at zero work; the moment a
+        // template or a watcher DOES read one of these, the very next
+        // write invalidates it and the gate below opens every frame. In
+        // other words, reading ui.now()/deltaTime()/framecount() is the
+        // request for continuous frames, and it needs no other machinery.
         this._framecount++;
         this._deltaTime := elapsed;
         this._timeNow := now;
 
+        let prevMousePosKnown = this.mousePosKnown;
         this.pmousePos = this.mousePos;
         this.mousePos = this._mousePosCb();
         // Sampled with the position, so every consumer this frame agrees
@@ -2549,6 +2617,69 @@ export opaque ref struct UIContext {
         if this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0 {
             pendingEvents.push({ kind: PointerEventKind.Move, button: PointerButton.None, buttons: buttons, pos: this.mousePos });
         }
+
+        // Per-frame hooks, before the gate below -- see runFrameHooks for
+        // why they are the one thing a skipped frame still does. They see
+        // this frame's pointer/clock (both sampled above) and whatever they
+        // write is what decides the gate.
+        this.runFrameHooks();
+
+        // THE FRAME GATE
+        //
+        // Below this line is the expensive half of a frame: a full walk of
+        // the tree for hidden-input release, dismiss layers, hover, hit
+        // paths and focus, plus the template pass. None of it produces a
+        // different result than last frame unless either some input arrived
+        // or something invalidated the tree, so when neither happened the
+        // whole thing is skipped and last frame's tree handed straight back.
+        // That is what makes an idle UI cost nothing at all rather than a
+        // traversal per frame.
+        //
+        // Input is checked here rather than inside needsUpdate() because
+        // this is the only place that knows what arrived: it has just
+        // sampled the pointer, and the key/wheel polls below are the same
+        // ones the dispatch further down uses (they read this frame's
+        // host-side buffers, so asking twice reports the same thing).
+        // Everything else -- reactive invalidation, queued watcher jobs,
+        // explicit requests -- lives in needsUpdate(), which is public so a
+        // host can ask the same question before it even starts a frame.
+        // Polled ONCE, here, and carried down to the dispatch below in these
+        // locals rather than asked for again -- edgesThisFrame() above shows
+        // why: a host is free to implement any of these as a drain, and the
+        // gate must not be the thing that eats this frame's keystrokes.
+        let keyEdges = this._noKeyEdges;
+        let textChunks = this._noTextChunks;
+        let keyboard = this._keyboard;
+        if keyboard {
+            keyEdges = keyboard.keyEdgesThisFrame();
+            textChunks = keyboard.textInputThisFrame();
+        }
+        let wheelDelta = Vec2(0.0, 0.0);
+        if this._inputExtras {
+            wheelDelta = this._inputExtras.wheelDelta();
+        }
+        // A pointer whose position only just became trustworthy changes what
+        // is hovered without moving -- see mousePosKnown.
+        let pointerKnownChanged = this.mousePosKnown != prevMousePosKnown;
+
+        let hasInput = pendingEvents.length > 0
+            || keyEdges.length > 0
+            || textChunks.length > 0
+            || wheelDelta.x != 0.0 || wheelDelta.y != 0.0
+            || pointerKnownChanged;
+
+        if !hasInput && !this.needsUpdate() {
+            if !this.rootComponent {
+                return none;
+            }
+            return this.rootComponent.rootElement;
+        }
+
+        // Committed to doing the work, so an outstanding request is now
+        // satisfied. Cleared HERE rather than at the end so that a request
+        // made later in this same frame -- a click handler calling focus(),
+        // say -- survives to open the gate for the next one.
+        ui_takeUpdateRequest();
 
         // HIT TESTING & EVENT SCHEDULING
         //
@@ -2771,17 +2902,14 @@ export opaque ref struct UIContext {
 
             // Wheel: acts on whatever's currently under the cursor, so it
             // reuses this frame's finalHitPath rather than computing its own.
-            if this._inputExtras {
-                let wheelDelta = this._inputExtras.wheelDelta();
-                if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
-                    let wheelEvent = WheelEvent {
-                        pos: this.mousePos,
-                        delta: wheelDelta,
-                        modifiers: this.currentModifiers(),
-                    };
-                    this.dispatchWheelCapturing(finalHitPath, wheelEvent, eventQueue);
-                    this.dispatchWheelBubbling(finalHitPath, wheelEvent, eventQueue);
-                }
+            if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
+                let wheelEvent = WheelEvent {
+                    pos: this.mousePos,
+                    delta: wheelDelta,
+                    modifiers: this.currentModifiers(),
+                };
+                this.dispatchWheelCapturing(finalHitPath, wheelEvent, eventQueue);
+                this.dispatchWheelBubbling(finalHitPath, wheelEvent, eventQueue);
             }
 
             // Keyboard + text input: delivered only to the currently
@@ -2793,11 +2921,7 @@ export opaque ref struct UIContext {
             // frame's key/text queues, same as a real UI wouldn't drop a
             // keystroke that lands in the same tick as the click that
             // focused the field it's meant for.
-            let keyboard = this._keyboard;
-            if keyboard {
-              let keyEdges = keyboard.keyEdgesThisFrame();
-              let textChunks = keyboard.textInputThisFrame();
-              if keyEdges.length > 0 || textChunks.length > 0 {
+            if keyEdges.length > 0 || textChunks.length > 0 {
                 let focusPath = this._focusPath;
                 this.buildFocusPathInto(focusPath, tree);
                 // A focused element that got hidden this frame must not keep
@@ -2845,7 +2969,6 @@ export opaque ref struct UIContext {
                         this.dispatchTextInputBubbling(focusPath, textEvent, eventQueue);
                     }
                 }
-              }
             }
         }
 
@@ -2868,6 +2991,73 @@ export opaque ref struct UIContext {
         return this.rootComponent.rootElement;
     }
 
+    // Whether this frame has any work to do at all -- the single gate that
+    // makes the tree pull-based instead of per-frame. process() consults it
+    // (together with this frame's input, which only process() can see) and
+    // does literally nothing when it says no: no traversal, no hit-testing,
+    // no template.
+    //
+    // Everything that can invalidate the frame has to be represented here,
+    // and "is the template dirty" alone is NOT enough:
+    //
+    //  - The root template covers every reactive any template read, at any
+    //    depth. A child's templateComputed is read from inside its parent's
+    //    (defineComponentImpl), so a write in the deepest leaf marks the
+    //    whole chain up to rootTemplate dirty -- mark_dirty in
+    //    hzstd_reactive.c walks dependents transitively.
+    //
+    //  - A WATCHER is a computed of its own and deliberately NOT part of
+    //    that chain: rx.watch evaluates its source with the watcher's node
+    //    as the only tracking context, precisely so a watch() call inside a
+    //    setup does not make the parent template depend on whatever it
+    //    watches. So a watched source changing does not touch rootTemplate,
+    //    and the template being clean says nothing about whether a watcher
+    //    is owed a run. What the write DOES do is call the watcher's
+    //    scheduler the instant it lands (hzstd_computed_set_scheduler ->
+    //    UIContext.watch's scheduler), which queues the job right here. A
+    //    non-empty queue therefore IS the "a watcher fired" signal, and it
+    //    is readable without evaluating anything.
+    //
+    //    That is what keeps a watched property from going stale. Without
+    //    this check the sequence is: watched source is written, template
+    //    stays clean, gate says no, frame is skipped, the job sits in the
+    //    queue -- forever, because nothing else is ever going to dirty the
+    //    template either; the callback that WOULD have done it is the one
+    //    being skipped. With it: the gate opens, flushJobs runs the
+    //    callback, the callback's writes dirty the template, and the same
+    //    flush re-runs it before the frame ends. The watcher's dependency
+    //    does not need to be mirrored onto the template to achieve that --
+    //    the scheduler already delivered the invalidation, and reusing it
+    //    here keeps the template's dependency set honest (a `post` watcher,
+    //    or one whose callback only talks to the host, still must not force
+    //    a re-render of a tree that did not change).
+    //
+    //  - requestUpdate() is the escape hatch for state the reactive graph
+    //    cannot see at all -- a queued focus request, a resized window, a
+    //    host mutating something behind the UI's back. See ui_requestUpdate.
+    //
+    //  - No root component yet means the first frame, which always runs.
+    //
+    // Purely a query: it evaluates nothing, subscribes to nothing, and
+    // clears nothing, so a host may call it as often as it likes.
+    fn needsUpdate(): bool {
+        if !this.rootComponent {
+            return true;
+        }
+        if ui_updateRequested() {
+            return true;
+        }
+        if this._preJobs.jobs.length > 0 || this._postJobs.jobs.length > 0 {
+            return true;
+        }
+        return rx.isDirty(this.rootTemplate);
+    }
+
+    // See ui_requestUpdate -- the method form, for hosts holding a context.
+    fn requestUpdate(): none {
+        ui_requestUpdate();
+    }
+
     // Vue's flushJobs(), with the frame as the tick. `pre` watchers run
     // before the template pass so what they write is rendered this frame;
     // `post` watchers run after it. Whatever a watcher writes is picked up
@@ -2887,7 +3077,15 @@ export opaque ref struct UIContext {
             if this._preJobs.jobs.length == 0 {
                 this._postJobs.flush();
             }
-            if this._preJobs.jobs.length == 0 && this._postJobs.jobs.length == 0 {
+            // The template is re-checked, not just the queues: a `post`
+            // watcher runs AFTER the template pass by definition, so what it
+            // writes lands in a template that has already been evaluated this
+            // round. Leaving on an empty queue alone would end the frame with
+            // the tree still dirty -- rendered one frame behind whatever that
+            // callback wrote, until something unrelated happened to
+            // invalidate it again. Another round costs one cached read when
+            // there is nothing to redo.
+            if this._preJobs.jobs.length == 0 && this._postJobs.jobs.length == 0 && !rx.isDirty(this.rootTemplate) {
                 return;
             }
             rounds++;
@@ -3053,6 +3251,14 @@ export opaque ref struct UIContext {
         }
         component.watchers.clear();
 
+        // Same reason, and the same lifetime: a hook parked on the context's
+        // per-frame list would otherwise keep running (and keep polling the
+        // pointer, or keep writing state) for a component that no longer
+        // exists. Clearing the callback is the whole unregistration --
+        // runFrameHooks() compacts the dead entry out of the list on its
+        // next pass, so this needs no identity search here.
+        component.onFrame = none;
+
         if component.onUnmount {
             component.onUnmount();
         }
@@ -3209,14 +3415,6 @@ export opaque ref struct UIContext {
             });
         }
 
-        // Per-frame hook, run BEFORE this frame's template is built so that
-        // whatever it changes is reflected in the same frame rather than the
-        // next. Nothing on the first frame: setup has not run yet, so nothing
-        // has been registered.
-        if instance.onFrame {
-            instance.onFrame();
-        }
-
         rx.get(instance.templateComputed);
 
         if !instance.mounted {
@@ -3336,15 +3534,57 @@ export opaque ref struct UIContext {
     // written as a .hzui single-file component cannot: its template is
     // declarative and holds no statements, so this is the hook it uses.
     //
-    // Registration needs no undoing. A component that is no longer rendered
-    // is never walked, so its callback simply stops being called -- unlike a
-    // watcher parked on a context-wide list, which would outlive it.
+    // The hook runs on EVERY frame, including the ones the frame gate skips
+    // (see runFrameHooks) -- it has to, since polling something the reactive
+    // graph cannot see is the entire reason it exists, and a gate that only
+    // opened once that thing had already been noticed could never notice it.
+    // It is therefore held on the context, not reached through the tree:
+    // walking to it would mean re-running the ancestors' templates, which is
+    // exactly the work being avoided. Registration is undone when the
+    // component is destroyed (destroyComponent), like a watcher's.
     //
     // Prefer reactive state and events; reach for this only when neither can
     // see what you need.
     fn onFrame(callback: () => none) {
         let component = this.getCurrentComponent();
+        if !component.onFrame {
+            this._frameHooks.push(component);
+        }
         component.onFrame = callback;
+    }
+
+    // Runs every registered onFrame hook. Called once per process(), BEFORE
+    // the frame gate -- deliberately: a hook is the framework's answer to
+    // "I have to look at something the reactive graph cannot see" (the
+    // pointer, the clock, the host), so it is the one thing that must still
+    // run on a frame that would otherwise be skipped. That costs a walk of
+    // this list and nothing else -- no tree traversal, no template -- and
+    // whatever a hook writes drives the gate the ordinary way: a write to a
+    // reactive the template read reopens it, a write to a watched source
+    // queues a job. A hook that finds nothing to do writes nothing, the
+    // gate stays shut, and the frame still costs nothing.
+    fn runFrameHooks() {
+        // Compacting walk: entries whose callback was cleared by
+        // destroyComponent are dropped as they are passed over, so an
+        // unregistration costs nothing at destroy time and the list never
+        // grows past the number of live hooks. Written as an explicit
+        // read/write cursor rather than a removal, so a hook that itself
+        // destroys a component (clearing another entry) cannot make the
+        // walk skip or repeat one.
+        let write = 0;
+        for (let read = 0; read < this._frameHooks.length; read++) {
+            let component = this._frameHooks[read];
+            let hook = component.onFrame;
+            if !hook {
+                continue;
+            }
+            this._frameHooks[write] = component;
+            write++;
+            hook();
+        }
+        while this._frameHooks.length > write {
+            this._frameHooks.pop();
+        }
     }
 
     ref struct WatchOptions {
@@ -3473,6 +3713,9 @@ export opaque ref struct UIContext {
             data.autofocusApplied = true;
             if data.focusable && props.autofocus is not none && props.autofocus {
                 data.focusRequested = FocusRequest.Focus;
+                // Same as ui_focus(): this is set during the template pass,
+                // and only next frame's applyPendingFocus acts on it.
+                ui_requestUpdate();
             }
         }
         data.onFocus = props.onFocus;

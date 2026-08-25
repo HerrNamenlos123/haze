@@ -112,6 +112,25 @@ namespace rx {
         };
     }
 
+    // Whether `c` has been invalidated by a write since it was last
+    // evaluated -- i.e. whether rx.get(c) would actually re-run it, or just
+    // hand back the cache. The pull-based counterpart to a scheduler: a
+    // host with a frame loop asks this to decide whether there is any work
+    // to do at all, WITHOUT evaluating anything (see
+    // ui_components.UIContext.needsUpdate). Reading it is not a dependency:
+    // it neither tracks nor triggers, so it is safe to call from outside
+    // any computed, which is exactly where a frame loop lives.
+    export fn isDirty<T>(c: rx.Computed<T>): bool {
+        // Copied into a plain local: raw C can only name those, not a
+        // parameter reached through the generic's signature.
+        let node = c;
+        let dirty = false;
+        do unsafe {
+            __c__("dirty = hzstd_computed_is_dirty((hzstd_computed_node_t*)node) != 0;");
+        };
+        return dirty;
+    }
+
     export fn get<T>(value: T) {
         if comptime T.category == meta.TypeCategory.Union {
             for comptime Variant in T.variants {

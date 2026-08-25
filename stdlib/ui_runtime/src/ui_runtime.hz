@@ -98,6 +98,12 @@ export opaque ref struct Runtime {
     fn resize(windowState: renderer.gfx.CanvasSize) {
         this.dpiScale = windowState.dpiScale as real;
         this.layout.setLayoutSize(windowState.logicalSize.x, windowState.logicalSize.y);
+        // The layout size is not a reactive the component tree reads -- it
+        // belongs to the layout engine -- so nothing about this invalidates
+        // anything, and an otherwise idle UI would sit at its old size until
+        // something unrelated happened. Ask for the one frame explicitly.
+        // See ui_components.UIContext.needsUpdate.
+        this.ui.requestUpdate();
     }
 
     // Runs this frame's component tree + flexbox layout, drawing the result

@@ -268,8 +268,8 @@ fn main(): int {
     // focus ring shows. There are three focusable elements here: editor (1)
     // and other (2) inside the container, then outside (4).
     let pressTab = (shift: bool) => {
-        let mods = ui_components.KeyModifiers.None;
-        if shift { mods = ui_components.KeyModifiers.Shift; }
+        let mods = KeyModifiers.None;
+        if shift { mods = KeyModifiers.Shift; }
         pendingKeys.push({
             key: ui_components.Key.Tab,
             kind: ui_components.KeyEdgeKind.Pressed,

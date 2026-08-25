@@ -1,0 +1,198 @@
+import ui_components
+import ui_elements
+
+// Drives the component system headlessly to verify the FRAME GATE -- the
+// thing that makes the tree pull-based rather than per-frame
+// (UIContext.needsUpdate / the gate in process()).
+//
+// Two halves, and the second is the one that is easy to get wrong:
+//
+//   1. An idle frame must do NOTHING. No template runs, no tree walk, no
+//      component setup -- process() hands back last frame's tree untouched.
+//
+//   2. A WATCHER must still be able to open that gate. A watcher is a
+//      computed of its own, deliberately not a dependency of any template
+//      (rx.watch runs its source under the watcher's own node), so writing
+//      a watched value leaves every template clean. If the gate only asked
+//      "is the template dirty", such a write would be skipped forever --
+//      the callback that would have dirtied the template is exactly the one
+//      not running -- and the component would render permanently stale
+//      state. What actually carries the invalidation is the watcher's
+//      scheduler, which queues the job at write time; needsUpdate() reads
+//      that queue, and these cases pin that down.
+//
+// No layout engine and no renderer are wired up (measureText is optional and
+// nothing here measures text), so nothing has a bounding box and no hit test
+// can ever succeed -- everything below is driven through reactive state, not
+// synthesised clicks.
+
+ref struct TestArgs {}
+
+ref struct State {
+    // Bumped inside the ROOT template, so it counts template passes.
+    rootRuns: int = 0;
+    // Bumped inside the CHILD component's template.
+    childRuns: int = 0;
+    // Bumped by onFrame, which must run even on a gated-out frame.
+    hookRuns: int = 0;
+    // Bumped by the watcher callback.
+    watcherRuns: int = 0;
+    // What the child last rendered from the watcher-written value.
+    rendered: int = 0;
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkInt(name: str, actual: int, expected: int) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+
+    mut fn checkBool(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+
+    // Read by the child's template -- the ordinary reactive path.
+    let shown = rx.reactive<int>(0);
+    // WATCHED, and never read by any template. Writing this must still make
+    // a frame happen, or the watcher below can never run.
+    let watched = rx.reactive<int>(0);
+    // Written by the watcher's callback, read by the child's template. This
+    // is the hop that would go stale: watched -> callback -> mirrored ->
+    // template.
+    let mirrored = rx.reactive<int>(0);
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            state.rootRuns = state.rootRuns + 1;
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+
+                ctx.watch(() => watched, (value: int, old: int | none) => {
+                    state.watcherRuns = state.watcherRuns + 1;
+                    // The callback's own write is what has to reach the
+                    // template, in this same frame.
+                    mirrored := value * 10;
+                });
+
+                ctx.onFrame(() => {
+                    state.hookRuns = state.hookRuns + 1;
+                });
+
+                return (): ui_components.DivProps => {
+                    state.childRuns = state.childRuns + 1;
+                    state.rendered = rx.get(shown) + rx.get(mirrored);
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(0.0, 0.0); },
+    });
+
+    // ── frame 1: builds everything ──────────────────────────────────────
+    ui.process();
+    // TWO root passes, and exactly two. Building a component for the first
+    // time writes reactives the root template had already read during that
+    // same pass (its props version, its root element's style), so the pass
+    // ends up dirty from its own work. flushJobs converges that in the frame
+    // it happened rather than leaving the tree dirty for the next one --
+    // which is the whole reason it re-checks the template and not just its
+    // queues. Every pass after this one is single (see the PROBEs below).
+    state.checkInt("frame 1 ran the root template twice, then settled", state.rootRuns, 2);
+    state.checkInt("frame 1 ran the child template", state.childRuns, 1);
+    // ZERO: hooks run before the template pass, and setup -- which is what
+    // registers them -- runs inside it. So a hook first fires on frame 2,
+    // exactly as it did when defineComponentImpl still called it directly.
+    state.checkInt("frame 1 could not run a hook that setup had not registered yet", state.hookRuns, 0);
+    state.checkInt("frame 1 rendered 0", state.rendered, 0);
+
+    // ── idle frames: nothing at all ─────────────────────────────────────
+    state.checkBool("idle: needsUpdate is false", ui.needsUpdate(), false);
+    ui.process();
+    ui.process();
+    ui.process();
+    state.checkInt("idle frames did not re-run the root template", state.rootRuns, 2);
+    state.checkInt("idle frames did not re-run the child template", state.childRuns, 1);
+    // The hook is the deliberate exception -- it is the only thing a gated
+    // frame still does, because polling something the graph cannot see is
+    // the entire reason it exists. Three idle frames, three runs.
+    state.checkInt("idle frames still ran the frame hook", state.hookRuns, 3);
+
+    // ── an ordinary reactive write reopens the gate ──────────────────────
+    shown := 5;
+    state.checkBool("template write: needsUpdate is true", ui.needsUpdate(), true);
+    ui.process();
+    // One extra root pass, not two: in steady state the template does not
+    // dirty itself, so the flush converges on the first re-check.
+    state.checkInt("template write cost exactly one root pass", state.rootRuns, 3);
+    state.checkInt("template write re-ran the child template", state.childRuns, 2);
+    state.checkInt("template write rendered", state.rendered, 5);
+    state.checkBool("after the frame: needsUpdate is false again", ui.needsUpdate(), false);
+    ui.process();
+    state.checkInt("and idles again", state.childRuns, 2);
+
+    // ── THE CASE THIS FILE EXISTS FOR ───────────────────────────────────
+    // `watched` is read by NOTHING except the watcher, so every template is
+    // still clean after this write. Only the watcher's queued job says
+    // otherwise.
+    watched := 3;
+    state.checkInt("watcher has not run yet (it is scheduled, not sync)", state.watcherRuns, 0);
+    state.checkBool("watched-only write: needsUpdate is true", ui.needsUpdate(), true);
+
+    ui.process();
+    state.checkInt("the frame ran the watcher", state.watcherRuns, 1);
+    // ... and what the callback wrote was picked up by the SAME frame, not
+    // the next one: flushJobs re-runs the template after the pre-flush.
+    state.checkInt("the watcher's write cost exactly one root pass", state.rootRuns, 4);
+    state.checkInt("the watcher's write re-ran the template", state.childRuns, 3);
+    state.checkInt("the component is not stale", state.rendered, 35);
+    state.checkBool("and settles", ui.needsUpdate(), false);
+
+    ui.process();
+    state.checkInt("no extra watcher run", state.watcherRuns, 1);
+    state.checkInt("no extra template run", state.childRuns, 3);
+
+    // Writing the same value again still schedules the job (the node went
+    // dirty), but rx.watch's own hasChanged check must stop the callback --
+    // and with nothing written, the frame after it must idle again.
+    watched := 3;
+    ui.process();
+    state.checkInt("same value: callback did not fire", state.watcherRuns, 1);
+    state.checkInt("same value: template did not re-run", state.childRuns, 3);
+    state.checkBool("same value: settles", ui.needsUpdate(), false);
+
+    // A second real change, to be sure the first was not a one-off.
+    watched := 7;
+    ui.process();
+    state.checkInt("second watched change ran the callback", state.watcherRuns, 2);
+    state.checkInt("second watched change re-rendered", state.rendered, 75);
+
+    // ── requestUpdate() forces exactly one frame ────────────────────────
+    let runsBefore = state.childRuns;
+    ui.requestUpdate();
+    state.checkBool("requestUpdate: needsUpdate is true", ui.needsUpdate(), true);
+    ui.process();
+    // The template itself is still clean, so the pass is a cached read --
+    // what the request buys is that the frame's non-reactive work (focus
+    // requests, layout size, hit-testing) happens at all.
+    state.checkBool("requestUpdate is consumed by the frame", ui.needsUpdate(), false);
+    ui.process();
+    state.checkInt("requestUpdate did not force a re-render", state.childRuns, runsBefore);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}
