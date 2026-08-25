@@ -5366,24 +5366,9 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
             fmt.println("CHANGE");
         });
 
-        return (): ui_components.DivProps => {
-            // The same list with each tab's unsaved-changes dot filled in.
+        let updateFrame = () => {
             rx.get(runSharedLspLoop);
             rx.get(followNavigation);
-
-            // Whichever document is currently asking about a disk
-            // conflict, if any. Read here rather than inside the dialog so
-            // the modal's mere existence is a fact this render pass knows:
-            // it is also what takes the keyboard away from every binding
-            // below.
-            let conflictEntry = documents().firstConflict();
-            let rootEl = rx.get(rootRef);
-            let rootSize = rootEl ? rootEl.size() : none;
-
-            // Publish the shell's own piece of `when`-clause context. The
-            // tab commands are gated on it, so ctrl+w with nothing open is
-            // not a bound key at all rather than a bound key that does
-            // nothing.
             keybindings().context.setBool("hasOpenTabs", tabs.length > 0);
             if tabs.length == 0 {
                 // Closing the focused tab UNMOUNTS its editor, and an
@@ -5395,7 +5380,24 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // resolving to the vim override.
                 keybindings().context.setBool(ctxEditorTextFocus(), false);
             }
+        };
 
+        let menuItems = rx.computed(() => {
+            let menuItems: []ui_widgets.DropdownItem | none = none;
+            if titleBarState.openMenu == menuFile() {
+                menuItems = rx.get(fileMenuItems);
+            }
+            return menuItems;
+        });
+
+        let conflictEntry = rx.computed(() => documents().firstConflict());
+        let rootSize = rx.computed(() => {
+            let r = rx.get(rootRef);
+            return r ? r.size() : none;
+        });
+
+        return (): ui_components.DivProps => {
+            updateFrame();
             ui.div({
                 id: 0,
                 elementRef: rootRef,
@@ -5423,17 +5425,11 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // the menu itself -- see dismissMenusOnPress.
                 onPointerDownCapture: dismissMenusOnPressCapture,
             }, () => {
-                let openMenu = rx.get(titleBarState.openMenu);
-                let menuItems: []ui_widgets.DropdownItem | none = none;
-                if openMenu == menuFile() {
-                    menuItems = rx.get(fileMenuItems);
-                }
-
                 TitleBar(ui, titleBarState, TitleBarArgs {
                     id: 100,
                     documentName: activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : "",
                     workspaceName: rx.get(workspace().name),
-                    openMenu: openMenu,
+                    openMenu: titleBarState.openMenu,
                 });
 
                 if tabs.length == 0 {
@@ -5490,7 +5486,7 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 // editor underneath it. See titlebar.hz.
                 TitleBarMenus(ui, titleBarState, TitleBarMenusArgs {
                     id: 101,
-                    openMenu: openMenu,
+                    openMenu: titleBarState.openMenu,
                     items: menuItems,
                 });
 
@@ -5501,11 +5497,26 @@ export fn UI(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context) {
                 ConflictDialog(ui, ConflictDialogArgs {
                     id: 102,
                     open: conflictEntry ? true : false,
-                    fileName: conflictEntry ? fileNameOf(conflictEntry.path) : "",
-                    viewport: rootSize ? rootSize as Vec2 : Vec2(0.0, 0.0),
-                    onOverwrite: conflictEntry ? conflictEntry.resolveOverwrite : noAnswer,
-                    onDiscard: conflictEntry ? conflictEntry.resolveDiscard : noAnswer,
-                    onCancel: conflictEntry ? conflictEntry.resolveCancel : noAnswer,
+                    fileName: do {
+                        let e = rx.get(conflictEntry);
+                        e ? fileNameOf(e.path) : "";
+                    },
+                    viewport: do {
+                        let r = rx.get(rootSize);
+                        r ? r as Vec2 : Vec2(0.0, 0.0);
+                    },
+                    onOverwrite: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveOverwrite : noAnswer;
+                    },
+                    onDiscard: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveDiscard : noAnswer;
+                    },
+                    onCancel: do {
+                        let c = rx.get(conflictEntry);
+                        c ? c.resolveCancel : noAnswer;
+                    },
                 });
             },
                 presets.col(),
