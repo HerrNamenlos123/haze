@@ -3854,25 +3854,77 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                 return;
             }
             // Clicking is an interaction with the text, not a
-            // request to describe it -- put the popup away.
+            // request to describe it -- put the popup away. Any
+            // button: the popup is pointing at a token, and a right
+            // press means you have moved on from reading it too.
             dismissHover();
+            // Only the primary button selects. A right or middle
+            // press leaves the caret and the selection alone, as a
+            // browser does -- right-clicking inside a selection
+            // must not destroy the thing you are about to act on.
+            if event.button != ui_components.PointerButton.Left {
+                return;
+            }
             let target = documentPositionAt(event.pos);
+            let granularity = textedit_behavior.granularityForClickCount(event.detail);
+            let extending = hasModifier(event.modifiers, KeyModifiers.Shift);
+
             mouseSelecting := true;
             dragOriginPxX := event.pos.x;
             dragOriginPxY := event.pos.y;
             dragOriginX := target.x;
             dragOriginY := target.y;
-            dragMoved := false;
+            // A word or line press has ALREADY produced a
+            // selection, and so has a shift+click, so the drag is
+            // live from this very frame. Only a plain single press
+            // has to wait and see whether it becomes a drag at all
+            // -- see the pointer pump below.
+            dragMoved := extending || granularity != textedit_behavior.SelectionGranularity.Character;
+
             if rx.get(vimOn) {
-                // Leave whatever visual selection existed, then
-                // place the caret; a subsequent drag re-enters
-                // visual mode from here.
-                texteditBehavior.setMode(textedit_behavior.Mode.Normal);
-                texteditBehavior.clearSelection();
-            } else {
+                // Vim's own mouse behaviour: a plain press drops
+                // out of visual mode and just places the caret (a
+                // subsequent drag re-enters it), while a double or
+                // triple press selects and therefore IS a visual
+                // selection immediately. Shift+click extends
+                // whatever is already there, so it keeps the mode.
+                if !extending {
+                    texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+                    texteditBehavior.clearSelection();
+                    if granularity == textedit_behavior.SelectionGranularity.Word {
+                        // Set BEFORE selecting: visual mode is what
+                        // makes the engine place the caret on the
+                        // last selected character rather than past
+                        // it (see selectionRangeForLine).
+                        texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                    } else if granularity == textedit_behavior.SelectionGranularity.Line {
+                        // A triple press means whole lines, and vim
+                        // has a mode for exactly that -- so the
+                        // selection a following `d` or `y` acts on is
+                        // linewise, not a characterwise span that
+                        // happens to reach both ends of a line.
+                        texteditBehavior.setMode(textedit_behavior.Mode.VisualLine);
+                    }
+                } else if !textedit_behavior.modeIsVisual(rx.get(texteditBehavior.mode)) {
+                    // Shift+click extends, and in vim an extended
+                    // selection IS visual mode -- otherwise the
+                    // highlight would appear with no mode behind it
+                    // and the next `d` would delete a line instead
+                    // of the selection.
+                    texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+                }
+            } else if !extending {
                 texteditBehavior.clearSelection();
             }
-            texteditBehavior.moveTo(target, true, false);
+
+            if extending {
+                // Keeps whatever granularity is in force, so double
+                // click then shift+click extends by whole words --
+                // see textedit_behavior.SelectionGranularity.
+                texteditBehavior.extendSelectionTo(target);
+            } else {
+                texteditBehavior.beginSelection(target, granularity);
+            }
         };
 
         let onTextInput = (event: ui_components.TextInputEvent) => {
@@ -4245,6 +4297,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                             // is this a drag -- until then, leave the caret
                             // exactly where the press put it and select
                             // nothing.
+                            //
+                            // This wait applies to a SINGLE press only. A
+                            // double or triple press has already selected
+                            // something, so onPointerDown set dragMoved
+                            // straight away and the word/line drag is live
+                            // from the first frame -- which is what makes
+                            // double-click-and-drag feel immediate rather
+                            // than needing a cell of slack first.
                             let origin: Vec2i = {
                                 x: rx.get(dragOriginX),
                                 y: rx.get(dragOriginY),
@@ -4273,14 +4333,18 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                             texteditBehavior.setMode(textedit_behavior.Mode.Visual);
                                             texteditBehavior.setSelectionAnchor(origin);
                                         }
-                                    } else {
-                                        texteditBehavior.setSelectionAnchor(origin);
                                     }
                                 }
                             }
                             if rx.get(dragMoved) {
-                                texteditBehavior.moveTo(
-                                    documentPositionAt(ui.mousePos), true, true);
+                                // One call for all three granularities: the
+                                // engine kept the anchor AND what the press
+                                // established, so this is a character drag
+                                // after a single click and a word-by-word
+                                // drag after a double one -- see
+                                // textedit_behavior.SelectionGranularity.
+                                texteditBehavior.extendSelectionTo(
+                                    documentPositionAt(ui.mousePos));
                             }
                         } else {
                             mouseSelecting := false;
@@ -4462,6 +4526,14 @@ export fn EditorView(ui: ui_components.UIContext, args: EditorViewArgs) {
                                 // which would otherwise start a text
                                 // selection every time you grab the bar.
                                 event.stopPropagation();
+                                // Dragging is a primary-button gesture; a
+                                // right-click on the bar must not seize the
+                                // pointer, or the per-frame drag pump (which
+                                // ends the drag on the LEFT button going up)
+                                // would never let go of it.
+                                if event.button != ui_components.PointerButton.Left {
+                                    return;
+                                }
                                 scroll.beginDragY(event.pos.y - editorOriginY());
                             },
                             // NOTE: no onPointerMove/onPointerUp here.

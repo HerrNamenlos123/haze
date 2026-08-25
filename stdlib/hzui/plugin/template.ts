@@ -462,11 +462,17 @@ const DIV_EVENT_PROPS = [
   "onPointerUp",
   "onPointerMove",
   "onClick",
+  "onDoubleClick",
+  "onAuxClick",
+  "onContextMenu",
   "onWheel",
   "onPointerDownCapture",
   "onPointerUpCapture",
   "onPointerMoveCapture",
   "onClickCapture",
+  "onDoubleClickCapture",
+  "onAuxClickCapture",
+  "onContextMenuCapture",
   "onWheelCapture",
   "onHoverEnter",
   "onHoverLeave",
@@ -497,6 +503,13 @@ const EVENT_MAP: Record<string, string> = {};
 for (const prop of DIV_EVENT_PROPS) {
   EVENT_MAP[prop.slice(2).toLowerCase()] = prop;
 }
+
+// HTML spells double-click `dblclick`, and that is the name anyone reaching
+// for it will type. The prop is `onDoubleClick` (the abbreviation reads as a
+// typo in Haze code), so the two are aliased here rather than picking one and
+// making the other an error.
+EVENT_MAP["dblclick"] = "onDoubleClick";
+EVENT_MAP["dblclickcapture"] = "onDoubleClickCapture";
 
 /** `pointer-down` / `pointerdown` / `pointerDown` -> `pointerdown`. */
 function eventKey(name: string): string {

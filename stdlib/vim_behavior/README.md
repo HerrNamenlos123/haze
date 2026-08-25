@@ -132,6 +132,65 @@ The engine cannot scroll — it has no idea how tall the viewport is. `zz`
 and friends record an *intent* (`ScrollIntent.Center`, `Top`, `Bottom`)
 that the host reads and applies, then clears with `clearScrollRequest()`.
 
+### Mouse selection
+
+Word snapping is a *document* operation — it has to look at what the
+characters are — so a host holding only pixel coordinates cannot do it.
+The engine owns it instead, behind two calls:
+
+```haze
+// The press. `detail` is the click count (see
+// ui_components.PointerEvent.detail); the mapping is 1 -> Character,
+// 2 -> Word, 3 -> Line.
+ctx.beginSelection(pos, textedit_behavior.granularityForClickCount(detail));
+
+// Every subsequent drag frame, and a shift+click too.
+ctx.extendSelectionTo(pos);
+```
+
+That is the whole host-side API. `extendSelectionTo` is one call for all
+three granularities because the engine remembers what the press
+established, so a host never branches on "was this a double click".
+
+The rule it implements is Chrome's, and it is the answer to why a drag
+sometimes snaps to whole words and sometimes does not:
+
+| press | selects on the press | the drag after it extends by |
+|---|---|---|
+| single | nothing (a bare caret) | characters |
+| double | the word under it | **whole words** |
+| triple | the line under it | whole lines |
+
+The granularity is decided **once**, by the press that starts the gesture,
+and then governs everything that gesture does. Nothing about the drag —
+its speed, its length, its direction — changes it.
+
+Two consequences worth knowing:
+
+- **It survives the release.** A shift+click after a double click still
+  extends by whole words. Blink does the same (`SelectionController::`
+  `HandleMousePressEventSingleClick` reads back `FrameSelection`'s current
+  granularity when extending). Any ordinary caret move — a plain click, an
+  arrow key, a programmatic `moveTo` — resets it to Character.
+- **The anchor chunk stays whole.** Dragging backwards past the word a
+  double click selected flips the selection's direction without ever eating
+  into that word, which is Blink's
+  `SelectionAdjuster::AdjustSelectionRespectingGranularity`.
+
+A "word" here is a maximal run of one character class (see `charClassAt`):
+letters/digits/underscore, whitespace, or punctuation. So `foo.bar`
+double-clicks as `foo`, then the dot alone, then `bar`; a gap between words
+selects as one whitespace chunk; and a word never swallows the space after
+it (Blink appends trailing whitespace for *touch* selection only, never for
+the mouse). `wordRangeAt`/`lineRangeAt` expose the ranges directly for a
+host that wants them for something else.
+
+The two selection models are reconciled inside the engine: a textbox
+selection runs *between* characters, while Vim's visual modes put the caret
+*on* the last selected character (see `selectionRangeForLine`). The same
+word range therefore lands the caret in a different place depending on the
+active mode, and callers do not have to know that.
+
 ## Testing against real Neovim
 
 Correctness here is not "looks right", it is "byte-identical to Neovim".
@@ -240,5 +299,6 @@ ctx.setBehavior(behavior);
 Everything it needs is already public on the engine: pure motions
 (`targetWordLeft`, `firstNonBlank`, `charClassAt`), range-based editing
 (`deleteRange`, `replaceRangeWith`, `textInRange`), selection control
-(`setSelectionAnchor`, `swapSelectionEnds`, `selectionAsRange`), modes
+(`setSelectionAnchor`, `swapSelectionEnds`, `selectionAsRange`), pointer
+selection (`beginSelection`, `extendSelectionTo`, `wordRangeAt`), modes
 and transactions. Nothing in the engine needs to change.

@@ -162,6 +162,27 @@ describe("events", () => {
     expect(out).toContain("onPointerMove: c");
   });
 
+  test("the non-primary button events are ordinary builtin events", () => {
+    const out = gen(
+      "import ui_components\n@template\ndiv [] @auxclick=a @context-menu=b @contextMenuCapture=c"
+    );
+    expect(out).toContain("onAuxClick: a");
+    expect(out).toContain("onContextMenu: b");
+    expect(out).toContain("onContextMenuCapture: c");
+  });
+
+  test("dblclick and double-click are the same event", () => {
+    const out = gen(
+      "import ui_components\n@template\ndiv [] @dblclick=a"
+    );
+    expect(out).toContain("onDoubleClick: a");
+    const alt = gen(
+      "import ui_components\n@template\ndiv [] @double-click=a @dblclick-capture=b"
+    );
+    expect(alt).toContain("onDoubleClick: a");
+    expect(alt).toContain("onDoubleClickCapture: b");
+  });
+
   test("an unknown event on a builtin element is an error", () => {
     expect(() =>
       gen("import ui_components\n@template\ndiv [] @submit=a")

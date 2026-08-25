@@ -105,9 +105,11 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
 - **Events:** on a builtin element, `@pointerdown=clicked` → `onPointerDown: clicked`; every
   `ui_components.DivProps` callback is reachable, and separators/case in the name do not matter
   (`@pointer-down` / `@pointerdown` / `@pointerDown`). That includes the four focus events —
-  `@focus`/`@blur` (no bubbling, capture only) and `@focusin`/`@focusout` (bubbling), plus a
-  `-capture` variant of each. On a **component**, `@name=` always binds that component's declared
-  `@emit name` (→ `onName:`) and never an element event.
+  `@focus`/`@blur` (no bubbling, capture only) and `@focusin`/`@focusout` (bubbling) — and the
+  non-primary button events `@auxclick` and `@contextmenu`, plus `@dblclick` (aliased to
+  `onDoubleClick`, so `@double-click` reaches the same prop), each with a `-capture` variant. On a
+  **component**, `@name=` always binds that component's declared `@emit name` (→ `onName:`) and
+  never an element event.
 - **Focus rings:** `outline-2 outline-color-[c] outline-offset-2` — a CSS outline, drawn outside
   the border box and taking no space, so a ring appearing on focus moves nothing. Gate it on
   `ElementWrapper.focusVisible()` (CSS `:focus-visible`), not `focused()`: that is focus which did

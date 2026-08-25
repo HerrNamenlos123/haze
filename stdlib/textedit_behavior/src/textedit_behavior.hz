@@ -115,6 +115,53 @@ export ref struct Range {
     kind: RangeKind = RangeKind.Characterwise;
 }
 
+// What a pointer-driven selection SNAPS TO. Chrome's TextGranularity, cut
+// down to the three values a mouse can actually produce.
+//
+// The rule browsers follow -- and the one this reproduces -- is that the
+// granularity is decided ONCE, by the press that starts the gesture, and
+// then governs everything that gesture does afterwards:
+//
+//   * a single press selects nothing and drags character by character;
+//   * a double press selects the word under it and drags WORD BY WORD, so
+//     the selection always covers whole words and never stops mid-word;
+//   * a triple press selects the line and drags line by line.
+//
+// This is the answer to "sometimes a drag snaps to words and sometimes it
+// does not": it is not sometimes. It snaps exactly when the drag began
+// with a double (or triple) press -- the gesture is press, press, and then
+// KEEP THE SECOND ONE HELD and move. Nothing about the drag itself, its
+// speed or its length, changes it.
+//
+// It also survives the release, which is the other half people notice: the
+// granularity stays in force for a subsequent shift+click, so double
+// clicking a word and then shift-clicking three words further along
+// extends by whole words too (Blink does exactly this -- see
+// SelectionController::HandleMousePressEventSingleClick, which reads back
+// FrameSelection's current granularity when extending). Any ordinary caret
+// move -- a click, an arrow key, a programmatic moveTo -- resets it to
+// Character, again as in Blink.
+export enum SelectionGranularity { Character, Word, Line }
+
+// The click count -> granularity mapping, which is the whole of the rule
+// and is identical in every host: 1 selects nothing and drags characters,
+// 2 takes a word, 3 takes a line. Counts above 3 stay at Line, matching the
+// click counter that feeds this (see ui_components.PointerEvent.detail,
+// capped at 3 exactly as Chromium caps it) -- and matching the fact that
+// there is nothing coarser to escalate to.
+//
+// A free function rather than a method: a host calls it while deciding what
+// to ask the engine for, before any engine state is involved.
+export fn granularityForClickCount(clickCount: int): SelectionGranularity {
+    if clickCount >= 3 {
+        return SelectionGranularity.Line;
+    }
+    if clickCount == 2 {
+        return SelectionGranularity.Word;
+    }
+    return SelectionGranularity.Character;
+}
+
 // A half-open column range on a single line, as selected. Returned by
 // Context.selectionRangeForLine() so a host can render one highlight rect
 // per visual line without having to re-derive the per-line clamping of a
@@ -270,6 +317,23 @@ export ref struct Context {
     // Otherwise the selection spans from this anchor to the (active)
     // cursorPosition, in whichever order the user dragged/shift-moved it.
     selectionAnchor: rx.Reactive<Vec2i | none>;
+
+    // --- Pointer selection granularity (see SelectionGranularity) ---
+    //
+    // The granularity in force, plus the FIXED END of the gesture already
+    // expanded to it: the whole word a double press landed on, the whole
+    // line a triple press landed on, or just the caret position for a plain
+    // press. Keeping the expanded range (rather than only the raw press
+    // position, the way Blink keeps a base and re-expands it on every read)
+    // is what makes a backwards drag keep the anchor word fully selected
+    // instead of eating into it.
+    //
+    // Not reactive: nothing renders off "which granularity is in force",
+    // only off the selection it produces, and selectionAnchor/cursorPosition
+    // are already reactive.
+    _selectionGranularity: SelectionGranularity = SelectionGranularity.Character;
+    _granularityAnchorStart: Vec2i = {};
+    _granularityAnchorEnd: Vec2i = {};
     hasSelection: rx.Computed<bool>;
     selectionStart: rx.Computed<Vec2i>;
     selectionEnd: rx.Computed<Vec2i>;
@@ -551,6 +615,185 @@ export ref struct Context {
     // selection lifecycle (visual modes, click-drag).
     mut fn setSelectionAnchor(anchor: Vec2i) {
         this.selectionAnchor := anchor;
+        // A hand-placed anchor is a character-granularity gesture by
+        // definition -- the caller picked an exact position, not a word.
+        // Anything that wants word/line snapping goes through
+        // beginSelection() below, which sets both together.
+        this._selectionGranularity = SelectionGranularity.Character;
+        this._granularityAnchorStart = { x: anchor.x, y: anchor.y };
+        this._granularityAnchorEnd = { x: anchor.x, y: anchor.y };
+    }
+
+    // === Pointer selection ========================================
+    //
+    // The two calls a host needs for browser-grade mouse selection, and the
+    // reason a host needs them at all: word snapping is a DOCUMENT
+    // operation (it has to look at what the characters are), so a UI that
+    // only has pixel coordinates cannot do it. See SelectionGranularity for
+    // the rule these implement.
+
+    // The press that STARTS a selection gesture. `granularity` comes
+    // straight from the click count: 1 -> Character, 2 -> Word, 3 -> Line.
+    //
+    // Character places a bare caret and selects nothing (a click that never
+    // becomes a drag must not leave a selection behind). Word and Line
+    // select the chunk under `pos` immediately, which is the whole point of
+    // a double click -- the selection is there on the press, before any
+    // drag.
+    mut fn beginSelection(pos: Vec2i, granularity: SelectionGranularity) {
+        if granularity == SelectionGranularity.Character {
+            this.selectionAnchor := none;
+            this._moveTo(pos, true, false);
+            // After _moveTo, which resets these to the (clamped, snapped)
+            // caret it actually landed on -- the anchor of a
+            // character-granularity gesture is that landing position, not
+            // the raw pixel-derived one, or a drag would start one
+            // character off on a click past the end of a line.
+            return;
+        }
+
+        let range = granularity == SelectionGranularity.Word
+            ? this.wordRangeAt(pos)
+            : this.lineRangeAt(pos);
+
+        // Written directly rather than through setSelectionAnchor(), which
+        // would reset the granularity this call is establishing.
+        this.selectionAnchor := range.start;
+        this._moveTo(this._selectionEndCaret(range.end), true, true);
+        this._selectionGranularity = granularity;
+        this._granularityAnchorStart = { x: range.start.x, y: range.start.y };
+        this._granularityAnchorEnd = { x: range.end.x, y: range.end.y };
+    }
+
+    // The moving end of a selection gesture: a drag, or a shift+click.
+    // Snaps to whatever granularity beginSelection() established -- so this
+    // is the ONE call a host makes for both, and word snapping is not
+    // something the host has to remember to ask for.
+    //
+    // Chrome's expansion rule exactly (Blink's
+    // SelectionAdjuster::AdjustSelectionRespectingGranularity): the anchor
+    // chunk always stays fully covered, and the moving end grows outward to
+    // the far edge of the chunk it is currently in -- the chunk's END when
+    // dragging forwards, its START when dragging backwards. Drag back
+    // across the anchor word and the selection flips direction without ever
+    // shrinking below that one whole word.
+    mut fn extendSelectionTo(pos: Vec2i) {
+        if this._selectionGranularity == SelectionGranularity.Character {
+            // Re-assert the anchor: a drag may be the first thing that
+            // turns the press's bare caret into a selection.
+            this.selectionAnchor := this._granularityAnchorStart;
+            this._moveTo(pos, true, true);
+            return;
+        }
+
+        let anchorStart = this._granularityAnchorStart;
+        let anchorEnd = this._granularityAnchorEnd;
+        let chunk = this._selectionGranularity == SelectionGranularity.Word
+            ? this.wordRangeAt(pos)
+            : this.lineRangeAt(pos);
+
+        if !this._posBefore(chunk.start, anchorEnd) {
+            // Forwards: at or past the anchor chunk.
+            this.selectionAnchor := anchorStart;
+            this._moveTo(this._selectionEndCaret(chunk.end), true, true);
+        }
+        else if !this._posBefore(anchorStart, chunk.end) {
+            // Backwards: at or before the anchor chunk. The anchor moves to
+            // the chunk's far end so the selection runs the other way, which
+            // is what keeps the anchor word whole.
+            this.selectionAnchor := this._selectionEndCaret(anchorEnd);
+            this._moveTo(chunk.start, true, true);
+        }
+        else {
+            // Still inside the anchor chunk: exactly the anchor chunk.
+            this.selectionAnchor := anchorStart;
+            this._moveTo(this._selectionEndCaret(anchorEnd), true, true);
+        }
+    }
+
+    // The granularity currently in force. A host reads it to decide whether
+    // a shift+click should extend by word (it should, if a double click set
+    // it -- see SelectionGranularity), but does not have to: passing the
+    // shift+click straight to extendSelectionTo() already does the right
+    // thing for all three.
+    fn selectionGranularity(): SelectionGranularity {
+        return this._selectionGranularity;
+    }
+
+    // The half-open range of the "chunk" containing `pos` -- what a double
+    // click selects.
+    //
+    // A chunk is a maximal run of characters of one CLASS (see
+    // charClassAt): letters/digits/underscore, whitespace, or punctuation.
+    // So double clicking inside `foo` in `foo.bar` selects `foo` and not the
+    // dot, double clicking the dot selects just `.` (or the whole `...` in
+    // `a...b`), and double clicking a gap selects the run of spaces. That is
+    // Chrome's behaviour, and unlike Word/LibreOffice it does NOT swallow
+    // the whitespace after a word: Blink appends trailing whitespace only
+    // for TOUCH selection, never for the mouse.
+    //
+    // Clicking past the end of a line selects the last chunk ON that line
+    // rather than collapsing to nothing, which is again what a browser does
+    // with a double click in the empty space right of a line. An empty line
+    // has nothing to select and yields an empty range at column 0.
+    fn wordRangeAt(pos: Vec2i): Range {
+        let lineCount = this.args.getLineCount();
+        let y = clamp<int>(pos.y, 0, lineCount - 1);
+        let length = this.args.getLineLength(y);
+        if length <= 0 {
+            let empty: Range = { start: { x: 0, y: y }, end: { x: 0, y: y }, kind: RangeKind.Characterwise };
+            return empty;
+        }
+
+        let line = this._lineText(y);
+        // Snap into the line and onto a cluster boundary. Past the end
+        // means the LAST cluster, so the trailing chunk is what gets
+        // selected rather than an empty range beyond everything.
+        let x = clamp<int>(pos.x, 0, length);
+        if x >= length {
+            x = unicode.previousClusterOffset(line, length);
+        } else {
+            x = unicode.clusterStart(line, x);
+        }
+
+        let targetClass = this._charClassAt(line, x);
+
+        let start = x;
+        while start > 0 {
+            let previous = unicode.previousClusterOffset(line, start);
+            if this._charClassAt(line, previous) != targetClass {
+                break;
+            }
+            start = previous;
+        }
+
+        let end = x;
+        while end < length {
+            if this._charClassAt(line, end) != targetClass {
+                break;
+            }
+            end = unicode.nextClusterOffset(line, end);
+        }
+
+        let result: Range = { start: { x: start, y: y }, end: { x: end, y: y }, kind: RangeKind.Characterwise };
+        return result;
+    }
+
+    // The half-open range of the whole line containing `pos` -- what a
+    // triple click selects. Characterwise from column 0 to the line's
+    // length, deliberately WITHOUT the trailing newline: including it would
+    // put the selection's end on the next line, and every host here renders
+    // a selection per line from its column span, so that would draw a stray
+    // sliver of highlight at the start of the following line.
+    fn lineRangeAt(pos: Vec2i): Range {
+        let lineCount = this.args.getLineCount();
+        let y = clamp<int>(pos.y, 0, lineCount - 1);
+        let result: Range = {
+            start: { x: 0, y: y },
+            end: { x: this.args.getLineLength(y), y: y },
+            kind: RangeKind.Characterwise,
+        };
+        return result;
     }
 
     mut fn clearSelection() {
@@ -1595,6 +1838,69 @@ export ref struct Context {
         if updateDesiredX {
             this._desiredCursorPosition.x = x;
         }
+
+        // A move that COLLAPSED the selection is a fresh caret placement,
+        // and a fresh caret placement resets the pointer-selection
+        // granularity to Character and re-anchors it here -- exactly what
+        // Blink does when a selection is set to a caret (FrameSelection's
+        // granularity goes back to kCharacter). This is what stops a double
+        // click, an arrow key, and then a shift+click from still snapping
+        // to words.
+        //
+        // The test is "is there a selection left", not merely "was this
+        // move unextended", because a visual mode keeps its anchor through
+        // an unextended move (see above) -- an `l` in vim's visual mode
+        // moves the caret without ending the selection, so the gesture's
+        // fixed end is still the visual anchor and must not be dragged
+        // along to the caret.
+        //
+        // The anchor recorded is the position actually LANDED ON, after
+        // clamping and cluster snapping, not the raw target -- so a drag
+        // starting from a click past the end of a line anchors on the line
+        // end rather than a column that does not exist.
+        if !extend && !this.selectionAnchor {
+            this._selectionGranularity = SelectionGranularity.Character;
+            this._granularityAnchorStart = { x: x, y: y };
+            this._granularityAnchorEnd = { x: x, y: y };
+        }
+    }
+
+    // Where the caret (or the anchor) has to sit for a selection to cover
+    // up to an EXCLUSIVE end position.
+    //
+    // The two selection models this engine supports disagree about that,
+    // and the granularity ranges above are computed in only one of them.
+    // A textbox selection runs BETWEEN characters, so an exclusive end is
+    // already the right position. Vim's visual modes put the caret ON the
+    // last selected character (see selectionRangeForLine, which adds the
+    // caret's own character back to the highlight), so the same range needs
+    // the caret one character earlier or the selection covers one too many.
+    //
+    // Doing it here rather than in wordRangeAt/lineRangeAt keeps those two
+    // honest: a range is a range, half-open, whatever mode happens to be
+    // active.
+    fn _selectionEndCaret(exclusiveEnd: Vec2i): Vec2i {
+        if !modeIsVisual(rx.get(this.mode)) {
+            return exclusiveEnd;
+        }
+        if exclusiveEnd.x <= 0 {
+            return exclusiveEnd;
+        }
+        let result: Vec2i = {
+            x: this.previousColumn(exclusiveEnd.y, exclusiveEnd.x),
+            y: exclusiveEnd.y,
+        };
+        return result;
+    }
+
+    // Document order: is `a` strictly before `b`? The one comparison the
+    // granularity expansion above needs, and deliberately not exported --
+    // callers deal in ranges, not in raw position ordering.
+    fn _posBefore(a: Vec2i, b: Vec2i): bool :: final {
+        if a.y != b.y {
+            return a.y < b.y;
+        }
+        return a.x < b.x;
     }
 
     // --- Pure motions: (position) => target position. No side effects. ---
