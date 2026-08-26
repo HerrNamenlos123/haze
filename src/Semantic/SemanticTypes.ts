@@ -355,6 +355,14 @@ export namespace Semantic {
 
   export type StructDatatypeDef = {
     variant: ENode.StructDatatype;
+    /**
+     * Written inline as `{ x: int, y: int }` rather than declared.
+     *
+     * `name` still holds something -- a content-derived identifier, so the same
+     * shape mangles identically in every module -- but that name is for C, not
+     * for the reader: an anonymous struct prints as its members (§3.1).
+     */
+    anonymous: boolean;
     name: string;
     noemit: boolean;
     generics: ExprId[];
@@ -1155,6 +1163,12 @@ export namespace Semantic {
 
     elaboratedStructDatatypes: StructDefCache;
     elaboratedFuncdefSymbols: FuncDefCache;
+    /**
+     * Anonymous struct shapes, by canonical structural key (§3.3). One entry
+     * per SHAPE, not per written occurrence: `{ x: int }` written in five
+     * places is one type here.
+     */
+    internedAnonymousStructs: Map<string, Semantic.TypeDefId>;
     elaboratedUntaggedUnions: Map<string, Semantic.TypeDefId>;
     elaboratedTaggedUnions: Map<string, Semantic.TypeDefId>;
     elaboratedNamespaceSymbols: {
@@ -1973,6 +1987,7 @@ export namespace Semantic {
       elaboratedLiteralTypes: [],
       elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
+      internedAnonymousStructs: new Map(),
       elaboratedUntaggedUnions: new Map(),
       elaboratedTaggedUnions: new Map(),
       elaboratedEnumSymbols: new Map(),
@@ -2284,7 +2299,15 @@ export namespace Semantic {
       type.variant === Semantic.ENode.NamespaceDatatype &&
       type.isModuleNamespace;
     const current = {
-      pretty: type.name,
+      // An anonymous struct has no name a reader or a re-parsing consumer could
+      // use -- its `name` is a content-derived C identifier. It prints as its
+      // members, which is exactly the syntax that produced it, so an exported
+      // signature containing one re-parses in the consumer and interns back to
+      // the same type (§3.5).
+      pretty:
+        type.variant === Semantic.ENode.StructDatatype && type.anonymous
+          ? serializeAnonymousStruct(sr, type)
+          : type.name,
       mangled: mangledSegment,
       wasMangled: true,
       isMonomorphized: false,
@@ -2411,6 +2434,53 @@ export namespace Semantic {
     return fragments;
   }
 
+  /**
+   * `{ x: int, y: int }` -- an anonymous struct as the programmer would write
+   * it, in DECLARED member order rather than the canonical sorted order used
+   * for interning. The sort exists so two orderings are one type; showing the
+   * reader a reordered version of what they wrote would be gratuitous.
+   */
+  /**
+   * Guards against a shape that contains itself, which is legal and common:
+   * `type Node = { value: int, next: ref Node | none }`. Printing one member at
+   * a time would recurse forever, so a re-entry prints `{ ... }`.
+   */
+  const anonymousStructsBeingSerialized = new Set<Semantic.StructDatatypeDef>();
+
+  function serializeAnonymousStruct(
+    sr: Semantic.Context,
+    struct: Semantic.StructDatatypeDef
+  ): string {
+    if (anonymousStructsBeingSerialized.has(struct)) {
+      return "{ ... }";
+    }
+    anonymousStructsBeingSerialized.add(struct);
+    try {
+      return serializeAnonymousStructMembers(sr, struct);
+    } finally {
+      anonymousStructsBeingSerialized.delete(struct);
+    }
+  }
+
+  function serializeAnonymousStructMembers(
+    sr: Semantic.Context,
+    struct: Semantic.StructDatatypeDef
+  ): string {
+    const defaults = new Map(
+      struct.memberDefaultValues.map((d) => [d.memberName, d.value])
+    );
+    const members = struct.members.map((memberId) => {
+      const member = sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol);
+      assert(member.type);
+      const def = defaults.get(member.name);
+      return `${member.name}: ${serializeTypeUse(sr, member.type)}${
+        def === undefined ? "" : ` = ${serializeExpr(sr, def)}`
+      }`;
+    });
+    return members.length === 0 ? "{ }" : `{ ${members.join(", ")} }`;
+  }
+
   export function serializeTypeDef(
     sr: Semantic.Context,
     datatypeId: Semantic.TypeDefId,
@@ -2427,6 +2497,14 @@ export namespace Semantic {
 
       case Semantic.ENode.EnumDatatype:
       case Semantic.ENode.StructDatatype:
+        if (
+          datatype.variant === Semantic.ENode.StructDatatype &&
+          datatype.anonymous
+        ) {
+          // Structural, so it prints as its members. Its `name` is a
+          // content-derived C identifier and would tell the reader nothing.
+          return serializeAnonymousStruct(sr, datatype);
+        }
         if (datatype.extern === EExternLanguage.Extern_C) {
           return datatype.name;
         }

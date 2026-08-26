@@ -3620,9 +3620,23 @@ export function lowerTypeDef(
     let optimizeAsRawPointer: Lowered.TypeUseId | null = null;
     if (type.members.length === 2) {
       // Is optimized if either 'Foo | null' or 'Foo | none'. 'Foo | null | none' can NOT be optimized (length != 2)
-      const use1 = lr.sr.typeUseNodes.get(type.members[0]);
+      //
+      // Alias-RESOLVED, or the representation would depend on how a member
+      // happened to be spelled: `ref Node | none` where `Node` is an alias saw
+      // a TypeAliasDatatype rather than a StructDatatype and fell through to
+      // the tagged representation. That is wrong on its own (two spellings of
+      // one type laid out differently), and it also puts the union back into
+      // the struct's C dependency graph, which for a self-referential type
+      // means the struct's own typedef is emitted before its forward
+      // declaration and the C compiler rejects the file. Same class as the
+      // union-member deduplication bug that already had to be fixed here.
+      const use1 = lr.sr.typeUseNodes.get(
+        lr.sr.e.resolveAlias(type.members[0])
+      );
       const def1 = lr.sr.typeDefNodes.get(use1.type);
-      const use2 = lr.sr.typeUseNodes.get(type.members[1]);
+      const use2 = lr.sr.typeUseNodes.get(
+        lr.sr.e.resolveAlias(type.members[1])
+      );
       const def2 = lr.sr.typeDefNodes.get(use2.type);
       // Only a plain `ref` is a nullable C pointer; a stackref is a struct
       // and gets the ordinary tagged representation.

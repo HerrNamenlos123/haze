@@ -781,6 +781,7 @@ export type ASTExpr =
   | ASTBinaryUnionTypeExpr
   | ASTTaggedUnionTypeExpr
   | ASTTypeValueExpr
+  | ASTAnonStructType
   | ASTTypeOfExpr;
 
 export type ASTLambda = {
@@ -813,10 +814,33 @@ export type ASTMetaAnnotationItem = {
   value: LiteralValue | null;
 };
 
+/**
+ * A structurally-typed struct written inline in a type position:
+ * `fn draw(p: { x: real, y: real })`.
+ *
+ * Structural, not nominal: two of these with the same members are the SAME
+ * type, everywhere, across modules — unlike `struct Foo { }`, where two
+ * identical declarations are two types. Value only, and deliberately without
+ * methods, operators or constructors: if every structurally identical use is
+ * one type, "which methods apply here" has no answer. That restriction is
+ * exactly why `operator as` (§4) has to exist.
+ */
+export type ASTAnonStructType = {
+  variant: "AnonStructType";
+  members: ASTStructMemberDefinition[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
-  type: ASTExpr;
+  /**
+   * null when the member omitted its type and takes it from its default
+   * (`test = true`). Anonymous structs are how named structs declare interfaces
+   * to each other, so `call_foo(args: { id: int, test = true })` is a primary
+   * case rather than a convenience.
+   */
+  type: ASTExpr | null;
   defaultValue: ASTExpr | null;
   optional: boolean;
   mutability: EVariableMutability;

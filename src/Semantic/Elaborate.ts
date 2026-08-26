@@ -104,6 +104,24 @@ const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
  *   type     anything else, including real type expressions like `int | none`;
  *            the type-valued half of the elaborator handles it
  */
+/**
+ * A stable, content-derived C identifier for an anonymous struct shape.
+ *
+ * Hashed rather than spelled out because a shape's key can be arbitrarily long
+ * and arbitrarily nested, and C identifiers cannot be. The hash is FNV-1a over
+ * the canonical key, so every module that writes the same shape derives the
+ * same name without coordinating -- which is the whole cross-module ABI story
+ * (§3.3).
+ */
+function anonymousStructCName(key: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= BigInt(key.charCodeAt(i));
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return `anon_${hash.toString(36)}`;
+}
+
 type AliasTarget =
   | { kind: "symbol"; symbolId: Collect.SymbolId; generics: Collect.ExprId[] }
   | { kind: "value" }
@@ -5208,6 +5226,116 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * Collapse an elaborated anonymous struct onto the canonical one for its
+   * shape (§3.3).
+   *
+   * Interning by structural key is what makes an anonymous struct *structural*
+   * rather than merely convertible: two identical shapes become one TypeDefId,
+   * so identical-shape "conversion" is free rather than a copy, and there is
+   * one C struct per shape -- which is what makes the cross-module ABI fall out
+   * automatically, provided the C name is derived from the key's CONTENT and
+   * never from a per-module counter.
+   *
+   * The key is the member names sorted canonically, each with its resolved type
+   * use, its optionality and its default. Two shapes differing only in written
+   * member order are therefore the same type; two with the same members but
+   * different defaults are different types, still trivially convertible where
+   * the semantics allow.
+   */
+  internAnonymousStruct(structId: Semantic.TypeDefId): Semantic.TypeDefId {
+    const struct = this.sr.typeDefNodes.get(structId);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+
+    // A shape that contains itself -- `type Node = { value: int, next: ref Node
+    // | none }` -- reaches this from inside its own member elaboration, where
+    // its member list is still being filled. Keying it there would produce a
+    // key for half a shape, and a second, different key once the members were
+    // complete. Leave it alone; the call that started the elaboration interns
+    // it once the members are built.
+    if (!struct.membersBuilt) {
+      return structId;
+    }
+
+    // Computed once per struct and remembered. Recomputing risks disagreeing
+    // with the key it was registered under, which would make a struct look like
+    // a duplicate of something else and get suppressed.
+    const remembered = this.anonymousStructKeysByStruct.get(structId);
+    if (remembered !== undefined) {
+      return this.sr.internedAnonymousStructs.get(remembered) ?? structId;
+    }
+
+    const key = this.anonymousStructKey(struct);
+    this.anonymousStructKeysByStruct.set(structId, key);
+
+    // The name is content-derived and carries no module, namespace or counter,
+    // so the same shape mangles to the same C identifier in every module that
+    // writes it. `parentSymbolId` is null for the same reason: nesting it in a
+    // module namespace would make one shape into several C types.
+    struct.name = anonymousStructCName(key);
+    struct.parentSymbolId = null;
+
+    const existing = this.sr.internedAnonymousStructs.get(key);
+    if (existing === structId) {
+      // The same written occurrence, elaborated again and served from the
+      // struct-def cache. Already canonical -- and marking it noemit here would
+      // delete the one definition of the shape.
+      return structId;
+    }
+    if (existing !== undefined) {
+      // A second elaboration of a shape that already exists. The canonical one
+      // is what everything gets handed; this one is left behind, named
+      // identically (so any stray reference still names the right C type) but
+      // emitting nothing -- two definitions of one C struct is a redefinition
+      // error, and a shape is by construction defined exactly once.
+      struct.noemit = true;
+      return existing;
+    }
+
+    this.sr.internedAnonymousStructs.set(key, structId);
+    return structId;
+  }
+
+  /**
+   * The canonical structural key of an anonymous struct.
+   *
+   * Member types go in alias-RESOLVED, so `type Meters = int` and `int` do not
+   * produce two shapes; the members are sorted by name, so written order is
+   * irrelevant (D3, as reversed).
+   */
+  private anonymousStructKey(struct: Semantic.StructDatatypeDef): string {
+    const defaults = new Map(
+      struct.memberDefaultValues.map((d) => [
+        d.memberName,
+        Semantic.serializeExpr(this.sr, d.value),
+      ])
+    );
+
+    const members = struct.members.map((memberId) => {
+      const member = this.sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol);
+      assert(member.type);
+      // The member's TYPE TEXT, not its TypeUseId. An id is a per-compilation
+      // counter, so keying on one gives the same shape a different key in every
+      // module -- which is precisely the failure §3.3 warns about: the C name
+      // must be derived from the key's CONTENT. With ids, `helper.area`
+      // mangled one way in the module that defined it and another way in the
+      // module that called it, and the link failed.
+      //
+      // Alias-resolved, so `type Meters = int` and `int` do not make two
+      // shapes; and serializeTypeUse names a nested anonymous struct
+      // structurally, so nesting stays content-derived all the way down.
+      const resolved = Semantic.serializeTypeUse(
+        this.sr,
+        this.resolveAlias(member.type)
+      );
+      const def = defaults.get(member.name);
+      return `${member.name}:${resolved}${def === undefined ? "" : `=${def}`}`;
+    });
+    members.sort();
+    return members.join(",");
+  }
+
   instantiateAndElaborateStructWithGenerics(
     definedStructTypeId: Collect.TypeDefId,
     genericArgs: Semantic.ExprId[],
@@ -5488,9 +5616,14 @@ export class SemanticElaborator {
       return substitute;
     });
 
-    const parentSymbolId = this.elaborateParentSymbolFromCache(
-      definedStructType.parentScope
-    );
+    // An anonymous struct has no parent, deliberately. Nesting one inside the
+    // namespace it happened to be written in would make a single shape into
+    // several C types and defeat the interning it depends on (§3.3) -- and the
+    // scope it was written in is often not one that names a symbol at all (a
+    // type alias's generic scope, or another struct's field scope).
+    const parentSymbolId = definedStructType.anonymous
+      ? null
+      : this.elaborateParentSymbolFromCache(definedStructType.parentScope);
 
     // This whole recursive stack and SCC business is a deep rabbit hole we must go down.
     // It is required in order to make sure complex chains of structs work, where one struct
@@ -5534,6 +5667,7 @@ export class SemanticElaborator {
       this.sr,
       {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: definedStructType.anonymous,
         name: definedStructType.name,
         generics: genericArgs,
         extern: definedStructType.extern,
@@ -8107,6 +8241,16 @@ export class SemanticElaborator {
   comptimeUnrollGeneration = 0;
 
   /**
+   * The structural key each anonymous struct was interned under.
+   *
+   * Memoised rather than recomputed: a shape's key depends on its members'
+   * types, and a struct that is re-interned after anything downstream has been
+   * elaborated could otherwise produce a slightly different key and be mistaken
+   * for a duplicate of a different shape.
+   */
+  anonymousStructKeysByStruct = new Map<Semantic.TypeDefId, string>();
+
+  /**
    * The generation an alias should be cached under.
    *
    * Only aliases declared inside a function body can be affected: a `for
@@ -8650,6 +8794,25 @@ export class SemanticElaborator {
       case Collect.ENode.TypeOfExpr: {
         const [expr] = this.expr(type.expr, {});
         return expr.type;
+      }
+
+      case Collect.ENode.AnonStructTypeExpr: {
+        // Elaborate the written shape exactly as a named struct would be, then
+        // hand it to the intern table: two `{ x: int, y: int }` written in
+        // different places -- or in different modules -- are one type, not two
+        // convertible ones (§3.3).
+        const written = this.instantiateAndElaborateStructWithGenerics(
+          type.structTypeDef,
+          [],
+          type.sourceloc
+        );
+        return makeTypeUse(
+          this.sr,
+          this.internAnonymousStruct(written),
+          EDatatypeMutability.Default,
+          EStorageClass.Value,
+          type.sourceloc
+        )[1];
       }
 
       case Collect.ENode.TypeModifierExpr: {
@@ -13444,6 +13607,7 @@ export class SemanticElaborator {
     const [metaFieldStruct, metaFieldStructId] =
       this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_field_t",
         noemit: true,
         generics: [],
@@ -13513,6 +13677,7 @@ export class SemanticElaborator {
       this.sr,
       {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_type_t",
         noemit: true,
         generics: [],
@@ -13563,6 +13728,7 @@ export class SemanticElaborator {
     const [metaTaggedMemberStruct, structId] =
       this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_tagged_member_t",
         noemit: true,
         generics: [],
@@ -15896,6 +16062,85 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * Build a fresh anonymous struct type from an untyped `{ ... }` literal.
+   *
+   * Every element must be named: a positional element has no member name to
+   * give the shape, and there is no declared type here to take one from.
+   */
+  anonymousStructFromLiteral(
+    structInst: Collect.AggregateLiteralExpr,
+    inference: Semantic.Inference
+  ): Semantic.TypeUseId {
+    const [struct, structId] = this.sr.b.addType<Semantic.StructDatatypeDef>(
+      this.sr,
+      {
+        variant: Semantic.ENode.StructDatatype,
+        anonymous: true,
+        name: "",
+        noemit: false,
+        generics: [],
+        opaque: false,
+        plain: false,
+        reactiveClone: false,
+        refByDefault: false,
+        nocopy: false,
+        export: false,
+        extern: EExternLanguage.None,
+        members: [],
+        membersBuilt: true,
+        membersFinalized: true,
+        memberDefaultValues: [],
+        methods: [],
+        methodsInProgress: false,
+        methodsFinalized: true,
+        nestedStructs: [],
+        parentSymbolId: null,
+        sourceloc: structInst.sourceloc,
+        concrete: true,
+        originalCollectedDefinition: -1 as Collect.TypeDefId,
+        originalCollectedSymbol: -1 as Collect.SymbolId,
+        annotations: [],
+      }
+    );
+
+    for (const element of structInst.elements) {
+      if (element.key === null) {
+        throw new CompilerError(
+          "A struct literal with no inferable type must name every member: there is nothing here to take the names from.",
+          element.sourceloc ?? structInst.sourceloc,
+          HazeErrorCode.ThisStructAnonymousAndMustBeTypeInferred
+        );
+      }
+      const [valueExpr] = this.expr(element.value, inference);
+      const memberId = this.sr.b.addSymbol(this.sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        comptime: false,
+        comptimeValue: null,
+        concrete: true,
+        export: false,
+        extern: EExternLanguage.None,
+        requiresHoisting: false,
+        memberOfStruct: structId,
+        mutability: EVariableMutability.Default,
+        name: element.key,
+        parentSymbolId: null,
+        sourceloc: element.sourceloc ?? structInst.sourceloc,
+        type: valueExpr.type,
+        variableContext: EVariableContext.MemberOfStruct,
+      } satisfies Semantic.VariableSymbol)[1];
+      struct.members.push(memberId);
+    }
+
+    return makeTypeUse(
+      this.sr,
+      this.internAnonymousStruct(structId),
+      EDatatypeMutability.Default,
+      EStorageClass.Value,
+      structInst.sourceloc
+    )[1];
+  }
+
   structInstantiation(
     structInst: Collect.AggregateLiteralExpr,
     inference: Semantic.Inference
@@ -15924,11 +16169,16 @@ export class SemanticElaborator {
     }
 
     if (!structId) {
-      throw new CompilerError(
-        "This struct is anonymous and must be type-inferred, but there is not enough context to infer it. Either it is not directly passed to something that expects a specific type, or it is being passed to an overloaded function.",
-        structInst.sourceloc,
-        HazeErrorCode.ThisStructAnonymousAndMustBeTypeInferred
-      );
+      // Nothing to infer from, so the literal makes its own type: a fresh
+      // anonymous struct built from the members it actually has (§3.4). This
+      // is what turns `let foo = { x: 0, y: 0 };` from an error into a
+      // perfectly ordinary declaration.
+      //
+      // Only when there is genuinely NO context. An inferred target that
+      // cannot be satisfied stays an error rather than silently falling back
+      // to a different type -- falling back there would replace a precise
+      // "this member does not exist" with a mystifying type mismatch later.
+      structId = this.anonymousStructFromLiteral(structInst, inference);
     }
 
     const struct = this.sr.typeDefNodes.get(
@@ -19108,6 +19358,7 @@ export function makeDeepDatatypeAvailable(
     sr,
     {
       variant: Semantic.ENode.StructDatatype,
+      anonymous: false,
       export: false,
       extern: EExternLanguage.None,
       generics: wrappedTypeDef.generics,

@@ -1182,6 +1182,10 @@ export namespace Conversion {
         kind: "clone-struct-to-target-type";
       }
     | {
+        // Anonymous struct -> anonymous struct, member by member (§3.4).
+        kind: "structural-struct-conversion";
+      }
+    | {
         kind: "construct-via-constructor";
         unsafe: boolean;
       };
@@ -1192,6 +1196,85 @@ export namespace Conversion {
   };
 
   type ConversionPlan = ConversionPlanSuccess | ConversionPlanError;
+
+  /** A struct's members as a name -> (symbol, type) map, in declared order. */
+  function structMembersByName(
+    sr: Semantic.Context,
+    struct: Semantic.StructDatatypeDef
+  ): Map<string, { symbolId: Semantic.SymbolId; type: Semantic.TypeUseId }> {
+    const out = new Map<
+      string,
+      { symbolId: Semantic.SymbolId; type: Semantic.TypeUseId }
+    >();
+    for (const memberId of struct.members) {
+      const member = sr.symbolNodes.get(memberId);
+      if (member.variant !== Semantic.ENode.VariableSymbol) {
+        continue;
+      }
+      assert(member.type);
+      out.set(member.name, { symbolId: memberId, type: member.type });
+    }
+    return out;
+  }
+
+  /**
+   * Why `target` cannot be built from `source` structurally, or null when it can.
+   *
+   * "Can" means every member of the TARGET is satisfiable: present in the source
+   * and implicitly convertible, or defaulted (which covers optional members,
+   * since collection gives those a `none` default). Excess members on the source
+   * are not a reason to refuse -- they are dropped (§3.4).
+   *
+   * Member conversion goes through the ordinary rules, which is what makes the
+   * recursion in §4.2 work: a member that needs `operator as` gets it.
+   */
+  function unsatisfiedStructuralMembers(
+    sr: Semantic.Context,
+    source: Semantic.StructDatatypeDef,
+    target: Semantic.StructDatatypeDef,
+    sourceExprId: Semantic.ExprId,
+    constraints: ConstraintSet,
+    sourceloc: SourceLoc
+  ): string | null {
+    const sourceMembers = structMembersByName(sr, source);
+    const defaulted = new Set(
+      target.memberDefaultValues.map((d) => d.memberName)
+    );
+
+    const problems: string[] = [];
+    for (const [name, targetMember] of structMembersByName(sr, target)) {
+      const sourceMember = sourceMembers.get(name);
+      if (!sourceMember) {
+        if (!defaulted.has(name)) {
+          problems.push(`'${name}' is missing and has no default`);
+        }
+        continue;
+      }
+      const memberPlan = buildConversionPlan(
+        sr,
+        sr.b.addExpr(sr, {
+          variant: Semantic.ENode.MemberAccessExpr,
+          instanceIds: [],
+          expr: sourceExprId,
+          memberName: name,
+          type: sourceMember.type,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: Semantic.FlowResult.fallthrough(),
+          writes: Semantic.WriteResult.empty(),
+        })[1],
+        targetMember.type,
+        constraints,
+        sourceloc,
+        Mode.Implicit,
+        false
+      );
+      if (memberPlan.kind === "error") {
+        problems.push(`'${name}': ${memberPlan.message}`);
+      }
+    }
+    return problems.length === 0 ? null : problems.join("; ");
+  }
 
   function checkFunctionDatatypeCompatibility(
     sr: Semantic.Context,
@@ -1482,7 +1565,7 @@ export namespace Conversion {
     // From object reference to cptr
     if (
       resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
-      (resolvedSourceTypeUse.storage !== EStorageClass.Value) &&
+      resolvedSourceTypeUse.storage !== EStorageClass.Value &&
       resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
       resolvedTargetTypeDef.primitive === EPrimitive.cptr
     ) {
@@ -1811,8 +1894,12 @@ export namespace Conversion {
           // lambda into an `(() => int) | none` slot is the everyday case
           // (`f?: () => int`); purity is inferred per lambda, so the type
           // ids rarely coincide even when the signatures do.
-          const mDef = sr.typeDefNodes.get(sr.typeUseNodes.get(sr.e.resolveAlias(m)).type);
-          const sDef = sr.typeDefNodes.get(sr.typeUseNodes.get(resolvedSourceTypeUseId).type);
+          const mDef = sr.typeDefNodes.get(
+            sr.typeUseNodes.get(sr.e.resolveAlias(m)).type
+          );
+          const sDef = sr.typeDefNodes.get(
+            sr.typeUseNodes.get(resolvedSourceTypeUseId).type
+          );
           if (
             mDef.variant === Semantic.ENode.CallableDatatype &&
             sDef.variant === Semantic.ENode.CallableDatatype
@@ -2279,6 +2366,43 @@ export namespace Conversion {
       }
     }
 
+    // Structural conversion between anonymous structs (§3.4).
+    //
+    // Allowed iff every member of the TARGET is satisfiable: present in the
+    // source and implicitly convertible, or optional, or defaulted. Members of
+    // the source that the target does not have are DROPPED.
+    //
+    // Dropping is safe here in a way it is not in TypeScript. TS duck-typing
+    // needs a member offset resolved dynamically on an opaque object, which C
+    // cannot do; because we always copy into a known layout, dropping costs
+    // nothing at all and follows the programmer's stated intent.
+    //
+    // Both sides must be anonymous: a named struct has identity even on the
+    // stack, and converting into or out of one needs the explicit opt-in of §4.
+    if (
+      resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.StructDatatype &&
+      resolvedSourceTypeDef.anonymous &&
+      resolvedTargetTypeDef.anonymous &&
+      resolvedSourceTypeUse.type !== resolvedTargetTypeUse.type
+    ) {
+      const unsatisfied = unsatisfiedStructuralMembers(
+        sr,
+        resolvedSourceTypeDef,
+        resolvedTargetTypeDef,
+        sourceExprId,
+        constraints,
+        _sourceloc
+      );
+      if (unsatisfied === null) {
+        return { kind: "structural-struct-conversion" };
+      }
+      return {
+        kind: "error",
+        message: `No suitable conversion from ${sourceTypeText} to ${targetTypeText} is known: ${unsatisfied}`,
+      };
+    }
+
     // Implicit conversion via a struct constructor (like an implicit/non-explicit
     // constructor in C++): if the target is a struct that provides a constructor
     // callable with the source value (taking default parameter values into account),
@@ -2402,6 +2526,93 @@ export namespace Conversion {
         return literalId;
       }
 
+      case "structural-struct-conversion": {
+        // Build the TARGET's member set out of the source's, taking each member
+        // that exists and leaving the rest to the target's defaults. Excess
+        // members of the source are simply never read -- which is the whole of
+        // "dropping" (§3.4): because the result is a literal of a known layout,
+        // an unused source member costs nothing at runtime and needs no
+        // representation at all.
+        assert(resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype);
+        const resolvedTargetTypeDef = sr.typeDefNodes.get(
+          sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeId)).type
+        );
+        assert(resolvedTargetTypeDef.variant === Semantic.ENode.StructDatatype);
+
+        const sourceMembers = structMembersByName(sr, resolvedSourceTypeDef);
+        const assign: { name: string; value: Semantic.ExprId }[] = [];
+        for (const [name, targetMember] of structMembersByName(
+          sr,
+          resolvedTargetTypeDef
+        )) {
+          const sourceMember = sourceMembers.get(name);
+          if (!sourceMember) {
+            // Not present in the source, so the target's own default supplies
+            // it. The planner already refused the conversion if there is none,
+            // so a member with no source and no default cannot reach here.
+            const fallback = resolvedTargetTypeDef.memberDefaultValues.find(
+              (d) => d.memberName === name
+            );
+            assert(fallback, `'${name}' has neither a source nor a default`);
+            assign.push({ name: name, value: fallback.value });
+            continue;
+          }
+          const memberAccessId = sr.b.addExpr(sr, {
+            variant: Semantic.ENode.MemberAccessExpr,
+            instanceIds: [...sourceExpr.instanceIds],
+            expr: sourceExprId,
+            memberName: name,
+            type: sourceMember.type,
+            sourceloc: sourceloc,
+            isTemporary: true,
+            flow: sourceExpr.flow,
+            writes: sourceExpr.writes,
+          })[1];
+          // Members convert by the ordinary rules, so a member needing its own
+          // conversion (including a nested structural one) gets it here.
+          const converted = MakeConversion(
+            sr,
+            memberAccessId,
+            targetMember.type,
+            sr.e.currentContext.constraints,
+            sourceloc,
+            Mode.Implicit,
+            false
+          );
+          assert(converted.ok, "member conversion was checked by the planner");
+          assign.push({ name: name, value: converted.expr });
+        }
+
+        const [literal, literalId] = sr.b.addExpr<Semantic.StructLiteralExpr>(
+          sr,
+          {
+            variant: Semantic.ENode.StructLiteralExpr,
+            instanceIds: [Semantic.makeInstanceId(sr)],
+            assign: assign,
+            type: targetTypeId,
+            inFunction: sr.e.inFunction,
+            allocator: null,
+            sourceloc: sourceloc,
+            isTemporary: true,
+            flow: sourceExpr.flow,
+            writes: sourceExpr.writes,
+          }
+        );
+        if (sr.e.inFunction) {
+          const functionSymbol = sr.symbolNodes.get(sr.e.inFunction);
+          assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+          for (const i of literal.instanceIds) {
+            functionSymbol.createsInstanceIds.add(i);
+          }
+        }
+        for (const a of assign) {
+          const value = sr.exprNodes.get(a.value);
+          literal.flow.addAll(value.flow);
+          literal.writes.addAll(value.writes);
+        }
+        return literalId;
+      }
+
       case "basic-c-cast": {
         return sr.b.addExpr(sr, {
           variant: Semantic.ENode.ExplicitCastExpr,
@@ -2443,8 +2654,12 @@ export namespace Conversion {
             sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeId)).type
           );
           if (targetDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-            const memberTypeId = sr.e.resolveAlias(targetDef.members[conversionPlan.index]);
-            const memberDef = sr.typeDefNodes.get(sr.typeUseNodes.get(memberTypeId).type);
+            const memberTypeId = sr.e.resolveAlias(
+              targetDef.members[conversionPlan.index]
+            );
+            const memberDef = sr.typeDefNodes.get(
+              sr.typeUseNodes.get(memberTypeId).type
+            );
             const srcDef = sr.typeDefNodes.get(
               sr.typeUseNodes.get(sr.e.resolveAlias(sourceExpr.type)).type
             );
@@ -2740,7 +2955,10 @@ export namespace Conversion {
     };
   }
 
-  const nocopyCaches = new WeakMap<Semantic.Context, Map<Semantic.TypeDefId, boolean>>();
+  const nocopyCaches = new WeakMap<
+    Semantic.Context,
+    Map<Semantic.TypeDefId, boolean>
+  >();
 
   /** `nocopy` is viral: a struct holding a nocopy value field is nocopy too. */
   export function isNocopyType(
@@ -2765,7 +2983,10 @@ export namespace Conversion {
         nocopyCache.set(typeDefId, false); // cycle guard
         for (const memberId of def.members) {
           const member = sr.symbolNodes.get(memberId);
-          if (member.variant !== Semantic.ENode.VariableSymbol || !member.type) {
+          if (
+            member.variant !== Semantic.ENode.VariableSymbol ||
+            !member.type
+          ) {
             continue;
           }
           const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(member.type));
@@ -2780,7 +3001,10 @@ export namespace Conversion {
           }
           if (
             mDef.variant === Semantic.ENode.FixedArrayDatatype &&
-            isNocopyType(sr, sr.typeUseNodes.get(sr.e.resolveAlias(mDef.datatype)).type)
+            isNocopyType(
+              sr,
+              sr.typeUseNodes.get(sr.e.resolveAlias(mDef.datatype)).type
+            )
           ) {
             result = true;
             break;
@@ -2790,7 +3014,8 @@ export namespace Conversion {
     } else if (def.variant === Semantic.ENode.FixedArrayDatatype) {
       const elemUse = sr.typeUseNodes.get(sr.e.resolveAlias(def.datatype));
       result =
-        elemUse.storage === EStorageClass.Value && isNocopyType(sr, elemUse.type);
+        elemUse.storage === EStorageClass.Value &&
+        isNocopyType(sr, elemUse.type);
     }
     nocopyCache.set(typeDefId, result);
     return result;

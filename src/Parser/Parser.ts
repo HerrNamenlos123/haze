@@ -74,6 +74,7 @@ import {
   type ASTTaggedUnionTypeExpr,
   type ASTTernaryExpr,
   type ASTAliasDef,
+  type ASTAnonStructType,
   type ASTTypeOfExpr,
   type ASTTypeValueExpr,
   type ASTUnaryExpr,
@@ -183,6 +184,9 @@ import {
   type TopLevelDeclarationsContext,
   type TripleFStringContext,
   type TripleStringConstantContext,
+  type AnonStructMemberContext,
+  type AnonStructTypeContext,
+  type StructMemberInferredContext,
   type TypeAliasDirectiveContext,
   type TypeAliasStatementContext,
   type TypeExprContext,
@@ -478,6 +482,7 @@ class ASTBuilder extends HazeParserListener {
       | GlobalVariableDefinitionContext
       | VariableCreationStatementRuleContext
       | StructMemberContext
+      | StructMemberInferredContext
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
       return EVariableMutability.Default;
@@ -980,6 +985,16 @@ class ASTBuilder extends HazeParserListener {
         literal: produced[0] as LiteralValue,
         sourceloc: this.loc(ctx),
       } satisfies ASTLiteralExpr);
+      return;
+    }
+
+    if (ctx.anonStructType()) {
+      if (produced.length !== 1) {
+        throw new InternalError(
+          "TypeExprPrimary anonStructType stack mismatch"
+        );
+      }
+      this.stack.push(produced[0]);
       return;
     }
 
@@ -1566,6 +1581,76 @@ class ASTBuilder extends HazeParserListener {
       datatype: datatype,
       expr: expr,
     } satisfies ASTGlobalVariableDefinition);
+  };
+
+  /**
+   * `name = <default>` — a named struct member whose type comes from its
+   * default. SymbolCollection turns the missing type into `typeof(<default>)`.
+   */
+  exitStructMemberInferred = (ctx: StructMemberInferredContext) => {
+    const expectedChildren = (ctx.metaAnnotation() ? 1 : 0) + 1;
+    const start = this.stack.length - expectedChildren;
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    let annotations: ASTMetaAnnotationItem[] = [];
+    if (ctx.metaAnnotation()) {
+      annotations = produced[i++] as ASTMetaAnnotationItem[];
+    }
+    const defaultValue = produced[i++] as ASTExpr;
+
+    if (i !== produced.length) {
+      throw new InternalError("StructMemberInferred stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "StructMember",
+      name: ctx.TYPE()?.getText() ?? ctx.id()!.getText(),
+      type: null,
+      annotations: annotations,
+      mutability: ctx.variableMutabilitySpecifier()
+        ? this.mutability(ctx)
+        : EVariableMutability.Default,
+      optional: false,
+      defaultValue: defaultValue,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTStructMemberDefinition);
+  };
+
+  exitAnonStructMember = (ctx: AnonStructMemberContext) => {
+    const expectedChildren = (ctx.typeExpr() ? 1 : 0) + (ctx.expr() ? 1 : 0);
+    const start = this.stack.length - expectedChildren;
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    const type = ctx.typeExpr() ? (produced[i++] as ASTExpr) : null;
+    const defaultValue = ctx.expr() ? (produced[i++] as ASTExpr) : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("AnonStructMember stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "StructMember",
+      name: ctx._name!.getText(),
+      type: type,
+      annotations: [],
+      mutability: EVariableMutability.Default,
+      optional: Boolean(ctx.QUESTIONMARK()),
+      defaultValue: defaultValue,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTStructMemberDefinition);
+  };
+
+  exitAnonStructType = (ctx: AnonStructTypeContext) => {
+    const start = this.stack.length - ctx.anonStructMember().length;
+    const produced = this.stack.splice(start);
+
+    this.stack.push({
+      variant: "AnonStructType",
+      members: produced as ASTStructMemberDefinition[],
+      sourceloc: this.loc(ctx),
+    } satisfies ASTAnonStructType);
   };
 
   exitStructMember = (ctx: StructMemberContext) => {

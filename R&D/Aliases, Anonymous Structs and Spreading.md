@@ -965,3 +965,77 @@ feature with its own questions — chiefly whether a consumer links against the 
 global, and what that means for mutable shared state across a module boundary — and should be
 specified before it is built.
 
+### 10.8 §3.1's "value only" contradicts §1.5, and §1.5 wins
+
+§3.1's storage row says an anonymous struct is **value only**, and that
+"`ref`/`stackref`/`mut` on an alias to one is a type error." §1.5 and §3.5 both give
+
+```haze
+type Node = { value: int, next: ref Node | none };
+```
+
+as **valid and required to work** — and that is a `ref` to an alias to an anonymous struct,
+exactly what §3.1 forbids. Implemented as §3.1 states, the recursion case fails with
+*"'ref' cannot be applied to the anonymous struct { value: int }"*.
+
+The rule that survives is §1.5's, for two reasons. Banning it makes recursive structural types
+unwritable at all, which §1.5 spends a paragraph explaining must not happen. And §3.1's own
+rationale — *"Box it if you need a reference"* — is **satisfied** by `ref Node`: that is a
+pointer to a heap instance of the interned shape, and nothing about structural identity or
+interning is harmed by it. What "value only" correctly rules out is ref-ness being part of the
+shape's *identity*, the way `ref struct X` makes it part of a named struct's — and no syntax for
+that exists.
+
+So `ref`/`stackref` on an anonymous struct is allowed, written inline or through an alias, and
+the storage-class rejection was removed along with its error code.
+
+### 10.9 Three more pre-existing bugs, found by building §3
+
+**Bug 8 — `ref <alias-to-a-struct> | none` was not optimized to a nullable pointer.** `Lower`
+decides that representation by testing whether one member is a `ref` struct and the other
+`none`/`null` — but it read the member's type def *without resolving aliases*, so a member
+spelled through an alias presented as a `TypeAliasDatatype` and fell through to the tagged
+representation. Two spellings of one type therefore had different C layouts.
+
+It also broke compilation outright for a self-referential type. With the union left in the
+tagged form, it stays in the struct's C dependency graph, so the emit order became
+struct → union → pointer → alias → the struct's own `typedef`, and the struct's `typedef` was
+written **before** its forward declaration. `type Node = { value: int, next: ref Node | none }`
+did not compile at all. This is the same class as the union-member deduplication bug that
+`cases_union_alias_dedup` already pins: an alias must never change an answer.
+
+**Bug 9 — `printCollectedExpr` printed every literal as the word `literal`.** Harmless while
+nothing re-parsed the output. An anonymous struct's DEFAULT is part of its identity (§3.3), so
+an exported shape has to carry its defaults as real source — and `verbose: bool = literal` does
+not parse. A literal at collection time is always a primitive (an enum member is a member access
+there, and only becomes a literal value after elaboration), so it needs no elaborated context to
+print.
+
+**Bug 10 — a value struct that directly contains itself is a raw C error, not a diagnostic.**
+`struct Bad { self: Bad; }` produces *"unknown type name '_HNHM..._3BadE'"* from clang, and so
+does the anonymous spelling. §1.5 asks for this to be the *rejection* case of the cycle rule, so
+it should be a proper diagnostic naming the cycle. Not fixed here: it is pre-existing, it applies
+equally to named structs and is therefore not anonymous-struct work, and it fails loudly rather
+than silently. Worth its own small piece of work, together with §1.5's "cycle with no
+indirection" matrix.
+
+### 10.10 What interning turned out to require
+
+Three things §3.3 implies but does not spell out, each of which failed first:
+
+- **The key must be the members' type TEXT, not their `TypeUseId`s.** An id is a per-compilation
+  counter — precisely the "per-module counter" §3.3 warns against, one level down from the C name
+  it warns about. Keyed on ids, a module and its consumer derived different names for one shape
+  and the link failed with *"undefined reference to ..._4areaEi18anon_1g6wi758m3wh4"*.
+
+- **A shape must not be keyed while its own members are still being built.** A recursive shape
+  reaches interning from inside its own member elaboration, where the member list is half filled;
+  keying it there produces a key for half a shape and a second, different key once it is
+  complete. The key is now computed once, after `membersBuilt`, and remembered per struct.
+
+- **The loser of an interning collision has to be silenced, not just ignored.** Elaborating a
+  shape twice produces two struct type defs; returning the canonical one is not enough, because
+  the other is still reachable and still emits a C definition — two definitions of one struct.
+  The duplicate is renamed to the canonical name (so a stray reference still names the right
+  type) and marked `noemit`.
+

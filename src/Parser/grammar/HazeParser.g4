@@ -137,6 +137,26 @@ typeExprPrimary
     | literal // Literal types such as 5, true or "Foo"
     | TYPEOF LB expr RB
     | LB typeExpr RB
+    | anonStructType
+    ;
+
+// A structurally-typed struct written inline: `{ x: real, y: real }`.
+// Value only -- `ref { ... }` is deliberately not expressible, because an
+// anonymous struct has no identity to hang a reference on. Commas and
+// semicolons are both accepted as separators, in named struct bodies too.
+// A member may omit its type when a default gives it one (`test = true`).
+anonStructType
+    : LCURLY (anonStructMember (memberSeparator anonStructMember)* memberSeparator?)? RCURLY
+    ;
+
+memberSeparator
+    : COMMA
+    | SEMI
+    ;
+
+anonStructMember
+    : name=id QUESTIONMARK? COLON typeExpr (EQUALS expr)?
+    | name=id EQUALS expr
     ;
 
 typeArgList
@@ -191,7 +211,8 @@ structContentWithSourceloc
 
 structContent
     : structContentWithSourceloc                                                                            #StructContentWithSourcelocAlt
-    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? SEMI?                     #StructMember
+    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
+    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
     | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition

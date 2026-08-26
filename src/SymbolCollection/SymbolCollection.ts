@@ -50,6 +50,7 @@ import {
   assert,
   CompilerError,
   formatSourceLoc,
+  InternalError,
   type SourceLoc,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
@@ -195,6 +196,7 @@ export namespace Collect {
     UnsafeExpr,
     BinaryExpr,
     TypeOfExpr,
+    AnonStructTypeExpr,
     LiteralExpr,
     FStringExpr,
     UnaryExpr,
@@ -477,6 +479,17 @@ export namespace Collect {
 
   export type StructTypeDef = {
     variant: ENode.StructTypeDef;
+    /**
+     * Written inline in a type position (`{ x: int, y: int }`) rather than
+     * declared with `struct`.
+     *
+     * An anonymous struct is STRUCTURAL: two with the same members are one
+     * type, everywhere, across modules -- so it is interned by a canonical key
+     * at elaboration rather than being its own nominal identity. It has no
+     * methods, operators or constructors, deliberately: if every structurally
+     * identical use is the same type, "which methods apply here" has no answer.
+     */
+    anonymous: boolean;
     fullyQualifiedName: string;
     parentScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
@@ -668,6 +681,20 @@ export namespace Collect {
   export type TypeOfExpr = BaseExpr & {
     variant: ENode.TypeOfExpr;
     expr: Collect.ExprId;
+  };
+
+  /**
+   * `{ x: int, y: int }` in a type position.
+   *
+   * Collected as a nameless StructTypeDef so that member collection, field
+   * scopes, defaults and optionality all reuse the named-struct machinery
+   * unchanged; this expression is only the pointer to it. What differs is
+   * elaboration, where the result is interned by structural key rather than
+   * given its own nominal identity.
+   */
+  export type AnonStructTypeExpr = BaseExpr & {
+    variant: ENode.AnonStructTypeExpr;
+    structTypeDef: Collect.TypeDefId;
   };
 
   export type BinaryExpr = BaseExpr & {
@@ -949,6 +976,7 @@ export namespace Collect {
     | UntaggedUnionTypeDefinitionExpr
     | TaggedUnionTypeDefinitionExpr
     | PreIncrExpr
+    | AnonStructTypeExpr
     | PostIncrExpr;
 
   export type ModuleImport = {
@@ -1502,6 +1530,7 @@ function collectTypeDef(
         cc,
         {
           variant: Collect.ENode.StructTypeDef,
+          anonymous: false,
           name: item.name,
           fullyQualifiedName: fullyQualifiedName,
           generics: [],
@@ -2022,7 +2051,23 @@ function collectSymbol(
     // =================================================================================================================
 
     case "StructMember": {
-      let datatype: ASTExpr = item.type;
+      // A member may omit its type when a default gives it one (`test = true`),
+      // which is what makes `call_foo(args: { id: int, test = true })` -- an
+      // anonymous struct used as an interface between named structs --
+      // writable at all. `typeof` already exists and already elaborates, so the
+      // omitted type simply *is* `typeof(<default>)`; nothing downstream has to
+      // learn about a second kind of member.
+      if (item.type === null) {
+        assert(
+          item.defaultValue,
+          "a struct member with no type must have a default"
+        );
+      }
+      let datatype: ASTExpr = item.type ?? {
+        variant: "TypeOfExpr",
+        expr: item.defaultValue as ASTExpr,
+        sourceloc: item.sourceloc,
+      };
       if (item.optional) {
         datatype = {
           variant: "BinaryExpr",
@@ -3433,6 +3478,112 @@ function collectExpr(
     // =================================================================================================================
     // =================================================================================================================
 
+    case "AnonStructType": {
+      // A nameless StructTypeDef, so member collection, the field scope,
+      // defaults and optionality are all the named-struct code unchanged.
+      // Identity is what differs, and that is settled at elaboration: this
+      // definition is interned away by structural key, so two `{ x: int }`
+      // written in different places become one type.
+      //
+      // No lexical scope of its own beyond the field scope: an anonymous struct
+      // has no methods, no nested types and no generic parameters to hold.
+      const [struct, structId] = Collect.makeTypeDef<Collect.StructTypeDef>(
+        cc,
+        {
+          variant: Collect.ENode.StructTypeDef,
+          anonymous: true,
+          name: "",
+          fullyQualifiedName: "",
+          generics: [],
+          optional: new Set(
+            item.members.filter((m) => m.optional).map((m) => m.name)
+          ),
+          defaultMemberValues: [],
+          export: false,
+          extern: EExternLanguage.None,
+          opaque: false,
+          plain: false,
+          refByDefault: false,
+          nocopy: false,
+          pub: false,
+          noemit: false,
+          lexicalScope: -1 as Collect.ScopeId,
+          fieldScope: -1 as Collect.ScopeId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          originalSourcecode: "",
+          collectedTypeDefSymbol: -1 as Collect.SymbolId,
+          annotations: [],
+        }
+      );
+
+      // A TypeDefSymbol is created but deliberately never added to any scope:
+      // the struct is anonymous, so nothing may find it by name -- but the
+      // member-elaboration path reaches a struct's fields THROUGH its symbol
+      // (StructDatatype.originalCollectedSymbol), so one has to exist.
+      const structSymbolId = Collect.makeSymbol<Collect.TypeDefSymbol>(cc, {
+        variant: Collect.ENode.TypeDefSymbol,
+        inScope: args.currentParentScope,
+        name: "",
+        export: false,
+        typeDef: structId,
+        sourceloc: item.sourceloc,
+      })[1];
+      struct.collectedTypeDefSymbol = structSymbolId;
+
+      // The field scope hangs off the scope the type was WRITTEN in, so member
+      // types resolve there -- an anonymous struct introduces no scope of its
+      // own for names to hide in.
+      const lexicalScopeId = Collect.makeScope<Collect.StructLexicalScope>(cc, {
+        variant: Collect.ENode.StructLexicalScope,
+        owningSymbol: structSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      })[1];
+      struct.lexicalScope = lexicalScopeId;
+      const fieldScopeId = Collect.makeScope<Collect.StructFieldScope>(cc, {
+        variant: Collect.ENode.StructFieldScope,
+        owningSymbol: structSymbolId,
+        parentScope: lexicalScopeId,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      })[1];
+      struct.fieldScope = fieldScopeId;
+
+      for (const m of item.members) {
+        if (m.defaultValue) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: collectExpr(cc, m.defaultValue, {
+              currentParentScope: fieldScopeId,
+            }),
+          });
+        } else if (m.optional) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: Collect.makeExpr(cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: "none",
+              sourceloc: m.sourceloc,
+            })[1],
+          });
+        }
+        collectSymbol(cc, m, { currentParentScope: fieldScopeId });
+      }
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.AnonStructTypeExpr,
+        structTypeDef: structId,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
     case "ConstTypeExpr": {
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.TypeModifierExpr,
@@ -3985,6 +4136,42 @@ export function printCollectedDatatype(
       })}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(cc, type.returnType)}${requires})`;
     }
 
+    case Collect.ENode.AnonStructTypeExpr: {
+      // Printed back out as the source that produced it, because the consumer
+      // RE-PARSES this text. That works precisely because §3.2 made the shape
+      // writable syntax: an anonymous struct's exported form is just the type
+      // the programmer wrote, and re-parsing it in the consumer produces the
+      // same shape, which interns to the same type (§3.5).
+      const struct = cc.typeDefNodes.get(type.structTypeDef);
+      assert(struct.variant === Collect.ENode.StructTypeDef);
+      const fieldScope = cc.scopeNodes.get(struct.fieldScope);
+      assert(fieldScope.variant === Collect.ENode.StructFieldScope);
+
+      const defaults = new Map(
+        struct.defaultMemberValues.map((d) => [d.name, d.value])
+      );
+      const members: string[] = [];
+      for (const symbolId of fieldScope.symbols) {
+        const member = cc.symbolNodes.get(symbolId);
+        if (member.variant !== Collect.ENode.VariableSymbol || !member.type) {
+          continue;
+        }
+        // An optional member's type already carries the `| none` the collector
+        // added, so re-emitting `?` too would double it.
+        const written = printCollectedDatatype(cc, member.type);
+        const def = defaults.get(member.name);
+        // A defaulted member's default is printed as well: two shapes with the
+        // same members but different defaults are DIFFERENT types (§3.3), so
+        // dropping it here would silently merge them across the boundary.
+        members.push(
+          `${member.name}: ${written}${
+            def === undefined ? "" : ` = ${printCollectedExpr(cc, def)}`
+          }`
+        );
+      }
+      return members.length === 0 ? "{ }" : `{ ${members.join(", ")} }`;
+    }
+
     case Collect.ENode.SymbolValueExpr:
     case Collect.ENode.TypeModifierExpr:
     case Collect.ENode.BinaryExpr:
@@ -3995,6 +4182,36 @@ export function printCollectedDatatype(
     default:
       assert(false, (type as any).variant.toString());
   }
+}
+
+/** A collected literal as source text; see the LiteralExpr case below. */
+function printCollectedLiteralValue(value: LiteralValue): string {
+  switch (value.type) {
+    case EPrimitive.str:
+    case EPrimitive.cstr:
+    case EPrimitive.ccstr:
+      return JSON.stringify(value.value);
+    case EPrimitive.bool:
+      return value.value ? "true" : "false";
+    case EPrimitive.null:
+      return "null";
+    case EPrimitive.none:
+      return "none";
+    case EPrimitive.Regex:
+      return `r"${value.pattern}"${[...value.flags].join("")}`;
+    default:
+      break;
+  }
+  if (value.type === "enum") {
+    // Unreachable from collected source, but a wrong answer here would be a
+    // silently mis-exported default rather than a visible failure.
+    throw new InternalError(
+      "an enum literal cannot appear in a collected expression"
+    );
+  }
+  // Every remaining primitive is numeric, and a bare number re-parses as
+  // whatever the member's declared type says.
+  return `${value.value}`;
 }
 
 export const printCollectedExpr = (
@@ -4013,8 +4230,17 @@ export const printCollectedExpr = (
     }
 
     case Collect.ENode.LiteralExpr: {
-      return "literal";
-      // return Semantic.serializeLiteralValue(cc, expr.literal);
+      // Used to be the literal string "literal", which was harmless while
+      // nothing re-parsed the output. An anonymous struct's DEFAULT is part of
+      // its identity -- two shapes with the same members and different defaults
+      // are different types (§3.3) -- so an exported shape has to carry its
+      // defaults as real source, and `verbose: bool = literal` does not parse.
+      //
+      // Semantic.serializeLiteralValue needs an elaborated context this side
+      // does not have; it is not needed either, because a literal at collection
+      // time is always a primitive. Enum members are member accesses here, not
+      // literals, and only become literal values after elaboration.
+      return printCollectedLiteralValue(expr.literal);
     }
 
     case Collect.ENode.FStringExpr: {

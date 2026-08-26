@@ -1,0 +1,318 @@
+// ============================================================================
+// Anonymous, structurally-typed structs (§3 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// `struct Foo { }` is NOMINAL: two identical declarations are two types.
+// `{ x: int, y: int }` written inline is STRUCTURAL: the same members mean the
+// same type, everywhere, including across a module boundary. That is the whole
+// point, and it is why these are interned by a canonical key rather than given
+// an identity of their own.
+//
+// Three consequences the cases below pin down:
+//
+//   * Interning is by CONTENT, not by identity. `{ x: int, y: int }` and
+//     `{ y: int, x: int }` are one type — written order is irrelevant. Two
+//     shapes with the same members and different DEFAULTS are different types,
+//     because a default is part of what the shape means.
+//
+//   * The C name has to be derived from that content and from nothing else.
+//     The first implementation keyed on TypeUseIds, which are per-compilation
+//     counters, so a module and its consumer derived different names for one
+//     shape and the link failed with "undefined reference to
+//     ..._4areaEi18anon_1g6wi758m3wh4". `crossModule` is that case.
+//
+//   * Value only, and no methods. An anonymous struct has no identity to hang a
+//     reference on — two structurally identical shapes are ONE type, so "which
+//     object is this a reference to" has no nominal answer, and "which methods
+//     apply here" has no answer either. That second restriction is exactly why
+//     `operator as` (§4) has to exist.
+//
+// Conversion is structural in one direction only: anon to anon. A named struct
+// keeps its identity even on the stack, so nominal <-> anon is refused in both
+// directions until §4's explicit opt-in. Excess members are DROPPED, which is
+// safe here in a way it is not in TypeScript: TS duck-typing needs a member
+// offset resolved dynamically on an opaque object, which C cannot do, so we
+// always copy into a known layout and dropping costs nothing.
+// ============================================================================
+
+namespace cases_anon_structs {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "anon structs: syntax, interning, defaults, nesting, conversion",
+            """
+// Both separators, in an anonymous body and a named one.
+type Config = { id: int; verbose: bool = false };
+type Pair<T> = { a: T, b: T };
+
+struct Named {
+    a: int = 1,
+    b: int = 2;
+}
+
+fn takesXY(p: { x: int, y: int }): int { return p.x * p.y; }
+
+// The same shape, written in the other order. One type, not two.
+fn producesYX(): { y: int, x: int } { return { x: 3, y: 4 }; }
+
+// Excess members are dropped; missing ones come from the target's defaults.
+fn takesX(p: { x: int }): int { return p.x; }
+fn withDefaults(p: { x: int = 5, y: int = 7 }): int { return p.x + p.y; }
+
+// A member may omit its type when a default gives it one. This is what makes
+// an anonymous struct usable as an interface between named structs.
+fn callFoo(args: { id: int, test = true }): int { return args.test ? args.id : 0; }
+
+// Optional members, and nesting to arbitrary depth.
+fn withOptional(a: { id: int, tag?: int }): int { return a.tag ? 1 : 0; }
+fn nested(a: { pos: { x: int, y: int } }): int { return a.pos.x; }
+
+// `{ }` is the unit struct -- sane, unlike JavaScript's: it is an empty struct,
+// and converts into any shape whose members are all defaulted or optional.
+fn unit(u: { }): int { return 1; }
+
+fn main(): int {
+    let c: Config = { id: 3 };
+    fmt.println(f"alias {c.id} {c.verbose}");
+    fmt.println(f"named {Named { }.a + Named { }.b}");
+
+    // Interning: producesYX() returns the same TYPE takesXY takes, despite the
+    // members having been written in the other order.
+    fmt.println(f"order {takesXY(producesYX())}");
+
+    let wide: { x: int, y: int } = { x: 3, y: 9 };
+    fmt.println(f"drop {takesX(wide)}");
+    fmt.println(f"defaults {withDefaults({ })}");
+    fmt.println(f"partial {withDefaults({ x: 1 })}");
+
+    fmt.println(f"inferred {callFoo({ id: 5 })}");
+    fmt.println(f"optional {withOptional({ id: 1 })}");
+    fmt.println(f"nested {nested({ pos: { x: 8, y: 0 } })}");
+    fmt.println(f"unit {unit({ })}");
+
+    // A generic alias instantiates to the same shape as the hand-written one.
+    let p: Pair<int> = { a: 1, b: 2 };
+    fmt.println(f"generic {takesX({ x: p.a + p.b })}");
+
+    let items: []{ id: int } = [{ id: 4 }];
+    fmt.println(f"array {items[0].id}");
+    let maybe: { id: int } | none = none;
+    fmt.println(f"union {maybe ? 1 : 0}");
+
+    // With NOTHING to infer from, the literal makes its own type (§3.4).
+    let fresh = { alpha: 10, beta: 20 };
+    fmt.println(f"fresh {fresh.alpha + fresh.beta}");
+
+    // `==` is memberwise, exactly as for a named struct.
+    let l: { x: int } = { x: 1 };
+    let r: { x: int } = { x: 1 };
+    fmt.println(f"equal {l == r}");
+
+    // The type prints as its members, not as the C identifier it mangles to.
+    fmt.println(f"pretty {typeof(wide).prettyName}");
+
+    // Reflection sees the members like any struct's.
+    let count = 0;
+    for comptime f in typeof(wide).fields { count = count + 1; }
+    fmt.println(f"fields {count}");
+    return 0;
+}
+""",
+            """
+alias 3 false
+named 3
+order 12
+drop 3
+defaults 12
+partial 8
+inferred 5
+optional 0
+nested 8
+unit 1
+generic 3
+array 4
+union 0
+fresh 30
+equal true
+pretty { x: int, y: int }
+fields 2
+""");
+
+        // ── Storage classes (§3.1, corrected) ───────────────────────────────
+        //
+        // §3.1 says an anonymous struct is "value only", and that `ref` on an
+        // alias to one is a type error. That cannot be right, because §1.5 and
+        // §3.5 both require `type Node = { value: int, next: ref Node | none }`
+        // to work — and a ref to the shape is exactly the "box it if you need a
+        // reference" that §3.1's own rationale prescribes.
+        //
+        // So the rule that survives is the narrow one the grammar already
+        // enforces: `ref { ... }` cannot be WRITTEN inline, because a shape has
+        // no identity of its own to attach ref-ness to. Referring to an
+        // instance of one is ordinary boxing and is allowed.
+        s.run(
+            "anon structs: a reference to a shape is ordinary boxing",
+            """
+type P = { x: int, y: int };
+
+// Through an alias, and written inline. Both are the same thing: a pointer to
+// an instance of the interned shape. This is the mechanism
+// `type Node = { ..., next: ref Node | none }` is built out of, so if this does
+// not work, no recursive structural type can exist.
+fn viaAlias(p: ref P): int { return p.x + p.y; }
+fn viaInline(p: ref { x: int, y: int }): int { return p.x * p.y; }
+
+fn main(): int {
+    let boxed: ref P = { x: 2, y: 3 };
+    fmt.println(f"alias {viaAlias(boxed)}");
+    // The same interned shape, so the same pointer type.
+    fmt.println(f"inline {viaInline(boxed)}");
+    return 0;
+}
+""",
+            """
+alias 5
+inline 6
+""");
+
+        // ── Identity is not negotiable (§3.4, D2) ───────────────────────────
+        //
+        // A named struct has identity even on the stack. Converting into or out
+        // of one needs the explicit opt-in of §4; until then both directions
+        // are refused, including when the members line up exactly.
+        s.compileFails(
+            "anon structs: a named struct does not become an anonymous one",
+            """
+struct V { x: int = 0; }
+fn f(p: { x: int }): int { return p.x; }
+fn main(): int {
+    let v: V = { x: 1 };
+    return f(v);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "anon structs: an anonymous struct does not become a named one",
+            """
+struct V { x: int = 0; }
+fn f(v: V): int { return v.x; }
+fn main(): int {
+    let a: { x: int } = { x: 1 };
+    return f(a);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // A member that is neither present nor defaulted is a plain error --
+        // dropping EXCESS members does not mean inventing missing ones.
+        s.compileFails(
+            "anon structs: a member with no source and no default is an error",
+            """
+fn f(p: { x: int, y: int }): int { return p.x; }
+fn main(): int {
+    let narrow: { x: int } = { x: 1 };
+    return f(narrow);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // ── nocopy is inherited (§3.5) ──────────────────────────────────────
+        //
+        // The modifier cannot be written on an anonymous struct, but a shape
+        // containing a `nocopy` member is itself `nocopy`. No interning problem:
+        // every use site names the same members, so every use site derives the
+        // same answer.
+        s.compileFails(
+            "anon structs: a nocopy member makes the shape nocopy",
+            """
+nocopy struct Handle { fd: int = 0; }
+fn main(): int {
+    let a: { h: Handle } = { h: { fd: 3 } };
+    let b = a;
+    return b.h.fd;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // ── Recursion (§1.5, §3.5) ──────────────────────────────────────────
+        //
+        // The rejection rule is not "the type refers to itself". It is "the
+        // cycle contains no indirection". A cycle through `ref` and `| none`
+        // has a finite size and a fixed point, and must keep working.
+        s.run(
+            "anon structs: a recursive shape through ref and none is legal",
+            """
+type Node = { value: int, next: ref Node | none };
+
+fn sum(n: ref Node): int {
+    let total = 0;
+    let cursor: ref Node | none = n;
+    while cursor {
+        total = total + cursor.value;
+        cursor = cursor.next;
+    }
+    return total;
+}
+
+fn main(): int {
+    let third: ref Node = { value: 3, next: none };
+    let second: ref Node = { value: 2, next: third };
+    let first: ref Node = { value: 1, next: second };
+    fmt.println(f"sum {sum(first)}");
+    return 0;
+}
+""",
+            "sum 6");
+
+        // ── Across a module boundary (§3.5) ─────────────────────────────────
+        //
+        // The case that made the C name content-derived. An exported signature
+        // containing a shape is printed STRUCTURALLY into the generated
+        // interface and re-parsed by the consumer — which works only because
+        // §3.2 made the shape writable syntax. The consumer then builds its own
+        // literal of that shape, and the two must be the same C type.
+        //
+        // A single-module test cannot reach this: within one module there is
+        // only ever one interning table.
+        s.runWithModules(
+            "anon structs: the same shape is one type across a module boundary",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export fn area(p: { x: int, y: int }): int { return p.x * p.y; }
+export fn makePoint(): { x: int, y: int } { return { x: 3, y: 4 }; }
+
+// An alias to a shape, with a default, exported and re-parsed.
+export type Config = { id: int, verbose: bool = false };
+export fn describe(c: Config): int { return c.verbose ? -c.id : c.id; }
+""",
+                },
+            ],
+            """
+import shapes;
+fn main(): int {
+    // A literal built HERE, passed to a signature declared THERE.
+    fmt.println(f"in {shapes.area({ x: 2, y: 5 })}");
+
+    // A value made THERE, passed back to a signature declared THERE -- the
+    // returned type and the parameter type have to be the same interned shape.
+    let p = shapes.makePoint();
+    fmt.println(f"roundtrip {shapes.area(p)}");
+
+    // The exported alias's default survives the boundary.
+    fmt.println(f"default {shapes.describe({ id: 9 })}");
+    fmt.println(f"explicit {shapes.describe({ id: 9, verbose: true })}");
+    return 0;
+}
+""",
+            """
+in 10
+roundtrip 12
+default 9
+explicit -9
+""");
+    }
+}

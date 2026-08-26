@@ -1602,6 +1602,11 @@ ref struct Parser {
             return;
         }
 
+        if k == TK.LCurly {
+            this.anonStructType();
+            return;
+        }
+
         // Literal types such as 5, true or "Foo".
         if this.isLiteralStart(k) {
             this.literalExpr();
@@ -3087,18 +3092,27 @@ ref struct Parser {
         let nameTok = this.memberName();
         let name = this.text(nameTok);
         let isOptional = this.accept(TK.Question);
-        this.expect(TK.Colon);
-        let datatype = this.captureType();
+
+        // The type may be omitted when a default gives it one (`test = true`).
+        // SymbolCollection turns the absent type into `typeof(<default>)`.
+        let datatype = emptyCapture();
+        if !this.at(TK.Equals) {
+            this.expect(TK.Colon);
+            datatype = this.captureType();
+        }
 
         let defaultValue = emptyCapture();
         if this.accept(TK.Equals) { defaultValue = this.captureExpr(); }
-        this.accept(TK.Semi);
+        // Commas and semicolons are both accepted, here as in an anonymous
+        // struct body. The formatter will normalise later; the parser is
+        // permissive now.
+        this.memberSeparator();
 
         members.push(this.captureWith(() => {
             this.w.beginObject();
             this.w.keyString("variant", "StructMember");
             this.w.keyString("name", name);
-            this.w.keyRaw("type", datatype);
+            this.writeOptionalRaw("type", datatype);
             this.writeOptionalRaw("defaultValue", defaultValue);
             this.w.keyBool("optional", isOptional);
             this.w.keyInt("mutability", mutability);
@@ -3106,6 +3120,66 @@ ref struct Parser {
             this.locHere(start);
             this.w.endObject();
         }));
+    }
+
+    // A member separator: `,` or `;`, both optional at the end of a body.
+    mut fn memberSeparator(): bool :: final {
+        if this.accept(TK.Comma) { return true; }
+        if this.accept(TK.Semi) { return true; }
+        return false;
+    }
+
+    // anonStructType: `{ x: real, y: real }` in a TYPE position.
+    //
+    // Value only: `ref { ... }` is deliberately not expressible, because an
+    // anonymous struct has no identity to hang a reference on.
+    mut fn anonStructType(): void :: final {
+        let start = this.expect(TK.LCurly);
+
+        let members: mut []str = [];
+        while !this.at(TK.RCurly) && !this.atEnd() {
+            let memberStart = this.cur();
+            let nameTok = this.memberName();
+            let name = this.text(nameTok);
+            let isOptional = this.accept(TK.Question);
+
+            let datatype = emptyCapture();
+            if !this.at(TK.Equals) {
+                this.expect(TK.Colon);
+                datatype = this.captureType();
+            }
+
+            let defaultValue = emptyCapture();
+            if this.accept(TK.Equals) { defaultValue = this.captureExpr(); }
+
+            members.push(this.captureWith(() => {
+                this.w.beginObject();
+                this.w.keyString("variant", "StructMember");
+                this.w.keyString("name", name);
+                this.writeOptionalRaw("type", datatype);
+                this.writeOptionalRaw("defaultValue", defaultValue);
+                this.w.keyBool("optional", isOptional);
+                // EVariableMutability.Default
+                this.w.keyInt("mutability", 3);
+                this.w.key("annotations");
+                this.w.beginArray();
+                this.w.endArray();
+                this.locHere(memberStart);
+                this.w.endObject();
+            }));
+
+            if !this.memberSeparator() { break; }
+        }
+        this.expect(TK.RCurly);
+
+        this.w.beginObject();
+        this.w.keyString("variant", "AnonStructType");
+        this.w.key("members");
+        this.w.beginArray();
+        for m in members { this.w.rawValue(m); }
+        this.w.endArray();
+        this.locHere(start);
+        this.w.endObject();
     }
 
     // Look past modifiers to see whether a struct/enum keyword follows.
