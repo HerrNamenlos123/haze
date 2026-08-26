@@ -1,0 +1,185 @@
+// ============================================================================
+// Literal discrimination for unions and overloads (§5 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// An untyped `{ ... }` passed to an overloaded function, or assigned to a union
+// of structs, used to be refused outright — it "matched" every struct-shaped
+// candidate and the call was reported as ambiguous. That refusal is one of the
+// reasons this whole change exists, and it is replaced by explicit
+// discrimination: the literal's own members decide which candidate it is.
+//
+// Unions and overload sets are treated IDENTICALLY at this level. Function
+// overload resolution is a separate, larger system that wraps around this one;
+// the rule here decides only which shape an untyped literal takes.
+//
+// A candidate MATCHES EXACTLY when every required member is supplied, no excess
+// member is supplied, and every unsupplied member is optional or defaulted.
+// Implicit conversions on the supplied VALUES are permitted and deliberately do
+// not affect matching — they are a question about the values, settled
+// afterwards by the ordinary rules, not about which shape was meant.
+//
+//   exactly one candidate matches   ->  chosen
+//   none                            ->  error, blaming one candidate (§5.2)
+//   more than one                   ->  hard ambiguity error
+//
+// There is deliberately NO tie-breaking. No "better match wins", no "fewer
+// implicit conversions wins". The principle: if it is 100% unambiguous what the
+// user meant, do exactly that; if it is not, never guess. C++ does a great deal
+// the user did not intend; most other languages decline to act even when they
+// could have, and so do we.
+//
+// §5.2 decides only who to BLAME, never who to select. "First discriminating
+// member wins": scan the literal's members in written order and take the first
+// that exists on exactly one candidate. `{ a1: 0, b2: 0 }` and `{ b2: 0, a1: 0 }`
+// both select nothing and differ only in whose error is reported.
+// ============================================================================
+
+namespace cases_literal_discrimination {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "literal discrimination: unions and overloads pick by member set",
+            """
+struct A { a1: int = 0; a2: int = 0; }
+struct B { b1: int = 0; b2: int = 0; }
+
+// Required members, to prove "supplied" is what matters and not just "named".
+struct NeedsBoth { p: int; q: int; }
+struct NeedsOne { p: int; }
+
+fn f(v: A): int { return 1; }
+fn f(v: B): int { return 2; }
+
+fn g(v: NeedsBoth): int { return v.p + v.q; }
+fn g(v: NeedsOne): int { return v.p * 100; }
+
+// Generic and parameter-pack candidates do not participate at all -- not a
+// match, not an ambiguity, simply out. So the concrete overload wins even
+// though the generic one would happily have taken anything.
+fn h<T>(v: T): int { return -1; }
+fn h(v: A): int { return 7; }
+
+// Implicit conversion on a supplied VALUE is allowed and does not affect
+// matching: `{ w: 5 }` is an int literal against an i64 member.
+struct Wide { w: i64 = 0; }
+fn k(v: Wide): int { return 42; }
+
+fn main(): int {
+    // Overloads.
+    fmt.println(f"overloadA {f({ a1: 1, a2: 2 })}");
+    fmt.println(f"overloadB {f({ b1: 1, b2: 2 })}");
+
+    // A member that is REQUIRED and not supplied disqualifies the candidate,
+    // so `{ p: 1 }` is NeedsOne and `{ p: 1, q: 2 }` is NeedsBoth.
+    fmt.println(f"required1 {g({ p: 1 })}");
+    fmt.println(f"required2 {g({ p: 1, q: 2 })}");
+
+    fmt.println(f"generic {h({ a1: 1, a2: 2 })}");
+    fmt.println(f"convert {k({ w: 5 })}");
+
+    // Unions, by the same rule.
+    let x: A | B = { a1: 1, a2: 2 };
+    let y: A | B = { b1: 3, b2: 4 };
+    fmt.println(f"unionA {x is A}");
+    fmt.println(f"unionB {y is B}");
+
+    // ...including through a nullish union, where the literal still has to
+    // choose between the two struct members.
+    let z: A | B | none = { b1: 5, b2: 6 };
+    fmt.println(f"nullish {z is B}");
+    return 0;
+}
+""",
+            """
+overloadA 1
+overloadB 2
+required1 100
+required2 3
+generic 7
+convert 42
+unionA true
+unionB true
+nullish true
+""");
+
+        // ── Ambiguity is a hard error (§5.1) ────────────────────────────────
+        //
+        // Two candidates the literal satisfies equally. There is nothing to
+        // choose between them and nothing that would be honest to guess.
+        s.compileFails(
+            "literal discrimination: two matching union members are ambiguous",
+            """
+struct A { x: int = 0; }
+struct B { x: int = 0; }
+fn main(): int {
+    let v: A | B = { x: 1 };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.AmbiguousLiteralCandidates)]);
+
+        // ── §5.2: who gets blamed ───────────────────────────────────────────
+        //
+        // These two select nothing and differ ONLY in whom the message blames.
+        // `a1` exists on exactly one candidate, so it discriminates to A, and
+        // the failure is reported against A: "A has no member b2".
+        s.compileFails(
+            "literal discrimination: the first discriminating member picks the blame (A)",
+            """
+struct A { a1: int = 0; a2: int = 0; }
+struct B { b1: int = 0; b2: int = 0; }
+fn main(): int {
+    let v: A | B = { a1: 0, b2: 0 };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DoesNotHaveMemberNamed)]);
+
+        s.compileFails(
+            "literal discrimination: the first discriminating member picks the blame (B)",
+            """
+struct A { a1: int = 0; a2: int = 0; }
+struct B { b1: int = 0; b2: int = 0; }
+fn main(): int {
+    let v: A | B = { b2: 0, a1: 0 };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DoesNotHaveMemberNamed)]);
+
+        // When no member discriminates, there is no subject to blame and the
+        // message falls back to listing the candidates.
+        s.compileFails(
+            "literal discrimination: with nothing to discriminate on, candidates are listed",
+            """
+struct A { a1: int = 0; }
+struct B { b1: int = 0; }
+fn main(): int {
+    let v: A | B = { z: 0 };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoCandidateForLiteral)]);
+
+        // The overload spelling of "nothing matched". The larger overload
+        // system reports it, but it must say no candidate matched rather than
+        // that several did — which is what it used to say, because the implicit
+        // tier skipped deferred literals entirely and every candidate survived.
+        s.compileFails(
+            "literal discrimination: no overload matches is not an ambiguity",
+            """
+struct A { a1: int = 0; }
+struct B { b1: int = 0; }
+fn f(v: A): int { return 1; }
+fn f(v: B): int { return 2; }
+fn main(): int {
+    return f({ a1: 0, b1: 0 });
+}
+""",
+            [
+                testsuite.mustHave(errorcodes.Code.AmbiguousOverloadCandidates),
+                testsuite.mustNotHave(errorcodes.Code.AmbiguousOverloadNeedsTypeAnnotation),
+            ]);
+    }
+}

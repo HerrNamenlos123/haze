@@ -265,6 +265,8 @@ export enum HazeErrorCode {
   AliasTargetIsNotAliasable = 7199, // '' cannot be aliased: only types, namespaces, functions, globals and enum members can
   SymbolIsNotAValue = 7200, // '' cannot be used as a value here
   ImportedSymbolNotFound = 7201, // Module '' has no exported symbol named ''
+  AmbiguousLiteralCandidates = 7202, // This literal matches more than one candidate
+  NoCandidateForLiteral = 7203, // This literal matches no candidate
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

@@ -64,6 +64,7 @@ fn main(): int {
     cases_comptime_alias_scoping.register(suite);
     cases_symbol_imports.register(suite);
     cases_anon_structs.register(suite);
+    cases_literal_discrimination.register(suite);
 
     return testsuite.runAll(config, suite);
 }

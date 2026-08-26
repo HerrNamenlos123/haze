@@ -6013,6 +6013,188 @@ export class SemanticElaborator {
   // as a value of this type? Mirrors what structInstantiation() accepts when
   // given the type as its hint: a struct, an array, or a union whose only
   // non-nullish member is one of those.
+  /**
+   * Does this untyped `{ ... }` literal match `targetTypeUse` EXACTLY (§5.1)?
+   *
+   * Exactly means: every required member is supplied, no excess member is
+   * supplied, and every unsupplied member is optional or defaulted. Implicit
+   * conversions on the supplied VALUES are permitted and deliberately do not
+   * affect matching -- this decides which shape the literal takes, not whether
+   * the values fit, which the ordinary rules settle afterwards.
+   *
+   * Returns null when the question does not apply: the target is not a struct,
+   * or the literal is positional (an array literal), so the caller can fall
+   * through to whatever it did before.
+   */
+  literalMatchesExactly(
+    elements: readonly Collect.AggregateLiteralElement[],
+    targetTypeUse: Semantic.TypeUseId
+  ): boolean | null {
+    const resolved = this.resolveAlias(targetTypeUse);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (def.variant !== Semantic.ENode.StructDatatype) {
+      return null;
+    }
+    if (elements.some((e) => e.key === null)) {
+      return null;
+    }
+
+    const supplied = new Set(elements.map((e) => e.key as string));
+    const defaulted = new Set(def.memberDefaultValues.map((d) => d.memberName));
+
+    let anyMember = false;
+    for (const memberId of def.members) {
+      const member = this.sr.symbolNodes.get(memberId);
+      if (member.variant !== Semantic.ENode.VariableSymbol) {
+        continue;
+      }
+      anyMember = true;
+      if (supplied.has(member.name)) {
+        supplied.delete(member.name);
+        continue;
+      }
+      // Not supplied: only fine if the struct can fill it in itself. An
+      // optional member is given a `none` default at collection, so `defaulted`
+      // covers both.
+      if (!defaulted.has(member.name)) {
+        return false;
+      }
+    }
+    if (!anyMember && elements.length > 0) {
+      return false;
+    }
+    // Anything left over is an excess member, which disqualifies the candidate
+    // rather than being dropped: dropping is for a conversion between two
+    // KNOWN types (§3.4), while here the excess member is the evidence that
+    // this is not the shape the programmer meant.
+    return supplied.size === 0;
+  }
+
+  /**
+   * Which candidate an error should blame when nothing matched (§5.2).
+   *
+   * "First discriminating member wins": scan the literal's members in WRITTEN
+   * order and take the first that exists on exactly one candidate. This is
+   * reporting, not selection -- `{ a1: 0, b2: 0 }` and `{ b2: 0, a1: 0 }` both
+   * select nothing, and differ only in whom they blame.
+   *
+   * Null when no member discriminates, so the caller lists candidates instead.
+   */
+  discriminatingCandidate(
+    elements: readonly Collect.AggregateLiteralElement[],
+    candidates: readonly Semantic.TypeUseId[]
+  ): Semantic.TypeUseId | null {
+    for (const element of elements) {
+      if (element.key === null) {
+        continue;
+      }
+      const owning = candidates.filter((candidate) =>
+        this.structHasMember(candidate, element.key as string)
+      );
+      if (owning.length === 1) {
+        return owning[0];
+      }
+    }
+    return null;
+  }
+
+  private structHasMember(
+    typeUseId: Semantic.TypeUseId,
+    name: string
+  ): boolean {
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(typeUseId)).type
+    );
+    if (def.variant !== Semantic.ENode.StructDatatype) {
+      return false;
+    }
+    return def.members.some((memberId) => {
+      const member = this.sr.symbolNodes.get(memberId);
+      return (
+        member.variant === Semantic.ENode.VariableSymbol && member.name === name
+      );
+    });
+  }
+
+  /**
+   * The type an untyped literal would actually be built as.
+   *
+   * `Foo | none` builds a `Foo`; the nullish part is not a candidate for a
+   * literal. Mirrors canBuildUntypedAggregateLiteralAs, which accepts such a
+   * union for exactly that reason.
+   */
+  /**
+   * Why this parameter cannot take the untyped `{ ... }` passed at this
+   * position, or null if it can (or nothing untyped was passed).
+   *
+   * Two reasons, in order. The parameter may not be able to take an aggregate
+   * literal at ALL -- `real` cannot -- which is what stops `p({})` against
+   * `p(real)` and `p(Full)` from matching both. And per §5.1 the parameter's
+   * shape may simply not be the one written: a required member missing, or an
+   * excess member supplied, puts the candidate out.
+   */
+  untypedLiteralRejects(
+    passed:
+      | {
+          index: number;
+          exprId: Semantic.ExprId | null;
+          collectExprId?: Collect.ExprId;
+        }
+      | undefined,
+    signatureParam:
+      | { kind: "normal"; type: Semantic.TypeUseId | null }
+      | { kind: "param-pack" },
+    index: number
+  ): string | null {
+    if (
+      !passed ||
+      passed.exprId !== null ||
+      passed.collectExprId === undefined ||
+      signatureParam.kind === "param-pack" ||
+      signatureParam.type === null ||
+      !isTypeConcrete(this.sr, signatureParam.type)
+    ) {
+      return null;
+    }
+    const literalId = this.untypedAggregateLiteralBehind(passed.collectExprId);
+    if (literalId === null) {
+      return null;
+    }
+    const paramText = Semantic.serializeTypeUse(this.sr, signatureParam.type);
+
+    if (!this.canBuildUntypedAggregateLiteralAs(signatureParam.type)) {
+      return `Parameter #${index + 1} of type ${paramText} cannot be built from an aggregate literal`;
+    }
+
+    const literal = this.sr.cc.exprNodes.get(literalId);
+    assert(literal.variant === Collect.ENode.AggregateLiteralExpr);
+    const exactly = this.literalMatchesExactly(
+      literal.elements,
+      this.untypedLiteralTargetOf(signatureParam.type)
+    );
+    if (exactly === false) {
+      return `Parameter #${index + 1} of type ${paramText} does not match the members of this literal`;
+    }
+    return null;
+  }
+
+  untypedLiteralTargetOf(typeUseId: Semantic.TypeUseId): Semantic.TypeUseId {
+    const resolved = this.resolveAlias(typeUseId);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const parts = this.nullishPartsOf(resolved);
+      const candidates = parts ? parts.remaining : def.members;
+      if (candidates.length === 1) {
+        return this.untypedLiteralTargetOf(candidates[0]);
+      }
+    }
+    return resolved;
+  }
+
   canBuildUntypedAggregateLiteralAs(typeUseId: Semantic.TypeUseId): boolean {
     const resolved = this.resolveAlias(typeUseId);
     const def = this.sr.typeDefNodes.get(
@@ -6181,27 +6363,14 @@ export class SemanticElaborator {
             !(passed && passed.exprId) ||
             signatureParam.kind === "param-pack"
           ) {
-            // An untyped aggregate literal (`p({})`) is deferred because its
-            // type comes from the parameter -- but it can only ever become a
-            // struct or an array, so a parameter that is neither (e.g. `real`)
-            // cannot take it. Without this, `p({})` against `p(real)` and
-            // `p(Full)` matched both and was reported as ambiguous.
-            if (
-              passed &&
-              passed.exprId === null &&
-              passed.collectExprId !== undefined &&
-              signatureParam.kind !== "param-pack" &&
-              signatureParam.type !== null &&
-              this.untypedAggregateLiteralBehind(passed.collectExprId) !==
-                null &&
-              isTypeConcrete(this.sr, signatureParam.type) &&
-              !this.canBuildUntypedAggregateLiteralAs(signatureParam.type)
-            ) {
+            const literalRejection = this.untypedLiteralRejects(
+              passed,
+              signatureParam,
+              i
+            );
+            if (literalRejection !== null) {
               matches = false;
-              reason = `Parameter #${i + 1} of type ${Semantic.serializeTypeUse(
-                this.sr,
-                signatureParam.type
-              )} cannot be built from an aggregate literal`;
+              reason = literalRejection;
               return;
             }
             // This parameter is not passed or is not concrete, so hope that the others are enough for a match
@@ -6436,6 +6605,21 @@ export class SemanticElaborator {
           for (const [i, signatureParam] of signature.parameters.entries()) {
             const passed = calledWithArgs!.find((a) => a.index === i);
             if (!passed?.exprId || signatureParam.kind === "param-pack") {
+              // A deferred literal is checked here too, not only in the exact
+              // tier. This tier used to skip it entirely, so a literal that
+              // matched NO candidate exactly still matched every one of them
+              // implicitly, and the call was reported as ambiguous rather than
+              // as having no candidate at all.
+              const literalRejection = this.untypedLiteralRejects(
+                passed,
+                signatureParam,
+                i
+              );
+              if (literalRejection !== null) {
+                matches = false;
+                reason = literalRejection;
+                break;
+              }
               continue;
             }
             // Only closure signatures ever have a null parameter type, and closures
@@ -16210,6 +16394,75 @@ export class SemanticElaborator {
       };
 
       const nonNullMembers = struct.members.filter((m) => !isNullOrNone(m));
+
+      // §5.1: with more than one struct member in the union, the literal's own
+      // members decide which one it is. Unions and overload sets are treated
+      // identically at this level -- the same exactly-one-match rule, and the
+      // same hard ambiguity error rather than any kind of tie-break.
+      if (nonNullMembers.length > 1) {
+        const structMembers = nonNullMembers.filter((m) =>
+          Conversion.isStruct(
+            this.sr,
+            this.sr.typeUseNodes.get(this.resolveAlias(m)).type
+          )
+        );
+        const matching = structMembers.filter(
+          (m) => this.literalMatchesExactly(structInst.elements, m) === true
+        );
+
+        if (matching.length === 1) {
+          return this.makeStructLiteral(
+            matching[0],
+            structInst.elements,
+            structInst.allocator
+              ? this.expr(structInst.allocator, undefined)[1]
+              : null,
+            structInst.sourceloc,
+            inference
+          );
+        }
+
+        if (matching.length > 1) {
+          // No tie-breaking, deliberately. If it is 100% unambiguous what the
+          // user meant, do exactly that; if it is not, never guess.
+          throw new CompilerError(
+            `This literal matches more than one member of '${Semantic.serializeTypeUse(this.sr, structId)}' (${matching
+              .map((m) => Semantic.serializeTypeUse(this.sr, m))
+              .join(
+                ", "
+              )}). Write the type explicitly to say which one is meant.`,
+            structInst.sourceloc,
+            HazeErrorCode.AmbiguousLiteralCandidates
+          );
+        }
+
+        if (structMembers.length > 0) {
+          // Nothing matched. §5.2 picks who to blame: the first member of the
+          // literal that exists on exactly one candidate.
+          const blamed = this.discriminatingCandidate(
+            structInst.elements,
+            structMembers
+          );
+          if (blamed !== null) {
+            return this.makeStructLiteral(
+              blamed,
+              structInst.elements,
+              structInst.allocator
+                ? this.expr(structInst.allocator, undefined)[1]
+                : null,
+              structInst.sourceloc,
+              inference
+            );
+          }
+          throw new CompilerError(
+            `This literal matches no member of '${Semantic.serializeTypeUse(this.sr, structId)}' (${structMembers
+              .map((m) => Semantic.serializeTypeUse(this.sr, m))
+              .join(", ")}).`,
+            structInst.sourceloc,
+            HazeErrorCode.NoCandidateForLiteral
+          );
+        }
+      }
 
       if (
         nonNullMembers.length === 1 &&
