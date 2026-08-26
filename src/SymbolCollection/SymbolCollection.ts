@@ -78,6 +78,28 @@ export type CollectionContext = {
   elaboratedNamespacesAndStructs: Set<Collect.TypeDefId>;
 
   exportedGenericSymbols: Set<Collect.SymbolId>;
+
+  /**
+   * `from m import a;` where `m` has no `a`.
+   *
+   * The alias is created regardless -- it is just a name bound to a member
+   * access -- so nothing would ever notice the mistake unless the alias were
+   * used. §D7 says an import that names something the module does not export
+   * fails the build whether or not it is used, so the check is recorded here at
+   * collection time and run at pre-elaboration, which is the first point where
+   * the imported module's symbols are actually known.
+   */
+  symbolImportsToVerify: {
+    aliasTypeDef: Collect.TypeDefId;
+    moduleName: string;
+    /** The module's generated global namespace, e.g. `m_v1_0_0_AbC12xY9`. */
+    importedNamespace: string;
+    /** The name in the module. */
+    symbolName: string;
+    /** The name it was bound to here -- differs under `as`. */
+    boundName: string;
+    sourceloc: SourceLoc;
+  }[];
 };
 
 export function funcSymHasParameterPack(
@@ -106,6 +128,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     overloadGroups: new Set(),
     exportedGenericSymbols: new Set<Collect.SymbolId>(),
     elaboratedNamespacesAndStructs: new Set(),
+    symbolImportsToVerify: [],
   };
 
   const [_, moduleScopeId] = Collect.makeScope(cc, {
@@ -2274,73 +2297,121 @@ function collectGlobalDirective(
     // =================================================================================================================
     // =================================================================================================================
 
-    // case "SymbolImport": {
-    //   const dependency = cc.config.dependencies.find(
-    //     (d) => d.name === item.name
-    //   );
-    //   if (!dependency) {
-    //     throw new CompilerError(
-    //       `Cannot find import '${item.name}': No such module`,
-    //       item.sourceloc,
-    //       HazeErrorCode.CannotFindImportNoSuchModule
-    //     );
-    //   }
-    //   const globalBuildDir = join(process.cwd(), "__haze__");
-    //   const metadataPath = join(
-    //     globalBuildDir,
-    //     cc.config.name,
-    //     "__deps",
-    //     dependency.name,
-    //     "metadata.json"
-    //   );
-    //   const filecontent = readFileSync(metadataPath, "utf8");
-    //   const metadata: ModuleConfig = JSON.parse(filecontent);
-    //   const importedNamespace = getModuleGlobalNamespaceName(
-    //     metadata.name,
-    //     metadata.version,
-    //     metadata.id
-    //   );
-    //   const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
-    //     variant: Collect.ENode.AliasDef,
-    //     inScope: args.currentParentScope,
-    //     target: collectExpr(
-    //       cc,
-    //       {
-    //         variant: "SymbolValueExpr",
-    //         name: importedNamespace,
-    //         generics: [],
-    //         sourceloc: null,
-    //       },
-    //       args
-    //     ),
-    //     generics: [],
-    //     genericScope: -1 as Collect.ScopeId,
-    //     name: item.name,
-    //     annotations: [],
-    //     sourceloc: item.sourceloc,
-    //   });
-    //   const symbolId = Collect.makeSymbol(cc, {
-    //     variant: Collect.ENode.TypeDefSymbol,
-    //     inScope: args.currentParentScope,
-    //     typeDef: aliasId,
-    //     export: false,
-    //     name: item.name,
-    //     sourceloc: item.sourceloc,
-    //   })[1];
-    //   const scope = cc.scopeNodes.get(args.currentParentScope);
-    //   scope.symbols.add(symbolId);
+    case "SymbolImport": {
+      // `from m import a, b as c;` desugars to two aliases in file scope:
+      //
+      //   alias a = m_v1_0_0_AbC12xY9.a;
+      //   alias c = m_v1_0_0_AbC12xY9.b;
+      //
+      // That is the whole feature. Overload sets, generics, error naming and C
+      // emission are all inherited from `alias` (§1), which is why the alias
+      // had to exist first -- this adds no mechanism of its own.
+      if (item.mode === "path") {
+        throw new CompilerError(
+          `Cannot import from '${item.name}': importing by path is not supported`,
+          item.sourceloc,
+          HazeErrorCode.CannotFindImportNoSuchModule
+        );
+      }
 
-    //   const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
-    //     variant: Collect.ENode.TypeDefScope,
-    //     owningSymbol: symbolId,
-    //     parentScope: args.currentParentScope,
-    //     sourceloc: item.sourceloc,
-    //     symbols: new Set(),
-    //   })[1];
-    //   alias.genericScope = structScopeId;
+      const dependency = cc.config.dependencies.find(
+        (d) => d.name === item.name
+      );
+      if (!dependency) {
+        throw new CompilerError(
+          `Cannot find import '${item.name}': No such module`,
+          item.sourceloc,
+          HazeErrorCode.CannotFindImportNoSuchModule
+        );
+      }
+      const globalBuildDir = join(process.cwd(), "__haze__");
+      const metadataPath = join(
+        globalBuildDir,
+        cc.config.name,
+        "__deps",
+        dependency.name,
+        "metadata.json"
+      );
+      const filecontent = readFileSync(metadataPath, "utf8");
+      const metadata: ModuleConfig = JSON.parse(filecontent);
+      const importedNamespace = getModuleGlobalNamespaceName(
+        metadata.name,
+        metadata.version,
+        metadata.id
+      );
 
-    //   return symbolId;
-    // }
+      let lastSymbolId = -1 as Collect.SymbolId;
+      for (const imported of item.symbols) {
+        // `b as c` binds `c`. Only the listed names are bound -- `m` itself is
+        // NOT, so it still has to be a declared dependency to be named (§2.2).
+        const boundName = imported.alias ?? imported.symbol;
+
+        const [genericsScope, genericsScopeId] =
+          Collect.makeScope<Collect.TypeDefScope>(cc, {
+            variant: Collect.ENode.TypeDefScope,
+            owningSymbol: -1 as Collect.SymbolId,
+            parentScope: args.currentParentScope,
+            sourceloc: item.sourceloc,
+            symbols: new Set(),
+          });
+
+        const [, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+          variant: Collect.ENode.AliasDef,
+          // An imported symbol may be a function, a global or an enum member
+          // just as easily as a type, so this is never the `type` subset.
+          typeOnly: false,
+          inScope: args.currentParentScope,
+          name: boundName,
+          generics: [],
+          genericScope: genericsScopeId,
+          target: collectExpr(
+            cc,
+            {
+              variant: "ExprMemberAccess",
+              expr: {
+                variant: "SymbolValueExpr",
+                name: importedNamespace,
+                generics: [],
+                sourceloc: item.sourceloc,
+              },
+              member: imported.symbol,
+              generics: [],
+              sourceloc: item.sourceloc,
+            },
+            { currentParentScope: genericsScopeId }
+          ),
+          annotations: [],
+          sourceloc: item.sourceloc,
+        });
+
+        const symbolId = Collect.makeSymbol(cc, {
+          variant: Collect.ENode.TypeDefSymbol,
+          inScope: args.currentParentScope,
+          typeDef: aliasId,
+          export: false,
+          name: boundName,
+          sourceloc: item.sourceloc,
+        })[1];
+        genericsScope.owningSymbol = symbolId;
+        addSymbolToScope(cc, args.currentParentScope, symbolId);
+
+        // An import that names something the module does not export fails the
+        // build whether or not anything uses it (§D7). Recorded here and
+        // checked at pre-elaboration, where the module's symbols are known.
+        cc.symbolImportsToVerify.push({
+          aliasTypeDef: aliasId,
+          moduleName: item.name,
+          importedNamespace: importedNamespace,
+          symbolName: imported.symbol,
+          boundName: boundName,
+          sourceloc: item.sourceloc,
+        });
+
+        lastSymbolId = symbolId;
+      }
+
+      return lastSymbolId;
+    }
 
     default:
       assert(false, "" + (item as any).variant);
@@ -3703,7 +3774,10 @@ export function CollectImmediate(
       const symbolId = collectSymbol(cc, decl, {
         currentParentScope: parentScope,
       });
-      parent.symbols.add(symbolId);
+      // Through the duplicate check, so a declaration colliding with a name an
+      // `import`/`from ... import` already bound in this file is reported
+      // rather than silently shadowing (or being shadowed by) it.
+      addSymbolToScope(cc, parentScope, symbolId);
     }
   }
 }

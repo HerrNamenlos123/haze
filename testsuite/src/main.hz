@@ -62,6 +62,7 @@ fn main(): int {
     cases_multimodule_smoke.register(suite);
     cases_aliases.register(suite);
     cases_comptime_alias_scoping.register(suite);
+    cases_symbol_imports.register(suite);
 
     return testsuite.runAll(config, suite);
 }

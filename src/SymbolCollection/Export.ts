@@ -692,6 +692,36 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
         )};`
       );
     }
+    // The same trap, one level finer. `from n import helper;` binds `helper`
+    // in ONE FILE of this module -- and a generic exported function whose body
+    // calls `helper(...)` is re-emitted as raw source and re-elaborated in the
+    // consumer, where that file (and its import) do not exist. Without these
+    // lines the consumer fails with "Symbol 'helper' was not declared in this
+    // scope", pointing into a generated interface file. No single-module test
+    // can catch it (§2.3).
+    //
+    // Hoisting a per-file binding to module scope is the same trade-off the
+    // dependency aliases above already make. It does mean two files importing
+    // DIFFERENT symbols under the same name cannot both be re-emitted, so a
+    // conflicting name is dropped rather than resolved arbitrarily: dropping it
+    // leaves the consumer exactly where it is today, while guessing would
+    // silently bind the wrong function.
+    const importedByName = new Map<string, string | null>();
+    for (const imported of sr.cc.symbolImportsToVerify) {
+      const line = `alias ${imported.boundName} = ${imported.importedNamespace}.${imported.symbolName};`;
+      const existing = importedByName.get(imported.boundName);
+      if (existing === undefined) {
+        importedByName.set(imported.boundName, line);
+      } else if (existing !== line) {
+        importedByName.set(imported.boundName, null);
+      }
+    }
+    for (const line of importedByName.values()) {
+      if (line !== null) {
+        aliases.push(line);
+      }
+    }
+
     if (aliases.length > 0) {
       file
         .writeLine(

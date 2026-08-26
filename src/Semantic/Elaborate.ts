@@ -3580,6 +3580,86 @@ export class SemanticElaborator {
     return [result, resultId];
   }
 
+  /**
+   * Check every `from m import a;` names something `m` actually has (§2.2).
+   *
+   * An alias is only a name bound to a member access, so a bad import creates
+   * a perfectly valid alias that simply fails when used -- and an unused one
+   * would never be noticed at all. §D7 makes this eager: the build fails even
+   * if nothing touches the import, and the message names both the symbol and
+   * the module rather than reporting an unresolvable name somewhere else.
+   */
+  verifySymbolImports(): void {
+    for (const pending of this.sr.cc.symbolImportsToVerify) {
+      // A name the importing module also declares itself. The two land in
+      // different scopes -- a `from` import goes into file scope, while a
+      // top-level declaration goes into the module's namespace, which is
+      // *inside* it -- so the declaration silently wins and the import is dead.
+      // Different scopes, but the same problem §1.5 is about: one name, two
+      // bindings, and nothing said so.
+      const shadowing = this.findInOwnModuleNamespace(pending.boundName);
+      if (shadowing !== null) {
+        throw new CompilerError(
+          `Symbol '${pending.boundName}' was already declared in this scope. Previous definition: ${
+            (shadowing.sourceloc && formatSourceLoc(shadowing.sourceloc)) || ""
+          }`,
+          pending.sourceloc,
+          HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
+        );
+      }
+
+      const target = this.resolveAliasTarget(pending.aliasTypeDef);
+      if (target.kind !== "type") {
+        continue;
+      }
+      throw new CompilerError(
+        `Module '${pending.moduleName}' has no exported symbol named '${pending.symbolName}'`,
+        pending.sourceloc,
+        HazeErrorCode.ImportedSymbolNotFound
+      );
+    }
+  }
+
+  /**
+   * A symbol of this module's own generated namespace, by name.
+   *
+   * Only this module's: a name that merely exists in some dependency is not a
+   * collision, and neither is one in the stdlib.
+   */
+  private findInOwnModuleNamespace(
+    name: string
+  ): { sourceloc: SourceLoc } | null {
+    for (const typeDef of this.sr.cc.typeDefNodes.getAll()) {
+      if (
+        typeDef.variant !== Collect.ENode.NamespaceTypeDef ||
+        !typeDef.isModuleNamespace ||
+        typeDef.moduleName !== this.sr.cc.config.name
+      ) {
+        continue;
+      }
+      const found = this.lookupInNamespaceDirectly(
+        typeDef.sharedInstance,
+        name
+      );
+      if (found !== null) {
+        const symbol = this.sr.cc.symbolNodes.get(found);
+        if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+          for (const overloadId of symbol.overloads) {
+            const overload = this.sr.cc.symbolNodes.get(overloadId);
+            assert(overload.variant === Collect.ENode.FunctionSymbol);
+            return { sourceloc: overload.sourceloc };
+          }
+          return { sourceloc: null };
+        }
+        if (symbol.variant === Collect.ENode.CInjectDirective) {
+          continue;
+        }
+        return { sourceloc: symbol.sourceloc };
+      }
+    }
+    return null;
+  }
+
   topLevelScope(scopeId: Collect.ScopeId) {
     const scope = this.sr.cc.scopeNodes.get(scopeId);
     switch (scope.variant) {

@@ -917,3 +917,51 @@ sibling `lib` module per entry. Module ids are derived from the case index and m
 they are stable across runs (the build cache still works) and distinct within a case (two modules
 never collide in the generated C namespace).
 
+### 10.5 §2.2's scope row is wrong: imports are per *unit*, not per file
+
+§2.2 says a `from` import's scope is "Per file, like `import`. Importing in `a.hz` binds nothing
+in `b.hz`." The two halves contradict each other in this compiler, and the first half is the one
+that is normative.
+
+Measured: `import helper;` written in `main.hz` **is** visible in `other.hz` of the same module.
+`tryLookupSymbol`'s `FileScope` case, on a miss, explicitly walks the adjacent file scopes of the
+enclosing unit before going higher — so a file-scope binding is really a unit-scope binding with
+a per-file *declaration* site.
+
+A `from` import lands in exactly the same scope and therefore behaves the same way. That is the
+right outcome — the rule §2.2 actually states is "like `import`", and that holds — but the
+parenthetical describing what `import` does was wrong. The regression case pins the consistency
+rather than the parenthetical: whatever the rule is, `import` and `from ... import` must not
+differ.
+
+### 10.6 Collisions between an import and a declaration cross a scope boundary
+
+§1.5's duplicate check inserts into one scope and looks for a name already there, which catches
+two declarations, two imports, or an import and a declaration *in the same scope*. It does not
+catch the most likely collision of all.
+
+A `from` import goes into **file scope**; a top-level declaration goes into the module's
+generated **namespace**, which is nested *inside* it. So `from helper import greet;` and
+`fn greet()` in the same file are in different scopes, the declaration shadows the import
+silently, and no insert-time check can see it. Handled as a second check in
+`verifySymbolImports`, which runs after collection and looks the bound name up in this module's
+own namespace.
+
+### 10.7 Exported globals do not cross module boundaries at all
+
+Not a regression and not in scope here, but it limits §1.2's global-variable row to
+within-a-module use, so it is worth recording where it was found.
+
+`export let counter: int = 41;` in a library module never reaches the generated `import.hz`:
+`ExportModuleInterface` emits structs, functions, enums and aliases, and nothing at all for
+global variables. So `import m; m.counter` fails with *"Namespace 'm_v1_0_0_...' does not define
+any declarations named 'counter'"*, and `from m import counter` therefore fails too — correctly,
+via §2.2's missing-symbol diagnostic, since from the consumer's point of view the module really
+does not have it.
+
+Aliasing a global works within a module (that is what §1.2 asks for and what the regression case
+covers, through a namespace as well as at file scope). Making globals exportable is a separate
+feature with its own questions — chiefly whether a consumer links against the producer's single C
+global, and what that means for mutable shared state across a module boundary — and should be
+specified before it is built.
+

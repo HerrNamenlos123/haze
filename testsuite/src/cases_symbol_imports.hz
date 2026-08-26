@@ -1,0 +1,246 @@
+// ============================================================================
+// `from m import a, b as c;` and `import m as n;` (§2 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// The whole feature is a desugaring into the aliases of §1:
+//
+//   import m;                    ->  type m = m_v1_0_0_AbC12xY9;
+//   import m as n;               ->  type n = m_v1_0_0_AbC12xY9;
+//   from m import a, b as c;     ->  alias a = m_v1_0_0_AbC12xY9.a;
+//                                    alias c = m_v1_0_0_AbC12xY9.b;
+//
+// placed in file scope, where `import`'s alias already goes. Overload sets,
+// generics, error naming and C emission are all inherited from `alias`, which
+// is why the alias had to exist first — this adds no mechanism of its own.
+//
+// Two bugs of §0.2 are pinned here:
+//
+//   * `from m import f;` was an INTERNAL CRASH. `case "SymbolImport"` in
+//     collectGlobalDirective was commented out, so the statement parsed
+//     correctly and then fell into assert(false).
+//
+//   * `import m as n;` silently ignored the `as`. It parsed into
+//     ASTModuleImport.alias, and the collector never read it — the alias was
+//     always named after the module.
+//
+// THE CASE THAT MATTERS MOST is `generic body across two boundaries`. A generic
+// exported function is re-emitted into the consumer as RAW SOURCE and
+// re-elaborated there, in a scope where the original file's imports do not
+// exist. So a module that uses `from n import helper;` and exports a generic
+// function calling `helper(...)` produced, in its consumer, "Symbol 'helper'
+// was not declared in this scope" — pointing into a generated interface file
+// the programmer never wrote. Export.ts has to re-emit the import alias into
+// the module namespace, exactly as it already does for `import dep;`.
+//
+// Per DEVELOPMENT.md that is this repository's most common bug shape: a feature
+// that works inside one module and vanishes across a boundary. No single-module
+// test can catch it, which is why these cases build real projects.
+// ============================================================================
+
+namespace cases_symbol_imports {
+
+    // A module with everything a `from` import might name.
+    fn helperModule(): testsuite.TestModule {
+        return testsuite.TestModule {
+            name: "helper",
+            source: """
+export struct Widget { id: int = 0; }
+export enum Mode { Fast, Slow }
+
+export fn greet(): str { return "hi"; }
+export fn greet(n: int): str { return f"hi {n}"; }
+export fn identity<T>(v: T): T { return v; }
+export fn applyTo(v: int, f: (x: int) => int): int { return f(v); }
+
+export namespace deep {
+    export fn nested(): int { return 99; }
+}
+""",
+        };
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.runWithModules(
+            "from-import: functions, overload groups, generics, types, enums, renames",
+            [helperModule()],
+            """
+from helper import greet, identity, applyTo, Widget, Mode as M, deep;
+
+fn main(): int {
+    // The alias binds the whole overload GROUP, not whichever overload was
+    // found first.
+    fmt.println(f"overload1 {greet()}");
+    fmt.println(f"overload2 {greet(2)}");
+
+    // Generics forward when written, and deduce when not.
+    fmt.println(f"generic {identity<int>(5)}");
+    fmt.println(f"deduce {identity("z")}");
+
+    // And inference still runs back OUT of the imported signature into the
+    // closure's parameter type.
+    fmt.println(f"infer {applyTo(4, (x) => x + 1)}");
+
+    let w: Widget = { id: 7 };
+    fmt.println(f"struct {w.id}");
+    fmt.println(f"enum {M.Fast == M.Fast}");
+    fmt.println(f"namespace {deep.nested()}");
+    return 0;
+}
+""",
+            """
+overload1 hi
+overload2 hi 2
+generic 5
+deduce z
+infer 5
+struct 7
+enum true
+namespace 99
+""");
+
+        // Bug 2 of §0.2: `as` parsed and was then thrown away.
+        s.runWithModules(
+            "import-as: the module binds under the new name",
+            [helperModule()],
+            """
+import helper as h;
+fn main(): int {
+    fmt.println(f"renamed {h.greet()} {h.deep.nested()}");
+    return 0;
+}
+""",
+            "renamed hi 99");
+
+        // ...and the old name must be gone, or `as` would be a second binding
+        // rather than a rename.
+        s.compileFailsWithModules(
+            "import-as: the original module name is not also bound",
+            [helperModule()],
+            """
+import helper as h;
+fn main(): int {
+    return helper.greet().length;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasNotDeclaredThisScope)]);
+
+        // §2.2: `from m import a;` binds ONLY the listed names. `m` itself is
+        // not bound — it must still be imported to be named.
+        s.compileFailsWithModules(
+            "from-import: does not also bind the module name",
+            [helperModule()],
+            """
+from helper import greet;
+fn main(): int {
+    return helper.greet().length;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasNotDeclaredThisScope)]);
+
+        // §D7: eager. The alias is only a name bound to a member access, so a
+        // bad import produces a perfectly valid alias that fails when used —
+        // and an UNUSED one would never be noticed at all. Nothing here touches
+        // `nosuchthing`, and the build must still fail.
+        s.compileFailsWithModules(
+            "from-import: a symbol the module does not have fails the build, unused",
+            [helperModule()],
+            """
+from helper import nosuchthing;
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.ImportedSymbolNotFound)]);
+
+        s.compileFailsWithModules(
+            "from-import: a name already bound in the file collides",
+            [helperModule()],
+            """
+from helper import greet;
+fn greet(): str { return "mine"; }
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasAlreadyDeclaredThisScopePreviousDefinition)]);
+
+        // §2.2 says the scope is "per file, like `import`". Those two are not
+        // the same thing in this compiler, and `import` is the one that is
+        // normative: a file-scope lookup that misses explicitly searches the
+        // adjacent files of the same unit (tryLookupSymbol, FileScope case), so
+        // `import m;` in main.hz IS visible in other.hz. Measured, not assumed.
+        //
+        // A `from` import lands in the same scope and therefore behaves the
+        // same way. That consistency is the thing worth pinning: whatever the
+        // rule is, the two forms must not differ.
+        s.runWithFiles(
+            "from-import: scopes exactly as `import` does, across a module's files",
+            [helperModule()],
+            """
+from helper import greet;
+import helper as h;
+fn main(): int {
+    fmt.println(f"sibling {viaFrom()} {viaImport()}");
+    return 0;
+}
+""",
+            [
+                testsuite.TestFile {
+                    name: "other.hz",
+                    source: """
+// Neither name is imported in THIS file. Both resolve, because file scope is
+// searched across the unit -- and both forms agree.
+fn viaFrom(): str { return greet(); }
+fn viaImport(): str { return h.greet(); }
+""",
+                },
+            ],
+            "sibling hi hi");
+
+        // ── The cross-module trap (§2.3) ────────────────────────────────────
+        //
+        // `middle` imports from `inner` and exports a GENERIC function whose
+        // body calls the imported name. Generic bodies cross the boundary as
+        // raw source and are re-elaborated in the consumer, where `middle`'s
+        // own file — and its import — do not exist. Three modules, because two
+        // are not enough to produce the situation.
+        s.runWithModules(
+            "from-import: a generic body still resolves its imports in the consumer",
+            [
+                testsuite.TestModule {
+                    name: "inner",
+                    source: """
+export fn double(x: int): int { return x * 2; }
+export struct Tag { name: str = "tag"; }
+""",
+                },
+                testsuite.TestModule {
+                    name: "middle",
+                    dependencies: ["inner"],
+                    source: """
+from inner import double, Tag;
+
+// Generic, so this BODY is re-emitted into the consumer as raw source and
+// re-elaborated there. Both the function and the type have to survive.
+export fn applyTwice<T>(v: T): int {
+    return double(double(v));
+}
+
+export fn describe<T>(v: T): str {
+    let t: Tag = { name: "from-middle" };
+    return t.name;
+}
+""",
+                },
+            ],
+            """
+from middle import applyTwice, describe;
+fn main(): int {
+    fmt.println(f"trap {applyTwice<int>(3)}");
+    fmt.println(f"type {describe<int>(0)}");
+    return 0;
+}
+""",
+            """
+trap 12
+type from-middle
+""");
+    }
+}

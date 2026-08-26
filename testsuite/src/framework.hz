@@ -56,9 +56,26 @@ namespace testsuite {
     // re-emitted into the consumer as raw source and re-elaborated there, in a
     // scope where the original file's imports do not exist -- so anything the
     // body depends on has to survive as text, not just as compiler state.
+    // One extra source file of a module, beyond its `source` (which is always
+    // written as src/lib.hz for a dependency and src/main.hz for the main
+    // module). Needed because `import` binds PER FILE, so a rule about what one
+    // file's import does or does not do to a sibling file cannot be expressed
+    // in a single-file module.
+    export ref struct TestFile {
+        name: str;      // file name inside src/, e.g. "other.hz"
+        source: str;
+    }
+
     export ref struct TestModule {
         name: str;
         source: str;
+        extraFiles: []TestFile = [];
+        // Other modules of the same case that this one depends on. Needed as
+        // soon as a case has a dependency chain rather than a flat list -- the
+        // §2.3 trap needs exactly that, since a module has to import from a
+        // second module before a third can observe what crossing two
+        // boundaries does.
+        dependencies: []str = [];
     }
 
     export ref struct TestCase {
@@ -72,6 +89,9 @@ namespace testsuite {
         // multi-module project: each entry becomes a sibling `lib` module and
         // a declared dependency of the main module.
         modules: []TestModule = [];
+        // Extra files of the MAIN module, alongside src/main.hz. Only
+        // meaningful for a multi-module case.
+        extraFiles: []TestFile = [];
         // Applies to compiler output (stderr) in both directions: on
         // CompileOnly this checks the warnings emitted by an otherwise
         // successful build; on CompileFailure it checks the errors emitted
@@ -191,6 +211,30 @@ namespace testsuite {
                 modules: modules,
                 expect: ExpectKind.CompileFailure,
                 diagnosticChecks: checks,
+            });
+        }
+
+        mut fn compileFailsWithFiles(name: str, modules: []TestModule, source: str, extraFiles: []TestFile, checks: []ErrorCheck) {
+            this.cases.push(TestCase {
+                name: name,
+                source: source,
+                modules: modules,
+                extraFiles: extraFiles,
+                expect: ExpectKind.CompileFailure,
+                diagnosticChecks: checks,
+            });
+        }
+
+        mut fn runWithFiles(name: str, modules: []TestModule, source: str, extraFiles: []TestFile, expectedStdout: str) {
+            this.cases.push(TestCase {
+                name: name,
+                source: source,
+                modules: modules,
+                extraFiles: extraFiles,
+                expect: ExpectKind.CompileAndRun,
+                checkStdout: true,
+                expectedStdout: expectedStdout,
+                expectedExitCode: 0,
             });
         }
     }
@@ -342,6 +386,13 @@ namespace testsuite {
             createDirOrDie(f"{root}/{m.name}");
             createDirOrDie(f"{root}/{m.name}/src");
             writeFileOrDie(f"{root}/{m.name}/src/lib.hz", m.source);
+            for extra in m.extraFiles {
+                writeFileOrDie(f"{root}/{m.name}/src/{extra.name}", extra.source);
+            }
+            let ownDeps = "";
+            for d in m.dependencies {
+                ownDeps = ownDeps + f"{d} = {{ path = \"../{d}\" }}\n";
+            }
             writeFileOrDie(f"{root}/{m.name}/haze.toml",
                 f"name = \"{m.name}\"\n" +
                 f"id = \"{moduleId(index, m.name)}\"\n" +
@@ -350,11 +401,15 @@ namespace testsuite {
                 "license = \"MIT\"\n" +
                 "authors = []\n" +
                 "src = \"src\"\n" +
-                "type = \"lib\"\n");
+                "type = \"lib\"\n" +
+                "\n[dependencies]\n" + ownDeps);
             deps = deps + f"{m.name} = {{ path = \"./{m.name}\" }}\n";
         }
 
         writeFileOrDie(f"{root}/src/main.hz", tc.source);
+        for extra in tc.extraFiles {
+            writeFileOrDie(f"{root}/src/{extra.name}", extra.source);
+        }
         writeFileOrDie(f"{root}/haze.toml",
             f"name = \"case_{index}\"\n" +
             f"id = \"{moduleId(index, "main")}\"\n" +

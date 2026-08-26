@@ -262,6 +262,7 @@ namespace errorcodes {
         AliasCycleWithoutIndirection = 7198,
         AliasTargetIsNotAliasable = 7199,
         SymbolIsNotAValue = 7200,
+        ImportedSymbolNotFound = 7201,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

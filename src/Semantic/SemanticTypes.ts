@@ -2040,6 +2040,12 @@ export namespace Semantic {
     sr.e = new SemanticElaborator(sr, context);
     sr.b = new SemanticBuilder(sr);
 
+    // Before anything else: an import that names a symbol the module does not
+    // have fails the build, used or not (§2.2, §D7). Running it first means the
+    // diagnostic names the import rather than surfacing later as an
+    // unresolvable name deep inside whatever happened to use it.
+    sr.e.verifySymbolImports();
+
     sr.e.topLevelScope(cc.moduleScopeId);
 
     // Structs reached only as another struct's member type never get their
