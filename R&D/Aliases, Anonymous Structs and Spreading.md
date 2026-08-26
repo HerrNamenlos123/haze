@@ -1,6 +1,9 @@
 # Aliases, Anonymous Structs and Spreading
 
-**Status: specified, not yet implemented (2026-08-26).** Written at HEAD `9007dcaf` as the result
+**Status: implemented (2026-08-26).** All seven stages of §9.1's build order are built, tested and
+committed; the suite is 180 passed, 0 failed, up from a 129-case baseline. §10 records everything
+that turned out to be wrong or incomplete in §1–§9, including four places where this document
+contradicted itself and the reading that won. Written at HEAD `9007dcaf` as the result
 of the design conversation that specified five related features at once: general symbol aliases,
 function imports built on them, anonymous (structurally typed) structs, JavaScript-semantics
 struct spreading, and the revival of the `operator as` conversion operator that lets nominal
