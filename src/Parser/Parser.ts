@@ -223,6 +223,14 @@ type IfStatementCondition =
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
     filename: string;
+    // The parser keeps its own `numberOfSyntaxErrors`, but the *lexer* does
+    // not: a character no lexer rule matches was reported here and then
+    // silently dropped, and the parse went on to "succeed" over a token stream
+    // with a hole in it. `stdlib/hzui/src/hzui.hz` uses `^`, which is in
+    // neither grammar, and ANTLR accepted the file anyway -- while the native
+    // parser correctly rejected it. Counting lexer errors here is what makes
+    // the two agree, and what makes ANTLR usable as an oracle at all (§8.3).
+    errors = 0;
 
     constructor(filename: string) {
       super();
@@ -237,6 +245,7 @@ export namespace Parser {
       msg: string,
       _e: any
     ) {
+      this.errors++;
       printErrorMessage(
         msg,
         { filename: this.filename, start: { line: line, column: column } },
@@ -267,7 +276,7 @@ export namespace Parser {
     parser.addParseListener(listener);
 
     parser.prog();
-    if (parser.numberOfSyntaxErrors !== 0) {
+    if (parser.numberOfSyntaxErrors !== 0 || errorListener.errors !== 0) {
       throw new SyntaxError();
     }
   }
@@ -291,8 +300,9 @@ export namespace Parser {
    *   native  the hand-written parser in compiler/haze-parser (much faster)
    *   assert  both, requiring the results to be identical
    *
-   * The native parser falls back to ANTLR if its binary is unavailable, so a
-   * missing or unbuildable parser degrades performance rather than the build.
+   * `antlr` is only ever reached by an explicit `--parser antlr`: an
+   * unavailable native parser is a hard error rather than a silent, slower and
+   * differently-behaving fallback (see nativeParserAvailable).
    */
   export function parseTextToAST(
     config: ModuleConfig,
@@ -301,9 +311,10 @@ export namespace Parser {
   ) {
     const mode = getParserMode();
 
-    if (mode === "antlr" || !nativeParserAvailable()) {
+    if (mode === "antlr") {
       return parseWithANTLR(config, text, filename);
     }
+    nativeParserAvailable();
 
     if (mode === "native") {
       return parseTextNativeSync(getParserRepoRoot(), text, filename);
@@ -334,10 +345,10 @@ export namespace Parser {
   ): Promise<ASTRoot> {
     const mode = getParserMode();
 
-    if (mode === "antlr" || !nativeParserAvailable()) {
-      console.warn("Native parser not available, falling back to ANTLR parser");
+    if (mode === "antlr") {
       return parseWithANTLR(config, text, filename);
     }
+    nativeParserAvailable();
 
     if (mode === "native") {
       return await parseTextNativeAsync(text, filename);

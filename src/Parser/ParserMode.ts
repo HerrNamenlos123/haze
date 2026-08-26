@@ -1,8 +1,9 @@
 // Which parser the compiler uses, and the dual-parser equivalence check.
 //
 // Three modes:
-//   antlr   the original ANTLR parser only (the default, always available)
-//   native  the Haze parser in compiler/haze-parser (fast path)
+//   antlr   the original ANTLR parser only -- the bootstrap and the oracle,
+//           never selected automatically; only by an explicit --parser antlr
+//   native  the Haze parser in compiler/haze-parser (what every build uses)
 //   assert  run BOTH and require the ASTs to be identical
 //
 // `assert` is what keeps the two implementations honest: building any project
@@ -49,8 +50,18 @@ export function getParserRepoRoot(): string {
 /**
  * Is the native parser binary usable right now?
  *
- * Checked per call (and cached) so that a mode of `native`/`assert` degrades to
- * ANTLR instead of breaking the build when the binary is missing.
+ * There is deliberately no "no" answer that lets the build continue. ANTLR
+ * exists to bootstrap the native parser and to check it, and nothing else in
+ * the compiler ever uses it (§8 of `R&D/Aliases, Anonymous Structs and
+ * Spreading.md`). A missing native parser used to warn and quietly switch the
+ * whole compile to ANTLR, which is both much slower and a *different*
+ * implementation -- so the observable effect of, say, a stale parser stamp was
+ * a test suite that took an hour and behaved subtly differently, with nothing
+ * but one line on stderr to explain it. It is a hard error now, naming what
+ * failed.
+ *
+ * Checked once and cached; `--parser antlr` remains available as an explicit,
+ * deliberate choice, but nothing ever selects it automatically.
  */
 let availability: boolean | null = null;
 
@@ -60,14 +71,18 @@ export function nativeParserAvailable(): boolean {
   }
   if (availability === null) {
     availability = prepareNativeParser();
-    if (availability) {
-      // Safety net for entry points that never called startNativeParser().
-      warmupNativeParserSync(repoRoot);
-    } else {
-      console.warn(
-        "Warning: the native Haze parser is unavailable; falling back to the ANTLR parser."
+    if (!availability) {
+      throw new Error(
+        `The native Haze parser is unavailable and could not be built from ` +
+          `'${path.join(repoRoot, "compiler", "haze-parser")}'.\n` +
+          `The compiler does not fall back to ANTLR: that would be a slower and ` +
+          `differently-behaving compile with no error to explain it.\n` +
+          `Build it with: bun run src/main.ts build --dir compiler/haze-parser --parser antlr\n` +
+          `Or compile this project explicitly with --parser antlr.`
       );
     }
+    // Safety net for entry points that never called startNativeParser().
+    warmupNativeParserSync(repoRoot);
   }
   return availability;
 }
@@ -78,8 +93,8 @@ export function resetNativeParserAvailability(): void {
 
 /**
  * Make sure the native parser binary exists and is current. Returns false if it
- * could not be built, in which case the caller should fall back to ANTLR rather
- * than fail the build.
+ * could not be built; the only caller, nativeParserAvailable(), turns that into
+ * a hard error.
  */
 export function prepareNativeParser(): boolean {
   if (!usesNativeParser()) {

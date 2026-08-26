@@ -82,9 +82,11 @@ Recorded because the *lesson* outlasts the facts.
 
 - **"Six test cases fail on a clean checkout."** False at HEAD. The suite is **129 passed, 0
   failed, in 1m26s**. All 7 `optional chaining:` and all 4 `nullish coalescing:` cases pass.
-- **"ANTLR mishandles `?.` and `??`, so the suite falls back and takes an hour."** False at HEAD.
-  Standalone probes of both operators compile clean under ANTLR specifically, and a full run
-  emits **zero** "falling back to the ANTLR parser" warnings.
+- **"ANTLR mishandles `?.` and `??`, so the suite falls back and takes an hour."** Half false at
+  HEAD: a full run does emit **zero** "falling back to the ANTLR parser" warnings, so the suite
+  never took an hour. But the probe that "compiled clean" did not prove what it seemed to —
+  **ANTLR genuinely could not parse `??` at all**, because `autogen/` is gitignored and had
+  gone 8 days stale against `HazeParser.g4`. See §8.5, finding 1.
 
 Both beliefs were measured at `f3f89815`; something between there and `9007dcaf` fixed them. The
 durable lesson is not the failure list — it is **re-baseline before assuming any failure is
@@ -707,6 +709,77 @@ Wired into `run-tests.sh`, so every suite run proves the two parsers still agree
 tree rather than on whatever happened to be compiled.
 
 ---
+
+### 8.4 How the bootstrap itself is pinned
+
+*Added during implementation. §8.2's three changes are compiler plumbing, not language
+behaviour, so no `testsuite/` case can reach them: a test case is a Haze snippet handed to an
+already-working compiler, and everything §8 fixes happens before that compiler can parse
+anything. They need a check at the level they live at.*
+
+`scripts/parser-bootstrap.test.ts`, a `bun test` file, asserts the three invariants directly:
+
+| Invariant | Assertion |
+|---|---|
+| `dist/` is a whole install | With `HAZE_HOME` pointed at `dist/`, `getInstalledParserBinary()` returns an existing path. Red before §8.2, because `dist/libexec/` does not exist. |
+| Bootstrap argv is shape-correct | `nativeParserBuildCommand()` — extracted from `buildNativeParser` for exactly this reason — omits `src/main.ts` when the host is a compiled compiler and includes it when the host is a JS runtime. Red before §8.2, which always emits `src/main.ts`. |
+| There is no silent fallback | `nativeParserAvailable()` throws, naming the parser project, when the parser is neither installed nor buildable. Red before §8.2, which warns and returns false. |
+
+Run from `run-tests.sh` before the suite, so a broken bootstrap is reported as itself rather
+than as an hour of slow tests.
+
+**On `scripts/build.js`.** §8.2's first row names the wrong file: `scripts/build.js` is an
+esbuild bundler used only by `profile-node`/`debug-node` and is not on the `bun run build`
+path at all. The real entry point is the `build` script in `package.json`
+(`bun build --compile` + `copylib`). The parser deployment lands there, in a new
+`scripts/deploy-parser.ts` that `build` invokes after `copylib`.
+
+The stamp-invalidation check §9.1 calls for is a manual verification of the whole chain, not a
+unit test: it needs a real stale stamp and a real rebuild, and it is destructive to the
+checkout's build state.
+
+### 8.5 What §8.1 and §0.3 got wrong, found by building it
+
+*Added during implementation.* §8.1's chain was real and the fix works, but the sweep §8.3 asks
+for immediately turned up four further defects in the same area. Three of them are why §0.3's
+second "stale belief" correction was itself wrong.
+
+**1. `autogen/` is gitignored and silently goes stale.** The ANTLR parser the compiler actually
+runs is generated from the `.g4` files into `src/Parser/grammar/autogen/`, which is *not* in
+git and is regenerated only by `postinstall` or `bun run install --regen-antlr`. At `9007dcaf`
+it was 8 days older than `HazeParser.g4` and did not contain `DOUBLEQUESTION` at all — so
+**ANTLR could not parse `??` in any form**, and the first sweep reported 38 divergences.
+Regenerating took it to 1.
+
+This is what §0.3's second bullet actually measured. The belief "ANTLR mishandles `??`" was
+*true*; what was false was only the conclusion that the suite therefore falls back, since the
+native parser was current and no fallback occurred. The durable lesson stands but sharpens:
+**re-baseline, and check that what you are baselining is built from the sources you are
+reading.** A generated artefact outside version control is not evidence of anything.
+
+**2. The install-root probe misidentified `dist/`.** §8.1 says `dist/` "is recognised as an
+install root". It is not — it is recognised as being *inside* one. `detectInstallRoot()`'s
+"<root>/bin/haze" branch tested only `isInstallRoot(dirname(execDir))`, and for
+`<repo>/dist/haze` that is `<repo>`, which has `stdlib/core/haze.toml` of its own. So
+`dist/haze` claimed the entire checkout as its payload and looked for its parser in
+`<repo>/libexec/`. Deploying to `dist/libexec/` fixes nothing until the first branch also
+requires `basename(execDir) === "bin"`. §8.1's conclusion held; its mechanism did not.
+
+**3. ANTLR did not count lexer errors.** `parse()` failed only on
+`parser.numberOfSyntaxErrors`, which does not include errors the *lexer* reported. A character
+no lexer rule matches was printed as a diagnostic and then dropped, and the parse "succeeded"
+over a token stream with a hole in it. `stdlib/hzui/src/hzui.hz` uses `^`, which is in neither
+grammar; ANTLR accepted the file and the native parser correctly rejected it — the last of the
+38 divergences. The error listener counts its own errors now.
+
+**4. `dist/` was never rebuilt from a stale parser in practice.** The reason §8.1's chain had
+not fired yet is narrower than "a stamp that happens to be current": `getInstallRoot()`
+returning the checkout meant `getInstalledParserBinary()` was null *and*
+`isParserUpToDate(process.cwd())` looked at the checkout's own current stamp. Both halves had
+to be wrong together, which they were.
+
+**Sweep result after the four fixes:** 373 distinct files (735 on disk, 362 byte-identical
+duplicates), 348 parsed identically, 25 rejected by both, **0 divergences**, 32 seconds.
 
 ## 9. Implementation surface
 
