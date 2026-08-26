@@ -16,7 +16,7 @@ import {
   EDatatypeMutability,
   EExternLanguage,
   type EIncrOperation,
-  type EOverloadedOperator,
+  EOverloadedOperator,
   type EUnaryOperation,
   type EVariableMutability,
   UnaryOperationToString,
@@ -2713,6 +2713,18 @@ export namespace Semantic {
     return names.map((n) => n.pretty).join(".");
   }
 
+  /** Is this elaborated function a `fn operator as()`? See mangleSymbol. */
+  function isCastOperator(
+    sr: Semantic.Context,
+    symbol: Semantic.FunctionSymbol
+  ): boolean {
+    const original = sr.cc.symbolNodes.get(symbol.originalCollectedFunction);
+    return (
+      original.variant === Collect.ENode.FunctionSymbol &&
+      original.overloadedOperator === EOverloadedOperator.Cast
+    );
+  }
+
   export function mangleSymbol(
     sr: Semantic.Context,
     symbolId: Semantic.SymbolId
@@ -2743,6 +2755,14 @@ export namespace Semantic {
       }
       if (ftype.vararg) {
         functionParameterPart += "V";
+      }
+      // `operator as` is the one function whose RETURN type is part of its
+      // identity: it takes no parameters, so a struct's several cast operators
+      // are otherwise indistinguishable and mangle to one C name. §4.3 requires
+      // several to be declarable, distinguished by what they produce -- so what
+      // they produce has to be in the name.
+      if (isCastOperator(sr, symbol)) {
+        functionParameterPart += `_to_${mangleTypeUse(sr, ftype.returnType).name}`;
       }
     }
 

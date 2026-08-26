@@ -438,6 +438,27 @@ export class SemanticElaborator {
   // machinery will not attempt another implicit constructor conversion.
   disallowImplicitConstructorConversion: boolean = false;
 
+  /**
+   * Set while an `operator as` conversion is being performed, so no second one
+   * can run inside it.
+   *
+   * DELIBERATELY separate from disallowImplicitConstructorConversion. §4.1's
+   * chain is "at most one user-defined conversion out, one structural bridge,
+   * one user-defined conversion in":
+   *
+   *   Vec2 --[Vec2.operator as]--> { x: int, y: int }
+   *        --[structural, §3.4  ]--> { x: int, y: int }
+   *        --[Point.constructor ]--> Point
+   *
+   * One flag for both halves would make that whole chain impossible, because
+   * resolving Point's constructor against a Vec2 needs the `as` -- while the
+   * constructor guard is already set. Two flags let the PAIR compose while
+   * neither can recur: never two `operator as` in sequence, never a constructor
+   * feeding another constructor. Without that bound, implicit conversion
+   * becomes a graph search and the language becomes C++.
+   */
+  disallowCastOperatorConversion: boolean = false;
+
   constructor(
     public sr: Semantic.Context,
     currentContext: Semantic.ElaborationContext
@@ -2545,6 +2566,128 @@ export class SemanticElaborator {
     );
   }
 
+  /**
+   * Are these two signatures both `operator as` producing different types?
+   *
+   * The only case in the language where a return type distinguishes two
+   * otherwise identical signatures (§4.3).
+   */
+  private differByCastOperatorTarget(
+    a: Semantic.FunctionSignature,
+    b: Semantic.FunctionSignature
+  ): boolean {
+    const isCast = (sig: Semantic.FunctionSignature): boolean => {
+      const original = this.sr.cc.symbolNodes.get(sig.originalFunction);
+      return (
+        original.variant === Collect.ENode.FunctionSymbol &&
+        original.overloadedOperator === EOverloadedOperator.Cast
+      );
+    };
+    if (!(isCast(a) && isCast(b))) {
+      return false;
+    }
+    const returnOf = (sig: Semantic.FunctionSignature) =>
+      sig.returnType === null
+        ? null
+        : this.sr.typeUseNodes.get(this.resolveAlias(sig.returnType)).type;
+    const ra = returnOf(a);
+    const rb = returnOf(b);
+    return ra !== null && rb !== null && ra !== rb;
+  }
+
+  /**
+   * The `operator as` of `structDef` whose return type is `targetTypeUseId`
+   * (§4).
+   *
+   * An anonymous struct deliberately has no methods, so a named type cannot
+   * become one -- and that is what makes `operator as` necessary rather than
+   * merely convenient. `Vec2` keeps its identity and its methods, and gains
+   * structural BEHAVIOUR by declaring a conversion out; a peer type declaring a
+   * constructor taking the same shape completes the bridge. A value is nominal
+   * while it is spelled `Vec2`, nominal while spelled `Point`, and structural
+   * in between.
+   *
+   * Selection is by target type, never by ranking: a struct may declare several
+   * `operator as` overloads distinguished by their return type, and two that
+   * both fit is an error rather than a choice.
+   */
+  findCastOperator(
+    structDef: Semantic.StructDatatypeDef,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.SymbolId | null {
+    const wanted = this.resolveAlias(targetTypeUseId);
+    const wantedType = this.sr.typeUseNodes.get(wanted).type;
+
+    const matches: Semantic.SymbolId[] = [];
+    for (const methodId of structDef.methods) {
+      const method = this.sr.symbolNodes.get(methodId);
+      if (
+        method.variant !== Semantic.ENode.FunctionSymbol ||
+        method.generics.length > 0
+      ) {
+        continue;
+      }
+      const original = this.sr.cc.symbolNodes.get(
+        method.originalCollectedFunction
+      );
+      if (
+        original.variant !== Collect.ENode.FunctionSymbol ||
+        original.overloadedOperator !== EOverloadedOperator.Cast
+      ) {
+        continue;
+      }
+      const functype = this.sr.typeDefNodes.get(method.type);
+      if (functype.variant !== Semantic.ENode.FunctionDatatype) {
+        continue;
+      }
+      const returned = this.sr.typeUseNodes.get(
+        this.resolveAlias(functype.returnType)
+      );
+      if (returned.type === wantedType) {
+        matches.push(methodId);
+      }
+    }
+
+    if (matches.length > 1) {
+      throw new CompilerError(
+        `'${structDef.name}' declares more than one 'operator as' producing ${Semantic.serializeTypeUse(this.sr, targetTypeUseId)}`,
+        sourceloc,
+        HazeErrorCode.AmbiguousCastOperator
+      );
+    }
+    return matches[0] ?? null;
+  }
+
+  /**
+   * May `sourceExprId` reach `targetTypeUseId` through its own `operator as`?
+   *
+   * Bounded exactly as the constructor half is, and by the same flag, so the
+   * two compose into §4.1's chain -- at most one conversion out, one structural
+   * bridge, one conversion in -- while neither can recur. Without that bound
+   * implicit conversion becomes a graph search and the language becomes C++.
+   */
+  findCastOperatorFor(
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.SymbolId | null {
+    if (this.disallowCastOperatorConversion || !this.inFunction) {
+      return null;
+    }
+    const sourceUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(this.sr.exprNodes.get(sourceExprId).type)
+    );
+    const sourceDef = this.sr.typeDefNodes.get(sourceUse.type);
+    if (
+      sourceDef.variant !== Semantic.ENode.StructDatatype ||
+      sourceDef.anonymous
+    ) {
+      return null;
+    }
+    return this.findCastOperator(sourceDef, targetTypeUseId, sourceloc);
+  }
+
   // Determines whether `sourceExprId` can be implicitly converted to the struct type
   // `targetTypeUseId` by calling one of the struct's constructors with the single value
   // (taking default parameter values into account). Generic constructors do not count.
@@ -2634,6 +2777,80 @@ export class SemanticElaborator {
   // Build the actual constructor call that materializes an implicit struct-constructor
   // conversion of `sourceExprId` to `targetTypeUseId`, e.g. rewriting `let a: Color = "#000"`
   // into `let a: Color = Color("#000")`.
+  /**
+   * Materialise `operator as` as what it is: an ordinary method call on the
+   * source, whose result is then reconciled with the requested target type.
+   *
+   * The chain guard is set for the duration, so a conversion needed INSIDE the
+   * operator's own call cannot reach for another user-defined conversion --
+   * never two `operator as` in sequence (§4.1).
+   */
+  buildCastOperatorConversion(
+    sourceExprId: Semantic.ExprId,
+    castOperatorId: Semantic.SymbolId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.ExprId {
+    const prev = this.disallowCastOperatorConversion;
+    this.disallowCastOperatorConversion = true;
+    try {
+      const method = this.sr.symbolNodes.get(castOperatorId);
+      assert(method.variant === Semantic.ENode.FunctionSymbol);
+      const functype = this.sr.typeDefNodes.get(method.type);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+
+      const sourceUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(this.sr.exprNodes.get(sourceExprId).type)
+      );
+      const receiverStorage =
+        method.methodReceiverStorage === EStorageClass.Stackref
+          ? EStorageClass.Stackref
+          : EStorageClass.Ref;
+
+      const [, calleeId] = this.sr.b.callableExpr(
+        castOperatorId,
+        {
+          type: "method",
+          thisExprType: makeTypeUse(
+            this.sr,
+            sourceUse.type,
+            EDatatypeMutability.Mut,
+            receiverStorage,
+            sourceloc
+          )[1],
+        },
+        { type: "method", thisExpr: sourceExprId },
+        sourceloc
+      );
+
+      const callId = this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ExprCallExpr,
+        instanceIds: [Semantic.makeInstanceId(this.sr)],
+        calledExpr: calleeId,
+        arguments: [],
+        type: functype.returnType,
+        sourceloc: sourceloc,
+        isTemporary: true,
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+      })[1];
+
+      // The operator's declared return type may differ from the requested
+      // target in mutability or storage; reconcile with the ordinary rules.
+      return Conversion.MakeConversionOrThrow(
+        this.sr,
+        callId,
+        targetTypeUseId,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+    } finally {
+      this.disallowCastOperatorConversion = prev;
+    }
+  }
+
   buildImplicitConstructorConversion(
     sourceExprId: Semantic.ExprId,
     targetTypeUseId: Semantic.TypeUseId,
@@ -10813,7 +11030,15 @@ export class SemanticElaborator {
             );
           }
           return signature.parameters[i].type === p.type;
-        })
+        }) &&
+        // `operator as` is the one place a return type is part of the
+        // signature. It takes NO parameters, so two of them on one struct are
+        // identical by the ordinary rule -- yet §4.3 requires a struct to be
+        // able to declare several, distinguished by what they produce, since
+        // that is the only thing that can distinguish them. Selection is by
+        // target type, so the return type is exactly what makes them different
+        // functions rather than a redefinition.
+        !this.differByCastOperatorTarget(sig, signature)
       ) {
         const ori = this.sr.cc.symbolNodes.get(sig.originalFunction);
         assert(ori.variant === Collect.ENode.FunctionSymbol);

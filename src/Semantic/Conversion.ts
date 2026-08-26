@@ -1186,6 +1186,17 @@ export namespace Conversion {
         kind: "structural-struct-conversion";
       }
     | {
+        // A named struct's own `operator as` produces the target (§4).
+        kind: "convert-via-cast-operator";
+        castOperator: Semantic.SymbolId;
+      }
+    | {
+        // ...and then into the union variant it produced (§4.2).
+        kind: "convert-into-union-variant";
+        index: number;
+        memberTypeUseId: Semantic.TypeUseId;
+      }
+    | {
         kind: "construct-via-constructor";
         unsafe: boolean;
       };
@@ -1947,6 +1958,43 @@ export namespace Conversion {
           index: matching,
         };
       }
+
+      // No variant is the source's type outright. §4.2 requires `operator as`
+      // to fire everywhere an implicit conversion happens, and a union variant
+      // is one of those places: `let p: Point | none = someVec2;` has to reach
+      // Point through the chain, exactly as `let p: Point = someVec2;` does.
+      //
+      // Exactly one variant must be reachable; two would be a conversion the
+      // programmer did not clearly ask for.
+      const reachable: number[] = [];
+      resolvedTargetTypeDef.members.forEach((m, index) => {
+        const memberPlan = buildConversionPlan(
+          sr,
+          sourceExprId,
+          m,
+          constraints,
+          _sourceloc,
+          mode,
+          unsafe
+        );
+        // Only the two USER-DECLARED conversions of §4 count here. A variant
+        // reachable by some broad built-in conversion (an integer widening,
+        // say) must not silently win a union slot no exact match claimed --
+        // that would be guessing, and §5's principle applies here too.
+        if (
+          memberPlan.kind === "convert-via-cast-operator" ||
+          memberPlan.kind === "construct-via-constructor"
+        ) {
+          reachable.push(index);
+        }
+      });
+      if (reachable.length === 1) {
+        return {
+          kind: "convert-into-union-variant",
+          index: reachable[0],
+          memberTypeUseId: resolvedTargetTypeDef.members[reachable[0]],
+        };
+      }
     }
 
     // Value To Tagged Union (i.e. Value-To-Result)
@@ -2403,6 +2451,33 @@ export namespace Conversion {
       };
     }
 
+    // Conversion OUT of a named struct through its own `operator as` (§4).
+    //
+    // An anonymous struct has no methods, deliberately, so a named type can
+    // never become one on its own. `operator as` is the opt-in that lets it:
+    // `Vec2` keeps its identity and its methods and gains structural behaviour,
+    // and a peer declaring a constructor over the same shape completes the
+    // bridge. Tried before the constructor branch because it is the "out" half:
+    // a source that can produce the target itself should, rather than asking
+    // the target to construct itself from the source.
+    //
+    // Bounded by the same flag as the constructor half, so the two compose into
+    // §4.1's chain -- one conversion out, one structural bridge, one conversion
+    // in -- and neither can recur.
+    {
+      const castOperator = sr.e.findCastOperatorFor(
+        sourceExprId,
+        rawTargetTypeUseId,
+        _sourceloc
+      );
+      if (castOperator !== null) {
+        return {
+          kind: "convert-via-cast-operator",
+          castOperator: castOperator,
+        };
+      }
+    }
+
     // Implicit conversion via a struct constructor (like an implicit/non-explicit
     // constructor in C++): if the target is a struct that provides a constructor
     // callable with the source value (taking default parameter values into account),
@@ -2625,6 +2700,38 @@ export namespace Conversion {
           flow: sourceExpr.flow,
           writes: sourceExpr.writes,
         })[1];
+      }
+
+      case "convert-into-union-variant": {
+        const converted = MakeConversionOrThrow(
+          sr,
+          sourceExprId,
+          conversionPlan.memberTypeUseId,
+          sr.e.currentContext.constraints,
+          sourceloc,
+          Mode.Implicit,
+          false
+        );
+        return sr.b.addExpr(sr, {
+          variant: Semantic.ENode.ValueToUnionCastExpr,
+          expr: converted,
+          instanceIds: sr.exprNodes.get(converted).instanceIds,
+          type: targetTypeId,
+          index: conversionPlan.index,
+          sourceloc: sourceloc,
+          isTemporary: true,
+          flow: sr.exprNodes.get(converted).flow,
+          writes: sr.exprNodes.get(converted).writes,
+        })[1];
+      }
+
+      case "convert-via-cast-operator": {
+        return sr.e.buildCastOperatorConversion(
+          sourceExprId,
+          conversionPlan.castOperator,
+          targetTypeId,
+          sourceloc
+        );
       }
 
       case "construct-via-constructor": {

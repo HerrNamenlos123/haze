@@ -1,0 +1,250 @@
+// ============================================================================
+// `operator as` — the structural bridge (§4 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// Anonymous structs have no methods, deliberately: if every structurally
+// identical use is the same type, "which methods apply here" has no answer.
+// That restriction is exactly what forces this feature to exist, and it is why
+// `Vec2` stays a NAMED struct — `vec2.length()` is the reason Vec2 exists at
+// all. So Vec2 keeps its identity and its methods, and gains structural
+// BEHAVIOUR by declaring two conversions:
+//
+//   fn operator as(): { x: int, y: int }          // out
+//   fn constructor(other: { x: int, y: int })     // in
+//
+// When Point declares the same pair, Vec2 and Point become freely convertible
+// through the anonymous shape, which is the shared vocabulary. A value is
+// nominal while it is spelled Vec2 (and has Vec2's methods), nominal while
+// spelled Point (and has Point's), and structural in between.
+//
+// §4.1 — THE BOUNDED CHAIN, which is the whole design:
+//
+//   Vec2  --[ Vec2.operator as ]-->  { x: int, y: int }
+//         --[ structural, §3.4  ]-->  { x: int, y: int }
+//         --[ Point.constructor ]-->  Point
+//
+// At most one user-defined conversion out, one structural bridge, one
+// user-defined conversion in. Never two `operator as` in sequence, never a
+// constructor feeding another constructor. Without that bound, implicit
+// conversion becomes a graph search and the language becomes C++.
+//
+// Building it turned up that the bound needs TWO guards, not one. The existing
+// `disallowImplicitConstructorConversion` already implemented the idea for the
+// constructor half; reusing it for the `as` half made the chain above
+// impossible, because resolving Point's constructor against a Vec2 needs the
+// `as` — while the constructor guard is already set. Two separate flags let
+// the PAIR compose while neither can recur.
+//
+// §4.2 — it must fire everywhere an implicit conversion happens, explicitly
+// including nested inside a larger one. That nesting is the part most likely to
+// be missed, and the part that makes the feature worth having.
+//
+// EOverloadedOperator.Cast parsed into the AST and appeared nowhere else in the
+// compiler — not in SymbolCollection, not in Elaborate, not in Conversion. This
+// was greenfield rather than repair.
+// ============================================================================
+
+namespace cases_operator_as {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "operator as: the bounded chain, in every position a conversion happens",
+            """
+type Shape = { x: int, y: int };
+
+struct Vec2 {
+    x: int = 0;
+    y: int = 0;
+    // The reason Vec2 is a named struct at all: an anonymous one could not
+    // carry this.
+    fn length(): int { return this.x + this.y; }
+    fn operator as(): Shape { return { x: this.x, y: this.y }; }
+    fn constructor(o: Shape): Vec2 { return Vec2 { x: o.x, y: o.y }; }
+}
+
+struct Point {
+    x: int = 0;
+    y: int = 0;
+    fn describe(): str { return "point"; }
+    fn operator as(): Shape { return { x: this.x, y: this.y }; }
+    fn constructor(o: Shape): Point { return Point { x: o.x, y: o.y }; }
+}
+
+fn takesShape(p: Shape): int { return p.x * p.y; }
+fn takesPoint(p: Point): int { return p.x * 10 + p.y; }
+fn returnsPoint(v: Vec2): Point { return v; }
+
+// §4.2: nested inside a larger conversion. The shapes differ only in a MEMBER,
+// and that member needs the whole chain.
+fn takesShapeOfPoint(s: { pos: Point }): int { return s.pos.x * 10 + s.pos.y; }
+
+fn main(): int {
+    let v: Vec2 = { x: 3, y: 4 };
+
+    // Just the `as` half: Vec2 -> the anonymous shape.
+    fmt.println(f"out {takesShape(v)}");
+
+    // The full chain: out, bridge, in.
+    fmt.println(f"argument {takesPoint(v)}");
+    fmt.println(f"return {returnsPoint(v).x}");
+    let assigned: Point = v;
+    fmt.println(f"assignment {assigned.y}");
+
+    // Nested one level down, inside a structural conversion.
+    let holder: { pos: Vec2 } = { pos: v };
+    fmt.println(f"member {takesShapeOfPoint(holder)}");
+
+    // ...and inside an array element and a union variant.
+    let points: []Point = [v];
+    fmt.println(f"element {points[0].x}");
+    let maybe: Point | none = v;
+    fmt.println(f"variant {maybe ? 1 : 0}");
+
+    // Identity survives the round trip: it is nominal at both ends, with each
+    // end's own methods.
+    fmt.println(f"methods {v.length()} {assigned.describe()}");
+    return 0;
+}
+""",
+            """
+out 12
+argument 34
+return 3
+assignment 4
+member 34
+element 3
+variant 1
+methods 7 point
+""");
+
+        // Selection is by TARGET TYPE, and a struct may declare several. Two
+        // that both produce the requested type is an error rather than a
+        // ranking -- the same refusal to guess as everywhere else.
+        s.run(
+            "operator as: several overloads, selected by target type",
+            """
+type XY = { x: int, y: int };
+type WH = { w: int, h: int };
+
+struct Box {
+    x: int = 0;
+    y: int = 0;
+    fn operator as(): XY { return { x: this.x, y: this.y }; }
+    fn operator as(): WH { return { w: this.x * 2, h: this.y * 2 }; }
+}
+
+fn takesXY(v: XY): int { return v.x + v.y; }
+fn takesWH(v: WH): int { return v.w + v.h; }
+
+fn main(): int {
+    let b: Box = { x: 1, y: 2 };
+    fmt.println(f"xy {takesXY(b)}");
+    fmt.println(f"wh {takesWH(b)}");
+    return 0;
+}
+""",
+            """
+xy 3
+wh 6
+""");
+
+        // ── The bound (§4.1) ────────────────────────────────────────────────
+        //
+        // Two `operator as` in sequence is refused. `A as-> B` and `B as-> C`
+        // exist, but that does not make A reachable from C: the chain allows
+        // ONE conversion out, not a path through the graph.
+        s.compileFails(
+            "operator as: two conversions out do not chain",
+            """
+struct C { c: int = 0; }
+struct B {
+    b: int = 0;
+    fn operator as(): C { return C { c: this.b }; }
+}
+struct A {
+    a: int = 0;
+    fn operator as(): B { return B { b: this.a }; }
+}
+fn takesC(v: C): int { return v.c; }
+fn main(): int {
+    let a: A = { a: 1 };
+    return takesC(a);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // Without a declared conversion, a named struct still does not become
+        // an anonymous one, however well the members line up. §4 is an opt-in,
+        // not a loophole in §3's identity rule.
+        s.compileFails(
+            "operator as: without one, identity still holds",
+            """
+struct Plain { x: int = 0; y: int = 0; }
+fn takesShape(p: { x: int, y: int }): int { return p.x; }
+fn main(): int {
+    let v: Plain = { x: 1, y: 2 };
+    return takesShape(v);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // ── Across a module boundary (§4.3) ─────────────────────────────────
+        //
+        // A consumer converting FROM an imported struct has to learn that the
+        // conversion exists, and the generated interface is the only place it
+        // can. Export.ts asserted false on an unrecognised operator before, so
+        // a module declaring one could not even be built.
+        s.runWithModules(
+            "operator as: survives a module boundary in both directions",
+            [
+                testsuite.TestModule {
+                    name: "geom",
+                    source: """
+export type Shape = { x: int, y: int };
+
+export struct Vec2 {
+    x: int = 0;
+    y: int = 0;
+    fn length(): int { return this.x + this.y; }
+    fn operator as(): Shape { return { x: this.x, y: this.y }; }
+    fn constructor(o: Shape): Vec2 { return Vec2 { x: o.x, y: o.y }; }
+}
+
+// The other half declared over there, so a consumer's own type can bridge to
+// this one as well.
+export fn takesVec2(v: Vec2): int { return v.x * 10 + v.y; }
+""",
+                },
+            ],
+            """
+import geom;
+
+// A local type that speaks the same shape. Neither module knows about the
+// other's struct; the shape is the whole of the shared vocabulary.
+struct Point {
+    x: int = 0;
+    y: int = 0;
+    fn operator as(): geom.Shape { return { x: this.x, y: this.y }; }
+    fn constructor(o: geom.Shape): Point { return Point { x: o.x, y: o.y }; }
+}
+
+fn takesPoint(p: Point): int { return p.x * 10 + p.y; }
+
+fn main(): int {
+    let v: geom.Vec2 = { x: 3, y: 4 };
+    let p: Point = { x: 5, y: 6 };
+    // Imported struct -> local struct, and local struct -> imported struct.
+    fmt.println(f"in {takesPoint(v)}");
+    fmt.println(f"out {geom.takesVec2(p)}");
+    fmt.println(f"methods {v.length()}");
+    return 0;
+}
+""",
+            """
+in 34
+out 56
+methods 7
+""");
+    }
+}

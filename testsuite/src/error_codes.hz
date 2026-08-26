@@ -265,6 +265,7 @@ namespace errorcodes {
         ImportedSymbolNotFound = 7201,
         AmbiguousLiteralCandidates = 7202,
         NoCandidateForLiteral = 7203,
+        AmbiguousCastOperator = 7204,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

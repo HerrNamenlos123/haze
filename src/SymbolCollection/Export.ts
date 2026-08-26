@@ -293,6 +293,13 @@ export function ExportTypeDef(
             method.overloadedOperator === EOverloadedOperator.Subscript
           ) {
             methodName = "operator[]";
+          } else if (method.overloadedOperator === EOverloadedOperator.Cast) {
+            // `operator as` has to cross the boundary like any other: a
+            // consumer converting FROM this struct needs to know the conversion
+            // exists, and the interface is the only place it can learn that
+            // (§4.3). The return type carries which target it produces, so
+            // nothing else has to be encoded.
+            methodName = "operator as";
           } else {
             assert(false);
           }

@@ -1039,3 +1039,54 @@ Three things §3.3 implies but does not spell out, each of which failed first:
   The duplicate is renamed to the canonical name (so a stray reference still names the right
   type) and marked `noemit`.
 
+### 10.11 §4.1's bound needs two flags, not one
+
+§4.1 says the `as` half needs "the same guard" as the constructor half, and that "the two must
+compose so the pair is permitted but neither can recur". Those are two different requirements,
+and reusing the single existing `disallowImplicitConstructorConversion` for both satisfies only
+the second.
+
+The chain is `Vec2 --[as]--> shape --[structural]--> shape --[ctor]--> Point`. Planning
+`Vec2 -> Point` reaches Point's constructor, which sets the constructor guard, and then has to
+convert its Vec2 argument to the shape the constructor takes — which needs the `as`, while the
+guard is set. One flag makes the whole chain unreachable. Two flags —
+`disallowImplicitConstructorConversion` and `disallowCastOperatorConversion` — let the pair
+compose while neither can recur: never two `operator as` in sequence, never a constructor feeding
+another constructor.
+
+### 10.12 Return-type overloading, in exactly one place
+
+§4.3's "a struct may declare several `operator as` overloads distinguished by return type" is a
+bigger statement than it looks. `operator as` takes no parameters, so two of them on one struct
+are identical under every rule the compiler has: the same-signature check rejected the second as
+a redefinition, and the mangler gave both the same C name. Both needed the return type added,
+and only for this operator:
+
+- `elaborateFunctionSignature`'s duplicate check treats two cast operators with different return
+  types as different functions.
+- `mangleSymbol` appends `_to_<mangled return type>` for a cast operator.
+
+This is the only place in the language where a return type is part of a function's identity, and
+it is justified by there being nothing else that could distinguish them — selection is by target
+type, so the target type *is* the difference.
+
+### 10.13 Two conversion sites §4.2 reaches that were not obvious
+
+§4.2 says the operator must fire "everywhere an implicit conversion happens, explicitly including
+nested inside a larger one", and lists argument, return, assignment, struct member, array element
+and union variant. Five of those fell out of putting the plan in `Conversion.ts`. The sixth did
+not:
+
+**A union variant.** `let p: Point | none = someVec2;` is planned by a separate value-to-union
+branch that looks for a variant the source's type already *is* (allowing a mutability change),
+and gives up when none matches — it never consults the ordinary conversion planner. It now falls
+back to asking which variants are reachable by one of §4's two user-declared conversions, and
+takes it only when exactly one is. Deliberately restricted to those two: a variant reachable by
+some broad built-in conversion must not silently win a slot no exact match claimed, which is §5's
+principle applied to the same question.
+
+**Export.ts asserted false.** `ExportTypeDef` maps each overloaded operator to its source
+spelling and `assert(false)`s on anything else, so a module declaring `operator as` could not be
+built at all — never mind consumed. It emits `operator as` now; the return type in the signature
+carries which target it produces, so nothing else has to be encoded.
+
