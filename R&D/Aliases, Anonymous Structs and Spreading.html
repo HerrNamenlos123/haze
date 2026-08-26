@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Archived from the Claude Artifact published 2026-08-26 during the design conversation
+     that produced this specification. Companion to the .md of the same name, which is the
+     normative text. Self-contained apart from Google Fonts; open directly in a browser. -->
+<title>Aliases and Anonymous Structs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    --paper:      #F2F5F6;
+    --surface:    #FFFFFF;
+    --surface-2:  #E9EEEF;
+    --ink:        #12181B;
+    --ink-2:      #384347;
+    --muted:      #5D6A6E;
+    --rule:       #D6DFE1;
+    --rule-soft:  #E5ECED;
+    --accent:     #0B6E6A;
+    --accent-ink: #085551;
+    --allow:      #2C6E49;
+    --reject:     #A22C21;
+    --decide:     #8F5400;
+    --allow-bg:   #E6F1EA;
+    --reject-bg:  #F8E9E7;
+    --decide-bg:  #F7EEDF;
+    --accent-bg:  #E2F0EF;
+
+    --f-sans:  "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    --f-serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    --f-mono:  "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0D1315;
+      --surface:    #141D20;
+      --surface-2:  #1B262A;
+      --ink:        #E5ECED;
+      --ink-2:      #C2CFD2;
+      --muted:      #8DA0A5;
+      --rule:       #26343A;
+      --rule-soft:  #1D282C;
+      --accent:     #4ECDC4;
+      --accent-ink: #7BDDD6;
+      --allow:      #74C79A;
+      --reject:     #EF9186;
+      --decide:     #DFAB5E;
+      --allow-bg:   #163024;
+      --reject-bg:  #33201D;
+      --decide-bg:  #33291A;
+      --accent-bg:  #14302F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0D1315;
+    --surface:    #141D20;
+    --surface-2:  #1B262A;
+    --ink:        #E5ECED;
+    --ink-2:      #C2CFD2;
+    --muted:      #8DA0A5;
+    --rule:       #26343A;
+    --rule-soft:  #1D282C;
+    --accent:     #4ECDC4;
+    --accent-ink: #7BDDD6;
+    --allow:      #74C79A;
+    --reject:     #EF9186;
+    --decide:     #DFAB5E;
+    --allow-bg:   #163024;
+    --reject-bg:  #33201D;
+    --decide-bg:  #33291A;
+    --accent-bg:  #14302F;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-serif);
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 1.25rem 8rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 62rem; margin: 0 auto; }
+
+  .masthead {
+    padding: 4.5rem 0 2rem;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  h1 {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 5.2vw, 3.15rem);
+    line-height: 1.06;
+    letter-spacing: -0.024em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 1.08rem;
+    color: var(--ink-2);
+    max-width: 44rem;
+    margin: 0;
+  }
+  .meta {
+    font-family: var(--f-mono);
+    font-size: 0.76rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.4rem;
+  }
+
+  nav.toc {
+    margin: 2rem 0 0;
+    padding: 1.5rem 0 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0.55rem 2rem;
+  }
+  nav.toc a {
+    font-family: var(--f-sans);
+    font-size: 0.9rem;
+    color: var(--ink-2);
+    text-decoration: none;
+    display: flex;
+    gap: 0.7rem;
+    padding: 0.2rem 0;
+    border-bottom: 1px solid transparent;
+  }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-bottom-color: var(--accent); }
+  nav.toc .n { font-family: var(--f-mono); color: var(--muted); font-size: 0.8rem; min-width: 1.5rem; }
+
+  section { padding-top: 3.4rem; }
+
+  h2 {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: clamp(1.5rem, 3vw, 1.95rem);
+    letter-spacing: -0.018em;
+    line-height: 1.14;
+    margin: 0 0 1.4rem;
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--rule);
+    text-wrap: balance;
+  }
+  h2 .n {
+    font-family: var(--f-mono);
+    font-size: 0.78em;
+    color: var(--accent);
+    margin-right: 0.6rem;
+    font-weight: 500;
+  }
+  h3 {
+    font-family: var(--f-sans);
+    font-weight: 600;
+    font-size: 1.13rem;
+    letter-spacing: -0.008em;
+    margin: 2.4rem 0 0.75rem;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  h3 .n { font-family: var(--f-mono); color: var(--muted); font-weight: 500; margin-right: 0.5rem; font-size: 0.92em; }
+  h4 {
+    font-family: var(--f-sans);
+    font-size: 0.79rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 1.9rem 0 0.6rem;
+  }
+
+  p { margin: 0 0 1rem; max-width: 44rem; }
+  ul, ol { margin: 0 0 1.1rem; padding-left: 1.35rem; max-width: 44rem; }
+  li { margin-bottom: 0.42rem; }
+  li::marker { color: var(--muted); }
+
+  strong { font-weight: 600; color: var(--ink); }
+  em { font-style: italic; }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.87em;
+    background: var(--surface-2);
+    padding: 0.08em 0.34em;
+    border-radius: 3px;
+    color: var(--ink);
+  }
+
+  pre {
+    font-family: var(--f-mono);
+    font-size: 0.83rem;
+    line-height: 1.62;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.15rem;
+    overflow-x: auto;
+    margin: 0 0 1.2rem;
+    tab-size: 2;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  pre .c { color: var(--muted); font-style: italic; }
+  pre .k { color: var(--accent-ink); font-weight: 600; }
+  pre .bad { color: var(--reject); }
+  pre .ok { color: var(--allow); }
+
+  .tablewrap { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--rule); background: var(--surface); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--f-sans);
+    font-size: 0.855rem;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.62rem 0.85rem;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  th {
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code, th code { font-size: 0.86em; background: none; padding: 0; white-space: nowrap; }
+  td.narrow { white-space: nowrap; }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.14rem 0.44rem;
+    border-radius: 2px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .t-allow  { background: var(--allow-bg);  color: var(--allow); }
+  .t-reject { background: var(--reject-bg); color: var(--reject); }
+  .t-decide { background: var(--decide-bg); color: var(--decide); }
+  .t-info   { background: var(--accent-bg); color: var(--accent-ink); }
+
+  .note {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--decide);
+    padding: 0.95rem 1.15rem;
+    margin: 0 0 1.3rem;
+    max-width: 46rem;
+  }
+  .note.trap { border-left-color: var(--reject); }
+  .note.key  { border-left-color: var(--accent); }
+  .note p:last-child { margin-bottom: 0; }
+  .note h4 { margin-top: 0; }
+
+  .decision {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 1.05rem 1.2rem;
+    margin: 0 0 0.9rem;
+    display: grid;
+    grid-template-columns: 3.4rem 1fr;
+    gap: 0 1rem;
+    align-items: start;
+  }
+  .decision .id {
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--allow);
+    padding-top: 0.08rem;
+  }
+  .decision .body p { margin-bottom: 0.55rem; max-width: 42rem; }
+  .decision .body p:last-child { margin-bottom: 0; }
+  .decision .q { font-family: var(--f-sans); font-weight: 600; font-size: 0.98rem; color: var(--ink); }
+
+  .struck { opacity: 0.62; }
+  .struck .q, .struck .strike { text-decoration: line-through; }
+  .revision {
+    border-top: 1px dashed var(--rule);
+    margin-top: 0.7rem;
+    padding-top: 0.7rem;
+    opacity: 1;
+  }
+  .revision .lbl {
+    font-family: var(--f-sans); font-size: 0.7rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--decide); font-weight: 600;
+    display: block; margin-bottom: 0.25rem;
+  }
+
+  hr.thick { border: none; border-top: 2px solid var(--ink); margin: 4rem 0 0; }
+
+  a { color: var(--accent-ink); }
+  a:focus-visible, nav.toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; padding: 0 1rem 5rem; }
+    .decision { grid-template-columns: 1fr; gap: 0.4rem; }
+  }
+</style>
+
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">Haze compiler · resolved spec · rev 2</div>
+    <h1>Aliases and Anonymous Structs</h1>
+    <p class="standfirst">General aliases, function imports, anonymous structs, struct spreading, and the revived <code>as</code> operator that bridges nominal types through them. All decisions resolved; this is now the build document.</p>
+    <div class="meta">
+      <span>Read against HEAD 9007dcaf</span>
+      <span>rev 2 · 2026-08-26</span>
+      <span>Nothing implemented yet</span>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <a href="#s0"><span class="n">0</span><span>Baseline, and five confirmed bugs</span></a>
+    <a href="#s1"><span class="n">1</span><span>The <code>alias</code> feature</span></a>
+    <a href="#s2"><span class="n">2</span><span>Function imports</span></a>
+    <a href="#s3"><span class="n">3</span><span>Anonymous structs</span></a>
+    <a href="#s4"><span class="n">4</span><span>The structural bridge: <code>as</code></span></a>
+    <a href="#s5"><span class="n">5</span><span>Literal discrimination</span></a>
+    <a href="#s6"><span class="n">6</span><span>Spreading</span></a>
+    <a href="#s7"><span class="n">7</span><span>Decisions, as resolved</span></a>
+    <a href="#s8"><span class="n">8</span><span>Parser policy</span></a>
+    <a href="#s9"><span class="n">9</span><span>Implementation surface</span></a>
+  </nav>
+
+  <!-- ================================================================= -->
+  <section id="s0">
+    <h2><span class="n">0</span>Baseline, and five confirmed bugs</h2>
+
+    <p>What exists today, and four things that are broken in the exact code this change rewrites. The last two I confirmed by building probe projects, not by reading.</p>
+
+    <h3><span class="n">0.1</span>What already works</h3>
+    <ul>
+      <li><strong>Type aliases are a complete pipeline.</strong> <code>ASTTypeAlias</code> → <code>Collect.TypeAliasDef</code> → <code>Semantic.TypeAliasDatatype</code> → <code>Lowered.TypeAliasDatatype</code> → C <code>typedef</code>. <code>resolveAlias()</code> sees through it everywhere; modifiers stack; results cache per <code>(typeDefId, genericArgs, parentSymbol)</code>.</li>
+      <li><strong><code>import m;</code> is already an alias</strong> to the module's generated namespace <code>m_v1_0_0_&lt;id&gt;</code>. Aliasing a symbol through this node is already proven in production.</li>
+      <li><strong>The <code>a.k.a</code> mechanism exists.</strong> <code>serializeTypeUseWithAliasAKA</code> prints <code>Foo (a.k.a &lt;resolved&gt;)</code> when they differ. With anonymous structs it will expand <code>Foo</code> to <code>Foo (a.k.a { x: int, y: int })</code> for free.</li>
+      <li><strong>Braced literals already infer backwards</strong> from context via <code>inference.gonnaInstantiateStructWithType</code>.</li>
+      <li><strong>Conversion constructors already convert implicitly</strong> — <code>canImplicitlyConstructStructFrom</code>, guarded against chaining by a <code>disallowImplicitConstructorConversion</code> flag. That guard is the model for §4.</li>
+      <li><strong><code>...</code> exists as a general grammar node</strong>, currently reachable only from <code>argList</code>, where it spreads parameter packs. Its own grammar comment says object spreading should reuse it — so §6 is extending a node built for the purpose, not adding a parallel one.</li>
+      <li><strong>Warnings exist</strong> — <code>printWarningMessage</code>, stable codes in the 9001–9999 block, already surfaced as LSP diagnostics. §6.2 needs a code and a call site, not infrastructure.</li>
+    </ul>
+
+    <h3><span class="n">0.2</span>The five bugs</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Written</th><th>What happens today</th></tr></thead>
+        <tbody>
+          <tr><td><code>from m import f;</code></td><td>Parses correctly. <code>case "SymbolImport"</code> in <code>collectGlobalDirective</code> is <strong>commented out</strong>, so it falls into <code>assert(false)</code> — an internal crash, not a diagnostic.</td></tr>
+          <tr><td><code>import m as n;</code></td><td><code>as</code> parses into <code>ASTModuleImport.alias</code>; the collector <strong>never reads it</strong> and names the alias <code>item.name</code>. <code>as</code> is silently ignored.</td></tr>
+          <tr><td><code>type F&lt;T&gt; = G&lt;T&gt;;</code> in a function body</td><td><span class="tag t-info">confirmed by build</span> <em>"H7076: Type F expects 0 type parameters but got 1"</em>. <code>collectScope</code>'s <code>"TypeAlias"</code> case hardcodes <code>generics: []</code> and never reads <code>astStatement.generics</code>, unlike the global path which loops them into <code>defineGenericTypeParameter</code>. Non-generic local aliases build fine.</td></tr>
+          <tr><td><code>fn operator as(): T</code></td><td><span class="tag t-info">confirmed by grep</span> Parses into <code>EOverloadedOperator.Cast</code>, and that enum value appears <strong>nowhere else in the compiler</strong> — not in SymbolCollection, not in Elaborate, not in Conversion. Parsed and dropped on the floor. This is the "neglected" operator, and it is entirely unimplemented rather than partially working.</td></tr>
+          <tr><td>An alias inside <code>for comptime</code></td><td><span class="tag t-info">confirmed by build</span> <strong>Silently resolves to the first iteration's type.</strong> See §1.6 — this is the worst of the five, because it produces wrong code rather than an error whenever the iterations' types happen to be compatible.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Path-mode imports (<code>import "some/path"</code>) also do not work — the collector only searches <code>config.dependencies</code> by name. Confirmed out of scope; no immediate need.</p>
+
+    <div class="note trap">
+      <h4>Two mechanical facts that shape everything</h4>
+      <p><strong>There are two parsers.</strong> The ANTLR grammar and the native Haze parser in <code>compiler/haze-parser/</code>; mode <code>assert</code> diffs their ASTs. Every syntax change lands in both.</p>
+      <p><strong><code>Export.ts</code> is the trap.</strong> Per <code>DEVELOPMENT.md</code>, the most common bug pattern in this repo is a feature that works in one module and vanishes across a boundary because <code>ExportSymbol()</code> did not serialise it. Every feature here touches it.</p>
+    </div>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s1">
+    <h2><span class="n">1</span>The <code>alias</code> feature</h2>
+
+    <h3><span class="n">1.1</span>One node, two keywords</h3>
+    <p><code>alias</code> is a general symbol alias. <code>type</code> is <code>alias</code> plus one check: <em>the target must resolve to a datatype</em>. Where both are legal they produce byte-identical output; the keyword is not recorded past the check.</p>
+    <p>So: rename <code>Collect.TypeAliasDef</code> → <code>Collect.AliasDef</code> with a <code>typeOnly: boolean</code> flag. <code>Semantic.TypeAliasDatatype</code> keeps its name — it <em>is</em> the type-valued outcome, and renaming it would churn ~100 <code>resolveAlias</code> call sites for nothing.</p>
+
+<pre><code><span class="k">alias</span> foo = m.bar;            <span class="c">// function, namespace, type, global — anything</span>
+<span class="k">alias</span> Foo&lt;T&gt; = Bar&lt;T&gt;;        <span class="c">// generic</span>
+<span class="k">export</span> <span class="k">alias</span> foo = m.bar;     <span class="c">// re-exported</span>
+
+<span class="k">type</span> Foo = Bar;               <span class="c">// unchanged</span>
+<span class="k">type</span> Foo = m.bar;             <span class="c"><span class="bad">// error: not a datatype. Use `alias`.</span></span></code></pre>
+
+    <p>Valid everywhere <code>type</code> is valid: top level, in a namespace, and <strong>as a statement in a function body</strong> — including generically, which means fixing bug 3 of §0.2 as part of this.</p>
+
+    <h3><span class="n">1.2</span>What can be aliased</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Target</th><th><code>type</code></th><th><code>alias</code></th><th>C output</th></tr></thead>
+        <tbody>
+          <tr><td class="narrow"><strong>Any datatype</strong></td><td><span class="tag t-allow">ok</span></td><td><span class="tag t-allow">ok</span></td><td><code>typedef &lt;target&gt; &lt;alias&gt;;</code></td></tr>
+          <tr><td class="narrow"><strong>Namespace</strong></td><td><span class="tag t-allow">ok</span></td><td><span class="tag t-allow">ok</span></td><td>Nothing — compile-time redirect. What <code>import m;</code> already does.</td></tr>
+          <tr><td class="narrow"><strong>Function overload group</strong></td><td><span class="tag t-reject">error</span></td><td><span class="tag t-allow">ok</span></td><td>Nothing. Calls emit the target's own mangled name. No thunk, no second symbol, no function pointer.</td></tr>
+          <tr><td class="narrow"><strong>Global variable</strong></td><td><span class="tag t-reject">error</span></td><td><span class="tag t-allow">ok</span></td><td>Nothing. Reads and writes hit the target's single C global.</td></tr>
+          <tr><td class="narrow"><strong>Enum member</strong></td><td><span class="tag t-reject">error</span></td><td><span class="tag t-allow">ok</span></td><td>Falls out of symbol delegation; needs a test, not code.</td></tr>
+          <tr><td class="narrow"><strong>Local variable / parameter</strong></td><td><span class="tag t-reject">error</span></td><td><span class="tag t-reject">error</span></td><td>Reference binding wearing an alias costume. Separate feature.</td></tr>
+          <tr><td class="narrow"><strong>Another alias</strong></td><td colspan="2"><span class="tag t-allow">ok</span> — chains resolve transitively</td><td>Whatever the chain ends at.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3><span class="n">1.3</span>Generics: forwarding <em>and</em> inference</h3>
+    <p>Two separate requirements, and the second is the harder one.</p>
+    <p><strong>Forwarding.</strong> When an alias declares no parameters and its target is written without arguments, generic arguments at the use site forward to the target. <code>alias F = G;</code> then <code>F&lt;int&gt;</code> works. This is load-bearing: <code>from m import someGenericFn</code> generates its alias at collection time, when the target's arity lives in another module and is not yet known. It also fixes the standing pain point that <code>type</code> aliases require the arity to be known up front.</p>
+    <p><strong>Inference.</strong> An alias must be fully transparent to generic <em>deduction</em>, in both directions. Aliasing <code>rx.computed</code> has to keep inferring every generic from the call arguments, and keep inferring argument types (closure parameters) back out of the substituted signature. Concretely, the alias must not become a barrier between <code>callExpr</code>'s deduction and the target's signature — which is why the alias resolves to the target's <em>own</em> overload group and elaborates through the target's normal path, rather than producing a distinct wrapper signature.</p>
+
+    <h3><span class="n">1.4</span>Identity in diagnostics</h3>
+    <p>For type targets this is already solved by <code>TypeAliasDatatype</code> plus the <code>a.k.a</code> expansion.</p>
+    <p>For function and value targets it cannot work the same way: a function reference elaborates to a <code>SymbolValueExpr</code> pointing at a <em>shared</em> elaborated <code>FunctionSymbol</code>, and the same function may be reached by several aliases and by its real name. So the alias name lives on the <strong>expression</strong>: an optional <code>aliasedVia { name, parentSymbolId }</code>, populated when the expression was reached through an alias, read only by diagnostics and <code>serializeExpr</code>, ignored entirely by <code>Lower</code> and <code>Codegen</code>. A wrapping <code>AliasExpr</code> node would be more principled but would force every <code>switch</code> in an 18k-line file to unwrap it — one missed site becomes a wrong-code bug rather than a wrong-message bug.</p>
+
+    <div class="note">
+      <h4>On <code>a.k.a</code> and readability</h4>
+      <p>The existing mechanism prints both the alias and the resolved form when they differ, which is exactly right for anonymous structs: <code>Foo</code> at a use site with an alias, <code>{ x: int, y: int }</code> without one, and <code>Foo (a.k.a { x: int, y: int })</code> when the expansion is what explains the error. Noted for the long run: with structural expansion these strings can get long enough to hurt, and unwrapping is often exactly what the reader needs. Continuing as-is now; message aesthetics are a separate pass, not something to solve under this change.</p>
+    </div>
+
+    <h3><span class="n">1.5</span>Scoping, collisions, cycles</h3>
+    <ul>
+      <li><strong>Resolution scope.</strong> A target resolves in the alias's <em>definition</em> scope, never the use site. Already true for type aliases; must stay true, or an imported alias would resolve against the importer's namespace.</li>
+      <li><strong>Collisions.</strong> Currently handled badly — the collector does not diagnose two symbols with the same name in one scope, and <code>lookupDirect</code> silently returns the first hit. Imports turn this from rare into routine, so it needs real improvement, not a patch: a proper duplicate check at scope-insert time with a diagnostic naming both locations.</li>
+      <li><strong>Cycles — and the ones that are legal.</strong> A self-referential type reached through an alias is <em>valid</em> and must keep working:
+<pre><code><span class="k">type</span> Node = { value: int, next: ref Node | none };</code></pre>
+        The rejection rule is not "the alias graph has a cycle". It is "the cycle contains no indirection, so the type has no finite size or no fixed point". A cycle through a <code>ref</code>, a <code>| none</code>, a boxed member, or a dynamic array is fine; <code>alias a = b; alias b = a;</code> and a value struct that directly contains itself are not. Getting this distinction wrong breaks recursive data structures, so it needs its own test matrix rather than a blanket guard.</li>
+      <li><strong>Visibility.</strong> <code>export</code> and <code>pub</code> behave as on <code>type</code>.</li>
+    </ul>
+
+    <h3><span class="n">1.6</span>Comptime scope binding</h3>
+    <p>An alias declared inside a <code>for comptime</code> body must be bound to <em>that iteration's</em> scope. Each unrolled iteration declares a different alias, resolved against that iteration's substitutions. This has to hold at compile time exactly as it does at runtime — the loop is unrolled, so "the same alias every time" is not an approximation, it is a wrong answer.</p>
+    <p>It does not hold today. Confirmed with a build:</p>
+<pre><code><span class="k">fn</span> probe(values: ...): int {
+    <span class="k">for</span> <span class="k">comptime</span> v <span class="k">in</span> values {
+        <span class="k">type</span> Elem = <span class="k">typeof</span>(v);
+        <span class="k">let</span> x: Elem = v;
+    }
+}
+probe(1, "hello", 2.5);
+
+<span class="c"><span class="bad">// H4001: No suitable conversion from str to Elem (a.k.a int)</span></span></code></pre>
+    <p>Iteration 1 binds <code>Elem = int</code> and caches it. Iteration 2 asks for <code>Elem</code> again and gets <code>int</code> back.</p>
+    <p><strong>Root cause.</strong> <code>getFromTypeAliasDefCache</code> keys on <code>(Collect.TypeDefId, canonicalized genericArgs, parentSymbolId)</code>. Across unrolled iterations of one loop body, all three are identical: the same collected AST node, no generics, the same enclosing function. So iteration 2 hits iteration 1's entry, whose <code>targetType</code> was resolved under iteration 1's substitution of <code>v</code>.</p>
+    <p>This is the <em>same class of bug</em> as the known comptime-closure defect, where the func-def cache — keyed on <code>(Collect.SymbolId, genericArgs, paramPackTypes, parentSymbolId)</code> — made every unrolled closure share the first iteration's elaboration and captures. That one was fixed by bypassing the cache <em>read</em> while keeping the insert (parent lookup depends on it) and suffixing names for uniqueness. The alias cache needs the same treatment: the per-iteration elaboration identity has to participate in the key, or the read has to be bypassed for aliases declared inside an unrolled scope.</p>
+    <div class="note trap">
+      <p><strong>Why this one ranks above the other four.</strong> It fails loudly only when the iterations' types are incompatible. When they are compatible — two structs with the same shape, two integer widths — it compiles, silently, against the wrong type. That is a miscompile, not a diagnostic, and it is presumably what was hit in the <code>json</code> implementation, which is dense with <code>for comptime … in T.variants</code> and <code>T.fields</code>.</p>
+    </div>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s2">
+    <h2><span class="n">2</span>Function imports</h2>
+
+    <h3><span class="n">2.1</span>The desugaring</h3>
+<pre><code><span class="k">import</span> m;                    <span class="c">// → type m = m_v1_0_0_AbC12xY9;      (exists today)</span>
+<span class="k">import</span> m <span class="k">as</span> n;               <span class="c">// → type n = m_v1_0_0_AbC12xY9;      (rename; bug 2 fixed)</span>
+<span class="k">from</span> m <span class="k">import</span> a, b <span class="k">as</span> c;      <span class="c">// → alias a = m_v1_0_0_AbC12xY9.a;</span>
+                             <span class="c">//   alias c = m_v1_0_0_AbC12xY9.b;</span></code></pre>
+    <p>Placed in file scope, where <code>import</code>'s alias already goes. That is the entire feature — overload sets, generics, error naming and C emission all come from §1, which is why the alias has to exist first.</p>
+
+    <h3><span class="n">2.2</span>Consequences</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Situation</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td><code>a</code> has several overloads</td><td>The alias binds the whole <strong>group</strong>. All overloads callable through <code>a</code>, including ones declared in other files of <code>m</code>. Candidates are reported at their real locations; the callee is named <code>a</code>.</td></tr>
+          <tr><td><code>a</code> is generic</td><td>Works via forwarding, and infers in both directions (§1.3).</td></tr>
+          <tr><td><code>a</code> is a struct / enum / alias / nested namespace</td><td>Works — that is the <code>type</code> subset, so it comes free.</td></tr>
+          <tr><td>Does it also bind <code>m</code>?</td><td><strong>No.</strong> Only the listed names. <code>m</code> must still be a declared dependency in <code>haze.toml</code>.</td></tr>
+          <tr><td>Scope</td><td>Per file, like <code>import</code>. Importing in <code>a.hz</code> binds nothing in <code>b.hz</code>.</td></tr>
+          <tr><td><code>a</code> does not exist in <code>m</code></td><td>Eager diagnostic at pre-elaboration, naming <code>a</code> and <code>m</code>. An unused bad import fails the build.</td></tr>
+          <tr><td>Name already bound in the file</td><td>Collision diagnostic (§1.5).</td></tr>
+          <tr><td><code>from "path" import a</code></td><td>Unsupported, because path-mode imports are unsupported generally. Out of scope.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note trap">
+      <h4>The cross-module trap</h4>
+      <p>A generic exported function is re-emitted into <code>import.hz</code> as <strong>raw source</strong> and re-elaborated inside the consumer, where the original file's imports do not exist. <code>Export.ts</code> already works around this for module imports by re-emitting <code>type &lt;dep&gt; = &lt;versioned-ns&gt;;</code> lines into the module namespace.</p>
+      <p><code>from</code> imports need the same treatment: if <code>m/src/x.hz</code> writes <code>from n import helper;</code> and exports a generic function whose body calls <code>helper(...)</code>, the consumer's re-elaboration fails with <em>"Symbol 'helper' was not declared in this scope"</em> unless the alias is re-emitted too. No single-module test can catch this.</p>
+    </div>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s3">
+    <h2><span class="n">3</span>Anonymous structs</h2>
+
+    <h3><span class="n">3.1</span>The three kinds, side by side</h3>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th></th><th><code>struct Foo { }</code></th><th><code>type Foo = { }</code></th><th>bare <code>{ }</code> in a type position</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="narrow"><strong>Identity</strong></td><td>Nominal. Two identical declarations are two types.</td><td colspan="2">Structural. Same members ⇒ same type, everywhere, across modules.</td></tr>
+          <tr><td class="narrow"><strong>Prints as</strong></td><td><code>Foo</code></td><td><code>Foo</code>, expanding to <code>Foo (a.k.a { … })</code> where the expansion explains the error</td><td><code>{ x: int, y: int }</code></td></tr>
+          <tr><td class="narrow"><strong>Storage</strong></td><td>value, <code>ref</code>, <code>stackref</code>, <code>mut</code></td><td colspan="2"><strong>Value only.</strong> <code>ref { }</code> is a syntax error; <code>ref</code>/<code>stackref</code>/<code>mut</code> on an alias to one is a type error. Box it if you need a reference.</td></tr>
+          <tr><td class="narrow"><strong>Methods, operators, constructors</strong></td><td>Yes</td><td colspan="2">None, deliberately — if every structurally identical use is the same type, "which methods apply here" has no answer.</td></tr>
+          <tr><td class="narrow"><strong>Modifiers</strong></td><td><code>opaque</code>, <code>plain</code>, <code>nocopy</code>, <code>ref</code></td><td colspan="2">None spellable. <code>nocopy</code> is <strong>inherited</strong> from members and propagates — see §3.5.</td></tr>
+          <tr><td class="narrow"><strong><code>==</code></strong></td><td colspan="3">Autogenerated memberwise, same rules for all three</td></tr>
+          <tr><td class="narrow"><strong>Converts to a structural peer</strong></td><td><span class="tag t-reject">not by itself</span> — needs <code>operator as</code> / a conversion constructor (§4)</td><td colspan="2"><span class="tag t-allow">always</span>, when members are satisfiable</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3><span class="n">3.2</span>Syntax</h3>
+<pre><code><span class="k">fn</span> draw(p: { x: real, y: real }) { }
+
+<span class="k">type</span> Config = { id: int; verbose: bool = false };   <span class="c">// semicolons also fine</span>
+<span class="k">type</span> Pair&lt;T&gt; = { a: T, b: T };
+
+<span class="k">fn</span> call_foo(args: { id: int, test = <span class="k">true</span> }) { }        <span class="c">// type inferred from the default</span>
+
+<span class="k">let</span> items: []{ id: int } = [];
+<span class="k">let</span> maybe: { id: int } | none = none;
+<span class="k">let</span> a: <span class="k">typeof</span>(b) = …;                                  <span class="c">// name a shape without repeating it</span></code></pre>
+    <p><strong>Separators.</strong> Commas and semicolons are both accepted, in <em>both</em> anonymous and named struct bodies. The formatter will normalise later; the parser is permissive now.</p>
+    <p><strong>Members</strong> may be optional (<code>x?: int</code>), defaulted (<code>x: int = 0</code>), or defaulted with the type inferred from the default (<code>test = true</code>). Defaults are not a convenience here — anonymous structs are how named structs declare interfaces to each other, so <code>call_foo(args: { id: int, test = true })</code> is a primary use case, not an edge one.</p>
+    <p><strong><code>typeof</code></strong> is the second way to name a shape, as in TypeScript: copy the definition, or write <code>typeof(b)</code>. The <code>TypeOfExpr</code> production already exists in both the grammar and <code>elaborateDatatype</code>; this needs a test more than it needs code.</p>
+    <p><strong><code>{ }</code></strong> is legal — the unit struct. Sane, unlike JavaScript's: it is an empty struct. It converts implicitly into any other anonymous struct all of whose members have defaults or are optional.</p>
+
+    <h3><span class="n">3.3</span>Interning</h3>
+    <p>Anonymous struct types are <strong>interned by structural key</strong>, like the existing array and union caches in <code>LookupDatatype.ts</code>. Same members ⇒ same <code>TypeDefId</code>. That gives three things at once: structurally identical shapes are genuinely one type rather than two convertible ones; identical-shape conversion is free rather than a copy; and there is one C struct per shape, so the cross-module ABI is automatic — provided the C name is derived from the key's content and never from a per-module counter.</p>
+    <p>The key is <strong>member names sorted canonically</strong>, each with its resolved type use, optionality, and default expression. Two shapes differing only in written member order are the same type. Two shapes with the same members but different defaults are <em>different</em> types — still trivially convertible where semantics allow.</p>
+
+    <h3><span class="n">3.4</span>Conversion matrix</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>From</th><th>To</th><th></th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td><code>{ … }</code> literal</td><td>an inferred target</td><td><span class="tag t-allow">allow</span></td><td>Not a conversion — the literal is <em>constructed as</em> the target. Errors land on the offending element. If the inferred target cannot be satisfied, that is an error, not a fallback.</td></tr>
+          <tr><td><code>{ … }</code> literal</td><td>nothing inferable</td><td><span class="tag t-allow">allow</span></td><td><strong>New.</strong> With no inferred type, or only something indecisive that is not a clear error, a fresh anonymous struct is created. <code>let foo = { x: 0, y: 0 };</code> is a valid statement.</td></tr>
+          <tr><td>anon <code>A</code></td><td>anon <code>A</code></td><td><span class="tag t-allow">free</span></td><td>Same <code>TypeDefId</code>. No code.</td></tr>
+          <tr><td>anon <code>A</code></td><td>anon <code>B</code></td><td><span class="tag t-allow">allow</span></td><td>Iff every member of <code>B</code> is satisfiable: present in <code>A</code> and implicitly convertible, or optional, or defaulted. Members convert by the ordinary rules, so member conversion operators apply recursively. Members of <code>A</code> absent from <code>B</code> are <strong>dropped</strong>.</td></tr>
+          <tr><td><code>{ }</code></td><td>anon <code>B</code></td><td><span class="tag t-allow">allow</span></td><td>Iff every member of <code>B</code> is optional or defaulted.</td></tr>
+          <tr><td>nominal <code>N</code></td><td>anon <code>A</code></td><td><span class="tag t-reject">reject</span><br><span class="tag t-allow">unless §4</span></td><td>Named structs have identity, even on the stack. Allowed only when <code>N</code> declares <code>operator as</code> producing a compatible shape.</td></tr>
+          <tr><td>anon <code>A</code></td><td>nominal <code>N</code></td><td><span class="tag t-reject">reject</span><br><span class="tag t-allow">unless §4</span></td><td>Symmetric. Allowed only when <code>N</code> declares a conversion constructor taking a compatible shape.</td></tr>
+          <tr><td>anon <code>A</code></td><td><code>ref</code>/<code>stackref</code>/<code>mut</code> anything</td><td><span class="tag t-reject">reject</span></td><td>The target type cannot be written in the first place.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Dropping excess members is safe here in a way it is not in TypeScript: TS duck-typing needs a member offset resolved dynamically on an opaque object, which C cannot do. Because we always copy into a known layout, dropping has no effect on codegen or semantic correctness, and it follows the programmer's stated intent.</p>
+
+    <h3><span class="n">3.5</span>Edge cases</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Case</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td><code>nocopy</code> members</td><td><strong>Bubbles up.</strong> An anonymous struct containing a <code>nocopy</code> member is itself <code>nocopy</code>, even though the modifier cannot be written. No interning problem: every use site names the same members, so every use site derives the same answer.</td></tr>
+          <tr><td>Recursion</td><td><code>type Node = { value: int, next: ref Node | none }</code> is <strong>valid</strong> and must work. A value struct that directly contains itself with no indirection is the error. See §1.5.</td></tr>
+          <tr><td>Nesting</td><td><code>{ pos: { x: real, y: real } }</code> — inner is an interned value member, arbitrarily deep.</td></tr>
+          <tr><td><code>ref</code> members</td><td><code>{ owner: ref Foo }</code> is fine. The <em>member</em> may be a reference; the struct may not.</td></tr>
+          <tr><td>Generic instantiation</td><td><code>Pair&lt;int&gt;</code> interns to <code>{a: int, b: int}</code>, identical to the hand-written shape. Intended.</td></tr>
+          <tr><td>Exported signatures</td><td>Printed structurally into <code>import.hz</code> and re-parsed. Works precisely because the type is now writable syntax — a required test, not an assumption.</td></tr>
+          <tr><td>Reflection</td><td><code>T.fields</code> as for any struct; <code>T.name</code> is the structural string.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s4">
+    <h2><span class="n">4</span>The structural bridge: reviving <code>as</code></h2>
+
+    <p>Anonymous structs having no methods means <code>Vec2</code> cannot become one — <code>vec2.length()</code> is the reason <code>Vec2</code> exists. So <code>Vec2</code> stays a named struct with methods and identity, and gets structural <em>behaviour</em> through two declared conversions instead:</p>
+
+<pre><code><span class="k">struct</span> Vec2 {
+    x: int; y: int;
+    <span class="k">fn</span> length(): real { … }
+    <span class="k">fn</span> <span class="k">operator</span> <span class="k">as</span>(): { x: int, y: int } { … }        <span class="c">// out</span>
+    <span class="k">fn</span> <span class="k">constructor</span>(other: { x: int, y: int }): Vec2 { … } <span class="c">// in</span>
+}</code></pre>
+
+    <p>When <code>Point</code> declares the same pair, <code>Vec2</code> and <code>Point</code> become freely convertible — through the anonymous shape, which is the shared vocabulary. A value is nominal while it is spelled <code>Vec2</code> (and has <code>Vec2</code>'s methods), nominal while spelled <code>Point</code> (and has <code>Point</code>'s), and structural in between. That is what makes named types behave structurally without giving up identity or methods.</p>
+
+    <h3><span class="n">4.1</span>The bounded chain</h3>
+    <p>The conversion <code>Vec2 → Point</code> is three steps, and the bound matters more than the steps:</p>
+<pre><code>Vec2  --[ Vec2.operator as ]-->  { x: int, y: int }
+      --[ structural, §3.4   ]-->  { x: int, y: int }
+      --[ Point.constructor  ]-->  Point</code></pre>
+    <p><strong>At most one user-defined conversion out, one structural bridge, one user-defined conversion in.</strong> Never two <code>operator as</code> calls in sequence, never a constructor feeding another constructor. Without that bound, implicit conversion becomes a graph search and the language becomes C++.</p>
+    <p>The existing <code>disallowImplicitConstructorConversion</code> flag already implements exactly this idea for the constructor half; the <code>as</code> half needs the same guard, and the two must compose so that the pair is permitted but neither can recur.</p>
+
+    <h3><span class="n">4.2</span>Where it must fire</h3>
+    <p>The requirement is "everywhere an implicit conversion happens", explicitly including nested inside a larger one. So it lives in <code>Conversion.ts</code>'s plan builder, not at call sites — which means it applies to argument passing, assignment, return values, union variant selection, <em>and</em> member-by-member conversion when a whole struct converts:</p>
+<pre><code><span class="k">struct</span> A { pos: Vec2; }
+<span class="k">struct</span> B { pos: Point; }
+<span class="k">let</span> b: B = someA;   <span class="c">// A→B memberwise, and pos: Vec2→Point via the §4.1 chain</span></code></pre>
+    <p>That nesting is the part most likely to be missed, and it is the part that makes the feature worth having. It needs its own tests at every level: argument, return, assignment, struct member, array element, union variant.</p>
+
+    <h3><span class="n">4.3</span>What has to be built</h3>
+    <p><code>EOverloadedOperator.Cast</code> is parsed and referenced nowhere else, so this is greenfield rather than repair: collect it as a method with its operator tag, elaborate it (return type is the conversion target, no parameters), find it during conversion planning, add the <code>as</code> plan kind, materialise it as a method call in <code>Lower</code>, and serialise it in <code>Export.ts</code> so it survives module boundaries. A struct may declare several <code>operator as</code> overloads distinguished by return type; selection is by target type, and ambiguity is an error rather than a ranking.</p>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s5">
+    <h2><span class="n">5</span>Literal discrimination for unions and overloads</h2>
+
+    <p>Today an untyped <code>{ … }</code> passed to an overloaded function, or assigned to a union of structs, is refused outright. That refusal is one of the reasons this whole change exists. It is replaced by explicit discrimination — TypeScript's behaviour, with the ambiguity rule tightened.</p>
+    <p>Unions and overload sets are treated <strong>identically</strong> at this level. Function overload resolution is a separate, larger system that <em>wraps around</em> this one; the rules below decide only which shape an untyped literal takes.</p>
+
+    <h3><span class="n">5.1</span>Selection</h3>
+    <p>A candidate <strong>matches exactly</strong> when: every required member is supplied, no excess member is supplied, and every unsupplied member is optional or defaulted. Implicit conversions on the supplied values are permitted and do not affect matching.</p>
+    <ul>
+      <li><strong>Exactly one candidate matches</strong> → chosen.</li>
+      <li><strong>No candidate matches</strong> → error (§5.2 decides which candidate to blame).</li>
+      <li><strong>More than one matches</strong> → <strong>ambiguity error</strong>, requires an explicit type.</li>
+    </ul>
+    <p>There is deliberately no tie-breaking. No "better match wins", no "fewer implicit conversions wins". If more than one candidate is satisfiable after any amount of implicit conversion, it is a hard error. The principle: <em>if it is 100% unambiguous what the user meant, do exactly that; if it is not, never guess.</em> C++ does a great deal the user did not intend; most other languages decline to act even when they could have. We decline.</p>
+<pre><code><span class="k">let</span> foo: A | B = { a1: 0, a2: 0 };   <span class="c">// → A</span>
+<span class="k">let</span> foo: A | B = { b1: 0, b2: 0 };   <span class="c">// → B</span>
+foo({ a: 0 });                       <span class="c">// → the overload taking A</span>
+foo({ b: 0 });                       <span class="c">// → the overload taking B</span></code></pre>
+    <p>Parameter packs or generics in play on a candidate mean it does not participate — not a match, not an ambiguity, simply out.</p>
+
+    <h3><span class="n">5.2</span>Which candidate the error blames</h3>
+    <p>When nothing matches, the diagnostic has to pick a subject, and picking it well is the difference between a useful message and a list of every variant. The rule is <strong>first discriminating member wins</strong>: scan the literal's members in written order; the first member that exists on exactly one candidate selects that candidate as the subject; report the specific failure against it.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Given <code>A { a1, a2 }</code> and <code>B { b1, b2 }</code></th><th>Message</th></tr></thead>
+        <tbody>
+          <tr><td><code>{ a1: 0, b2: 0 }</code></td><td><code>a1</code> discriminates to <code>A</code> → <em>"A has no member b2"</em></td></tr>
+          <tr><td><code>{ b2: 0, a1: 0 }</code></td><td><code>b2</code> discriminates to <code>B</code> → <em>"B has no member a1"</em></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Note this is <em>reporting</em>, not selection — the two examples above select nothing, they only differ in whom they blame. If no member discriminates, the message falls back to listing candidates.</p>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s6">
+    <h2><span class="n">6</span>Spreading</h2>
+
+    <p>JavaScript semantics, made static. <code>...</code> already exists as a grammar node and already spreads parameter packs into argument lists; the node was deliberately written general — the comment above it in <code>HazeParser.g4</code> says object spreading should reuse it. It is reachable only from <code>argList</code> today, so <code>{ ...bar, b: 0 }</code> does not parse (confirmed: <code>H1000 unexpected token in expression: ...</code>).</p>
+
+    <p><strong>This is a general struct feature, not an anonymous-struct one.</strong> It works in every struct literal — nominal, anonymous, <code>ref</code>, generic — and spreads from any struct value except an <code>opaque</code> one, which by construction exposes no member set to read.</p>
+
+    <h3><span class="n">6.1</span>Resolution</h3>
+    <p>Elements are processed left to right into an ordered map <code>name → value</code>:</p>
+    <ul>
+      <li>A named element <code>b: 0</code> sets <code>b</code>.</li>
+      <li>A spread <code>...bar</code> sets every member of <code>bar</code>'s type, in that type's declared order, each to <code>bar.&lt;member&gt;</code>.</li>
+      <li>A later element setting the same name <strong>replaces</strong> the earlier one. Last write wins, exactly as in JavaScript.</li>
+    </ul>
+    <p>The accumulated map is then the literal's member set, and the ordinary rules take over: constructed as the inferred target type, or materialised as an anonymous struct when nothing is inferable (§3.4).</p>
+<pre><code><span class="k">let</span> foo = { ...bar, b: 0 };        <span class="c">// bar's members, with b overridden</span>
+<span class="k">let</span> p: Vec2 = { ...q, x: 0 };      <span class="c">// nominal target — same rules</span>
+<span class="k">let</span> m = { ...defaults, ...user };  <span class="c">// idiomatic; user wins</span></code></pre>
+
+    <div class="note key">
+      <h4>Why the warning is even possible here</h4>
+      <p>In JavaScript, whether a spread shadows an earlier key is a runtime property — keys are dynamic. In Haze every member set is statically known, so the whole overwrite analysis is decidable at compile time. That is what turns "silently discarded write" from an unavoidable footgun into a diagnosable one.</p>
+    </div>
+
+    <h3><span class="n">6.2</span>The dead-write warning</h3>
+    <p>When an <strong>explicitly written member</strong> is overwritten by anything later — a spread or another named element — its value is discarded and writing it was pointless. That is a warning naming the member, pointing at the dead element, and saying to either remove it or move it after the spread depending on which was meant.</p>
+<pre><code>{ b: 1, ...bar }        <span class="c"><span class="bad">// warning: 'b' is overwritten by the spread and has no effect</span></span>
+{ ...bar, b: 1 }        <span class="c"><span class="ok">// fine — this is the override idiom</span></span>
+{ a: 0, a: 1 }          <span class="c"><span class="bad">// warning: the first 'a' has no effect</span></span></code></pre>
+    <p><strong>One refinement on top of what you specified.</strong> The warning fires only for members the programmer wrote out explicitly — <em>not</em> for members a spread contributed that a later spread overwrites. <code>{ ...defaults, ...overrides }</code> is the single most common use of spreading, and warning on it would make the feature unusable. So: overwriting an explicit value is always a mistake and always warns; overwriting a spread-provided value is the entire point and never warns. Flagging it because you specified the first half and this is my reading of the second.</p>
+    <p>New code in the 9001–9999 warning block. The mechanism already exists — <code>printWarningMessage</code>, already surfaced as an LSP diagnostic — so this needs a code and a call, not infrastructure.</p>
+
+    <h3><span class="n">6.3</span>Rules and edge cases</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Case</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td>Spreading a nominal struct</td><td><span class="tag t-allow">allow</span> — and note this is <em>not</em> a hole in §3's identity rule. Identity protects against <em>silent</em> conversion; <code>...</code> is explicit member extraction the programmer wrote. <code>operator as</code> gives implicit conversion, <code>...</code> gives explicit destructuring. Both should exist.</td></tr>
+          <tr><td>Spreading an <code>opaque</code> struct</td><td><span class="tag t-reject">error</span> — no visible member set.</td></tr>
+          <tr><td>Spreading a non-struct</td><td><span class="tag t-reject">error</span>. Array spread (<code>[...arr]</code>) is a separate feature, explicitly out of scope here.</td></tr>
+          <tr><td>Spreading a <code>ref</code>/<code>stackref</code> struct</td><td><span class="tag t-allow">allow</span> — members are read through the reference; each contributed value is a copy.</td></tr>
+          <tr><td>Excess members vs a typed target</td><td>Dropped, consistent with D1. <code>let p: Vec2 = { ...bigThing }</code> takes <code>x</code> and <code>y</code> and ignores the rest.</td></tr>
+          <tr><td>Missing required members</td><td>Ordinary error — the accumulated map must satisfy the target, whether the members came from a spread or were written out.</td></tr>
+          <tr><td>Multiple spreads</td><td><span class="tag t-allow">allow</span>, left to right.</td></tr>
+          <tr><td><code>nocopy</code> members</td><td>A spread copies each member, so a <code>nocopy</code> member makes it an error exactly as any other copy would. Per §3.5 the resulting anonymous struct is itself <code>nocopy</code>.</td></tr>
+          <tr><td>Side effects</td><td>The spread source is evaluated <strong>exactly once</strong>, in position, <em>even if every one of its members is later overwritten</em>. <code>{ ...f(), a: 0, b: 0 }</code> still calls <code>f()</code>. Do not elide it for being fully shadowed.</td></tr>
+          <tr><td>Interaction with §5</td><td>The member set is computed before discrimination runs, so discrimination is unaffected. If the spread source's type is not yet resolved at that point, the candidate simply does not participate — no match, no ambiguity.</td></tr>
+          <tr><td>Inside <code>for comptime</code></td><td>Works, because member sets are static. Subject to §1.6.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note key">
+      <h4>Two spread positions, two rule sets — existing tests stay valid</h4>
+      <p><code>...</code> in an <strong>argument list</strong> keeps its current meaning and its current restriction: only a parameter pack may be spread there, enforced by <code>SpreadOperandNotParameterPack</code>. Three test cases already pin that down — <code>bar(...x)</code> for an array variable, <code>bar(...[1])</code> for an array literal, and <code>bar(...values[0])</code> for a pack element — and <strong>all three remain correct and untouched</strong>.</p>
+      <p><code>...</code> in a <strong>brace literal</strong> is the new, separate rule set in §6: struct sources only, never packs. Same token, same AST node, two contexts the semantic layer keeps apart — which is exactly what the node's original grammar comment anticipated. Neither position should ever accept the other's operand, and that pair of negative cases is worth testing in both directions.</p>
+    </div>
+
+    <h3><span class="n">6.4</span>Lowering: there isn't any</h3>
+    <p>A spread desugars completely during elaboration into per-member accesses — <code>{ ...bar, b: 0 }</code> becomes the struct literal <code>{ a: bar.a, b: 0 }</code>. So <code>Lower</code> and <code>Codegen</code> need <strong>no changes at all</strong>; there is no runtime spread, exactly as pack spread already desugars to <code>pack[i]</code>.</p>
+    <p>The one implementation trap: the source expression must be bound to a temporary first, so a spread of a call or any non-trivial expression is evaluated once rather than re-evaluated per member.</p>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s7">
+    <h2><span class="n">7</span>Decisions, as resolved</h2>
+
+    <div class="decision">
+      <div class="id">D1</div>
+      <div class="body">
+        <p class="q">Anon → anon with excess members: drop them.</p>
+        <p>Follows programmer intent, and unlike TypeScript's duck-typing it costs nothing: C cannot resolve a member offset dynamically on an opaque object, so we always copy into a known layout anyway. Zero effect on codegen or semantic correctness.</p>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="id">D2</div>
+      <div class="body">
+        <p class="q">Nominal ↔ anon: rejected in both directions, unless §4 conversions are declared.</p>
+        <p>Named structs have identity even on the stack. <code>operator as</code> and the conversion constructor are the explicit opt-in, and they are what makes <code>Vec2</code>-style types structurally interoperable without losing methods.</p>
+      </div>
+    </div>
+
+    <div class="decision struck">
+      <div class="id">D3</div>
+      <div class="body">
+        <p class="q">Member order: declaration order is significant.</p>
+        <p class="strike">Different orderings are different types in the compiler, always trivially convertible. Kept for possible future duck-typing-by-cloning, which could get harder under canonicalisation.</p>
+        <div class="revision">
+          <span class="lbl">Revised — kept for the record</span>
+          <p><strong>Canonicalise.</strong> <code>{a, b}</code> and <code>{b, a}</code> are the same struct. Order is irrelevant when writing a literal anyway, and the more consistent the layout, the better the C optimiser does.</p>
+          <p>Retained rather than deleted because the original reasoning may become live again: if duck-typing-by-cloning is ever wanted, order-significance could matter, and this is the note that says why it was traded away.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="id">D4</div>
+      <div class="body">
+        <p class="q">Optional members and defaults: required, not optional-to-build.</p>
+        <p>Anonymous structs are how named structs declare interfaces to each other, so <code>call_foo(args: { id: int, test = true })</code> is a primary case. A member may omit its type when a default gives it one. Same members with different defaults are different structs, still trivially convertible where semantics allow.</p>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="id">D5</div>
+      <div class="body">
+        <p class="q">Generic forwarding: yes — and it fixes an existing pain point.</p>
+        <p>Requiring the generic count to be known up front is a standing annoyance with <code>type</code> aliases, not just a blocker for imports. Aliases must also stay fully transparent to generic <em>inference</em> in both directions (§1.3).</p>
+      </div>
+    </div>
+
+    <div class="decision"><div class="id">D6</div><div class="body"><p class="q">Alias targets: types, namespaces, function groups, globals, enum members. Locals and parameters rejected.</p></div></div>
+    <div class="decision"><div class="id">D7</div><div class="body"><p class="q">Missing imported symbol: eager error at pre-elaboration.</p></div></div>
+
+    <div class="decision">
+      <div class="id">D8</div>
+      <div class="body">
+        <p class="q">Overload and union discrimination: build it, per §5.</p>
+        <p>Superseded by §5, which is now the specification. The earlier concern — that a fallback anonymous type would silently pick an overload — is answered by the exactly-one-match rule plus a hard ambiguity error, rather than by refusing the case.</p>
+      </div>
+    </div>
+
+    <div class="decision"><div class="id">D9</div><div class="body"><p class="q"><code>import m as n</code>: fixed, with a regression case.</p></div></div>
+    <div class="decision"><div class="id">D10</div><div class="body"><p class="q">Collision detection: yes, and it needs real improvement rather than a patch.</p></div></div>
+    <div class="decision"><div class="id">D11</div><div class="body"><p class="q">Native parser: updated in lockstep with ANTLR.</p></div></div>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s8">
+    <h2><span class="n">8</span>Parser policy and bootstrap</h2>
+
+    <p>The rule, stated plainly: <strong>ANTLR exists to build the native parser and to check it. Nothing else in the compiler ever uses it.</strong> If the native parser is missing, build it — never quietly compile with ANTLR instead.</p>
+
+    <h3><span class="n">8.1</span>What is actually wrong today</h3>
+    <p>The silent fallback is not hypothetical, and it is armed to fire the moment this change touches <code>compiler/haze-parser/src</code>. Three findings compound:</p>
+    <ul>
+      <li><strong><code>dist/</code> is a half install.</strong> <code>isInstallRoot()</code> tests for <code>stdlib/core/haze.toml</code>, and <code>dist/stdlib/core/haze.toml</code> exists — so <code>dist/</code> is recognised as an install root. But <code>dist/libexec/</code> does not exist, and <code>scripts/build.js</code> <em>never mentions the parser at all</em>. So <code>getInstalledParserBinary()</code> returns null and the "deployed parser is current by construction" fast path never applies.</li>
+      <li><strong>It only works today by accident.</strong> Falling through, <code>isParserUpToDate(process.cwd())</code> finds the <em>checkout's</em> <code>__haze__/haze-parser/bin/haze-parser</code> and its <code>.source-hash</code>. That holds only because <code>run-tests.sh</code> happens to <code>cd</code> to the repo root and the stamp happens to be current.</li>
+      <li><strong>The rebuild cannot succeed under <code>dist/haze</code>.</strong> <code>buildNativeParser</code> spawns <code>process.execPath src/main.ts build …</code>. Under <code>bun run src/main.ts</code> that is right. Under a compiled binary, <code>execPath</code> <em>is the binary</em>, so it becomes <code>dist/haze src/main.ts build …</code> — and <code>src/main.ts</code> is not a subcommand, so argparse rejects it, the spawn returns non-zero, and <code>buildNativeParser</code> returns false.</li>
+    </ul>
+    <p>Chain them: edit a parser source → stamp goes stale → rebuild attempted → rebuild impossible under <code>dist/haze</code> → returns false → <code>nativeParserAvailable()</code> prints a warning and <strong>silently degrades all 129 test cases to ANTLR</strong>. That is the hour-long suite, it cannot self-heal, and the only reason it is not happening right now is a stamp that this change is about to invalidate.</p>
+
+    <h3><span class="n">8.2</span>The fix</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Change</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>scripts/build.js</code> deploys the parser to <code>dist/libexec/</code></td><td>Makes <code>dist/</code> a real install rather than half of one, so the "current by construction" path applies and <code>run-tests.sh</code> stops depending on the checkout's build directory.</td></tr>
+          <tr><td><code>buildNativeParser</code> builds correct argv</td><td>When <code>execPath</code> is the compiled compiler rather than a JS runtime, spawn <code>execPath build --dir compiler/haze-parser --parser antlr</code> — no <code>src/main.ts</code>. The binary takes the same CLI, so bootstrap works from either shape.</td></tr>
+          <tr><td><strong>Delete the fallback</strong> in <code>nativeParserAvailable()</code></td><td>Rule 3. A missing native parser is a hard error naming what failed, never a warning followed by a slower, differently-behaving compile.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><code>--parser antlr</code> stays as an explicit, deliberate flag — bootstrap needs it and debugging wants it — but nothing ever selects it automatically.</p>
+
+    <h3><span class="n">8.3</span>Equivalence over the whole repository</h3>
+    <p>ANTLR stops being a compilation path but remains the correctness oracle. A sweep parses <strong>every <code>.hz</code> file in the repository</strong> with both parsers and asserts they agree, using the <code>diffAST</code> machinery that <code>assert</code> mode already has.</p>
+    <p>A dedicated sweep rather than just building with <code>--parser assert</code>, because <code>assert</code> only covers files reachable from a compiled project. Parse-only coverage reaches everything: stdlib, the parser's own sources, test fixtures, <code>R&amp;D/</code> snippets, the generated <code>__haze__/**/import.hz</code> interfaces, and files that belong to no project or do not typecheck at all.</p>
+    <p><strong>Equivalence means same outcome, not same success.</strong> Both parse and produce identical ASTs — equivalent. Both reject — equivalent, since a deliberately malformed fixture should be rejected by both and their messages are allowed to differ. One accepts while the other rejects — divergence, and a failure. That third case is the one that actually catches drift.</p>
+    <p>Wired into <code>run-tests.sh</code>, so every suite run proves the two parsers still agree on the whole tree rather than on whatever happened to be compiled.</p>
+  </section>
+
+  <!-- ================================================================= -->
+  <section id="s9">
+    <h2><span class="n">9</span>Implementation surface</h2>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>File</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><code>Parser/grammar/HazeLexer.g4</code></td><td><code>ALIAS: 'alias';</code></td></tr>
+          <tr><td><code>Parser/grammar/HazeParser.g4</code></td><td><code>typeDef</code> gains an <code>ALIAS</code> alternative; <code>typeExprPrimary</code> gains the anonymous-struct production; <code>aggregateLiteralElement</code> gains a <code>spreadExpr</code> alternative; both struct bodies accept comma <em>and</em> semicolon separators; struct members may omit the type when defaulted. Regenerate <code>autogen/</code>.</td></tr>
+          <tr><td><code>Parser/Parser.ts</code></td><td>Listeners for the above. <code>exitFromImportStatement</code> already parses correctly.</td></tr>
+          <tr><td><code>compiler/haze-parser/src/{lexer,tokens,parser}.hz</code></td><td>All syntax mirrored, or <code>assert</code> mode diverges.</td></tr>
+          <tr><td><code>shared/AST.ts</code></td><td><code>ASTTypeAlias</code> → <code>ASTAliasDef</code> + <code>typeOnly</code>; new <code>ASTAnonStructType</code>; <code>ASTAggregateLiteralElement</code> gains <code>spread: boolean</code> (a spread carries a null key, so the flag has to be explicit — a null key already means "positional", as in array literals).</td></tr>
+          <tr><td><code>SymbolCollection/SymbolCollection.ts</code></td><td><code>TypeAliasDef</code> → <code>AliasDef</code> + <code>typeOnly</code>; implement <code>SymbolImport</code>; honour <code>ModuleImport.alias</code>; <strong>fix local generic aliases</strong> (bug 3); collect the anonymous-struct type expression; collect <code>operator as</code>; real duplicate-symbol detection.</td></tr>
+          <tr><td><code>Semantic/SemanticTypes.ts</code></td><td><code>StructDatatypeDef.anonymous</code>; structural printing; content-derived mangling; <code>nocopy</code> inheritance; lookup pass-through for non-type aliases.</td></tr>
+          <tr><td><code>Semantic/LookupDatatype.ts</code></td><td>Anonymous-struct interning cache on a canonical sorted key.</td></tr>
+          <tr><td><code>Semantic/Elaborate.ts</code></td><td>Split the alias elaborator into type-valued and symbol-valued paths; delegate in <code>explicitSymbolValue</code>; generic forwarding; anonymous-struct case in <code>elaborateDatatype</code> plus storage-class rejection; the no-context branch of <code>structInstantiation</code>; §5 discrimination; <code>aliasedVia</code>; indirection-aware cycle detection; <strong>re-key or bypass <code>getFromTypeAliasDefCache</code> for comptime-unrolled scopes</strong> (§1.6).</td></tr>
+          <tr><td><code>Semantic/Conversion.ts</code></td><td>Structural anon↔anon branch; the <code>operator as</code> plan kind and its recursion guard, composed with the existing constructor guard (§4.1); recursion into member-wise conversion (§4.2).</td></tr>
+          <tr><td><code>Semantic/Elaborate.ts</code> — <code>structInstantiation</code></td><td>§6 spread resolution: left-to-right accumulation, last-write-wins, dead-write warning, temp-binding of the spread source so it is evaluated once. Desugars fully here, which is why <code>Lower</code> and <code>Codegen</code> stay untouched by spreading.</td></tr>
+          <tr><td><code>Semantic/Fingerprint.ts</code></td><td>Alias, anonymous-struct and <code>as</code>-operator cases, so incremental rebuilds invalidate.</td></tr>
+          <tr><td><code>SymbolCollection/Export.ts</code></td><td>Emit <code>alias</code> lines; re-emit <code>from</code>-import aliases into the module namespace; structural printing of anonymous types; serialise <code>operator as</code>. <strong>Highest risk.</strong></td></tr>
+          <tr><td><code>Lower/Lower.ts</code>, <code>Codegen/CodeGenerator.ts</code></td><td>Anonymous structs are ordinary value structs. Symbol aliases vanish before lowering. <code>operator as</code> materialises as a method call.</td></tr>
+          <tr><td><code>shared/ErrorCodes.ts</code></td><td>New codes: alias-target-not-a-datatype, alias-cycle-without-indirection, alias-target-not-aliasable, ref-on-anonymous-struct, duplicate-symbol-in-scope, imported-symbol-not-found, ambiguous-literal-candidates, no-candidate-for-literal, spread-of-non-struct, spread-of-opaque-struct. Plus one <strong>warning</strong> in the 9001–9999 block: member-overwritten-has-no-effect.</td></tr>
+          <tr><td><code>Parser/ParserMode.ts</code>, <code>Parser/NativeParser.ts</code>, <code>scripts/build.js</code></td><td>§8: deploy the parser into <code>dist/libexec/</code>, fix <code>buildNativeParser</code>'s argv for the compiled-binary shape, delete the silent ANTLR fallback. <strong>Must land before any edit to <code>compiler/haze-parser/src</code></strong>, or the suite silently degrades the moment the stamp goes stale.</td></tr>
+          <tr><td><code>scripts/parser-equivalence.ts</code> <span class="tag t-info">new</span></td><td>§8.3: parse every <code>.hz</code> in the repo with both parsers, diff the ASTs, treat both-reject as agreement. Wired into <code>run-tests.sh</code>.</td></tr>
+          <tr><td><code>extension/syntaxes/</code></td><td>Highlight <code>alias</code>.</td></tr>
+          <tr><td><code>testsuite/src/</code></td><td><code>cases_aliases.hz</code>, <code>cases_anon_structs.hz</code>, <code>cases_symbol_imports.hz</code>, <code>cases_operator_as.hz</code>, <code>cases_literal_discrimination.hz</code>, <code>cases_comptime_alias_scoping.hz</code>, <code>cases_struct_spread.hz</code>, registered in <code>main.hz</code>; new codes in <code>error_codes.hz</code>. Cross-module cases need a real second module — no single-module test catches the <code>Export.ts</code> failure mode. The comptime cases must assert the <em>value</em> produced per iteration, not just that it compiles, since the failure mode is a silent wrong type.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note key">
+      <h4>Baseline: measured, and fully green</h4>
+      <p><strong>129 passed, 0 failed.</strong> Measured at HEAD <code>9007dcaf</code> before touching anything. Every future failure in this work is therefore mine, with no pre-existing noise to subtract.</p>
+      <p>This <em>corrects</em> a stale belief I carried in — that six cases fail on a clean checkout (four <em>nullish coalescing</em>, two <em>optional chaining</em>) because the native parser could not be built and ANTLR mishandles <code>?.</code> / <code>??</code>. That was measured at <code>f3f89815</code>; something since then fixed it. At HEAD all 7 optional-chaining and all 4 nullish-coalescing cases pass, and standalone <code>?.</code> / <code>??</code> probes compile clean under ANTLR specifically. <strong>There is no ANTLR coalescing bug left to fix.</strong></p>
+      <p>The native parser is likewise <em>available</em> here, not falling back: <code>--parser</code> defaults to <code>native</code>, the binary and its <code>.source-hash</code> stamp both exist, <code>isParserUpToDate()</code> returns true, each case inherits the repo-root cwd so the check succeeds per case too, and no "falling back to the ANTLR parser" warning appears in a full run. If it ever <em>does</em> fall back, the failure mode is sharp and worth knowing: <code>buildNativeParser</code> spawns <code>process.execPath src/main.ts …</code>, which is correct under <code>bun run src/main.ts</code> but nonsense under a compiled <code>dist/haze</code>, where <code>execPath</code> is the binary itself. So a stale or missing stamp under <code>run-tests.sh</code> cannot self-heal — it silently degrades all 129 cases to ANTLR. That is the hour-long-suite scenario, and it is a one-line fix if it resurfaces.</p>
+    </div>
+  </section>
+
+  <hr class="thick">
+
+</div>
+</body>
+</html>
