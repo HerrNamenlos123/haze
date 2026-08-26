@@ -300,6 +300,12 @@ requiresBlock
 
 aggregateLiteralElement
     : (key=memberNameId COLON)? value=expr
+    // `...bar` inside a brace literal spreads a STRUCT's members. Same token
+    // and same node as the argument-list spread, two contexts the semantic
+    // layer keeps apart: only a parameter pack may be spread into an argument
+    // list, only a struct into a brace literal, and neither position ever
+    // accepts the other's operand (§6.4).
+    | spreadExpr
     ;
 
 genericArgs

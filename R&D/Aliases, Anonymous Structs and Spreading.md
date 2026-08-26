@@ -1090,3 +1090,38 @@ spelling and `assert(false)`s on anything else, so a module declaring `operator 
 built at all — never mind consumed. It emits `operator as` now; the return type in the signature
 carries which target it produces, so nothing else has to be encoded.
 
+### 10.14 §6's resolution has to be universal, not spread-only
+
+§6.1 describes processing a literal's elements "left to right into an ordered map" as the rule
+for spreading, and §6.2 then gives `{ a: 0, a: 1 }` — no spread in sight — as a case that
+**warns** that the first `a` has no effect. Those only agree if the ordered map is how *every*
+struct literal is resolved, not just one containing a spread.
+
+Implemented spread-only, `{ a: 0, a: 1 }` kept its old behaviour: `H7121 Cannot assign member a
+twice`, a hard error. So the resolution runs for every keyed literal, and the duplicate error
+became §6.2's warning with last-write-wins. Positional literals (array elements) are left exactly
+as written — they have no member names to build a map out of.
+
+### 10.15 The trap §6.5 names is both halves of one bug
+
+§6.5 says lowering needs no changes, with "one implementation trap: the source expression must be
+bound to a temporary first, so a spread of a call or any non-trivial expression is evaluated once
+rather than re-evaluated per member." Measured, that trap is two failures, not one, and the
+second is the one §6.3 warns about:
+
+```haze
+let once: P     = { ...source() };                    // calls = 2   (once per member)
+let shadowed: P = { ...source(), a: 7, b: 8, c: 9 };  // calls = 0   (elided entirely)
+```
+
+Re-evaluation per member is the obvious half. The other is that a *fully shadowed* spread
+contributes no member accesses at all, so nothing in the final tree references the source and it
+is never emitted — the side effect vanishes. §6.3 is explicit that it must not
+("`{ ...f(), a: 0, b: 0 }` still calls `f()`. Do not elide it for being fully shadowed"), and
+only a temporary gets both: the binding statement runs whether or not any member survives.
+
+The literal is therefore wrapped in a block scope, `{ let t = f(); <the literal, reading t> }`,
+when and only when it contains a spread. §6.5's claim still holds: there is no runtime spread and
+`Lower`/`Codegen` are untouched — the literal itself is the same per-member struct literal it
+would otherwise have been.
+

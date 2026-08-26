@@ -630,6 +630,24 @@ export namespace Semantic {
     stackEnv?: boolean;
   };
 
+  /**
+   * One member of a struct literal after §6.1's spread resolution.
+   *
+   * `value` is either still a collected expression (a member the programmer
+   * wrote, elaborated later against the member's own type so inference works)
+   * or an already-elaborated one (a member a spread contributed, which is a
+   * member access on the spread source and has no target to infer against).
+   */
+  export type ResolvedLiteralElement = {
+    key: string | null;
+    value:
+      | { kind: "collect"; id: Collect.ExprId }
+      | { kind: "semantic"; id: Semantic.ExprId };
+    /** Written out by the programmer, as opposed to contributed by a spread. */
+    written: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type SymbolValueExpr = BaseExpr & {
     variant: ENode.SymbolValueExpr;
     instanceIds: InstanceId[];

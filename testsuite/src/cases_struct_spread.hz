@@ -1,0 +1,283 @@
+// ============================================================================
+// Struct spreading (§6 of R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// JavaScript semantics, made static. This is a GENERAL STRUCT FEATURE, not an
+// anonymous-struct one: it works in every struct literal — nominal, anonymous,
+// `ref`, generic — and spreads from any struct value except an `opaque` one,
+// which by construction exposes no member set to read.
+//
+// §6.1 — elements are processed left to right into an ordered map:
+//
+//   a named element `b: 0`   sets `b`
+//   a spread `...bar`        sets every member of bar's TYPE, in declared
+//                            order, each to `bar.<member>`
+//   a later element setting the same name REPLACES the earlier one
+//
+// Last write wins, exactly as in JavaScript. The accumulated map is then the
+// literal's member set, and the ordinary rules take over.
+//
+// §6.2 — WHY THE WARNING IS EVEN POSSIBLE. In JavaScript, whether a spread
+// shadows an earlier key is a runtime property, because keys are dynamic. In
+// Haze every member set is statically known, so the whole overwrite analysis is
+// decidable at compile time. That turns "silently discarded write" from an
+// unavoidable footgun into a diagnosable one.
+//
+// It fires only for members the programmer wrote out EXPLICITLY — never for a
+// member one spread contributed and a later spread overwrote.
+// `{ ...defaults, ...overrides }` is the single most common use of spreading,
+// and warning on it would make the feature unusable. Overwriting an explicit
+// value is always a mistake and always warns; overwriting a spread-provided
+// value is the entire point and never warns.
+//
+// §6.5 — there is no lowering. A spread desugars completely during elaboration
+// into per-member accesses: `{ ...bar, b: 0 }` becomes `{ a: bar.a, b: 0 }`, so
+// `Lower` and `Codegen` need no changes at all, exactly as pack spread already
+// desugars to `pack[i]`.
+//
+// The one implementation trap the spec names, and `evaluatedOnce` below is the
+// case for it: the source has to be bound to a temporary first. Without that,
+// `{ ...f() }` calls f() once PER MEMBER, and `{ ...f(), a: 0, b: 0 }` — where
+// every member is overwritten — drops the call entirely along with its side
+// effects. The spec is explicit: evaluated exactly once, in position, even when
+// fully shadowed. Do not elide it.
+// ============================================================================
+
+namespace cases_struct_spread {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "spread: override, merge, drop, nest, and evaluate exactly once",
+            """
+struct P { a: int = 0; b: int = 0; c: int = 0; }
+struct Narrow { a: int = 0; }
+ref struct R { a: int = 0; b: int = 0; }
+
+let calls: int = 0;
+fn source(): P { calls = calls + 1; return P { a: 1, b: 2, c: 3 }; }
+
+fn main(): int {
+    let bar: P = { a: 1, b: 2, c: 3 };
+
+    // The override idiom: bar's members, with b replaced.
+    let overridden: P = { ...bar, b: 9 };
+    fmt.println(f"override {overridden.a} {overridden.b} {overridden.c}");
+
+    // Two spreads, left to right; the later one wins. No warning: overwriting
+    // a spread-contributed member is the whole point.
+    let defaults: P = { a: 10, b: 20, c: 30 };
+    let user: P = { a: 99, b: 0, c: 0 };
+    let merged: P = { ...defaults, ...user };
+    fmt.println(f"merge {merged.a} {merged.b}");
+
+    // Excess members vs a typed target are dropped, consistent with §3.4.
+    let narrow: Narrow = { ...bar };
+    fmt.println(f"drop {narrow.a}");
+
+    // Spreading a `ref` struct: members are read through the reference and
+    // each contributed value is a copy.
+    let boxed: R = { a: 4, b: 5 };
+    let fromRef: R = { ...boxed, b: 6 };
+    fmt.println(f"ref {fromRef.a} {fromRef.b}");
+
+    // With nothing to infer from, the spread's members give the literal its
+    // own anonymous shape (§3.4), and a named element can add to it.
+    let fresh = { ...bar, d: 7 };
+    fmt.println(f"anon {fresh.a} {fresh.d}");
+
+    // THE TRAP: the source is evaluated exactly once even though it
+    // contributes three members...
+    let once: P = { ...source() };
+    fmt.println(f"once {calls} {once.a}");
+
+    // ...and exactly once even though every one of its members is then
+    // overwritten and it contributes nothing at all.
+    calls = 0;
+    let shadowed: P = { ...source(), a: 7, b: 8, c: 9 };
+    fmt.println(f"shadowed {calls} {shadowed.a}");
+    return 0;
+}
+""",
+            """
+override 1 9 3
+merge 99 0
+drop 1
+ref 4 6
+anon 1 7
+once 1 1
+shadowed 1 7
+""");
+
+        // ── The dead-write warning (§6.2) ───────────────────────────────────
+        //
+        // An explicitly written member overwritten by a later spread: its value
+        // is discarded, so writing it was pointless.
+        s.compileOkWithChecks(
+            "spread: an explicit member overwritten by a spread warns",
+            """
+struct P { a: int = 0; b: int = 0; }
+fn main(): int {
+    let bar: P = { a: 1, b: 2 };
+    let foo: P = { b: 1, ...bar };
+    return foo.b;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.MemberOverwrittenHasNoEffect, 1)]);
+
+        // ...and by another named element. `{ a: 0, a: 1 }` used to be a hard
+        // error; under §6.1's last-write-wins it is legal and warns.
+        //
+        // The VALUE is asserted through the exit code rather than through
+        // stdout, because the warning itself lands on the compiler's output and
+        // an exact-stdout check would be asserting on the diagnostic text.
+        s.runExitCode(
+            "spread: a repeated member is last-write-wins (last value)",
+            """
+struct P { a: int = 0; }
+fn main(): int {
+    let p: P = { a: 0, a: 1 };
+    return p.a;
+}
+""",
+            1);
+
+        s.compileOkWithChecks(
+            "spread: a repeated member warns exactly once",
+            """
+struct P { a: int = 0; }
+fn main(): int {
+    let p: P = { a: 0, a: 1 };
+    return p.a;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.MemberOverwrittenHasNoEffect, 1)]);
+
+        // The guard that keeps the warning usable: the most common spread of
+        // all must be silent.
+        s.compileOkWithChecks(
+            "spread: merging two spreads never warns",
+            """
+struct P { a: int = 0; b: int = 0; }
+fn main(): int {
+    let defaults: P = { a: 1, b: 2 };
+    let overrides: P = { a: 3, b: 4 };
+    let merged: P = { ...defaults, ...overrides };
+    return merged.a;
+}
+""",
+            [testsuite.mustNotHave(errorcodes.Code.MemberOverwrittenHasNoEffect)]);
+
+        // ── What cannot be spread (§6.3) ────────────────────────────────────
+        s.compileFails(
+            "spread: a non-struct cannot be spread",
+            """
+fn main(): int {
+    let x = 5;
+    let foo = { ...x };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOfNonStruct)]);
+
+        // An opaque struct exposes no member set by construction, so there is
+        // nothing to spread even though it is a struct.
+        s.compileFails(
+            "spread: an opaque struct has no member set to spread",
+            """
+opaque struct O {
+    a: int = 0;
+    static fn make(): O { return O { a: 1 }; }
+}
+fn main(): int {
+    let o = O.make();
+    let foo = { ...o };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOfOpaqueStruct)]);
+
+        // Missing required members are an ordinary error -- the accumulated map
+        // must satisfy the target however the members arrived.
+        s.compileFails(
+            "spread: a required member the spread does not supply is still missing",
+            """
+struct Small { a: int = 0; }
+struct Big { a: int = 0; z: int; }
+fn main(): int {
+    let small: Small = { a: 1 };
+    let big: Big = { ...small };
+    return big.z;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.MembersWereNotAssignedAndNoDefaultValue)]);
+
+        // ── Two spread positions, two rule sets (§6.4) ──────────────────────
+        //
+        // Same token, same AST node, two contexts the semantic layer keeps
+        // apart. Neither position ever accepts the other's operand, and that
+        // pair of negative cases is worth testing in both directions.
+        s.compileFails(
+            "spread: a struct cannot be spread into an argument list",
+            """
+struct P { a: int = 0; }
+fn f(v: int): int { return v; }
+fn main(): int {
+    let p: P = { a: 1 };
+    return f(...p);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOperandNotParameterPack)]);
+
+        s.compileFails(
+            "spread: a parameter pack cannot be spread into a brace literal",
+            """
+struct P { a: int = 0; }
+fn probe(values: ...): int {
+    let p: P = { ...values };
+    return p.a;
+}
+fn main(): int { return probe(1); }
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOfNonStruct)]);
+
+        s.compileFails(
+            "spread: an array literal does not take a spread",
+            """
+struct P { a: int = 0; }
+fn main(): int {
+    let p: P = { a: 1 };
+    let xs: []int = [...p];
+    return xs.length;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SpreadOfNonStruct)]);
+
+        // ── Inside `for comptime` (§6.3) ────────────────────────────────────
+        //
+        // Works because member sets are static: each unrolled iteration sees
+        // its own value's type and spreads that type's members.
+        s.run(
+            "spread: works inside an unrolled comptime loop",
+            """
+struct P { a: int = 0; b: int = 0; }
+struct Q { a: int = 0; b: int = 0; tag: int = 0; }
+
+fn probe(values: ...): str {
+    let out = "";
+    for comptime v in values {
+        // The spread source's type differs per iteration; the member set is
+        // still statically known in each.
+        let merged: P = { ...v, b: 1 };
+        out = out + f"{merged.a}/{merged.b};";
+    }
+    return out;
+}
+
+fn main(): int {
+    fmt.println(f"comptime {probe(P { a: 5 }, Q { a: 7, tag: 9 })}");
+    return 0;
+}
+""",
+            "comptime 5/1;7/1;");
+    }
+}

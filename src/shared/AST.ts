@@ -548,6 +548,14 @@ export type ASTExprComptimeMemberAccess = {
 export type ASTAggregateLiteralElement = {
   key: string | null;
   value: ASTExpr;
+  /**
+   * `...bar` -- spread every member of `bar`'s type into the literal (§6).
+   *
+   * An explicit flag rather than inferred from a null key, because a null key
+   * ALREADY means "positional" (an array literal element), and the two are
+   * different things.
+   */
+  spread: boolean;
   sourceloc: SourceLoc;
 };
 

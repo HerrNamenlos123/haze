@@ -3302,9 +3302,24 @@ class ASTBuilder extends HazeParserListener {
 
     const value = produced[0];
 
+    // A spread produces a SpreadExpr node; unwrap it and record the flag, so
+    // every consumer sees a plain element with `spread` set rather than having
+    // to know about a wrapper.
+    if (ctx.spreadExpr()) {
+      const spread = value as ASTSpreadExpr;
+      this.stack.push({
+        key: null,
+        value: spread.expr,
+        spread: true,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTAggregateLiteralElement);
+      return;
+    }
+
     this.stack.push({
       key: ctx._key?.getText() ?? null,
       value: value,
+      spread: false,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);
   };

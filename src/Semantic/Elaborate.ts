@@ -6244,7 +6244,7 @@ export class SemanticElaborator {
    * through to whatever it did before.
    */
   literalMatchesExactly(
-    elements: readonly Collect.AggregateLiteralElement[],
+    elements: readonly Semantic.ResolvedLiteralElement[],
     targetTypeUse: Semantic.TypeUseId
   ): boolean | null {
     const resolved = this.resolveAlias(targetTypeUse);
@@ -6300,7 +6300,7 @@ export class SemanticElaborator {
    * Null when no member discriminates, so the caller lists candidates instead.
    */
   discriminatingCandidate(
-    elements: readonly Collect.AggregateLiteralElement[],
+    elements: readonly Semantic.ResolvedLiteralElement[],
     candidates: readonly Semantic.TypeUseId[]
   ): Semantic.TypeUseId | null {
     for (const element of elements) {
@@ -6387,8 +6387,18 @@ export class SemanticElaborator {
 
     const literal = this.sr.cc.exprNodes.get(literalId);
     assert(literal.variant === Collect.ENode.AggregateLiteralExpr);
+    // Spreads are resolved first, so overload matching sees the post-spread
+    // member set and needs to know nothing about spreading (§6.3). If the
+    // spread source's type cannot be resolved here, the candidate simply does
+    // not participate rather than being wrongly rejected.
+    let resolved: Semantic.ResolvedLiteralElement[];
+    try {
+      resolved = this.resolveLiteralElements(literal.elements, {});
+    } catch {
+      return null;
+    }
     const exactly = this.literalMatchesExactly(
-      literal.elements,
+      resolved,
       this.untypedLiteralTargetOf(signatureParam.type)
     );
     if (exactly === false) {
@@ -13765,7 +13775,7 @@ export class SemanticElaborator {
 
   makeStructLiteral(
     typeUseId: Semantic.TypeUseId,
-    elements: Collect.AggregateLiteralElement[],
+    elements: readonly Semantic.ResolvedLiteralElement[],
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Semantic.Inference
@@ -13839,6 +13849,14 @@ export class SemanticElaborator {
       });
 
       if (!variableId) {
+        // A member a SPREAD contributed that this target does not have is
+        // dropped, not an error (§6.3): `let p: Vec2 = { ...bigThing }` takes
+        // x and y. Dropping costs nothing because the result is always copied
+        // into a known layout. A member the programmer WROTE stays an error --
+        // they named something that does not exist.
+        if (!m.written) {
+          continue;
+        }
         const options = struct.members.map((mmId) => {
           const mm = this.sr.symbolNodes.get(mmId);
           assert(mm.variant === Semantic.ENode.VariableSymbol);
@@ -13858,17 +13876,24 @@ export class SemanticElaborator {
       const variable = this.sr.symbolNodes.get(variableId);
       assert(variable.variant === Semantic.ENode.VariableSymbol);
 
-      if (assignedMembers.includes(m.key)) {
-        throw new CompilerError(
-          `Cannot assign member ${m.key} twice`,
-          sourceloc,
-          HazeErrorCode.CannotAssignMemberTwice
-        );
-      }
+      // A member cannot be assigned twice HERE any more, because §6.1's
+      // resolution collapsed repeats before this point: last write wins, and
+      // the discarded one produced the §6.2 warning. Reaching this with a
+      // duplicate would be an internal error.
+      assert(
+        !assignedMembers.includes(m.key),
+        `member '${m.key}' survived resolution twice`
+      );
 
-      const [_, eId] = this.expr(m.value, {
-        gonnaInstantiateStructWithType: variable.type || undefined,
-      });
+      // A written member elaborates against the member's own type, so an
+      // untyped nested literal still infers. A spread-contributed one is
+      // already elaborated -- it is a member access on the spread source.
+      const eId =
+        m.value.kind === "semantic"
+          ? m.value.id
+          : this.expr(m.value.id, {
+              gonnaInstantiateStructWithType: variable.type || undefined,
+            })[1];
 
       assert(variable.type);
       const convertedExprId = Conversion.MakeConversionOrThrow(
@@ -16478,7 +16503,8 @@ export class SemanticElaborator {
    * give the shape, and there is no declared type here to take one from.
    */
   anonymousStructFromLiteral(
-    structInst: Collect.AggregateLiteralExpr,
+    elements: readonly Semantic.ResolvedLiteralElement[],
+    sourceloc: SourceLoc,
     inference: Semantic.Inference
   ): Semantic.TypeUseId {
     const [struct, structId] = this.sr.b.addType<Semantic.StructDatatypeDef>(
@@ -16505,7 +16531,7 @@ export class SemanticElaborator {
         methodsFinalized: true,
         nestedStructs: [],
         parentSymbolId: null,
-        sourceloc: structInst.sourceloc,
+        sourceloc: sourceloc,
         concrete: true,
         originalCollectedDefinition: -1 as Collect.TypeDefId,
         originalCollectedSymbol: -1 as Collect.SymbolId,
@@ -16513,15 +16539,18 @@ export class SemanticElaborator {
       }
     );
 
-    for (const element of structInst.elements) {
+    for (const element of elements) {
       if (element.key === null) {
         throw new CompilerError(
           "A struct literal with no inferable type must name every member: there is nothing here to take the names from.",
-          element.sourceloc ?? structInst.sourceloc,
+          element.sourceloc ?? sourceloc,
           HazeErrorCode.ThisStructAnonymousAndMustBeTypeInferred
         );
       }
-      const [valueExpr] = this.expr(element.value, inference);
+      const [valueExpr] =
+        element.value.kind === "semantic"
+          ? [this.sr.exprNodes.get(element.value.id)]
+          : this.expr(element.value.id, inference);
       const memberId = this.sr.b.addSymbol(this.sr, {
         variant: Semantic.ENode.VariableSymbol,
         comptime: false,
@@ -16534,7 +16563,7 @@ export class SemanticElaborator {
         mutability: EVariableMutability.Default,
         name: element.key,
         parentSymbolId: null,
-        sourceloc: element.sourceloc ?? structInst.sourceloc,
+        sourceloc: element.sourceloc ?? sourceloc,
         type: valueExpr.type,
         variableContext: EVariableContext.MemberOfStruct,
       } satisfies Semantic.VariableSymbol)[1];
@@ -16546,14 +16575,258 @@ export class SemanticElaborator {
       this.internAnonymousStruct(structId),
       EDatatypeMutability.Default,
       EStorageClass.Value,
-      structInst.sourceloc
+      sourceloc
     )[1];
+  }
+
+  /**
+   * §6.1: process a literal's elements left to right into an ordered map.
+   *
+   *   a named element `b: 0`   sets `b`
+   *   a spread `...bar`        sets every member of bar's TYPE, in that type's
+   *                            declared order, each to `bar.<member>`
+   *   a later element setting the same name REPLACES the earlier one
+   *
+   * Last write wins, exactly as in JavaScript. The accumulated map is then the
+   * literal's member set and the ordinary rules take over -- constructed as the
+   * inferred target, or materialised as an anonymous struct when nothing is
+   * inferable (§3.4). Because the member set is computed here, §5's
+   * discrimination sees the post-spread members and needs to know nothing about
+   * spreading at all.
+   *
+   * A spread desugars completely: `{ ...bar, b: 0 }` becomes `{ a: bar.a, b: 0 }`,
+   * so `Lower` and `Codegen` need no changes -- there is no runtime spread,
+   * exactly as pack spread already desugars to `pack[i]`.
+   */
+  resolveLiteralElements(
+    elements: readonly Collect.AggregateLiteralElement[],
+    inference: Semantic.Inference,
+    /**
+     * Filled with one `let <temp> = <source>;` per spread. The caller must
+     * execute these before the literal: §6.3 requires the source to be
+     * evaluated EXACTLY ONCE, in position, even if every one of its members is
+     * later overwritten -- `{ ...f(), a: 0, b: 0 }` still calls f(). Without a
+     * temporary the call is duplicated once per member, and a fully shadowed
+     * spread disappears entirely along with its side effects.
+     */
+    spreadBindings?: Semantic.StatementId[]
+  ): Semantic.ResolvedLiteralElement[] {
+    // Positional elements (an array literal) have no member names to build a
+    // map out of, and no spread to resolve. Left exactly as written.
+    if (elements.every((e) => !e.spread && e.key === null)) {
+      return elements.map((e) => ({
+        key: e.key,
+        value: { kind: "collect", id: e.value },
+        written: true,
+        sourceloc: e.sourceloc,
+      }));
+    }
+
+    const resolved: Semantic.ResolvedLiteralElement[] = [];
+    const indexByKey = new Map<string, number>();
+
+    const set = (element: Semantic.ResolvedLiteralElement) => {
+      if (element.key === null) {
+        resolved.push(element);
+        return;
+      }
+      const existing = indexByKey.get(element.key);
+      if (existing !== undefined) {
+        // §6.2: overwriting a member the programmer WROTE OUT discards their
+        // value, so writing it was pointless. Overwriting one a spread
+        // contributed is the entire point of spreading and never warns --
+        // `{ ...defaults, ...overrides }` is its most common use, and warning
+        // there would make the feature unusable.
+        if (resolved[existing].written) {
+          printWarningMessage(
+            `'${element.key}' is overwritten later in this literal and has no effect.${
+              element.written
+                ? " Remove it, or keep only the one you meant."
+                : " Remove it, or move it after the spread if it was meant as the override."
+            }`,
+            resolved[existing].sourceloc,
+            HazeErrorCode.MemberOverwrittenHasNoEffect
+          );
+        }
+        resolved[existing] = element;
+        return;
+      }
+      indexByKey.set(element.key, resolved.length);
+      resolved.push(element);
+    };
+
+    for (const element of elements) {
+      if (!element.spread) {
+        set({
+          key: element.key,
+          value: { kind: "collect", id: element.value },
+          written: true,
+          sourceloc: element.sourceloc,
+        });
+        continue;
+      }
+
+      // The source is elaborated ONCE, here, in position -- even if every one
+      // of its members is later overwritten. `{ ...f(), a: 0, b: 0 }` still
+      // calls f(); eliding a fully shadowed spread would drop its side effects.
+      const [sourceExpr, sourceExprId] = this.expr(element.value, inference);
+      const sourceUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(sourceExpr.type)
+      );
+      const sourceDef = this.sr.typeDefNodes.get(sourceUse.type);
+
+      if (sourceDef.variant !== Semantic.ENode.StructDatatype) {
+        throw new CompilerError(
+          `Only a struct can be spread into a literal; '${Semantic.serializeTypeUse(this.sr, sourceExpr.type)}' is not one. (Array spreading is a separate feature.)`,
+          element.sourceloc,
+          HazeErrorCode.SpreadOfNonStruct
+        );
+      }
+      if (sourceDef.opaque) {
+        throw new CompilerError(
+          `'${Semantic.serializeTypeDef(this.sr, sourceUse.type)}' is opaque and exposes no member set to spread.`,
+          element.sourceloc,
+          HazeErrorCode.SpreadOfOpaqueStruct
+        );
+      }
+
+      // Bind the source to a temporary and read the members off THAT, so it is
+      // evaluated exactly once however many members it contributes and however
+      // many of them are later overwritten (§6.3, §6.5).
+      let readFromId = sourceExprId;
+      if (spreadBindings) {
+        const tempName = makeTempName();
+        const [, tempVariableId] = this.sr.b.addSymbol(this.sr, {
+          variant: Semantic.ENode.VariableSymbol,
+          comptime: false,
+          comptimeValue: null,
+          concrete: false,
+          export: false,
+          extern: EExternLanguage.None,
+          memberOfStruct: null,
+          mutability: EVariableMutability.Default,
+          requiresHoisting: false,
+          name: tempName,
+          sourceloc: element.sourceloc,
+          parentSymbolId: null,
+          type: sourceExpr.type,
+          variableContext: EVariableContext.FunctionLocal,
+        });
+        spreadBindings.push(
+          this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.VariableStatement,
+            name: tempName,
+            comptime: false,
+            sourceloc: element.sourceloc,
+            value: sourceExprId,
+            intrinsicTakeAddrOfValue: false,
+            stackrefInit: null,
+            variableSymbol: tempVariableId,
+          })[1]
+        );
+        readFromId = this.sr.b.symbolValue(
+          tempVariableId,
+          element.sourceloc
+        )[1];
+      }
+      const readFrom = this.sr.exprNodes.get(readFromId);
+
+      for (const memberId of sourceDef.members) {
+        const member = this.sr.symbolNodes.get(memberId);
+        if (member.variant !== Semantic.ENode.VariableSymbol) {
+          continue;
+        }
+        assert(member.type);
+        const accessId = this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.MemberAccessExpr,
+          instanceIds: [...readFrom.instanceIds],
+          expr: readFromId,
+          memberName: member.name,
+          type: member.type,
+          sourceloc: element.sourceloc,
+          isTemporary: true,
+          flow: readFrom.flow,
+          writes: readFrom.writes,
+        })[1];
+        set({
+          key: member.name,
+          value: { kind: "semantic", id: accessId },
+          // Contributed by a spread, not written out: a later element may
+          // replace it silently.
+          written: false,
+          sourceloc: element.sourceloc,
+        });
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * `[...arr]` is a separate feature and out of scope (§6.3), so a spread that
+   * turns out to be building an ARRAY is rejected rather than silently ignored.
+   */
+  rejectSpreadIntoArray(structInst: Collect.AggregateLiteralExpr): void {
+    const spread = structInst.elements.find((e) => e.spread);
+    if (spread) {
+      throw new CompilerError(
+        "'...' cannot spread into an array literal; only a struct literal accepts a spread.",
+        spread.sourceloc,
+        HazeErrorCode.SpreadOfNonStruct
+      );
+    }
   }
 
   structInstantiation(
     structInst: Collect.AggregateLiteralExpr,
     inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const [expr, exprId] = this.structInstantiationInner(structInst, inference);
+    const bindings = this.pendingSpreadBindings.pop();
+    if (bindings === undefined || bindings.length === 0) {
+      return [expr, exprId];
+    }
+    // The spread sources have to be evaluated before the literal is built, and
+    // exactly once (§6.3). A block scope is the vehicle: `{ let t = f(); <the
+    // literal, reading t> }`. There is still no runtime spread -- the literal
+    // itself is the same per-member struct literal it would have been.
+    const [, blockId] = this.sr.b.blockScope(
+      bindings,
+      exprId,
+      structInst.sourceloc
+    );
+    const [blockExpr, blockExprId] = this.sr.b.blockScopeExpr(
+      blockId,
+      expr.flow,
+      expr.writes
+    );
+    blockExpr.type = expr.type;
+    blockExpr.instanceIds = [
+      ...expr.instanceIds,
+    ] as typeof blockExpr.instanceIds;
+    return [blockExpr, blockExprId];
+  }
+
+  /** Spread bindings collected by the structInstantiation currently running. */
+  private pendingSpreadBindings: Semantic.StatementId[][] = [];
+
+  private structInstantiationInner(
+    structInst: Collect.AggregateLiteralExpr,
+    inference: Semantic.Inference
   ) {
+    // §6.1 first: the literal's member set is what everything below decides
+    // against -- which candidate it discriminates to (§5), which members the
+    // target still needs, and, with nothing to infer from, what shape it makes
+    // for itself. Spreading is resolved before any of that, so none of it has
+    // to know spreading exists.
+    const spreadBindings: Semantic.StatementId[] = [];
+    this.pendingSpreadBindings.push(spreadBindings);
+    const elements = this.resolveLiteralElements(
+      structInst.elements,
+      inference,
+      spreadBindings
+    );
+
     let structId = undefined as Semantic.TypeUseId | undefined;
     if (structInst.structType) {
       structId = this.withContext(
@@ -16587,7 +16860,11 @@ export class SemanticElaborator {
       // cannot be satisfied stays an error rather than silently falling back
       // to a different type -- falling back there would replace a precise
       // "this member does not exist" with a mystifying type mismatch later.
-      structId = this.anonymousStructFromLiteral(structInst, inference);
+      structId = this.anonymousStructFromLiteral(
+        elements,
+        structInst.sourceloc,
+        inference
+      );
     }
 
     const struct = this.sr.typeDefNodes.get(
@@ -16596,7 +16873,7 @@ export class SemanticElaborator {
     if (struct.variant === Semantic.ENode.StructDatatype) {
       return this.makeStructLiteral(
         structId,
-        structInst.elements,
+        elements,
         structInst.allocator
           ? this.expr(structInst.allocator, undefined)[1]
           : null,
@@ -16632,13 +16909,13 @@ export class SemanticElaborator {
           )
         );
         const matching = structMembers.filter(
-          (m) => this.literalMatchesExactly(structInst.elements, m) === true
+          (m) => this.literalMatchesExactly(elements, m) === true
         );
 
         if (matching.length === 1) {
           return this.makeStructLiteral(
             matching[0],
-            structInst.elements,
+            elements,
             structInst.allocator
               ? this.expr(structInst.allocator, undefined)[1]
               : null,
@@ -16664,14 +16941,11 @@ export class SemanticElaborator {
         if (structMembers.length > 0) {
           // Nothing matched. §5.2 picks who to blame: the first member of the
           // literal that exists on exactly one candidate.
-          const blamed = this.discriminatingCandidate(
-            structInst.elements,
-            structMembers
-          );
+          const blamed = this.discriminatingCandidate(elements, structMembers);
           if (blamed !== null) {
             return this.makeStructLiteral(
               blamed,
-              structInst.elements,
+              elements,
               structInst.allocator
                 ? this.expr(structInst.allocator, undefined)[1]
                 : null,
@@ -16700,7 +16974,7 @@ export class SemanticElaborator {
         if (Conversion.isStruct(this.sr, pickedUse.type)) {
           return this.makeStructLiteral(
             picked,
-            structInst.elements,
+            elements,
             structInst.allocator
               ? this.expr(structInst.allocator, undefined)[1]
               : null,
@@ -16713,6 +16987,7 @@ export class SemanticElaborator {
           pickedDef.variant === Semantic.ENode.FixedArrayDatatype ||
           pickedDef.variant === Semantic.ENode.DynamicArrayDatatype
         ) {
+          this.rejectSpreadIntoArray(structInst);
           return this.makeArrayLiteral(
             picked,
             structInst.elements,
@@ -16730,6 +17005,7 @@ export class SemanticElaborator {
       struct.variant === Semantic.ENode.FixedArrayDatatype ||
       struct.variant === Semantic.ENode.DynamicArrayDatatype
     ) {
+      this.rejectSpreadIntoArray(structInst);
       return this.makeArrayLiteral(
         structId,
         structInst.elements,

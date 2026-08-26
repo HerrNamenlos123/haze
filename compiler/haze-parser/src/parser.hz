@@ -1262,12 +1262,18 @@ ref struct Parser {
                 this.advance();
             }
 
+            // `...bar` spreads a struct's members into the literal (§6).
+            // Same token as the argument-list spread; the semantic layer keeps
+            // the two contexts apart.
+            let isSpread = this.accept(TK.Ellipsis);
+
             let value = this.captureExpr();
 
             this.w.beginObject();
             if hasKey { this.w.keyString("key", key); }
             else { this.w.keyNull("key"); }
             this.w.keyRaw("value", value);
+            this.w.keyBool("spread", isSpread);
             this.locHere(start);
             this.w.endObject();
         });

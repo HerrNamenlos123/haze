@@ -66,6 +66,7 @@ fn main(): int {
     cases_anon_structs.register(suite);
     cases_literal_discrimination.register(suite);
     cases_operator_as.register(suite);
+    cases_struct_spread.register(suite);
 
     return testsuite.runAll(config, suite);
 }
