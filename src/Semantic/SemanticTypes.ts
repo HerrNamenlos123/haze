@@ -498,6 +498,21 @@ export namespace Semantic {
     targetType: Semantic.TypeUseId;
     concrete: boolean; // For consistency, always true
     annotations: ASTMetaAnnotationItem[];
+    /**
+     * Which unrolled `for comptime` iteration produced this alias (§1.6).
+     *
+     * One `type Elem = typeof(v);` inside an unrolled loop is genuinely several
+     * different types, one per iteration -- and each emits its own C typedef.
+     * They all carry the same written name, so without something to tell them
+     * apart the C compiler sees `typedef long Elem;` followed by `typedef str
+     * Elem;` and rejects the redefinition.
+     *
+     * Deliberately part of the MANGLED name only, never the pretty one:
+     * diagnostics say `Elem`, exactly as the programmer wrote it. 0 for every
+     * alias outside an unrolling, which is the overwhelming majority, and which
+     * mangles identically to how it always did.
+     */
+    unrollIndex: number;
   };
 
   export type TypeDef =
@@ -611,6 +626,23 @@ export namespace Semantic {
     variant: ENode.SymbolValueExpr;
     instanceIds: InstanceId[];
     symbol: SymbolId;
+    /**
+     * The alias this reference was reached through, if any (§1.4).
+     *
+     * A type-valued alias keeps its identity in the type itself -- a
+     * TypeAliasDatatype prints as the alias and resolves to the target. A
+     * symbol-valued one cannot: it elaborates to a SymbolValueExpr pointing at
+     * a SHARED elaborated FunctionSymbol, and the same function may be reached
+     * by several aliases and by its real name. So the alias name lives on the
+     * expression instead.
+     *
+     * Read only by diagnostic construction and serializeExpr; `Lower` and
+     * `Codegen` ignore it entirely. A wrapping AliasExpr node would be more
+     * principled, but it forces every expression `switch` in an 18,000-line
+     * file to learn to unwrap it, and one missed site becomes a wrong-code bug
+     * rather than a wrong-message bug.
+     */
+    aliasedVia?: string;
   };
 
   export type IntrinsicValueExpr = BaseExpr & {
@@ -1057,14 +1089,29 @@ export namespace Semantic {
   };
   export type EnumDefCache = Map<Collect.TypeDefId, EnumDef[]>;
 
-  export type TypeAliasDef = {
+  export type AliasDef = {
     substitutionContext: Semantic.ElaborationContext;
     canonicalizedGenerics: string[];
     parentSymbolId: Semantic.SymbolId | null;
+    /**
+     * Which unrolled `for comptime` iteration this entry belongs to (§1.6).
+     *
+     * The other three key parts are all identical across the iterations of one
+     * unrolled loop -- the same collected AST node, no generics, the same
+     * enclosing function -- so without this, iteration 2 hits iteration 1's
+     * entry and gets back a type resolved under iteration 1's substitution.
+     * When the iterations' types happen to be compatible that is a silent
+     * miscompile rather than an error, which is why this ranks above the other
+     * alias bugs.
+     *
+     * 0 for every alias outside a comptime unrolling, so ordinary aliases cache
+     * exactly as before.
+     */
+    unrollGeneration: number;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
   };
-  export type TypeAliasDefCache = Map<Collect.TypeDefId, TypeAliasDef[]>;
+  export type AliasDefCache = Map<Collect.TypeDefId, AliasDef[]>;
 
   export type StructDef = {
     canonicalizedGenerics: string[];
@@ -1116,7 +1163,7 @@ export namespace Semantic {
       result: Semantic.TypeDefId;
     }[];
     elaboratedEnumSymbols: EnumDefCache;
-    elaboratedTypeAliasSymbols: TypeAliasDefCache;
+    elaboratedTypeAliasSymbols: AliasDefCache;
     elaboratedTypeDefSymbols: SymbolId[];
 
     // Those are GlobalVariableDefinitionSymbols
@@ -1360,7 +1407,7 @@ export namespace Semantic {
               return id;
             }
           } else if (
-            typedef.variant === Collect.ENode.TypeAliasDef &&
+            typedef.variant === Collect.ENode.AliasDef &&
             typedef.name === name
           ) {
             return id;
@@ -2205,7 +2252,13 @@ export namespace Semantic {
       ];
     }
 
-    let mangledSegment = type.name.length + type.name;
+    // The unroll index rides along in the mangled segment only (see
+    // TypeAliasDatatypeDef.unrollIndex): same written name, distinct C types.
+    const mangledName =
+      type.variant === Semantic.ENode.TypeAliasDatatype && type.unrollIndex > 0
+        ? `${type.name}_u${type.unrollIndex}`
+        : type.name;
+    let mangledSegment = mangledName.length + mangledName;
     if (
       type.variant === Semantic.ENode.NamespaceDatatype &&
       type.isModuleNamespace
@@ -2235,9 +2288,7 @@ export namespace Semantic {
       moduleName: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleName
         : "",
-      moduleId: isModNs
-        ? (type as Semantic.NamespaceDatatypeDef).moduleId
-        : "",
+      moduleId: isModNs ? (type as Semantic.NamespaceDatatypeDef).moduleId : "",
       moduleVersion: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleVersion
         : "",
@@ -3227,6 +3278,12 @@ export namespace Semantic {
 
       case Semantic.ENode.SymbolValueExpr: {
         const symbol = sr.symbolNodes.get(expr.symbol);
+        // Report the name the programmer actually wrote. Naming the target
+        // instead sends the reader looking for a symbol their file never
+        // mentions.
+        if (expr.aliasedVia !== undefined) {
+          return expr.aliasedVia;
+        }
         if (symbol.variant === Semantic.ENode.VariableSymbol) {
           return symbol.name;
         }

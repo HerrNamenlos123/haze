@@ -73,7 +73,7 @@ import {
   type ASTSymbolValueExpr,
   type ASTTaggedUnionTypeExpr,
   type ASTTernaryExpr,
-  type ASTTypeAlias,
+  type ASTAliasDef,
   type ASTTypeOfExpr,
   type ASTTypeValueExpr,
   type ASTUnaryExpr,
@@ -3179,7 +3179,9 @@ class ASTBuilder extends HazeParserListener {
       .map((g) => g.getText());
 
     this.stack.push({
-      variant: "TypeAlias",
+      variant: "AliasDef",
+      // One rule, two keywords: `type` is `alias` plus the datatype check.
+      typeOnly: ctx._kw?.type === HazeLexer.TYPE,
       datatype: datatype,
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
@@ -3191,7 +3193,7 @@ class ASTBuilder extends HazeParserListener {
       name: ctx._name.getText(),
       annotations: annotations,
       sourceloc: this.loc(ctx),
-    } satisfies ASTTypeAlias);
+    } satisfies ASTAliasDef);
   };
 
   exitTypeAliasStatement = (ctx: TypeAliasStatementContext) => {

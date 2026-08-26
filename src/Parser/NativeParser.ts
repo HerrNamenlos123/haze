@@ -175,7 +175,7 @@ const NODES_WITH_GENERICS = new Set([
   "OptionalChainingExprMemberAccess",
   "FunctionDefinition",
   "StructDefinition",
-  "TypeAlias",
+  "AliasDef",
 ]);
 
 function isIntegerPrimitive(type: number): boolean {

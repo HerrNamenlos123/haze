@@ -560,7 +560,7 @@
     },
     "type-alias-declaration": {
       "name": "meta.type.declaration.haze",
-      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?:(export)\\s+)?\n(?:(extern)\\s+(?:([_[:alpha:]][_[:alnum:]]*)\\s+)?)?\n(?:(pub)\\s+)?\n(type)\\s+\n([_[:alpha:]][_[:alnum:]]*)",
+      "begin": "(?x)\n(?<![_[:alnum:]])(?:(?<!\\.)\\b)\n(?:(export)\\s+)?\n(?:(extern)\\s+(?:([_[:alpha:]][_[:alnum:]]*)\\s+)?)?\n(?:(pub)\\s+)?\n(type|alias)\\s+\n([_[:alpha:]][_[:alnum:]]*)",
       "beginCaptures": {
         "1": {
           "name": "keyword.control.export.haze"

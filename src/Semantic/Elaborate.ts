@@ -94,6 +94,21 @@ class GenericDeductionIncompleteError extends CompilerError {}
 // name from here.
 const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
 
+/**
+ * What an alias's target turned out to name.
+ *
+ *   symbol   a Collect symbol -- a function overload group, a global variable,
+ *            a struct, a namespace, an enum, or a generic alias
+ *   value    an expression that is a value but not a symbol, i.e. an enum
+ *            member; elaborated as an ordinary expression
+ *   type     anything else, including real type expressions like `int | none`;
+ *            the type-valued half of the elaborator handles it
+ */
+type AliasTarget =
+  | { kind: "symbol"; symbolId: Collect.SymbolId; generics: Collect.ExprId[] }
+  | { kind: "value" }
+  | { kind: "type" };
+
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
@@ -4120,7 +4135,7 @@ export class SemanticElaborator {
       const r = this.resolveAlias(m);
       return r !== nullType && r !== noneType;
     });
-    return { hasNull, hasNone, remaining };
+    return { hasNull: hasNull, hasNone: hasNone, remaining: remaining };
   }
 
   // Entry point for the top of a postfix chain containing a `?.`.
@@ -4194,7 +4209,8 @@ export class SemanticElaborator {
 
     // `recv.m(args)` / `recv?.m(args)` is one unit, so that the call's
     // overload resolution (which drives the member lookup) sees the member.
-    const next = i + 1 < ops.length ? this.sr.cc.exprNodes.get(ops[i + 1]) : null;
+    const next =
+      i + 1 < ops.length ? this.sr.cc.exprNodes.get(ops[i + 1]) : null;
     const isMemberNode =
       op.variant === Collect.ENode.MemberAccessExpr ||
       op.variant === Collect.ENode.OptionalChainingMemberAccessExpr;
@@ -4233,7 +4249,11 @@ export class SemanticElaborator {
     ops: Collect.ExprId[],
     i: number,
     object: readonly [Semantic.Expression, Semantic.ExprId],
-    parts: { hasNull: boolean; hasNone: boolean; remaining: Semantic.TypeUseId[] },
+    parts: {
+      hasNull: boolean;
+      hasNone: boolean;
+      remaining: Semantic.TypeUseId[];
+    },
     inference: Semantic.Inference
   ): readonly [Semantic.Expression, Semantic.ExprId] {
     const op = this.sr.cc.exprNodes.get(ops[i]);
@@ -4724,7 +4744,6 @@ export class SemanticElaborator {
     return this.sr.b.blockScopeExpr(blockScopeId, flow, writes);
   }
 
-
   memberAccess(
     memberAccess: Collect.MemberAccessExpr,
     inference: Semantic.Inference
@@ -4844,11 +4863,18 @@ export class SemanticElaborator {
   ): Semantic.SymbolId | null {
     const typedef = this.sr.cc.typeDefNodes.get(typeDefSymbol.typeDef);
     switch (typedef.variant) {
-      case Collect.ENode.TypeAliasDef: {
+      case Collect.ENode.AliasDef: {
         if (typeDefSymbol.export) {
           this.sr.exportedTypeAliases.add(typeDefSymbol.typeDef);
         }
-        return null; // No need to pre-elaborate type aliases, they are elaborated on demand when looked up
+        // An alias is elaborated on demand, when something looks it up -- but
+        // `type Foo = m.someFunction;` is wrong the moment it is written, not
+        // the moment it is used, and an alias nobody uses would never be
+        // checked at all. Resolving the target is pure Collect-level lookup
+        // (no elaboration, nothing instantiated), so it is cheap enough to do
+        // for every alias up front. Cycles surface here for the same reason.
+        this.checkAliasTargetEagerly(typeDefSymbol.typeDef);
+        return null;
       }
 
       case Collect.ENode.StructTypeDef: {
@@ -4879,7 +4905,7 @@ export class SemanticElaborator {
 
     const typedef = this.sr.cc.typeDefNodes.get(typeDefSymbol.typeDef);
     switch (typedef.variant) {
-      case Collect.ENode.TypeAliasDef: {
+      case Collect.ENode.AliasDef: {
         return this.sr.b.typeDefSymbol(
           this.elaborateTypeDefAlias(typeDefSymbol.typeDef, genericArgs)[1]
         )[1];
@@ -7988,13 +8014,405 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * Bumped once per unrolled `for comptime` iteration.
+   *
+   * Nothing about a local alias's cache key varies between the iterations of an
+   * unrolled loop -- same collected node, no generics, same enclosing function
+   * -- so iteration 2 would otherwise be handed iteration 1's already-resolved
+   * type. This is the part of the key that does vary (§1.6). It never resets:
+   * two different unrollings must never share a value, and monotonic is the
+   * cheapest way to guarantee that, nesting included.
+   */
+  comptimeUnrollGeneration = 0;
+
+  /**
+   * The generation an alias should be cached under.
+   *
+   * Only aliases declared inside a function body can be affected: a `for
+   * comptime` unrolls statements, and only a block scope holds statements. A
+   * global or namespace alias always keys on 0, so it caches exactly as before.
+   * A local alias in an ordinary function also effectively keys on a constant,
+   * because nothing bumps the counter while it is elaborated.
+   */
+  aliasUnrollGeneration(typedefId: Collect.TypeDefId): number {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const scope = this.sr.cc.scopeNodes.get(typedef.inScope);
+    return scope.variant === Collect.ENode.BlockScope
+      ? this.comptimeUnrollGeneration
+      : 0;
+  }
+
+  /**
+   * The `type` keyword's one check (§1.1), made eagerly.
+   *
+   * Silent when the target cannot be resolved statically -- an unresolvable
+   * name is somebody else's diagnostic, raised where it is actually used, and
+   * guessing here would only produce a worse message.
+   */
+  checkAliasTargetEagerly(typedefId: Collect.TypeDefId): void {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    if (!typedef.typeOnly) {
+      return;
+    }
+    const target = this.resolveAliasTarget(typedefId);
+    if (target.kind === "value") {
+      this.checkAliasIsTypeValued(typedefId, typedef.sourceloc);
+      return;
+    }
+    if (
+      target.kind === "symbol" &&
+      !this.aliasTargetIsTypeLike(target.symbolId)
+    ) {
+      this.checkAliasIsTypeValued(typedefId, typedef.sourceloc);
+    }
+  }
+
+  /**
+   * What an alias's target names, resolved at the Collect level.
+   *
+   * An `alias` may name a datatype, but it may equally name a function overload
+   * group, a global variable, a namespace, an enum member or another alias
+   * (§1.2). Only the first of those is a *type*, and the elaborator's two halves
+   * are completely different: a type-valued alias produces a
+   * `TypeAliasDatatype` wrapping the target type, while a symbol-valued one has
+   * to disappear entirely and let the target be elaborated exactly as if it had
+   * been written at the use site. This is what decides which half runs.
+   *
+   * Resolution happens in the alias's *definition* scope, never the use site
+   * (§1.5) -- otherwise an alias imported into another file would resolve
+   * against the importer's namespace.
+   */
+  resolveAliasTarget(
+    typedefId: Collect.TypeDefId,
+    visited: Set<Collect.TypeDefId> = new Set()
+  ): AliasTarget {
+    if (visited.has(typedefId)) {
+      const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+      assert(typedef.variant === Collect.ENode.AliasDef);
+      throw new CompilerError(
+        `Alias '${typedef.name}' is defined in terms of itself, through a chain of aliases with no type in it`,
+        typedef.sourceloc,
+        HazeErrorCode.AliasCycleWithoutIndirection
+      );
+    }
+    visited.add(typedefId);
+
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    // A synthesised `import m;` alias has no generic scope; its target is a
+    // bare generated namespace name and resolves in the file scope.
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+
+    return this.resolveAliasTargetExpr(typedef.target, scope, visited);
+  }
+
+  private resolveAliasTargetExpr(
+    exprId: Collect.ExprId,
+    scope: Collect.ScopeId,
+    visited: Set<Collect.TypeDefId>
+  ): AliasTarget {
+    const expr = this.sr.cc.exprNodes.get(exprId);
+
+    if (expr.variant === Collect.ENode.SymbolValueExpr) {
+      const found = Semantic.tryLookupSymbol(this.sr, expr.name, {
+        startLookupInScope: scope,
+        sourceloc: expr.sourceloc,
+      });
+      if (!found || found.type !== "collect") {
+        return { kind: "type" };
+      }
+      return this.classifyAliasTargetSymbol(
+        found.id,
+        expr.genericArgs,
+        visited
+      );
+    }
+
+    if (expr.variant === Collect.ENode.MemberAccessExpr) {
+      const parent = this.resolveAliasTargetExpr(expr.expr, scope, visited);
+      if (parent.kind !== "symbol") {
+        return { kind: "type" };
+      }
+      const parentSymbol = this.sr.cc.symbolNodes.get(parent.symbolId);
+      if (parentSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+        return { kind: "type" };
+      }
+      const parentDef = this.sr.cc.typeDefNodes.get(parentSymbol.typeDef);
+
+      if (parentDef.variant === Collect.ENode.NamespaceTypeDef) {
+        const member = this.lookupInNamespaceDirectly(
+          parentDef.sharedInstance,
+          expr.memberName
+        );
+        if (member === null) {
+          return { kind: "type" };
+        }
+        return this.classifyAliasTargetSymbol(
+          member,
+          expr.genericArgs,
+          visited
+        );
+      }
+
+      if (parentDef.variant === Collect.ENode.EnumTypeDef) {
+        // An enum member is a value, not a symbol -- there is nothing to
+        // delegate to, so the target is elaborated as an ordinary expression.
+        // §1.2 predicted this one falls out of symbol delegation, and it does.
+        if (parentDef.values.some((v) => v.name === expr.memberName)) {
+          return { kind: "value" };
+        }
+        return { kind: "type" };
+      }
+
+      return { kind: "type" };
+    }
+
+    return { kind: "type" };
+  }
+
+  /** Where a resolved target symbol lands: a type, a value, or a chained alias. */
+  private classifyAliasTargetSymbol(
+    symbolId: Collect.SymbolId,
+    generics: Collect.ExprId[],
+    visited: Set<Collect.TypeDefId>
+  ): AliasTarget {
+    const symbol = this.sr.cc.symbolNodes.get(symbolId);
+
+    if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+      const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+      if (def.variant === Collect.ENode.AliasDef) {
+        // A chain resolves transitively to whatever it ends at (§1.2). An
+        // alias with its own generic parameters is a real type constructor and
+        // stops the walk: `alias BI<T> = Boxed<T>` has to be elaborated, not
+        // delegated to.
+        if (def.generics.length > 0 || generics.length > 0) {
+          return { kind: "symbol", symbolId: symbolId, generics: generics };
+        }
+        return this.resolveAliasTarget(symbol.typeDef, visited);
+      }
+      return { kind: "symbol", symbolId: symbolId, generics: generics };
+    }
+
+    return { kind: "symbol", symbolId: symbolId, generics: generics };
+  }
+
+  /**
+   * Look a name up in one namespace and nowhere else.
+   *
+   * `tryLookupSymbol` on a namespace scope falls through to the enclosing scope
+   * when it finds nothing, which is right for an unqualified name and wrong for
+   * a qualified one: `m.foo` must not quietly resolve to an outer `foo`. A
+   * namespace can also be reopened in several files, so all the scopes of its
+   * shared instance have to be consulted.
+   */
+  private lookupInNamespaceDirectly(
+    sharedInstanceId: Collect.NSSharedInstanceId,
+    name: string
+  ): Collect.SymbolId | null {
+    const instance = this.sr.cc.nsSharedInstances.get(sharedInstanceId);
+    assert(instance.variant === Collect.ENode.NamespaceSharedInstance);
+    for (const scopeId of instance.namespaceScopes) {
+      const scope = this.sr.cc.scopeNodes.get(scopeId);
+      assert(scope.variant === Collect.ENode.NamespaceScope);
+      for (const symbolId of scope.symbols) {
+        const symbol = this.sr.cc.symbolNodes.get(symbolId);
+        if (
+          symbol.variant !== Collect.ENode.CInjectDirective &&
+          symbol.name === name
+        ) {
+          return symbolId;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Does this Collect symbol name a type, rather than a value? */
+  private aliasTargetIsTypeLike(symbolId: Collect.SymbolId): boolean {
+    const symbol = this.sr.cc.symbolNodes.get(symbolId);
+    if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
+      return true;
+    }
+    if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return false;
+    }
+    const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+    return (
+      def.variant === Collect.ENode.StructTypeDef ||
+      def.variant === Collect.ENode.NamespaceTypeDef ||
+      def.variant === Collect.ENode.EnumTypeDef ||
+      def.variant === Collect.ENode.AliasDef
+    );
+  }
+
+  /**
+   * `type` is `alias` plus this check. Raised where the target is known, which
+   * is the earliest point the keyword can be validated at all.
+   */
+  private checkAliasIsTypeValued(
+    typedefId: Collect.TypeDefId,
+    sourceloc: SourceLoc
+  ): void {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    if (!typedef.typeOnly) {
+      return;
+    }
+    throw new CompilerError(
+      `'${typedef.name}' is declared with 'type', but its target is not a datatype. Use 'alias' instead.`,
+      typedef.sourceloc ?? sourceloc,
+      HazeErrorCode.AliasTargetIsNotADatatype
+    );
+  }
+
+  /**
+   * Elaborate an alias's target as a plain value expression, in the alias's own
+   * definition scope. The path for a target that is a value but not a symbol --
+   * in practice an enum member.
+   */
+  elaborateAliasTargetAsValue(
+    typedefId: Collect.TypeDefId,
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+
+    const context = Semantic.isolateElaborationContext(this.currentContext, {
+      currentScope: scope,
+      genericsScope: scope,
+      constraints: this.currentContext.constraints,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
+    });
+
+    return this.withContext(
+      {
+        context: context,
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+      },
+      () => this.expr(typedef.target, inference)
+    );
+  }
+
+  /**
+   * The forwarding half of §1.3: hand the use site's generic arguments to the
+   * alias's target, which was written with none of its own.
+   *
+   * Returns null when the target is not something that takes generics at all,
+   * so the caller can fall through to the ordinary arity error rather than
+   * report something confusing.
+   */
+  elaborateForwardedGenericAlias(
+    typedefId: Collect.TypeDefId,
+    genericArgs: Semantic.ExprId[]
+  ): [Semantic.TypeDef, Semantic.TypeDefId] | null {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+
+    const target = this.resolveAliasTarget(typedefId);
+    if (target.kind !== "symbol" || target.generics.length > 0) {
+      return null;
+    }
+    const targetSymbol = this.sr.cc.symbolNodes.get(target.symbolId);
+    if (targetSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return null;
+    }
+    const targetDef = this.sr.cc.typeDefNodes.get(targetSymbol.typeDef);
+
+    let aliasedTypeDefId: Semantic.TypeDefId;
+    if (targetDef.variant === Collect.ENode.StructTypeDef) {
+      const instantiated = this.instantiateAndElaborateStructWithGenerics(
+        targetSymbol.typeDef,
+        genericArgs,
+        typedef.sourceloc
+      );
+      assert(instantiated);
+      aliasedTypeDefId = instantiated;
+    } else if (targetDef.variant === Collect.ENode.AliasDef) {
+      aliasedTypeDefId = this.elaborateTypeDefAlias(
+        targetSymbol.typeDef,
+        genericArgs
+      )[1];
+    } else {
+      return null;
+    }
+
+    const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
+    const cached = getFromAliasDefCache(this.sr, typedefId, {
+      genericArgs: genericArgs,
+      parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
+    });
+    if (cached) {
+      return [this.sr.typeDefNodes.get(cached), cached];
+    }
+
+    const [t, tId] = this.sr.b.addType<Semantic.TypeAliasDatatypeDef>(this.sr, {
+      variant: Semantic.ENode.TypeAliasDatatype,
+      targetType: makeTypeUse(
+        this.sr,
+        aliasedTypeDefId,
+        EDatatypeMutability.Default,
+        EStorageClass.Value,
+        typedef.sourceloc
+      )[1],
+      generics: genericArgs,
+      name: typedef.name,
+      parentSymbolId: parent,
+      concrete: true,
+      annotations: typedef.annotations,
+      unrollIndex: this.aliasUnrollGeneration(typedefId),
+    });
+    insertIntoAliasDefCache(this.sr, typedefId, {
+      genericArgs: genericArgs,
+      parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
+      result: tId,
+      resultAsTypeDefSymbol: this.sr.b.typeDefSymbol(tId)[1],
+      substitutionContext: this.currentContext,
+    });
+    return [t, tId];
+  }
+
   elaborateTypeDefAlias(
     typedefId: Collect.TypeDefId,
     genericArgs: Semantic.ExprId[]
   ): [Semantic.TypeDef, Semantic.TypeDefId] {
     const typedef = this.sr.cc.typeDefNodes.get(typedefId);
-    assert(typedef.variant === Collect.ENode.TypeAliasDef);
+    assert(typedef.variant === Collect.ENode.AliasDef);
     if (typedef.generics.length !== genericArgs.length) {
+      // Generic forwarding (§1.3): an alias that declares no parameters of its
+      // own, whose target is written without arguments, passes the use site's
+      // generics straight to the target. `alias F = G;` then `F<int>`.
+      //
+      // This is load-bearing rather than a convenience: `from m import
+      // someGenericFn` generates its alias at collection time, when the
+      // target's arity lives in another module and is not yet known. It also
+      // removes a standing annoyance, namely that a `type` alias used to
+      // require the arity up front.
+      if (typedef.generics.length === 0 && genericArgs.length > 0) {
+        const forwarded = this.elaborateForwardedGenericAlias(
+          typedefId,
+          genericArgs
+        );
+        if (forwarded) {
+          return forwarded;
+        }
+      }
       throw new CompilerError(
         `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${genericArgs.length}`,
         typedef.sourceloc,
@@ -8005,9 +8423,10 @@ export class SemanticElaborator {
     const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
 
     // Find in cache
-    const cached = getFromTypeAliasDefCache(this.sr, typedefId, {
+    const cached = getFromAliasDefCache(this.sr, typedefId, {
       genericArgs: genericArgs,
       parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
     });
     if (cached) {
       return [this.sr.typeDefNodes.get(cached), cached];
@@ -8050,11 +8469,13 @@ export class SemanticElaborator {
             parentSymbolId: parent,
             concrete: true,
             annotations: typedef.annotations,
+            unrollIndex: this.aliasUnrollGeneration(typedefId),
           }
         );
-        insertIntoTypeAliasDefCache(this.sr, typedefId, {
+        insertIntoAliasDefCache(this.sr, typedefId, {
           genericArgs: genericArgs,
           parentSymbolId: parent,
+          unrollGeneration: this.aliasUnrollGeneration(typedefId),
           result: tId,
           resultAsTypeDefSymbol: this.sr.b.typeDefSymbol(tId)[1],
           substitutionContext: context,
@@ -10124,10 +10545,34 @@ export class SemanticElaborator {
         return this.sr.b.symbolValue(typeDefSymbol, sourceloc);
       }
 
+      case Collect.ENode.VariableSymbol: {
+        // A global declared inside a namespace, reached as `m.counter`.
+        //
+        // This case did not exist: a namespace-scoped global fell straight into
+        // the assert(false) below, so `m.counter` was an internal crash rather
+        // than either a value or a diagnostic -- while the identical
+        // declaration at file scope worked fine. explicitSymbolValue already
+        // knows how to elaborate a global from its Collect symbol (it elaborates
+        // the top-level symbol on demand and then looks it up), and the
+        // namespace it happens to live in changes nothing about that, so this
+        // hands straight over to it.
+        return this.explicitSymbolValue(
+          symbolId,
+          generics,
+          inference,
+          null,
+          sourceloc
+        );
+      }
+
       default:
         break;
     }
-    assert(false);
+    throw new CompilerError(
+      `'${(symbol as { name?: string }).name ?? "symbol"}' cannot be used as a value here`,
+      sourceloc,
+      HazeErrorCode.SymbolIsNotAValue
+    );
   }
 
   resolveMemberAccessInStruct(
@@ -14868,6 +15313,10 @@ export class SemanticElaborator {
             assert(paramValue.variant === Semantic.ENode.VariableSymbol);
             assert(paramValue.type);
 
+            // Each iteration is a distinct scope with distinct bindings, so
+            // anything cached per-scope inside the body must not be shared
+            // with the previous one (§1.6).
+            this.comptimeUnrollGeneration++;
             syntheticMap.set(s.loopVariable, semanticParamId);
             const crossedLambda = this.packAccessCrossedLambda.get(valueId);
             if (crossedLambda) {
@@ -15773,8 +16222,71 @@ export class SemanticElaborator {
     if (
       symbol.variant === Collect.ENode.TypeDefSymbol &&
       this.sr.cc.typeDefNodes.get(symbol.typeDef).variant ===
-        Collect.ENode.TypeAliasDef
+        Collect.ENode.AliasDef
     ) {
+      // The symbol-valued half of the alias elaborator (§1.1).
+      //
+      // A type-valued alias becomes a TypeAliasDatatype wrapping its target, so
+      // it keeps its own identity in diagnostics. A symbol-valued one must do
+      // the opposite and vanish: the alias resolves to the target's OWN
+      // overload group / variable and is elaborated through the target's normal
+      // path, so that generic deduction and overload selection see exactly what
+      // they would have seen had the target been written here (§1.3). A wrapper
+      // signature would sit between callExpr's deduction and the target and
+      // break inference in both directions.
+      const target = this.resolveAliasTarget(symbol.typeDef);
+
+      if (
+        target.kind === "symbol" &&
+        !this.aliasTargetIsTypeLike(target.symbolId)
+      ) {
+        const targetSymbol = this.sr.cc.symbolNodes.get(target.symbolId);
+        if (
+          targetSymbol.variant === Collect.ENode.VariableSymbol &&
+          targetSymbol.variableContext !== EVariableContext.Global
+        ) {
+          // A local or a parameter is a reference binding wearing an alias
+          // costume, and a separate feature (§1.2).
+          throw new CompilerError(
+            `'${targetSymbol.name}' is a local variable or parameter and cannot be aliased`,
+            sourceloc,
+            HazeErrorCode.AliasTargetIsNotAliasable
+          );
+        }
+        this.checkAliasIsTypeValued(symbol.typeDef, sourceloc);
+        // Generics written at the use site forward to the target when the
+        // target itself was written without any: `alias id = m.identity;`
+        // then `id<int>(9)` (§1.3).
+        const [delegated, delegatedId] = this.explicitSymbolValue(
+          target.symbolId,
+          target.generics.length > 0 ? target.generics : generics,
+          inference,
+          crossedLambdaScope,
+          sourceloc
+        );
+        // The alias name rides on the expression so diagnostics can report the
+        // name the programmer wrote rather than the target's (§1.4). Nothing
+        // below the semantic layer reads it.
+        if (delegated.variant === Semantic.ENode.SymbolValueExpr) {
+          const aliasDef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+          assert(aliasDef.variant === Collect.ENode.AliasDef);
+          delegated.aliasedVia = aliasDef.name;
+        }
+        return [delegated, delegatedId];
+      }
+
+      if (target.kind === "value") {
+        // An enum member: a value with no symbol behind it, so the target
+        // expression is elaborated as an ordinary expression, in the alias's
+        // own definition scope.
+        this.checkAliasIsTypeValued(symbol.typeDef, sourceloc);
+        const [valueExpr, valueExprId] = this.elaborateAliasTargetAsValue(
+          symbol.typeDef,
+          inference
+        );
+        return [valueExpr, valueExprId];
+      }
+
       return this.sr.b.datatypeDefAsValue(
         this.elaborateTypeDefAlias(symbol.typeDef, genericArgs)[1],
         sourceloc
@@ -18134,12 +18646,13 @@ export function insertIntoStructDefCache(
   });
 }
 
-export function getFromTypeAliasDefCache(
+export function getFromAliasDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     genericArgs: Semantic.ExprId[];
     parentSymbolId: Semantic.SymbolId | null;
+    unrollGeneration: number;
   }
 ) {
   const entries = sr.elaboratedTypeAliasSymbols.get(symbolId);
@@ -18154,6 +18667,7 @@ export function getFromTypeAliasDefCache(
   for (const entry of entries) {
     if (
       entry.parentSymbolId === args.parentSymbolId &&
+      entry.unrollGeneration === args.unrollGeneration &&
       entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
       entry.canonicalizedGenerics.every(
         (g, index) => g === canonicalizedGenerics[index]
@@ -18166,7 +18680,7 @@ export function getFromTypeAliasDefCache(
   return;
 }
 
-export function insertIntoTypeAliasDefCache(
+export function insertIntoAliasDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
@@ -18175,6 +18689,7 @@ export function insertIntoTypeAliasDefCache(
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
     parentSymbolId: Semantic.SymbolId | null;
+    unrollGeneration: number;
   }
 ) {
   const canonicalizedGenerics = args.genericArgs.map((g) =>
@@ -18190,6 +18705,7 @@ export function insertIntoTypeAliasDefCache(
   entries.push({
     canonicalizedGenerics: canonicalizedGenerics,
     parentSymbolId: args.parentSymbolId,
+    unrollGeneration: args.unrollGeneration,
     result: args.result,
     substitutionContext: args.substitutionContext,
     resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,

@@ -59,6 +59,9 @@ fn main(): int {
     cases_optional_chaining.register(suite);
     cases_overload_aggregate_literal.register(suite);
     cases_watch.register(suite);
+    cases_multimodule_smoke.register(suite);
+    cases_aliases.register(suite);
+    cases_comptime_alias_scoping.register(suite);
 
     return testsuite.runAll(config, suite);
 }

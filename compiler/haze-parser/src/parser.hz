@@ -2015,6 +2015,14 @@ ref struct Parser {
             }
         }
 
+        if k == TK.Alias {
+            // `alias` is a reserved word, so unlike `type` there is nothing
+            // else it can start.
+            this.typeAlias(this.cur(), false, 0, emptyCapture());
+            this.accept(TK.Semi);
+            return;
+        }
+
         if k == TK.If {
             this.ifStatement();
             return;
@@ -2342,10 +2350,10 @@ ref struct Parser {
             name = this.text(t);
         }
 
-        let alias = "";
+        let aliasName = "";
         if this.accept(TK.As) {
             let t = this.expect(TK.Ident);
-            alias = this.text(t);
+            aliasName = this.text(t);
         }
         this.accept(TK.Semi);
 
@@ -2353,7 +2361,7 @@ ref struct Parser {
         this.w.keyString("variant", "ModuleImport");
         this.w.keyString("mode", mode);
         this.w.keyString("name", name);
-        this.writeOptionalString("alias", alias);
+        this.writeOptionalString("alias", aliasName);
         this.locHere(start);
         this.w.endObject();
     }
@@ -2380,15 +2388,15 @@ ref struct Parser {
         while true {
             let symTok = this.expect(TK.Ident);
             let symbol = this.text(symTok);
-            let alias = "";
+            let aliasName = "";
             if this.accept(TK.As) {
                 let aliasTok = this.expect(TK.Ident);
-                alias = this.text(aliasTok);
+                aliasName = this.text(aliasTok);
             }
             symbols.push(this.captureWith(() => {
                 this.w.beginObject();
                 this.w.keyString("symbol", symbol);
-                this.writeOptionalString("alias", alias);
+                this.writeOptionalString("alias", aliasName);
                 this.w.endObject();
             }));
             if !this.accept(TK.Comma) { break; }
@@ -2445,7 +2453,7 @@ ref struct Parser {
         if this.at(TK.Fn) { this.functionDefinition(declStart, isExport, mods, false, 0); return; }
         if this.at(TK.Struct) { this.structDefinition(declStart, isExport, mods, annotations); return; }
         if this.at(TK.Enum) { this.enumDefinition(declStart, isExport, mods); return; }
-        if this.at(TK.Type) { this.typeAlias(declStart, isExport, mods.externLang, annotations); this.accept(TK.Semi); return; }
+        if this.at(TK.Type) || this.at(TK.Alias) { this.typeAlias(declStart, isExport, mods.externLang, annotations); this.accept(TK.Semi); return; }
         if this.at(TK.Let) || this.at(TK.Const) { this.globalVariable(declStart, isExport, mods); return; }
 
         this.errorAt(this.cur(), f"unexpected token at top level: {tokenName(this.kind())}");
@@ -2790,9 +2798,14 @@ ref struct Parser {
         this.w.endObject();
     }
 
-    // typeDef: type name (<generics>)? = typeExpr
+    // typeDef: (type | alias) name (<generics>)? = typeExpr
+    //
+    // One production, two keywords. `alias` aliases any symbol; `type` is
+    // `alias` plus a check, made later, that the target resolves to a datatype.
+    // `typeOnly` is the only trace of which keyword was written.
     mut fn typeAlias(start: Token, isExport: bool, externLang: int, annotations: str): void :: final {
-        this.expect(TK.Type);
+        let typeOnly = this.at(TK.Type);
+        if typeOnly { this.expect(TK.Type); } else { this.expect(TK.Alias); }
         let nameTok = this.expect(TK.Ident);
         let name = this.text(nameTok);
 
@@ -2802,7 +2815,8 @@ ref struct Parser {
         let datatype = this.captureType();
 
         this.w.beginObject();
-        this.w.keyString("variant", "TypeAlias");
+        this.w.keyString("variant", "AliasDef");
+        this.w.keyBool("typeOnly", typeOnly);
         this.w.keyString("name", name);
         this.w.keyRaw("datatype", datatype);
         this.writeGenerics(generics, start);

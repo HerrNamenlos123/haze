@@ -45,6 +45,22 @@ namespace testsuite {
         CompileFailure,  // must fail to compile; errorChecks apply to compiler output
     }
 
+    // One dependency module of a multi-module case. `name` is both the
+    // directory name and the module name the main source imports; `source` is
+    // the whole of its src/lib.hz.
+    //
+    // Multi-module cases exist because of one specific, recurring bug shape
+    // that no single-file case can reach: a feature that works inside a module
+    // and vanishes across a module boundary because Export.ts did not
+    // serialise it (see DEVELOPMENT.md). A generic exported function is
+    // re-emitted into the consumer as raw source and re-elaborated there, in a
+    // scope where the original file's imports do not exist -- so anything the
+    // body depends on has to survive as text, not just as compiler state.
+    export ref struct TestModule {
+        name: str;
+        source: str;
+    }
+
     export ref struct TestCase {
         name: str;
         source: str;
@@ -52,6 +68,10 @@ namespace testsuite {
         expectedExitCode: int = 0;
         checkStdout: bool = false;
         expectedStdout: str = "";
+        // Non-empty turns this case from a single .hz file into a real
+        // multi-module project: each entry becomes a sibling `lib` module and
+        // a declared dependency of the main module.
+        modules: []TestModule = [];
         // Applies to compiler output (stderr) in both directions: on
         // CompileOnly this checks the warnings emitted by an otherwise
         // successful build; on CompileFailure it checks the errors emitted
@@ -130,6 +150,45 @@ namespace testsuite {
             this.cases.push(TestCase {
                 name: name,
                 source: source,
+                expect: ExpectKind.CompileFailure,
+                diagnosticChecks: checks,
+            });
+        }
+
+        // ── Multi-module variants ───────────────────────────────────────────
+        //
+        // Same three expectations, but the case is laid out as a real project
+        // with real dependency modules rather than one loose .hz file. Reach
+        // for these whenever the thing under test has to cross a module
+        // boundary -- which, for anything Export.ts touches, is the only place
+        // the bug lives.
+
+        mut fn runWithModules(name: str, modules: []TestModule, source: str, expectedStdout: str) {
+            this.cases.push(TestCase {
+                name: name,
+                source: source,
+                modules: modules,
+                expect: ExpectKind.CompileAndRun,
+                checkStdout: true,
+                expectedStdout: expectedStdout,
+                expectedExitCode: 0,
+            });
+        }
+
+        mut fn compileOkWithModules(name: str, modules: []TestModule, source: str) {
+            this.cases.push(TestCase {
+                name: name,
+                source: source,
+                modules: modules,
+                expect: ExpectKind.CompileOnly,
+            });
+        }
+
+        mut fn compileFailsWithModules(name: str, modules: []TestModule, source: str, checks: []ErrorCheck) {
+            this.cases.push(TestCase {
+                name: name,
+                source: source,
+                modules: modules,
                 expect: ExpectKind.CompileFailure,
                 diagnosticChecks: checks,
             });
@@ -226,11 +285,123 @@ namespace testsuite {
         return path;
     }
 
+    fn writeFileOrDie(path: str, text: str) {
+        let result = fs.writeText(path, text);
+        if !result {
+            sys.panic(f"testsuite: failed to write {path}");
+        }
+    }
+
+    fn createDirOrDie(path: str) {
+        let result = fs.createDirectory(path);
+        if !result {
+            sys.panic(f"testsuite: failed to create directory {path}");
+        }
+    }
+
+    // A module id is an 8-character token that has to be stable per module and
+    // distinct between modules -- it ends up in the generated C namespace name
+    // (`<name>_v1_0_0_<id>`), so a collision between two modules of a case
+    // would silently merge their namespaces. Derived from the case index and
+    // the module name, so re-running a case reuses the same id (and therefore
+    // the same build cache) while two modules in one case never collide.
+    fn moduleId(index: int, name: str): str {
+        let alphabet: []str = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+                               "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"];
+        let seed = index * 131 + 7;
+        for (let i = 0; i < name.length; i++) {
+            seed = seed * 31 + int(name[i]);
+        }
+        let out = "";
+        for (let i = 0; i < 8; i++) {
+            let pick = seed % alphabet.length;
+            if pick < 0 {
+                pick = pick + alphabet.length;
+            }
+            out = out + alphabet[pick];
+            seed = seed / alphabet.length + 17 + i;
+        }
+        return out;
+    }
+
+    // Lay a multi-module case out on disk as a real project:
+    //
+    //   case_<n>/haze.toml          the main module, depending on each module
+    //   case_<n>/src/main.hz        tc.source
+    //   case_<n>/<mod>/haze.toml    type = "lib"
+    //   case_<n>/<mod>/src/lib.hz   that module's source
+    //
+    // Returns the project directory, which is what gets passed to --dir.
+    fn writeCaseProject(config: RunnerConfig, index: int, tc: TestCase): str {
+        let root = f"{config.workDir}/case_{index}";
+        createDirOrDie(root);
+        createDirOrDie(f"{root}/src");
+
+        let deps = "";
+        for m in tc.modules {
+            createDirOrDie(f"{root}/{m.name}");
+            createDirOrDie(f"{root}/{m.name}/src");
+            writeFileOrDie(f"{root}/{m.name}/src/lib.hz", m.source);
+            writeFileOrDie(f"{root}/{m.name}/haze.toml",
+                f"name = \"{m.name}\"\n" +
+                f"id = \"{moduleId(index, m.name)}\"\n" +
+                "version = \"1.0.0\"\n" +
+                "description = \"testsuite module\"\n" +
+                "license = \"MIT\"\n" +
+                "authors = []\n" +
+                "src = \"src\"\n" +
+                "type = \"lib\"\n");
+            deps = deps + f"{m.name} = {{ path = \"./{m.name}\" }}\n";
+        }
+
+        writeFileOrDie(f"{root}/src/main.hz", tc.source);
+        writeFileOrDie(f"{root}/haze.toml",
+            f"name = \"case_{index}\"\n" +
+            f"id = \"{moduleId(index, "main")}\"\n" +
+            "version = \"0.1.0\"\n" +
+            "description = \"testsuite case\"\n" +
+            "license = \"MIT\"\n" +
+            "authors = []\n" +
+            "src = \"src\"\n" +
+            "type = \"exe\"\n" +
+            "\n[dependencies]\n" + deps);
+
+        return root;
+    }
+
+    // How the compiler is pointed at this case: a loose file for a single-file
+    // case, `--dir <project>` for a multi-module one.
+    fn caseTarget(config: RunnerConfig, index: int, tc: TestCase): []str {
+        if tc.modules.length > 0 {
+            return ["--dir", writeCaseProject(config, index, tc)];
+        }
+        return [writeCaseSource(config, index, tc.source)];
+    }
+
+    // `exec` compiles and runs a loose file; a project directory is built and
+    // run with `run`. Same observable behaviour, different entry point.
+    fn runVerb(tc: TestCase): str {
+        if tc.modules.length > 0 {
+            return "run";
+        }
+        return "exec";
+    }
+
+    // `<verb> --quiet <target...>` -- the full argv for one invocation of the
+    // compiler under test.
+    fn caseArgs(verb: str, target: []str): []str {
+        let args: []str = [verb, "--quiet"];
+        for t in target {
+            args.push(t);
+        }
+        return args;
+    }
+
     fn runOne(config: RunnerConfig, index: int, tc: TestCase): CaseResult {
-        let path = writeCaseSource(config, index, tc.source);
+        let target = caseTarget(config, index, tc);
 
         if tc.expect == ExpectKind.CompileOnly {
-            let r = process.runCaptured(config.hazeBinary, ["build", "--quiet", path]);
+            let r = process.runCaptured(config.hazeBinary, caseArgs("build", target));
             if r.exitCode != 0 {
                 return CaseResult {
                     name: tc.name,
@@ -249,7 +420,7 @@ namespace testsuite {
             return CaseResult { name: tc.name, passed: true, detail: "" };
         }
         else if tc.expect == ExpectKind.CompileAndRun {
-            let r = process.runCaptured(config.hazeBinary, ["exec", "--quiet", path]);
+            let r = process.runCaptured(config.hazeBinary, caseArgs(runVerb(tc), target));
             if r.exitCode != tc.expectedExitCode {
                 return CaseResult {
                     name: tc.name,
@@ -272,7 +443,7 @@ namespace testsuite {
         }
         else {
             // ExpectKind.CompileFailure
-            let r = process.runCaptured(config.hazeBinary, ["build", "--quiet", path]);
+            let r = process.runCaptured(config.hazeBinary, caseArgs("build", target));
             if r.exitCode == 0 {
                 return CaseResult {
                     name: tc.name,

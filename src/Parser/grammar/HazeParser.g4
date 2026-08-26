@@ -94,7 +94,7 @@ globalVariableDef
     ;
 
 typeDef
-    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? TYPE name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS typeExpr        #TypeAliasDirective
+    : metaAnnotation? (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? kw=(TYPE | ALIAS) name=id (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? EQUALS typeExpr        #TypeAliasDirective
     ;
 
 variableMutabilitySpecifier

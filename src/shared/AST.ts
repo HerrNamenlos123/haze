@@ -406,8 +406,20 @@ export type ASTWhileStatement = {
   sourceloc: SourceLoc;
 };
 
-export type ASTTypeAlias = {
-  variant: "TypeAlias";
+/**
+ * `type Foo = Bar;` and `alias foo = m.bar;` -- one node, two keywords.
+ *
+ * `alias` is the general symbol alias: its target may be a datatype, a
+ * namespace, a function overload group, a global variable or an enum member.
+ * `type` is `alias` plus one check -- that the target resolves to a datatype --
+ * and `typeOnly` is what records which keyword was written so that check can be
+ * made. Past that point the two are indistinguishable and produce byte-identical
+ * output (§1.1 of R&D/Aliases, Anonymous Structs and Spreading.md).
+ */
+export type ASTAliasDef = {
+  variant: "AliasDef";
+  /** Written as `type` rather than `alias`: the target must be a datatype. */
+  typeOnly: boolean;
   name: string;
   datatype: ASTExpr;
   generics: {
@@ -432,7 +444,7 @@ export type ASTStatement =
   | ASTContinueStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTWhileStatement;
 
 export type ASTScope = {
@@ -862,7 +874,7 @@ export type ASTTypeDef =
   | ASTStructDefinition
   | ASTNamespaceDefinition
   | ASTModuleNamespaceDefinition
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTEnumDefinition;
 
 export type ASTNamespaceDefinition = {
@@ -907,7 +919,7 @@ export type ASTSymbolDefinition =
   | ASTTypeDef
   | ASTNamespaceDefinition
   | ASTModuleNamespaceDefinition
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTGlobalVariableDefinition;
 
 export type ASTTopLevelDeclaration =

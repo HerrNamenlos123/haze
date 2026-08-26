@@ -1,0 +1,113 @@
+// ============================================================================
+// An alias inside `for comptime` binds to THAT iteration's scope (§1.6 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// The loop is unrolled, so "the same alias every time" is not an approximation
+// — it is a wrong answer. Each unrolled iteration declares a different alias,
+// resolved against that iteration's substitutions.
+//
+// It did not hold. getFromAliasDefCache keys on (Collect.TypeDefId,
+// canonicalized genericArgs, parentSymbolId), and across the unrolled
+// iterations of one loop body all three are identical: the same collected AST
+// node, no generics, the same enclosing function. Iteration 2 hit iteration 1's
+// entry, whose target type had been resolved under iteration 1's substitution.
+//
+// WHY THIS RANKS ABOVE THE OTHER ALIAS BUGS, and why the cases below assert
+// VALUES rather than merely that the program compiles: it fails loudly only
+// when the iterations' types are incompatible. When they are compatible — two
+// structs of the same shape, two integer widths — it compiled silently against
+// the wrong type. That is a miscompile, not a diagnostic. A test that only
+// checked "does it build" would have passed against the bug.
+//
+// So `sameShape` is the real test here. `A` and `B` have identical layouts and
+// differ only in what their methods return, which means the WRONG binding
+// compiles perfectly and prints the wrong answer. Under the bug it printed
+// A1;A2;A3; — every iteration using the first iteration's type.
+//
+// The fix keys the cache on an unroll generation, bumped once per iteration.
+// That alone produced three distinct `Elem` types with the same C name and a
+// typedef-redefinition error out of the C compiler, so the generation also
+// rides along in the MANGLED name — never in the pretty one, so diagnostics
+// still say `Elem`, exactly as written.
+// ============================================================================
+
+namespace cases_comptime_alias_scoping {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "comptime alias: each unrolled iteration binds its own type",
+            """
+// Two types with the SAME SHAPE. Nothing about the layout distinguishes them,
+// so a wrong binding is a silent miscompile rather than a type error — this is
+// the case §1.6 says matters most.
+struct A { v: int = 0; fn tag(): str { return "A"; } }
+struct B { v: int = 0; fn tag(): str { return "B"; } }
+
+fn sameShape(values: ...): str {
+    let out = "";
+    for comptime v in values {
+        type Elem = typeof(v);
+        let x: Elem = v;
+        out = out + x.tag() + f"{x.v};";
+    }
+    return out;
+}
+
+// Incompatible types: this is the variation that failed LOUDLY before the fix,
+// with "H4001: No suitable conversion from str to Elem (a.k.a int)" — iteration
+// 1 bound Elem = int and iteration 2 was handed it back.
+fn mixed(values: ...): str {
+    let out = "";
+    for comptime v in values {
+        type Elem = typeof(v);
+        let x: Elem = v;
+        out = out + f"{x};";
+    }
+    return out;
+}
+
+// `alias` must behave exactly as `type` does here: same node, same cache.
+fn viaAliasKeyword(values: ...): str {
+    let out = "";
+    for comptime v in values {
+        alias Elem = typeof(v);
+        let x: Elem = v;
+        out = out + f"{x};";
+    }
+    return out;
+}
+
+// Two aliases in one body, and a nested unrolling, so the generation cannot be
+// a per-loop flag that resets: the inner loop must not hand the outer one's
+// second iteration the inner loop's first binding.
+fn nested(outer: ...): str {
+    let out = "";
+    for comptime a in outer {
+        type Outer = typeof(a);
+        let x: Outer = a;
+        for comptime b in outer {
+            type Inner = typeof(b);
+            let y: Inner = b;
+            out = out + f"{x}/{y};";
+        }
+    }
+    return out;
+}
+
+fn main(): int {
+    fmt.println(f"sameShape {sameShape(A { v: 1 }, B { v: 2 }, A { v: 3 })}");
+    fmt.println(f"mixed {mixed(1, "hello", 2.5)}");
+    fmt.println(f"alias {viaAliasKeyword(7, "x")}");
+    fmt.println(f"nested {nested(1, "two")}");
+    return 0;
+}
+""",
+            """
+sameShape A1;B2;A3;
+mixed 1;hello;2.5;
+alias 7;x;
+nested 1/1;1/two;two/1;two/two;
+""");
+    }
+}

@@ -72,7 +72,7 @@ export function ExportCollectedTypeDefAlias(
   nested: boolean
 ) {
   const typedef = sr.cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeAliasDef);
+  assert(typedef.variant === Collect.ENode.AliasDef);
   const generics = typedef.generics.map((g) => {
     const symbol = sr.cc.symbolNodes.get(g);
     assert(symbol.variant === Collect.ENode.GenericTypeParameterSymbol);
@@ -129,8 +129,18 @@ export function ExportCollectedTypeDefAlias(
     }
   }
 
+  // Which keyword the alias was written with is load-bearing across the
+  // boundary, not cosmetic: the consumer re-parses this text, and `type`
+  // carries the check that the target is a datatype. Emitting `type` for an
+  // alias to a function or a global would make the consumer reject a
+  // declaration the producer accepted.
   alias.writeLine(
-    "type " + typedef.name + genericsString + " = " + aliasBody + ";"
+    (typedef.typeOnly ? "type " : "alias ") +
+      typedef.name +
+      genericsString +
+      " = " +
+      aliasBody +
+      ";"
   );
 
   if (typedef.sourceloc) {
@@ -605,7 +615,7 @@ function getNamespacesFromTypeDefSymbol(
   current: string[] = []
 ) {
   const typedef = cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeAliasDef);
+  assert(typedef.variant === Collect.ENode.AliasDef);
   return getNamespacesFromScope(cc, typedef.inScope, [
     typedef.name,
     ...current,

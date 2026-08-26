@@ -580,7 +580,9 @@ export namespace Lowered {
   // C name of the env struct of a lambda's main function. Must match
   // CodeGenerator.mangleName's rule for the function name itself.
   export function closureEnvStructName(name: NameSet): string {
-    return (name.wasMangled ? "_H" + name.mangledName : name.mangledName) + "_env_t";
+    return (
+      (name.wasMangled ? "_H" + name.mangledName : name.mangledName) + "_env_t"
+    );
   }
 
   export type EnvBlockType =
@@ -1612,7 +1614,7 @@ export function lowerExpr(
       );
 
       let structTypeDef = accessedExprTypeDef;
-      let isInline = (accessedExprTypeUse.storage === EStorageClass.Value);
+      let isInline = accessedExprTypeUse.storage === EStorageClass.Value;
       let isDeepAccess = false;
       if (accessedExprTypeDef.variant === Semantic.ENode.DeepDatatype) {
         const clonedTypeUse = lr.sr.typeUseNodes.get(
@@ -1631,15 +1633,18 @@ export function lowerExpr(
       let requiresDeref = isDeepAccess
         ? false
         : !(
-            structTypeDef.variant === Semantic.ENode.StructDatatype &&
-            isInline
+            structTypeDef.variant === Semantic.ENode.StructDatatype && isInline
           );
       if (
         structTypeDef.variant === Semantic.ENode.StructDatatype &&
         accessedExprTypeUse.storage === EStorageClass.Stackref
       ) {
         // Every read through a stackref goes through the checked deref.
-        objectExprId = makeStackrefDeref(lr, objectExprId, accessedExprTypeUse.type);
+        objectExprId = makeStackrefDeref(
+          lr,
+          objectExprId,
+          accessedExprTypeUse.type
+        );
         requiresDeref = true;
       }
 
@@ -2095,7 +2100,12 @@ export function lowerExpr(
             loweredThisExpression = Lowered.addExpr(lr, {
               variant: Lowered.ENode.ExplicitCastExpr,
               expr: tempId,
-              type: lowerTypeUse(lr, expr.envType!.type === "method" ? expr.envType!.thisExprType : thisExpr.type),
+              type: lowerTypeUse(
+                lr,
+                expr.envType!.type === "method"
+                  ? expr.envType!.thisExprType
+                  : thisExpr.type
+              ),
               integerNarrowingRange: null,
             })[1];
           } else {
@@ -2126,7 +2136,9 @@ export function lowerExpr(
           type: "method",
           thisExprType: lowerTypeUse(
             lr,
-            expr.envType?.type === "method" ? expr.envType.thisExprType : thisExpr.type
+            expr.envType?.type === "method"
+              ? expr.envType.thisExprType
+              : thisExpr.type
           ),
         };
         envValue = {
@@ -3393,7 +3405,11 @@ function makeStackrefDeref(
   stackrefExprId: Lowered.ExprId,
   structTypeDefId: Semantic.TypeDefId
 ): Lowered.ExprId {
-  const pointerType = makeLowerTypeUse(lr, lowerTypeDef(lr, structTypeDefId), true)[1];
+  const pointerType = makeLowerTypeUse(
+    lr,
+    lowerTypeDef(lr, structTypeDefId),
+    true
+  )[1];
   return Lowered.addExpr(lr, {
     variant: Lowered.ENode.StackrefDerefExpr,
     expr: stackrefExprId,
@@ -3844,9 +3860,23 @@ function lowerTypeUse(
       // class, so only wrap again when *this* use adds ref-ness on top of a
       // non-ref target (`type V = Vec2; ref V`). Wrapping a target that is
       // already a pointer would produce a double pointer.
+      //
+      // The comparison has to be against the alias TARGET's storage, not
+      // against the resolved use. resolveAlias() deliberately stacks this use's
+      // own modifiers onto the target -- that is how `type Bar = mut Foo; ref
+      // Bar` works -- so resolvedTypeUse.storage is always exactly
+      // typeUse.storage, and comparing them could never be true. `ref
+      // <alias-to-a-value-struct>` therefore never became a pointer, while
+      // mangleTypeUse (which compares against the target correctly) still gave
+      // it the `p` prefix of a pointer type: the C output ended up with a
+      // pointer-named typedef aliasing the struct by value, and clang rejected
+      // every use of it.
+      const aliasTargetUse = lr.sr.typeUseNodes.get(
+        lr.sr.e.resolveAlias(originalTypeDef.targetType)
+      );
       pointer =
         typeUse.storage === EStorageClass.Ref &&
-        resolvedTypeUse.storage !== EStorageClass.Ref;
+        aliasTargetUse.storage !== EStorageClass.Ref;
     } else {
       pointer =
         originalTypeDef.variant === Semantic.ENode.StructDatatype
@@ -4663,8 +4693,10 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       // so that it lines up with `parameterNames` above. The lowered function
       // type expands the pack the same way (see lowerTypeDef), and the
       // trampoline below indexes parameters by name position.
-      const expandedParameters: { optional: boolean; type: Semantic.TypeUseId }[] =
-        [];
+      const expandedParameters: {
+        optional: boolean;
+        type: Semantic.TypeUseId;
+      }[] = [];
       for (const p of originalFuncType.parameters) {
         const pp = lr.sr.typeDefNodes.get(lr.sr.typeUseNodes.get(p.type).type);
         if (pp.variant === Semantic.ENode.ParameterPackDatatype) {
@@ -4859,7 +4891,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                 Lowered.addStatement(lr, {
                   variant: Lowered.ENode.InlineCStatement,
                   sourceloc: f.sourceloc,
-                  value: "hzstd_stackref_t this = *(hzstd_stackref_t*)__hz_env;",
+                  value:
+                    "hzstd_stackref_t this = *(hzstd_stackref_t*)__hz_env;",
                 })[1]
               );
             } else if (methodThisIsAlreadyPointer) {

@@ -825,3 +825,95 @@ larger type-system work rather than after.
 **129 passed, 0 failed, 1m26s**, measured at `9007dcaf` before any change. Every later failure is
 therefore attributable to this work, with no pre-existing noise to subtract. Re-measure rather
 than trusting this number if significant time has passed.
+
+---
+
+## 10. Implementation notes
+
+*Written while building, not while designing. Where §1–§9 turned out to be wrong or incomplete,
+this is the correction.*
+
+### 10.1 Two more pre-existing bugs, both blocking §1
+
+Neither was in §0.2, and both had to be fixed before the alias work could be finished.
+
+**Bug 6 — a global declared in a namespace was an internal crash.** `elaborateSymbolInNamespace`
+handled function overload groups and typedefs and let everything else fall into `assert(false)`,
+so `m.counter` was an assertion failure rather than a value or a diagnostic — while the identical
+declaration at file scope worked fine. §1.2 lists global variables as aliasable, so this had to
+work first. Fixed by handing `VariableSymbol` to `explicitSymbolValue`, which already knew how to
+elaborate a global from its Collect symbol; the namespace it happens to live in changes nothing.
+The `assert(false)` became a real diagnostic (`SymbolIsNotAValue`, H7200).
+
+**Bug 7 — `ref <alias-to-a-value-struct>` produced C that would not compile.** In `lowerTypeUse`:
+
+```ts
+pointer = typeUse.storage === Ref && resolvedTypeUse.storage !== Ref;   // never true
+```
+
+`resolveAlias()` deliberately stacks *this* use's modifiers onto the target — that is how
+`type Bar = mut Foo; ref Bar` works — so `resolvedTypeUse.storage` is always exactly
+`typeUse.storage`, and the condition is unsatisfiable. `ref V` therefore never became a pointer,
+while `mangleTypeUse` (which compares against the alias *target*, correctly) still gave it the
+`p` prefix of a pointer type. The output was a pointer-named typedef aliasing the struct by
+value, and clang rejected every use of it. The comparison now uses the alias target's own
+storage, matching both the comment's stated intent and the mangler.
+
+This one matters beyond aliases: it is why §1.5's "a self-referential type reached through an
+alias is valid and must keep working" could not have been true as written. `type List = Node;`
+plus `fn sum(n: ref List)` did not compile at all.
+
+### 10.2 §1.6's "silent miscompile" is real but rarely observable
+
+§1.6 says the comptime alias bug "compiles silently against the wrong type" when the iterations'
+types are compatible, and ranks it above the other four bugs on that basis. The first half is
+confirmed: with the fix reverted, `probe(big: i64, small: u8)` compiles clean and iteration 2's
+`Elem` is silently `i64`.
+
+The second half is weaker than stated, at least for the constructions reachable here. Haze's
+conversion and arithmetic rules are strict enough that the wrong binding usually surfaces as an
+error at the very next operation: `real` → `int` is refused, `i64` → `u8` is refused, and even
+`x + 100` on a wrongly-widened value is refused by the safe-arithmetic check. Every attempt to
+turn the silent binding into observably wrong *runtime* behaviour ran into one of those.
+
+So the bug is real, and it is still the worst of the five because it is the only one that can
+compile — but "miscompile" overstates it. The regression case therefore pins the loud form (two
+same-shape nominal structs, where iteration 2 gets `A` where `B` was meant) rather than trying to
+manufacture a silent one.
+
+### 10.3 Corrections to §9's implementation surface
+
+- **`Semantic/Fingerprint.ts` needs no alias change.** Its `TypeAliasDatatype` case already folds
+  the *target's* fingerprint plus the alias's own annotations, which is exactly right: an alias is
+  not a distinct nominal identity, and two aliases of one target differing only in annotations
+  must not fingerprint equal. Different unrolled iterations resolve to different targets, so they
+  fingerprint differently for free.
+
+- **`shared/AST.ts`'s rename went all the way.** `ASTTypeAlias` → `ASTAliasDef` *and* the
+  `variant` discriminator `"TypeAlias"` → `"AliasDef"`, in both parsers. Leaving the wire name
+  behind would have been less churn but would have left the node's two names disagreeing forever.
+
+- **`alias` is a reserved word.** `type` is not (`id: RAW_ID | TYPE`, so struct members may be
+  called `type`), but nothing in the tree used `alias` as an identifier except two locals in the
+  native parser's own source, which were renamed. Reserving it avoids a grammar ambiguity that
+  buys nothing.
+
+- **The `type`-target check is eager.** §1.1 states `type Foo = m.bar;` is an error, and an alias
+  nobody uses would never be checked if the check waited for a use. Resolving an alias target is
+  pure Collect-level symbol lookup — nothing is elaborated or instantiated — so it is cheap enough
+  to run for every alias at pre-elaboration. §D7's "eager" ruling was written for missing imported
+  symbols; it applies here for the same reason.
+
+### 10.4 The test harness had to grow first
+
+`testsuite/`'s framework wrote exactly one `.hz` file per case and invoked the compiler on it, so
+it could not express a case with a dependency at all — and a single-file case has no
+`dependencies` in its synthesised config, so `import` cannot work in one. Every cross-module
+requirement in this document (§2.3 above all) was therefore untestable.
+
+`TestModule` plus `runWithModules` / `compileOkWithModules` / `compileFailsWithModules` lay a case
+out as a real project: a main module with a `haze.toml` declaring each dependency, and one
+sibling `lib` module per entry. Module ids are derived from the case index and module name, so
+they are stable across runs (the build cache still works) and distinct within a case (two modules
+never collide in the generated C namespace).
+

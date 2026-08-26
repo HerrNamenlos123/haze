@@ -16,7 +16,7 @@ import {
   type ASTSymbolDefinition,
   type ASTSymbolImport,
   type ASTTaggedUnionTypeExpr,
-  type ASTTypeAlias,
+  type ASTAliasDef,
   type ASTTypeDef,
   type ASTVariableDefinitionStatement,
   AssignmentOperationToString,
@@ -142,7 +142,7 @@ export namespace Collect {
     FunctionSymbol,
     VariableSymbol,
     TypeDefSymbol,
-    TypeAliasDef,
+    AliasDef,
     StackArrayTypeDefinitionExpr,
     DynamicArrayTypeDefinitionExpr,
     UntaggedUnionTypeDefinitionExpr,
@@ -405,9 +405,23 @@ export namespace Collect {
     | GenericTypeParameterSymbol
     | CInjectDirective;
 
-  export type TypeAliasDef = {
-    variant: ENode.TypeAliasDef;
+  /**
+   * `type Foo = Bar;` and `alias foo = m.bar;` -- one node, two keywords.
+   *
+   * `alias` names any symbol: a datatype, a namespace, a function overload
+   * group, a global variable, an enum member, or another alias. `type` is the
+   * same thing plus a check that the target resolves to a datatype, and
+   * `typeOnly` is the only record of which keyword was written (§1.1).
+   *
+   * `import m;` synthesises one of these too, with the module's generated
+   * global namespace as the target -- which is why aliasing a *symbol* through
+   * this node was already proven before `alias` existed.
+   */
+  export type AliasDef = {
+    variant: ENode.AliasDef;
     name: string;
+    /** Written as `type`: the target must resolve to a datatype. */
+    typeOnly: boolean;
     inScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
     genericScope: Collect.ScopeId;
@@ -483,7 +497,7 @@ export namespace Collect {
   };
 
   export type TypeDef =
-    | TypeAliasDef
+    | AliasDef
     | StructTypeDef
     | NamespaceTypeDef
     | EnumTypeDef;
@@ -1143,6 +1157,90 @@ function defineGenericTypeParameter(
   return id;
 }
 
+/**
+ * Insert a symbol into a scope, rejecting a name that is already taken there.
+ *
+ * The collector used to insert blind, and `lookupDirect` silently returned
+ * whichever hit it saw first -- so two declarations of one name in one scope
+ * quietly resolved to an arbitrary one of them. That was rare enough to live
+ * with while the only way to introduce a name was to declare it; `import` and
+ * `from ... import` make it routine, because a name now arrives from another
+ * module without the reader necessarily seeing it (§1.5).
+ *
+ * Namespaces are exempt because reopening one is not a redeclaration -- and
+ * they never reach here twice anyway, since collectSymbol reuses the existing
+ * namespace symbol. Function overloads are exempt for the same reason: they
+ * share one overload-group symbol.
+ */
+export function addSymbolToScope(
+  cc: CollectionContext,
+  scopeId: Collect.ScopeId,
+  symbolId: Collect.SymbolId
+) {
+  const scope = cc.scopeNodes.get(scopeId);
+  const symbol = cc.symbolNodes.get(symbolId);
+  const name =
+    symbol.variant === Collect.ENode.CInjectDirective ? null : symbol.name;
+
+  if (name !== null) {
+    for (const existingId of scope.symbols) {
+      if (existingId === symbolId) {
+        continue;
+      }
+      const existing = cc.symbolNodes.get(existingId);
+      if (
+        existing.variant === Collect.ENode.CInjectDirective ||
+        existing.name !== name
+      ) {
+        continue;
+      }
+      if (isNamespaceSymbol(cc, existing) && isNamespaceSymbol(cc, symbol)) {
+        continue;
+      }
+      // An overload group carries no source location of its own; its
+      // overloads each have one.
+      const previous = symbolSourceLoc(cc, existing);
+      throw new CompilerError(
+        `Symbol '${name}' was already declared in this scope. Previous definition: ${
+          (previous && formatSourceLoc(previous)) || "<unknown>"
+        }`,
+        symbolSourceLoc(cc, symbol),
+        HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
+      );
+    }
+  }
+
+  scope.symbols.add(symbolId);
+  return symbolId;
+}
+
+/** Where a symbol was written, for symbols that record it. */
+function symbolSourceLoc(
+  cc: CollectionContext,
+  symbol: Collect.Symbols
+): SourceLoc {
+  if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+    for (const overloadId of symbol.overloads) {
+      const overload = cc.symbolNodes.get(overloadId);
+      assert(overload.variant === Collect.ENode.FunctionSymbol);
+      return overload.sourceloc;
+    }
+    return null;
+  }
+  return symbol.sourceloc;
+}
+
+function isNamespaceSymbol(
+  cc: CollectionContext,
+  symbol: Collect.Symbols
+): boolean {
+  return (
+    symbol.variant === Collect.ENode.TypeDefSymbol &&
+    cc.typeDefNodes.get(symbol.typeDef).variant ===
+      Collect.ENode.NamespaceTypeDef
+  );
+}
+
 export function defineVariableSymbol(
   cc: CollectionContext,
   variable: Omit<Collect.VariableSymbol, "inScope">,
@@ -1564,7 +1662,7 @@ function collectTypeDef(
       return typedefSymbolId;
     }
 
-    case "TypeAlias": {
+    case "AliasDef": {
       return collectGlobalDirective(cc, item, {
         currentParentScope: args.currentParentScope,
       });
@@ -1852,7 +1950,7 @@ function collectSymbol(
     // =================================================================================================================
 
     case "EnumDefinition":
-    case "TypeAlias":
+    case "AliasDef":
     case "NamespaceDefinition":
     case "StructDefinition": {
       return collectTypeDef(cc, item, args);
@@ -1976,7 +2074,7 @@ function collectSymbol(
 function collectGlobalDirective(
   cc: CollectionContext,
   item:
-    | ASTTypeAlias
+    | ASTAliasDef
     | ASTCInjectDirective
     | ASTGlobalVariableDefinition
     | ASTModuleImport
@@ -2044,7 +2142,7 @@ function collectGlobalDirective(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "TypeAlias": {
+    case "AliasDef": {
       const [genericsScope, genericsScopeId] =
         Collect.makeScope<Collect.TypeDefScope>(cc, {
           variant: Collect.ENode.TypeDefScope,
@@ -2054,8 +2152,9 @@ function collectGlobalDirective(
           symbols: new Set(),
         });
 
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-        variant: Collect.ENode.TypeAliasDef,
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+        variant: Collect.ENode.AliasDef,
+        typeOnly: item.typeOnly,
         inScope: args.currentParentScope,
         name: item.name,
         generics: [],
@@ -2075,7 +2174,7 @@ function collectGlobalDirective(
         sourceloc: item.sourceloc,
       })[1];
       genericsScope.owningSymbol = symbolId;
-      cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
+      addSymbolToScope(cc, args.currentParentScope, symbolId);
       // if (item.export) {
       //   cc.exportedSymbols.exported.add(symbolId);
       // }
@@ -2123,8 +2222,15 @@ function collectGlobalDirective(
         metadata.version,
         metadata.id
       );
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-        variant: Collect.ENode.TypeAliasDef,
+      // `import m as n;` binds the module namespace under `n`. The `as` clause
+      // parsed correctly all along but was never read here, so the alias was
+      // always named after the module and `as` was silently ignored (bug 2 of
+      // §0.2).
+      const boundName = item.alias ?? item.name;
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+        variant: Collect.ENode.AliasDef,
+        // A module namespace is a datatype, so this is the `type` subset.
+        typeOnly: true,
         inScope: args.currentParentScope,
         target: collectExpr(
           cc,
@@ -2138,7 +2244,7 @@ function collectGlobalDirective(
         ),
         generics: [],
         genericScope: -1 as Collect.ScopeId,
-        name: item.name,
+        name: boundName,
         annotations: [],
         sourceloc: item.sourceloc,
       });
@@ -2147,11 +2253,10 @@ function collectGlobalDirective(
         inScope: args.currentParentScope,
         typeDef: aliasId,
         export: false,
-        name: item.name,
+        name: boundName,
         sourceloc: item.sourceloc,
       })[1];
-      const scope = cc.scopeNodes.get(args.currentParentScope);
-      scope.symbols.add(symbolId);
+      addSymbolToScope(cc, args.currentParentScope, symbolId);
 
       const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
         variant: Collect.ENode.TypeDefScope,
@@ -2195,8 +2300,8 @@ function collectGlobalDirective(
     //     metadata.version,
     //     metadata.id
     //   );
-    //   const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-    //     variant: Collect.ENode.TypeAliasDef,
+    //   const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+    //     variant: Collect.ENode.AliasDef,
     //     inScope: args.currentParentScope,
     //     target: collectExpr(
     //       cc,
@@ -2461,15 +2566,34 @@ function collectScope(
         break;
       }
 
-      case "TypeAlias": {
-        const [typeDef, typeDefId] = Collect.makeTypeDef(cc, {
-          variant: Collect.ENode.TypeAliasDef,
+      case "AliasDef": {
+        // The generics scope has to exist BEFORE the target is collected, and
+        // the target has to be collected inside it -- otherwise the alias's own
+        // type parameters are not in scope for its own right-hand side.
+        //
+        // This is bug 3 of §0.2: this case hardcoded `generics: []`, never read
+        // `astStatement.generics`, and collected the target in the block scope,
+        // so `type F<T> = G<T>;` inside a function body failed with "Type F
+        // expects 0 type parameters but got 1". The global path (above) always
+        // did this correctly; only the local one did not.
+        const [genericsScope, genericsScopeId] =
+          Collect.makeScope<Collect.TypeDefScope>(cc, {
+            variant: Collect.ENode.TypeDefScope,
+            owningSymbol: -1 as Collect.SymbolId,
+            parentScope: blockScopeId,
+            sourceloc: astStatement.sourceloc,
+            symbols: new Set(),
+          });
+
+        const [typeDef, typeDefId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+          variant: Collect.ENode.AliasDef,
+          typeOnly: astStatement.typeOnly,
           inScope: blockScopeId,
           name: astStatement.name,
           generics: [],
-          genericScope: -1 as Collect.ScopeId,
+          genericScope: genericsScopeId,
           target: collectExpr(cc, astStatement.datatype, {
-            currentParentScope: blockScopeId,
+            currentParentScope: genericsScopeId,
           }),
           annotations: astStatement.annotations,
           sourceloc: astStatement.sourceloc,
@@ -2482,18 +2606,14 @@ function collectScope(
           name: astStatement.name,
           sourceloc: astStatement.sourceloc,
         })[1];
-        (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(
-          symbolId
-        );
+        genericsScope.owningSymbol = symbolId;
+        addSymbolToScope(cc, blockScopeId, symbolId);
 
-        const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
-          variant: Collect.ENode.TypeDefScope,
-          owningSymbol: symbolId,
-          parentScope: blockScopeId,
-          sourceloc: item.sourceloc,
-          symbols: new Set(),
-        })[1];
-        typeDef.genericScope = structScopeId;
+        for (const g of astStatement.generics) {
+          typeDef.generics.push(
+            defineGenericTypeParameter(cc, g.name, genericsScopeId, g.sourceloc)
+          );
+        }
 
         break;
       }
@@ -3573,7 +3693,7 @@ export function CollectImmediate(
       decl.variant === "CInjectDirective" ||
       decl.variant === "ModuleImport" ||
       decl.variant === "GlobalVariableDefinition" ||
-      decl.variant === "TypeAlias" ||
+      decl.variant === "AliasDef" ||
       decl.variant === "SymbolImport"
     ) {
       collectGlobalDirective(cc, decl, {
@@ -4225,7 +4345,7 @@ export const printCollectedSymbol = (
           break;
         }
 
-        case Collect.ENode.TypeAliasDef: {
+        case Collect.ENode.AliasDef: {
           print(
             `type ${typedef.name} = ${printCollectedDatatype(cc, typedef.target)};`
           );

@@ -74,6 +74,7 @@ export enum TK {
     True,
     False,
     Type,
+    Alias,
     Return,
     Typeof,
     If,
@@ -237,6 +238,7 @@ export fn tokenName(k: TK): str {
     if k == TK.True { return "true"; }
     if k == TK.False { return "false"; }
     if k == TK.Type { return "type"; }
+    if k == TK.Alias { return "alias"; }
     if k == TK.Return { return "return"; }
     if k == TK.Typeof { return "typeof"; }
     if k == TK.If { return "if"; }

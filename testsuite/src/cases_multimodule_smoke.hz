@@ -1,0 +1,31 @@
+// Proves the multi-module test harness itself works: a real dependency module
+// with its own haze.toml, imported and called across the boundary. Every
+// cross-module case in this suite rests on this, so it is worth one compile of
+// its own to know the harness is not the thing that broke.
+
+namespace cases_multimodule_smoke {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.runWithModules(
+            "the harness can build a real two-module project",
+            [
+                testsuite.TestModule {
+                    name: "helper",
+                    source: """
+export fn greet(): str {
+    return "hello from the module";
+}
+""",
+                },
+            ],
+            """
+import helper;
+
+fn main(): int {
+    fmt.println(helper.greet());
+    return 0;
+}
+""",
+            "hello from the module");
+    }
+}

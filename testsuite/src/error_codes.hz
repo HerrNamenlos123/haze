@@ -258,6 +258,10 @@ namespace errorcodes {
         ImmediateOnlyOnParameters = 7194, // 'immediate' is only allowed on a parameter's type
         ImmediateOnNonCallable = 7195, // 'immediate' requires a callable (or optional callable) parameter
         ImmediateParameterEscapes = 7196, // An 'immediate' parameter may only be called, forwarded to another 'immediate' parameter, or captured by an in-place closure
+        AliasTargetIsNotADatatype = 7197,
+        AliasCycleWithoutIndirection = 7198,
+        AliasTargetIsNotAliasable = 7199,
+        SymbolIsNotAValue = 7200,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

@@ -29,6 +29,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,9 +141,25 @@ function assertAntlrParserIsCurrent(): void {
   const stale = ["HazeLexer.g4", "HazeParser.g4"].filter(
     (g) => statSync(join(grammarDir, g)).mtimeMs > generatedAt
   );
-  if (stale.length > 0) {
+  if (stale.length === 0) {
+    return;
+  }
+
+  // Regenerate rather than just complain. Staleness here is routine -- any
+  // grammar edit causes it, and so does anything that rewrites the .g4 files'
+  // mtimes, a `git stash` round-trip included -- and a sweep that refuses to
+  // run is a sweep people learn to skip.
+  console.info(
+    `  regenerating the ANTLR parser (${stale.join(" and ")} changed)...`
+  );
+  const result = spawnSync("bun", ["run", "generate-parser"], {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
     console.error(
-      `\nThe generated ANTLR parser is older than ${stale.join(" and ")}.\n` +
+      "\nThe generated ANTLR parser is out of date and could not be " +
+        "regenerated.\n" +
         "It is the oracle the native parser is checked against, so a stale one " +
         "reports divergences that are not real.\n" +
         "Run: bun run generate-parser   (needs a Java runtime)\n"
