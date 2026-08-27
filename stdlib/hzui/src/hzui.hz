@@ -9,10 +9,69 @@
 // Runtime helpers referenced by generated code live here.
 
 import ui_components
+import ui_elements
+import ui_styling
+import headwind
 
 // TODO(v0): id derivation for keyed loop elements: hash(staticId, key).
 // Referenced by lowered `for=`/`key=` template code.
+// export fn keyId(staticId: int, key: int): int {
+//     // Placeholder mixing; replace with a real hash.
+//     return staticId ^ (key * 2654435761);
+// }
+
 export fn keyId(staticId: int, key: int): int {
-    // Placeholder mixing; replace with a real hash.
-    return staticId ^ (key * 2654435761);
+    sys.panic("keyId NOT IMPLEMENTED");
 }
+
+// Here, re-export all the modules and symbols anyone would want to import from hzui
+
+export type Reactive = rx.Reactive;
+export type ShallowReactive = rx.ShallowReactive;
+export type UnwrapReactive = rx.UnwrapReactive;
+export type Computed = rx.Computed;
+export alias reactive = rx.reactive;
+export alias shallowReactive = rx.shallowReactive;
+export alias computed = rx.computed;
+export type PointerEvent = ui_components.PointerEvent;
+export type WheelEvent = ui_components.WheelEvent;
+export type KeyboardEvent = ui_components.KeyboardEvent;
+export type TextInputEvent = ui_components.TextInputEvent;
+export type FocusEvent = ui_components.FocusEvent;
+export type PointerEdge = ui_components.PointerEdge;
+export type KeyEdge = ui_components.KeyEdge;
+export type Key = ui_components.Key;
+export type PointerButton = ui_components.PointerButton;
+export type PointerButtons = ui_components.PointerButtons;
+export type PointerEventKind = ui_components.PointerEventKind;
+export type KeyEdgeKind = ui_components.KeyEdgeKind;
+export type FocusEventKind = ui_components.FocusEventKind;
+export type ElementRef = ui_components.ElementRef;
+export type ComponentRef = ui_components.ComponentRef;
+export type ElementWrapper = ui_components.ElementWrapper;
+export type DivProps = ui_components.DivProps;
+export type TextProps = ui_components.TextProps;
+export type CanvasProps = ui_components.CanvasProps;
+export type UIContext = ui_components.UIContext;
+export type InstanceData = ui_components.InstanceData;
+export type Element = ui_elements.Element;
+export type DivElement = ui_elements.DivElement;
+export type TextElement = ui_elements.TextElement;
+export type CanvasElement = ui_elements.CanvasElement;
+export type Size = ui_styling.Size;
+export type SizeMode = ui_styling.SizeMode;
+export type Direction = ui_styling.Direction;
+export type CrossAlign = ui_styling.CrossAlign;
+export type Packing = ui_styling.Packing;
+export type Overflow = ui_styling.Overflow;
+export type Position = ui_styling.Position;
+export type Display = ui_styling.Display;
+export type Cursor = ui_styling.Cursor;
+export type DivStyle = ui_styling.DivStyle;
+export type TextStyle = ui_styling.TextStyle;
+export type Length = ui_styling.Length;
+export type Px = ui_styling.Px;
+export type Em = ui_styling.Em;
+export type Rem = ui_styling.Rem;
+export alias mergeDivStyle = ui_styling.mergeDivStyle;
+export alias presets = headwind.presets;

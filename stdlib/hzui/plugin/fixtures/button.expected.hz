@@ -1,3 +1,5 @@
+from hzui import Reactive, ShallowReactive, Computed, UnwrapReactive, reactive, shallowReactive, computed, PointerEvent, WheelEvent, KeyboardEvent, TextInputEvent, FocusEvent, PointerEdge, KeyEdge, Key, PointerButton, PointerButtons, PointerEventKind, KeyEdgeKind, FocusEventKind, ElementRef, ComponentRef, ElementWrapper, DivProps, TextProps, CanvasProps, UIContext, InstanceData, Element, DivElement, TextElement, CanvasElement, Size, SizeMode, Direction, CrossAlign, Packing, Overflow, Position, Display, Cursor, DivStyle, TextStyle, Length, Px, Em, Rem, mergeDivStyle, presets, keyId
+
 #source "button.hzui:1" {
 
 }
@@ -34,7 +36,7 @@ focusRingColor: str = "#0078D4";
 focusRingOffset: real = 2.0;
 }
 
-    onClick?: (e0: ui_components.PointerEvent) => none;
+    onClick?: (e0: PointerEvent) => none;
 
     content?: (s: ButtonSlotContent) => none;
 
@@ -113,32 +115,32 @@ focusRingOffset: real = 2.0;
 }
 
 struct ButtonEmits {
-    instance: ui_components.InstanceData<ButtonArgs>;
-    fn click(e0: ui_components.PointerEvent) {
+    instance: InstanceData<ButtonArgs>;
+    fn click(e0: PointerEvent) {
         let p = this.instance.props();
         if p.onClick { p.onClick(e0); }
     }
 }
 
-export fn ButtonComponent(ui: ui_components.UIContext, args: ButtonArgs) {
-    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ButtonArgs>) => {
+fn ButtonComponent(ui: UIContext, args: ButtonArgs) {
+    ui.defineComponent(args.id, args, (instance: InstanceData<ButtonArgs>) => {
         let emits = ButtonEmits { instance: instance };
 
 #source "button.hzui:33" {
-let buttonRef = ui.elementRef<ui_elements.DivElement>();
+let buttonRef = ui.elementRef<DivElement>();
 
-let isHovered = rx.computed(() => buttonRef?.hover() ?? false);
-let isActive = rx.computed(() => buttonRef?.active() ?? false);
+let isHovered = computed(() => buttonRef?.hover() ?? false);
+let isActive = computed(() => buttonRef?.active() ?? false);
 // :focus-visible, not :focus -- a clicked button must not keep a ring.
-let ringVisible = rx.computed(() => (buttonRef?.focusVisible() ?? false) && instance.props().focusRing > 0.0);
+let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && instance.props().focusRing > 0.0);
 
-let clicked = (event: ui_components.PointerEvent) => {
+let clicked = (event: PointerEvent) => {
     event.stopPropagation();
     if !instance.props().enabled { return; }
     emits.click(event);
 };
 
-let backgroundColor = rx.computed(() => {
+let backgroundColor = computed(() => {
     if !instance.props().enabled { return instance.props().bg; } 
     else if instance.props().selected { return instance.props().bgSelected; } 
     else if isActive { return instance.props().bgActive; } 
@@ -155,7 +157,7 @@ let backgroundColor = rx.computed(() => {
 // same reason.
 }
 
-        return (): ui_components.DivProps => {
+        return (): DivProps => {
             let props = instance.props();
             #source "button.hzui:72:1" {
                 let slot_content = props.content;
@@ -179,14 +181,14 @@ let backgroundColor = rx.computed(() => {
                     elementRef: buttonRef,
                     focusable: props.enabled,
                     onPointerDown: clicked,
-                    style: ui_styling.mergeDivStyle({},
+                    style: mergeDivStyle({},
                         presets.row(),
                         presets.itemsCenter(),
                         presets.gap(0),
-                        presets.px(ui_styling.Px { value: (props.paddingX) }),
-                        presets.py(ui_styling.Px { value: (props.paddingY) }),
+                        presets.px(Px { value: (props.paddingX) }),
+                        presets.py(Px { value: (props.paddingY) }),
                         presets.bg(backgroundColor),
-                        presets.rounded(ui_styling.Px { value: (props.rounded) }),
+                        presets.rounded(Px { value: (props.rounded) }),
                         presets.hFit(),
                         (props.enabled) ? presets.cursorPointer() : presets.noop(),
                         presets.wFit(),

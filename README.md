@@ -1,6 +1,10 @@
 # haze
 A WIP toy programming language, inspired by the best of TypeScript and C++
 
+Bundled third-party assets and the attribution they require -- including what an
+application built with Haze has to forward to its own users -- are documented in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
 ## Stopped last time
 
 Beim Umbauen von Elaborate. Der Signature Pass muss komplett durchlaufen durch alles und darf nicht resolveDatatype machen.

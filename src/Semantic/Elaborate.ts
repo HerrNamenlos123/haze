@@ -3843,8 +3843,7 @@ export class SemanticElaborator {
         );
       }
 
-      const target = this.resolveAliasTarget(pending.aliasTypeDef);
-      if (target.kind !== "type") {
+      if (this.moduleHasImportedSymbol(pending.aliasTypeDef)) {
         continue;
       }
       throw new CompilerError(
@@ -3853,6 +3852,64 @@ export class SemanticElaborator {
         HazeErrorCode.ImportedSymbolNotFound
       );
     }
+  }
+
+  /**
+   * Does the imported module actually have the member this import names?
+   *
+   * ONE HOP, deliberately, and not `resolveAliasTarget`. That walker answers a
+   * different question -- which half of the elaborator an alias runs through --
+   * and folds every outcome it cannot hand to the symbol half into
+   * `{kind: "type"}`: an unresolvable name and a perfectly good
+   * `type Either = Point | Tag;` are the same value to it, because both simply
+   * mean "elaborate this as a type". Reading that back as "no such symbol"
+   * rejected every import of an alias to a type EXPRESSION -- a union, an
+   * array, a callable -- and, for an alias chain, blamed the importer for a
+   * dangling re-export inside the exporting module.
+   *
+   * What §D7 asks is narrower and has an exact answer: does `m` have a member
+   * named `a`? That is the first hop of the member access this import was
+   * desugared into (see the SymbolImport case in SymbolCollection), and
+   * nothing deeper. Whatever the member turns out to be -- a type, a union
+   * alias, an overload group, another module's re-export, or something that
+   * does not resolve two hops further along -- is somebody else's diagnostic,
+   * raised where it is used and in terms the programmer can act on.
+   */
+  private moduleHasImportedSymbol(
+    aliasTypeDefId: Collect.TypeDefId
+  ): boolean {
+    const typedef = this.sr.cc.typeDefNodes.get(aliasTypeDefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const access = this.sr.cc.exprNodes.get(typedef.target);
+    assert(access.variant === Collect.ENode.MemberAccessExpr);
+
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+    const parent = this.resolveAliasTargetExpr(access.expr, scope, new Set());
+
+    // The module namespace is generated from a declared dependency, so failing
+    // to find it is not this diagnostic's business -- say nothing rather than
+    // blame the import for it.
+    if (parent.kind !== "symbol") {
+      return true;
+    }
+    const parentSymbol = this.sr.cc.symbolNodes.get(parent.symbolId);
+    if (parentSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return true;
+    }
+    const parentDef = this.sr.cc.typeDefNodes.get(parentSymbol.typeDef);
+    if (parentDef.variant !== Collect.ENode.NamespaceTypeDef) {
+      return true;
+    }
+
+    return (
+      this.lookupInNamespaceDirectly(
+        parentDef.sharedInstance,
+        access.memberName
+      ) !== null
+    );
   }
 
   /**

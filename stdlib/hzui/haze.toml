@@ -1,4 +1,5 @@
 name = "hzui"
+id = "Xrq4QbGl"
 version = "0.0.1"
 description = "SFC (single-file component) UI framework. Ships the SFC transformer as a compiler plugin (plugin/)."
 license = "MIT"

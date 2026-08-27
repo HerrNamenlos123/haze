@@ -1,0 +1,14 @@
+
+name = "codicons"
+id = "f3vKVnl2"
+version = "0.0.1"
+description = "Microsoft Codicons for Haze UI"
+license = "MIT"
+authors = []
+type = "lib"
+
+[dependencies]
+hzui = { path = "../hzui" }
+
+[plugins]
+hzui = { path = "../hzui" }

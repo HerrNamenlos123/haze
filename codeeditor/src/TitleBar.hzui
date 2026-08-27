@@ -1,4 +1,6 @@
 
+from ui_components import CodiconComponent
+
 @props
 color: str = "#292929";
 textColor: str = "#FFF";
@@ -34,9 +36,9 @@ div [absolute] {
 
 slot rightContent title=[props.title]
 
-Button [] {
+Button [] label="Button" {}
 
-}
+Codicon [] {}
 
 // // Button [] label=["File"] selected=[props.openMenu == menuFile()] paddingX=[8] paddingY=[4] @click=onClick
 // // Pushes the title to the middle of the remaining space.

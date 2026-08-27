@@ -30,7 +30,7 @@ content: {
 click: ();
 
 @setup
-let buttonRef = elementRef<ui_elements.DivElement>();
+let buttonRef = elementRef<DivElement>();
 
 let isHovered = computed(() => buttonRef?.hover() ?? false);
 let isActive = computed(() => buttonRef?.active() ?? false);

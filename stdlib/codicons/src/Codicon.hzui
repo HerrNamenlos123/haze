@@ -1,0 +1,19 @@
+
+@setup
+
+// The Visual Studio Code icon font, (c) Microsoft, CC BY 4.0 -- NOT MIT; the
+// MIT half of that repo covers its build scripts, which we do not ship. This
+// embed bakes the font into the binary, so an app using this widget
+// redistributes it and owes attribution. See ../resources/NOTICE-codicons.md
+// and THIRD-PARTY-NOTICES.md at the repo root.
+let codicon_ttf = computed(() => {
+    return embed.binary("resources/codicon.ttf");
+});
+
+let text = computed<str>(() => {
+    return fmt.format(codicon_ttf.length);
+});
+
+@template []
+
+text [] [text]

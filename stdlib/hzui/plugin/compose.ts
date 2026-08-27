@@ -45,11 +45,8 @@ export class ComposeError extends Error {
 // narrow (`[props.style.fontSize]?font-size-[props.style.fontSize]`), unlike
 // two separate `instance.props()` calls.
 export function rewriteTemplateExpr(code: string): string {
-  return qualifyDialectTypes(code)
+  return code
     .replace(/\bslots\./g, "props.")
-    .replace(/(?<![.\w])shallowReactive\s*(?=[<(])/g, "rx.shallowReactive")
-    .replace(/(?<![.\w])reactive\s*(?=[<(])/g, "rx.reactive")
-    .replace(/(?<![.\w])computed\s*(?=[<(])/g, "rx.computed")
     .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef");
 }
 
@@ -57,174 +54,130 @@ export function rewriteTemplateExpr(code: string): string {
 // snapshot), so `props.x` becomes `instance.props().x` at the use site.
 export function rewriteDialectAccessors(code: string): string {
   return (
-    qualifyDialectTypes(code)
+    code
       .replace(/\bprops\./g, "instance.props().")
       .replace(/\bslots\./g, "instance.props().")
-      // Forwarded dialect functions. Textual on purpose: haze has no generic
-      // function values (`let computed = rx.computed;` is rejected), so these
-      // cannot be forwarded by assigning them to variables.
-      // Every one of these matches on `<` as well as `(`: they are generic
-      // functions, so `computed<Color>(...)` and `elementRef<DivElement>()`
-      // are just as ordinary as the bare call and must rewrite the same way.
-      // The lookbehind is what stops `shallowReactive(` from matching the
-      // `reactive` rule -- the character in front of it is a word character.
-      .replace(/(?<![.\w])shallowReactive\s*(?=[<(])/g, "rx.shallowReactive")
-      .replace(/(?<![.\w])reactive\s*(?=[<(])/g, "rx.reactive")
-      .replace(/(?<![.\w])computed\s*(?=[<(])/g, "rx.computed")
+      // `elementRef` is the one dialect function that is not a free symbol:
+      // it is a method on the UIContext, so it cannot be imported and has to
+      // be routed to the `ui` the component function was handed. `<` as well
+      // as `(`, because `elementRef<DivElement>()` is just as ordinary as the
+      // bare call. Everything else the dialect offers by bare name --
+      // `computed`, `reactive`, `shallowReactive`, every type -- is a real
+      // symbol imported from hzui, so it needs no rewrite at all.
       .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef")
   );
 }
 
 // ---------------------------------------------------------------------------
-// Dialect types.
+// The dialect surface: one import, from hzui.
 //
-// The types a component names constantly, so an .hzui never has to spell a
-// namespace: `(e: PointerEvent)`, `elementRef<DivElement>()`,
-// `text: Reactive<str>`, `width: SizeMode.Grow`.
+// A component names these constantly -- `(e: PointerEvent)`,
+// `elementRef<DivElement>()`, `text: Reactive<str>`, `width: SizeMode.Grow` --
+// and the code this transformer generates around it names more of them still
+// (InstanceData, DivProps, mergeDivStyle, Px). None of that should oblige an
+// .hzui file, or its haze.toml, to know which of half a dozen modules a given
+// name lives in. So the generated file opens with a single
 //
-// QUALIFIED TEXTUALLY, not aliased. `type PointerEvent =
-// ui_components.PointerEvent;` per file was the obvious approach and it fails
-// in the two positions that matter most, because an alias is a distinct named
-// type rather than a transparent one:
+//   from hzui import PointerEvent, DivElement, computed, presets, ...
 //
-//   1. As a GENERIC ARGUMENT, `elementRef<DivElement>()` yields an
-//      ElementRef<ui_widgets.DivElement>, a different instantiation from
-//      ElementRef<ui_elements.DivElement>, and the two do not convert.
-//   2. In an EXPORTED declaration, `@props` becomes an exported struct, so
-//      `text: Reactive<str>` mirrors into the module's import.hz as
-//      `ui_widgets.Reactive<str>` -- a file-local name escaping into a public
-//      API, which no consumer can resolve.
+// and hzui re-exports the lot. A component's module depends on hzui, and on
+// nothing else the framework happens to be built out of.
 //
-// Writing the qualified name into the source has neither problem: what the
-// compiler sees is exactly what a hand-written .hz file would say. The cost is
-// that this is a textual pass, so it skips string literals and comments
-// explicitly (see qualifyDialectTypes) rather than pretending identifiers only
-// ever appear in code.
+// IMPORTED, not re-declared per file. `type PointerEvent =
+// ui_components.PointerEvent;` at the top of every .hzui was the obvious
+// alternative, and it puts a file-local name in two places where only the real
+// symbol will do:
+//
+//   1. As a GENERIC ARGUMENT: `elementRef<DivElement>()` has to yield the same
+//      ElementRef instantiation a hand-written .hz file would get, or the two
+//      do not convert.
+//   2. In an EXPORTED declaration: `@props` becomes an exported struct, so
+//      `text: Reactive<str>` mirrors into the module's import.hz -- a name from
+//      inside one file escaping into a public API, which no consumer can
+//      resolve.
+//
+// A `from` import introduces no new name of its own: what the file holds IS
+// hzui's symbol, so both positions behave exactly as hand-written haze does.
+// That is also why the list is emitted whole rather than filtered down to the
+// names a given component happens to use -- an unused import costs nothing,
+// and "happens to use" is not a question a textual pass can answer.
 //
 // These names are RESERVED inside an .hzui file: a local or type of your own
-// called `Key` or `Element` would be rewritten out from under you.
+// called `Key` or `Element` would collide with the import.
 // ---------------------------------------------------------------------------
-const DIALECT_TYPE_NAMESPACES: Record<string, string[]> = {
-  rx: ["Reactive", "ShallowReactive", "Computed", "UnwrapReactive"],
-  ui_components: [
-    "PointerEvent",
-    "WheelEvent",
-    "KeyboardEvent",
-    "TextInputEvent",
-    "FocusEvent",
-    "PointerEdge",
-    "KeyEdge",
-    "Key",
-    "PointerButton",
-    "PointerButtons",
-    "PointerEventKind",
-    "KeyEdgeKind",
-    "FocusEventKind",
-    "ElementRef",
-    "ComponentRef",
-    "ElementWrapper",
-    "DivProps",
-    "TextProps",
-    "CanvasProps",
-    "UIContext",
-  ],
-  ui_elements: ["Element", "DivElement", "TextElement", "CanvasElement"],
-  ui_styling: [
-    "Size",
-    "SizeMode",
-    "Direction",
-    "CrossAlign",
-    "Packing",
-    "Overflow",
-    "Position",
-    "Display",
-    "Cursor",
-    "DivStyle",
-    "TextStyle",
-    "Length",
-    "Px",
-    "Em",
-    "Rem",
-  ],
-};
+export const DIALECT_IMPORTS: string[] = [
+  // Reactivity: the handle types and the three constructors. The constructors
+  // are imported rather than rewritten to `rx.computed` because haze has no
+  // generic function values -- `let computed = rx.computed;` is rejected -- so
+  // an import is the only way to give them a bare name.
+  "Reactive",
+  "ShallowReactive",
+  "Computed",
+  "UnwrapReactive",
+  "reactive",
+  "shallowReactive",
+  "computed",
 
-const DIALECT_TYPES: Record<string, string> = {};
-for (const ns of Object.keys(DIALECT_TYPE_NAMESPACES)) {
-  for (const name of DIALECT_TYPE_NAMESPACES[ns]!) {
-    DIALECT_TYPES[name] = `${ns}.${name}`;
-  }
-}
+  // Components: events, refs, the props structs, the context, and the
+  // per-instance data the generated component function is handed.
+  "PointerEvent",
+  "WheelEvent",
+  "KeyboardEvent",
+  "TextInputEvent",
+  "FocusEvent",
+  "PointerEdge",
+  "KeyEdge",
+  "Key",
+  "PointerButton",
+  "PointerButtons",
+  "PointerEventKind",
+  "KeyEdgeKind",
+  "FocusEventKind",
+  "ElementRef",
+  "ComponentRef",
+  "ElementWrapper",
+  "DivProps",
+  "TextProps",
+  "CanvasProps",
+  "UIContext",
+  "InstanceData",
 
-/**
- * Rewrites every bare dialect type name to its qualified form.
- *
- * A scan rather than a regex sweep, because the two places an identifier must
- * NOT be touched -- inside a string literal, inside a comment -- are exactly
- * the two a regex cannot see. An already-qualified name is left alone (the
- * character before it is a `.`), and so is any longer identifier that merely
- * starts or ends with one of these words.
- *
- * f-string interpolations are treated as string content and left untouched;
- * naming a type inside one is not something a component does.
- */
-export function qualifyDialectTypes(code: string): string {
-  let out = "";
-  let i = 0;
-  const n = code.length;
-  while (i < n) {
-    const c = code[i]!;
-    if (c === '"') {
-      out += c;
-      i++;
-      while (i < n) {
-        if (code[i] === "\\") {
-          out += code[i]! + (code[i + 1] ?? "");
-          i += 2;
-          continue;
-        }
-        out += code[i]!;
-        const closing = code[i] === '"';
-        i++;
-        if (closing) {
-          break;
-        }
-      }
-      continue;
-    }
-    if (c === "/" && code[i + 1] === "/") {
-      while (i < n && code[i] !== "\n") {
-        out += code[i]!;
-        i++;
-      }
-      continue;
-    }
-    if (c === "/" && code[i + 1] === "*") {
-      out += "/*";
-      i += 2;
-      while (i < n && !(code[i] === "*" && code[i + 1] === "/")) {
-        out += code[i]!;
-        i++;
-      }
-      out += "*/";
-      i += 2;
-      continue;
-    }
-    if (/[A-Za-z_]/.test(c)) {
-      let j = i;
-      while (j < n && /[A-Za-z0-9_]/.test(code[j]!)) {
-        j++;
-      }
-      const word = code.slice(i, j);
-      const qualified = DIALECT_TYPES[word];
-      const alreadyQualified = i > 0 && code[i - 1] === ".";
-      out += qualified && !alreadyQualified ? qualified : word;
-      i = j;
-      continue;
-    }
-    out += c;
-    i++;
-  }
-  return out;
+  // Elements: what an `ElementRef<...>` is taken over.
+  "Element",
+  "DivElement",
+  "TextElement",
+  "CanvasElement",
+
+  // Styling: the enums a prop declares, plus what a lowered class list builds
+  // -- `mergeDivStyle` and the three length units.
+  "Size",
+  "SizeMode",
+  "Direction",
+  "CrossAlign",
+  "Packing",
+  "Overflow",
+  "Position",
+  "Display",
+  "Cursor",
+  "DivStyle",
+  "TextStyle",
+  "Length",
+  "Px",
+  "Em",
+  "Rem",
+  "mergeDivStyle",
+
+  // The class-list presets, as a namespace: a lowered class token is a
+  // `presets.wFit()` call, and which ones appear depends on the template.
+  "presets",
+
+  // hzui's own runtime helpers, named by generated code.
+  "keyId",
+];
+
+/** The single import line every generated file opens with. */
+export function dialectImportLine(): string {
+  return `from hzui import ${DIALECT_IMPORTS.join(", ")}`;
 }
 
 function sourceBasename(filepath: string): string {
@@ -405,7 +358,7 @@ function parseSlots(section: Section): SlotDecl[] {
 // ---------------------------------------------------------------------------
 
 export function compose(filepath: string, source: string): string {
-  const { prelude, sections } = splitSections(source);
+  const { prelude, sections, exported } = splitSections(source);
   const get = (name: string) => sections.find((s) => s.name === name);
 
   const comp = componentNameFromFile(filepath);
@@ -437,6 +390,12 @@ export function compose(filepath: string, source: string): string {
 
   const src = sourceBasename(filepath);
 
+  // The dialect, in one line, before anything that could name it. Outside a
+  // `#source` block on purpose: it corresponds to no line of the .hzui file,
+  // so an error on it has nowhere honest to point.
+  push(dialectImportLine());
+  push("");
+
   push(`#source "${src}:1" {`);
   push(prelude.trimEnd());
   push(`}`);
@@ -450,7 +409,7 @@ export function compose(filepath: string, source: string): string {
     push(`export struct ${slotStructName(s)} {`);
     for (const line of s.payloadBody.split("\n")) {
       if (line.trim() !== "") {
-        push(`    ${qualifyDialectTypes(line.trim())}`);
+        push(`    ${line.trim()}`);
       }
     }
     push(`}`);
@@ -466,7 +425,7 @@ export function compose(filepath: string, source: string): string {
     push(`// because a ComponentRef holds it as '${exposeName} | null'.`);
     push(`export ref struct ${exposeName} {`);
     push(`#source "${src}:${exposeSec.bodyStartLine}" {`);
-    push(qualifyDialectTypes(exposeSec.body.trimEnd()));
+    push(exposeSec.body.trimEnd());
     push(`}`);
     push(`}`);
     push("");
@@ -480,20 +439,18 @@ export function compose(filepath: string, source: string): string {
     push(`    // generated: where this component publishes its API. Excluded`);
     push(`    // from operator!= below -- it is written once, during setup,`);
     push(`    // and never participates in whether the template re-runs.`);
-    push(`    exposeRef?: ui_components.ComponentRef<${exposeName}>;`);
+    push(`    exposeRef?: ComponentRef<${exposeName}>;`);
   }
   if (propsSec) {
     push("");
     push(`#source "${src}:${propsSec.bodyStartLine}" {`);
-    push(qualifyDialectTypes(propsSec.body.trimEnd()));
+    push(propsSec.body.trimEnd());
     push(`}`);
   }
   if (emits.length > 0) {
     push("");
     for (const e of emits) {
-      const params = e.argTypes
-        .map((t, i) => `e${i}: ${qualifyDialectTypes(t)}`)
-        .join(", ");
+      const params = e.argTypes.map((t, i) => `e${i}: ${t}`).join(", ");
       push(`    on${pascal(e.name)}?: (${params}) => none;`);
     }
   }
@@ -561,11 +518,9 @@ export function compose(filepath: string, source: string): string {
   // Emits struct
   if (emits.length > 0) {
     push(`struct ${emitsName} {`);
-    push(`    instance: ui_components.InstanceData<${argsName}>;`);
+    push(`    instance: InstanceData<${argsName}>;`);
     for (const e of emits) {
-      const params = e.argTypes
-        .map((t, i) => `e${i}: ${qualifyDialectTypes(t)}`)
-        .join(", ");
+      const params = e.argTypes.map((t, i) => `e${i}: ${t}`).join(", ");
       const fwd = e.argTypes.map((_, i) => `e${i}`).join(", ");
       push(`    fn ${e.name}(${params}) {`);
       push(`        let p = this.instance.props();`);
@@ -594,10 +549,16 @@ export function compose(filepath: string, source: string): string {
     }
   }
 
-  // Component function
-  push(`export fn ${fnName}(ui: ui_components.UIContext, args: ${argsName}) {`);
+  // Component function. `export` only when the file opens with `@export`: a
+  // component is module-local by default, and crosses the module boundary only
+  // when it says so. The generated types around it (the Args struct, the slot
+  // payloads, the exposed struct) stay exported unconditionally -- they are
+  // names a caller in ANOTHER file of the same module already has to write.
   push(
-    `    ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<${argsName}>) => {`
+    `${exported ? "export " : ""}fn ${fnName}(ui: UIContext, args: ${argsName}) {`
+  );
+  push(
+    `    ui.defineComponent(args.id, args, (instance: InstanceData<${argsName}>) => {`
   );
   if (emits.length > 0) {
     push(`        let emits = ${emitsName} { instance: instance };`);
@@ -624,7 +585,7 @@ export function compose(filepath: string, source: string): string {
     push(`            let __exposeOpt = instance.props().exposeRef;`);
     push(`            if __exposeOpt is not none {`);
     push(
-      `                let __expose: ui_components.ComponentRef<${exposeName}> = __exposeOpt;`
+      `                let __expose: ComponentRef<${exposeName}> = __exposeOpt;`
     );
     push(
       `                __expose := ${exposeName} { ${exposeNames
@@ -649,7 +610,7 @@ export function compose(filepath: string, source: string): string {
   push("");
   // The template closure returns the root element's props -- see
   // ui_components.ComponentInstance.currentTemplate.
-  push(`        return (): ui_components.DivProps => {`);
+  push(`        return (): DivProps => {`);
   push(`            let props = instance.props();`);
   if (templateSec) {
     try {

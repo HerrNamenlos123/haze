@@ -10,7 +10,6 @@ import unicode
 import ui_elements
 import ui_components
 import ui_widgets
-import unicode
 import filedialog
 // Aliased because this file also has local things called "tabs" (the open
 // tab list in UI()), and the module name would shadow confusingly.

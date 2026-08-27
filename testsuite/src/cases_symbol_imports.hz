@@ -242,5 +242,85 @@ fn main(): int {
 trap 12
 type from-middle
 """);
+
+        // ── An export that is an alias to a type EXPRESSION ─────────────────
+        //
+        // REGRESSION. `from m import a;` desugars to `alias a = m.a;`, and the
+        // §D7 existence check asked `resolveAliasTarget` what that alias landed
+        // on. But that walker answers a different question: it decides which
+        // half of the elaborator runs, and folds EVERY outcome it cannot hand
+        // to the symbol half -- an unresolvable name and a perfectly good
+        // `type Either = Point | Tag;` alike -- into `{kind: "type"}`, because
+        // both simply mean "elaborate this as a type". Reading that back as
+        // "the module has no such symbol" rejected every import of an alias to
+        // a union, an array or a callable, with a message flatly contradicted
+        // by the exporting file.
+        //
+        // Found through hzui, whose entire public surface is re-exported
+        // aliases: `from hzui import Element` -- `type Element =
+        // ui_elements.Element;`, itself `DivElement | TextElement |
+        // CanvasElement` -- failed with "Module 'hzui' has no exported symbol
+        // named 'Element'".
+        //
+        // The three targets take three different branches, and `Chained` is
+        // the two-module shape that actually occurred: an alias to an alias to
+        // a union.
+        s.runWithModules(
+            "from-import: an export that is an alias to a union, array or callable",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export struct Point { x: int = 0; }
+export struct Tag { name: str = ""; }
+
+export type Either = Point | Tag;
+export type Ints = []int;
+export type Mapper = (x: int) => int;
+""",
+                },
+                testsuite.TestModule {
+                    name: "reexport",
+                    dependencies: ["shapes"],
+                    source: """
+import shapes;
+
+// One module re-exporting another's alias under its own name -- hzui's shape,
+// so the chain is two aliases deep before it reaches the union.
+export type Either = shapes.Either;
+""",
+                },
+            ],
+            """
+from shapes import Point, Tag, Either, Ints, Mapper;
+from reexport import Either as Chained;
+
+fn main(): int {
+    let e: Either = Point { x: 3 };
+    if e is Point {
+        fmt.println(f"union {e.x}");
+    }
+
+    let xs: Ints = [1, 2, 3];
+    fmt.println(f"array {xs.length}");
+
+    // The callable also proves the import is the real symbol: parameter
+    // inference has to run back out of the imported signature.
+    let f: Mapper = (x) => x * 2;
+    fmt.println(f"callable {f(21)}");
+
+    let c: Chained = Tag { name: "chain" };
+    if c is Tag {
+        fmt.println(f"chained {c.name}");
+    }
+    return 0;
+}
+""",
+            """
+union 3
+array 3
+callable 42
+chained chain
+""");
     }
 }

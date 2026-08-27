@@ -18,6 +18,10 @@ export type SectionName = (typeof SECTION_NAMES)[number];
 // e.g. `@template [w-fit ...]`).
 const MARKER_RE = /^@(props|emit|slot|expose|setup|template)\b(.*)$/;
 
+// `@export` alone on a line, at the very top of the file. Not a section: it is
+// a file-level directive, so it carries no body and never ends a section.
+const EXPORT_RE = /^@export\b(.*)$/;
+
 export type Section = {
   name: SectionName;
   /**
@@ -37,6 +41,12 @@ export type SplitResult = {
   prelude: string;
   preludeStartLine: number; // always 1
   sections: Section[];
+  /**
+   * `@export` was present: the component function is declared `export`, so it
+   * crosses the module boundary. Off by default -- a component is module-local
+   * unless it says otherwise.
+   */
+  exported: boolean;
 };
 
 export function hasMarkers(source: string): boolean {
@@ -137,12 +147,25 @@ function readMarkerArg(
   return { arg: arg, nextLine: i };
 }
 
+/**
+ * A line that declares nothing: blank, or a line comment. `@export` has to come
+ * before every real declaration, and this is what "real" means -- a file may
+ * still open with its licence header.
+ */
+function isBlankOrComment(line: string): boolean {
+  const t = line.trim();
+  return t === "" || t.startsWith("//");
+}
+
 export function splitSections(source: string): SplitResult {
   const lines = source.split("\n");
   const sections: Section[] = [];
   let preludeEnd = lines.length;
   let current: Section | null = null;
   const bodyLines: string[] = [];
+  let exported = false;
+  // Whether anything that is not a blank line or a comment has been seen yet.
+  let sawDecl = false;
 
   const finish = () => {
     if (current) {
@@ -153,6 +176,34 @@ export function splitSections(source: string): SplitResult {
   };
 
   for (let i = 0; i < lines.length; i++) {
+    const ex = EXPORT_RE.exec(lines[i]!);
+    if (ex) {
+      if ((ex[1] ?? "").trim() !== "") {
+        throw new SectionError(
+          `@export takes no arguments on the marker line`,
+          i + 1
+        );
+      }
+      if (exported) {
+        throw new SectionError(`duplicate @export`, i + 1);
+      }
+      if (sawDecl) {
+        throw new SectionError(
+          `@export must come first, before every other declaration in the file`,
+          i + 1
+        );
+      }
+      exported = true;
+      // Blanked rather than dropped: the prelude is spliced verbatim under a
+      // `#source "file:1"` directive, so every line after this one has to keep
+      // the line number it had in the original file.
+      lines[i] = "";
+      continue;
+    }
+    if (!isBlankOrComment(lines[i]!)) {
+      sawDecl = true;
+    }
+
     const m = MARKER_RE.exec(lines[i]!);
     if (m) {
       const name = m[1] as SectionName;
@@ -202,5 +253,6 @@ export function splitSections(source: string): SplitResult {
     prelude: lines.slice(0, preludeEnd).join("\n"),
     preludeStartLine: 1,
     sections: sections,
+    exported: exported,
   };
 }

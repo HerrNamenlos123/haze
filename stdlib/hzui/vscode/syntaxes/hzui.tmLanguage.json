@@ -4,6 +4,9 @@
   "scopeName": "source.hzui",
   "patterns": [
     {
+      "include": "#export-marker"
+    },
+    {
       "include": "#decl-section"
     },
     {
@@ -18,6 +21,15 @@
     }
   ],
   "repository": {
+    "export-marker": {
+      "comment": "@export -- file-level, at the very top; makes the component function 'export'",
+      "match": "^(@export)\\s*$",
+      "captures": {
+        "1": {
+          "name": "keyword.control.export.hzui"
+        }
+      }
+    },
     "section-marker": {
       "comment": "@props / @emit / @slot / @expose / @setup markers (open-only, line-anchored)",
       "match": "^(@setup)\\s*$",

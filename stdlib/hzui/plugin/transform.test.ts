@@ -12,6 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import plugin from "./index";
 import { splitSections } from "./sections";
+import { DIALECT_IMPORTS, dialectImportLine } from "./compose";
 import { lowerClassList, parseClassToken } from "./classlist";
 
 /** Transforms a whole SFC and returns the generated haze. */
@@ -86,6 +87,45 @@ describe("sections", () => {
   });
 });
 
+describe("@export", () => {
+  test("a component is module-local by default", () => {
+    const code = gen("@template\n");
+    expect(code).toContain("fn XComponent(");
+    expect(code).not.toContain("export fn XComponent(");
+  });
+
+  test("@export declares the component function export", () => {
+    expect(gen("@export\n@template\n")).toContain("export fn XComponent(");
+  });
+
+  test("may be preceded by comments and blank lines only", () => {
+    expect(splitSections("// licence\n\n@export\n@template\n").exported).toBe(
+      true
+    );
+    expect(() => splitSections("import x\n@export\n@template\n")).toThrow(
+      /must come first/
+    );
+    expect(() => splitSections("@props\n@export\n")).toThrow(/must come first/);
+  });
+
+  test("exactly one, with no arguments", () => {
+    expect(() => splitSections("@export\n@export\n@template\n")).toThrow(
+      /duplicate @export/
+    );
+    expect(() => splitSections("@export Button\n@template\n")).toThrow(
+      /takes no arguments/
+    );
+  });
+
+  test("keeps the prelude's line numbers", () => {
+    // The blanked marker line must not shift what follows it: `import x` is
+    // still line 2, so the prelude's `#source "x.hzui:1"` stays honest.
+    const r = splitSections("@export\nimport x\n@props\na: int;\n");
+    expect(r.prelude).toBe("\nimport x");
+    expect(r.sections[0]!.bodyStartLine).toBe(4);
+  });
+});
+
 describe("the template root element", () => {
   const withHead = (head: string, body = "") =>
     gen(`import ui_components\n@template ${head}\n${body}`);
@@ -98,7 +138,7 @@ describe("the template root element", () => {
 
   test("class tokens become the root's own style", () => {
     const out = withHead("[row gap-2]");
-    expect(out).toContain("style: ui_styling.mergeDivStyle({},");
+    expect(out).toContain("style: mergeDivStyle({},");
     expect(out).toContain("presets.row()");
     expect(out).toContain("presets.gap(2)");
   });
@@ -172,9 +212,7 @@ describe("events", () => {
   });
 
   test("dblclick and double-click are the same event", () => {
-    const out = gen(
-      "import ui_components\n@template\ndiv [] @dblclick=a"
-    );
+    const out = gen("import ui_components\n@template\ndiv [] @dblclick=a");
     expect(out).toContain("onDoubleClick: a");
     const alt = gen(
       "import ui_components\n@template\ndiv [] @double-click=a @dblclick-capture=b"
@@ -255,85 +293,104 @@ describe("slots", () => {
   });
 });
 
-describe("dialect types", () => {
-  const setup = (body: string) =>
-    gen(`import ui_components\n@setup\n${body}\n@template\n`);
+describe("the dialect import", () => {
+  const setup = (body: string) => gen(`@setup\n${body}\n@template\n`);
 
-  test("bare type names are qualified", () => {
+  test("every generated file opens with one import, from hzui", () => {
+    const out = gen("@template\n");
+    expect(dialectImportLine()).toStartWith("from hzui import ");
+    expect(out.split("\n")[0]).toBe(dialectImportLine());
+    // ...and it is the ONLY import the transformer emits: a component's module
+    // depends on hzui, not on the modules hzui is built out of.
+    expect(out.match(/^(?:from \S+ )?import\b/gm)).toHaveLength(1);
+  });
+
+  test("bare type names stay bare -- the import is what resolves them", () => {
     expect(setup("let f = (e: PointerEvent) => {};")).toContain(
-      "(e: ui_components.PointerEvent)"
+      "(e: PointerEvent)"
     );
     expect(setup("let r = elementRef<DivElement>();")).toContain(
-      "ui.elementRef<ui_elements.DivElement>()"
+      "ui.elementRef<DivElement>()"
     );
-    expect(setup("let w = SizeMode.Grow;")).toContain("ui_styling.SizeMode.Grow");
+    expect(setup("let w = SizeMode.Grow;")).toContain("SizeMode.Grow");
   });
 
-  test("an exported @props field is qualified too", () => {
+  test("an exported @props field names the imported symbol", () => {
     // This is the position an alias could never serve: the args struct is
     // exported, so a file-local name would escape into the module's import.hz.
-    expect(
-      gen("import ui_components\n@props\nvalue: Reactive<str>;\n@template\n")
-    ).toContain("value: rx.Reactive<str>;");
-  });
-
-  test("@emit argument types are qualified", () => {
-    expect(
-      gen("import ui_components\n@emit\ntap: (PointerEvent,);\n@template\n")
-    ).toContain("onTap?: (e0: ui_components.PointerEvent) => none;");
-  });
-
-  test("an already-qualified name is left alone", () => {
-    expect(setup("let f = (e: ui_components.PointerEvent) => {};")).toContain(
-      "(e: ui_components.PointerEvent)"
-    );
-    expect(setup("let f = (e: ui_components.PointerEvent) => {};")).not.toContain(
-      "ui_components.ui_components"
+    // A `from` import introduces no new name -- it IS hzui's symbol.
+    expect(gen("@props\nvalue: Reactive<str>;\n@template\n")).toContain(
+      "value: Reactive<str>;"
     );
   });
 
-  test("strings and comments are not rewritten", () => {
-    const out = setup('let s = "a Key and an Element";\n// a Key in a comment');
-    expect(out).toContain('"a Key and an Element"');
-    expect(out).toContain("// a Key in a comment");
+  test("@emit argument types come through unchanged", () => {
+    expect(gen("@emit\ntap: (PointerEvent,);\n@template\n")).toContain(
+      "onTap?: (e0: PointerEvent) => none;"
+    );
   });
 
-  test("a longer identifier that merely contains a type name is left alone", () => {
-    const out = setup("let KeyMap = 1;\nlet myKey = 2;\nlet ElementList = 3;");
-    expect(out).toContain("let KeyMap = 1;");
-    expect(out).toContain("let myKey = 2;");
-    expect(out).toContain("let ElementList = 3;");
+  test("the generated boilerplate names imported symbols too", () => {
+    const out = gen("@template [row]\n");
+    expect(out).toContain("fn XComponent(ui: UIContext, args: XArgs)");
+    expect(out).toContain("(instance: InstanceData<XArgs>)");
+    expect(out).toContain("return (): DivProps => {");
+    expect(out).toContain("style: mergeDivStyle({},");
+    // Every namespace the transformer used to spell out is gone from the
+    // output; `ui.` (a method on the context) is the only prefix left.
+    expect(out).not.toMatch(/\b(?:ui_components|ui_elements|ui_styling|rx)\./);
+  });
+
+  test("the import covers every symbol the transformer emits", () => {
+    for (const name of [
+      "UIContext",
+      "InstanceData",
+      "DivProps",
+      "ComponentRef",
+      "mergeDivStyle",
+      "Px",
+      "Em",
+      "Rem",
+      "presets",
+      "keyId",
+      "computed",
+      "reactive",
+      "shallowReactive",
+    ]) {
+      expect(DIALECT_IMPORTS).toContain(name);
+    }
   });
 });
 
 describe("dialect rewrites", () => {
-  const setup = (body: string) =>
-    gen(`import ui_components\n@setup\n${body}\n@template\n`);
+  const setup = (body: string) => gen(`@setup\n${body}\n@template\n`);
 
-  test("rx functions are reachable unqualified", () => {
-    expect(setup("let a = computed(() => 1);")).toContain("rx.computed(");
-    expect(setup("let b = reactive<int>(0);")).toContain("rx.reactive<int>(0)");
+  test("rx functions are called by their bare, imported names", () => {
+    expect(setup("let a = computed(() => 1);")).toContain("computed(() => 1)");
+    expect(setup("let b = reactive<int>(0);")).toContain("reactive<int>(0)");
     expect(setup("let c = shallowReactive<[]int>([]);")).toContain(
-      "rx.shallowReactive<[]int>([])"
+      "shallowReactive<[]int>([])"
     );
   });
 
-  test("an explicit type argument rewrites too", () => {
-    // These are generic functions; `computed<Color>(...)` is as ordinary as
-    // the bare call and must not be left unqualified.
-    expect(setup("let a = computed<Color>(() => x);")).toContain(
-      "rx.computed<Color>(() => x)"
-    );
-    // ...and the type argument is qualified on the way through -- see
-    // qualifyDialectTypes.
+  test("elementRef is the one that is rewritten -- it is a method on ui", () => {
+    // Not a free symbol, so it cannot be imported; it has to reach the
+    // UIContext the component function was handed. `<` counts as a call too.
+    expect(setup("let r = elementRef();")).toContain("ui.elementRef()");
     expect(setup("let r = elementRef<DivElement>();")).toContain(
-      "ui.elementRef<ui_elements.DivElement>()"
+      "ui.elementRef<DivElement>()"
     );
   });
 
   test("a longer name that merely ends in a dialect name is left alone", () => {
-    expect(setup("let s = shallowReactive<int>(0);")).not.toContain(
-      "shallowrx.reactive"
+    expect(setup("let s = myElementRef<int>(0);")).toContain(
+      "let s = myElementRef<int>(0);"
+    );
+  });
+
+  test("props reads become live reads of the instance", () => {
+    expect(setup("let a = props.label;")).toContain(
+      "let a = instance.props().label;"
     );
   });
 });
@@ -343,7 +400,7 @@ describe("generated operator!=", () => {
     gen(`import ui_components\n@props\n${props}\n@template\n`);
 
   test("a required field is compared directly", () => {
-    expect(args("label: str = \"\";")).toContain(
+    expect(args('label: str = "";')).toContain(
       "if this.label != other.label { return true; }"
     );
   });
@@ -360,13 +417,17 @@ describe("generated operator!=", () => {
   });
 
   test("`T | none` counts as optional too, `?:` is not the only spelling", () => {
-    expect(args("size: real | none = none;")).toContain("let __a_size = this.size;");
+    expect(args("size: real | none = none;")).toContain(
+      "let __a_size = this.size;"
+    );
   });
 
   test("a non-optional field is never treated as optional", () => {
     // The dangerous direction: `x is none` on a non-union is itself an error.
     const out = args("nonsense: NoneSuch = {};");
-    expect(out).toContain("if this.nonsense != other.nonsense { return true; }");
+    expect(out).toContain(
+      "if this.nonsense != other.nonsense { return true; }"
+    );
     expect(out).not.toContain("__a_nonsense");
   });
 
@@ -383,7 +444,7 @@ describe("generated operator!=", () => {
       expect(args(decl)).not.toContain("this.value != other.value");
     }
     // ...but a plain prop whose name merely mentions one still is.
-    expect(args("reactiveLabel: str = \"\";")).toContain(
+    expect(args('reactiveLabel: str = "";')).toContain(
       "if this.reactiveLabel != other.reactiveLabel { return true; }"
     );
   });
@@ -400,14 +461,16 @@ describe("generated operator!=", () => {
 
 describe("expose", () => {
   const child = (expose: string, setup: string) =>
-    gen(`import ui_components\n@expose\n${expose}\n@setup\n${setup}\n@template\n`);
+    gen(
+      `import ui_components\n@expose\n${expose}\n@setup\n${setup}\n@template\n`
+    );
 
   test("the exposed struct takes the component's bare name", () => {
     // ...and the component function is suffixed instead, so the good name
     // belongs to the type a parent writes by hand.
     const out = child("focus: () => none;", "let focus = () => {};");
     expect(out).toContain("export ref struct X {");
-    expect(out).toContain("export fn XComponent(ui: ui_components.UIContext");
+    expect(out).toContain("fn XComponent(ui: UIContext");
   });
 
   test("the API is published once, at the end of setup, and cleared on unmount", () => {
@@ -415,7 +478,7 @@ describe("expose", () => {
       "focus: () => none;\nreset: () => none;",
       "let focus = () => {};\nlet reset = () => {};"
     );
-    expect(out).toContain("exposeRef?: ui_components.ComponentRef<X>;");
+    expect(out).toContain("exposeRef?: ComponentRef<X>;");
     expect(out).toContain("__expose := X { focus: focus, reset: reset };");
     expect(out).toContain("ui.onUnmount(() => { __expose := null; });");
     // Written once during setup, so it must not affect template memoization.
@@ -457,11 +520,9 @@ describe("class tokens", () => {
       "backgroundColor",
     ]);
     expect(parseClassToken("px-[props.style.paddingX]px").args).toEqual([
-      "ui_styling.Px { value: (props.style.paddingX) }",
+      "Px { value: (props.style.paddingX) }",
     ]);
-    expect(parseClassToken("w-[10]em").args).toEqual([
-      "ui_styling.Em { value: (10) }",
-    ]);
+    expect(parseClassToken("w-[10]em").args).toEqual(["Em { value: (10) }"]);
   });
 
   test("conditions: single identifier or [expr]; member access must be bracketed", () => {
@@ -505,9 +566,7 @@ describe("class tokens", () => {
   test("margin tokens lower like padding, by the same mechanical rule", () => {
     expect(parseClassToken("m-4")).toMatchObject({ fn: "m", args: ["4"] });
     expect(parseClassToken("mx-2")).toMatchObject({ fn: "mx", args: ["2"] });
-    expect(parseClassToken("mt-[8]px").args).toEqual([
-      "ui_styling.Px { value: (8) }",
-    ]);
+    expect(parseClassToken("mt-[8]px").args).toEqual(["Px { value: (8) }"]);
     expect(lowerClassList("m-4 mb-1", "presets")).toEqual([
       "presets.m(4)",
       "presets.mb(1)",
@@ -515,18 +574,10 @@ describe("class tokens", () => {
   });
 
   test("explicit values are unscaled Px/Em/Rem; scale numbers stay plain", () => {
-    expect(parseClassToken("p-[8]").args).toEqual([
-      "ui_styling.Px { value: (8) }",
-    ]);
-    expect(parseClassToken("p-[8]px").args).toEqual([
-      "ui_styling.Px { value: (8) }",
-    ]);
-    expect(parseClassToken("w-[1.5]em").args).toEqual([
-      "ui_styling.Em { value: (1.5) }",
-    ]);
-    expect(parseClassToken("w-[2]rem").args).toEqual([
-      "ui_styling.Rem { value: (2) }",
-    ]);
+    expect(parseClassToken("p-[8]").args).toEqual(["Px { value: (8) }"]);
+    expect(parseClassToken("p-[8]px").args).toEqual(["Px { value: (8) }"]);
+    expect(parseClassToken("w-[1.5]em").args).toEqual(["Em { value: (1.5) }"]);
+    expect(parseClassToken("w-[2]rem").args).toEqual(["Rem { value: (2) }"]);
     expect(parseClassToken("gap-1.5").args).toEqual(["1.5"]);
     expect(() => parseClassToken("w-1/2")).toThrow(/percent/);
   });
