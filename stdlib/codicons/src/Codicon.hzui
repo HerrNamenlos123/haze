@@ -1,3 +1,4 @@
+@export
 
 struct IconMeta {
     slug: str;
@@ -59,6 +60,6 @@ let text = computed<str>(() => {
     return fmt.format(codicon_ttf.length);
 });
 
-@template []
+@template [h-fit w-fit]
 
 text [] [text]

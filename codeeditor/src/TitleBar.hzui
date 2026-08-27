@@ -1,5 +1,5 @@
 
-from ui_components import CodiconComponent
+from codicons import CodiconComponent
 
 @props
 color: str = "#292929";
@@ -38,7 +38,7 @@ slot rightContent title=[props.title]
 
 Button [] label="Button" {}
 
-Codicon [] {}
+Codicon [] icon="window-closes" {}
 
 // // Button [] label=["File"] selected=[props.openMenu == menuFile()] paddingX=[8] paddingY=[4] @click=onClick
 // // Pushes the title to the middle of the remaining space.

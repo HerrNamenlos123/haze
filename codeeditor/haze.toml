@@ -24,6 +24,7 @@ ui_widgets = { path = "../stdlib/ui_widgets" }
 renderer = { path = "../stdlib/renderer" }
 app = { path = "../stdlib/app" }
 wgpu = { path = "../stdlib/wgpu" }
+codicons = { path = "../stdlib/codicons" }
 
 # Actual application and business logic
 filedialog = { path = "../stdlib/filedialog" }

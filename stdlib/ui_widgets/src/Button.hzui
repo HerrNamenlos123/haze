@@ -1,4 +1,4 @@
-
+@export
 @props
 label: str = "";
 enabled: bool = true;
