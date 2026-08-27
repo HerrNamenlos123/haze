@@ -201,7 +201,8 @@ export type ModuleConfig = {
   // [plugins] table -- dependency-style entries. Non-inheriting: a plugin
   // applies only to the source files of the module whose haze.toml declares
   // it. The compiler core knows nothing about what any plugin does -- see
-  // src/Plugins/PluginInterface.ts.
+  // src/Plugins/PluginInterface.ts. Every entry must also appear in
+  // [dependencies], pointing at the same package: see getPlugins.
   plugins: { name: string; path: string }[];
   linkerFlags: PlatformStrings;
   interfaceLinkerFlags: PlatformStrings;
@@ -640,8 +641,17 @@ export class ConfigParser {
   }
 
   // Mirrors getDependencies: [plugins] entries are { path = "..." } tables.
-  // The name (toml key) is informational for now.
-  getPlugins(toml: any) {
+  //
+  // A plugin package must ALSO be declared as a dependency of the same
+  // module, and point at the same place. `[plugins]` only registers a
+  // transformer; it does not put the package on the module's import path.
+  // A transformer that generates code referencing its own runtime helpers
+  // (hzui emits `from hzui import ...` into every .hzui file) therefore
+  // produced code that could not resolve its own import -- reported as
+  // H2007 against a generated line the user never wrote, in a file whose
+  // haze.toml looked complete. Declared in both tables, with a real
+  // dependency edge, that generated import resolves like any other.
+  getPlugins(toml: any, dependencies: ModuleDependency[]) {
     const plugins = [] as { name: string; path: string }[];
     if (toml["plugins"]) {
       for (const [name, props] of Object.entries(toml["plugins"])) {
@@ -655,7 +665,35 @@ export class ConfigParser {
             `Plugin '${name}' in file ${this.configPath} requires a path attribute of type string`
           );
         }
-        plugins.push({ name: name, path: props["path"] });
+        const path = props["path"] as string;
+        const dependency = dependencies.find((d) => d.name === name);
+        if (!dependency) {
+          throw new GeneralError(
+            `Plugin '${name}' in file ${this.configPath} is not also declared as a dependency.\n` +
+              `  A [plugins] entry only registers the transformer; it does not make '${name}' importable.\n` +
+              `  Code the plugin generates cannot then reference its own runtime helpers.\n` +
+              `  Add it to [dependencies] as well:\n` +
+              `\n` +
+              `    [dependencies]\n` +
+              `    ${name} = { path = "${path}" }`
+          );
+        }
+        // A dependency declared without a path resolves out of the standard
+        // library, which is not knowable from here -- ProjectCompiler does
+        // that lookup, and reports it far better than a guess would.
+        if (
+          dependency.path !== null &&
+          resolve(dirname(this.configPath), dependency.path) !==
+            resolve(dirname(this.configPath), path)
+        ) {
+          throw new GeneralError(
+            `Plugin '${name}' in file ${this.configPath} points at a different package than the dependency of the same name.\n` +
+              `  [plugins]      ${name} = { path = "${path}" }\n` +
+              `  [dependencies] ${name} = { path = "${dependency.path}" }\n` +
+              `  Both must name the same package: the transformer that runs and the module its generated code imports are one and the same.`
+          );
+        }
+        plugins.push({ name: name, path: path });
       }
     }
     return plugins;
@@ -714,6 +752,10 @@ export class ConfigParser {
     const moduleType =
       type === "exe" ? ModuleType.Executable : ModuleType.Library;
 
+    // Parsed before the config literal below: getPlugins cross-checks every
+    // [plugins] entry against these.
+    const dependencies = this.getDependencies(toml);
+
     const config: ModuleConfig = {
       name: this.getString(toml, "name"),
       // Placeholder -- resolved (validated or generated+persisted) at the
@@ -736,8 +778,8 @@ export class ConfigParser {
             this.getScripts((toml as any)["scripts"]?.linux)) ||
           [],
       },
-      dependencies: this.getDependencies(toml),
-      plugins: this.getPlugins(toml),
+      dependencies: dependencies,
+      plugins: this.getPlugins(toml, dependencies),
       source: {
         type: "src-dir",
         dirpath: join(

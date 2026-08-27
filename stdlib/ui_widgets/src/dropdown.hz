@@ -2,7 +2,6 @@ import ui_elements
 import ui_styling
 import ui_components
 import headwind
-type presets = headwind.presets;
 
 // Named so a closure literal can be assigned into DivProps.onPointerDown's
 // `| none` union: a handler that ONLY calls event.stopPropagation() infers

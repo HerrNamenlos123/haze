@@ -105,6 +105,52 @@ fn main(): int {
 5: true 3
 """);
 
+        // A lambda whose parameter is written with an ALIAS of the declared
+        // parameter type is a structurally identical but distinctly mangled
+        // callable, so the argument goes through a callable-to-callable cast.
+        // Codegen used to re-emit the lambda underneath that cast, building a
+        // second stack env (`__hz_senv_1`) whose declaration went into a
+        // discarded writer -- the emitted C named a variable that was never
+        // declared and clang rejected the whole module. Real-world trigger:
+        // every .hzui component, whose generated setup lambda annotates
+        // `InstanceData<Args>` through hzui's re-export while
+        // UIContext.defineComponent declares it under ui_components.
+        s.run(
+            "callable-to-callable cast: an alias-typed lambda keeps its one env",
+            """
+ref struct Inst { v: int; }
+type InstAlias = Inst;
+
+fn callImmediate(f: immediate (i: Inst) => int): int {
+    let inst = Inst { v: 10 };
+    return f(inst);
+}
+
+fn callTwo(a: immediate (i: Inst) => int, b: immediate (i: Inst) => int): int {
+    let inst = Inst { v: 100 };
+    return a(inst) + b(inst);
+}
+
+ref struct Holder { f: ((i: Inst) => int) | none = none; }
+fn keep(h: ref Holder, f: (i: Inst) => int) { h.f = f; }
+
+fn main(): int {
+    let cap = 3;
+    fmt.println(f"1: {callImmediate((i: InstAlias) => { return i.v + cap; })}");
+    fmt.println(f"2: {callTwo((i: InstAlias) => { return i.v + cap; }, (i: InstAlias) => { return i.v - cap; })}");
+    let h = Holder {};
+    keep(h, (i: InstAlias) => { return i.v * cap; });
+    assert(h.f);
+    fmt.println(f"3: {h.f(Inst { v: 7 })}");
+    return 0;
+}
+""",
+            """
+1: 13
+2: 200
+3: 21
+""");
+
         // The profiler writes its progress to stdout, so the allocation count
         // is asserted rather than compared as output.
         s.runExitCode(

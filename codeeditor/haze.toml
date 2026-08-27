@@ -31,6 +31,9 @@ textedit_behavior = { path = "../stdlib/textedit_behavior" }
 vim_behavior = { path = "../stdlib/vim_behavior" }
 language_server_protocol = { path = "../stdlib/language_server_protocol" }
 unicode = { path = "../stdlib/unicode" }
+# The SFC transformer below generates `from hzui import ...` into every
+# .hzui file in this module, so hzui is a real dependency, not only a plugin.
+hzui = { path = "../stdlib/hzui" }
 
 [plugins]
 hzui = { path = "../stdlib/hzui" }

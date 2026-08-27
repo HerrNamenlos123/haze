@@ -1,7 +1,12 @@
 // hzui -- SFC UI framework runtime helpers.
 //
 // The SFC transformer lives in ../plugin (TypeScript, v0; haze in Phase 1).
-// Consumers enable it with a single line in their haze.toml:
+// Consumers enable it in their haze.toml, in BOTH tables -- [plugins] runs
+// the transformer, [dependencies] is what makes the `from hzui import ...`
+// line it generates resolve. Declaring only the plugin is an error:
+//
+//   [dependencies]
+//   hzui = { path = "path/to/stdlib/hzui" }
 //
 //   [plugins]
 //   hzui = { path = "path/to/stdlib/hzui" }

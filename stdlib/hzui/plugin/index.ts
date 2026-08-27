@@ -8,7 +8,12 @@
 // module is extracted as a dependency, and Phase 1 can swap it for a
 // compiled-haze shared library behind the same shape.
 //
-// Enable per module (non-inheriting) in haze.toml:
+// Enable per module (non-inheriting) in haze.toml. Both tables are required:
+// [plugins] runs this transformer, [dependencies] is what makes the
+// `from hzui import ...` line it generates resolve.
+//
+//   [dependencies]
+//   hzui = { path = "path/to/stdlib/hzui" }
 //
 //   [plugins]
 //   hzui = { path = "path/to/stdlib/hzui" }

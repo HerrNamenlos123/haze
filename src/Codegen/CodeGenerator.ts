@@ -2254,7 +2254,13 @@ class CodeGenerator {
           const exprType = this.lr.typeDefNodes.get(exprTypeUse.type);
           if (exprType.variant === Lowered.ENode.CallableDatatype) {
             outWriter.write(
-              `({ ${this.mangleTypeUse(sourceExpr.type)} __tmp = ${this.emitExpr(expr.expr).out.get()}; (${this.mangleTypeUse(expr.type)}){ .env=__tmp.env, .fn=__tmp.fn }; })`
+              // exprWriter, NOT a second emitExpr(expr.expr): re-emitting
+              // builds a fresh set of statement temps (a stack closure env,
+              // a hoisted lvalue) whose declarations land in a tempWriter
+              // that is thrown away here, leaving this `out` referring to
+              // names that were never declared -- `__hz_senv_1` next to a
+              // lone `__hz_senv_0`.
+              `({ ${this.mangleTypeUse(sourceExpr.type)} __tmp = ${exprWriter.out.get()}; (${this.mangleTypeUse(expr.type)}){ .env=__tmp.env, .fn=__tmp.fn }; })`
             );
             return { out: outWriter, temp: tempWriter };
           }

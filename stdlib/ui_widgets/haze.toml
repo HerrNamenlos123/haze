@@ -16,6 +16,9 @@ ui_elements = { path = "../ui_elements" }
 ui_styling = { path = "../ui_styling" }
 headwind = { path = "../headwind" }
 codicons = { path = "../codicons" }
+# The SFC transformer below generates `from hzui import ...` into every
+# .hzui file in this module, so hzui is a real dependency, not only a plugin.
+hzui = { path = "../hzui" }
 
 [plugins]
 hzui = { path = "../hzui" }
