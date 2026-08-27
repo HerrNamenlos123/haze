@@ -1,4 +1,13 @@
 
+struct IconMeta {
+    slug: str;
+    icon: str;
+    code: str;
+}
+
+@props
+icon: str;
+
 @setup
 
 // The Visual Studio Code icon font, (c) Microsoft, CC BY 4.0 -- NOT MIT; the
@@ -8,6 +17,42 @@
 // and THIRD-PARTY-NOTICES.md at the repo root.
 let codicon_ttf = computed(() => {
     return embed.binary("resources/codicon.ttf");
+});
+
+let codicon_metadata = computed(() => {
+    let file = embed.text("resources/codicon.csv");
+    let lines = file.split("\n");
+
+    let meta: []IconMeta = [];
+    meta.reserve(lines.length);
+
+    for line in lines {
+        let parts = line.split(",");
+        assert(parts.length == 3);
+        meta.push({
+            slug: parts[0],
+            icon: parts[1],
+            code: parts[2],
+        });
+    }
+    return meta;
+});
+
+let findIconBySlug = (slug: str) => {
+    for meta in codicon_metadata {
+        if meta.slug == slug {
+            return meta;
+        }
+    }
+}
+
+let selectedIcon = computed(() => {
+    let icon = findIconBySlug(props.icon);
+    if icon { return icon; }
+
+    let fallback = findIconBySlug("question");
+    assert(fallback);
+    return fallback;
 });
 
 let text = computed<str>(() => {

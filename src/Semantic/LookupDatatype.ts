@@ -140,10 +140,25 @@ export function makeRawFunctionDatatypeAvailable(
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
+  // Identity is compared THROUGH aliases, so a signature written with an
+  // alias and the same signature written with the target are one type.
+  // Left unresolved, `from m import Props` in two files -- two file-scoped
+  // aliases of one struct -- built two FunctionDatatypes for `() => Props`,
+  // hence two CallableDatatypes, hence one C struct emitted twice under the
+  // one name mangleTypeUse now gives both.
+  //
+  // Only the comparison resolves. The node keeps the types AS WRITTEN,
+  // because Export.ts serialises them back out as the module's interface
+  // source: an alias printed as its target loses more than the name --
+  // `type Result = nodiscard union {...}` comes back as a bare annotated
+  // union, which is not a type the parser accepts in return position.
+  const resolvedReturn = sr.e.resolveAlias(args.returnType);
+  const resolvedParams = args.parameters.map((p) => sr.e.resolveAlias(p.type));
+
   // Bucketed by return type and parameter count -- both necessary conditions
   // the scan checked anyway. Everything else is compared exactly as before,
   // just over the handful of entries that share those two.
-  let byParamCount = sr.functionTypeCache.get(args.returnType);
+  let byParamCount = sr.functionTypeCache.get(resolvedReturn);
   let fnBucket = byParamCount?.get(args.parameters.length);
   for (const id of fnBucket ?? []) {
     const type = sr.typeDefNodes.get(id);
@@ -154,7 +169,7 @@ export function makeRawFunctionDatatypeAvailable(
     let wrong = false;
     for (let i = 0; i < args.parameters.length; i++) {
       if (
-        type.parameters[i].type !== args.parameters[i].type ||
+        sr.e.resolveAlias(type.parameters[i].type) !== resolvedParams[i] ||
         type.parameters[i].optional !== args.parameters[i].optional
       ) {
         wrong = true;
@@ -164,7 +179,7 @@ export function makeRawFunctionDatatypeAvailable(
     if (wrong) {
       continue;
     }
-    if (type.returnType !== args.returnType) {
+    if (sr.e.resolveAlias(type.returnType) !== resolvedReturn) {
       continue;
     }
     if (type.vararg !== args.vararg) {
@@ -200,7 +215,7 @@ export function makeRawFunctionDatatypeAvailable(
   });
   if (!byParamCount) {
     byParamCount = new Map();
-    sr.functionTypeCache.set(args.returnType, byParamCount);
+    sr.functionTypeCache.set(resolvedReturn, byParamCount);
   }
   if (!fnBucket) {
     fnBucket = [];

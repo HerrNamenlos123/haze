@@ -19677,6 +19677,14 @@ function getFromFuncDefCache(
   const canonicalizedGenerics = args.genericArgs.map((g) =>
     Semantic.canonicalizeGenericExpr(sr, g)
   );
+  // Pack types compared THROUGH aliases, for the same reason
+  // canonicalizeGenericExpr resolves: two spellings of one type must not
+  // instantiate the function twice. They mangle identically now, so a second
+  // instantiation is not a second symbol -- it is the same C function defined
+  // twice in one translation unit.
+  const resolvedPackTypes = args.paramPackTypes.map((t) =>
+    sr.e.resolveAlias(t)
+  );
 
   for (const entry of entries) {
     if (
@@ -19685,8 +19693,10 @@ function getFromFuncDefCache(
       entry.canonicalizedGenerics.every(
         (g, index) => g === canonicalizedGenerics[index]
       ) &&
-      entry.paramPackTypes.length === args.paramPackTypes.length &&
-      entry.paramPackTypes.every((g, index) => g === args.paramPackTypes[index])
+      entry.paramPackTypes.length === resolvedPackTypes.length &&
+      entry.paramPackTypes.every(
+        (g, index) => sr.e.resolveAlias(g) === resolvedPackTypes[index]
+      )
     ) {
       return entry.result;
     }

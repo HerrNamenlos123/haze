@@ -3,7 +3,8 @@ import ui_styling
 import ui_components
 import ui_widgets
 import headwind
-type presets = headwind.presets;
+// `presets` itself comes from the hzui from-import the SFC transformer puts
+// in every .hzui file of this module -- declaring it here again collides.
 
 // ═══ The file-conflict dialog ════════════════════════════════════════════
 //

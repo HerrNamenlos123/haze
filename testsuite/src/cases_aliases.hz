@@ -245,6 +245,135 @@ fn main(): int {
 """,
             "sum 6");
 
+        // ── Transparency in type IDENTITY, not just in lookup (§0.1) ────────
+        //
+        // "Sees through it everywhere types are compared" is the whole claim,
+        // and two places did not: the generic instantiation cache keyed on the
+        // raw type-use id, so `Box<Alias>` and `Box<Real>` were two unrelated
+        // instantiations of one generic -- H4001 between a type and itself,
+        // printing the two spellings side by side and looking like nonsense.
+        //
+        // Reached in real code through a re-export: an SFC writes
+        // `elementRef<DivElement>()` with the name hzui re-exports, while
+        // ui_components declares the field it flows into as
+        // `ElementRef<ui_elements.DivElement>`.
+        s.run(
+            "alias: a generic argument written through an alias is the same instantiation",
+            """
+struct Real { x: int = 0; }
+ref struct RefReal { x: int = 0; }
+struct Box<T> { v: T; fn get(): T { return this.v; } }
+struct Pair<A, B> { a: A; b: B; }
+
+type Alias = Real;
+type Chain = Alias;
+type RefAlias = RefReal;
+type BoxAlias<T> = Box<T>;
+
+namespace n { export type Nested = Real; }
+
+// Every one of these is declared with the TARGET; every call below hands it
+// something written through an alias instead.
+fn takeBox(b: Box<Real>): int { return b.v.x; }
+fn takeNested(b: Box<Box<Real>>): int { return b.v.v.x; }
+fn takePair(p: Pair<Real, int>): int { return p.a.x + p.b; }
+fn takeRef(b: Box<ref RefReal>): int { return b.v.x; }
+fn takeOpt(b: Box<Real> | none): int { if b { return b.v.x; } return -1; }
+
+// And the other direction: declared with the alias, called with the target.
+fn takeAliasBox(b: Box<Alias>): int { return b.v.x; }
+
+fn main(): int {
+    fmt.println(f"1: {takeBox(Box<Alias> { v: Real { x: 1 } })}");
+    fmt.println(f"2: {takeBox(Box<Chain> { v: Real { x: 2 } })}");
+    fmt.println(f"3: {takeBox(Box<n.Nested> { v: Real { x: 3 } })}");
+    fmt.println(f"4: {takeAliasBox(Box<Real> { v: Real { x: 4 } })}");
+    fmt.println(f"5: {takeBox(BoxAlias<Alias> { v: Real { x: 5 } })}");
+    fmt.println(f"6: {takeNested(Box<Box<Alias>> { v: Box<Real> { v: Real { x: 6 } } })}");
+    fmt.println(f"7: {takePair(Pair<Alias, int> { a: Real { x: 7 }, b: 0 })}");
+    fmt.println(f"8: {takeRef(Box<ref RefAlias> { v: RefReal { x: 8 } })}");
+    fmt.println(f"9: {takeOpt(Box<Alias> { v: Real { x: 9 } })}");
+    // Not merely convertible -- the SAME type: a plain binding, no conversion
+    // in sight, and the method reached through either spelling is one method.
+    let viaAlias = Box<Alias> { v: Real { x: 10 } };
+    let viaReal: Box<Real> = viaAlias;
+    fmt.println(f"10: {viaReal.get().x + viaAlias.get().x}");
+    return 0;
+}
+""",
+            """
+1: 1
+2: 2
+3: 3
+4: 4
+5: 5
+6: 6
+7: 7
+8: 8
+9: 9
+10: 20
+""");
+
+        // The same rule, one layer down: a structural type BUILT on an alias.
+        //
+        // `from m import Props` puts a FILE-scoped alias in each file that
+        // writes it, so two files importing one name from one module held two
+        // distinct alias nodes for one struct. `() => Props` then interned a
+        // FunctionDatatype per file, each wrapped in its own CallableDatatype,
+        // each emitting its own C struct -- under one mangled name, because a
+        // file-scoped alias has a namespace chain of length 1 and mangled to a
+        // bare `5Props`. The C compiler rejected the translation unit outright:
+        // "redefinition of '_HClFE_f_5Props'".
+        //
+        // Two files are the whole point of this case; it cannot be written in
+        // one, because one file has only one alias node.
+        s.runWithFiles(
+            "alias: two files importing one name build one type, not one per file",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export struct Props { x: int = 0; }
+export struct Box<T> { v: T; }
+""",
+                },
+            ],
+            """
+fn main(): int {
+    // Built in a.hz, consumed in b.hz, through neither file's alias.
+    fmt.println(f"1: {makeA()().x} {makeB()().x}");
+    fmt.println(f"2: {boxB(boxA())}");
+    fmt.println(f"3: {roundTrip(makeA())().x}");
+    return 0;
+}
+""",
+            [
+                testsuite.TestFile {
+                    name: "a.hz",
+                    source: """
+from shapes import Props, Box;
+fn makeA(): () => Props { return () => { return Props { x: 1 }; }; }
+fn boxA(): Box<Props> { return Box<Props> { v: Props { x: 3 } }; }
+""",
+                },
+                testsuite.TestFile {
+                    name: "b.hz",
+                    source: """
+from shapes import Props, Box;
+fn makeB(): () => Props { return () => { return Props { x: 2 }; }; }
+// Takes what a.hz produced: one file's callable type has to BE the other's,
+// not merely convert to it.
+fn roundTrip(f: () => Props): () => Props { return f; }
+fn boxB(b: Box<Props>): int { return b.v.x; }
+""",
+                },
+            ],
+            """
+1: 1 2
+2: 3
+3: 1
+""");
+
         // ── Collisions (§1.5) ───────────────────────────────────────────────
         //
         // The collector used to insert blind and lookupDirect returned whichever

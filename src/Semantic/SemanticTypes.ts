@@ -1276,7 +1276,17 @@ export namespace Semantic {
   ) {
     const expr = sr.exprNodes.get(exprId);
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      return expr.type.toString();
+      // Through the alias, not at it. This string is the key the struct and
+      // alias instantiation caches dedupe on, so an alias left unresolved
+      // here makes `Box<Alias>` and `Box<Real>` two unrelated instantiations
+      // of one generic -- H4001 between a type and itself, with the two
+      // spellings printed side by side. Aliases are transparent "everywhere
+      // types are compared" (R&D/Aliases, Anonymous Structs and
+      // Spreading.md §0.1) and to generic deduction "in both directions"
+      // (§1.3); this is one of the places that has to hold it up.
+      // resolveAlias re-applies whatever `ref`/`mut` the use added on top,
+      // so `Box<ref Alias>` still keys apart from `Box<Alias>`.
+      return sr.e.resolveAlias(expr.type).toString();
     }
     if (expr.variant === Semantic.ENode.LiteralExpr) {
       if (expr.literal.type === EPrimitive.null) {
@@ -2846,6 +2856,33 @@ export namespace Semantic {
     sr: Semantic.Context,
     typeInstanceId: Semantic.TypeUseId
   ) {
+    // An alias is not a C type of its own -- it mangles as whatever it
+    // resolves to, storage and mutability stacked on by resolveAlias.
+    //
+    // Mangling it under its OWN name instead was a hard collision, not a
+    // cosmetic one: `from m import Props` puts a FILE-scoped alias in every
+    // file that writes it, each a distinct type node, all with a namespace
+    // chain of length 1 -- so each mangled to a bare `5Props`, and any
+    // structural type built on one (`() => Props` interns a callable struct)
+    // emitted `struct _HClFE_f_5Props` once PER FILE. Two files importing one
+    // name from one module produced a C translation unit that redefined a
+    // struct. Resolved, they are one name and one definition, which is also
+    // what "resolves to the target" in R&D/Aliases, Anonymous Structs and
+    // Spreading.md §0.1 means once it reaches codegen.
+    {
+      const aliasVariant = sr.typeDefNodes.get(
+        sr.typeUseNodes.get(typeInstanceId).type
+      ).variant;
+      if (aliasVariant === Semantic.ENode.TypeAliasDatatype) {
+        const resolved = sr.e.resolveAlias(typeInstanceId);
+        // A cyclic alias resolves to itself; fall through to the branch below
+        // rather than recursing forever.
+        if (resolved !== typeInstanceId) {
+          return mangleTypeUse(sr, resolved);
+        }
+      }
+    }
+
     const typeInstance = sr.typeUseNodes.get(typeInstanceId);
 
     const def = mangleTypeDef(sr, typeInstance.type);
@@ -2870,8 +2907,10 @@ export namespace Semantic {
       def.name = "s" + def.name;
       def.wasMangled = true;
     } else if (typeDefVariant === Semantic.ENode.TypeAliasDatatype) {
-      // An alias use that adds a storage class on top of the alias target
-      // (`stackref StringWriter`) is a different C type from the plain alias.
+      // Only a cyclic alias reaches here now -- everything else was resolved
+      // at the top. An alias use that adds a storage class on top of the
+      // alias target (`stackref StringWriter`) is a different C type from the
+      // plain alias.
       const aliasDef = sr.typeDefNodes.get(typeInstance.type);
       assert(aliasDef.variant === Semantic.ENode.TypeAliasDatatype);
       const targetUse = sr.typeUseNodes.get(
@@ -3143,6 +3182,12 @@ export namespace Semantic {
       case Semantic.ENode.TypeAliasDatatype: {
         assert(type.concrete);
 
+        // NOT resolved to the target here, unlike mangleTypeUse above: a
+        // typedef name cannot carry a storage class, so an alias whose target
+        // is a `ref struct` would come back without the `p` its own target
+        // type USE has -- and `typedef Match* X;` would be emitted under the
+        // plain struct's name. The alias keeps a name of its own; nothing
+        // else refers to it, because every use resolves past it.
         const names = getNamespaceChainFromDatatype(sr, typeId);
         if (names.length === 1) {
           return {
