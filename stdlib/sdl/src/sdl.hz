@@ -19,6 +19,7 @@ namespace ffi {
 	extern C fn haze_sdl_getTime(): f64 :: final;
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasFocus(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_windowHasMouseFocus(window: SDL_Window): bool :: final;
 
 	// Custom-titlebar / OS window integration -- see the block comment above
 	// haze_sdl_hit_test in sdl_impl.c. The region list is pushed one box at a
@@ -158,6 +159,10 @@ namespace ffi {
 
 	export fn windowHasFocus(window: SDL_Window): bool {
 		return haze_sdl_windowHasFocus(window);
+	}
+
+	export fn windowHasMouseFocus(window: SDL_Window): bool {
+		return haze_sdl_windowHasMouseFocus(window);
 	}
 
 	export fn enableWindowHitTest(window: SDL_Window): bool {
@@ -614,6 +619,14 @@ export ref struct Window {
 	// not event-driven -- see the shim in sdl_impl.c.
 	fn hasFocus(): bool {
 		return ffi.windowHasFocus(this.handle);
+	}
+
+	// Is the pointer over this window right now? Polled, not event-driven --
+	// see the shim in sdl_impl.c, and note this is about the MOUSE, not the
+	// keyboard focus hasFocus() reports: a window can hold the keyboard while
+	// the pointer is somewhere else entirely.
+	fn hasMouseFocus(): bool {
+		return ffi.windowHasMouseFocus(this.handle);
 	}
 
 	fn getProcAddress(): ((name: ccstr) -> cptr) {

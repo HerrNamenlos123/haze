@@ -13,11 +13,25 @@ outputs = [
     { module="this", dir="bin", path="include/SDL3/SDL.h" },
 ]
 
+# Wayland's xdg-shell bindings, so this module can start a compositor-driven
+# window move itself -- see gen-wayland-protocols.hz and sdl_impl.c.
+[generator.wayland-protocols]
+exec = "scripts/gen-wayland-protocols.hz"
+inputs = []
+outputs = [
+    { module="this", dir="bin", path="include/xdg-shell-client-protocol.h" },
+    { module="this", dir="bin", path="include/xdg-shell-protocol.c" },
+]
+
 [linker.win32]
 flags = ["-lSDL3-static"]
 
+# libwayland-client is linked directly rather than dlopened: SDL already
+# requires it on Linux (it dlopens the same shared object), so this adds no
+# dependency that a Linux build did not already have, and the proxies SDL
+# creates and the ones created here are then the same library's.
 [linker.linux]
-flags = ["-lSDL3"]
+flags = ["-lSDL3", "-lwayland-client"]
 
 [interface.linker.win32]
 flags = [  

@@ -229,13 +229,21 @@ export fn cursorToInt(cursor: Cursor): int :: final {
 //            Shake, double-click to maximize, the right-click window menu and
 //            the keyboard move/resize gestures all follow, and the press
 //            never reaches the application at all.
-//   Wayland  SDL calls xdg_toplevel_move / xdg_toplevel_resize, so the
-//            compositor owns the drag: moving, snapping and tiling are its
-//            own. It stops there -- the protocol has no "this is a caption
-//            bar" concept, so a client-drawn titlebar is expected to turn a
-//            double click into a maximize call itself, exactly as GTK and Qt
-//            do. SDL consumes the press for the move grab, though, so that
-//            fallback only runs where the press is actually delivered.
+//   Wayland  xdg-shell has no caption-bar concept either -- only "start
+//            moving me", "start resizing me" and "show the window menu" --
+//            so SDL's hit test alone yields dragging and resizing and
+//            nothing more. Every Wayland window that does more than that
+//            does it because whoever draws its titlebar owns the press: the
+//            compositor for server-side decorations, GTK or libdecor for
+//            client-side ones. So the platform layer keeps the press on this
+//            backend and issues those requests itself, and drag,
+//            double-click to maximize and the window menu all work. The
+//            gestures are still the compositor's; only the reading of which
+//            one the user made happens locally. See the block above
+//            haze_sdl_handle_titlebar_event in sdl_impl.c.
+//   X11      SDL's _NET_WM_MOVERESIZE path: dragging, resizing, and whatever
+//            the window manager does with them. No double click, since SDL
+//            consumes the press there as well.
 //
 // Boxes resolve in PAINT ORDER, last one wins, so NoDrag carves a hole out of
 // an enclosing Drag region -- which is exactly what a close button in a

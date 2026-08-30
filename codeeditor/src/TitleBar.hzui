@@ -78,15 +78,10 @@ let minimizeWindow = () => {
     ui.window.minimize();
 };
 
-// Bound to the maximize button, and also to a double click on the bar.
-//
-// On a backend where the press in a drag region belongs to the platform, this
-// never fires for the double click and does not need to: Windows turns
-// SDL_HITTEST_DRAGGABLE into HTCAPTION, and the OS then does the toggle
-// itself, with the user's own settings for what a double click means. Where
-// the press does reach the application, this is the fallback -- and it is
-// still not a reimplementation of anything, since toggleMaximize() is the
-// platform's own maximize/restore. See the note in ui_styling.OSTitlebar.
+// The maximize button. There is deliberately no double-click handler beside
+// it: a press on the drag region never reaches this component on any backend
+// -- it belongs to the platform layer, which turns a double click there into
+// the very same maximize/restore. See ui_styling.OSTitlebar.
 let toggleMaximizeWindow = () => {
     ui.window.toggleMaximize();
 };
@@ -98,16 +93,12 @@ let closeWindow = () => {
     ui.window.close();
 };
 
-let titlebarDoubleClicked = (event: PointerEvent) => {
-    toggleMaximizeWindow();
-};
 
 @template [
         os-titlebar relative row w-grow h-[props.height]px items-center
         bg-[props.color] font-size-16
     ]
     ref=rootRef
-    @doubleclick=titlebarDoubleClicked
 
 slot leftContent title=[props.title]
 

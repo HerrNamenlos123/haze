@@ -2529,7 +2529,20 @@ export opaque ref struct UIContext {
     // Descending with false lets the ordinary transition code below notice
     // the change and fire those leave callbacks exactly once, which is what
     // a browser does when you hide an element out from under the cursor.
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void), hidden: bool = false): bool :: final {
+    //
+    // `pointerPresent` -- whether the pointer is over this window at all (see
+    // UIContext.mousePosKnown). False forces every hit to false for exactly
+    // the same reason `hidden` does, and it is a separate input rather than a
+    // position the caller could pick because there IS no position that means
+    // "nowhere": mousePos still holds the last real coordinates, which are
+    // usually sitting right on top of whatever the pointer left through.
+    //
+    // Note this walk must still RUN when the pointer is absent. Skipping it
+    // does not un-hover anything -- hover/hit are persistent per element -- it
+    // freezes the last frame's answer, so the element under the pointer's exit
+    // point stays lit and its onHoverLeave never fires. Same trap as `hidden`,
+    // same fix.
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void), pointerPresent: bool = true, hidden: bool = false): bool :: final {
         let subtreeHidden = hidden || ui_elements.isDisplayNone(element);
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
@@ -2537,7 +2550,7 @@ export opaque ref struct UIContext {
         // A hidden element keeps the bounding box it had when it was last
         // visible, so the geometry test would still pass -- it has to be
         // suppressed explicitly rather than relying on the box being gone.
-        if !subtreeHidden && elementPos && elementSize {
+        if pointerPresent && !subtreeHidden && elementPos && elementSize {
             selfHit =
                 (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
                 (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
@@ -2549,7 +2562,7 @@ export opaque ref struct UIContext {
         let childHover = false;
         if element is ui_elements.DivElement {
             for child in element.children {
-                if this.updateHoverState(child, mousePos, buttons, eventQueue, subtreeHidden) {
+                if this.updateHoverState(child, mousePos, buttons, eventQueue, pointerPresent, subtreeHidden) {
                     childHover = true;
                 }
             }
@@ -3137,8 +3150,15 @@ export opaque ref struct UIContext {
             finalHitPath.clear();
             if pointerLocated {
                 this.buildHitPathInto(finalHitPath, tree, this.mousePos);
-                this.updateHoverState(tree, this.mousePos, buttons, eventQueue);
             }
+            // Deliberately OUTSIDE the check above: when the pointer is not
+            // here, the walk still has to run and report that nothing is hit,
+            // so whatever was hovered gives that state up and its
+            // onHoverLeave/onHitLeave fire. Skipping it instead leaves the
+            // last frame's hover frozen in place -- the element the pointer
+            // left the window through stays lit, which is a claim about where
+            // the pointer is that we know to be false.
+            this.updateHoverState(tree, this.mousePos, buttons, eventQueue, pointerLocated);
 
             // The pointer's shape follows whatever it is currently over, so
             // it is resolved from this frame's hit path -- the same path the

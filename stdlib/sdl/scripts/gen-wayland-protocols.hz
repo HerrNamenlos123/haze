@@ -1,0 +1,68 @@
+// Generates the xdg-shell client bindings this module needs to drive a window
+// move itself on Wayland -- see the "OS titlebar press ownership" block in
+// sdl_impl.c for why that is necessary at all.
+//
+// wayland-scanner and the xdg-shell protocol XML are NOT a new build
+// requirement: build-sdl.hz already needs libwayland-dev and
+// wayland-protocols on Linux to build SDL with Wayland support in the first
+// place, and both tools ship in exactly those packages.
+//
+// On every other platform this writes empty placeholders, because the
+// generator's declared outputs have to exist either way and nothing includes
+// them outside the __linux__ guard in sdl_impl.c.
+
+fn writePlaceholder(path: str): Result<none, fs.Error> {
+    fs.writeText(path, "/* not generated: this platform does not use Wayland. */\n")?!;
+    return none;
+}
+
+fn main(): int {
+    attempt {
+        let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
+        if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
+
+        let includeDir = f"{binaryDir}/include";
+        fs.createDirectory(includeDir)?!;
+
+        let header = f"{includeDir}/xdg-shell-client-protocol.h";
+        let code = f"{includeDir}/xdg-shell-protocol.c";
+
+        if !sys.isLinux() {
+            writePlaceholder(header)?!;
+            writePlaceholder(code)?!;
+            return 0;
+        }
+
+        // Where the distribution keeps the protocol XML. Asked of pkg-config
+        // rather than hardcoding /usr/share, since the prefix moves between
+        // distributions and inside containers.
+        let dataDir = process.runCaptured("pkg-config", { "--variable=pkgdatadir", "wayland-protocols" });
+        if dataDir.exitCode != 0 {
+            raise f"wayland-protocols is not installed (pkg-config --variable=pkgdatadir wayland-protocols failed): {dataDir.stderrResult}";
+        }
+        let xml = f"{dataDir.stdoutResult.trim()}/stable/xdg-shell/xdg-shell.xml";
+        if !fs.exists(xml)?! {
+            raise f"xdg-shell protocol description not found at {xml}";
+        }
+
+        process.run("wayland-scanner", { "client-header", xml, header }, { inherit_stdio: true })?!;
+        process.run("wayland-scanner", { "private-code", xml, code }, { inherit_stdio: true })?!;
+    }
+    else e {
+        if e is fs.Error {
+            fmt.println("gen-wayland-protocols step failed:", e);
+            return 1;
+        }
+        else if e is str {
+            fmt.println(f"gen-wayland-protocols step failed: {e}");
+            return 1;
+        }
+        else if e is int {
+            fmt.println(f"gen-wayland-protocols step failed: wayland-scanner exited with code {e}");
+            return 1;
+        }
+        assert(false);
+    };
+
+    return 0;
+}
