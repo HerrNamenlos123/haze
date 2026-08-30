@@ -1,0 +1,290 @@
+// The little bit of HTTPS this module needs: reading the release manifest and
+// downloading the `claude` binary.
+//
+// It shells out to `curl`, falling back to `wget`. That is a deliberate
+// choice, not a shortcut. The alternative is a TLS stack, and the only correct
+// way to get one is to link OpenSSL or similar -- a large native dependency,
+// a certificate-store problem on three platforms, and a security surface this
+// module has no business owning. `curl` is present on every macOS and Linux
+// install and has shipped in Windows since 10 1803; Anthropic's own installer
+// uses exactly the same two tools in the same order.
+//
+// If a host application already has an HTTP client, it does not have to use
+// any of this: `binary.hz` takes the manifest as a string, so a caller can
+// fetch it however it likes and hand it over.
+
+export enum HttpTool {
+    Curl,
+    Wget,
+    // Neither is installed. Every call fails with a message saying so.
+    None,
+}
+
+export struct HttpResponse {
+    ok: bool = false;
+    body: str = "";
+    // Empty when ok. Otherwise a human-readable reason, including the tool's
+    // own stderr, which is what actually explains a TLS or proxy failure.
+    error: str = "";
+    exitCode: int = 0;
+}
+
+// Which downloader is available. Probed by running `--version`, so cache the
+// result rather than calling it in a loop.
+export fn detectHttpTool(): HttpTool {
+    let curl = process.runCaptured("curl", ["--version"], { inherit_stdio: false });
+    if curl.exitCode == 0 {
+        return HttpTool.Curl;
+    }
+    let wget = process.runCaptured("wget", ["--version"], { inherit_stdio: false });
+    if wget.exitCode == 0 {
+        return HttpTool.Wget;
+    }
+    return HttpTool.None;
+}
+
+export fn httpToolName(tool: HttpTool): str {
+    if tool == HttpTool.Curl { return "curl"; }
+    if tool == HttpTool.Wget { return "wget"; }
+    return "none";
+}
+
+// A blocking GET for a small response -- a version string or a manifest.
+//
+// Blocking is safe here only because these responses are tiny: `runCaptured`
+// waits for the child to exit before draining its pipes, so anything larger
+// than a pipe buffer would deadlock. Large downloads go through `Download`
+// below, which never reads the body through a pipe at all.
+export fn httpGet(url: str, timeoutSeconds: int): HttpResponse {
+    return httpGetWith(detectHttpTool(), url, timeoutSeconds);
+}
+
+export fn httpGetWith(tool: HttpTool, url: str, timeoutSeconds: int): HttpResponse {
+    if tool == HttpTool.None {
+        return HttpResponse {
+            ok: false,
+            error: "neither curl nor wget is available; cannot reach " + url,
+        };
+    }
+
+    let timeout = f"{timeoutSeconds}";
+
+    // -f  fail on HTTP >= 400 instead of printing the error page as the body
+    // -sS silent, but still report errors
+    // -L  follow redirects
+    let args: []str = ["-fsSL", "--max-time", timeout, "--retry", "2", url];
+    let exe = "curl";
+    if tool == HttpTool.Wget {
+        exe = "wget";
+        args = ["-q", "-O", "-", "--timeout=" + timeout, "--tries=2", url];
+    }
+
+    let result = process.runCaptured(exe, args, { inherit_stdio: false });
+
+    if result.exitCode != 0 {
+        let detail = result.stderrResult.trim();
+        if detail.length == 0 {
+            detail = "exit code " + f"{result.exitCode}";
+        }
+        return HttpResponse {
+            ok: false,
+            error: "GET " + url + " failed: " + detail,
+            exitCode: result.exitCode,
+        };
+    }
+
+    return HttpResponse { ok: true, body: result.stdoutResult };
+}
+
+export enum DownloadState {
+    Running,
+    Complete,
+    Failed,
+    Cancelled,
+}
+
+// A value type: poll() returns one of these on every tick of a download, and a
+// reference type would allocate once per frame for the whole download.
+export struct DownloadProgress {
+    state: DownloadState = DownloadState.Running;
+    bytesReceived: int = 0;
+    // From the caller (the manifest knows the size); 0 when unknown.
+    bytesTotal: int = 0;
+    // 0.0 .. 1.0, or 0.0 when the total is unknown.
+    fraction: real = 0.0;
+    error: str = "";
+}
+
+// A file download that can be polled without blocking.
+//
+// Progress is measured by stat-ing the partial file rather than by parsing the
+// downloader's progress output: it needs no cooperation from curl or wget, it
+// cannot be confused by their differing formats, and it is what actually
+// matters to the caller. `expectedBytes` comes from the release manifest.
+export ref struct Download {
+    proc: process.Process;
+    destination: str;
+    expectedBytes: int = 0;
+    state: DownloadState = DownloadState.Running;
+    error: str = "";
+    bytesReceived: int = 0;
+    stderrTail: str = "";
+    finished: bool = false;
+
+    fn constructor(tool: HttpTool, url: str, destination: str, expectedBytes: int): Result<mut Download, str> {
+        if tool == HttpTool.None {
+            return "neither curl nor wget is available";
+        }
+
+        // A stale partial file would make the first progress reading wrong and,
+        // worse, could be resumed into a corrupt result.
+        removeFile(destination);
+
+        let parent = dirName(destination);
+        if parent.length > 0 {
+            fs.createDirectory(parent);
+        }
+
+        let exe = "curl";
+        let args: []str = ["-fsSL", "--retry", "3", "--retry-delay", "2", "-o", destination, url];
+        if tool == HttpTool.Wget {
+            exe = "wget";
+            args = ["-q", "--tries=3", "-O", destination, url];
+        }
+
+        let spawned = process.spawn(exe, args, {});
+        if !spawned {
+            return "failed to start the download process";
+        }
+
+        return Download {
+            proc: spawned,
+            destination: destination,
+            expectedBytes: expectedBytes,
+        };
+    }
+
+    mut fn poll(): DownloadProgress {
+        if this.finished {
+            return this.progress();
+        }
+
+        let stderr = this.proc.readStderr();
+        if stderr.length > 0 {
+            this.stderrTail = this.stderrTail + stderr;
+            if this.stderrTail.length > 2048 {
+                this.stderrTail = this.stderrTail.slice(this.stderrTail.length - 2048, this.stderrTail.length);
+            }
+        }
+        // Drained even though it is unused: a downloader that fills its stdout
+        // pipe would block forever.
+        this.proc.readStdout();
+
+        let stat = fs.statFile(this.destination);
+        if stat {
+            this.bytesReceived = stat.size;
+        }
+
+        if this.proc.isAlive() {
+            return this.progress();
+        }
+
+        let code = this.proc.join();
+        this.finished = true;
+
+        if this.state == DownloadState.Cancelled {
+            removeFile(this.destination);
+            return this.progress();
+        }
+
+        if code != 0 {
+            this.state = DownloadState.Failed;
+            let detail = this.stderrTail.trim();
+            if detail.length == 0 {
+                detail = "exit code " + f"{code}";
+            }
+            this.error = "download failed: " + detail;
+            removeFile(this.destination);
+            return this.progress();
+        }
+
+        // A downloader can exit 0 having written a truncated file if the
+        // connection dropped at just the wrong moment, so the size is checked
+        // here as well as the checksum later.
+        let completed = fs.statFile(this.destination);
+        if !completed {
+            this.state = DownloadState.Failed;
+            this.error = "download reported success but wrote no file";
+            return this.progress();
+        }
+        this.bytesReceived = completed.size;
+        if this.expectedBytes > 0 && completed.size != this.expectedBytes {
+            this.state = DownloadState.Failed;
+            this.error = "download is " + f"{completed.size}" + " bytes, expected "
+                + f"{this.expectedBytes}";
+            removeFile(this.destination);
+            return this.progress();
+        }
+
+        this.state = DownloadState.Complete;
+        return this.progress();
+    }
+
+    mut fn cancel() {
+        if this.finished {
+            return;
+        }
+        this.state = DownloadState.Cancelled;
+        // No pid for the downloader is available through the process API, so
+        // closing its stdin is the only lever; curl and wget both exit when
+        // their output can no longer be written, and the partial file is
+        // removed once the process is reaped in poll().
+        this.proc.closeStdin();
+    }
+
+    fn progress(): DownloadProgress {
+        let fraction = 0.0;
+        if this.expectedBytes > 0 {
+            fraction = (this.bytesReceived as real) / (this.expectedBytes as real);
+            if fraction > 1.0 {
+                fraction = 1.0;
+            }
+        }
+        return DownloadProgress {
+            state: this.state,
+            bytesReceived: this.bytesReceived,
+            bytesTotal: this.expectedBytes,
+            fraction: fraction,
+            error: this.error,
+        };
+    }
+}
+
+// Opens a URL in the user's browser. Used by the OAuth login flow, which needs
+// the user to approve in a real browser session.
+export fn openInBrowser(url: str): bool {
+    if sys.isWin32() {
+        let result = process.run("cmd", ["/c", "start", "", url], { inherit_stdio: false });
+        return result as bool;
+    }
+
+    // `$BROWSER` first: on a remote or headless host it is often the only
+    // thing that knows how to reach the user's actual browser.
+    let browser = env.get("BROWSER");
+    if browser {
+        if browser.length > 0 {
+            let result = process.run(browser, [url], { inherit_stdio: false });
+            if result {
+                return true;
+            }
+        }
+    }
+
+    let opened = process.run("xdg-open", [url], { inherit_stdio: false });
+    if opened {
+        return true;
+    }
+    // macOS.
+    let macOpened = process.run("open", [url], { inherit_stdio: false });
+    return macOpened as bool;
+}

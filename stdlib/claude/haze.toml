@@ -1,0 +1,13 @@
+name = "claude"
+id = "cLaUdE01"
+version = "1.0.0"
+description = "A Haze client for the Claude Code CLI: process protocol, conversations, tools, permissions, sessions, auth profiles and binary installation"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+base64 = { path = "../base64" }
+
+[linker.win32]
+flags = ["-lbcrypt"]

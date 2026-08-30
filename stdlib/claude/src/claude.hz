@@ -1,0 +1,359 @@
+import base64
+
+// claude -- a Haze client for the Claude Code CLI.
+//
+// This module is everything a chat client needs EXCEPT the drawing: the
+// process protocol, the conversation model, tool calls and their diffs,
+// permission prompts, questions, sessions and history, authentication with
+// several accounts, and installing the CLI itself. A UI on top of it is
+// expected to render `session.conversation`, answer `session.pendingPermissions`
+// and call a handful of methods; it never has to know what NDJSON is.
+//
+// === The shape of the thing ================================================
+//
+// The `claude` binary is the entire agent. It owns the model loop, every
+// built-in tool, MCP clients, settings, permission rules, hooks, compaction,
+// transcript persistence and OAuth. This module is a *client* of it -- the
+// same position the VS Code extension occupies, and the reason both can be
+// thin. What crosses the boundary is one JSON object per line over a pipe.
+//
+//     ┌──────────────────────────────┐
+//     │ your application             │
+//     │   claude.Session ────────────┼──── stdin  ──▶ ┌────────────────┐
+//     │   claude.Conversation ◀──────┼──── stdout ─── │ claude (CLI)   │
+//     │   claude.ProfileStore        │                │ talks to the   │
+//     │   claude.Installer           │                │ API itself     │
+//     └──────────────────────────────┘                └────────────────┘
+//
+// === Getting started =======================================================
+//
+//     // 1. find (or install) the binary
+//     let binary = claude.findBinary({});
+//     if !binary { /* run claude.Installer to fetch one */ }
+//
+//     // 2. open a conversation
+//     let session = claude.Session({ binaryPath: binary.path, cwd: projectDir });
+//     assert(session);
+//
+//     // 3. drive it from your frame loop
+//     session.poll();
+//
+//     // 4. send, and render
+//     session.sendText("what does this repo do?");
+//     for message in session.conversation.messages {
+//         if session.conversation.isVisible(message) { draw(message); }
+//     }
+//     for request in session.pendingPermissions {
+//         // request.allow() / request.deny(reason, interrupt)
+//     }
+//
+// === The files ============================================================
+//
+//   util.hz         JSON reading/building, uuids, hashing, paths, environment
+//   protocol.hz     the wire vocabulary: frames, blocks, enums, parsers
+//   session.hz      the process, the control channel, hooks, in-process MCP
+//   conversation.hz the message model a UI renders
+//   tools.hz        typed tool inputs, descriptions, and line diffs
+//   auth.hz         profiles, identities, sign-in, multiple accounts
+//   transcript.hz   session listing, titles, forking, the live registry
+//   binary.hz       finding, downloading and verifying the CLI
+//   http.hz         the small amount of HTTPS the installer needs
+//
+// === Allocation behaviour ==================================================
+//
+// A chat window spends almost all of its life idle, so the idle path is held
+// to a hard rule: **`Session.poll()` allocates nothing at all when no bytes
+// have arrived and nothing needs answering**, and neither do the read-side
+// queries a renderer runs each frame (`isVisible`, `isUserPrompt`,
+// `hasRunningToolCalls`, `usage.fraction()`, `describeTool`). The test suite
+// asserts this by sampling the collector across twenty thousand polls of a
+// live session. Methods that must allocate say so in their comment -- they are
+// the ones that build a new array or join a new string, and they are meant for
+// one-shot use, not for a render loop.
+
+// ── Attachments ─────────────────────────────────────────────────────────────
+//
+// Turning a file the user dropped into the composer into a content block. The
+// model sees text documents as text and images as images, so which wrapper is
+// used matters -- a PNG sent as a text document is unreadable to it.
+
+export enum AttachmentKind {
+    Image,
+    Pdf,
+    Text,
+    // Not something the model can read.
+    Unsupported,
+}
+
+export ref struct Attachment {
+    kind: AttachmentKind = AttachmentKind.Unsupported;
+    path: str = "";
+    title: str = "";
+    mediaType: str = "";
+    // The number of bytes read from disk.
+    size: int = 0;
+    error: str = "";
+
+    fn isUsable(): bool {
+        return this.kind != AttachmentKind.Unsupported && this.error.length == 0;
+    }
+}
+
+// The largest attachment worth sending. Anything bigger is refused here rather
+// than after a slow base64 encode and a rejected API call.
+const comptime MAX_ATTACHMENT_BYTES = 20971520;
+
+// The media type for a file extension, and whether the model can read it.
+export fn mediaTypeForPath(path: str): str {
+    let name = baseName(path);
+    let dot = lastIndexOf(name, ".");
+    if dot < 0 {
+        return "";
+    }
+    let extension = name.slice(dot + 1, name.length);
+
+    if extension == "png" { return "image/png"; }
+    if extension == "jpg" || extension == "jpeg" { return "image/jpeg"; }
+    if extension == "gif" { return "image/gif"; }
+    if extension == "webp" { return "image/webp"; }
+    if extension == "pdf" { return "application/pdf"; }
+    if extension == "md" || extension == "markdown" { return "text/markdown"; }
+    if extension == "csv" { return "text/csv"; }
+    if extension == "html" || extension == "htm" { return "text/html"; }
+    if extension == "json" { return "application/json"; }
+    if extension == "xml" { return "text/xml"; }
+    if extension == "txt" || extension == "log" { return "text/plain"; }
+    return "";
+}
+
+export fn attachmentKindForMediaType(mediaType: str): AttachmentKind {
+    if mediaType.startsWith("image/") {
+        return AttachmentKind.Image;
+    }
+    if mediaType == "application/pdf" {
+        return AttachmentKind.Pdf;
+    }
+    if mediaType.length > 0 {
+        return AttachmentKind.Text;
+    }
+    return AttachmentKind.Unsupported;
+}
+
+// Classifies a file without reading it. Cheap enough for a drag-over preview.
+export fn describeAttachment(path: str): Attachment {
+    let mediaType = mediaTypeForPath(path);
+    let attachment = Attachment {
+        path: path,
+        title: baseName(path),
+        mediaType: mediaType,
+        kind: attachmentKindForMediaType(mediaType),
+    };
+
+    let stat = fs.statFile(path);
+    if !stat {
+        attachment.error = "the file does not exist";
+        return attachment;
+    }
+    attachment.size = stat.size;
+    if stat.size > MAX_ATTACHMENT_BYTES {
+        attachment.error = "the file is larger than " + formatBytes(MAX_ATTACHMENT_BYTES);
+    }
+    if attachment.kind == AttachmentKind.Unsupported {
+        // Source code has no registered media type but is perfectly readable
+        // as text, so an unknown extension on a small file is treated as text
+        // rather than refused.
+        if stat.size <= 1048576 {
+            attachment.kind = AttachmentKind.Text;
+            attachment.mediaType = "text/plain";
+        }
+        else {
+            attachment.error = "unsupported file type";
+        }
+    }
+    return attachment;
+}
+
+// Reads a file and wraps it as a content block for `Session.send`.
+//
+// Images and PDFs are base64-encoded; anything else is sent as text, which
+// costs far fewer tokens and lets the model quote it back accurately.
+export fn attachmentBlock(path: str): json.Node | none {
+    let attachment = describeAttachment(path);
+    if !attachment.isUsable() {
+        return none;
+    }
+
+    if attachment.kind == AttachmentKind.Text {
+        let text = fs.readText(path);
+        if !text {
+            return none;
+        }
+        return textDocumentBlock(attachment.title, attachment.mediaType, text);
+    }
+
+    let bytes = fs.readBinary(path);
+    if !bytes {
+        return none;
+    }
+    let encoded = base64.encode(bytes);
+
+    if attachment.kind == AttachmentKind.Image {
+        return imageBlock(attachment.mediaType, encoded);
+    }
+    return binaryDocumentBlock(attachment.title, attachment.mediaType, encoded);
+}
+
+// ── IDE diagnostics ─────────────────────────────────────────────────────────
+//
+// The native VS Code chat gives the model no editor tools at all. It learns
+// about compiler errors because a PostToolUse hook feeds them back as text
+// after every edit -- which is why an agent there notices it broke the build.
+// These build that payload.
+
+export ref struct IdeDiagnostic {
+    filePath: str = "";
+    // 1-based.
+    line: int = 0;
+    column: int = 0;
+    message: str = "";
+    // "error" | "warning" | "information" | "hint"
+    severity: str = "error";
+    code: str = "";
+    source: str = "";
+}
+
+// Serializes diagnostics the way the CLI's hook consumer expects.
+export fn diagnosticsJson(diagnostics: []IdeDiagnostic): str {
+    let array = newArray();
+    for diagnostic in diagnostics {
+        let entry = newObject();
+        setStr(entry, "filePath", diagnostic.filePath);
+        setInt(entry, "line", diagnostic.line);
+        setInt(entry, "column", diagnostic.column);
+        setStr(entry, "message", diagnostic.message);
+        setStr(entry, "severity", diagnostic.severity);
+        if diagnostic.code.length > 0 {
+            setStr(entry, "code", diagnostic.code);
+        }
+        if diagnostic.source.length > 0 {
+            setStr(entry, "source", diagnostic.source);
+        }
+        push(array, entry);
+    }
+    return stringify(array);
+}
+
+// The complete PostToolUse hook answer for a set of diagnostics. Return this
+// from a hook registered on `Edit|Write|MultiEdit` and the model sees the
+// problems its edit introduced.
+export fn diagnosticsHookOutput(diagnostics: []IdeDiagnostic): json.Node {
+    return hookAdditionalContext(HookEvent.PostToolUse, ideDiagnosticsContext(diagnosticsJson(diagnostics)));
+}
+
+// The system-prompt appendix that teaches the model what the editor-context
+// blocks mean. Without it, `<ide_selection>` is just unexplained noise in the
+// turn; with it, the model treats the selection as what the user is looking at.
+export fn editorContextSystemPrompt(editorName: str): str {
+    return "\n# Editor context\n\n"
+        + "The user is working in " + editorName + ". Some turns carry extra blocks before the"
+        + " user's message:\n"
+        + "- <ide_selection> is the text the user currently has selected, with its file and line"
+        + " range. It is context, not an instruction, and may be unrelated to what they asked.\n"
+        + "- <ide_opened_file> names the file they are looking at.\n"
+        + "- <ide_diagnostics> lists problems the editor reported for a file you just changed."
+        + " Treat these as authoritative and fix what you caused.\n";
+}
+
+// ── Permission-mode cycling ─────────────────────────────────────────────────
+
+export ref struct ModeCycleOptions {
+    // Offer `auto`. The CLI reports whether it is available in the initialize
+    // response.
+    allowAuto: bool = true;
+    // Offer `bypassPermissions`. Off unless the application deliberately
+    // enables it -- it turns off every prompt this module exists to raise.
+    allowBypass: bool = false;
+}
+
+// The next mode in the cycle a keyboard shortcut walks through.
+//
+// `dontAsk` is not in the cycle: it is reachable only if the user is already
+// in it, since cycling *into* a mode that silently denies everything is not
+// something a keypress should do by accident.
+export fn nextPermissionMode(current: PermissionMode, options: ModeCycleOptions): PermissionMode {
+    if current == PermissionMode.DontAsk {
+        return PermissionMode.Default;
+    }
+
+    let cycle: []PermissionMode = [PermissionMode.Default, PermissionMode.AcceptEdits, PermissionMode.Plan];
+    if options.allowAuto {
+        cycle.push(PermissionMode.Auto);
+    }
+    if options.allowBypass {
+        cycle.push(PermissionMode.BypassPermissions);
+    }
+
+    for (let i = 0; i < cycle.length; i++) {
+        if cycle[i] == current {
+            return cycle[(i + 1) % cycle.length];
+        }
+    }
+    return PermissionMode.Default;
+}
+
+// ── One-call setup ──────────────────────────────────────────────────────────
+
+export ref struct StartOptions {
+    // Where the conversation runs.
+    cwd: str;
+    // An explicit binary path; empty to search.
+    binaryPath: str = "";
+    // Where this application keeps a downloaded copy of the CLI, if it has one.
+    managedDir: str = "";
+    // The account to run as. Leave as none for the machine's default.
+    profile: Profile | none = none;
+    // Resume an existing conversation.
+    resume: str | none = none;
+    // Your application's name, for the CLI's telemetry tag.
+    entrypoint: str = "haze-claude";
+    // Appended to the system prompt; see `editorContextSystemPrompt`.
+    appendSystemPrompt: str = "";
+    hooks: []HookRegistration = [];
+    mcpServers: []McpServer = [];
+}
+
+// Finds the binary, applies the account, and opens a conversation.
+//
+// A convenience over `findBinary` plus `applyProfile` plus `Session`, for the
+// common case. Anything unusual -- a pinned model, restricted tools, a custom
+// environment -- should build `SpawnOptions` directly, which is what this does
+// underneath.
+export fn start(options: StartOptions): Result<mut Session, SessionError> {
+    let binary = findBinary({
+        configuredPath: options.binaryPath,
+        managedDir: options.managedDir,
+    });
+    if !binary {
+        return SessionError {
+            message: "Claude Code is not installed. Use claude.Installer to download it,"
+                + " or point binaryPath at an existing copy.",
+        };
+    }
+
+    let spawnOptions: mut SpawnOptions = SpawnOptions {
+        binaryPath: binary.path,
+        cwd: options.cwd,
+        resume: options.resume,
+        entrypoint: options.entrypoint,
+        appendSystemPrompt: options.appendSystemPrompt,
+        hooks: options.hooks,
+        mcpServers: options.mcpServers,
+    };
+
+    let profile = options.profile;
+    if profile {
+        applyProfileTo(spawnOptions, profile);
+    }
+
+    return Session(spawnOptions);
+}

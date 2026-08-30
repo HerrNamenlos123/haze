@@ -1,0 +1,1160 @@
+// Typed views over the built-in tools, and the line diff a UI needs to show
+// what an edit actually changes.
+//
+// A tool's `input` is whatever that tool declares -- the protocol carries it
+// as opaque JSON and neither the CLI nor this module validates it. But a chat
+// UI cannot render "Bash" usefully without reading `command`, and it cannot
+// render "Edit" at all without turning `old_string`/`new_string` into a diff.
+// So the tools that have a UI worth building get a typed accessor here;
+// everything else falls back to pretty-printed JSON, which is what the VS Code
+// client does too.
+//
+// Every parser is total. A tool whose arguments do not match the expected
+// shape yields a struct with empty fields rather than an error: the model
+// occasionally produces malformed input, and a client that crashed on it would
+// be worse than one that renders an empty card.
+
+export enum ToolKind {
+    Bash,
+    BashOutput,
+    Read,
+    Edit,
+    MultiEdit,
+    Write,
+    NotebookEdit,
+    Glob,
+    Grep,
+    WebFetch,
+    WebSearch,
+    // The subagent tool, named `Task` on the wire and `Agent` in the UI.
+    Task,
+    TaskOutput,
+    TodoWrite,
+    ExitPlanMode,
+    AskUserQuestion,
+    Skill,
+    SlashCommand,
+    Artifact,
+    KillShell,
+    // `mcp__<server>__<tool>`.
+    Mcp,
+    Unknown,
+}
+
+export fn toolKind(name: str): ToolKind {
+    if name == "Bash" || name == "PowerShell" { return ToolKind.Bash; }
+    if name == "BashOutput" { return ToolKind.BashOutput; }
+    if name == "Read" { return ToolKind.Read; }
+    if name == "Edit" { return ToolKind.Edit; }
+    if name == "MultiEdit" { return ToolKind.MultiEdit; }
+    if name == "Write" { return ToolKind.Write; }
+    if name == "NotebookEdit" { return ToolKind.NotebookEdit; }
+    if name == "Glob" { return ToolKind.Glob; }
+    if name == "Grep" { return ToolKind.Grep; }
+    if name == "WebFetch" { return ToolKind.WebFetch; }
+    if name == "WebSearch" { return ToolKind.WebSearch; }
+    if name == "Task" || name == "Agent" { return ToolKind.Task; }
+    if name == "TaskOutput" { return ToolKind.TaskOutput; }
+    if name == "TodoWrite" { return ToolKind.TodoWrite; }
+    if name == "ExitPlanMode" { return ToolKind.ExitPlanMode; }
+    if name == "AskUserQuestion" { return ToolKind.AskUserQuestion; }
+    if name == "Skill" { return ToolKind.Skill; }
+    if name == "SlashCommand" { return ToolKind.SlashCommand; }
+    if name == "Artifact" { return ToolKind.Artifact; }
+    if name == "KillShell" { return ToolKind.KillShell; }
+    if name.startsWith("mcp__") { return ToolKind.Mcp; }
+    return ToolKind.Unknown;
+}
+
+export fn isMcpTool(name: str): bool {
+    return name.startsWith("mcp__");
+}
+
+// `mcp__github__create_issue` -> "github".
+export fn mcpServerOf(name: str): str {
+    if !isMcpTool(name) {
+        return "";
+    }
+    let rest = name.slice(5, name.length);
+    let cut = indexOf(rest, "__");
+    if cut < 0 {
+        return rest;
+    }
+    return rest.slice(0, cut);
+}
+
+// `mcp__github__create_issue` -> "create_issue".
+export fn mcpToolOf(name: str): str {
+    if !isMcpTool(name) {
+        return name;
+    }
+    let rest = name.slice(5, name.length);
+    let cut = indexOf(rest, "__");
+    if cut < 0 {
+        return rest;
+    }
+    return rest.slice(cut + 2, rest.length);
+}
+
+// Tools that only look at things. A UI can fold consecutive read-only calls
+// into one "Explored 7 files" row instead of seven cards.
+export fn isReadOnlyTool(name: str): bool {
+    let kind = toolKind(name);
+    if kind == ToolKind.Read || kind == ToolKind.Glob || kind == ToolKind.Grep
+        || kind == ToolKind.TodoWrite || kind == ToolKind.WebFetch || kind == ToolKind.WebSearch {
+        return true;
+    }
+    if kind != ToolKind.Mcp {
+        return false;
+    }
+    // An MCP tool is a black box, but its name is a strong hint and the cost
+    // of guessing wrong is only a fold that should not have happened.
+    let toolName = mcpToolOf(name);
+    return indexOf(toolName, "read") >= 0 || indexOf(toolName, "get") >= 0
+        || indexOf(toolName, "list") >= 0 || indexOf(toolName, "search") >= 0
+        || indexOf(toolName, "fetch") >= 0;
+}
+
+// Tools that change something on disk or in the world. These are the ones a
+// permission prompt must describe carefully.
+export fn isMutatingTool(name: str): bool {
+    let kind = toolKind(name);
+    return kind == ToolKind.Edit || kind == ToolKind.MultiEdit || kind == ToolKind.Write
+        || kind == ToolKind.NotebookEdit || kind == ToolKind.Bash;
+}
+
+// Internal plumbing with no meaning to a reader.
+export fn isHiddenTool(name: str): bool {
+    return name == "ToolSearch" || name == "AgentOutputTool";
+}
+
+// ── Typed inputs ────────────────────────────────────────────────────────────
+
+export ref struct BashInput {
+    command: str = "";
+    // A short human phrase the model wrote to explain the command.
+    description: str = "";
+    timeoutMillis: int = 0;
+    runInBackground: bool = false;
+}
+
+export fn parseBashInput(input: json.Node): BashInput {
+    return BashInput {
+        command: getStringOr(input, "command", ""),
+        description: getStringOr(input, "description", ""),
+        timeoutMillis: getIntOr(input, "timeout", 0),
+        runInBackground: getBoolOr(input, "run_in_background", false),
+    };
+}
+
+export ref struct ReadInput {
+    filePath: str = "";
+    // 1-based first line, 0 when unset.
+    offset: int = 0;
+    limit: int = 0;
+    // PDFs only.
+    pages: str = "";
+}
+
+export fn parseReadInput(input: json.Node): ReadInput {
+    return ReadInput {
+        filePath: getStringOr(input, "file_path", ""),
+        offset: getIntOr(input, "offset", 0),
+        limit: getIntOr(input, "limit", 0),
+        pages: getStringOr(input, "pages", ""),
+    };
+}
+
+export ref struct EditInput {
+    filePath: str = "";
+    oldString: str = "";
+    newString: str = "";
+    replaceAll: bool = false;
+}
+
+export fn parseEditInput(input: json.Node): EditInput {
+    return EditInput {
+        filePath: getStringOr(input, "file_path", ""),
+        oldString: getStringOr(input, "old_string", ""),
+        newString: getStringOr(input, "new_string", ""),
+        replaceAll: getBoolOr(input, "replace_all", false),
+    };
+}
+
+// Serializes an edit back into tool input -- what a client sends as
+// `updatedInput` after the user adjusted the change in a diff editor.
+export fn editInputToJson(edit: EditInput): json.Node {
+    let node = newObject();
+    setStr(node, "file_path", edit.filePath);
+    setStr(node, "old_string", edit.oldString);
+    setStr(node, "new_string", edit.newString);
+    setBool(node, "replace_all", edit.replaceAll);
+    return node;
+}
+
+export ref struct MultiEditInput {
+    filePath: str = "";
+    edits: []EditInput = [];
+}
+
+export fn parseMultiEditInput(input: json.Node): MultiEditInput {
+    let result = MultiEditInput { filePath: getStringOr(input, "file_path", "") };
+    for entry in getArray(input, "edits") {
+        result.edits.push(EditInput {
+            filePath: result.filePath,
+            oldString: getStringOr(entry, "old_string", ""),
+            newString: getStringOr(entry, "new_string", ""),
+            replaceAll: getBoolOr(entry, "replace_all", false),
+        });
+    }
+    return result;
+}
+
+export ref struct WriteInput {
+    filePath: str = "";
+    content: str = "";
+}
+
+export fn parseWriteInput(input: json.Node): WriteInput {
+    return WriteInput {
+        filePath: getStringOr(input, "file_path", ""),
+        content: getStringOr(input, "content", ""),
+    };
+}
+
+export ref struct GlobInput {
+    pattern: str = "";
+    path: str = "";
+}
+
+export fn parseGlobInput(input: json.Node): GlobInput {
+    return GlobInput {
+        pattern: getStringOr(input, "pattern", ""),
+        path: getStringOr(input, "path", ""),
+    };
+}
+
+export ref struct GrepInput {
+    pattern: str = "";
+    path: str = "";
+    glob: str = "";
+    fileType: str = "";
+    outputMode: str = "";
+    caseInsensitive: bool = false;
+    multiline: bool = false;
+    contextLines: int = 0;
+}
+
+export fn parseGrepInput(input: json.Node): GrepInput {
+    return GrepInput {
+        pattern: getStringOr(input, "pattern", ""),
+        path: getStringOr(input, "path", ""),
+        glob: getStringOr(input, "glob", ""),
+        fileType: getStringOr(input, "type", ""),
+        outputMode: getStringOr(input, "output_mode", ""),
+        caseInsensitive: getBoolOr(input, "-i", false),
+        multiline: getBoolOr(input, "multiline", false),
+        contextLines: getIntOr(input, "-C", 0),
+    };
+}
+
+export ref struct WebFetchInput {
+    url: str = "";
+    prompt: str = "";
+}
+
+export fn parseWebFetchInput(input: json.Node): WebFetchInput {
+    return WebFetchInput {
+        url: getStringOr(input, "url", ""),
+        prompt: getStringOr(input, "prompt", ""),
+    };
+}
+
+export ref struct WebSearchInput {
+    query: str = "";
+    allowedDomains: []str = [];
+    blockedDomains: []str = [];
+}
+
+export fn parseWebSearchInput(input: json.Node): WebSearchInput {
+    return WebSearchInput {
+        query: getStringOr(input, "query", ""),
+        allowedDomains: getStringArray(input, "allowed_domains"),
+        blockedDomains: getStringArray(input, "blocked_domains"),
+    };
+}
+
+export ref struct TaskInput {
+    description: str = "";
+    prompt: str = "";
+    subagentType: str = "";
+    runInBackground: bool = false;
+}
+
+export fn parseTaskInput(input: json.Node): TaskInput {
+    return TaskInput {
+        description: getStringOr(input, "description", ""),
+        prompt: getStringOr(input, "prompt", ""),
+        subagentType: getStringOr(input, "subagent_type", ""),
+        runInBackground: getBoolOr(input, "run_in_background", false),
+    };
+}
+
+export ref struct ExitPlanModeInput {
+    plan: str = "";
+    planFilePath: str = "";
+}
+
+export fn parseExitPlanModeInput(input: json.Node): ExitPlanModeInput {
+    return ExitPlanModeInput {
+        plan: getStringOr(input, "plan", ""),
+        planFilePath: getStringOr(input, "planFilePath", ""),
+    };
+}
+
+export ref struct SkillInput {
+    skill: str = "";
+    args: str = "";
+}
+
+export fn parseSkillInput(input: json.Node): SkillInput {
+    let skill = getStringOr(input, "skill", getStringOr(input, "command", ""));
+    if skill.startsWith("/") {
+        skill = skill.slice(1, skill.length);
+    }
+    return SkillInput {
+        skill: skill,
+        args: getStringOr(input, "args", ""),
+    };
+}
+
+// ── AskUserQuestion ─────────────────────────────────────────────────────────
+//
+// The agent's way of asking the user a multiple-choice question. It arrives as
+// an ordinary permission request for a tool named `AskUserQuestion`; the
+// client answers by filling in `answers` and allowing the call, which is why
+// `answeredInput` below exists.
+
+export ref struct QuestionOption {
+    label: str = "";
+    description: str = "";
+}
+
+export ref struct QuestionSpec {
+    question: str = "";
+    // A short chip label for a tab strip.
+    header: str = "";
+    multiSelect: bool = false;
+    options: []QuestionOption = [];
+}
+
+export ref struct AskUserQuestionInput {
+    questions: []QuestionSpec = [];
+}
+
+export fn parseAskUserQuestionInput(input: json.Node): AskUserQuestionInput {
+    let result = AskUserQuestionInput {};
+    for entry in getArray(input, "questions") {
+        let spec = QuestionSpec {
+            question: getStringOr(entry, "question", ""),
+            header: getStringOr(entry, "header", ""),
+            multiSelect: getBoolOr(entry, "multiSelect", false),
+        };
+        for option in getArray(entry, "options") {
+            spec.options.push(QuestionOption {
+                label: getStringOr(option, "label", ""),
+                description: getStringOr(option, "description", ""),
+            });
+        }
+        result.questions.push(spec);
+    }
+    return result;
+}
+
+export ref struct QuestionAnswer {
+    // Must match `QuestionSpec.question` exactly: that string is the key.
+    question: str = "";
+    // The chosen labels. For a multi-select, all of them; the user's own
+    // free-text answer is just another label.
+    labels: []str = [];
+}
+
+// Builds the `updatedInput` for an answered AskUserQuestion: the original
+// input with an `answers` map added, keyed by question text with the chosen
+// labels joined by ", ".
+export fn answeredQuestionInput(input: json.Node, answers: []QuestionAnswer): json.Node {
+    let updated = clone(input);
+    let map = newObject();
+    for answer in answers {
+        setStr(map, answer.question, joinStrings(answer.labels, ", "));
+    }
+    set(updated, "answers", map);
+    return updated;
+}
+
+// Builds the `updatedInput` for an accepted plan, carrying any comments the
+// user made while reviewing it.
+export fn acceptedPlanInput(input: json.Node, feedback: str): json.Node {
+    let updated = clone(input);
+    if feedback.length > 0 {
+        setStr(updated, "userFeedback", feedback);
+    }
+    return updated;
+}
+
+// ── One-line descriptions ───────────────────────────────────────────────────
+
+// A structured description of a tool call, as parts rather than a sentence.
+//
+// Kept as separate fields on purpose: composing them into one string would
+// allocate, and a UI redraws tool cards on every frame. `verb` is always a
+// literal, and `subject` / `detail` / `filePath` are almost always slices of
+// the tool input that is already in memory -- so building one of these
+// allocates nothing in the common case. Call `title()` only if a single string
+// is genuinely what you need.
+export struct ToolSummary {
+    // "Read", "Bash", "Edit". Always a constant.
+    verb: str = "";
+    // What it acts on: a file's base name, a server name. Usually a slice.
+    subject: str = "";
+    // The command, the pattern, the URL. Usually a slice.
+    detail: str = "";
+    // The file this call concerns, for a click-to-open affordance.
+    filePath: str = "";
+    // A line range, when the call has one; 0 when it does not.
+    lineStart: int = 0;
+    lineEnd: int = 0;
+    // A count the caller may want to render ("3 changes", "40 lines").
+    count: int = 0;
+
+    // Allocates. Only call it when one string is what you want.
+    fn title(): str {
+        if this.subject.length == 0 {
+            return this.verb;
+        }
+        return this.verb + " " + this.subject;
+    }
+}
+
+// A structured, renderer-agnostic description of a tool call. Not a rendering:
+// it returns strings and numbers, and the caller decides what to do with them.
+export fn describeTool(name: str, input: json.Node): ToolSummary {
+    let kind = toolKind(name);
+
+    if kind == ToolKind.Bash {
+        let parsed = parseBashInput(input);
+        return ToolSummary {
+            verb: "Bash",
+            subject: parsed.description,
+            detail: parsed.command,
+        };
+    }
+
+    if kind == ToolKind.Read {
+        let parsed = parseReadInput(input);
+        let summary = ToolSummary {
+            verb: "Read",
+            subject: baseName(parsed.filePath),
+            filePath: parsed.filePath,
+            lineStart: parsed.offset,
+        };
+        if parsed.offset > 0 && parsed.limit > 0 {
+            summary.lineEnd = parsed.offset + parsed.limit - 1;
+        }
+        return summary;
+    }
+
+    if kind == ToolKind.Edit {
+        let parsed = parseEditInput(input);
+        return ToolSummary {
+            verb: "Edit",
+            subject: baseName(parsed.filePath),
+            filePath: parsed.filePath,
+            count: 1,
+        };
+    }
+
+    if kind == ToolKind.MultiEdit {
+        let parsed = parseMultiEditInput(input);
+        return ToolSummary {
+            verb: "Edit",
+            subject: baseName(parsed.filePath),
+            filePath: parsed.filePath,
+            count: parsed.edits.length,
+        };
+    }
+
+    if kind == ToolKind.Write {
+        let parsed = parseWriteInput(input);
+        return ToolSummary {
+            verb: "Write",
+            subject: baseName(parsed.filePath),
+            filePath: parsed.filePath,
+            count: countLines(parsed.content),
+        };
+    }
+
+    if kind == ToolKind.Glob {
+        let parsed = parseGlobInput(input);
+        return ToolSummary { verb: "Glob", subject: parsed.pattern, filePath: parsed.path };
+    }
+
+    if kind == ToolKind.Grep {
+        let parsed = parseGrepInput(input);
+        return ToolSummary { verb: "Grep", subject: parsed.pattern, detail: parsed.glob,
+                             filePath: parsed.path };
+    }
+
+    if kind == ToolKind.WebFetch {
+        let parsed = parseWebFetchInput(input);
+        return ToolSummary { verb: "Fetch", subject: parsed.url };
+    }
+
+    if kind == ToolKind.WebSearch {
+        let parsed = parseWebSearchInput(input);
+        return ToolSummary { verb: "Search the web", subject: parsed.query };
+    }
+
+    if kind == ToolKind.Task {
+        let parsed = parseTaskInput(input);
+        return ToolSummary { verb: "Agent", subject: parsed.subagentType, detail: parsed.description };
+    }
+
+    if kind == ToolKind.TodoWrite {
+        return ToolSummary { verb: "Update todos" };
+    }
+
+    if kind == ToolKind.ExitPlanMode {
+        return ToolSummary { verb: "Present a plan" };
+    }
+
+    if kind == ToolKind.Skill {
+        let parsed = parseSkillInput(input);
+        return ToolSummary { verb: "Skill", subject: parsed.skill, detail: parsed.args };
+    }
+
+    if kind == ToolKind.Mcp {
+        return ToolSummary {
+            verb: mcpServerOf(name),
+            subject: mcpToolOf(name),
+            detail: firstInterestingField(input),
+        };
+    }
+
+    return ToolSummary { verb: name, detail: firstInterestingField(input) };
+}
+
+// Lines in a text, without building the array of them.
+fn countLines(text: str): int {
+    if text.length == 0 {
+        return 0;
+    }
+    let lines = 1;
+    for (let i = 0; i < text.length; i++) {
+        if text.slice(i, i + 1) == "\n" {
+            lines = lines + 1;
+        }
+    }
+    return lines;
+}
+
+// For a tool this module knows nothing about, the most useful single line is
+// whichever of these conventional fields it happens to have. The returned
+// string is a slice of the input, not a copy.
+fn firstInterestingField(input: json.Node): str {
+    let names: []str = ["query", "message", "command", "url", "path", "file_path",
+                        "title", "search", "text", "prompt", "description"];
+    for name in names {
+        let value = getString(input, name);
+        if value {
+            if value.length > 0 {
+                return value;
+            }
+        }
+    }
+    return "";
+}
+
+// The wording for a permission prompt. The VS Code client hard-codes one of
+// these per tool; the phrasing matters because it is the last thing a user
+// reads before approving a filesystem write.
+export fn permissionQuestion(name: str, input: json.Node): str {
+    let kind = toolKind(name);
+
+    if kind == ToolKind.Read {
+        return "Allow reading " + baseName(parseReadInput(input).filePath) + "?";
+    }
+    if kind == ToolKind.Edit || kind == ToolKind.MultiEdit {
+        return "Apply this edit to " + baseName(parseEditInput(input).filePath) + "?";
+    }
+    if kind == ToolKind.Write {
+        return "Allow writing " + baseName(parseWriteInput(input).filePath) + "?";
+    }
+    if kind == ToolKind.Bash {
+        return "Run this command?";
+    }
+    if kind == ToolKind.Glob {
+        return "Allow searching for files?";
+    }
+    if kind == ToolKind.Grep {
+        return "Allow searching file contents?";
+    }
+    if kind == ToolKind.WebFetch {
+        return "Allow fetching " + parseWebFetchInput(input).url + "?";
+    }
+    if kind == ToolKind.WebSearch {
+        return "Allow searching the web?";
+    }
+    if kind == ToolKind.ExitPlanMode {
+        return "Accept this plan?";
+    }
+    if kind == ToolKind.Skill {
+        return "Use the " + parseSkillInput(input).skill + " skill?";
+    }
+    return "Allow " + name + "?";
+}
+
+// The CLI writes a canned preamble into the tool_result of a denied call. A UI
+// that shows the raw text repeats boilerplate the user just typed; stripping
+// it leaves only the reason they gave.
+export fn strippedDenialReason(resultText: str): str {
+    const prefix = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+        + " (eg. if it was a file edit, the new_string was NOT written to the file).";
+    if !resultText.startsWith(prefix) {
+        return resultText;
+    }
+    let rest = resultText.slice(prefix.length, resultText.length);
+    const reasonMarker = "The user provided the following reason for the rejection: ";
+    let cut = indexOf(rest, reasonMarker);
+    if cut >= 0 {
+        return rest.slice(cut + reasonMarker.length, rest.length).trim();
+    }
+    return "";
+}
+
+// ── Line diff ───────────────────────────────────────────────────────────────
+
+export enum DiffLineKind {
+    Context,
+    Added,
+    Removed,
+}
+
+export ref struct DiffLine {
+    kind: DiffLineKind = DiffLineKind.Context;
+    text: str = "";
+    // 1-based line numbers, or 0 where the line does not exist on that side.
+    oldLine: int = 0;
+    newLine: int = 0;
+}
+
+// A run of changed lines with a little unchanged context around it -- what a
+// diff view actually draws.
+export ref struct DiffHunk {
+    oldStart: int = 0;
+    oldCount: int = 0;
+    newStart: int = 0;
+    newCount: int = 0;
+    lines: []DiffLine = [];
+
+    // The `@@ -a,b +c,d @@` header, for a caller that wants unified output.
+    fn header(): str {
+        return "@@ -" + f"{this.oldStart}" + "," + f"{this.oldCount}"
+            + " +" + f"{this.newStart}" + "," + f"{this.newCount}" + " @@";
+    }
+}
+
+export ref struct FileDiff {
+    path: str = "";
+    hunks: []DiffHunk = [];
+    added: int = 0;
+    removed: int = 0;
+    // The file did not exist before.
+    isNewFile: bool = false;
+    // The whole content is being replaced rather than patched.
+    isFullRewrite: bool = false;
+    // The change could not be located in the file -- an Edit whose
+    // `old_string` is not present, which is exactly what a stale edit looks
+    // like. The hunks then show the intended change without line numbers.
+    isUnanchored: bool = false;
+
+    fn isEmpty(): bool {
+        return this.added == 0 && this.removed == 0;
+    }
+
+    // "+12 −3", the summary line under a tool card.
+    fn summary(): str {
+        if this.isNewFile {
+            return f"{this.added}" + " lines";
+        }
+        if this.isEmpty() {
+            return "no changes";
+        }
+        return "+" + f"{this.added}" + " −" + f"{this.removed}";
+    }
+}
+
+// The largest region the LCS table is allowed to cover. The table is
+// (n+1)*(m+1) ints, so 1200x1200 is about 11 MB -- comfortably the largest
+// edit anyone reviews by eye, and far below anything that would stall a frame.
+// Beyond it, the diff degrades to "this block was replaced by that block",
+// which is honest and still renders.
+const comptime DIFF_MAX_AREA = 1440000;
+
+// A line-level diff of two texts.
+//
+// Common leading and trailing lines are trimmed first. That is not just an
+// optimisation: an Edit usually touches a few lines of a large file, and
+// without trimming the LCS table would be enormous for a change that is
+// trivially localised.
+export fn diffLines(oldText: str, newText: str): []DiffLine {
+    let oldLines = splitLines(oldText);
+    let newLines = splitLines(newText);
+    return diffLineArrays(oldLines, newLines);
+}
+
+export fn diffLineArrays(oldLines: []str, newLines: []str): []DiffLine {
+    let result: []DiffLine = [];
+
+    let prefix = 0;
+    while prefix < oldLines.length && prefix < newLines.length {
+        if oldLines[prefix] != newLines[prefix] {
+            break;
+        }
+        prefix = prefix + 1;
+    }
+
+    let suffix = 0;
+    while suffix < oldLines.length - prefix && suffix < newLines.length - prefix {
+        if oldLines[oldLines.length - 1 - suffix] != newLines[newLines.length - 1 - suffix] {
+            break;
+        }
+        suffix = suffix + 1;
+    }
+
+    for (let i = 0; i < prefix; i++) {
+        result.push(DiffLine {
+            kind: DiffLineKind.Context,
+            text: oldLines[i],
+            oldLine: i + 1,
+            newLine: i + 1,
+        });
+    }
+
+    let oldMid: []str = [];
+    for (let i = prefix; i < oldLines.length - suffix; i++) {
+        oldMid.push(oldLines[i]);
+    }
+    let newMid: []str = [];
+    for (let i = prefix; i < newLines.length - suffix; i++) {
+        newMid.push(newLines[i]);
+    }
+
+    let middle = diffMiddle(oldMid, newMid, prefix);
+    for line in middle {
+        result.push(line);
+    }
+
+    for (let i = 0; i < suffix; i++) {
+        let oldIndex = oldLines.length - suffix + i;
+        let newIndex = newLines.length - suffix + i;
+        result.push(DiffLine {
+            kind: DiffLineKind.Context,
+            text: oldLines[oldIndex],
+            oldLine: oldIndex + 1,
+            newLine: newIndex + 1,
+        });
+    }
+
+    return result;
+}
+
+// The changed region, aligned by longest common subsequence.
+fn diffMiddle(oldLines: []str, newLines: []str, offset: int): []DiffLine {
+    let result: []DiffLine = [];
+
+    if oldLines.length == 0 && newLines.length == 0 {
+        return result;
+    }
+
+    if oldLines.length == 0 {
+        for (let i = 0; i < newLines.length; i++) {
+            result.push(DiffLine {
+                kind: DiffLineKind.Added,
+                text: newLines[i],
+                newLine: offset + i + 1,
+            });
+        }
+        return result;
+    }
+
+    if newLines.length == 0 {
+        for (let i = 0; i < oldLines.length; i++) {
+            result.push(DiffLine {
+                kind: DiffLineKind.Removed,
+                text: oldLines[i],
+                oldLine: offset + i + 1,
+            });
+        }
+        return result;
+    }
+
+    if (oldLines.length + 1) * (newLines.length + 1) > DIFF_MAX_AREA {
+        // Too large to align line by line. Report it as a wholesale
+        // replacement rather than spending seconds on a table nobody will
+        // read every row of.
+        for (let i = 0; i < oldLines.length; i++) {
+            result.push(DiffLine {
+                kind: DiffLineKind.Removed,
+                text: oldLines[i],
+                oldLine: offset + i + 1,
+            });
+        }
+        for (let i = 0; i < newLines.length; i++) {
+            result.push(DiffLine {
+                kind: DiffLineKind.Added,
+                text: newLines[i],
+                newLine: offset + i + 1,
+            });
+        }
+        return result;
+    }
+
+    // table[i][j] = length of the LCS of oldLines[i..] and newLines[j..],
+    // flattened into one array because Haze has no 2-D array type.
+    let rows = oldLines.length + 1;
+    let columns = newLines.length + 1;
+    let table: []int = [];
+    array.reserve<int>(table, rows * columns);
+    for (let i = 0; i < rows * columns; i++) {
+        table.push(0);
+    }
+
+    for (let i = oldLines.length - 1; i >= 0; i--) {
+        for (let j = newLines.length - 1; j >= 0; j--) {
+            if oldLines[i] == newLines[j] {
+                table[i * columns + j] = table[(i + 1) * columns + (j + 1)] + 1;
+            }
+            else {
+                let skipOld = table[(i + 1) * columns + j];
+                let skipNew = table[i * columns + (j + 1)];
+                if skipOld >= skipNew {
+                    table[i * columns + j] = skipOld;
+                }
+                else {
+                    table[i * columns + j] = skipNew;
+                }
+            }
+        }
+    }
+
+    let i = 0;
+    let j = 0;
+    while i < oldLines.length && j < newLines.length {
+        if oldLines[i] == newLines[j] {
+            result.push(DiffLine {
+                kind: DiffLineKind.Context,
+                text: oldLines[i],
+                oldLine: offset + i + 1,
+                newLine: offset + j + 1,
+            });
+            i = i + 1;
+            j = j + 1;
+        }
+        else if table[(i + 1) * columns + j] >= table[i * columns + (j + 1)] {
+            result.push(DiffLine {
+                kind: DiffLineKind.Removed,
+                text: oldLines[i],
+                oldLine: offset + i + 1,
+            });
+            i = i + 1;
+        }
+        else {
+            result.push(DiffLine {
+                kind: DiffLineKind.Added,
+                text: newLines[j],
+                newLine: offset + j + 1,
+            });
+            j = j + 1;
+        }
+    }
+    while i < oldLines.length {
+        result.push(DiffLine {
+            kind: DiffLineKind.Removed,
+            text: oldLines[i],
+            oldLine: offset + i + 1,
+        });
+        i = i + 1;
+    }
+    while j < newLines.length {
+        result.push(DiffLine {
+            kind: DiffLineKind.Added,
+            text: newLines[j],
+            newLine: offset + j + 1,
+        });
+        j = j + 1;
+    }
+
+    return result;
+}
+
+// Groups a line diff into hunks with `context` unchanged lines on each side,
+// dropping the long stretches of untouched file in between.
+export fn buildHunks(lines: []DiffLine, context: int): []DiffHunk {
+    let hunks: []DiffHunk = [];
+
+    // Which lines are near a change and therefore worth keeping.
+    let keep: []bool = [];
+    for (let i = 0; i < lines.length; i++) {
+        keep.push(false);
+    }
+    for (let i = 0; i < lines.length; i++) {
+        if lines[i].kind == DiffLineKind.Context {
+            continue;
+        }
+        let start = i - context;
+        if start < 0 {
+            start = 0;
+        }
+        let end = i + context;
+        if end > lines.length - 1 {
+            end = lines.length - 1;
+        }
+        for (let j = start; j <= end; j++) {
+            keep[j] = true;
+        }
+    }
+
+    let index = 0;
+    while index < lines.length {
+        if !keep[index] {
+            index = index + 1;
+            continue;
+        }
+        let hunk = DiffHunk {};
+        let first = true;
+        while index < lines.length && keep[index] {
+            let line = lines[index];
+            if first {
+                hunk.oldStart = line.oldLine;
+                hunk.newStart = line.newLine;
+                first = false;
+            }
+            if line.kind != DiffLineKind.Added {
+                hunk.oldCount = hunk.oldCount + 1;
+                if hunk.oldStart == 0 {
+                    hunk.oldStart = line.oldLine;
+                }
+            }
+            if line.kind != DiffLineKind.Removed {
+                hunk.newCount = hunk.newCount + 1;
+                if hunk.newStart == 0 {
+                    hunk.newStart = line.newLine;
+                }
+            }
+            hunk.lines.push(line);
+            index = index + 1;
+        }
+        hunks.push(hunk);
+    }
+
+    return hunks;
+}
+
+fn countChanges(diff: FileDiff) {
+    diff.added = 0;
+    diff.removed = 0;
+    for hunk in diff.hunks {
+        for line in hunk.lines {
+            if line.kind == DiffLineKind.Added {
+                diff.added = diff.added + 1;
+            }
+            else if line.kind == DiffLineKind.Removed {
+                diff.removed = diff.removed + 1;
+            }
+        }
+    }
+}
+
+// Applies an Edit the way the CLI's own Edit tool does: a literal substring
+// replacement, once or everywhere. Returns none when `oldString` does not
+// occur -- which is how a client detects an edit that no longer applies,
+// before showing the user a diff that would not happen.
+export fn applyEdit(content: str, oldString: str, newString: str, replaceAll: bool): str | none {
+    if oldString.length == 0 {
+        // The CLI treats an empty old_string as "create the file with this
+        // content"; there is nothing to locate.
+        return newString;
+    }
+    let at = indexOf(content, oldString);
+    if at < 0 {
+        return none;
+    }
+    if !replaceAll {
+        return content.slice(0, at) + newString + content.slice(at + oldString.length, content.length);
+    }
+
+    let result = "";
+    let cursor = 0;
+    while true {
+        let found = indexOfFrom(content, oldString, cursor);
+        if found < 0 {
+            result = result + content.slice(cursor, content.length);
+            break;
+        }
+        result = result + content.slice(cursor, found) + newString;
+        cursor = found + oldString.length;
+    }
+    return result;
+}
+
+export ref struct DiffOptions {
+    // Unchanged lines to keep on each side of a change.
+    context: int = 3;
+}
+
+// The diff an Edit call would produce.
+//
+// `currentContent` is the file as it is on disk right now. Pass none when the
+// file cannot be read; the diff then shows the change without line numbers
+// (`isUnanchored`), which is still the right thing to render -- it is what the
+// model intends -- but tells the caller not to claim it knows where.
+export fn editDiff(edit: EditInput, currentContent: str | none, options: DiffOptions): FileDiff {
+    let diff = FileDiff { path: edit.filePath };
+
+    if !currentContent {
+        diff.isUnanchored = true;
+        diff.hunks = buildHunks(diffLines(edit.oldString, edit.newString), options.context);
+        countChanges(diff);
+        return diff;
+    }
+
+    let updated = applyEdit(currentContent, edit.oldString, edit.newString, edit.replaceAll);
+    if !updated {
+        // The anchor is gone: show the intended replacement on its own.
+        diff.isUnanchored = true;
+        diff.hunks = buildHunks(diffLines(edit.oldString, edit.newString), options.context);
+        countChanges(diff);
+        return diff;
+    }
+
+    diff.hunks = buildHunks(diffLines(currentContent, updated), options.context);
+    countChanges(diff);
+    return diff;
+}
+
+// The diff a MultiEdit call would produce: every edit applied in order, since
+// each one operates on the result of the last.
+export fn multiEditDiff(edits: MultiEditInput, currentContent: str | none, options: DiffOptions): FileDiff {
+    let diff = FileDiff { path: edits.filePath };
+
+    if !currentContent {
+        diff.isUnanchored = true;
+        let lines: []DiffLine = [];
+        for edit in edits.edits {
+            for line in diffLines(edit.oldString, edit.newString) {
+                lines.push(line);
+            }
+        }
+        diff.hunks = buildHunks(lines, options.context);
+        countChanges(diff);
+        return diff;
+    }
+
+    let working = currentContent;
+    for edit in edits.edits {
+        let updated = applyEdit(working, edit.oldString, edit.newString, edit.replaceAll);
+        if !updated {
+            diff.isUnanchored = true;
+            break;
+        }
+        working = updated;
+    }
+
+    diff.hunks = buildHunks(diffLines(currentContent, working), options.context);
+    countChanges(diff);
+    return diff;
+}
+
+// The diff a Write call would produce. A Write to a file that does not exist
+// is a creation, not a rewrite, and reads better shown as one.
+export fn writeDiff(write: WriteInput, currentContent: str | none, options: DiffOptions): FileDiff {
+    let diff = FileDiff { path: write.filePath };
+
+    if !currentContent {
+        diff.isNewFile = true;
+        let lines: []str = splitLines(write.content);
+        let hunk = DiffHunk { oldStart: 0, oldCount: 0, newStart: 1, newCount: lines.length };
+        for (let i = 0; i < lines.length; i++) {
+            hunk.lines.push(DiffLine {
+                kind: DiffLineKind.Added,
+                text: lines[i],
+                newLine: i + 1,
+            });
+        }
+        if lines.length > 0 {
+            diff.hunks.push(hunk);
+        }
+        countChanges(diff);
+        return diff;
+    }
+
+    diff.isFullRewrite = true;
+    diff.hunks = buildHunks(diffLines(currentContent, write.content), options.context);
+    countChanges(diff);
+    return diff;
+}
+
+// The diff for whatever kind of change this tool call represents, reading the
+// file from disk. Returns none for a tool that does not change a file.
+export fn toolDiff(name: str, input: json.Node, options: DiffOptions): FileDiff | none {
+    let kind = toolKind(name);
+
+    if kind == ToolKind.Edit {
+        let edit = parseEditInput(input);
+        return editDiff(edit, readFileIfPossible(edit.filePath), options);
+    }
+    if kind == ToolKind.MultiEdit {
+        let edits = parseMultiEditInput(input);
+        return multiEditDiff(edits, readFileIfPossible(edits.filePath), options);
+    }
+    if kind == ToolKind.Write {
+        let write = parseWriteInput(input);
+        return writeDiff(write, readFileIfPossible(write.filePath), options);
+    }
+    return none;
+}
+
+fn readFileIfPossible(path: str): str | none {
+    if path.length == 0 {
+        return none;
+    }
+    let content = fs.readText(path);
+    if !content {
+        return none;
+    }
+    return content;
+}
+
+// Renders a diff in unified format -- for copying to the clipboard, writing to
+// a patch file, or a terminal UI with no diff widget of its own.
+export fn unifiedDiff(diff: FileDiff): str {
+    let out: []str = [];
+    out.push("--- a/" + diff.path);
+    out.push("+++ b/" + diff.path);
+    for hunk in diff.hunks {
+        out.push(hunk.header());
+        for line in hunk.lines {
+            if line.kind == DiffLineKind.Added {
+                out.push("+" + line.text);
+            }
+            else if line.kind == DiffLineKind.Removed {
+                out.push("-" + line.text);
+            }
+            else {
+                out.push(" " + line.text);
+            }
+        }
+    }
+    return joinStrings(out, "\n");
+}

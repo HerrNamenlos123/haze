@@ -1,0 +1,11 @@
+name = "claudetest"
+id = "cLaUtSt0"
+version = "0.1.0"
+description = "Test suite for the claude module"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[dependencies]
+claude = { path = "../stdlib/claude" }

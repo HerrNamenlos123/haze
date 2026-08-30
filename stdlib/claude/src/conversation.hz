@@ -1,0 +1,1186 @@
+// The conversation model: what a chat UI renders.
+//
+// `Session` feeds every decoded frame into `Conversation.ingest()`, and the
+// result is a flat, ordered list of messages whose content blocks already have
+// their tool results attached, their streaming deltas assembled, and their
+// timings recorded. A UI walks `messages` and draws them; it never has to
+// correlate anything itself.
+//
+// Four things make this more than a list append:
+//
+//   * **Streaming.** With `--include-partial-messages` the text of a reply
+//     arrives as deltas long before the complete `assistant` frame does. A
+//     placeholder message is created on `message_start` and grown delta by
+//     delta; when the real frame arrives it REPLACES the placeholder in place,
+//     keeping the timing that was measured while it streamed.
+//   * **Subagents.** Every frame carries the `Task` tool_use id it belongs to.
+//     Main-loop and subagent output interleave on the wire, so there is one
+//     stream assembler per parent id -- with a single one, a subagent's tokens
+//     would be appended to the main reply.
+//   * **Tool results.** A `tool_result` arrives in a later *user* message,
+//     identified only by `tool_use_id`. It is matched back to the `tool_use`
+//     block that produced it, so a UI can draw a call and its output as one
+//     unit instead of two unrelated messages.
+//   * **Compaction.** A `compact_boundary` is followed by a synthetic user
+//     message holding the summary. That message is not a user turn and must
+//     not be drawn as one; it becomes the boundary's `compactSummary`.
+
+export enum MessageRole {
+    User,
+    Assistant,
+    // A note from the CLI rather than either party (a local command's output).
+    Meta,
+    // The marker where the conversation was compacted.
+    Compact,
+    // The model declined and fell back to another one.
+    RefusalFallback,
+    System,
+}
+
+export ref struct Message {
+    role: MessageRole = MessageRole.Assistant;
+    // The transcript uuid. Empty for a message that only exists as a
+    // streaming placeholder so far.
+    uuid: str = "";
+    // The Anthropic `message.id`. Used to match a streamed placeholder to the
+    // complete frame that later replaces it.
+    betaMessageId: str = "";
+    blocks: []ContentBlock = [];
+    timestamp: int = 0;
+
+    // The `Task`/`Agent` tool_use id this message belongs to; empty for the
+    // main conversation. A UI can indent or fold these.
+    parentToolUseId: str = "";
+
+    // Produced by the CLI rather than typed by the user (compaction
+    // summaries, "[Browser disconnected]" notices).
+    isSynthetic: bool = false;
+    // Echoed back by `--replay-user-messages`, either to confirm receipt or
+    // to rebuild the history of a resumed session.
+    isReplay: bool = false;
+    isMeta: bool = false;
+
+    model: str = "";
+    usage: Usage = {};
+    // Set on an assistant message the API refused or failed to produce.
+    error: str = "";
+
+    // Compact boundary only.
+    compact: CompactInfo | none = none;
+    compactSummary: str = "";
+
+    raw?: json.Node;
+
+    // True while the streaming assembler is still filling this message in.
+    streaming: bool = false;
+
+    // Monotonic position id, assigned when the message enters the
+    // conversation. Haze has no identity comparison for ref structs, and a
+    // streamed placeholder has to be found again in order to be replaced --
+    // this is what identifies it.
+    slot: int = 0;
+
+    // Nothing worth drawing: no blocks, only tool results (which are rendered
+    // inside the call that produced them), only unfinished tool calls, or only
+    // blank text.
+    fn isEmpty(): bool {
+        if this.blocks.length == 0 {
+            return true;
+        }
+        let anyVisible = false;
+        for block in this.blocks {
+            if block.kind == BlockKind.ToolResult {
+                continue;
+            }
+            if block.kind == BlockKind.ToolUse || block.kind == BlockKind.ServerToolUse {
+                if block.partial {
+                    continue;
+                }
+                anyVisible = true;
+                continue;
+            }
+            if block.kind == BlockKind.Text {
+                if block.text.trim().length > 0 {
+                    anyVisible = true;
+                }
+                continue;
+            }
+            anyVisible = true;
+        }
+        return !anyVisible;
+    }
+
+    // The first non-empty text block, as a slice of what was already parsed.
+    // Allocates nothing, which is what a per-frame renderer wants; `text()`
+    // below joins every block and does allocate.
+    fn firstText(): str {
+        for block in this.blocks {
+            if block.kind == BlockKind.Text {
+                if block.text.length > 0 {
+                    return block.text;
+                }
+            }
+        }
+        return "";
+    }
+
+    fn hasText(): bool {
+        for block in this.blocks {
+            if block.kind == BlockKind.Text {
+                if block.text.trim().length > 0 {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // All text blocks joined -- what to copy, search or summarize.
+    // ALLOCATES: builds a new string. Not for a per-frame path.
+    fn text(): str {
+        let parts: []str = [];
+        for block in this.blocks {
+            if block.kind == BlockKind.Text {
+                parts.push(block.text);
+            }
+        }
+        return joinStrings(parts, "\n");
+    }
+
+    // ALLOCATES.
+    fn thinkingText(): str {
+        let parts: []str = [];
+        for block in this.blocks {
+            if block.kind == BlockKind.Thinking {
+                parts.push(block.text);
+            }
+        }
+        return joinStrings(parts, "\n");
+    }
+
+    // ALLOCATES a new array. To walk them without one, iterate `blocks` and
+    // test `kind` directly.
+    fn toolCalls(): []ContentBlock {
+        let calls: []ContentBlock = [];
+        for block in this.blocks {
+            if block.kind == BlockKind.ToolUse || block.kind == BlockKind.ServerToolUse {
+                calls.push(block);
+            }
+        }
+        return calls;
+    }
+
+    // True for a message the user actually typed: a real user turn, not a
+    // tool result, not synthetic, not from a subagent. Turn boundaries are
+    // drawn here.
+    fn isUserPrompt(): bool {
+        if this.role != MessageRole.User {
+            return false;
+        }
+        if this.isSynthetic || this.isMeta {
+            return false;
+        }
+        if this.parentToolUseId.length > 0 {
+            return false;
+        }
+        for block in this.blocks {
+            if block.kind == BlockKind.Text {
+                if block.text.trim().length > 0 {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+// The per-parent-id stream assembler. `message` points at the placeholder in
+// `Conversation.messages`; because Message is a ref struct, growing it here
+// grows the one the UI is drawing.
+export ref struct StreamAssembler {
+    key: str = "";
+    message: Message | none = none;
+    betaMessageId: str = "";
+
+    // Deltas received but not yet merged into the block's text.
+    //
+    // A `str` is immutable, so `text = text + delta` copies the whole message
+    // so far -- once per delta, of which a long reply produces thousands.
+    // Deltas are collected here instead and merged ONCE per poll, in
+    // `flushStreaming`. One read from the pipe usually carries a dozen of
+    // them, so this turns a dozen copies of the growing message into one.
+    pendingIndex: int = -1;
+    pendingParts: []str = [];
+}
+
+export ref struct ContextUsage {
+    // Everything currently occupying the window.
+    totalTokens: int = 0;
+    contextWindow: int = 0;
+    maxOutputTokens: int = 0;
+    totalCostUsd: real = 0.0;
+
+    // Tokens actually available for the conversation. The model's own output
+    // has to fit in the window too, and the CLI reserves a slice for the
+    // system prompt and tool definitions, hence the constant.
+    fn usableWindow(): int {
+        if this.contextWindow <= 0 {
+            return 0;
+        }
+        let usable = this.contextWindow - this.maxOutputTokens - 13000;
+        if usable < 0 {
+            return 0;
+        }
+        return usable;
+    }
+
+    // 0.0 .. 1.0, for a context meter.
+    fn fraction(): real {
+        let usable = this.usableWindow();
+        if usable <= 0 {
+            return 0.0;
+        }
+        let value = (this.totalTokens as real) / (usable as real);
+        if value > 1.0 {
+            return 1.0;
+        }
+        return value;
+    }
+}
+
+export ref struct TodoItem {
+    content: str = "";
+    // "pending" | "in_progress" | "completed"
+    status: str = "";
+    activeForm: str = "";
+}
+
+export ref struct Conversation {
+    messages: []Message = [];
+
+    sessionId: str = "";
+    cwd: str = "";
+    // The model the CLI is configured to use.
+    model: str = "";
+    // The model that actually served the last reply, which can differ after a
+    // fallback. Showing both is how a UI explains "you asked for X, you got Y".
+    servedModel: str = "";
+    permissionMode: PermissionMode = PermissionMode.Default;
+
+    // A turn is in flight: draw a spinner, offer Stop rather than Send.
+    busy: bool = false;
+    // Non-empty during a long-running phase, e.g. "compacting".
+    status: str = "";
+
+    usage: ContextUsage = {};
+    // Live estimate while the model is thinking, before any usage is reported.
+    thinkingTokens: int = 0;
+
+    todos: []TodoItem = [];
+    subagentTasks: []TaskInfo = [];
+    rateLimit: RateLimitInfo | none = none;
+
+    // Suggested next prompt the CLI offered, shown as ghost text.
+    promptSuggestion: str = "";
+
+    // The most recent error text, cleared when the next turn starts.
+    lastError: str = "";
+
+    _assemblers: []StreamAssembler = [];
+    // A compact boundary whose summary message has not arrived yet.
+    _pendingCompact: Message | none = none;
+    // Where replayed history should be inserted, so a resumed session's
+    // messages land in order instead of after everything already shown.
+    _replayInsertIndex: int = 0;
+    _nextSlot: int = 1;
+
+    fn constructor(): mut Conversation {
+        return Conversation {};
+    }
+
+    // ── Entry point ────────────────────────────────────────────────────
+
+    // Merges the deltas collected during this poll into the blocks they belong
+    // to. `Session.poll()` calls this after draining the pipe, so a renderer
+    // never observes a block mid-merge.
+    mut fn flushStreaming() {
+        for assembler in this._assemblers {
+            flushAssembler(assembler);
+        }
+    }
+
+    mut fn ingest(frame: Frame) {
+        if frame.sessionId.length > 0 {
+            if this.sessionId.length > 0 && this.sessionId != frame.sessionId {
+                // A different session id means the CLI started a new session
+                // rather than continuing this one; everything on screen
+                // belongs to the old one.
+                this.reset();
+            }
+            this.sessionId = frame.sessionId;
+        }
+
+        if frame.kind == FrameKind.StreamEvent {
+            this.ingestStreamEvent(frame);
+            return;
+        }
+        if frame.kind == FrameKind.System {
+            this.ingestSystem(frame);
+            return;
+        }
+        if frame.kind == FrameKind.Assistant {
+            this.ingestAssistant(frame);
+            return;
+        }
+        if frame.kind == FrameKind.User {
+            this.ingestUser(frame);
+            return;
+        }
+        if frame.kind == FrameKind.Result {
+            this.ingestResult(frame);
+            return;
+        }
+        if frame.kind == FrameKind.ToolProgress {
+            this.ingestToolProgress(frame);
+            return;
+        }
+        if frame.kind == FrameKind.PromptSuggestion {
+            this.promptSuggestion = getStringOr(frame.raw, "suggestion", "");
+            return;
+        }
+    }
+
+    // Every message enters the list through here, so no path can forget to
+    // stamp a slot.
+    mut fn appendMessage(message: Message) {
+        message.slot = this._nextSlot;
+        this._nextSlot = this._nextSlot + 1;
+        this.messages.push(message);
+    }
+
+    mut fn reset() {
+        let messages: []Message = [];
+        this.messages = messages;
+        let assemblers: []StreamAssembler = [];
+        this._assemblers = assemblers;
+        let todos: []TodoItem = [];
+        this.todos = todos;
+        let tasks: []TaskInfo = [];
+        this.subagentTasks = tasks;
+        this.usage = ContextUsage {};
+        this.thinkingTokens = 0;
+        this.status = "";
+        this.lastError = "";
+        this._pendingCompact = none;
+        this._replayInsertIndex = 0;
+    }
+
+    // ── system ─────────────────────────────────────────────────────────
+
+    mut fn ingestSystem(frame: Frame) {
+        let subtype = frame.subtype;
+
+        if subtype == "init" {
+            let info = parseInitInfo(frame.raw);
+            this.cwd = info.cwd;
+            if info.model.length > 0 {
+                this.model = info.model;
+            }
+            this.permissionMode = info.permissionMode;
+            this.busy = true;
+            this.lastError = "";
+            return;
+        }
+
+        if subtype == "status" {
+            this.status = getStringOr(frame.raw, "status", "");
+            let mode = permissionModeFromName(getStringOr(frame.raw, "permissionMode", ""));
+            if mode {
+                this.permissionMode = mode;
+            }
+            return;
+        }
+
+        if subtype == "thinking_tokens" {
+            this.thinkingTokens = getIntOr(frame.raw, "estimated_tokens", 0);
+            return;
+        }
+
+        if subtype == "compact_boundary" {
+            let info = CompactInfo {};
+            let metadata = get(frame.raw, "compact_metadata");
+            if metadata {
+                info.trigger = getStringOr(metadata, "trigger", "");
+                info.preTokens = getIntOr(metadata, "pre_tokens", 0);
+            }
+            let message = Message {
+                role: MessageRole.Compact,
+                uuid: frame.uuid,
+                timestamp: nowMillis(),
+                compact: info,
+                raw: frame.raw,
+            };
+            this.appendMessage(message);
+            this._pendingCompact = message;
+            // Everything before the boundary was replaced by the summary.
+            this.usage.totalTokens = 0;
+            return;
+        }
+
+        if subtype == "task_started" {
+            this.subagentTasks.push(TaskInfo {
+                taskId: getStringOr(frame.raw, "task_id", ""),
+                toolUseId: getStringOr(frame.raw, "tool_use_id", ""),
+                taskType: getStringOr(frame.raw, "task_type", ""),
+                description: getStringOr(frame.raw, "description", ""),
+                prompt: getStringOr(frame.raw, "prompt", ""),
+                running: true,
+            });
+            return;
+        }
+
+        if subtype == "task_progress" {
+            let taskId = getStringOr(frame.raw, "task_id", "");
+            for task in this.subagentTasks {
+                if task.taskId != taskId {
+                    continue;
+                }
+                task.description = getStringOr(frame.raw, "description", task.description);
+                task.summary = getStringOr(frame.raw, "summary", task.summary);
+                task.lastToolName = getStringOr(frame.raw, "last_tool_name", task.lastToolName);
+                let usage = get(frame.raw, "usage");
+                if usage {
+                    task.totalTokens = getIntOr(usage, "total_tokens", task.totalTokens);
+                    task.toolUses = getIntOr(usage, "tool_uses", task.toolUses);
+                    task.durationMillis = getIntOr(usage, "duration_ms", task.durationMillis);
+                }
+            }
+            return;
+        }
+
+        if subtype == "task_notification" {
+            let taskId = getStringOr(frame.raw, "task_id", "");
+            for task in this.subagentTasks {
+                if task.taskId == taskId {
+                    task.running = false;
+                }
+            }
+            return;
+        }
+
+        if subtype == "model_refusal_fallback" {
+            // The messages the model retracted must disappear, or the UI shows
+            // a reply the conversation no longer contains.
+            this.retract(getStringArray(frame.raw, "retracted_message_uuids"));
+            let message = Message {
+                role: MessageRole.RefusalFallback,
+                uuid: frame.uuid,
+                timestamp: nowMillis(),
+                raw: frame.raw,
+            };
+            let text = getStringOr(frame.raw, "content", "");
+            if text.length > 0 {
+                message.blocks.push(ContentBlock { kind: BlockKind.Text, text: text });
+            }
+            this.appendMessage(message);
+            return;
+        }
+
+        if subtype == "local_command" || subtype == "api_error" {
+            let message = Message {
+                role: MessageRole.Meta,
+                uuid: frame.uuid,
+                timestamp: nowMillis(),
+                isMeta: true,
+                raw: frame.raw,
+            };
+            let text = getStringOr(frame.raw, "content", getStringOr(frame.raw, "error", ""));
+            if text.length > 0 {
+                message.blocks.push(ContentBlock { kind: BlockKind.Text, text: text });
+            }
+            if subtype == "api_error" {
+                this.lastError = text;
+            }
+            this.appendMessage(message);
+            return;
+        }
+    }
+
+    // ── assistant ──────────────────────────────────────────────────────
+
+    mut fn ingestAssistant(frame: Frame) {
+        let payload = get(frame.raw, "message");
+        if !payload {
+            return;
+        }
+
+        // `supersedes` names earlier replies this one replaces.
+        this.retract(getStringArray(frame.raw, "supersedes"));
+
+        let blocks = parseContentBlocks(getOrEmptyArray(payload, "content"));
+        let message = Message {
+            role: MessageRole.Assistant,
+            uuid: frame.uuid,
+            betaMessageId: getStringOr(payload, "id", ""),
+            blocks: blocks,
+            timestamp: nowMillis(),
+            parentToolUseId: frame.parentToolUseId,
+            model: getStringOr(payload, "model", ""),
+            error: getStringOr(frame.raw, "error", ""),
+            raw: frame.raw,
+        };
+
+        let usage = get(payload, "usage");
+        if usage {
+            message.usage = parseUsage(usage);
+            if frame.parentToolUseId.length == 0 {
+                // Only the main loop's usage describes the context window; a
+                // subagent has a window of its own.
+                this.usage.totalTokens = message.usage.totalTokens();
+            }
+        }
+
+        if frame.parentToolUseId.length == 0 {
+            let served = message.model;
+            if served.length > 0 && served != "<synthetic>" {
+                this.servedModel = served;
+            }
+            this.captureTodos(blocks);
+        }
+
+        if message.error.length > 0 {
+            this.lastError = message.error;
+        }
+
+        // Replace the streaming placeholder this message completes, if there
+        // is one; otherwise append. Any buffered deltas are merged first, so
+        // the timings adopted below come from a block in its final state.
+        let assembler = this.assemblerFor(frame.parentToolUseId);
+        flushAssembler(assembler);
+        let placeholder = assembler.message;
+        if placeholder {
+            let matches = false;
+            if message.uuid.length > 0 && placeholder.uuid == message.uuid {
+                matches = true;
+            }
+            else if message.betaMessageId.length > 0 && placeholder.betaMessageId == message.betaMessageId {
+                matches = true;
+            }
+            if matches {
+                // Adopt the timings measured while it streamed: the final
+                // frame has no notion of when each block started.
+                this.adoptTimings(placeholder, message);
+                this.replaceMessage(placeholder, message);
+                assembler.message = none;
+                this.reattachResults(message);
+                return;
+            }
+        }
+
+        this.appendMessage(message);
+        this.reattachResults(message);
+    }
+
+    // Carries per-block start/end times from the streamed placeholder onto the
+    // finished message, so "Thought for 12s" survives the replacement.
+    fn adoptTimings(placeholder: Message, message: Message) {
+        let count = message.blocks.length;
+        if placeholder.blocks.length < count {
+            count = placeholder.blocks.length;
+        }
+        for (let i = 0; i < count; i++) {
+            let source = placeholder.blocks[i];
+            let target = message.blocks[i];
+            if source.kind != target.kind {
+                continue;
+            }
+            target.startTime = source.startTime;
+            target.endTime = source.endTime;
+            if target.kind == BlockKind.Thinking && target.thinkingTokens == 0 {
+                target.thinkingTokens = source.thinkingTokens;
+            }
+        }
+    }
+
+    mut fn replaceMessage(oldMessage: Message, newMessage: Message) {
+        for (let i = 0; i < this.messages.length; i++) {
+            if this.messages[i].slot == oldMessage.slot {
+                newMessage.slot = oldMessage.slot;
+                this.messages[i] = newMessage;
+                return;
+            }
+        }
+        this.appendMessage(newMessage);
+    }
+
+    mut fn retract(uuids: []str) {
+        if uuids.length == 0 {
+            return;
+        }
+        let remaining: []Message = [];
+        for message in this.messages {
+            let drop = false;
+            for uuid in uuids {
+                if message.uuid == uuid {
+                    drop = true;
+                    break;
+                }
+            }
+            if !drop {
+                remaining.push(message);
+            }
+        }
+        this.messages = remaining;
+    }
+
+    mut fn captureTodos(blocks: []ContentBlock) {
+        for block in blocks {
+            if block.kind != BlockKind.ToolUse || block.name != "TodoWrite" {
+                continue;
+            }
+            let input = block.input;
+            if !input {
+                continue;
+            }
+            let todos: []TodoItem = [];
+            for entry in getArray(input, "todos") {
+                todos.push(TodoItem {
+                    content: getStringOr(entry, "content", ""),
+                    status: getStringOr(entry, "status", "pending"),
+                    activeForm: getStringOr(entry, "activeForm", ""),
+                });
+            }
+            this.todos = todos;
+        }
+    }
+
+    // ── user ───────────────────────────────────────────────────────────
+
+    mut fn ingestUser(frame: Frame) {
+        let payload = get(frame.raw, "message");
+        if !payload {
+            return;
+        }
+
+        let isSynthetic = getBoolOr(frame.raw, "isSynthetic", false);
+        let content = getOrEmptyArray(payload, "content");
+
+        // The summary that follows a compact boundary: it belongs to the
+        // boundary, not to the timeline.
+        let pendingCompact = this._pendingCompact;
+        if pendingCompact && isSynthetic {
+            let text = asStr(content);
+            if text {
+                pendingCompact.compactSummary = text;
+                this._pendingCompact = none;
+                return;
+            }
+        }
+
+        let blocks = parseContentBlocks(content);
+
+        // Tool results are the answers to earlier calls. Attach each to the
+        // block that made it; the carrier message stays in the list but
+        // renders as empty.
+        for block in blocks {
+            if block.kind == BlockKind.ToolResult {
+                this.attachResult(block);
+            }
+        }
+
+        let message = Message {
+            role: MessageRole.User,
+            uuid: frame.uuid,
+            blocks: blocks,
+            timestamp: nowMillis(),
+            parentToolUseId: frame.parentToolUseId,
+            isSynthetic: isSynthetic,
+            isReplay: getBoolOr(frame.raw, "isReplay", false),
+            isMeta: getBoolOr(frame.raw, "isMeta", false),
+            raw: frame.raw,
+        };
+
+        if message.isReplay {
+            // Replayed history is inserted where the replay cursor sits, so a
+            // resumed conversation reads in order.
+            if this.hasUuid(message.uuid) {
+                return;
+            }
+            this.insertAt(this._replayInsertIndex, message);
+            this._replayInsertIndex = this._replayInsertIndex + 1;
+            return;
+        }
+
+        this.appendMessage(message);
+        this._replayInsertIndex = this.messages.length;
+    }
+
+    fn hasUuid(uuid: str): bool {
+        if uuid.length == 0 {
+            return false;
+        }
+        for message in this.messages {
+            if message.uuid == uuid {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    mut fn insertAt(index: int, message: Message) {
+        message.slot = this._nextSlot;
+        this._nextSlot = this._nextSlot + 1;
+        if index < 0 || index >= this.messages.length {
+            this.messages.push(message);
+            return;
+        }
+        let rebuilt: []Message = [];
+        for (let i = 0; i < this.messages.length; i++) {
+            if i == index {
+                rebuilt.push(message);
+            }
+            rebuilt.push(this.messages[i]);
+        }
+        this.messages = rebuilt;
+    }
+
+    // Finds the `tool_use` block with this result's id -- newest first,
+    // because ids are only unique within a conversation and the newest match
+    // is the live one -- and hangs the result off it.
+    mut fn attachResult(result: ContentBlock) {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            let message = this.messages[i];
+            if message.role != MessageRole.Assistant {
+                continue;
+            }
+            for block in message.blocks {
+                if block.kind != BlockKind.ToolUse && block.kind != BlockKind.ServerToolUse {
+                    continue;
+                }
+                if block.id != result.toolUseId {
+                    continue;
+                }
+                block.result = result;
+                if block.endTime == 0 {
+                    block.endTime = nowMillis();
+                }
+                return;
+            }
+        }
+    }
+
+    // When a streamed placeholder is replaced by the finished message, its
+    // tool_use blocks are new objects and have lost any result that already
+    // arrived. Re-scan for them.
+    mut fn reattachResults(message: Message) {
+        for block in message.blocks {
+            if block.kind != BlockKind.ToolUse && block.kind != BlockKind.ServerToolUse {
+                continue;
+            }
+            if block.result is ContentBlock {
+                continue;
+            }
+            let found = this.findResult(block.id);
+            if found {
+                block.result = found;
+            }
+        }
+    }
+
+    fn findResult(toolUseId: str): ContentBlock | none {
+        if toolUseId.length == 0 {
+            return none;
+        }
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            let message = this.messages[i];
+            if message.role != MessageRole.User {
+                continue;
+            }
+            for block in message.blocks {
+                if block.kind == BlockKind.ToolResult && block.toolUseId == toolUseId {
+                    return block;
+                }
+            }
+        }
+        return none;
+    }
+
+    // ── result ─────────────────────────────────────────────────────────
+
+    mut fn ingestResult(frame: Frame) {
+        let result = parseTurnResult(frame.raw);
+        this.busy = false;
+        this.status = "";
+        this.usage.totalCostUsd = result.totalCostUsd;
+
+        // Window size comes from whichever model actually served the turn.
+        for usage in result.modelUsage {
+            if usage.model == this.servedModel || this.servedModel.length == 0 {
+                if usage.contextWindow > 0 {
+                    this.usage.contextWindow = usage.contextWindow;
+                    this.usage.maxOutputTokens = usage.maxOutputTokens;
+                }
+            }
+        }
+
+        if result.isError {
+            this.lastError = result.text;
+        }
+
+        let tasks: []TaskInfo = [];
+        this.subagentTasks = tasks;
+        this._replayInsertIndex = this.messages.length;
+    }
+
+    // ── tool_progress ──────────────────────────────────────────────────
+
+    mut fn ingestToolProgress(frame: Frame) {
+        let call = get(frame.raw, "repl_call");
+        if !call {
+            return;
+        }
+        let parentId = frame.parentToolUseId;
+        if parentId.length == 0 {
+            return;
+        }
+
+        let entry = ToolProgressEntry {
+            innerToolUseId: getStringOr(call, "inner_tool_use_id", ""),
+            toolName: getStringOr(call, "inner_tool_name", ""),
+            phase: getStringOr(call, "phase", ""),
+            input: get(call, "inner_tool_input"),
+        };
+
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            for block in this.messages[i].blocks {
+                if block.kind != BlockKind.ToolUse || block.id != parentId {
+                    continue;
+                }
+                let replaced = false;
+                for existing in block.progress {
+                    if existing.innerToolUseId == entry.innerToolUseId {
+                        existing.phase = entry.phase;
+                        existing.toolName = entry.toolName;
+                        existing.input = entry.input;
+                        replaced = true;
+                        break;
+                    }
+                }
+                if !replaced {
+                    block.progress.push(entry);
+                }
+                return;
+            }
+        }
+    }
+
+    // ── stream_event ───────────────────────────────────────────────────
+
+    mut fn assemblerFor(key: str): StreamAssembler {
+        for assembler in this._assemblers {
+            if assembler.key == key {
+                return assembler;
+            }
+        }
+        let created = StreamAssembler { key: key };
+        this._assemblers.push(created);
+        return created;
+    }
+
+    mut fn ingestStreamEvent(frame: Frame) {
+        let event = get(frame.raw, "event");
+        if !event {
+            return;
+        }
+        let kind = getStringOr(event, "type", "");
+        let assembler = this.assemblerFor(frame.parentToolUseId);
+
+        if kind == "message_start" {
+            let payload = get(event, "message");
+            if !payload {
+                return;
+            }
+            let message = Message {
+                role: MessageRole.Assistant,
+                betaMessageId: getStringOr(payload, "id", ""),
+                uuid: frame.uuid,
+                timestamp: nowMillis(),
+                parentToolUseId: frame.parentToolUseId,
+                model: getStringOr(payload, "model", ""),
+                streaming: true,
+            };
+            assembler.message = message;
+            assembler.betaMessageId = message.betaMessageId;
+            this.appendMessage(message);
+            this.busy = true;
+            return;
+        }
+
+        let message = assembler.message;
+        if !message {
+            return;
+        }
+
+        if kind == "content_block_start" {
+            let payload = get(event, "content_block");
+            if !payload {
+                return;
+            }
+            let block = parseContentBlock(payload);
+            block.partial = true;
+            block.startTime = nowMillis();
+            let index = getIntOr(event, "index", message.blocks.length);
+            this.setBlockAt(message, index, block);
+            return;
+        }
+
+        if kind == "content_block_delta" {
+            let delta = get(event, "delta");
+            if !delta {
+                return;
+            }
+            let index = getIntOr(event, "index", -1);
+            if index < 0 || index >= message.blocks.length {
+                return;
+            }
+            let block = message.blocks[index];
+            let deltaKind = getStringOr(delta, "type", "");
+
+            if deltaKind == "text_delta" {
+                queueDelta(assembler, index, getStringOr(delta, "text", ""));
+            }
+            else if deltaKind == "thinking_delta" {
+                queueDelta(assembler, index, getStringOr(delta, "thinking", ""));
+                let estimated = getInt(delta, "estimated_tokens");
+                if estimated {
+                    block.thinkingTokens = estimated;
+                    this.thinkingTokens = estimated;
+                }
+            }
+            else if deltaKind == "signature_delta" {
+                // Short and rare -- one per thinking block -- so it is merged
+                // straight away rather than buffered.
+                block.signature = block.signature + getStringOr(delta, "signature", "");
+            }
+            else if deltaKind == "input_json_delta" {
+                // A tool's arguments arrive as JSON text fragments. They are
+                // never displayed (a partial tool_use must not be rendered) and
+                // are parsed only at content_block_stop, so they can accumulate
+                // straight into the block.
+                block.partialJson = block.partialJson + getStringOr(delta, "partial_json", "");
+            }
+            block.endTime = nowMillis();
+            return;
+        }
+
+        if kind == "content_block_stop" {
+            let index = getIntOr(event, "index", -1);
+            if index < 0 || index >= message.blocks.length {
+                return;
+            }
+            flushAssembler(assembler);
+            let block = message.blocks[index];
+            block.partial = false;
+            block.endTime = nowMillis();
+            if block.kind == BlockKind.ToolUse || block.kind == BlockKind.ServerToolUse {
+                if block.partialJson.length > 0 {
+                    let parsed = parseJson(block.partialJson);
+                    if parsed {
+                        block.input = parsed;
+                    }
+                }
+            }
+            return;
+        }
+
+        if kind == "message_delta" {
+            let usage = get(event, "usage");
+            if usage {
+                let parsed = parseUsage(usage);
+                message.usage = parsed;
+            }
+            return;
+        }
+
+        if kind == "message_stop" {
+            flushAssembler(assembler);
+            message.streaming = false;
+            return;
+        }
+    }
+
+    // Places a block at `index`, filling any gap with placeholders. The CLI
+    // numbers blocks by position in the final message, and a client that
+    // simply appended would misplace them if one ever arrived out of order.
+    fn setBlockAt(message: Message, index: int, block: ContentBlock) {
+        if index < 0 {
+            message.blocks.push(block);
+            return;
+        }
+        while message.blocks.length < index {
+            message.blocks.push(ContentBlock { kind: BlockKind.Unknown });
+        }
+        if index < message.blocks.length {
+            message.blocks[index] = block;
+            return;
+        }
+        message.blocks.push(block);
+    }
+
+    // ── Queries a UI needs ─────────────────────────────────────────────
+
+    // Whether this message is worth drawing. Allocation-free: a renderer
+    // should iterate `messages` and skip on this rather than calling
+    // `visibleMessages()`, which builds a new array every time.
+    fn isVisible(message: Message): bool {
+        if message.role == MessageRole.Compact || message.role == MessageRole.RefusalFallback {
+            return true;
+        }
+        if message.isEmpty() {
+            return false;
+        }
+        // A user message that only carries a subagent's tool results is
+        // bookkeeping, not conversation.
+        if message.role == MessageRole.User && message.parentToolUseId.length > 0 {
+            return false;
+        }
+        return true;
+    }
+
+    // The messages worth drawing, in order.
+    // ALLOCATES a new array; prefer `isVisible()` in a render loop.
+    fn visibleMessages(): []Message {
+        let visible: []Message = [];
+        for message in this.messages {
+            if this.isVisible(message) {
+                visible.push(message);
+            }
+        }
+        return visible;
+    }
+
+    // Indices in `messages` where a new user turn begins. A UI groups
+    // everything between two of these into one collapsible exchange.
+    // ALLOCATES; `messages[i].isUserPrompt()` is the allocation-free test.
+    fn turnStarts(): []int {
+        let starts: []int = [];
+        for (let i = 0; i < this.messages.length; i++) {
+            if this.messages[i].isUserPrompt() {
+                starts.push(i);
+            }
+        }
+        return starts;
+    }
+
+    // The tool call with this id, wherever it is.
+    fn findToolUse(toolUseId: str): ContentBlock | none {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            for block in this.messages[i].blocks {
+                if block.kind == BlockKind.ToolUse || block.kind == BlockKind.ServerToolUse {
+                    if block.id == toolUseId {
+                        return block;
+                    }
+                }
+            }
+        }
+        return none;
+    }
+
+    // The last message the user actually typed -- what "edit and resend" and
+    // "rewind to here" operate on.
+    fn lastUserPrompt(): Message | none {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+            if this.messages[i].isUserPrompt() {
+                return this.messages[i];
+            }
+        }
+        return none;
+    }
+
+    // Whether any tool call is still waiting for an answer. Allocation-free;
+    // `runningToolCalls()` returns which ones and does allocate.
+    fn hasRunningToolCalls(): bool {
+        for message in this.messages {
+            for block in message.blocks {
+                if block.kind != BlockKind.ToolUse && block.kind != BlockKind.ServerToolUse {
+                    continue;
+                }
+                if block.partial {
+                    continue;
+                }
+                if !block.isResolved() {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Tool calls still waiting for an answer. ALLOCATES.
+    fn runningToolCalls(): []ContentBlock {
+        let running: []ContentBlock = [];
+        for message in this.messages {
+            for block in message.blocks {
+                if block.kind != BlockKind.ToolUse && block.kind != BlockKind.ServerToolUse {
+                    continue;
+                }
+                if block.partial {
+                    continue;
+                }
+                if !block.isResolved() {
+                    running.push(block);
+                }
+            }
+        }
+        return running;
+    }
+}
+
+// Records one delta against the block it belongs to. Switching blocks mid-poll
+// flushes the previous one, so parts never mix.
+fn queueDelta(assembler: StreamAssembler, index: int, text: str) {
+    if text.length == 0 {
+        return;
+    }
+    if assembler.pendingIndex != index {
+        flushAssembler(assembler);
+        assembler.pendingIndex = index;
+    }
+    assembler.pendingParts.push(text);
+}
+
+// Merges the buffered deltas into their block: one concatenation, however many
+// deltas arrived.
+fn flushAssembler(assembler: StreamAssembler) {
+    if assembler.pendingIndex < 0 || assembler.pendingParts.length == 0 {
+        return;
+    }
+    let message = assembler.message;
+    if !message {
+        array.clear<str>(assembler.pendingParts);
+        assembler.pendingIndex = -1;
+        return;
+    }
+    if assembler.pendingIndex < message.blocks.length {
+        let block = message.blocks[assembler.pendingIndex];
+        let merged = String(block.text);
+        for part in assembler.pendingParts {
+            merged.append(part);
+        }
+        block.text = merged.cloneString();
+    }
+    // Cleared rather than replaced: the capacity is reused for the next poll's
+    // deltas, so a long stream does not allocate a new array every frame.
+    array.clear<str>(assembler.pendingParts);
+    assembler.pendingIndex = -1;
+}
+
+// `node[key]` when it is an array or a string, or an empty array node. Content
+// arrives either way and every caller has to cope with both.
+fn getOrEmptyArray(node: json.Node, key: str): json.Node {
+    let value = get(node, key);
+    if value {
+        return value;
+    }
+    return newArray();
+}
