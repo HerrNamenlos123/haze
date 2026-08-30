@@ -1,6 +1,10 @@
 @export
+
+from codicons import CodiconComponent
+
 @props
 label: str = "";
+icon?: str;
 enabled: bool = true;
 selected: bool = false;
 grow: bool = false;
@@ -24,6 +28,7 @@ focusRingOffset: real = 2.0;
 @slot
 content: {
     label: str;
+    icon?: str;
 };
 
 @emit
@@ -77,7 +82,8 @@ let backgroundColor = computed(() => {
     @pointerdown=clicked
     @keydown=keydown
 
-slot content label=[props.label] {
+slot content label=[props.label] icon=[props.icon] {
+    Codicon if=[props.icon] [] icon=[props.icon] {}
     text if=[props.label.length > 0] [
         text-color-[props.enabled ? props.textColor : props.textColorDisabled] text-nowrap
         [props.fontSize]?font-size-[props.fontSize]
