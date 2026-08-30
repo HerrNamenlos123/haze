@@ -690,6 +690,27 @@ export opaque ref struct Context {
         this.popCascadingStack(ctx, element);
     }
 
+    // Binds `name` to a font the backend has already loaded, replacing whatever
+    // that name meant before. This is the only way the table changes after
+    // construction, and it exists because a font is not necessarily something
+    // the composition root knows about: a component can supply its own (see
+    // ui_components.UIContext.provideFont, which is what the hzui `@font`
+    // directive lowers to), and it can supply a DIFFERENT one later without
+    // anything being torn down -- every element already selects by name, so
+    // rebinding the name is the whole of "the font changed".
+    //
+    // Upsert rather than append: re-registering a name must not leave the old
+    // entry in front of the new one for getFont's scan to find first.
+    fn registerFont(name: str, id: int) {
+        for (let i = 0; i < this.fonts.length; i++) {
+            if this.fonts[i].name == name {
+                this.fonts[i] = FontEntry { name: name, id: id };
+                return;
+            }
+        }
+        this.fonts.push(FontEntry { name: name, id: id });
+    }
+
     fn getFont(name: str) {
         for entry in this.fonts {
             if entry.name == name {

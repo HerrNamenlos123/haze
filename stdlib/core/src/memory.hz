@@ -549,6 +549,51 @@ export opaque struct Bytes {
         }
     }
 
+    // Whether two slices name the exact same memory -- same base object, same
+    // offset, same length -- WITHOUT reading a single byte of it.
+    //
+    // This is deliberately NOT what `==` below means. `==` compares CONTENTS,
+    // and for a large buffer that is a memcmp over the whole thing; asking it
+    // "is this the same buffer I already saw" costs time proportional to the
+    // buffer's size, every time. This answers that question in a handful of
+    // integer compares, which is what a cache guarding expensive work (parsing
+    // an embedded font, uploading a texture) actually needs: two slices that
+    // pass here are interchangeable for any purpose, and one that fails may
+    // still be byte-equal -- so this is only ever a fast path, never a
+    // substitute for `==` where equality is the real question.
+    //
+    // A single-byte slice holds its byte inline and has no base pointer at
+    // all, so those compare by value; a single-byte and a pointer-backed
+    // slice are never the same memory even when they hold the same byte.
+    fn refersToSameMemory(other: Bytes): bool {
+        if this.length != other.length {
+            return false;
+        }
+
+        let a = this.singleByte;
+        let b = other.singleByte;
+        if (a is none) != (b is none) {
+            return false;
+        }
+        if a is not none {
+            if b is not none {
+                return a == b;
+            }
+        }
+
+        if this.offset != other.offset {
+            return false;
+        }
+
+        // cptr has no comparison in the language (Conversion.typeSupportsComparison
+        // excludes it outright: an address carries no meaning the language can
+        // reason about), and identity is the one question about an address that
+        // is always meaningful -- so it is asked here and nowhere else.
+        let same = false;
+        __c__("same = (this->basePtr == other.basePtr);");
+        return same;
+    }
+
     fn operator==(other: Bytes) {
         if this.length != other.length {
             return false;

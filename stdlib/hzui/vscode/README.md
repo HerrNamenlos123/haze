@@ -5,6 +5,9 @@ Language support for hzui single-file components (`.hzui`). Contributes the
 `source.hz` grammar (which must be installed) without modifying it:
 
 - `@props` / `@emit` / `@slot` / `@setup` / `@template` section markers
+- `@font <name> [<expr>]` directives, with the bound name and the expression
+  highlighted separately -- recognised anywhere in the file, including inside
+  `@template` and `@props`, since the directive never ends a section
 - template syntax: element/component heads, attrs, `@event=`, `if=`/`for=`,
   `slot` / `#slot`
 - tailwind-style class brackets, with `[expr]` arbitrary values highlighted

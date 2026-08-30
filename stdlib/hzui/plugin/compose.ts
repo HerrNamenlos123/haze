@@ -358,7 +358,7 @@ function parseSlots(section: Section): SlotDecl[] {
 // ---------------------------------------------------------------------------
 
 export function compose(filepath: string, source: string): string {
-  const { prelude, sections, exported } = splitSections(source);
+  const { prelude, sections, exported, fonts } = splitSections(source);
   const get = (name: string) => sections.find((s) => s.name === name);
 
   const comp = componentNameFromFile(filepath);
@@ -612,6 +612,31 @@ export function compose(filepath: string, source: string): string {
   // ui_components.ComponentInstance.currentTemplate.
   push(`        return (): DivProps => {`);
   push(`            let props = instance.props();`);
+  // `@font name [expr]`: bind a font to a name, right here at the top of the
+  // RENDER body rather than in setup.
+  //
+  // The body, because that is where a reactive read is tracked. The expression
+  // is evaluated on every run of the template computed, so a font held in a
+  // `computed`/`reactive` makes THIS component's template a subscriber: change
+  // the computed and the template re-runs, this line rebinds the name, and
+  // every element already selecting that name renders with the new font. A
+  // font can therefore be chosen dynamically -- theme, user setting, whatever
+  // -- with no separate registration step and nothing to keep in sync. Put
+  // this in setup and the binding would be whatever the font happened to be
+  // on the frame the component mounted, forever.
+  //
+  // The TOP of the body, because elements are declared below it: the name has
+  // to mean something before anything this frame selects it.
+  //
+  // Costing nothing when nothing changed is the runtime's job, in two layers --
+  // see ui_components.UIContext.provideFont.
+  for (const f of fonts) {
+    push(`#source "${src}:${f.line}:1" {`);
+    push(
+      `            ui.provideFont("${f.name}", ${rewriteTemplateExpr(f.expr)});`
+    );
+    push(`}`);
+  }
   if (templateSec) {
     try {
       push(lowerTemplate(templateSec.body, templateSec.bodyStartLine, ctx, 3));

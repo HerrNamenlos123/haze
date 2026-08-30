@@ -1,0 +1,29 @@
+// A component that supplies its own font. Nothing outside this file --  no
+// main(), no Runtime argument -- knows the font exists; the component names it
+// and hands over the bytes, and anything below can select it by that name.
+@export
+
+// File-scope, so every instance shares one embed rather than one each. It is
+// `| none` because a global initializer must be a compile-time constant and
+// `computed(...)` is a call; @setup fills it in.
+let iconBytes: Computed<Bytes> | none = none;
+
+@props
+glyph: str = "";
+// The font is a PROP here, to pin down the interesting case: the caller picks
+// it, so it can be a different font on a later frame, and the binding below
+// has to follow it rather than snapshot it.
+labelFont: Computed<Bytes>;
+
+@setup
+iconBytes = computed(() => embed.binary("resources/icons.ttf"));
+
+// Two directives, two names. The first reads a file-scope reactive, the second
+// a prop -- both are just expressions evaluated in the render body.
+@font icons [iconBytes]
+@font label [props.labelFont]
+
+@template [row items-center gap-4]
+
+text [font-family-["icons"]] [props.glyph]
+text [font-family-["label"]] ["Aa"]

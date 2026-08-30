@@ -55,6 +55,7 @@ describe("sfc transform", () => {
   // Compiled end-to-end against the real runtime (dev compiler, both parser
   // modes) on 2026-08-23 -- keep it minimal enough to stay compilable.
   test("widget golden", () => golden("widget"));
+  test("fonts golden", () => golden("fonts"));
 });
 
 describe("sections", () => {
@@ -123,6 +124,96 @@ describe("@export", () => {
     const r = splitSections("@export\nimport x\n@props\na: int;\n");
     expect(r.prelude).toBe("\nimport x");
     expect(r.sections[0]!.bodyStartLine).toBe(4);
+  });
+});
+
+describe("@font", () => {
+  test("binds a name to an expression, in the render body", () => {
+    const code = gen("@setup\nlet b = f();\n@font icons [b]\n@template\n");
+    expect(code).toContain('ui.provideFont("icons", b);');
+    // In the render closure, after `props` is bound and before anything that
+    // could select the font -- not in setup, which runs once.
+    const body = code.indexOf("return (): DivProps => {");
+    const call = code.indexOf('ui.provideFont("icons"');
+    expect(body).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(body);
+  });
+
+  test("may appear any number of times", () => {
+    const code = gen("@font a [x]\n@font b [y]\n@template\n");
+    expect(code).toContain('ui.provideFont("a", x);');
+    expect(code).toContain('ui.provideFont("b", y);');
+    expect(
+      splitSections("@font a [x]\n@font b [y]\n@template\n").fonts
+    ).toEqual([
+      { name: "a", expr: "x", line: 1 },
+      { name: "b", expr: "y", line: 2 },
+    ]);
+  });
+
+  test("the expression is arbitrary, and dialect-rewritten like a template one", () => {
+    // A prop, a call, a subscript: whatever produces Bytes. The `]` inside
+    // `arr[0]` must close on the LAST bracket, not the first.
+    const code = gen(
+      "@font a [props.face]\n@font b [pick(1)]\n@font c [arr[0]]\n@template\n"
+    );
+    expect(code).toContain('ui.provideFont("a", props.face);');
+    expect(code).toContain('ui.provideFont("b", pick(1));');
+    expect(code).toContain('ui.provideFont("c", arr[0]);');
+    // `slots.` is rewritten to `props.` in the render body, same as a template
+    // expression -- the directive is evaluated there, so it gets that scope.
+    expect(gen("@font a [slots.face]\n@template\n")).toContain(
+      'ui.provideFont("a", props.face);'
+    );
+  });
+
+  test("carries its own #source, so an error points at the directive", () => {
+    const code = gen("@template\n\n\n@font icons [nope]\n");
+    expect(code).toContain('#source "x.hzui:4:1" {');
+  });
+
+  test("rejects anything that is not exactly 'name [expression]'", () => {
+    const bad = [
+      "@font\n", // nothing at all
+      "@font icons\n", // no expression
+      "@font [b]\n", // no name
+      "@font icons b\n", // unbracketed expression
+      "@font icons [b\n", // unterminated
+      "@font icons b]\n", // unopened
+      "@font icons []\n", // empty expression
+      "@font icons [b] extra\n", // trailing junk
+      "@font icons [a] [b]\n", // two expressions
+      "@font 1icons [b]\n", // not an identifier
+      "@font icons[b]\n", // no space: not the documented shape
+    ];
+    for (const src of bad) {
+      expect(() => splitSections(src + "@template\n")).toThrow(
+        /@font takes exactly/
+      );
+    }
+  });
+
+  test("may sit anywhere, without shifting a section body's line numbers", () => {
+    // Inside @setup: the directive line is blanked in place, so `let y = 2;`
+    // is still line 4 and the body's #source mapping stays honest.
+    const r = splitSections("@setup\nlet x = 1;\n@font a [x]\nlet y = 2;\n");
+    expect(r.fonts).toEqual([{ name: "a", expr: "x", line: 3 }]);
+    expect(r.sections[0]!.body).toBe("let x = 1;\n\nlet y = 2;\n");
+    expect(r.sections[0]!.bodyStartLine).toBe(2);
+  });
+
+  test("@export still has to come before it", () => {
+    expect(splitSections("@export\n@font a [x]\n@template\n").exported).toBe(
+      true
+    );
+    expect(() => splitSections("@font a [x]\n@export\n@template\n")).toThrow(
+      /must come first/
+    );
+  });
+
+  test("a file with no @font emits no font call", () => {
+    expect(gen("@template\n")).not.toContain("provideFont");
+    expect(splitSections("@template\n").fonts).toEqual([]);
   });
 });
 

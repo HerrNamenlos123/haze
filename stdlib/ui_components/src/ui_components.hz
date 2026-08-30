@@ -1278,6 +1278,24 @@ export ref struct ClipboardCallbacks {
 // early-outs.
 export type CursorCallback = (index: int) => void;
 
+// Hands a font's bytes to whatever backend the composition root wired up (see
+// ui_runtime.Runtime), to be bound to `name` so elements can select it by that
+// name. Called from provideFont() below, never directly.
+export type ProvideFontCallback = (name: str, bytes: Bytes) => void;
+
+// One name currently bound, and the exact slice it was last bound from. The
+// slice is what makes the per-frame call cheap -- see provideFont().
+//
+// Exported only because UIContext holds a field of this type: a name used from
+// inside a struct body is resolved against the module's EXPORTED declarations,
+// so a module-private struct works as a free function's return type (DivLookup
+// above) but not as a member's. Same reason RenderContext, ChildElementEntry
+// and PendingPointerEvent are exported.
+export struct ProvidedFont {
+    name: str;
+    bytes: Bytes;
+}
+
 // Reports whether the pointer position is known yet -- see
 // UIContext.mousePosKnown.
 //
@@ -1323,6 +1341,12 @@ export opaque ref struct UIContext {
     // Optional so a headless/test UIContext (no layout engine wired up) can
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
+    // Optional for the same reason _measureText is: a headless/test context
+    // has no font backend at all. provideFont() asserts before using it.
+    _provideFont?: ProvideFontCallback;
+    // Which names are currently bound, and to what. Grows once per distinct
+    // font and never per frame; see provideFont().
+    _providedFonts: []ProvidedFont = [];
 
     _leftHeld: bool = false;
     _middleHeld: bool = false;
@@ -1428,6 +1452,9 @@ export opaque ref struct UIContext {
         setCursor?: CursorCallback;
         clipboard?: ClipboardCallbacks;
         measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
+        // See UIContext.provideFont. Optional; a context without one cannot
+        // accept fonts, which is exactly right for a headless/test context.
+        provideFont?: ProvideFontCallback;
     }
 
     fn constructor(args: UIContextArgs) {
@@ -1447,6 +1474,7 @@ export opaque ref struct UIContext {
             _setCursor: args.setCursor,
             _clipboard: args.clipboard,
             _measureText: args.measureText,
+            _provideFont: args.provideFont,
         };
 
         // UI Context depends on itself
@@ -1537,6 +1565,60 @@ export opaque ref struct UIContext {
         let size = fontSize ? fontSize : this.currentFontSize();
         assert(this._measureText, "measureText was not provided to this UIContext (see UIContextArgs.measureText)");
         return this._measureText(family, size, text);
+    }
+
+    // Binds `name` to a font, so that anything selecting that family name
+    // (`font-family-["codicons"]`) renders with it. This is the supply side;
+    // an element only ever names a font, never carries one.
+    //
+    // What the hzui `@font <name> [<expr>]` directive lowers to. That call
+    // lands in the component's RENDER body rather than its setup, which is
+    // what makes the binding live: the expression is read where a reactive
+    // read is tracked, so a component whose font is a `computed` re-runs its
+    // template when that computed changes, and this rebinds the name to the
+    // new bytes on exactly that frame. A font can therefore be picked
+    // dynamically -- per theme, per user setting, per frame -- and nothing
+    // downstream needs to know it can change.
+    //
+    // Costs nothing to leave in a hot path, in two layers. The template is a
+    // memoised computed (see defineComponentImpl), so on a frame where
+    // nothing this component reads has changed, this is not called at all.
+    // When it IS called, an unchanged font stops at refersToSameMemory():
+    // a handful of integer compares against the slice bound last time, with
+    // no look at the bytes themselves and no call into the backend. Only an
+    // actual change reaches the backend, which is where the real work (parsing
+    // the font, growing the glyph atlas) lives.
+    //
+    // The scan is over distinct font NAMES this context has ever been given --
+    // a handful, not a per-frame quantity -- and _providedFonts grows once per
+    // name, never per call.
+    fn provideFont(name: str, bytes: Bytes) {
+        for (let i = 0; i < this._providedFonts.length; i++) {
+            if this._providedFonts[i].name == name {
+                if this._providedFonts[i].bytes.refersToSameMemory(bytes) {
+                    return;
+                }
+                // Whole-element assignment: `[i].bytes = ...` would be a write
+                // into a copy for a value-typed element.
+                this._providedFonts[i] = ProvidedFont { name: name, bytes: bytes };
+                this.bindFont(name, bytes);
+                return;
+            }
+        }
+        this._providedFonts.push(ProvidedFont { name: name, bytes: bytes });
+        this.bindFont(name, bytes);
+    }
+
+    // The one call into the font backend. Split out so provideFont above reads
+    // as the cache it is, and so the assert names the missing wiring once.
+    fn bindFont(name: str, bytes: Bytes) {
+        assert(this._provideFont, "provideFont was not provided to this UIContext (see UIContextArgs.provideFont)");
+        this._provideFont(name, bytes);
+        // The font a name resolves to is not reactive state the tree reads --
+        // it lives in the layout engine's table -- so rebinding one invalidates
+        // nothing on its own. Anything already laid out with the old font has
+        // to be measured and drawn again. See ui_requestUpdate.
+        ui_requestUpdate();
     }
 
     // Whether a host actually wired an OS clipboard up (see

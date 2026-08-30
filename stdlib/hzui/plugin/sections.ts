@@ -22,6 +22,89 @@ const MARKER_RE = /^@(props|emit|slot|expose|setup|template)\b(.*)$/;
 // a file-level directive, so it carries no body and never ends a section.
 const EXPORT_RE = /^@export\b(.*)$/;
 
+// `@font <name> [<expr>]` -- also a file-level directive: no body, never ends a
+// section, and unlike @export it may appear any number of times and anywhere.
+// Anywhere, because the expression is evaluated in the RENDER body, where the
+// whole file's scope (setup locals, file-scope declarations, imports) is
+// visible no matter which line the directive was written on.
+const FONT_RE = /^@font\b(.*)$/;
+
+// The name, and the start of the group that must follow it.
+const FONT_NAME_RE = /^([A-Za-z_][\w]*)\s+\[/;
+
+/**
+ * The one shape accepted after the marker: `name [expression]`, and nothing
+ * else on the line.
+ *
+ * Deliberately exact. This directive is what makes a font exist under a name,
+ * and every way of getting it subtly wrong -- a missing bracket, a stray token,
+ * a second group -- fails far away as text silently drawn in the fallback font,
+ * with nothing pointing back at this line. So a near-miss is an error here
+ * rather than something quietly half-understood.
+ *
+ * Bracket-BALANCED rather than regex-matched, because both of these are one
+ * line with two `[` and two `]` and only one of them is the shape:
+ *
+ *     @font a [arr[0]]     one group, a subscript inside it   -> accepted
+ *     @font a [x] [y]      two groups                         -> rejected
+ *
+ * A greedy `\[(.+)\]$` accepts the second as an expression of `x] [y`; a lazy
+ * one truncates the first to `arr[0`. Only counting tells them apart: the group
+ * opened by the first `[` has to close on the LAST character of the line.
+ *
+ * Brackets inside a string literal are text, not structure -- same rule the
+ * @template head reader uses (see readMarkerArg's depth()).
+ *
+ * Returns null for anything that is not the shape; the caller turns that into
+ * the error.
+ */
+function parseFontDirective(
+  rest: string
+): { name: string; expr: string } | null {
+  const m = FONT_NAME_RE.exec(rest);
+  if (!m) {
+    return null;
+  }
+  const open = rest.indexOf("[", m[1]!.length);
+  let depth = 0;
+  let inStr = false;
+  for (let i = open; i < rest.length; i++) {
+    const c = rest[i]!;
+    if (inStr) {
+      if (c === "\\") {
+        i++;
+      } else if (c === '"') {
+        inStr = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inStr = true;
+    } else if (c === "[") {
+      depth++;
+    } else if (c === "]") {
+      depth--;
+      if (depth === 0) {
+        if (i !== rest.length - 1) {
+          return null; // a second group, or trailing junk
+        }
+        const expr = rest.slice(open + 1, i).trim();
+        return expr === "" ? null : { name: m[1]!, expr: expr };
+      }
+    }
+  }
+  return null; // unterminated
+}
+
+export type FontDecl = {
+  /** The name the font is bound to, and the only way an element selects it. */
+  name: string;
+  /** The bracketed expression, verbatim. Evaluated in the RENDER body. */
+  expr: string;
+  /** 1-based line of the directive, for `#source`. */
+  line: number;
+};
+
 export type Section = {
   name: SectionName;
   /**
@@ -47,6 +130,8 @@ export type SplitResult = {
    * unless it says otherwise.
    */
   exported: boolean;
+  /** Every `@font` directive in the file, in source order. */
+  fonts: FontDecl[];
 };
 
 export function hasMarkers(source: string): boolean {
@@ -164,6 +249,7 @@ export function splitSections(source: string): SplitResult {
   let current: Section | null = null;
   const bodyLines: string[] = [];
   let exported = false;
+  const fonts: FontDecl[] = [];
   // Whether anything that is not a blank line or a comment has been seen yet.
   let sawDecl = false;
 
@@ -200,6 +286,28 @@ export function splitSections(source: string): SplitResult {
       lines[i] = "";
       continue;
     }
+    const fo = FONT_RE.exec(lines[i]!);
+    if (fo) {
+      const decl = parseFontDirective((fo[1] ?? "").trim());
+      if (!decl) {
+        throw new SectionError(
+          `@font takes exactly a name and a bracketed expression, ` +
+            `e.g. '@font codicons [codicon_ttf]'`,
+          i + 1
+        );
+      }
+      fonts.push({ name: decl.name, expr: decl.expr, line: i + 1 });
+      sawDecl = true;
+      // Blanked IN PLACE and then allowed to fall through, rather than
+      // `continue`d past like @export. @export can only ever sit in the
+      // prelude, which is sliced out of `lines` and therefore keeps the blank
+      // on its own; a @font may sit inside a section body, which is collected
+      // line by line into `bodyLines` -- skipping the push there would shift
+      // every following line of that body up by one and put its `#source`
+      // mapping out by one for the rest of the section.
+      lines[i] = "";
+    }
+
     if (!isBlankOrComment(lines[i]!)) {
       sawDecl = true;
     }
@@ -254,5 +362,6 @@ export function splitSections(source: string): SplitResult {
     preludeStartLine: 1,
     sections: sections,
     exported: exported,
+    fonts: fonts,
   };
 }

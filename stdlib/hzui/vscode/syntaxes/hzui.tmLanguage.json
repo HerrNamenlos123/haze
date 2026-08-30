@@ -4,6 +4,9 @@
   "scopeName": "source.hzui",
   "patterns": [
     {
+      "include": "#font-marker"
+    },
+    {
       "include": "#export-marker"
     },
     {
@@ -30,6 +33,35 @@
         }
       }
     },
+    "font-marker": {
+      "comment": "@font <name> [<expr>] -- a file-level directive like @export, but repeatable and allowed ANYWHERE (prelude, between sections, inside a section body), because the expression is evaluated in the render body. It never ends a section, which is why it is absent from every 'end' pattern here and instead included INSIDE the blocks it can appear in. Matched as one exact shape, mirroring the transformer (sections.ts parseFontDirective): a line that is not the shape falls through to the plain haze grammar and visibly stops looking like a directive, which is the signal that it will be a hard error at build time.",
+      "match": "^(@font)\\s+([A-Za-z_][\\w]*)\\s+(\\[)(.+)(\\])\\s*$",
+      "captures": {
+        "1": {
+          "name": "keyword.control.font.hzui"
+        },
+        "2": {
+          "name": "entity.name.type.font.hzui"
+        },
+        "3": {
+          "name": "punctuation.definition.expression.begin.hzui"
+        },
+        "4": {
+          "name": "meta.embedded.expression.hzui",
+          "patterns": [
+            {
+              "include": "source.hz#expression"
+            },
+            {
+              "include": "source.hz"
+            }
+          ]
+        },
+        "5": {
+          "name": "punctuation.definition.expression.end.hzui"
+        }
+      }
+    },
     "section-marker": {
       "comment": "@props / @emit / @slot / @expose / @setup markers (open-only, line-anchored)",
       "match": "^(@setup)\\s*$",
@@ -50,6 +82,9 @@
       "end": "^(?=@(?:props|emit|slot|expose|setup|template)\\b)",
       "name": "meta.template.hzui",
       "patterns": [
+        {
+          "include": "#font-marker"
+        },
         {
           "include": "#template-content"
         }
@@ -385,6 +420,9 @@
       "end": "^(?=@(?:props|emit|slot|expose|setup|template)\\b)",
       "name": "meta.declarations.hzui",
       "patterns": [
+        {
+          "include": "#font-marker"
+        },
         {
           "include": "source.hz#comments"
         },

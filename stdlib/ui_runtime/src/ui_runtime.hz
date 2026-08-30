@@ -74,6 +74,20 @@ export opaque ref struct Runtime {
             measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
                 return layout.measureText(fontFamily, fontSize, text);
             },
+            // The font backend, which is a two-module job and therefore this
+            // module's: loading the bytes is the renderer's fontstash, binding
+            // the resulting id to a name is the layout engine's table, and
+            // neither of those modules knows the other exists. Everything above
+            // (a component's `@font` directive, ui_components.provideFont) only
+            // ever deals in a name and a slice.
+            //
+            // Called once per font, and again only when a font's bytes actually
+            // change -- provideFont filters the unchanged case out before it
+            // gets here, which matters because addFont parses the whole file.
+            provideFont: (name: str, bytes: Bytes): void => {
+                let id = args.gfx.fontRenderer.fs.addFont(name, bytes);
+                layout.registerFont(name, id);
+            },
         });
         return Runtime {
             gfx: args.gfx,

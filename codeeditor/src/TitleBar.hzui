@@ -38,7 +38,13 @@ slot rightContent title=[props.title]
 
 Button [] label="Button" {}
 
-Codicon [] icon="window-closes" {}
+Codicon [] icon="close" {}
+Codicon [] icon="close-compact" {}
+Codicon [] icon="close-all" {}
+
+Codicon [] icon="chrome-minimize" {}
+Codicon [] icon="chrome-maximize" {}
+Codicon [] icon="chrome-close" {}
 
 // // Button [] label=["File"] selected=[props.openMenu == menuFile()] paddingX=[8] paddingY=[4] @click=onClick
 // // Pushes the title to the middle of the remaining space.
