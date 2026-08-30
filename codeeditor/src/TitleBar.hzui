@@ -22,6 +22,10 @@ rightContent: {
 
 @setup
 
+let closeWindow = () => {
+
+};
+
 @template [relative w-grow h-fit bg-["#3C3C3C"] items-center font-size-16]
 
 slot leftContent title=[props.title]
@@ -39,5 +43,5 @@ slot rightContent title=[props.title]
 // Codicon [] icon="chrome-minimize" {}
 // Codicon [] icon="chrome-maximize" {}
 div [m-1] {
-    Button [] icon="chrome-close" paddingX=[4] rounded=[999] {}
+    Button [] icon="chrome-close" paddingX=[4] rounded=[999] @click=closeWindow {}
 }
