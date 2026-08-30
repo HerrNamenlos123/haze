@@ -1046,7 +1046,10 @@ export ref struct HookRegistration {
     // Called when the CLI reaches this hook. Returning `none` means "no
     // opinion" and is answered with `{}`; returning a node lets the hook
     // inject context, block the tool, or rewrite its input.
-    handler: (input: HookInput) => json.Node | none;
+    // The return type is parenthesised on purpose: without the parens the
+    // grammar binds the `|` outside the callable (an optional callable
+    // returning json.Node), which is not what this is.
+    handler: (input: HookInput) => (json.Node | none);
 }
 
 // A value type: one is built per hook callback and consumed immediately.

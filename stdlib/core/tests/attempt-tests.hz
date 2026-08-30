@@ -29,9 +29,9 @@ namespace attempt_tests {
     // Else returns value
     fn a1(): int | real {
         let x = attempt {
-            ok_int(1)?!;
+            ok_int(1)?!
         } else {
-            3.5;
+            3.5
         };
         return x;
     }
@@ -39,7 +39,7 @@ namespace attempt_tests {
     // Else returns nothing
     fn a2(): int | none {
         let x = attempt {
-            ok_int(1)?!;
+            ok_int(1)?!
         } else {
         };
         return x;
@@ -48,7 +48,7 @@ namespace attempt_tests {
     // Else never returns
     fn a3(): int {
         let x = attempt {
-            ok_int(1)?!;
+            ok_int(1)?!
         } else {
             panic();
         };
@@ -63,7 +63,7 @@ namespace attempt_tests {
             ok_int(1)?!;
             ok_void();
         } else {
-            2.5;
+            2.5
         };
         return x;
     }
@@ -96,7 +96,7 @@ namespace attempt_tests {
         let x = attempt {
             panic();
         } else {
-            42;
+            42
         };
         return x;
     }
@@ -126,9 +126,9 @@ namespace attempt_tests {
     fn d1(): int {
         let x = attempt {
             err_none()?!;
-            1;
+            1
         } else {
-            2;
+            2
         };
         return x;
     }
@@ -138,9 +138,9 @@ namespace attempt_tests {
         let x = attempt {
             err_none()?!;
             ok_int(5)?!;
-            1;
+            1
         } else {
-            2;
+            2
         };
         return x;
     }
@@ -150,9 +150,9 @@ namespace attempt_tests {
         let x = attempt {
             ok_int(5)?!;
             err_none()?!;
-            1;
+            1
         } else {
-            2;
+            2
         };
         return x;
     }
@@ -189,13 +189,13 @@ namespace attempt_tests {
         let x = attempt {
             let y = attempt {
                 err_none()?!;
-                1;
+                1
             } else {
-                2;
+                2
             };
-            y + 1;
+            y + 1
         } else {
-            100;
+            100
         };
         return x;
     }
@@ -205,13 +205,13 @@ namespace attempt_tests {
         let x = attempt {
             let y = attempt {
                 err_none()?!;
-                1;
+                1
             } else {
                 panic();
             };
-            y;
+            y
         } else {
-            42;
+            42
         };
         return x;
     }
@@ -222,7 +222,7 @@ namespace attempt_tests {
     fn g1(): int {
         let x = attempt {
             ok_int(9)?!;
-            9;
+            9
         } else {
             assert(false, none);
         };
@@ -233,7 +233,7 @@ namespace attempt_tests {
     fn g2(): int {
         let x = attempt {
             err_none()?!;
-            9;
+            9
         } else {
             assert(false, none);
         };
@@ -245,9 +245,9 @@ namespace attempt_tests {
     // No fallthrough into else
     fn h1(): int {
         let x = attempt {
-            1;
+            1
         } else {
-            2;
+            2
         };
         assert(x == 1, none);
         return x;
@@ -257,9 +257,9 @@ namespace attempt_tests {
     fn h2(): int {
         let x = attempt {
             err_none()?!;
-            1;
+            1
         } else {
-            2;
+            2
         };
         return x;
     }

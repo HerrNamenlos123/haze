@@ -556,6 +556,10 @@ export namespace Collect {
   export type ExprStatement = BaseStatement & {
     variant: ENode.ExprStatement;
     expr: Collect.ExprId;
+    // True when the statement carried no trailing `;`. Such a statement, when
+    // it is the last one in an emitting scope (`do { ... }` / `attempt { ... }`),
+    // is that scope's yielded value; everywhere else the value is discarded.
+    emit: boolean;
   };
 
   export type InlineCStatement = BaseStatement & {
@@ -2489,6 +2493,7 @@ function collectScope(
           expr: collectExpr(cc, astStatement.expr, {
             currentParentScope: blockScopeId,
           }),
+          emit: !astStatement.semicolon,
           sourceloc: astStatement.sourceloc,
         });
         break;
@@ -2528,6 +2533,7 @@ function collectScope(
               scope: conditionLetScopeId,
               sourceloc: astStatement.sourceloc,
             })[1],
+            emit: false,
             sourceloc: astStatement.sourceloc,
           });
         }
@@ -2664,6 +2670,7 @@ function collectScope(
               scope: letScopeId,
               sourceloc: astStatement.sourceloc,
             })[1],
+            emit: false,
             sourceloc: astStatement.sourceloc,
           });
         }
@@ -2811,6 +2818,7 @@ function collectScope(
             scope: forScopeId,
             sourceloc: astStatement.sourceloc,
           })[1],
+          emit: false,
           sourceloc: astStatement.sourceloc,
         });
 
@@ -3853,12 +3861,16 @@ function collectExpr(
                   ]
                 : []),
               {
+                // No semicolon: this wrapper exists only to give the handler
+                // variable a scope, so the inner block's value has to pass
+                // straight through it as the handler's own value.
                 variant: "ExprStatement",
                 expr: {
                   variant: "BlockScopeExpr",
                   scope: innerScope,
                   sourceloc: item.sourceloc,
                 },
+                semicolon: false,
                 sourceloc: item.sourceloc,
               },
             ],

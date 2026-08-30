@@ -2810,12 +2810,12 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "ExprStatement",
       expr: expr,
+      semicolon: Boolean(ctx.SEMI()),
       sourceloc: this.loc(ctx),
     } satisfies ASTExprStatement);
   };
 
-  // `do { ... }` used bare as a statement, with the trailing semicolon optional
-  // (unlike ExprStatement, which requires one). See the grammar comment on
+  // `do { ... }` used bare as a statement. See the grammar comment on
   // DoStatement/AttemptStatement for why these need their own alternatives.
   exitDoStatement = (ctx: DoStatementContext) => {
     const start = this.getMark(ctx);
@@ -2830,6 +2830,7 @@ class ASTBuilder extends HazeParserListener {
     this.stack.push({
       variant: "ExprStatement",
       expr: expr,
+      semicolon: Boolean(ctx.SEMI()),
       sourceloc: this.loc(ctx),
     } satisfies ASTExprStatement);
   };
@@ -2881,6 +2882,7 @@ class ASTBuilder extends HazeParserListener {
         recoverVar: recoverVar,
         sourceloc: this.loc(ctx),
       } satisfies ASTAttemptExpr,
+      semicolon: Boolean(ctx.SEMI()),
       sourceloc: this.loc(ctx),
     } satisfies ASTExprStatement);
   };

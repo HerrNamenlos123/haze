@@ -3762,7 +3762,7 @@ export opaque ref struct UIContext {
                 // of it, exactly as a div would (its `id` is the only field
                 // that does not apply; see DivProps.id).
                 let rootProps = attempt {
-                    instance.currentTemplate();
+                    instance.currentTemplate()
                 } recover e {
                     instance.crashed = true;
                     instance.crashInfo = e;

@@ -1,0 +1,359 @@
+// ============================================================================
+// REGRESSION TEST — what makes a scope yield a value: the missing semicolon.
+//
+// `do { ... }` and `attempt { ... }` are expressions, so they have to produce
+// something. The rule for what they produce is one thing and one thing only:
+//
+//     the last statement is an expression WITHOUT a trailing `;`  ->  its value
+//     anything else (including the same expression WITH a `;`)    ->  none
+//
+// It used to be neither of those. The last expression statement of an emitting
+// scope was emitted whenever its type was not void, semicolon or not, so
+// `do { x; }` and `do { x }` were the same expression and there was no way to
+// spell "run this and throw the value away". That is what these cases pin
+// down, in both directions: every `assert` here has a twin that checks the
+// none-yielding form, because a regression that emits too eagerly still passes
+// every test that only looks at the yielding form.
+//
+// Three properties are load-bearing and easy to break separately:
+//
+//   1. THE SEMICOLON IS THE WHOLE RULE. Not "is the value used", not "is the
+//      type non-void", not "is it the only statement". A `do` block whose last
+//      statement is a semicolon-terminated call yields `none` even though the
+//      call returns an int, and the compiler must type it as `none`.
+//
+//   2. IT NESTS. `do { do { 7 } }` is 7: the inner block is the outer block's
+//      last statement and carries no semicolon, so it emits, and the outer one
+//      passes that straight out. `do { do { 7 }; }` is none. This is the case
+//      the parser can get wrong on its own, because a bare `do { }` at
+//      statement position is a statement form of its own -- it has to record
+//      its missing semicolon just like a plain expression statement does.
+//
+//   3. `attempt` FOLLOWS THE SAME RULE, in all three of its scopes. The attempt
+//      block, the `else` handler and the `recover` handler are emitting scopes
+//      like any other, and a handler that ends in `0;` contributes `none` to
+//      the result union rather than 0.
+//
+// Per framework.hz's batching guidance almost everything lives in ONE compiled
+// program; only the must-fail-to-compile cases and the cross-module case need
+// their own compilation.
+// ============================================================================
+
+namespace cases_do_block_emit {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── The bundled compile+run case ────────────────────────────────────
+        s.run(
+            "do/attempt: the trailing semicolon decides whether a scope yields its value",
+            """
+struct Point { x: int = 0; y: int = 0; }
+
+fn twice(v: int): int { return v * 2; }
+fn nothing() {}
+
+fn ok(v: int): Result<int, str> { return Result<int, str>.Ok(v); }
+fn bad(m: str): Result<int, str> { return Result<int, str>.Err(m); }
+
+// ── 1. The rule itself ──────────────────────────────────────────────────────
+
+fn basic_yield(): int {
+    let a = do { 5 };
+    static_assert(typeof(a).prettyName == "int", "no semicolon yields the value");
+    return a;
+}
+
+fn basic_discard(): none {
+    let b = do { 5; };
+    static_assert(typeof(b).prettyName == "none", "a semicolon discards the value");
+    return b;
+}
+
+// The value is whatever the last expression is; the statements before it are
+// ordinary statements and say nothing about it.
+fn locals_then_value(): int {
+    let c = do {
+        let x = 3;
+        let y = 4;
+        x * y
+    };
+    static_assert(typeof(c).prettyName == "int", "trailing expression after locals");
+    return c;
+}
+
+// A call that returns a value is not special: with a `;` it is a statement
+// whose result is dropped, exactly like a call in any other scope.
+fn call_discarded(): none {
+    let d = do { twice(4); };
+    static_assert(typeof(d).prettyName == "none", "semicolon drops a call's result");
+    return d;
+}
+
+fn call_yielded(): int {
+    let e = do { twice(4) };
+    static_assert(typeof(e).prettyName == "int", "no semicolon keeps a call's result");
+    return e;
+}
+
+// A void call has nothing to yield either way, so both spellings are none --
+// this is the one place where the semicolon genuinely makes no difference.
+fn void_call_is_none(): none {
+    let f = do { nothing() };
+    let g = do { nothing(); };
+    static_assert(typeof(f).prettyName == "none", "a void call yields none");
+    static_assert(typeof(g).prettyName == "none", "a void call yields none");
+    return f;
+}
+
+// An empty block has no last expression at all.
+fn empty_is_none(): none {
+    let h = do { };
+    static_assert(typeof(h).prettyName == "none", "an empty block yields none");
+    return h;
+}
+
+// ── 2. Nesting ──────────────────────────────────────────────────────────────
+
+fn nested_yield(): int {
+    let i = do { do { 7 } };
+    static_assert(typeof(i).prettyName == "int", "an inner block without a semicolon emits");
+    return i;
+}
+
+fn nested_discard(): none {
+    let j = do { do { 7 }; };
+    static_assert(typeof(j).prettyName == "none", "an inner block with a semicolon does not");
+    return j;
+}
+
+// The inner block's OWN semicolon decides what it hands out, independently of
+// the outer one: here the inner block yields none, so the outer does too even
+// though the outer block does not end in a semicolon.
+fn nested_inner_discards(): none {
+    let k = do { do { 7; } };
+    static_assert(typeof(k).prettyName == "none", "the inner semicolon wins for the inner block");
+    return k;
+}
+
+// ── 3. What the value can be ────────────────────────────────────────────────
+
+fn yields_struct(): Point {
+    let p = do { Point { x: 1, y: 2 } };
+    static_assert(typeof(p).category == meta.TypeCategory.Struct, "a struct literal is an ordinary value");
+    return p;
+}
+
+fn yields_string(): str {
+    return do {
+        let n = 7;
+        f"n={n}"
+    };
+}
+
+fn unsafe_yields(): int {
+    let u = do unsafe { 42 };
+    static_assert(typeof(u).prettyName == "int", "do unsafe emits like do");
+    return u;
+}
+
+// ── 4. attempt: the same rule, in all three of its scopes ───────────────────
+
+fn attempt_yields(): int {
+    let a = attempt { ok(1)?! } else { 99 };
+    static_assert(typeof(a).prettyName == "int", "attempt and else both yield ints");
+    return a;
+}
+
+fn attempt_else_yields(): int {
+    let a = attempt { bad("x")?! } else { 99 };
+    return a;
+}
+
+fn attempt_discards(): none {
+    let a = attempt { ok(1)?!; } else { 99; };
+    static_assert(typeof(a).prettyName == "none", "both handlers discarded their values");
+    return a;
+}
+
+// One side yielding and one side not is exactly how a `T | none` arises, and
+// which side is which has to follow the semicolons.
+fn attempt_half_discards(): int | none {
+    let a = attempt { ok(1)?! } else { 99; };
+    static_assert(typeof(a).prettyName == "(int | none)", "only the attempt block yields");
+    return a;
+}
+
+fn attempt_else_half_discards(): int | none {
+    let a = attempt { ok(1)?!; } else { 99 };
+    static_assert(typeof(a).prettyName == "(int | none)", "only the else block yields");
+    return a;
+}
+
+fn recover_yields(): int {
+    let a = attempt { 5 } recover e { 6 };
+    static_assert(typeof(a).prettyName == "int", "recover yields like else");
+    return a;
+}
+
+fn recover_discards(): none {
+    let a = attempt { 5; } recover e { 6; };
+    static_assert(typeof(a).prettyName == "none", "recover discards like else");
+    return a;
+}
+
+// ── 5. A `do` block as a plain statement still works, either way ────────────
+// It yields nothing anybody looks at, so neither spelling may be an error.
+
+fn do_as_statement(): int {
+    let total = 0;
+    do {
+        total += 1;
+    };
+    do {
+        total += 1;
+    }
+    do unsafe {
+        total += 1;
+    }
+    return total;
+}
+
+// A `return` inside a `do` block returns from the FUNCTION and is not an
+// emitted value at all -- untouched by the semicolon rule.
+fn return_through_do(): int {
+    do {
+        return 11;
+    };
+    return 0;
+}
+
+fn main(): int {
+    // The none-returning halves are proven by the static_asserts inside them;
+    // calling them here only makes sure the generated C actually runs.
+    assert(basic_yield() == 5, "basic_yield");
+    basic_discard();
+    assert(locals_then_value() == 12, "locals_then_value");
+    call_discarded();
+    assert(call_yielded() == 8, "call_yielded");
+    void_call_is_none();
+    empty_is_none();
+
+    assert(nested_yield() == 7, "nested_yield");
+    nested_discard();
+    nested_inner_discards();
+
+    let p = yields_struct();
+    assert(p.x == 1 && p.y == 2, "yields_struct");
+    assert(yields_string() == "n=7", "yields_string");
+    assert(unsafe_yields() == 42, "unsafe_yields");
+
+    assert(attempt_yields() == 1, "attempt_yields");
+    assert(attempt_else_yields() == 99, "attempt_else_yields");
+    attempt_discards();
+    let half = attempt_half_discards();
+    if half is int {
+        assert(half == 1, "attempt_half_discards");
+    } else {
+        assert(false, "attempt_half_discards yielded none");
+    }
+    attempt_else_half_discards();
+    assert(recover_yields() == 5, "recover_yields");
+    recover_discards();
+
+    assert(do_as_statement() == 3, "do_as_statement");
+    assert(return_through_do() == 11, "return_through_do");
+
+    // The whole rule in one line, printed rather than asserted so the run
+    // actually proves the emitted C computes these and not just that the
+    // types line up.
+    fmt.println(f"{do { 1 + 1 }} {do { 1 + 1; }}");
+    fmt.println("ok");
+    return 0;
+}
+""",
+            """
+2 none
+ok
+""");
+
+        // ── Must fail: a discarded value is really gone ──────────────────────
+        //
+        // The type is what proves the rule; a `do` block whose last statement
+        // ends in a semicolon is `none`, and `none` does not convert to `int`.
+        // Without this case the suite above would still pass if the compiler
+        // quietly emitted the value AND typed the block as none.
+        s.compileFails(
+            "do: a semicolon-terminated last expression is not the block's value",
+            """
+fn main(): int {
+    let x: int = do { 1; };
+    fmt.println(f"{x}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "attempt: a semicolon-terminated handler contributes none, not its value",
+            """
+fn ok(v: int): Result<int, str> { return Result<int, str>.Ok(v); }
+
+fn main(): int {
+    let x: int = attempt { ok(1)?! } else { 0; };
+    fmt.println(f"{x}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // ── Across a module boundary ────────────────────────────────────────
+        //
+        // A generic exported function is re-emitted into its consumer as raw
+        // source and re-elaborated there (see DEVELOPMENT.md), so a `do` block
+        // in one has to survive a round trip through the export as TEXT. A
+        // printer that normalised statements -- or dropped a semicolon it
+        // thought was optional -- would flip the meaning of the body somewhere
+        // no single-module case can see. `rx.reactive` in the standard library
+        // is exactly this shape, which is how it would be found the hard way.
+        s.runWithModules(
+            "do: an emitting block survives generic re-emission across modules",
+            [
+                testsuite.TestModule {
+                    name: "helper",
+                    source: """
+// Yields, and is generic, so its body crosses the boundary as source.
+export fn boxed<T>(value: T): T {
+    return do {
+        let inner = value;
+        inner
+    };
+}
+
+// The same body with a semicolon, which must still be none on the other side.
+export fn dropped<T>(value: T): none {
+    return do {
+        let inner = value;
+        inner;
+    };
+}
+""",
+                },
+            ],
+            """
+import helper;
+
+fn main(): int {
+    let a = helper.boxed<int>(5);
+    static_assert(typeof(a).prettyName == "int", "the yielding body stayed yielding");
+    assert(a == 5, "boxed");
+
+    let b = helper.dropped<int>(5);
+    static_assert(typeof(b).prettyName == "none", "the discarding body stayed discarding");
+
+    fmt.println(f"{a}");
+    return 0;
+}
+""",
+            "5");
+    }
+}

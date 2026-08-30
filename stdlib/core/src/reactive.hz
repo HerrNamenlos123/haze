@@ -35,7 +35,7 @@ namespace rx {
         return do unsafe {
             let result: rx.ShallowReactive<T> = uninitialized;
             __c__(f"""result = HZSTD_REACTIVE_CELL_CREATE(__typeof__(result), {T.mangledName}, value);""");
-            result;
+            result
         };
     }
 
@@ -78,7 +78,7 @@ namespace rx {
             return do unsafe {
                 let result: rx.Reactive<T> = uninitialized;
                 __c__(f"""result = HZSTD_REACTIVE_CELL_CREATE(__typeof__(result), {T.baseType.mangledName}, value);""");
-                result;
+                result
             };
         }
 
@@ -108,7 +108,7 @@ namespace rx {
             __c__("""
                 result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
             """);
-            result;
+            result
         };
     }
 

@@ -313,6 +313,11 @@ export type ASTBlockScopeExpr = {
 export type ASTExprStatement = {
   variant: "ExprStatement";
   expr: ASTExpr;
+  // Was the statement terminated by a `;`? Purely syntactic, but load-bearing:
+  // an expression statement WITHOUT a semicolon that sits last in an emitting
+  // scope (`do { ... }`, `attempt { ... }`) is that scope's yielded value; with
+  // a semicolon, the value is discarded and the scope yields `none`.
+  semicolon: boolean;
   sourceloc: SourceLoc;
 };
 

@@ -22,7 +22,7 @@ icon: str;
 codicon_ttf = computed(() => {
     return embed.binary("resources/codicon.ttf");
 });
-@font codicons [do { assert(codicon_ttf); codicon_ttf; }]
+@font codicons [do { assert(codicon_ttf); codicon_ttf }]
 
 codicon_metadata = computed(() => {
     let file = embed.text("resources/codicon.csv").trim();
