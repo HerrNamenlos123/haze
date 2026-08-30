@@ -67,6 +67,7 @@ fn main(): int {
     cases_literal_discrimination.register(suite);
     cases_operator_as.register(suite);
     cases_struct_spread.register(suite);
+    cases_global_not_captured.register(suite);
 
     return testsuite.runAll(config, suite);
 }

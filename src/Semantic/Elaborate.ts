@@ -17159,6 +17159,23 @@ export class SemanticElaborator {
     assert(capturedVariable.variant === Semantic.ENode.VariableSymbol);
     assert(capturedVariable.type);
 
+    // A global is never a capture. Name lookup reports "this crossed a lambda
+    // scope" for a global exactly as it does for a local -- the walk out to the
+    // declaration passes through the same LambdaScope either way -- but only a
+    // local needs an env slot: it lives in a frame the closure can outlive,
+    // whereas a global is one storage location that the generated C addresses
+    // by name from any function, the lambda body included. Giving one an env
+    // slot copied it in at closure creation, so the closure read a snapshot
+    // that went stale the moment anyone wrote the global, and an assignment
+    // from inside the closure was rejected with H7189 -- whose advice, "declare
+    // it as a stack reference", does not exist at global scope. It also must
+    // not record capturedByValueAt, or an ordinary write to the global further
+    // down the enclosing function would warn H7190 about a copy that is not
+    // there. See testsuite/src/cases_global_not_captured.hz.
+    if (capturedVariable.variableContext === EVariableContext.Global) {
+      return;
+    }
+
     const resultingExpr = this.sr.exprNodes.get(resultingExprId);
 
     const byValue = this.isCapturedByValue(capturedVariable.type);
