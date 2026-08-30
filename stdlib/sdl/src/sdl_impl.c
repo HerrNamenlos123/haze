@@ -13,6 +13,203 @@
 #define HAZE_SDL_EVENT_USERDATA_PROPERTY "haze.event_userdata"
 #define HAZE_SDL_WINDOW_REGIONS_PROPERTY "haze.window_regions"
 
+/* ---------- OS titlebar press ownership ----------
+
+   SDL_SetWindowHitTest is enough for a real titlebar on some backends and not
+   on others, and the difference is not cosmetic.
+
+   On Windows a DRAGGABLE region is answered to WM_NCHITTEST as HTCAPTION, so
+   the region genuinely IS a caption bar: the OS supplies dragging, snapping,
+   Aero Shake, double-click to maximize and the window menu, and the press
+   never reaches this process.
+
+   Wayland has no such concept. xdg-shell offers only "start moving me",
+   "start resizing me" and "show the window menu"; there is no way to tell the
+   compositor that a rectangle is a titlebar. Every Wayland window that
+   double-click-maximizes does it because whoever draws its titlebar --
+   the compositor for server-side decorations, GTK or libdecor for client-side
+   ones -- owns the pointer press and implements the gesture. SDL's hit test
+   takes that press away (it calls xdg_toplevel_move and swallows the event,
+   release included, which was measured, not assumed), leaving nobody to
+   implement it.
+
+   So on Wayland this module does what a toolkit does: it keeps the press,
+   counts the clicks, and calls the protocol directly -- xdg_toplevel_move for
+   a drag, maximize/restore for a double click, xdg_toplevel_show_window_menu
+   for a right click. The move is still the compositor's, so snapping, tiling
+   and edge gestures are unaffected; only the decision of WHICH gesture was
+   made moves in here.
+
+   xdg_toplevel_move needs a wl_seat and a serial from a real input event, and
+   SDL exposes neither. Both are obtained by binding an ordinary second
+   wl_seat from the wl_display SDL does expose: the compositor delivers
+   pointer events to every wl_pointer a client creates, so the serials seen
+   there are the same ones SDL sees, and are accepted for the grab.
+
+   Everything here is Linux-only and additionally gated at runtime on the
+   Wayland video driver being the active one; on X11, Windows and macOS the
+   hit test keeps returning DRAGGABLE and the platform keeps doing the work. */
+
+#if defined(__linux__) && !defined(__ANDROID__)
+#define HAZE_SDL_WAYLAND 1
+#endif
+
+#ifdef HAZE_SDL_WAYLAND
+#include <wayland-client.h>
+#include <xdg-shell-client-protocol.h>
+#include <xdg-shell-protocol.c>
+
+static struct wl_seat *g_haze_wl_seat = NULL;
+static struct wl_pointer *g_haze_wl_pointer = NULL;
+/* Most recent serial from a real pointer event on our own seat. Refreshed on
+   enter/leave/button; a grab request carrying a stale or zero serial is
+   silently ignored by the compositor, which is why every one of those is
+   captured rather than just presses. */
+static uint32_t g_haze_wl_serial = 0;
+static bool g_haze_wl_ready = false;
+
+static void haze_wl_pointer_enter(void *data, struct wl_pointer *p, uint32_t serial,
+                                  struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y)
+{
+  (void)data; (void)p; (void)surface; (void)x; (void)y;
+  g_haze_wl_serial = serial;
+}
+static void haze_wl_pointer_leave(void *data, struct wl_pointer *p, uint32_t serial, struct wl_surface *surface)
+{
+  (void)data; (void)p; (void)surface;
+  g_haze_wl_serial = serial;
+}
+static void haze_wl_pointer_motion(void *data, struct wl_pointer *p, uint32_t time, wl_fixed_t x, wl_fixed_t y)
+{ (void)data; (void)p; (void)time; (void)x; (void)y; }
+static void haze_wl_pointer_button(void *data, struct wl_pointer *p, uint32_t serial,
+                                   uint32_t time, uint32_t button, uint32_t state)
+{
+  (void)data; (void)p; (void)time; (void)button;
+  if (state) {
+    g_haze_wl_serial = serial;
+  }
+}
+static void haze_wl_pointer_axis(void *data, struct wl_pointer *p, uint32_t time, uint32_t axis, wl_fixed_t value)
+{ (void)data; (void)p; (void)time; (void)axis; (void)value; }
+static void haze_wl_pointer_frame(void *data, struct wl_pointer *p) { (void)data; (void)p; }
+static void haze_wl_pointer_axis_source(void *data, struct wl_pointer *p, uint32_t src) { (void)data; (void)p; (void)src; }
+static void haze_wl_pointer_axis_stop(void *data, struct wl_pointer *p, uint32_t time, uint32_t axis)
+{ (void)data; (void)p; (void)time; (void)axis; }
+static void haze_wl_pointer_axis_discrete(void *data, struct wl_pointer *p, uint32_t axis, int32_t d)
+{ (void)data; (void)p; (void)axis; (void)d; }
+static void haze_wl_pointer_axis_value120(void *data, struct wl_pointer *p, uint32_t axis, int32_t d)
+{ (void)data; (void)p; (void)axis; (void)d; }
+static void haze_wl_pointer_axis_relative_direction(void *data, struct wl_pointer *p, uint32_t axis, uint32_t dir)
+{ (void)data; (void)p; (void)axis; (void)dir; }
+
+static const struct wl_pointer_listener haze_wl_pointer_listener = {
+  haze_wl_pointer_enter,
+  haze_wl_pointer_leave,
+  haze_wl_pointer_motion,
+  haze_wl_pointer_button,
+  haze_wl_pointer_axis,
+  haze_wl_pointer_frame,
+  haze_wl_pointer_axis_source,
+  haze_wl_pointer_axis_stop,
+  haze_wl_pointer_axis_discrete,
+  haze_wl_pointer_axis_value120,
+  haze_wl_pointer_axis_relative_direction,
+};
+
+static void haze_wl_seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps)
+{
+  (void)data;
+  if ((caps & WL_SEAT_CAPABILITY_POINTER) && !g_haze_wl_pointer) {
+    g_haze_wl_pointer = wl_seat_get_pointer(seat);
+    wl_pointer_add_listener(g_haze_wl_pointer, &haze_wl_pointer_listener, NULL);
+  }
+}
+static void haze_wl_seat_name(void *data, struct wl_seat *seat, const char *name)
+{ (void)data; (void)seat; (void)name; }
+
+static const struct wl_seat_listener haze_wl_seat_listener = {
+  haze_wl_seat_capabilities,
+  haze_wl_seat_name,
+};
+
+static void haze_wl_registry_global(void *data, struct wl_registry *registry, uint32_t name,
+                                    const char *interface, uint32_t version)
+{
+  (void)data;
+  if (SDL_strcmp(interface, "wl_seat") == 0 && !g_haze_wl_seat) {
+    /* Version 5 is all this needs (it never reads an axis event); asking for
+       more than the compositor advertises is a protocol error. */
+    g_haze_wl_seat = wl_registry_bind(registry, name, &wl_seat_interface, version < 5 ? version : 5);
+    wl_seat_add_listener(g_haze_wl_seat, &haze_wl_seat_listener, NULL);
+  }
+}
+static void haze_wl_registry_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{ (void)data; (void)registry; (void)name; }
+
+static const struct wl_registry_listener haze_wl_registry_listener = {
+  haze_wl_registry_global,
+  haze_wl_registry_global_remove,
+};
+
+static struct wl_display *haze_wl_display_of(SDL_Window *window)
+{
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  if (!props) {
+    return NULL;
+  }
+  return (struct wl_display *)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+}
+
+static struct xdg_toplevel *haze_wl_toplevel_of(SDL_Window *window)
+{
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  if (!props) {
+    return NULL;
+  }
+  return (struct xdg_toplevel *)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER, NULL);
+}
+
+/* Binds our own seat. Called once, when the hit test is installed. Failing
+   here is not fatal: g_haze_wl_ready stays false and the hit test falls back
+   to SDL_HITTEST_DRAGGABLE, which still gives dragging and resizing -- only
+   the double click is lost. */
+static void haze_sdl_wayland_init(SDL_Window *window)
+{
+  const char *driver = SDL_GetCurrentVideoDriver();
+  if (!driver || SDL_strcmp(driver, "wayland") != 0) {
+    return;
+  }
+  struct wl_display *display = haze_wl_display_of(window);
+  if (!display || !haze_wl_toplevel_of(window)) {
+    return;
+  }
+  if (!g_haze_wl_seat) {
+    struct wl_registry *registry = wl_display_get_registry(display);
+    if (!registry) {
+      return;
+    }
+    wl_registry_add_listener(registry, &haze_wl_registry_listener, NULL);
+    /* Two round trips: the first delivers the globals, the second the seat's
+       capabilities event that the pointer is created from. */
+    wl_display_roundtrip(display);
+    wl_display_roundtrip(display);
+  }
+  g_haze_wl_ready = g_haze_wl_seat != NULL && g_haze_wl_pointer != NULL;
+}
+#endif /* HAZE_SDL_WAYLAND */
+
+/* Does this process, rather than the platform, own presses in a draggable
+   region? True only on the Wayland path above. Everywhere else the answer is
+   no and the hit test keeps saying DRAGGABLE. */
+static bool haze_sdl_owns_titlebar_press(void)
+{
+#ifdef HAZE_SDL_WAYLAND
+  return g_haze_wl_ready;
+#else
+  return false;
+#endif
+}
+
 /* ---------- Trampoline function pointer types (must match Haze extern C type declarations) ---------- */
 
 typedef void (*HazeSdlKeyFn)(void* userdata, int scancode, bool repeat);
@@ -190,6 +387,29 @@ static haze_sdl_window_regions_t* haze_sdl_get_window_regions(SDL_Window* window
   return (haze_sdl_window_regions_t*)SDL_GetPointerProperty(props, HAZE_SDL_WINDOW_REGIONS_PROPERTY, NULL);
 }
 
+/* Which published box, if any, covers this point. Scanned back to front so the
+   last (topmost) match wins -- see the note on paint order above. Returns 1
+   for a draggable box, 0 for a hole, -1 for no box at all.
+
+   Shared by the hit test and by the press interception in pollEvents, so the
+   two can never disagree about where the titlebar is. */
+static int haze_sdl_region_at(const haze_sdl_window_regions_t* store, float x, float y)
+{
+  if (!store) {
+    return -1;
+  }
+  for (int i = store->count - 1; i >= 0; i--) {
+    const haze_sdl_region_t* r = &store->regions[i];
+    if (x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h) {
+      /* A hole stops the scan rather than falling through to whatever is
+         underneath: that is what makes it a hole in the titlebar around it,
+         which is what a close button needs. */
+      return r->draggable ? 1 : 0;
+    }
+  }
+  return -1;
+}
+
 static SDL_HitTestResult SDLCALL haze_sdl_hit_test(SDL_Window* window, const SDL_Point* area, void* data)
 {
   haze_sdl_window_regions_t* store = (haze_sdl_window_regions_t*)data;
@@ -234,24 +454,93 @@ static SDL_HitTestResult SDLCALL haze_sdl_hit_test(SDL_Window* window, const SDL
     }
   }
 
-  if (!store) {
-    return SDL_HITTEST_NORMAL;
-  }
-
-  for (int i = store->count - 1; i >= 0; i--) {
-    const haze_sdl_region_t* r = &store->regions[i];
-    const float x = (float)area->x;
-    const float y = (float)area->y;
-    if (x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h) {
-      /* A non-draggable box stops the scan rather than falling through to
-         whatever is underneath: that is exactly what makes it a HOLE in the
-         titlebar around it, which is what a close button needs. */
-      return r->draggable ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
-    }
+  if (haze_sdl_region_at(store, (float)area->x, (float)area->y) == 1) {
+    /* Where this process owns the press (Wayland), the region must NOT be
+       reported as draggable. SDL would take the press for its own move grab
+       and swallow it, and the click count -- and with it double-click to
+       maximize -- would be unobservable to everyone. The compositor still
+       performs the move; it is just asked for it from pollEvents instead.
+       Everywhere else DRAGGABLE is the better answer, because the platform
+       then supplies the whole gesture set itself. */
+    return haze_sdl_owns_titlebar_press() ? SDL_HITTEST_NORMAL : SDL_HITTEST_DRAGGABLE;
   }
 
   return SDL_HITTEST_NORMAL;
 }
+
+#ifdef HAZE_SDL_WAYLAND
+/* A pointer button event inside a draggable region, on the backend where those
+   belong to this process. Returns true when the event has been consumed and
+   must not be forwarded -- which mirrors exactly what SDL does for a draggable
+   region on every other backend, so the UI above sees the same thing (nothing)
+   no matter which platform it is running on.
+
+     left press    second click toggles maximize; otherwise the compositor is
+                   asked to take the window over for a drag.
+     right press   the window menu -- the other half of what a titlebar does,
+                   and a plain protocol request.
+     release       swallowed, so the application never sees an up whose down
+                   it was never given.
+
+   Note what is NOT reimplemented here: the move is xdg_toplevel_move, so
+   snapping, tiling and edge gestures stay the compositor's, and maximize is
+   SDL_MaximizeWindow, i.e. xdg_toplevel_set_maximized. Only the decision of
+   which gesture the user just made is taken here. */
+static bool haze_sdl_handle_titlebar_event(SDL_Window* window, const SDL_Event* event, bool down)
+{
+  if (!window || !haze_sdl_owns_titlebar_press()) {
+    return false;
+  }
+  const haze_sdl_window_regions_t* store = haze_sdl_get_window_regions(window);
+  if (haze_sdl_region_at(store, event->button.x, event->button.y) != 1) {
+    return false;
+  }
+  if (!down) {
+    return true;
+  }
+
+  struct xdg_toplevel* toplevel = haze_wl_toplevel_of(window);
+  struct wl_display* display = haze_wl_display_of(window);
+  /* A grab request carrying a serial we never actually saw is silently
+     ignored by the compositor; better to let the press through as an ordinary
+     click than to swallow it for a request that will do nothing. */
+  if (!toplevel || !display || g_haze_wl_serial == 0) {
+    return false;
+  }
+
+  if (event->button.button == SDL_BUTTON_RIGHT) {
+    xdg_toplevel_show_window_menu(toplevel, g_haze_wl_seat, g_haze_wl_serial,
+                                  (int32_t)event->button.x, (int32_t)event->button.y);
+    wl_display_flush(display);
+    return true;
+  }
+
+  if (event->button.button != SDL_BUTTON_LEFT) {
+    return false;
+  }
+
+  if (event->button.clicks >= 2) {
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) {
+      SDL_RestoreWindow(window);
+    } else {
+      SDL_MaximizeWindow(window);
+    }
+    return true;
+  }
+
+  xdg_toplevel_move(toplevel, g_haze_wl_seat, g_haze_wl_serial);
+  wl_display_flush(display);
+  return true;
+}
+#else
+static bool haze_sdl_handle_titlebar_event(SDL_Window* window, const SDL_Event* event, bool down)
+{
+  (void)window;
+  (void)event;
+  (void)down;
+  return false;
+}
+#endif
 
 /* Installs the hit test and the per-window box store. Returns false when the
    video backend has no hit-test support, in which case a borderless window
@@ -262,6 +551,13 @@ bool haze_sdl_enableWindowHitTest(SDL_Window* window)
   if (!window) {
     return false;
   }
+
+#ifdef HAZE_SDL_WAYLAND
+  /* Decides which of the two strategies above this window will use. Best
+     effort: if the seat cannot be bound, the hit test simply keeps reporting
+     DRAGGABLE and dragging and resizing still work. */
+  haze_sdl_wayland_init(window);
+#endif
 
   haze_sdl_window_regions_t* store = haze_sdl_get_window_regions(window);
   if (!store) {
@@ -575,6 +871,12 @@ void haze_sdl_pollEvents(void)
 
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
       SDL_Window* window = SDL_GetWindowFromID(event.button.windowID);
+      /* A press on the titlebar belongs to the window, not to the UI -- see
+         haze_sdl_handle_titlebar_event. On backends where SDL answers
+         DRAGGABLE this never fires, because SDL swallowed the press first. */
+      if (haze_sdl_handle_titlebar_event(window, &event, true)) {
+        continue;
+      }
       if (window && g_haze_trampolines.mouseDown) {
         void* userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
@@ -588,6 +890,9 @@ void haze_sdl_pollEvents(void)
 
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
       SDL_Window* window = SDL_GetWindowFromID(event.button.windowID);
+      if (haze_sdl_handle_titlebar_event(window, &event, false)) {
+        continue;
+      }
       if (window && g_haze_trampolines.mouseUp) {
         void* userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
