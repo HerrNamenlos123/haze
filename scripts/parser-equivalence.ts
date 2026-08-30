@@ -29,10 +29,13 @@
  */
 
 import * as crypto from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ensureAntlrParserCurrent,
+  isAntlrParserCurrent,
+} from "../src/Parser/AntlrGrammar";
 import { diffAST, formatDifferences } from "../src/Parser/ASTDiff";
 import { NativeParserServer } from "../src/Parser/NativeParser";
 import { Parser } from "../src/Parser/Parser";
@@ -115,54 +118,26 @@ async function parseWithNative(
 }
 
 /**
- * The ANTLR parser the compiler runs is *generated* from the `.g4` files into
- * `src/Parser/grammar/autogen/`, which is gitignored and regenerated only by
- * `postinstall` or `bun run install --regen-antlr`. It goes stale silently, and
- * a stale oracle is worse than none: at 9007dcaf it was 8 days behind
- * HazeParser.g4 and did not know `??` existed, which this sweep reported as 38
- * divergences in files that were perfectly fine. Check the dates first and say
- * so plainly (§8.5, finding 1).
+ * A stale oracle is worse than none: at 9007dcaf the generated ANTLR parser was
+ * 8 days behind HazeParser.g4 and did not know `??` existed, which this sweep
+ * reported as 38 divergences in files that were perfectly fine (§8.5, finding 1).
+ *
+ * Regenerate rather than complain: staleness is routine -- every grammar edit
+ * causes it -- and a sweep that refuses to run is one people learn to skip.
+ * The check itself lives in src/Parser/AntlrGrammar.ts, which the compiler's own
+ * bootstrap uses too, so the two cannot drift apart.
  */
 function assertAntlrParserIsCurrent(): void {
-  const grammarDir = join(REPO_ROOT, "src", "Parser", "grammar");
-  const generated = join(grammarDir, "autogen", "HazeParser.ts");
-
-  let generatedAt: number;
-  try {
-    generatedAt = statSync(generated).mtimeMs;
-  } catch {
-    console.error(
-      `\nThe ANTLR parser has never been generated (${generated} is missing).\n` +
-        "Run: bun run generate-parser   (needs a Java runtime)\n"
-    );
-    process.exit(1);
-  }
-
-  const stale = ["HazeLexer.g4", "HazeParser.g4"].filter(
-    (g) => statSync(join(grammarDir, g)).mtimeMs > generatedAt
-  );
-  if (stale.length === 0) {
+  if (isAntlrParserCurrent(REPO_ROOT)) {
     return;
   }
-
-  // Regenerate rather than just complain. Staleness here is routine -- any
-  // grammar edit causes it, and so does anything that rewrites the .g4 files'
-  // mtimes, a `git stash` round-trip included -- and a sweep that refuses to
-  // run is a sweep people learn to skip.
-  console.info(
-    `  regenerating the ANTLR parser (${stale.join(" and ")} changed)...`
-  );
-  const result = spawnSync("bun", ["run", "generate-parser"], {
-    cwd: REPO_ROOT,
-    stdio: "inherit",
-  });
-  if (result.status !== 0) {
+  console.info("  regenerating the ANTLR parser (the grammar changed)...");
+  const failure = ensureAntlrParserCurrent(REPO_ROOT);
+  if (failure) {
     console.error(
-      "\nThe generated ANTLR parser is out of date and could not be " +
-        "regenerated.\n" +
+      `\n${failure}` +
         "It is the oracle the native parser is checked against, so a stale one " +
-        "reports divergences that are not real.\n" +
-        "Run: bun run generate-parser   (needs a Java runtime)\n"
+        "reports divergences that are not real.\n"
     );
     process.exit(1);
   }

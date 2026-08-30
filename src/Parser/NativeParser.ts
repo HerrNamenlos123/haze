@@ -23,6 +23,7 @@ import {
   getInstalledParserBinary,
   isInstalledBuild,
 } from "../shared/InstallPaths";
+import { ensureAntlrParserCurrent } from "./AntlrGrammar";
 import { requestSync, warmupBridge } from "./SyncBridge";
 
 export const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
@@ -264,6 +265,16 @@ export function nativeParserBuildArgs(
  * leaves stderr in place if the build fails, so the caller can report it.
  */
 export function buildNativeParser(repoRoot: string): boolean {
+  // The child compiles with --parser antlr, so the generated ANTLR parser has
+  // to match the grammar FIRST. Done here in the parent, which is parsing
+  // natively and has not imported it: regenerating cannot help a process that
+  // already loaded the stale module, but the child is a fresh one.
+  const grammarFailure = ensureAntlrParserCurrent(repoRoot);
+  if (grammarFailure) {
+    lastBuildFailure = grammarFailure;
+    return false;
+  }
+
   const result = child_process.spawnSync(
     process.execPath,
     nativeParserBuildArgs(isInstalledBuild()),
@@ -275,11 +286,27 @@ export function buildNativeParser(repoRoot: string): boolean {
   );
 
   if (result.status !== 0) {
+    // Kept, because this is the only place the reason exists. Swallowing it
+    // turned every bootstrap failure into "could not be built" and nothing
+    // else, with the actual compile errors discarded.
+    lastBuildFailure = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     return false;
   }
 
   stampNativeParser(repoRoot);
+  lastBuildFailure = "";
   return true;
+}
+
+/**
+ * Why the last buildNativeParser() failed, for the error the caller raises.
+ * A module-level record rather than a return value so the boolean signature --
+ * which scripts/install.ts and scripts/deploy-parser.ts also use -- is unchanged.
+ */
+let lastBuildFailure = "";
+
+export function nativeParserBuildFailure(): string {
+  return lastBuildFailure;
 }
 
 /**

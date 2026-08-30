@@ -18,6 +18,7 @@ import { diffAST, formatDifferences } from "./ASTDiff";
 import {
   NativeParserServer,
   ensureNativeParser,
+  nativeParserBuildFailure,
   warmupNativeParserSync,
 } from "./NativeParser";
 import { shutdownAllBridges } from "./SyncBridge";
@@ -72,11 +73,16 @@ export function nativeParserAvailable(): boolean {
   if (availability === null) {
     availability = prepareNativeParser();
     if (!availability) {
+      // The bootstrap build's own output, when there is any. Without it this
+      // said only "could not be built", and the reason -- which exists, in the
+      // child's stderr -- was thrown away.
+      const detail = nativeParserBuildFailure();
       throw new Error(
         `The native Haze parser is unavailable and could not be built from ` +
           `'${path.join(repoRoot, "compiler", "haze-parser")}'.\n` +
           `The compiler does not fall back to ANTLR: that would be a slower and ` +
           `differently-behaving compile with no error to explain it.\n` +
+          (detail ? `\n${detail}\n\n` : "") +
           `Build it with: bun run src/main.ts build --dir compiler/haze-parser --parser antlr\n` +
           `Or compile this project explicitly with --parser antlr.`
       );

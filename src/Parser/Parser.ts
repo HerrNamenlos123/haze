@@ -202,6 +202,7 @@ import {
   type WhileStatementContext,
 } from "./grammar/autogen/HazeParser";
 import { HazeParserListener } from "./grammar/autogen/HazeParserListener";
+import { REGENERATE_COMMAND, isAntlrParserCurrent } from "./AntlrGrammar";
 import { parseTextNativeSync } from "./NativeParser";
 import {
   assertASTsEqual,
@@ -285,11 +286,38 @@ export namespace Parser {
     }
   }
 
+  /**
+   * Checked once. A stale generated parser cannot be repaired from here -- the
+   * module was imported at start-up, so regenerating on disk changes nothing
+   * until the process restarts -- so this reports rather than repairs. The
+   * bootstrap path regenerates ahead of the child that needs it; see
+   * AntlrGrammar.ensureAntlrParserCurrent.
+   */
+  let antlrGrammarChecked = false;
+
+  function assertAntlrParserCurrent() {
+    if (antlrGrammarChecked) {
+      return;
+    }
+    antlrGrammarChecked = true;
+    if (isAntlrParserCurrent(getParserRepoRoot())) {
+      return;
+    }
+    throw new Error(
+      `The generated ANTLR parser is older than the grammar it comes from ` +
+        `(src/Parser/grammar/*.g4).\n` +
+        `A stale one is not a slower parser, it is a different language: it ` +
+        `rejects syntax the grammar now accepts.\n` +
+        `Run: ${REGENERATE_COMMAND}   (needs a Java runtime)`
+    );
+  }
+
   function parseWithANTLR(
     config: ModuleConfig,
     text: string,
     filename: string
   ) {
+    assertAntlrParserCurrent();
     const listener = new ASTBuilder(config, filename);
     parse(text, listener, filename);
     return listener.result();
