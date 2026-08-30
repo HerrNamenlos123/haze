@@ -1,0 +1,590 @@
+import text_document
+import unicode
+
+// Syntax colouring for one document: grammar tokens from the syntax engine,
+// the language server's semantic tokens, and bracket nesting depth, cached per
+// line and merged only for the lines actually drawn.
+
+// Past any real document: bracketDirtyFrom sits here when nothing is dirty.
+const comptime BRACKET_CLEAN = 1000000000;
+
+// A highlight reply is phrased in the line numbers of the document as it was
+// when the request went out. These map them onto the document as it is now.
+ref struct PendingEdit {
+    version: int = 0;
+    startLine: int = 0;
+    removedCount: int = 0;
+    insertedCount: int = 0;
+}
+
+fn splitLineTokens(lineText: str, tokens: []Token,
+    overrides: []ColourOverride): []HighlightToken {
+    let parts: []HighlightToken = [];
+    let position = 0;
+
+    for token in tokens {
+        let tokenStart = unicode.clusterStart(lineText, token.startIndex);
+        if position < tokenStart && tokenStart <= lineText.length {
+            pushColouredRun(parts, lineText, position, tokenStart,
+                defaultTextColor(), overrides);
+        }
+        let rawEnd = token.endIndex < lineText.length ? token.endIndex : lineText.length;
+        let tokenEnd = unicode.clusterStart(lineText, rawEnd);
+        if tokenEnd > tokenStart {
+            pushColouredRun(parts, lineText, tokenStart, tokenEnd,
+                editorTheme().firstScopeColor(token.scopes), overrides);
+            position = tokenEnd;
+        }
+    }
+    if position < lineText.length {
+        pushColouredRun(parts, lineText, position, lineText.length,
+            defaultTextColor(), overrides);
+    }
+    return parts;
+}
+
+// Every boundary snaps to a cluster start: slicing mid-codepoint would split a
+// glyph across two runs.
+fn pushColouredRun(parts: []HighlightToken, lineText: str, start: int, end: int,
+    baseColor: Color, overrides: []ColourOverride) {
+    let position = start;
+    for token in overrides {
+        if token.endIndex <= position || token.startIndex >= end {
+            continue;
+        }
+        let tokenStart = unicode.clusterStart(lineText,
+            token.startIndex > position ? token.startIndex : position);
+        let tokenEnd = unicode.clusterStart(lineText,
+            token.endIndex < end ? token.endIndex : end);
+        if tokenStart > position {
+            parts.push({ text: lineText.slice(position, tokenStart), color: baseColor });
+        }
+        if tokenEnd > tokenStart {
+            parts.push({ text: lineText.slice(tokenStart, tokenEnd), color: token.color });
+            position = tokenEnd;
+        }
+    }
+    if position < end {
+        parts.push({ text: lineText.slice(position, end), color: baseColor });
+    }
+}
+
+ref struct LineTokens {
+    doc: text_document.Document;
+    // The owner's edit counter, shared rather than copied: half of the stamp.
+    docVersion: rx.Reactive<int>;
+    lspLanguageId: str = "";
+
+    // Replies are incremental -- tokens only for changed lines -- so they are
+    // merged into this, never used to replace it.
+    grammar: [][]Token = [];
+    grammarVersion: rx.Reactive<int>;
+
+    semantic: [][]SemanticToken = [];
+    semanticVersion: rx.Reactive<int>;
+
+    brackets: [][]BracketToken = [];
+    bracketVersion: rx.Reactive<int>;
+    // Open bracket kinds at the START of each line. A rescan stops as soon as
+    // one matches what was recorded there: everything below is then unchanged.
+    bracketStacks: [][]int = [];
+    bracketRegions: []int = [];
+    bracketRootRegion: int = 0;
+    bracketScanStack: []int = [];
+    bracketDirtyFrom: rx.Reactive<int>;
+    bracketDirtyThrough: rx.Reactive<int>;
+
+    pendingEdits: []PendingEdit = [];
+
+    lineRuns: [][]HighlightToken = [];
+    lineRunStamps: []int = [];
+
+    noTokens: []Token = [];
+    noSemantic: []SemanticToken = [];
+    noBrackets: []BracketToken = [];
+    noOverrides: []ColourOverride = [];
+
+    fn constructor(doc: text_document.Document, docVersion: rx.Reactive<int>,
+        lspLanguageId: str): mut LineTokens {
+        return LineTokens {
+            doc: doc,
+            docVersion: docVersion,
+            lspLanguageId: lspLanguageId,
+            // An SFC's top level is markup, so it starts outside any code.
+            bracketRootRegion: lspLanguageId == "vue"
+                ? BracketRegionNone : BracketRegionCode,
+            grammarVersion: rx.reactive<int>(0),
+            semanticVersion: rx.reactive<int>(0),
+            bracketVersion: rx.reactive<int>(0),
+            bracketDirtyFrom: rx.reactive<int>(0),
+            bracketDirtyThrough: rx.reactive<int>(BRACKET_CLEAN),
+        };
+    }
+
+    mut fn noteEdit(startLine: int, removedCount: int, insertedCount: int,
+        version: int): void {
+        this.spliceGrammar(startLine, removedCount, insertedCount);
+        this.spliceBrackets(startLine, removedCount, insertedCount);
+        let last = startLine + insertedCount - 1;
+        this.markBracketsDirty(startLine, last < startLine ? startLine : last);
+        this.pendingEdits.push(PendingEdit {
+            version: version,
+            startLine: startLine,
+            removedCount: removedCount,
+            insertedCount: insertedCount,
+        });
+    }
+
+    mut fn spliceGrammar(startLine: int, removedCount: int, insertedCount: int): void {
+        if removedCount == 0 && insertedCount == 0 {
+            return;
+        }
+        // One-for-one leaves the line count alone; the reply overwrites in place.
+        if removedCount == 1 && insertedCount == 1 {
+            return;
+        }
+        if startLine > this.grammar.length {
+            return;
+        }
+        let removable = removedCount;
+        if startLine + removable > this.grammar.length {
+            removable = this.grammar.length - startLine;
+        }
+        for (let i = 0; i < removable; i++) {
+            this.grammar.remove(startLine);
+        }
+        for (let i = 0; i < insertedCount; i++) {
+            let empty: []Token = [];
+            this.grammar.insert(startLine + i, empty);
+        }
+        this.grammarVersion := rx.get(this.grammarVersion) + 1;
+    }
+
+    mut fn spliceBrackets(startLine: int, removedCount: int, insertedCount: int): void {
+        if removedCount == insertedCount {
+            return;
+        }
+        if startLine > this.brackets.length || startLine > this.bracketStacks.length {
+            return;
+        }
+        let removableTokens = removedCount;
+        if startLine + removableTokens > this.brackets.length {
+            removableTokens = this.brackets.length - startLine;
+        }
+        for (let i = 0; i < removableTokens; i++) {
+            this.brackets.remove(startLine);
+        }
+        for (let i = 0; i < insertedCount; i++) {
+            let empty: []BracketToken = [];
+            this.brackets.insert(startLine + i, empty);
+        }
+
+        let removableStacks = removedCount;
+        if startLine + removableStacks > this.bracketStacks.length {
+            removableStacks = this.bracketStacks.length - startLine;
+        }
+        for (let i = 0; i < removableStacks; i++) {
+            this.bracketStacks.remove(startLine);
+            if startLine < this.bracketRegions.length {
+                this.bracketRegions.remove(startLine);
+            }
+        }
+        for (let i = 0; i < insertedCount; i++) {
+            let empty: []int = [];
+            this.bracketStacks.insert(startLine + i, empty);
+            this.bracketRegions.insert(startLine + i, this.bracketRootRegion);
+        }
+    }
+
+    mut fn markBracketsDirty(fromLine: int, throughLine: int): void {
+        let firstLine = fromLine < 0 ? 0 : fromLine;
+        if firstLine < rx.get(this.bracketDirtyFrom) {
+            this.bracketDirtyFrom := firstLine;
+        }
+        if throughLine > rx.get(this.bracketDirtyThrough) {
+            this.bracketDirtyThrough := throughLine;
+        }
+    }
+
+    // -1 when the line the reply named has since been deleted.
+    fn rebaseLine(line: int, fromVersion: int): int {
+        let result = line;
+        for edit in this.pendingEdits {
+            if edit.version <= fromVersion || result < edit.startLine {
+                continue;
+            }
+            if result < edit.startLine + edit.removedCount {
+                return -1;
+            }
+            result = result + edit.insertedCount - edit.removedCount;
+        }
+        return result;
+    }
+
+    mut fn applyGrammarResult(result: HighlightResult): void {
+        if !result.incremental {
+            for (let i = 0; i < this.grammar.length; i++) {
+                this.grammar[i].clear();
+            }
+        }
+
+        let lineCount = this.doc.lineCount();
+        while this.grammar.length < lineCount {
+            let empty: []Token = [];
+            this.grammar.push(empty);
+        }
+        while this.grammar.length > lineCount {
+            this.grammar.pop();
+        }
+
+        // Clear every touched line before filling any: two rebased sources can
+        // land on one line, and the second must not keep the first's leftovers.
+        for token in result.tokens {
+            let line = this.rebaseLine(token.lineIndex, result.version);
+            if line >= 0 && line < this.grammar.length {
+                this.grammar[line].clear();
+            }
+        }
+        for token in result.tokens {
+            let line = this.rebaseLine(token.lineIndex, result.version);
+            if line >= 0 && line < this.grammar.length {
+                this.grammar[line].push(token);
+            }
+        }
+
+        // Bracket scanning reads grammar scopes to skip comments and strings.
+        if !result.incremental {
+            this.markBracketsDirty(0, BRACKET_CLEAN);
+        }
+        else {
+            let firstDirty = -1;
+            let lastDirty = -1;
+            for token in result.tokens {
+                let line = this.rebaseLine(token.lineIndex, result.version);
+                if line < 0 {
+                    continue;
+                }
+                if firstDirty < 0 || line < firstDirty { firstDirty = line; }
+                if line > lastDirty { lastDirty = line; }
+            }
+            if firstDirty >= 0 {
+                this.markBracketsDirty(firstDirty, lastDirty);
+            }
+        }
+
+        while this.pendingEdits.length > 0
+            && this.pendingEdits[0].version <= result.version {
+            this.pendingEdits.remove(0);
+        }
+        this.grammarVersion := rx.get(this.grammarVersion) + 1;
+    }
+
+    mut fn applySemanticSpans(spans: []SemanticSpan, requestVersion: int): void {
+        // The document moved while the request was in flight, so the offsets no
+        // longer name anything.
+        if requestVersion != this.doc.version {
+            return;
+        }
+        let lineCount = this.doc.lineCount();
+
+        for (let i = 0; i < this.semantic.length; i++) {
+            this.semantic[i].clear();
+        }
+        while this.semantic.length < lineCount {
+            let empty: []SemanticToken = [];
+            this.semantic.push(empty);
+        }
+        while this.semantic.length > lineCount {
+            this.semantic.pop();
+        }
+
+        let lineStarts: []int = [];
+        let offset = 0;
+        for (let i = 0; i < lineCount; i++) {
+            lineStarts.push(offset);
+            offset = offset + this.doc.lineLength(i) + 1;
+        }
+
+        // For an SFC the server answers over its own virtual file, so offsets
+        // outside <script> do not name anything the user wrote.
+        let scriptOnly = this.lspLanguageId == "vue";
+        let scriptStarts: []int = [];
+        let scriptEnds: []int = [];
+        if scriptOnly {
+            let openLine = -1;
+            for (let i = 0; i < lineCount; i++) {
+                let trimmed = this.doc.lineText(i).trim();
+                if openLine < 0 && trimmed.startsWith("<script") {
+                    openLine = i;
+                }
+                else if openLine >= 0 && trimmed.startsWith("</script") {
+                    scriptStarts.push(lineStarts[openLine + 1]);
+                    scriptEnds.push(lineStarts[i]);
+                    openLine = -1;
+                }
+            }
+            if openLine >= 0 && openLine + 1 < lineCount {
+                scriptStarts.push(lineStarts[openLine + 1]);
+                scriptEnds.push(offset);
+            }
+        }
+
+        for span in spans {
+            if span.length <= 0 {
+                continue;
+            }
+            let scope = semanticScopeFor(
+                semanticTokenTypeName(span.tokenType), span.tokenModifiers);
+            if scope.length == 0 {
+                continue;
+            }
+            if scriptOnly {
+                let inScript = false;
+                for (let r = 0; r < scriptStarts.length; r++) {
+                    if span.start >= scriptStarts[r] && span.start < scriptEnds[r] {
+                        inScript = true;
+                        break;
+                    }
+                }
+                if !inScript {
+                    continue;
+                }
+            }
+
+            let lo = 0;
+            let hi = lineCount - 1;
+            while lo < hi {
+                let mid = (lo + hi + 1) / 2;
+                if lineStarts[mid] <= span.start { lo = mid; }
+                else { hi = mid - 1; }
+            }
+
+            let spanEnd = span.start + span.length;
+            let clipLine = lo;
+            let clipStart = lineStarts[lo];
+            let clipEnd = clipStart + this.doc.lineLength(lo);
+            while clipLine < lineCount {
+                let startInLine = span.start > clipStart ? span.start - clipStart : 0;
+                let endInLine = spanEnd < clipEnd ? spanEnd - clipStart : clipEnd - clipStart;
+                if endInLine > startInLine {
+                    this.semantic[clipLine].push(SemanticToken {
+                        startIndex: startInLine,
+                        endIndex: endInLine,
+                        scope: scope,
+                    });
+                }
+                if spanEnd <= clipEnd || clipLine + 1 >= lineCount {
+                    break;
+                }
+                clipLine = clipLine + 1;
+                clipStart = clipEnd + 1;
+                clipEnd = clipStart + this.doc.lineLength(clipLine);
+            }
+        }
+        this.semanticVersion := rx.get(this.semanticVersion) + 1;
+    }
+
+    fn stacksEqual(a: []int, b: []int): bool {
+        if a.length != b.length {
+            return false;
+        }
+        for (let i = 0; i < a.length; i++) {
+            if a[i] != b[i] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    mut fn refreshBrackets(): void {
+        let start: int = rx.get(this.bracketDirtyFrom);
+        if start >= BRACKET_CLEAN {
+            return;
+        }
+        let dirtyThrough: int = rx.get(this.bracketDirtyThrough);
+        let lineCount = this.doc.lineCount();
+        if start >= lineCount {
+            this.bracketDirtyFrom := BRACKET_CLEAN;
+            this.bracketDirtyThrough := -1;
+            return;
+        }
+
+        while this.brackets.length < lineCount {
+            let empty: []BracketToken = [];
+            this.brackets.push(empty);
+        }
+        while this.brackets.length > lineCount { this.brackets.pop(); }
+        while this.bracketStacks.length < lineCount {
+            let empty: []int = [];
+            this.bracketStacks.push(empty);
+        }
+        while this.bracketStacks.length > lineCount { this.bracketStacks.pop(); }
+        while this.bracketRegions.length < lineCount {
+            this.bracketRegions.push(this.bracketRootRegion);
+        }
+        while this.bracketRegions.length > lineCount { this.bracketRegions.pop(); }
+
+        let stack: []int = this.bracketScanStack;
+        stack.clear();
+        for kind in this.bracketStacks[start] {
+            stack.push(kind);
+        }
+        let region = this.bracketRegions[start];
+
+        for (let lineIndex = start; lineIndex < lineCount; lineIndex++) {
+            if lineIndex > start {
+                if lineIndex > dirtyThrough && this.bracketRegions[lineIndex] == region
+                    && this.stacksEqual(this.bracketStacks[lineIndex], stack) {
+                    break;
+                }
+                let saved: []int = this.bracketStacks[lineIndex];
+                saved.clear();
+                for kind in stack {
+                    saved.push(kind);
+                }
+                this.bracketRegions[lineIndex] = region;
+            }
+
+            let out: []BracketToken = this.brackets[lineIndex];
+            out.clear();
+
+            let tokens: []Token = this.noTokens;
+            if lineIndex < this.grammar.length {
+                tokens = this.grammar[lineIndex];
+            }
+
+            let lineRegion = region;
+            if this.bracketRootRegion == BracketRegionNone {
+                let packed = advanceSfcRegion(region, this.doc.lineText(lineIndex).trim());
+                lineRegion = sfcLineRegion(packed);
+                let nextRegion = sfcNextRegion(packed);
+                // Depth does not carry from one SFC block's language into the next.
+                if nextRegion != region {
+                    while stack.length > 0 { stack.pop(); }
+                }
+                region = nextRegion;
+            }
+            scanLineBrackets(this.doc.line(lineIndex), tokens, stack, out, lineRegion);
+        }
+
+        this.bracketVersion := rx.get(this.bracketVersion) + 1;
+        this.bracketDirtyFrom := BRACKET_CLEAN;
+        this.bracketDirtyThrough := -1;
+    }
+
+    // Everything a cached run depends on. Reading it also subscribes to all of it.
+    fn stamp(): int {
+        return rx.get(this.docVersion)
+            + rx.get(this.grammarVersion)
+            + rx.get(this.semanticVersion)
+            + rx.get(this.bracketVersion)
+            + rx.get(editorTheme().generation);
+    }
+
+    // Merged into one list ordered by start offset, which is what
+    // pushColouredRun walks.
+    mut fn overridesForLine(lineIndex: int): []ColourOverride {
+        let theme = editorTheme();
+
+        let semantic: []SemanticToken = this.noSemantic;
+        if theme.semanticEnabled && lineIndex < this.semantic.length {
+            semantic = this.semantic[lineIndex];
+        }
+        let brackets: []BracketToken = this.noBrackets;
+        if lineIndex < this.brackets.length {
+            brackets = this.brackets[lineIndex];
+        }
+        if semantic.length == 0 && brackets.length == 0 {
+            return this.noOverrides;
+        }
+
+        let overrides: []ColourOverride = [];
+        let si = 0;
+        let bi = 0;
+        while si < semantic.length || bi < brackets.length {
+            let takeBracket = si >= semantic.length;
+            if !takeBracket && bi < brackets.length {
+                takeBracket = brackets[bi].startIndex <= semantic[si].startIndex;
+            }
+            if takeBracket {
+                let color = theme.bracketColorFor(brackets[bi].level);
+                if color {
+                    overrides.push({
+                        startIndex: brackets[bi].startIndex,
+                        endIndex: brackets[bi].endIndex,
+                        color: color,
+                    });
+                }
+                bi = bi + 1;
+            }
+            else {
+                let color = theme.colorForScope(semantic[si].scope);
+                if color {
+                    overrides.push({
+                        startIndex: semantic[si].startIndex,
+                        endIndex: semantic[si].endIndex,
+                        color: color,
+                    });
+                }
+                si = si + 1;
+            }
+        }
+        return overrides;
+    }
+
+    mut fn runsForLine(lineIndex: int): []HighlightToken {
+        let stamp = this.stamp();
+        while this.lineRunStamps.length <= lineIndex {
+            let empty: []HighlightToken = [];
+            this.lineRuns.push(empty);
+            this.lineRunStamps.push(-1);
+        }
+        if this.lineRunStamps[lineIndex] == stamp {
+            return this.lineRuns[lineIndex];
+        }
+        let tokens: []Token = this.noTokens;
+        if lineIndex < this.grammar.length {
+            tokens = this.grammar[lineIndex];
+        }
+        let runs = splitLineTokens(this.doc.lineText(lineIndex), tokens,
+            this.overridesForLine(lineIndex));
+        this.lineRuns[lineIndex] = runs;
+        this.lineRunStamps[lineIndex] = stamp;
+        return runs;
+    }
+}
+
+// The hover popup is another document on the same engine, coloured by the same
+// theme. No overrides: a signature has no brackets to rainbow.
+ref struct HoverTokens {
+    lines: [][]Token = [];
+    version: rx.Reactive<int>;
+    noTokens: []Token = [];
+    noOverrides: []ColourOverride = [];
+
+    fn constructor(): mut HoverTokens {
+        return HoverTokens { version: rx.reactive<int>(0) };
+    }
+
+    mut fn apply(result: HighlightResult): void {
+        let buckets: [][]Token = [];
+        for token in result.tokens {
+            while buckets.length <= token.lineIndex {
+                let empty: []Token = [];
+                buckets.push(empty);
+            }
+            buckets[token.lineIndex].push(token);
+        }
+        this.lines = buckets;
+        this.version := rx.get(this.version) + 1;
+    }
+
+    fn runsForLine(lineText: str, lineIndex: int): []HighlightToken {
+        rx.get(this.version);
+        let tokens: []Token = this.noTokens;
+        if lineIndex < this.lines.length {
+            tokens = this.lines[lineIndex];
+        }
+        return splitLineTokens(lineText, tokens, this.noOverrides);
+    }
+}

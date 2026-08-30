@@ -20,6 +20,9 @@ export struct TabItem {
 @props
 [[hzui.untracked]]
 items?: []TabItem;
+// An array has no comparison, so `items` cannot say it changed. This is what
+// does: pass any number that moves with the list -- see tabsFingerprint.
+revision: int = 0;
 activeKey: int = -1;
 closable: bool = true;
 height: real = 35.0;

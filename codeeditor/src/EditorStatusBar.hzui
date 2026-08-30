@@ -1,0 +1,38 @@
+from ui_widgets import ButtonComponent
+
+// One editor's status line. Everything on it belongs to that document, which
+// is why it sits inside the editor rather than in the app shell.
+
+@props
+fps: str = "";
+mode: str = "";
+modeColor: str = "#888888";
+// The `:` line being typed. It replaces `message`: while a command is being
+// entered, the previous one's answer is no longer what this area is for.
+commandLine: str = "";
+message: str = "";
+stats: str = "";
+
+@setup
+let toggleIndent = () => { toggleIndentWidth(); };
+
+// A chord waiting for its second stroke. Without it, ctrl+k looks exactly like
+// pressing nothing and the next key means something unexpected.
+let chord = computed((): str => {
+    let hint: str = rx.get(keybindings().chordHint);
+    return hint.length > 0 ? f"{hint} ..." : "";
+});
+
+@template [row w-grow h-fit items-center gap-2 p-1]
+
+text [] [props.fps]
+text [text-color-[props.modeColor]] [props.mode]
+
+text if=[props.commandLine.length > 0] [text-color-["#FFFFFF"]] [props.commandLine]
+text else-if=[props.message.length > 0] [text-color-["#9ECE6A"]] [props.message]
+
+Button [] label=[indentLabel()] paddingX=[6] paddingY=[0] focusRing=[0]
+    @click=toggleIndent {}
+
+text if=[chord.length > 0] [text-color-["#D9B87F"]] [chord]
+text if=[props.stats.length > 0] [] [props.stats]

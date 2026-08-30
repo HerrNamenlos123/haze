@@ -1,0 +1,45 @@
+// The syntax engine and language servers, shared by every tab. One
+// VueLspBridge is a vue-language-server plus a tsserver; per-file would
+// multiply the whole footprint by the tab count, and tsserver wants the whole
+// project open anyway.
+ref struct State {
+    highlightEngine: HighlightEngine;
+    highlightCommands: []HighlightCommand = [];
+    highlightResults: []HighlightResult = [];
+    reactiveCounter: rx.Reactive<int>;
+
+    // Replaced on a workspace switch -- read through getState() at every use,
+    // never captured, or a tab keeps talking to exited processes.
+    lspBridge: VueLspBridge | none = none;
+
+    // Draining is destructive, so it is done per uri: a global drain would let
+    // whichever tab ran first swallow every other one's replies, and the engine
+    // sends a line's tokens exactly once. A reply nobody claims stays queued.
+    fn takeResultsFor(uri: str): []HighlightResult {
+        let mine: []HighlightResult = [];
+        let rest: []HighlightResult = [];
+        for result in this.highlightResults {
+            if result.uri == uri {
+                mine.push(result);
+            } else {
+                rest.push(result);
+            }
+        }
+        if mine.length > 0 {
+            this.highlightResults = rest;
+        }
+        return mine;
+    }
+}
+
+extern C let g_state: State | none = none;
+
+fn initState(state: State) {
+    g_state = state;
+}
+
+fn getState() {
+    let state = g_state;
+    assert(state);
+    return state;
+}

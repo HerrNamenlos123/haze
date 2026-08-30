@@ -1,0 +1,1236 @@
+import app
+import unicode
+import text_document
+import textedit_behavior
+import vim_behavior
+import ui_components
+
+// One open file: its document, editing engine, syntax colouring, scroll
+// position, caret, undo history and language-server state.
+//
+// A component rather than a function over lifted state, because the component
+// system is what gives it a lifetime: one instance per open file, kept alive
+// for as long as the tab exists. Switching tabs only hides it, so its scroll
+// offset and caret survive without being stored anywhere central.
+
+ref struct VisibleLine {
+    index: int;
+    top: real;
+    runs: []HighlightToken;
+}
+
+ref struct SelectionBand {
+    top: real;
+    left: real;
+    width: real;
+}
+
+ref struct CaretBox {
+    left: real;
+    top: real;
+    width: real;
+    height: real;
+}
+
+@props
+filePath: str;
+// The TAB's key, which is this document's identity everywhere outside the
+// editor -- documents.hz is keyed by it, and so is closing the tab. Passed
+// explicitly because the component id is not it: a keyed element in a loop
+// gets keyId(staticId, key), not the key.
+tabKey: int = 0;
+// Whether this is the tab the user is looking at. An inactive editor stays
+// mounted and still drains its own replies; it just must not act on input,
+// since the keyboard and mouse belong to the visible tab.
+active: bool = true;
+
+@setup
+
+// Pinned for the instance's life. The path is this instance's identity -- the
+// highlighter document, every cache keyed by it and the loaded text all belong
+// to this exact file. A different file is a different tab key, hence a
+// different instance.
+let filePath = args.filePath;
+let scopeName = scopeNameForFile(filePath);
+let lspLanguageId = lspLanguageIdForFile(filePath);
+// The file path IS the uri, which is what keeps every tab a separate document
+// on the one engine connection.
+let highlightUri = filePath.length > 0 ? filePath : f"buffer://{args.tabKey}";
+// Per editor: every tab's hover popup is a document on the same connection, so
+// one shared name would make each tab overwrite the others' parse state.
+let hoverUri = f"__hover__/{args.tabKey}";
+
+let buffer = FileBuffer(filePath);
+let doc = buffer.doc;
+let docVersion = buffer.version;
+let statusMessage = buffer.status;
+let tokens = LineTokens(doc, docVersion, lspLanguageId);
+let hoverTokens = HoverTokens();
+
+// --- Editing engine ----------------------------------------------
+
+let texteditBehavior = textedit_behavior.Context({
+    getLineLength: (lineIndex: int) => doc.lineLength(lineIndex),
+    getLine: (lineIndex: int) => doc.line(lineIndex),
+    getLineCount: () => doc.lineCount(),
+    getTimeInSeconds: () => ui.now(),
+    replaceRange: (start: Vec2i, end: Vec2i, text: String): void => {
+        buffer.replaceRange(start, end, text);
+    },
+    // Bound to a typed local first: returned bare it infers as `mut ref String`,
+    // which does not convert into the getter's declared type.
+    getClipboard: () => {
+        let text: String = String(app.getClipboardText());
+        return text;
+    },
+    setClipboard: (text: String): void => { app.setClipboardText(text.cloneString()); },
+});
+texteditBehavior.useSystemClipboard = true;
+
+let vim = vim_behavior.Vim(texteditBehavior);
+let vimOn = reactive<bool>(true);
+
+let applyVimMode = (enabled: bool) => {
+    if enabled {
+        vim.install();
+        vim_behavior.applyRemaps(vim, vim_behavior.defaultVimrc());
+        texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+    } else {
+        texteditBehavior.clearBehavior();
+        texteditBehavior.setMode(textedit_behavior.Mode.Insert);
+    }
+};
+applyVimMode(true);
+
+let toggleVim = (): void => {
+    let next = !rx.get(vimOn);
+    vimOn := next;
+    applyVimMode(next);
+};
+
+// --- Saving and reloading ----------------------------------------
+
+// Put the caret back where it was, clamped: a file reloaded from disk is
+// usually a small edit away from what was on screen.
+let restoreCaretAfterReload: DocAction = () => {
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    let line = vim_behavior.clampInt(caret.y, 0, doc.lineCount() - 1);
+    let column = vim_behavior.clampInt(caret.x, 0, doc.lineLength(line));
+    let target: Vec2i = { x: column, y: line };
+    texteditBehavior.clearSelection();
+    texteditBehavior.moveTo(target, true, false);
+};
+buffer.onReloaded = restoreCaretAfterReload;
+
+let requestSave = (): bool => { return buffer.requestSave(); };
+let checkDisk = () => { buffer.checkDisk(); };
+let resolveOverwrite = () => {
+    buffer.resolveOverwrite();
+    documents().requestEditorFocus();
+};
+let resolveDiscard = () => {
+    buffer.resolveDiscard();
+    documents().requestEditorFocus();
+};
+let resolveCancel = () => {
+    buffer.resolveCancel();
+    documents().requestEditorFocus();
+};
+
+documents().register(DocEntry {
+    key: args.tabKey,
+    path: filePath,
+    dirty: buffer.dirty,
+    diverged: buffer.diverged,
+    conflict: buffer.conflict,
+    save: requestSave,
+    checkDisk: checkDisk,
+    resolveOverwrite: resolveOverwrite,
+    resolveDiscard: resolveDiscard,
+    resolveCancel: resolveCancel,
+});
+
+// --- Ex commands and go-to-definition ----------------------------
+
+let runExCommand = (command: str): void => {
+    let parsed = parseExCommand(command);
+    if !parsed.valid {
+        let text = command.trim();
+        if text.length > 0 {
+            statusMessage := f"E492: Not an editor command: {text}";
+        }
+        return;
+    }
+
+    if parsed.reload {
+        if rx.get(buffer.dirty) && !parsed.force {
+            statusMessage := "E37: No write since last change (add ! to override)";
+            return;
+        }
+        if filePath.length == 0 {
+            statusMessage := "E32: No file name";
+            return;
+        }
+        let file = fs.readText(filePath);
+        if !file {
+            statusMessage := f"E484: Can't open file {filePath}";
+            return;
+        }
+        buffer.adoptDiskText(file as str);
+        statusMessage := f"\"{fileNameOf(filePath)}\" reloaded";
+        return;
+    }
+
+    if parsed.write {
+        if rx.get(buffer.diverged) && !parsed.force {
+            statusMessage := "E13: File has changed on disk (add ! to override)";
+            return;
+        }
+        if parsed.all {
+            documents().saveAllDirty();
+            if rx.get(buffer.diverged) && parsed.force {
+                buffer.save();
+            }
+        }
+        else if !(parsed.force ? buffer.save() : requestSave()) {
+            return;
+        }
+    }
+
+    if parsed.quit {
+        if !parsed.write && rx.get(buffer.dirty) && !parsed.force {
+            statusMessage := "E37: No write since last change (add ! to override)";
+            return;
+        }
+        // `:q!` abandons the changes first, which is what clears the flags the
+        // close path reads.
+        if parsed.force && !parsed.write {
+            if parsed.all {
+                documents().discardAll();
+            } else {
+                buffer.dirty := false;
+                buffer.diverged := false;
+                buffer.conflict := false;
+            }
+        }
+        keybindings().commands.run(parsed.all
+            ? "workbench.action.closeAllEditors"
+            : "workbench.action.closeActiveEditor");
+    }
+};
+
+let exCommandHook: vim_behavior.ExCommandHook = (command: str) => { runExCommand(command); };
+vim.onExCommand = exCommandHook;
+
+let goToDefinition = () => {
+    let bridge = getState().lspBridge;
+    if !bridge {
+        return;
+    }
+    if lspLanguageId.length == 0 {
+        return;
+    }
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    bridge.definition(filePath, caret.y, caret.x, doc.lineText(caret.y),
+        (targets: []DefinitionTarget) => {
+            if targets.length > 0 {
+                requestReveal(targets[0].filepath, targets[0].line, targets[0].utf16Offset);
+            }
+        });
+};
+
+let goToDefinitionHook: vim_behavior.GoToDefinitionHook = () => { goToDefinition(); };
+vim.onGoToDefinition = goToDefinitionHook;
+
+let trackIndentUnit = computed(() => {
+    let unit = indentString();
+    vim.indentUnit = unit;
+    return unit;
+});
+
+let isVue = asciiLower(filePath).endsWith(".vue");
+let fixedCommentString = commentStringForFile(filePath);
+let trackCommentString = computed(() => {
+    if !isVue {
+        vim.commentString = fixedCommentString;
+        return fixedCommentString;
+    }
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    rx.get(docVersion);
+    let resolved = vueCommentStringAt(doc, caret.y);
+    vim.commentString = resolved;
+    return resolved;
+});
+
+// --- Geometry ----------------------------------------------------
+
+let scroll = ui_components.ScrollState();
+scroll.overflowY = ui_components.Overflow.Auto;
+scroll.overflowX = ui_components.Overflow.Hidden;
+
+let editorRef = elementRef<DivElement>();
+// Measured once per frame rather than read per use, so every computed that
+// depends on the viewport re-runs exactly when it actually changes.
+let charWidth = reactive<real>(0.0);
+let charHeight = reactive<real>(0.0);
+let viewWidth = reactive<real>(0.0);
+let viewHeight = reactive<real>(0.0);
+
+let editorOrigin = (): Vec2 => {
+    let element = rx.get(editorRef);
+    let position = element ? element.position() : none;
+    return position ? position as Vec2 : Vec2(0.0, 0.0);
+};
+
+// Pixels to a document position. The font is passed explicitly -- see
+// editorFontFamily().
+let documentPositionAt = (pointer: Vec2): Vec2i => {
+    let charSize = ui.measureText("X", editorFontFamily(), editorFontSize());
+    let origin = editorOrigin();
+    let localX = pointer.x - origin.x;
+    let localY = pointer.y - origin.y + rx.get(scroll.scrollTop);
+
+    let lineIndex = charSize.y > 0.0 ? (localY / charSize.y) as int : 0;
+    lineIndex = text_document.clampIndex(lineIndex, doc.lineCount());
+
+    // Rounded, not truncated: a click in the right half of a cell belongs to
+    // the next column, which is where a caret goes.
+    let displayColumn = charSize.x > 0.0 ? ((localX / charSize.x) + 0.5) as int : 0;
+    if displayColumn < 0 { displayColumn = 0; }
+
+    // Display columns are not byte offsets: an emoji is 4 bytes and 2 cells.
+    let lineText = doc.lineText(lineIndex);
+    let column = 0;
+    let cell = 0;
+    while column < lineText.length {
+        let width = unicode.clusterColumnWidth(lineText, column);
+        if cell + width > displayColumn {
+            break;
+        }
+        cell = cell + width;
+        column = unicode.nextClusterOffset(lineText, column);
+    }
+    let maxColumn = texteditBehavior.maxColumn(lineIndex);
+    if column > maxColumn { column = maxColumn; }
+    let result: Vec2i = { x: column, y: lineIndex };
+    return result;
+};
+
+// Whether the pointer is over actual text, not the empty space past a line's
+// end -- a hover there has nothing to ask about.
+let pointerInsideLine = (pointer: Vec2, lineIndex: int): bool => {
+    let charSize = ui.measureText("X", editorFontFamily(), editorFontSize());
+    if charSize.x <= 0.0 {
+        return false;
+    }
+    let localX = pointer.x - editorOrigin().x;
+    if localX < 0.0 {
+        return false;
+    }
+    return ((localX / charSize.x) as int) < unicode.displayWidth(doc.lineText(lineIndex));
+};
+
+let isWordPositionAt = (pos: Vec2i): bool => {
+    let lineText = doc.lineText(pos.y);
+    if pos.x < 0 || pos.x >= lineText.length {
+        return false;
+    }
+    let byte = lineText[pos.x];
+    if byte >= b"a" && byte <= b"z" { return true; }
+    if byte >= b"A" && byte <= b"Z" { return true; }
+    if byte >= b"0" && byte <= b"9" { return true; }
+    if byte == b"_" || byte == b"$" { return true; }
+    return byte >= 0x80;
+};
+
+let pointerInsideEditor = (pointer: Vec2): bool => {
+    let origin = editorOrigin();
+    // The scrollbar is chrome, so a hover over it is not a hover over text.
+    let textWidth = rx.get(viewWidth)
+        - (scroll.showsVerticalBar() ? scroll.style.size : 0.0);
+    return pointer.x >= origin.x && pointer.x < origin.x + textWidth
+        && pointer.y >= origin.y && pointer.y < origin.y + rx.get(viewHeight);
+};
+
+// --- Hover -------------------------------------------------------
+//
+// A hover is a REQUEST at a position, not something that happens on its own.
+// Who raises it depends on the editing model: the dwelling mouse with vim off,
+// an explicit keypress with vim on.
+let hoverRequest = reactive<Vec2i | none>(none);
+let hoverResult = reactive<str | null>(null);
+// Window pixels. The popup belongs at the pointer, which may be nowhere near
+// the caret; `none` means "use the caret".
+let hoverAnchor = reactive<Vec2 | none>(none);
+let hoverRevision = reactive<int>(0);
+let bumpHover = () => { hoverRevision := rx.get(hoverRevision) + 1; };
+
+let dismissHover = () => {
+    hoverRequest := none;
+    hoverResult := null;
+    hoverAnchor := none;
+    bumpHover();
+};
+
+let hoverBlocks = computed((): []HoverBlock => {
+    let pending = rx.get(hoverResult);
+    if !pending {
+        let empty: []HoverBlock = [];
+        return empty;
+    }
+    return parseHoverBlocks(pending as str);
+});
+
+// Code blocks only: run through a TypeScript grammar, prose comes back with
+// English words coloured as identifiers. This is also the line space the
+// engine's reply is phrased in, so the popup walks these same lines.
+let hoverCodeText = computed((): str => {
+    let text = "";
+    let first = true;
+    let blocks: []HoverBlock = rx.get(hoverBlocks);
+    for block in blocks {
+        if block.isCode {
+            text = first ? block.text : text + "\n" + block.text;
+            first = false;
+        }
+    }
+    return text;
+});
+
+// Sent as a full open every time: the text is replaced wholesale per hover, so
+// there is no incremental edit to describe.
+let lastHoverCodeSent = reactive<str>("");
+let requestHoverHighlight = computed((): int => {
+    let code: str = rx.get(hoverCodeText);
+    if code == rx.get(lastHoverCodeSent) {
+        return 0;
+    }
+    lastHoverCodeSent := code;
+    if code.length > 0 {
+        getState().highlightEngine.sendOpenDocument(hoverUri, code, 0, "source.ts");
+    }
+    return 0;
+});
+
+let hoverPlaceholder = computed((): str => {
+    if rx.get(hoverResult) {
+        return "";
+    }
+    let bridge = getState().lspBridge;
+    return bridge && bridge.hoverAvailable() ? "Loading..." : "Starting language server...";
+});
+
+// --- Highlight replies -------------------------------------------
+
+let ownHighlights = computed((): []HighlightResult => {
+    let state = getState();
+    rx.get(state.reactiveCounter);
+    let mine = state.takeResultsFor(highlightUri);
+    for result in state.takeResultsFor(hoverUri) {
+        mine.push(result);
+    }
+    return mine;
+});
+
+let lastDrainedCounter: ref Box<int> = { value: -1 };
+let drainHighlights = () => {
+    let counter: int = rx.get(getState().reactiveCounter);
+    if counter == lastDrainedCounter.value {
+        return;
+    }
+    lastDrainedCounter.value = counter;
+    let results: []HighlightResult = rx.get(ownHighlights);
+    for result in results {
+        if result.uri == hoverUri {
+            hoverTokens.apply(result);
+            bumpHover();
+        } else {
+            tokens.applyGrammarResult(result);
+        }
+    }
+};
+
+// --- Document changes --------------------------------------------
+
+buffer.load();
+
+if filePath.length > 0 {
+    let startupText = rx.get(buffer.initialText);
+    getState().highlightEngine.sendOpenDocument(highlightUri,
+        startupText ? startupText as str : doc.text(), doc.version, scopeName);
+}
+
+let lspDocumentOpened = reactive<bool>(false);
+let lspGenerationSeen = reactive<int>(-1);
+let semanticRequestedVersion = reactive<int>(-1);
+// The last line's length BEFORE this change, which is what an LSP end position
+// past the old end has to be expressed in.
+let lspLastLineLength = reactive<int>(
+    doc.lineCount() > 0 ? doc.lineLength(doc.lineCount() - 1) : 0);
+let lastEditAt = reactive<real>(-1000.0);
+
+doc.addChangeListener((change: text_document.ChangeSet) => {
+    // Only when it flips: writing it per keystroke would re-notify the tab
+    // strip on every character.
+    if !rx.get(buffer.dirty) {
+        buffer.dirty := true;
+        statusMessage := "";
+    }
+
+    let newLines: []str = [];
+    for (let i = 0; i < change.insertedCount; i++) {
+        newLines.push(doc.lineText(change.startLine + i));
+    }
+    buffer.initialText := none;
+
+    let oldLineCount = doc.lineCount() - change.insertedCount + change.removedCount;
+    let oldLastLineLength = rx.get(lspLastLineLength);
+    if doc.lineCount() > 0 {
+        lspLastLineLength := doc.lineLength(doc.lineCount() - 1);
+    }
+
+    let bridge = getState().lspBridge;
+    if bridge && rx.get(lspDocumentOpened) && lspLanguageId.length > 0 {
+        let replacement = "";
+        for (let i = 0; i < change.insertedCount; i++) {
+            replacement = replacement + newLines[i];
+            // No trailing newline on the very last line of the document.
+            if change.startLine + change.removedCount < oldLineCount
+                || i + 1 < change.insertedCount {
+                replacement = replacement + "\n";
+            }
+        }
+        let endLine = change.startLine + change.removedCount;
+        let endColumn = 0;
+        // An end past the last line has to be expressed as the end OF it.
+        if endLine >= oldLineCount {
+            endLine = oldLineCount > 0 ? oldLineCount - 1 : 0;
+            endColumn = oldLastLineLength;
+        }
+        bridge.changeDocument(filePath, {
+            startLine: change.startLine,
+            endLine: endLine,
+            endColumn: endColumn,
+            newText: replacement,
+        }, doc.version);
+    }
+
+    tokens.noteEdit(change.startLine, change.removedCount, change.insertedCount,
+        doc.version);
+    getState().highlightEngine.sendDocumentChange(highlightUri, change.startLine,
+        change.removedCount, newLines, doc.version);
+});
+
+// --- Input -------------------------------------------------------
+
+let caretFollow = reactive<bool>(false);
+let mouseSelecting = reactive<bool>(false);
+// Pixels, not columns: a press must travel a whole cell before it counts as a
+// drag, so the jitter of a normal click never selects.
+let dragOriginPx = shallowReactive<Vec2>(Vec2(0.0, 0.0));
+let dragOrigin = shallowReactive<Vec2i>({ x: 0, y: 0 });
+let dragMoved = reactive<bool>(false);
+
+let keyboardTookOver = reactive<bool>(false);
+let hoverKeyPressed = reactive<bool>(false);
+let inputSerial = reactive<int>(0);
+
+let noteKeyboardActivity = () => {
+    lastEditAt := ui.now();
+    keyboardTookOver := true;
+    inputSerial := rx.get(inputSerial) + 1;
+};
+
+let onWheel = (event: ui_components.WheelEvent) => {
+    scroll.handleWheel(event.delta);
+    dismissHover();
+};
+
+let onPointerDown = (event: ui_components.PointerEvent) => {
+    if scroll.isDragging() {
+        return;
+    }
+    dismissHover();
+    if event.button != ui_components.PointerButton.Left {
+        return;
+    }
+    let target = documentPositionAt(event.pos);
+    let granularity = textedit_behavior.granularityForClickCount(event.detail);
+    let extending = hasModifier(event.modifiers, KeyModifiers.Shift);
+
+    mouseSelecting := true;
+    dragOriginPx := event.pos;
+    dragOrigin := target;
+    // A double or triple press has already selected something, so the drag is
+    // live from the first frame rather than needing a cell of slack.
+    dragMoved := extending
+        || granularity != textedit_behavior.SelectionGranularity.Character;
+
+    if rx.get(vimOn) {
+        if !extending {
+            texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+            texteditBehavior.clearSelection();
+            if granularity == textedit_behavior.SelectionGranularity.Word {
+                texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+            } else if granularity == textedit_behavior.SelectionGranularity.Line {
+                texteditBehavior.setMode(textedit_behavior.Mode.VisualLine);
+            }
+        } else if !textedit_behavior.modeIsVisual(rx.get(texteditBehavior.mode)) {
+            texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+        }
+    } else if !extending {
+        texteditBehavior.clearSelection();
+    }
+
+    if extending {
+        texteditBehavior.extendSelectionTo(target);
+    } else {
+        texteditBehavior.beginSelection(target, granularity);
+    }
+};
+
+let onTextInput = (event: ui_components.TextInputEvent) => {
+    if rx.get(vimOn) {
+        // The one hover binding: vim has no mouse dwell to raise it with.
+        if event.text == "L" && rx.get(texteditBehavior.mode) != textedit_behavior.Mode.Insert
+            && !vim.commandLineOpen() {
+            hoverKeyPressed := true;
+            return;
+        }
+        texteditBehavior.handleTextInput(event.text);
+    } else {
+        texteditBehavior.insertText(event.text);
+    }
+    caretFollow := true;
+    noteKeyboardActivity();
+    dismissHover();
+};
+
+// editorTextFocus is what separates "this key is for the document" from "this
+// key is for the application" -- tracked from focus itself, which is literally
+// the question the dispatcher asks.
+let onFocus = (event: ui_components.FocusEvent) => {
+    keybindings().context.setBool(ctxEditorTextFocus(), true);
+};
+
+let onBlur = (event: ui_components.FocusEvent) => {
+    keybindings().context.setBool(ctxEditorTextFocus(), false);
+    buffer.autosave();
+};
+
+let onKeyDown = (event: ui_components.KeyboardEvent) => {
+    let ctrl = hasModifier(event.modifiers, KeyModifiers.Ctrl);
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+    let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
+    caretFollow := true;
+
+    if rx.get(vimOn) {
+        let name = vim_behavior.namedKey(keyEventName(event.key), ctrl, alt);
+        if name.length > 0 {
+            texteditBehavior.handleKey(name);
+            noteKeyboardActivity();
+            dismissHover();
+        }
+        return;
+    }
+
+    if event.key == ui_components.Key.Left {
+        if ctrl { texteditBehavior.moveCursorWordLeft(shift); }
+        else { texteditBehavior.moveCursorLeft(shift); }
+    }
+    else if event.key == ui_components.Key.Right {
+        if ctrl { texteditBehavior.moveCursorWordRight(shift); }
+        else { texteditBehavior.moveCursorRight(shift); }
+    }
+    else if event.key == ui_components.Key.Up { texteditBehavior.moveCursorUp(shift); }
+    else if event.key == ui_components.Key.Down { texteditBehavior.moveCursorDown(shift); }
+    else if event.key == ui_components.Key.Home {
+        if ctrl { texteditBehavior.moveCursorDocumentStart(shift); }
+        else { texteditBehavior.moveCursorHome(shift); }
+    }
+    else if event.key == ui_components.Key.End {
+        if ctrl { texteditBehavior.moveCursorDocumentEnd(shift); }
+        else { texteditBehavior.moveCursorEnd(shift); }
+    }
+    else if event.key == ui_components.Key.Return { texteditBehavior.insertNewline(); }
+    else if event.key == ui_components.Key.Backspace { texteditBehavior.deleteBackward(ctrl); }
+    else if event.key == ui_components.Key.Delete { texteditBehavior.deleteForward(ctrl); }
+    else if event.key == ui_components.Key.Tab {
+        texteditBehavior.insertText(indentString());
+        // Or focus leaves the editor.
+        event.preventDefault();
+    }
+    else if ctrl && event.key == ui_components.Key.A { texteditBehavior.selectAll(); }
+    else if ctrl && event.key == ui_components.Key.C { texteditBehavior.copy(); }
+    else if ctrl && event.key == ui_components.Key.X { texteditBehavior.cut(); }
+    else if ctrl && event.key == ui_components.Key.V { texteditBehavior.paste(); }
+
+    noteKeyboardActivity();
+    dismissHover();
+};
+
+// Element events stop firing once the pointer leaves the 10px bar, so the drag
+// is driven from the per-frame poll below instead.
+let grabScrollbar = (event: ui_components.PointerEvent) => {
+    event.stopPropagation();
+    if event.button != ui_components.PointerButton.Left {
+        return;
+    }
+    scroll.beginDragY(event.pos.y - editorOrigin().y);
+};
+
+// --- Commands and context keys -----------------------------------
+
+let followActiveFocus = computed(() => {
+    rx.get(documents().focusEpoch);
+    let active = props.active;
+    if active {
+        let element = rx.get(editorRef);
+        if element {
+            element.focus();
+        }
+    }
+    return active;
+});
+
+let publishEditorContext = computed(() => {
+    if !props.active {
+        return false;
+    }
+    let context = keybindings().context;
+    let on = rx.get(vimOn);
+    context.setBool(ctxVimActive(), on);
+    context.setStr(ctxVimMode(), on ? vimModeContextName(rx.get(texteditBehavior.mode)) : "");
+    context.setBool(ctxEditorHasSelection(),
+        rx.get(texteditBehavior.selectionAnchor) ? true : false);
+    return true;
+});
+
+let editorCommands = EditorCommands {
+    save: () => { requestSave(); },
+    toggleVim: toggleVim,
+    vimNavigateBack: () => { vim.jumpBack(); },
+    vimNavigateForward: () => { vim.jumpForward(); },
+    goToDefinition: () => {
+        if rx.get(vimOn) {
+            vim.pushJump();
+        }
+        goToDefinition();
+    },
+};
+
+let ownEditorCommands = computed(() => {
+    if !props.active {
+        return false;
+    }
+    registerEditorCommands(keybindings(), editorCommands);
+    return true;
+});
+
+// The shell has already put the caret's file in this tab; placing it is this
+// half's job. See navigation.hz.
+let revealSerialSeen = reactive<int>(0);
+let applyPendingReveal = computed(() => {
+    let nav = navigation();
+    let serial = rx.get(nav.serial);
+    if serial == rx.get(revealSerialSeen) {
+        return serial;
+    }
+    let wanted: str = rx.get(nav.path);
+    if wanted != filePath {
+        return serial;
+    }
+    revealSerialSeen := serial;
+    let line = vim_behavior.clampInt(rx.get(nav.line), 0, doc.lineCount() - 1);
+    let byteColumn = unicode.offsetFromUtf16Units(doc.lineText(line),
+        rx.get(nav.utf16Offset));
+    let target: Vec2i = { x: byteColumn, y: line };
+    if rx.get(vimOn) {
+        texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+    }
+    texteditBehavior.clearSelection();
+    texteditBehavior.moveTo(target, true, false);
+    texteditBehavior.requestScroll(textedit_behavior.ScrollIntent.Center);
+    return serial;
+});
+
+// --- Status line -------------------------------------------------
+
+let fps = reactive<real>(0.0);
+let fpsText = computed((): str => f"{rx.get(fps) as int} FPS");
+let lspMemory = reactive<str>("");
+
+let modeLabel = computed((): str => {
+    if !rx.get(vimOn) {
+        return "INSERT (vim off - F2)";
+    }
+    let mode = rx.get(texteditBehavior.mode);
+    if mode == textedit_behavior.Mode.Insert { return "-- INSERT --"; }
+    if mode == textedit_behavior.Mode.Visual { return "-- VISUAL --"; }
+    if mode == textedit_behavior.Mode.VisualLine { return "-- VISUAL LINE --"; }
+    if mode == textedit_behavior.Mode.VisualBlock { return "-- VISUAL BLOCK --"; }
+    return "-- NORMAL --";
+});
+
+let modeColor = computed((): str => {
+    if !rx.get(vimOn) { return "#888888"; }
+    let mode = rx.get(texteditBehavior.mode);
+    if mode == textedit_behavior.Mode.Insert { return "#7FD97F"; }
+    if textedit_behavior.modeIsVisual(mode) { return "#D9B87F"; }
+    return "#7FA8D9";
+});
+
+let commandLineLabel = computed((): str => {
+    rx.get(inputSerial);
+    if !rx.get(vimOn) || !vim.commandLineOpen() {
+        return "";
+    }
+    return f":{vim.commandLineText()}";
+});
+
+// --- What gets drawn ---------------------------------------------
+
+// Only the lines on screen, so idle and typing cost is independent of document
+// length.
+let visibleLines = computed((): []VisibleLine => {
+    let out: []VisibleLine = [];
+    let lineHeight = rx.get(charHeight);
+    if lineHeight <= 0.0 {
+        return out;
+    }
+    rx.get(docVersion);
+    let range = scroll.visibleRange(lineHeight, doc.lineCount(), 2);
+    let scrollY = rx.get(scroll.scrollTop);
+    for (let i = range.x; i < range.y; i++) {
+        out.push(VisibleLine {
+            index: i,
+            top: i as real * lineHeight - scrollY,
+            runs: tokens.runsForLine(i),
+        });
+    }
+    return out;
+});
+
+// startCol/endCol are BYTE offsets, which are not proportional to screen
+// distance -- both ends are converted to display columns so the band lines up
+// with the glyphs.
+let selectionBands = computed((): []SelectionBand => {
+    let out: []SelectionBand = [];
+    let lineHeight = rx.get(charHeight);
+    let cellWidth = rx.get(charWidth);
+    if lineHeight <= 0.0 {
+        return out;
+    }
+    rx.get(docVersion);
+    rx.get(texteditBehavior.cursorPosition);
+    rx.get(texteditBehavior.selectionAnchor);
+    rx.get(texteditBehavior.mode);
+    let range = scroll.visibleRange(lineHeight, doc.lineCount(), 2);
+    let scrollY = rx.get(scroll.scrollTop);
+    for (let i = range.x; i < range.y; i++) {
+        let selection = texteditBehavior.selectionRangeForLine(i);
+        if !selection {
+            continue;
+        }
+        let startCell = texteditBehavior.displayColumnAt(i, selection.startCol);
+        let endCell = texteditBehavior.displayColumnAt(i, selection.endCol);
+        let columns = (endCell - startCell) as real;
+        // One extra cell so the newline reads as selected, and so an empty line
+        // inside a linewise selection does not collapse to zero width.
+        if selection.includesLineEnd {
+            columns = columns + 1.0;
+        }
+        out.push(SelectionBand {
+            top: i as real * lineHeight - scrollY,
+            left: startCell as real * cellWidth,
+            width: columns * cellWidth,
+        });
+    }
+    return out;
+});
+
+// A block in normal/visual mode -- there the caret is ON a character, not
+// between two -- and the usual thin bar otherwise.
+let caret = computed((): CaretBox => {
+    let lineHeight = rx.get(charHeight);
+    let cellWidth = rx.get(charWidth);
+    rx.get(docVersion);
+    let position = rx.get(texteditBehavior.cursorPosition);
+    let mode = rx.get(texteditBehavior.mode);
+    let block = mode == textedit_behavior.Mode.Normal
+        || textedit_behavior.modeIsVisual(mode);
+
+    let cell = texteditBehavior.displayColumnAt(position.y, position.x);
+    let cells = texteditBehavior.displayWidthOfCharacterAt(position.y, position.x);
+    // No character under it -- an empty line in normal mode, or the
+    // one-past-the-end position visual mode allows. A zero-wide block is an
+    // invisible caret; vim draws one cell there.
+    if cells <= 0 {
+        cells = 1;
+    }
+    return CaretBox {
+        left: cell as real * cellWidth,
+        top: position.y as real * lineHeight - rx.get(scroll.scrollTop),
+        width: block ? cells as real * cellWidth : 1.0,
+        height: lineHeight,
+    };
+});
+
+let caretColor = computed((): str => {
+    if !rx.get(texteditBehavior.cursorVisible) {
+        return "#00000000";
+    }
+    let mode = rx.get(texteditBehavior.mode);
+    return mode == textedit_behavior.Mode.Normal || textedit_behavior.modeIsVisual(mode)
+        ? "#FFFFFF99" : "#FFFFFF";
+});
+
+let scrollBarLeft = computed((): real => rx.get(viewWidth) - scroll.style.size);
+let scrollThumbColor = computed((): str =>
+    scroll.isDragging() ? scroll.style.thumbActiveColor : scroll.style.thumbColor);
+
+let hoverAnchorX = computed((): real => {
+    let anchor = rx.get(hoverAnchor);
+    return anchor ? anchor.x - editorOrigin().x : rx.get(caret).left;
+});
+let hoverAnchorY = computed((): real => {
+    let anchor = rx.get(hoverAnchor);
+    return anchor ? anchor.y - editorOrigin().y : rx.get(caret).top;
+});
+
+// --- The frame pump ----------------------------------------------
+//
+// Everything here polls something the reactive graph cannot see: the clock, the
+// pointer, the language server, the filesystem. None of it belongs in the
+// template, which must only rebuild when state it drew actually changed.
+
+let smoothedFps: ref Box<real> = { value: 0.0 };
+let lastFrameAt: ref Box<real> = { value: 0.0 };
+let lastStatsAt: ref Box<real> = { value: ui.now() };
+let lastDiskCheck: ref Box<real> = { value: ui.now() };
+let mouseRest = shallowReactive<Vec2>(Vec2(-1.0, -1.0));
+let mouseRestSince = reactive<real>(-1.0);
+let lastHoverPos = reactive<Vec2i | none>(none);
+
+const comptime HOVER_DWELL_SECONDS = 0.3;
+// Long enough that a semantic request is not sent between two keystrokes.
+const comptime SEMANTIC_QUIET_SECONDS = 0.25;
+const comptime DISK_POLL_SECONDS = 0.25;
+
+let updateStats = () => {
+    let bridge = getState().lspBridge;
+    if !bridge {
+        lspMemory := "";
+        return;
+    }
+    let memory = bridge.getSystemMemoryUtilization();
+    let vueMiB = memory.vue ? memory.vue / 1024 / 1024 : "?";
+    let tsMiB = memory.ts ? memory.ts / 1024 / 1024 : "?";
+    lspMemory := f"Vue LSP Memory: {vueMiB} MiB | TypeScript LSP Memory: {tsMiB} MiB";
+};
+
+// Element events only fire while the pointer is over the element, so a drag
+// that leaves the editor (or the window) has to be followed from here.
+// Gated on `active`: these are GLOBAL inputs, and an inactive tab reading them
+// would track the visible tab's drag invisibly.
+let pumpPointerCapture = (lineHeight: real, cellWidth: real) => {
+    let leftDown = props.active && ui.leftMouseHeld();
+
+    if scroll.isDragging() {
+        if leftDown {
+            scroll.updateDrag(ui.mousePos.y - editorOrigin().y);
+        } else {
+            scroll.endDrag();
+            scroll.clampToBounds();
+        }
+    }
+
+    if !rx.get(mouseSelecting) {
+        return;
+    }
+    if !leftDown {
+        mouseSelecting := false;
+        dragMoved := false;
+        return;
+    }
+    if !rx.get(dragMoved) {
+        let origin: Vec2 = rx.get(dragOriginPx);
+        let dx = ui.mousePos.x - origin.x;
+        let dy = ui.mousePos.y - origin.y;
+        if dx < 0.0 { dx = -dx; }
+        if dy < 0.0 { dy = -dy; }
+        if dx < cellWidth && dy < lineHeight {
+            return;
+        }
+        dragMoved := true;
+        // In vim a drag IS a visual selection, entered from the PRESS position:
+        // visual mode allows the caret one past the last character, so
+        // re-deriving it here would shift the anchor by one.
+        if rx.get(vimOn) && !textedit_behavior.modeIsVisual(rx.get(texteditBehavior.mode)) {
+            texteditBehavior.setMode(textedit_behavior.Mode.Visual);
+            texteditBehavior.setSelectionAnchor(rx.get(dragOrigin));
+        }
+    }
+    // One call for all three granularities: the engine kept what the press
+    // established, so this is a word-by-word drag after a double click.
+    texteditBehavior.extendSelectionTo(documentPositionAt(ui.mousePos));
+};
+
+let pumpHover = (now: real) => {
+    let bridge = getState().lspBridge;
+    if !bridge {
+        return;
+    }
+
+    if rx.get(vimOn) && rx.get(hoverKeyPressed) {
+        hoverKeyPressed := false;
+        let cursor = texteditBehavior.cursorPosition;
+        hoverAnchor := none;
+        hoverResult := null;
+        hoverRequest := { x: cursor.x, y: cursor.y } as Vec2i;
+        mouseRestSince := now;
+        bumpHover();
+    }
+
+    if !rx.get(vimOn) {
+        let pointer = ui.mousePos;
+        let moved = pointer.x != rx.get(mouseRest).x || pointer.y != rx.get(mouseRest).y;
+        if moved {
+            mouseRest := pointer;
+            mouseRestSince := now;
+            keyboardTookOver := false;
+        }
+
+        let busy = !props.active || !ui.mousePosKnown || rx.get(keyboardTookOver)
+            || rx.get(mouseSelecting) || scroll.isDragging();
+        if busy || moved {
+            // A popup the mouse raised dies as soon as the mouse moves; one the
+            // keyboard raised survives until the keyboard dismisses it.
+            if rx.get(hoverRequest) && (moved || rx.get(hoverAnchor) is Vec2) {
+                dismissHover();
+                lastHoverPos := none;
+            }
+        }
+        else if now - rx.get(mouseRestSince) > HOVER_DWELL_SECONDS
+            && now - rx.get(lastEditAt) > HOVER_DWELL_SECONDS
+            && pointerInsideEditor(pointer) && !rx.get(hoverRequest) {
+            let target = documentPositionAt(pointer);
+            if pointerInsideLine(pointer, target.y) && isWordPositionAt(target) {
+                hoverResult := null;
+                hoverAnchor := pointer;
+                hoverRequest := target;
+                bumpHover();
+            }
+        }
+    }
+
+    let wanted = rx.get(hoverRequest);
+    if !wanted {
+        return;
+    }
+    if !bridge.hoverAvailable() {
+        return;
+    }
+    let previous = rx.get(lastHoverPos);
+    if previous && previous.x == wanted.x && previous.y == wanted.y {
+        return;
+    }
+    lastHoverPos := wanted;
+    let requestedFor: Vec2i = { x: wanted.x, y: wanted.y };
+    bridge.hover(filePath, wanted.y, wanted.x, doc.lineText(wanted.y),
+        (text: str | null) => {
+            // The answer outlived the request that produced it.
+            let current = rx.get(hoverRequest);
+            if !current {
+                return;
+            }
+            if current.x != requestedFor.x || current.y != requestedFor.y {
+                return;
+            }
+            hoverResult := text ? text : "(no hover info at this position)";
+            bumpHover();
+        });
+};
+
+let pumpLsp = (now: real) => {
+    let generation = rx.get(workspace().lspGeneration);
+    if rx.get(lspGenerationSeen) != generation {
+        lspGenerationSeen := generation;
+        lspDocumentOpened := false;
+        semanticRequestedVersion := -1;
+    }
+
+    let bridge = getState().lspBridge;
+    if !bridge {
+        return;
+    }
+    if filePath.length == 0 || lspLanguageId.length == 0 {
+        // Nothing will ever ask for it, so stop holding the whole file.
+        if rx.get(buffer.initialText) {
+            buffer.initialText := none;
+        }
+        return;
+    }
+
+    if !rx.get(lspDocumentOpened) && bridge.isReady() {
+        lspDocumentOpened := true;
+        let startupText = rx.get(buffer.initialText);
+        bridge.openDocument(filePath, lspLanguageId, doc.version,
+            startupText ? startupText as str : doc.text());
+        buffer.initialText := none;
+    }
+
+    if editorTheme().semanticEnabled && rx.get(lspDocumentOpened)
+        && rx.get(semanticRequestedVersion) != doc.version
+        && now - rx.get(lastEditAt) >= SEMANTIC_QUIET_SECONDS {
+        semanticRequestedVersion := doc.version;
+        let requestVersion = doc.version;
+        bridge.semanticTokens(filePath, 0, documentByteLength(doc),
+            (spans: []SemanticSpan) => { tokens.applySemanticSpans(spans, requestVersion); });
+    }
+
+    pumpHover(now);
+};
+
+ui.onFrame(() => {
+    let now = ui.now();
+    let dt = now - lastFrameAt.value;
+    lastFrameAt.value = now;
+    if dt > 0.0 {
+        smoothedFps.value = smoothedFps.value * 0.9 + (1.0 / dt) * 0.1;
+    }
+    if now - lastStatsAt.value > 0.5 {
+        lastStatsAt.value = now;
+        fps := smoothedFps.value;
+        updateStats();
+    }
+    if now - lastDiskCheck.value > DISK_POLL_SECONDS {
+        lastDiskCheck.value = now;
+        checkDisk();
+    }
+
+    // A size is only known after a layout, and the writes are guarded because a
+    // reactive write is unconditional -- writing the same number back every
+    // frame would defeat the frame gate entirely.
+    let charSize = ui.measureText("X", editorFontFamily(), editorFontSize());
+    if charSize.x != rx.get(charWidth) { charWidth := charSize.x; }
+    if charSize.y != rx.get(charHeight) { charHeight := charSize.y; }
+
+    let element = rx.get(editorRef);
+    let viewport = element ? element.size() : none;
+    if viewport {
+        if viewport.x != rx.get(viewWidth) { viewWidth := viewport.x; }
+        if viewport.y != rx.get(viewHeight) { viewHeight := viewport.y; }
+        if charSize.y > 0.0 {
+            scroll.setMetrics(viewport,
+                Vec2(viewport.x, doc.lineCount() as real * charSize.y));
+        }
+    }
+
+    // vim's zz/zt/zb arrive as intents: the engine has no idea how tall the
+    // viewport is.
+    if charSize.y > 0.0 {
+        let cursorTop = texteditBehavior.cursorPosition.y as real * charSize.y;
+        let intent = rx.get(texteditBehavior.scrollIntent);
+        if intent == textedit_behavior.ScrollIntent.Center {
+            scroll.centerInView(cursorTop, charSize.y);
+        } else if intent == textedit_behavior.ScrollIntent.Top {
+            scroll.scrollToTop(cursorTop);
+        } else if intent == textedit_behavior.ScrollIntent.Bottom {
+            scroll.scrollToBottom(cursorTop, charSize.y);
+        } else if intent == textedit_behavior.ScrollIntent.Reveal {
+            scroll.scrollIntoView(cursorTop, charSize.y);
+        }
+        if intent != textedit_behavior.ScrollIntent.None {
+            texteditBehavior.clearScrollRequest();
+        }
+        if rx.get(caretFollow) {
+            scroll.scrollIntoView(cursorTop, charSize.y);
+            caretFollow := false;
+        }
+        pumpPointerCapture(charSize.y, charSize.x);
+    }
+
+    if rx.get(vimOn) && vim.tick() {
+        docVersion := rx.get(docVersion) + 1;
+    }
+    drainHighlights();
+    tokens.refreshBrackets();
+    rx.get(requestHoverHighlight);
+    pumpLsp(now);
+
+    // Cached computeds with side effects: reading one costs nothing unless
+    // something it depends on actually moved.
+    rx.get(followActiveFocus);
+    rx.get(publishEditorContext);
+    rx.get(ownEditorCommands);
+    rx.get(trackCommentString);
+    rx.get(trackIndentUnit);
+    rx.get(applyPendingReveal);
+});
+
+// An inactive tab hides ITSELF rather than being wrapped in a hidden div: it
+// stays declared, so its setup, caches and scroll position all survive, but a
+// display:none subtree is never laid out, painted or hit-tested.
+@template [col w-grow h-grow gap-2 bg-["#181818"] text-color-["#FFFFFF"]
+    show-[props.active]]
+
+EditorStatusBar [] fps=[fpsText] mode=[modeLabel] modeColor=[modeColor]
+    commandLine=[commandLineLabel] message=[statusMessage] stats=[lspMemory] {}
+
+// Lines are absolutely positioned at a scroll offset, so this box has to clip
+// them. The I-beam sits here rather than on each line so it also covers the
+// space past the last line, which is still text you can click into.
+div [
+        relative col w-grow h-grow overflow-hidden cursor-text
+        font-family-[editorFontFamily()] font-size-[editorFontSize()]
+    ]
+    ref=editorRef
+    focusable=true
+    @focus=onFocus
+    @blur=onBlur
+    @wheel=onWheel
+    @pointerdown=onPointerDown
+    @textinput=onTextInput
+    @keydown=onKeyDown
+{
+    // Behind the text: an absolute element always paints above its in-flow
+    // siblings, so the bands have to be declared first.
+    div for=[band, index in selectionBands] key=[index] [
+        absolute top-[band.top] left-[band.left]
+        w-[band.width]px h-[charHeight]px bg-["#3391FF55"]
+    ] {}
+
+    // One row per line, absolutely positioned, so scrolling is a translation
+    // rather than a relayout. A code line must never wrap: wrapping puts the
+    // overflow on a second visual row, and every pixel<->column conversion
+    // assumes the glyph at column N is at N * charWidth.
+    div for=[line in visibleLines] key=[line.index] [
+        absolute row no-wrap top-[line.top] left-[0]
+    ] {
+        // On each run, not just the row: text wrap does not cascade from a div.
+        text for=[run, runIndex in line.runs] key=[runIndex]
+            [text-nowrap text-color-[run.color]] [run.text]
+    }
+
+    div [absolute top-[caret.top] left-[caret.left]
+        w-[caret.width]px h-[caret.height]px bg-[caretColor]] {}
+
+    // After the text, so it paints over it and wins the hit test.
+    div if=[scroll.showsVerticalBar()] [
+            absolute top-[0] left-[scrollBarLeft] cursor-default
+            w-[scroll.style.size]px h-[scroll.verticalTrackLength()]px
+            bg-[scroll.style.trackColor]
+        ]
+        @pointerdown=grabScrollbar
+    {
+        div [absolute left-[0] top-[scroll.verticalThumbOffset()]
+            w-[scroll.style.size]px h-[scroll.verticalThumbLength()]px
+            bg-[scrollThumbColor] rounded-[5]px] {}
+    }
+
+    HoverPopup if=[hoverRequest] [] blocks=[hoverBlocks] tokens=[hoverTokens]
+        revision=[hoverRevision] placeholder=[hoverPlaceholder]
+        anchorX=[hoverAnchorX] anchorY=[hoverAnchorY]
+        viewWidth=[viewWidth] viewHeight=[viewHeight] lineHeight=[charHeight] {}
+}

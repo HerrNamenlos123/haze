@@ -1,0 +1,313 @@
+ref struct TokenColorSettings {
+    foreground?: str;
+    fontStyle?: str;
+}
+
+ref struct TokenColor {
+    name?: str;
+    scope: str | []str;
+    settings: TokenColorSettings;
+}
+
+// Every field is `?` rather than defaulted: json.parse treats a defaulted field
+// as required, so one absent key would fail the whole theme.
+ref struct VscodeTheme {
+    type?: str;
+    // Raw: the keys are dotted names like "editorBracketHighlight.foreground1",
+    // and only a handful of the ~200 are ever read.
+    colors?: json.Node;
+    // VS Code applies semantic tokens only where the theme opts in. A theme's
+    // tokenColors are tuned against the grammar, so painting over one that
+    // never asked restyles what its author deliberately styled.
+    semanticHighlighting?: bool;
+    tokenColors: []TokenColor = [];
+}
+
+ref struct CompiledTokenColor {
+    selectors: []str;
+    settings: TokenColorSettings;
+}
+
+// "string" matches "string.quoted.double" but not "stringify".
+fn scopeSelectorMatches(selector: str, scope: str): bool {
+    if selector.length == 0 || selector.length > scope.length {
+        return false;
+    }
+    if !scope.startsWith(selector) {
+        return false;
+    }
+    return selector.length == scope.length || scope[selector.length] == b".";
+}
+
+// Semantic tokens are coloured through TextMate scopes, which is what VS Code
+// falls back to: both layers then read the same theme entries and cannot
+// disagree. "" means no opinion, and the grammar's colour stands.
+fn semanticScopeFor(tokenType: str, tokenModifiers: int): str {
+    let isStatic = hasSemanticModifier(tokenModifiers, 1);
+    let isAsync = hasSemanticModifier(tokenModifiers, 2);
+    let isReadonly = hasSemanticModifier(tokenModifiers, 3);
+    let isDefaultLibrary = hasSemanticModifier(tokenModifiers, 4);
+
+    if tokenType == "namespace" { return "entity.name.namespace"; }
+    if tokenType == "class" {
+        return isDefaultLibrary ? "support.class" : "entity.name.type.class";
+    }
+    if tokenType == "enum" { return "entity.name.type.enum"; }
+    if tokenType == "interface" { return "entity.name.type.interface"; }
+    if tokenType == "typeParameter" { return "entity.name.type.parameter"; }
+    if tokenType == "type" {
+        return isDefaultLibrary ? "support.type" : "entity.name.type";
+    }
+    if tokenType == "parameter" { return "variable.parameter"; }
+    if tokenType == "variable" {
+        if isDefaultLibrary { return "support.variable"; }
+        return isReadonly ? "variable.other.constant" : "variable.other.readwrite";
+    }
+    if tokenType == "property" {
+        if isDefaultLibrary { return "support.variable.property"; }
+        return isReadonly ? "variable.other.constant.property" : "variable.other.property";
+    }
+    if tokenType == "enumMember" { return "variable.other.enummember"; }
+    if tokenType == "function" {
+        if isDefaultLibrary { return "support.function"; }
+        return isAsync ? "entity.name.function.async" : "entity.name.function";
+    }
+    if tokenType == "method" {
+        return isStatic ? "entity.name.function.member.static" : "entity.name.function.member";
+    }
+    return "";
+}
+
+// Bounded so h * 31 + 255 cannot overflow.
+fn hashScope(s: str): int {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+        h = (h * 31 + (s[i] as int)) % 1000000007;
+    }
+    return h;
+}
+
+// Open addressing; there is no hash map in the stdlib. Resolving one scope
+// scans every selector of every theme entry with no early exit, and this used
+// to run for every run of every visible line every frame -- ~23% of all CPU.
+//
+// `hasColors` separates "no theme rule for this scope" (a real answer) from
+// "not in the table", without which every unstyled scope rescans forever.
+ref struct ScopeColorCache {
+    used: []bool = [];
+    keys: []str = [];
+    colors: []Color = [];
+    hasColors: []bool = [];
+    count: int = 0;
+
+    fn constructor() {
+        let cache = ScopeColorCache {};
+        cache.reset(64);
+        return cache;
+    }
+
+    mut fn clear(): void {
+        this.reset(this.used.length > 0 ? this.used.length : 64);
+    }
+
+    mut fn reset(capacity: int): void {
+        let used: []bool = [];
+        let keys: []str = [];
+        let colors: []Color = [];
+        let hasColors: []bool = [];
+        used.reserve(capacity);
+        keys.reserve(capacity);
+        colors.reserve(capacity);
+        hasColors.reserve(capacity);
+        for (let i = 0; i < capacity; i++) {
+            used.push(false);
+            keys.push("");
+            colors.push(Color(0.0, 0.0, 0.0, 0.0));
+            hasColors.push(false);
+        }
+        this.used = used;
+        this.keys = keys;
+        this.colors = colors;
+        this.hasColors = hasColors;
+        this.count = 0;
+    }
+
+    fn slotFor(scope: str, hash: int): int {
+        let capacity = this.used.length;
+        let slot = hash % capacity;
+        while this.used[slot] && this.keys[slot] != scope {
+            slot = (slot + 1) % capacity;
+        }
+        return slot;
+    }
+
+    // An index, not an optional struct: a struct in a union is heap-boxed, and
+    // this runs per token per visible line per frame.
+    fn find(scope: str): int {
+        if this.used.length == 0 {
+            return -1;
+        }
+        let slot = this.slotFor(scope, hashScope(scope));
+        if !this.used[slot] {
+            return -1;
+        }
+        return slot;
+    }
+
+    mut fn insert(scope: str, color: Color | none): void {
+        // Under ~70% load, so slotFor always finds a free slot to stop on.
+        if (this.count + 1) * 10 >= this.used.length * 7 {
+            this.grow();
+        }
+        let slot = this.slotFor(scope, hashScope(scope));
+        if !this.used[slot] {
+            this.used[slot] = true;
+            this.keys[slot] = scope;
+            this.count = this.count + 1;
+        }
+        if color {
+            this.colors[slot] = color;
+            this.hasColors[slot] = true;
+        }
+        else {
+            this.hasColors[slot] = false;
+        }
+    }
+
+    mut fn grow(): void {
+        let oldUsed = this.used;
+        let oldKeys = this.keys;
+        let oldColors = this.colors;
+        let oldHasColors = this.hasColors;
+
+        this.reset(oldUsed.length * 2);
+
+        for (let i = 0; i < oldUsed.length; i++) {
+            if oldUsed[i] {
+                let slot = this.slotFor(oldKeys[i], hashScope(oldKeys[i]));
+                this.used[slot] = true;
+                this.keys[slot] = oldKeys[i];
+                this.colors[slot] = oldColors[i];
+                this.hasColors[slot] = oldHasColors[i];
+                this.count = this.count + 1;
+            }
+        }
+    }
+}
+
+// One per process, not one per tab: the table and the cache in front of it are
+// the same for every open file.
+ref struct EditorTheme {
+    compiled: []CompiledTokenColor = [];
+    palette: BracketPalette;
+    semanticEnabled: bool = false;
+    cache: mut ScopeColorCache;
+    // Folded into the per-line run stamps, so a reload invalidates them all.
+    generation: rx.Reactive<int>;
+
+    fn constructor(): mut EditorTheme {
+        return EditorTheme {
+            palette: resolveBracketPalette("dark", none),
+            cache: ScopeColorCache(),
+            generation: rx.reactive<int>(0),
+        };
+    }
+
+    mut fn load(path: str): void {
+        let file = fs.readText(path);
+        if !file {
+            fmt.println(f"Failed to load theme: {path}");
+            return;
+        }
+        let parsed = json.parse<VscodeTheme>(file);
+        if !parsed {
+            fmt.println("Failed to parse theme: ", parsed.error());
+            return;
+        }
+
+        let compiled: []CompiledTokenColor = [];
+        for tokenColor in parsed.tokenColors {
+            let selectors: []str = [];
+            if tokenColor.scope is str {
+                for part in tokenColor.scope.split(",") {
+                    selectors.push(part.trim());
+                }
+            } else {
+                selectors = tokenColor.scope;
+            }
+            compiled.push({ selectors: selectors, settings: tokenColor.settings });
+        }
+        this.compiled = compiled;
+
+        let themeType = parsed.type;
+        this.palette = resolveBracketPalette(
+            themeType is str ? themeType : "dark", parsed.colors);
+
+        let semantic = parsed.semanticHighlighting;
+        this.semanticEnabled = semantic is bool ? semantic : false;
+
+        this.cache.clear();
+        this.generation := rx.get(this.generation) + 1;
+    }
+
+    // Longest matching selector wins -- TextMate's own rule.
+    fn resolveScope(scope: str): Color | none {
+        let bestForeground: str | none = none;
+        let bestLength = -1;
+        for tokenColor in this.compiled {
+            for selector in tokenColor.selectors {
+                if selector.length >= bestLength
+                    && scopeSelectorMatches(selector, scope)
+                    && tokenColor.settings.foreground {
+                    bestForeground = tokenColor.settings.foreground;
+                    bestLength = selector.length;
+                }
+            }
+        }
+        return bestForeground ? Color(bestForeground) : none;
+    }
+
+    mut fn colorForScope(scope: str): Color | none {
+        let slot = this.cache.find(scope);
+        if slot >= 0 {
+            return this.cache.hasColors[slot] ? this.cache.colors[slot] : none;
+        }
+        let color = this.resolveScope(scope);
+        this.cache.insert(scope, color);
+        return color;
+    }
+
+    // Scopes are outermost-first, and the innermost one with a rule styles it.
+    mut fn firstScopeColor(scopes: []str): Color {
+        for (let i = scopes.length - 1; i >= 0; i--) {
+            let color = this.colorForScope(scopes[i]);
+            if color {
+                return color;
+            }
+        }
+        return defaultTextColor();
+    }
+
+    fn bracketColorFor(level: int): Color | none {
+        if level < 0 {
+            return this.palette.unexpectedColor;
+        }
+        if this.palette.levelColors.length == 0 {
+            return none;
+        }
+        return this.palette.levelColors[level % this.palette.levelColors.length];
+    }
+}
+
+extern C let g_editorTheme: mut EditorTheme | none = none;
+
+fn editorTheme(): mut EditorTheme {
+    let existing = g_editorTheme;
+    if existing {
+        return existing;
+    }
+    let created = EditorTheme();
+    created.load("codeeditor/resources/obsidian-radiance-dark.json");
+    g_editorTheme = created;
+    return created;
+}

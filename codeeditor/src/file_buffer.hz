@@ -1,0 +1,212 @@
+import text_document
+
+// One file, its in-memory buffer, and the relationship between the two.
+//
+// dirty     the buffer differs from what we last read or wrote
+// diverged  it is dirty AND the file has been rewritten since
+// conflict  the modal asking about that divergence is on screen
+//
+// Only a divergence is ever a question for the user: a clean buffer over a
+// changed file reloads silently, a dirty buffer over an unchanged file saves
+// silently. diverged and conflict are two flags because Cancel takes the dialog
+// away without making the versions agree -- collapsing them would re-arm the
+// autosave to perform the overwrite that was just declined.
+ref struct FileBuffer {
+    path: str = "";
+    doc: mut text_document.Document;
+    // Bumped by every edit, so the render path can invalidate exactly what
+    // changed instead of diffing content.
+    version: rx.Reactive<int>;
+
+    dirty: rx.Reactive<bool>;
+    diverged: rx.Reactive<bool>;
+    conflict: rx.Reactive<bool>;
+    // Read once when the conflict is raised, so "discard" applies to the
+    // version the question was about even if the file has moved on again.
+    pendingDiskText: rx.Reactive<str | none>;
+    // vim's message area, and the only channel an ex command answers through.
+    status: rx.Reactive<str>;
+
+    // The file as read, held until the highlighter and the language server have
+    // each been handed their initial copy -- we already have it, and doc.text()
+    // would rebuild the identical string.
+    initialText: rx.Reactive<str | none>;
+
+    // mtime AND size, because either alone lies: coarse timestamps miss a
+    // rewrite inside one second, and a same-length rewrite is invisible to size.
+    diskMtime: int = 0;
+    diskSize: int = 0;
+    diskKnown: bool = false;
+
+    // Put the caret back after the buffer was replaced from disk. The caret
+    // belongs to the editing engine, which this knows nothing about.
+    onReloaded: DocAction;
+
+    fn constructor(path: str): mut FileBuffer {
+        return FileBuffer {
+            path: path,
+            doc: text_document.Document(),
+            version: rx.reactive<int>(0),
+            dirty: rx.reactive<bool>(false),
+            diverged: rx.reactive<bool>(false),
+            conflict: rx.reactive<bool>(false),
+            pendingDiskText: rx.reactive<str | none>(none),
+            status: rx.reactive<str>(""),
+            initialText: rx.reactive<str | none>(none),
+            onReloaded: () => {},
+        };
+    }
+
+    // Adopting the file's current identity is what keeps the watcher from
+    // reporting our own save as somebody else's edit.
+    mut fn rememberDiskState(): void {
+        if this.path.length == 0 {
+            return;
+        }
+        let stat = fs.statFile(this.path);
+        if stat {
+            let state = stat as fs.FileState;
+            this.diskMtime = state.mtime;
+            this.diskSize = state.size;
+            this.diskKnown = true;
+        }
+        else {
+            this.diskKnown = false;
+        }
+    }
+
+    mut fn load(): void {
+        if this.path.length == 0 {
+            return;
+        }
+        let file = fs.readText(this.path);
+        if !file {
+            fmt.println(f"Failed loading file: {this.path}");
+            return;
+        }
+        let text = file as str;
+        this.doc.setText(text);
+        this.initialText := text;
+        this.version := rx.get(this.version) + 1;
+        // Stat AFTER the read: a file rewritten between the two would otherwise
+        // be recorded as the version we hold, and the change never noticed.
+        this.rememberDiskState();
+    }
+
+    // The single mutation primitive the editing engine drives. Cost is
+    // proportional to the EDIT, not to the document.
+    mut fn replaceRange(start: Vec2i, end: Vec2i, text: String): void {
+        this.doc.replaceRange(start, end, text.cloneString());
+        this.version := rx.get(this.version) + 1;
+    }
+
+    mut fn save(): bool {
+        if this.path.length == 0 {
+            this.status := "E32: No file name";
+            return false;
+        }
+        if !fs.writeText(this.path, this.doc.text()) {
+            this.status := f"E212: Can't open file for writing: {this.path}";
+            return false;
+        }
+        this.dirty := false;
+        this.diverged := false;
+        this.conflict := false;
+        this.pendingDiskText := none;
+        this.rememberDiskState();
+        this.status := f"\"{fileNameOf(this.path)}\" written";
+        return true;
+    }
+
+    // Raises the dialog instead of writing when the file has diverged.
+    mut fn requestSave(): bool {
+        if rx.get(this.diverged) {
+            this.conflict := true;
+            return false;
+        }
+        return this.save();
+    }
+
+    mut fn adoptDiskText(text: str): void {
+        this.doc.setText(text);
+        this.version := rx.get(this.version) + 1;
+        this.dirty := false;
+        this.diverged := false;
+        this.conflict := false;
+        this.pendingDiskText := none;
+        this.rememberDiskState();
+        let reloaded = this.onReloaded;
+        reloaded();
+    }
+
+    mut fn checkDisk(): void {
+        if this.path.length == 0 {
+            return;
+        }
+        let stat = fs.statFile(this.path);
+        if !stat {
+            this.diskKnown = false;
+            return;
+        }
+        let state = stat as fs.FileState;
+        if this.diskKnown && state.mtime == this.diskMtime && state.size == this.diskSize {
+            return;
+        }
+        let file = fs.readText(this.path);
+        if !file {
+            return;
+        }
+        let text = file as str;
+        this.diskMtime = state.mtime;
+        this.diskSize = state.size;
+        this.diskKnown = true;
+
+        // A rewrite that produced the same text is not a change. Length first,
+        // so the common case never rebuilds the document string.
+        if text.length == documentByteLength(this.doc) && text == this.doc.text() {
+            this.diverged := false;
+            this.conflict := false;
+            this.pendingDiskText := none;
+            return;
+        }
+        if rx.get(this.dirty) {
+            this.pendingDiskText := text;
+            this.diverged := true;
+            this.conflict := true;
+            return;
+        }
+        this.adoptDiskText(text);
+        this.status := f"\"{fileNameOf(this.path)}\" reloaded";
+    }
+
+    // Never writes over a divergence: that answer is the user's.
+    mut fn autosave(): void {
+        if this.path.length == 0 || rx.get(this.diverged) || rx.get(this.conflict)
+            || !rx.get(this.dirty) {
+            return;
+        }
+        this.save();
+    }
+
+    mut fn resolveOverwrite(): void {
+        this.conflict := false;
+        this.pendingDiskText := none;
+        this.save();
+    }
+
+    mut fn resolveDiscard(): void {
+        let pending = rx.get(this.pendingDiskText);
+        this.conflict := false;
+        if pending {
+            this.adoptDiskText(pending as str);
+        } else {
+            this.diverged := false;
+        }
+    }
+
+    // Leaves `diverged` set, which is what stops the autosave from performing
+    // the overwrite that was just declined.
+    mut fn resolveCancel(): void {
+        this.conflict := false;
+    }
+}

@@ -1,0 +1,56 @@
+ref struct HoverBlock {
+    text: str;
+    isCode: bool;
+}
+
+// Decided once per popup: placement reads the popup's own measured size, and
+// moving it re-measures it, so recomputing per frame oscillates forever.
+ref struct HoverPlacement {
+    x: real = 0.0;
+    y: real = 0.0;
+    above: bool = true;
+}
+
+// Two payload shapes arrive: bare code from tsserver quickinfo, and markdown
+// from LSP hover. No fence anywhere therefore means "all code". Only fences are
+// handled -- they are the only markdown that changes how text is COLOURED.
+//
+// One flat loop with no flush helper: a closure that REASSIGNS a captured array
+// does not clear the caller's copy in this compiler, so a helper silently
+// folded every block into the next.
+fn parseHoverBlocks(payload: str): []HoverBlock {
+    let blocks: []HoverBlock = [];
+    let fence = "```";
+    let current = "";
+    let currentHasLines = false;
+    let inCode = false;
+    let sawFence = false;
+
+    for line in payload.split("\n") {
+        if line.trim().startsWith(fence) {
+            sawFence = true;
+            if currentHasLines && current.trim().length > 0 {
+                blocks.push({ text: current, isCode: inCode });
+            }
+            current = "";
+            currentHasLines = false;
+            inCode = !inCode;
+        }
+        else {
+            current = currentHasLines ? current + "\n" + line : line;
+            currentHasLines = true;
+        }
+    }
+    if currentHasLines && current.trim().length > 0 {
+        blocks.push({ text: current, isCode: inCode });
+    }
+
+    if !sawFence {
+        let all: []HoverBlock = [];
+        for block in blocks {
+            all.push({ text: block.text, isCode: true });
+        }
+        return all;
+    }
+    return blocks;
+}

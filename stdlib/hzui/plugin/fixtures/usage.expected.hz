@@ -43,7 +43,7 @@ let save = () => {};
             let props = instance.props();
             #source "usage.hzui:12:1" {
                 ButtonComponent(ui, {
-                    id: 1,
+                    id: -2,
                     label: "Save",
                     onClick: save,
                     content: (s: ButtonSlotContent) => {

@@ -329,7 +329,7 @@ describe("events", () => {
 
   test("a component's class list is reserved: required, and empty", () => {
     expect(gen("import ui_components\n@template\nBtn []")).toContain(
-      "BtnComponent(ui, { id: 1 });"
+      "BtnComponent(ui, { id: -2 });"
     );
     expect(() => gen("import ui_components\n@template\nBtn label=x")).toThrow(
       /needs its \(reserved, currently empty\) class list/
@@ -584,7 +584,7 @@ describe("expose", () => {
 
   test("'ref=' on a component binds its exposed API, not an element", () => {
     const out = gen("import ui_components\n@template\nDialog [] ref=d");
-    expect(out).toContain("DialogComponent(ui, { id: 1, exposeRef: d });");
+    expect(out).toContain("DialogComponent(ui, { id: -2, exposeRef: d });");
     expect(out).not.toContain("elementRef: d");
   });
 

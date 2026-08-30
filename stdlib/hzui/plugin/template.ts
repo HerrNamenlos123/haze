@@ -465,6 +465,12 @@ export type TemplateContext = {
    * the first one's instance and crashed reading its props out of the wrong
    * TypeErasedBox.
    *
+   * The ids it hands out are NEGATIVE. A component's root element is a child of
+   * the same parent element its plain siblings are (createChild in
+   * ui_components), so the two counters share that parent's child-id space and
+   * would otherwise collide -- Clay reports "an element with this ID was
+   * already previously declared" and the two elements fight over one box.
+   *
    * KNOWN GAP: a component declared inside a SLOT provider is registered
    * against the component that RENDERS the slot, not the one that wrote it,
    * so it is numbered from the wrong counter. It only collides if the slot's

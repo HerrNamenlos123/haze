@@ -606,7 +606,11 @@ export function compose(filepath: string, source: string): string {
     presetNamespace: "presets",
     slots: new Map(slots.map((s) => [s.name, slotStructName(s)])),
     rewriteExpr: rewriteTemplateExpr,
-    nextComponentId: () => ++componentIds,
+    // Negative, so a component's ROOT ELEMENT can never collide with a plain
+    // sibling element: both are children of the same parent element and are
+    // numbered from different counters (see TemplateContext.nextComponentId).
+    // From -2, leaving -1 to the crash placeholder in defineComponentImpl.
+    nextComponentId: () => -(++componentIds) - 1,
   };
 
   push("");

@@ -83,7 +83,7 @@ const comptime ID_BTN_OVERWRITE = 6;
 const comptime ID_BTN_DISCARD = 7;
 const comptime ID_BTN_CANCEL = 8;
 
-export fn ConflictDialog(ui: ui_components.UIContext, args: ConflictDialogArgs) {
+export fn ConflictDialogComponent(ui: ui_components.UIContext, args: ConflictDialogArgs) {
     ui.defineComponent(args.id, args, (instance: ui_components.InstanceData<ConflictDialogArgs>) => {
         return (): ui_components.DivProps => {
             let props = instance.props();

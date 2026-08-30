@@ -1,0 +1,166 @@
+import ui_components
+import textedit_behavior
+import vim_behavior
+import text_document
+
+// Pixel<->column conversions must pass this font explicitly: a bare
+// ui.measureText() resolves the font from the live render stack, so it answers
+// differently inside and outside the render pass.
+fn editorFontFamily(): str {
+    return "JetBrainsMonoNerdFont-Regular";
+}
+
+fn editorFontSize(): real {
+    return 16.0;
+}
+
+fn defaultTextColor(): Color {
+    return "#FFF";
+}
+
+fn fileNameOf(path: str): str {
+    let start = 0;
+    for (let i = 0; i < path.length; i++) {
+        if path[i] == b"/" || path[i] == b"\\" {
+            start = i + 1;
+        }
+    }
+    if start >= path.length {
+        return path;
+    }
+    return path.slice(start, path.length);
+}
+
+// An unlisted extension gets a scope no grammar answers to, which the engine
+// reports as "no tokens" -- better than colouring it with an arbitrary grammar.
+fn scopeNameForFile(path: str): str {
+    if path.endsWith(".hz") { return "source.hz"; }
+    if path.endsWith(".vue") { return "source.vue"; }
+    if path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts") { return "source.ts"; }
+    if path.endsWith(".tsx") { return "source.tsx"; }
+    if path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") { return "source.js"; }
+    if path.endsWith(".jsx") { return "source.js.jsx"; }
+    if path.endsWith(".json") || path.endsWith(".jsonc") { return "source.json"; }
+    if path.endsWith(".json5") { return "source.json5"; }
+    if path.endsWith(".css") { return "source.css"; }
+    if path.endsWith(".scss") { return "source.css.scss"; }
+    if path.endsWith(".less") { return "source.css.less"; }
+    if path.endsWith(".sass") { return "source.sass"; }
+    if path.endsWith(".html") || path.endsWith(".htm") { return "text.html.basic"; }
+    if path.endsWith(".md") { return "text.html.markdown"; }
+    if path.endsWith(".yaml") || path.endsWith(".yml") { return "source.yaml"; }
+    if path.endsWith(".toml") { return "source.toml"; }
+    if path.endsWith(".graphql") || path.endsWith(".gql") { return "source.graphql"; }
+    return "text.plain";
+}
+
+// "" switches the language server off for the file. The one server understands
+// exactly these; anything else opened as "vue" is parsed as an SFC.
+fn lspLanguageIdForFile(path: str): str {
+    if path.endsWith(".vue") { return "vue"; }
+    if path.endsWith(".ts") || path.endsWith(".mts") || path.endsWith(".cts") { return "typescript"; }
+    if path.endsWith(".tsx") { return "typescriptreact"; }
+    if path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs") { return "javascript"; }
+    if path.endsWith(".jsx") { return "javascriptreact"; }
+    return "";
+}
+
+// vim's 'commentstring': one template, %s where the line's own text goes.
+fn commentStringForFile(path: str): str {
+    let lower = asciiLower(path);
+    if lower.endsWith(".py") || lower.endsWith(".sh") || lower.endsWith(".bash")
+        || lower.endsWith(".zsh") || lower.endsWith(".toml") || lower.endsWith(".yaml")
+        || lower.endsWith(".yml") || lower.endsWith(".ini") || lower.endsWith(".conf") {
+        return "# %s";
+    }
+    if lower.endsWith(".css") || lower.endsWith(".scss") || lower.endsWith(".less") {
+        return "/* %s */";
+    }
+    if lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xml")
+        || lower.endsWith(".svg") || lower.endsWith(".md") {
+        return "<!-- %s -->";
+    }
+    if lower.endsWith(".lua") || lower.endsWith(".sql") {
+        return "-- %s";
+    }
+    return "// %s";
+}
+
+// An SFC has three comment syntaxes. Its blocks are top-level and unnested, so
+// scanning back for the enclosing tag is reliable.
+fn vueCommentStringAt(doc: text_document.Document, line: int): str {
+    let y = vim_behavior.clampInt(line, 0, doc.lineCount() - 1);
+    for (let i = y; i >= 0; i--) {
+        let text = doc.lineText(i).trim();
+        if text.startsWith("<script") { return "// %s"; }
+        if text.startsWith("<style") { return "/* %s */"; }
+        if text.startsWith("<template") { return "<!-- %s -->"; }
+    }
+    return "<!-- %s -->";
+}
+
+// Printable characters arrive through onTextInput; the letters here are only
+// for Ctrl-combinations like <C-d>/<C-o>/<C-r>.
+fn keyEventName(key: ui_components.Key): str {
+    if key == ui_components.Key.Escape { return "Escape"; }
+    if key == ui_components.Key.Return { return "Return"; }
+    if key == ui_components.Key.Backspace { return "Backspace"; }
+    if key == ui_components.Key.Tab { return "Tab"; }
+    if key == ui_components.Key.Up { return "Up"; }
+    if key == ui_components.Key.Down { return "Down"; }
+    if key == ui_components.Key.Left { return "Left"; }
+    if key == ui_components.Key.Right { return "Right"; }
+    if key == ui_components.Key.Delete { return "Delete"; }
+    if key == ui_components.Key.Home { return "Home"; }
+    if key == ui_components.Key.End { return "End"; }
+    if key == ui_components.Key.PageUp { return "PageUp"; }
+    if key == ui_components.Key.PageDown { return "PageDown"; }
+    if key == ui_components.Key.A { return "a"; }
+    if key == ui_components.Key.D { return "d"; }
+    if key == ui_components.Key.I { return "i"; }
+    if key == ui_components.Key.O { return "o"; }
+    if key == ui_components.Key.R { return "r"; }
+    if key == ui_components.Key.U { return "u"; }
+    if key == ui_components.Key.V { return "v"; }
+    return "";
+}
+
+fn vimModeContextName(mode: textedit_behavior.Mode): str {
+    if mode == textedit_behavior.Mode.Insert { return "insert"; }
+    if mode == textedit_behavior.Mode.Visual { return "visual"; }
+    if mode == textedit_behavior.Mode.VisualLine { return "visualline"; }
+    if mode == textedit_behavior.Mode.VisualBlock { return "visualblock"; }
+    return "normal";
+}
+
+// doc.text().length without building the string.
+fn documentByteLength(doc: text_document.Document): int {
+    let count = doc.lineCount();
+    if count == 0 {
+        return 0;
+    }
+    let total = 0;
+    for (let i = 0; i < count; i++) {
+        total = total + doc.lineLength(i);
+    }
+    return total + count - 1;
+}
+
+ref struct HighlightToken {
+    text: str;
+    color: Color;
+}
+
+// Byte offsets, like everything else the editor stores. Semantic tokens and
+// bracket colours both lower into this, so the render path has one overlay kind.
+ref struct ColourOverride {
+    startIndex: int;
+    endIndex: int;
+    color: Color;
+}
+
+ref struct SemanticToken {
+    startIndex: int;
+    endIndex: int;
+    scope: str;
+}

@@ -1,0 +1,153 @@
+// The language server's answer, floating over the editor. Code blocks are
+// coloured by the same engine and theme as the buffer, so a signature here
+// looks identical to the same signature in the file.
+
+// Prose and code lines are flattened into one list so the template is flat and
+// every row has the same shape.
+ref struct HoverRow {
+    isCode: bool;
+    text: str;
+    runs: []HighlightToken;
+}
+
+@props
+[[hzui.untracked]]
+blocks?: []HoverBlock;
+[[hzui.untracked]]
+tokens: HoverTokens;
+// Bumps when blocks or their colouring change; a ref struct cannot be compared.
+revision: int = 0;
+// Shown until an answer arrives -- a cold language server takes many seconds,
+// and silence there is indistinguishable from the request being ignored.
+placeholder: str = "";
+// Editor-local pixels: the popup is positioned inside the editor's box.
+anchorX: real = 0.0;
+anchorY: real = 0.0;
+viewWidth: real = 0.0;
+viewHeight: real = 0.0;
+lineHeight: real = 0.0;
+gap: real = 6.0;
+bg: str = "#181818";
+borderColor: str = "#4F4F4F";
+proseColor: str = "#9A9A9A";
+
+@setup
+let popupRef = elementRef<DivElement>();
+let tokens = props.tokens;
+
+// Frozen once resolved: every decision below reads the popup's own measured
+// size, and moving the popup re-measures it. Recomputed per frame it oscillated
+// between two positions for as long as the popup was open.
+let placement = reactive<HoverPlacement | none>(none);
+ui.watch(() => props.revision, (value, previous) => { placement := none; });
+
+let rows = computed((): []HoverRow => {
+    let out: []HoverRow = [];
+    let blocks = props.blocks;
+    if !blocks { return out; }
+    // Code blocks share one line space with the engine's reply, so this counter
+    // must not restart per block.
+    let codeLine = 0;
+    for block in blocks {
+        if block.isCode {
+            for lineText in block.text.split("\n") {
+                out.push(HoverRow {
+                    isCode: true,
+                    text: lineText,
+                    runs: tokens.runsForLine(lineText, codeLine),
+                });
+                codeLine = codeLine + 1;
+            }
+        }
+        else {
+            let bare: []HighlightToken = [];
+            out.push(HoverRow { isCode: false, text: block.text, runs: bare });
+        }
+    }
+    return out;
+});
+
+// Laid out but not painted until the placement resolves: drawing at a
+// provisional position is the "appears, then jumps" flash this avoids. Not
+// display:none, which would remove it from layout so it could never be measured.
+let measuring = computed(() => rx.get(placement) is none);
+let invisible: Color = "#00000000";
+// Pre-resolved to Color: a ternary over a `str` prop and a Color would be a
+// union, which no style op accepts.
+let panelBg = computed((): Color => rx.get(measuring) ? invisible : props.bg as Color);
+let panelBorder = computed((): Color =>
+    rx.get(measuring) ? invisible : props.borderColor as Color);
+let proseInk = computed((): Color =>
+    rx.get(measuring) ? invisible : props.proseColor as Color);
+let plainInk = computed((): Color => rx.get(measuring) ? invisible : defaultTextColor());
+let popupX = computed((): real => {
+    let resolved = rx.get(placement);
+    return resolved ? resolved.x : 0.0;
+});
+let popupY = computed((): real => {
+    let resolved = rx.get(placement);
+    return resolved ? resolved.y : 0.0;
+});
+// -1 = up by exactly my own height, so the popup's BOTTOM lands on popupY.
+let lift = computed((): real => {
+    let resolved = rx.get(placement);
+    return resolved && resolved.above ? -1.0 : 0.0;
+});
+
+// A size is only known after a layout, so this cannot be a computed over props.
+ui.onFrame(() => {
+    if rx.get(placement) {
+        return;
+    }
+    let element = rx.get(popupRef);
+    let size = element ? element.size() : none;
+    if !size {
+        return;
+    }
+
+    // Above the token by default: below would cover the line about to be read.
+    // Flip only when below is genuinely roomier, or a popup taller than the
+    // viewport flips to a side that fits it no better.
+    let above = true;
+    if props.anchorY - props.gap < size.y {
+        let roomBelow = props.viewHeight - (props.anchorY + props.lineHeight + props.gap);
+        if roomBelow > props.anchorY - props.gap {
+            above = false;
+        }
+    }
+
+    // Keep the right edge in view, then re-clamp the left to 0: a popup wider
+    // than the viewport must stay anchored left, or the start of the signature
+    // -- the part worth reading -- is what goes off screen.
+    let x = props.anchorX;
+    if props.viewWidth > 0.0 {
+        let maxX = props.viewWidth - size.x - props.gap;
+        if x > maxX { x = maxX; }
+    }
+    if x < 0.0 { x = 0.0; }
+
+    placement := HoverPlacement {
+        x: x,
+        above: above,
+        y: above ? props.anchorY - props.gap
+                 : props.anchorY + props.lineHeight + props.gap,
+    };
+});
+
+@template [
+        absolute col w-fit h-fit p-2 rounded-2 cursor-default
+        top-[popupY] left-[popupX] translate-y-[lift]
+        bg-[panelBg] border-1 border-color-[panelBorder]
+    ]
+    ref=popupRef
+
+text if=[rows.length == 0] [text-color-[proseInk]] [props.placeholder]
+
+div for=[row, index in rows] key=[index] [row w-fit h-fit no-wrap] {
+    text if=[!row.isCode] [text-color-[proseInk]] [row.text]
+    // The engine's reply lands a frame after the text: show it uncoloured
+    // rather than showing nothing.
+    text else-if=[row.runs.length == 0] [text-color-[plainInk]] [row.text]
+    text else for=[run, runIndex in row.runs] key=[runIndex]
+        [text-nowrap text-color-[measuring ? invisible : run.color]] [run.text]
+}
